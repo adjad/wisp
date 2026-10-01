@@ -22,12 +22,13 @@ def test_legacy_rows_without_addresses_do_not_group_on_display_name():
         "[school@example.edu] University | Assignment posted",
     ])
     assert "represented 2 messages from 2 sender notes" in output
-    assert output.count("**University (address unavailable)**") == 2
+    # No address, no proof they are the same sender: never merged, in any section.
+    assert output.count("University (address unavailable)") == 2
 
 
 def test_subject_urgency_is_labeled_as_a_subject_claim():
     output = digest(["[mail] Casey <casey@example.test> | RSVP for Thursday dinner"])
-    assert "**Casey <casey@example.test>**" in output
+    assert "**Casey** · example.test" in output
     assert "Subject says: “RSVP for Thursday dinner”" in output
     assert "Thursday dinner is confirmed" not in output
 
@@ -38,7 +39,7 @@ def test_large_digest_is_bounded_but_discloses_hidden_senders():
     assert "represented 12 messages from 12 sender notes" in output
     assert "truncated 8 messages" in output
     assert "8 more sender addresses" in output
-    assert output.count("\n- **") == 12
+    assert output.count("Sender ") == 12
 
 
 def h(ts: float, account: str, account_id: str, name: str, address: str,
@@ -88,10 +89,14 @@ def test_identity_dedup_and_cross_account_grouping():
     assert len(parsed) == 4
     output = E.sender_digest(parsed, "fixture")
     assert "represented 4 messages from 2 sender notes" in output
-    assert "Nina <nina@example.test>** (3 messages, 3 unread; accounts: Personal, School)" in output
+    # Messages are listed individually, each tagged with its account; one display
+    # name fronting two addresses shows the addresses in full.
+    assert output.count("**Nina** · nina@example.test") == 3
+    assert output.count("**Nina** · other@example.test") == 1
     assert "Project update”" in output
-    assert "Nina <other@example.test>** (1 message" in output
-    assert E.sender_digest(E._filter_account_records(parsed, "School"), "School").count("3 messages") == 0
+    assert "· Personal" in output and "· School" in output
+    school_only = E.sender_digest(E._filter_account_records(parsed, "School"), "School")
+    assert "Personal" not in school_only and school_only.count("**Nina**") == 2
 
 
 def test_explicit_account_scope_does_not_count_other_account(monkeypatch):
@@ -243,7 +248,9 @@ def test_same_message_id_in_different_accounts_is_not_a_duplicate():
         h(100, "School", "a2", "Nina", "nina@example.test", "<same>", "Update"),
     ]))
     assert len(rows) == 2
-    assert "(2 messages, 2 unread; accounts: Personal, School)" in E.sender_digest(rows, "fixture")
+    digest_text = E.sender_digest(rows, "fixture")
+    assert digest_text.count("**Nina** · example.test") == 2
+    assert "· Personal" in digest_text and "· School" in digest_text
 
 
 def test_priority_keeps_important_automated_and_demotes_routine():
@@ -252,8 +259,10 @@ def test_priority_keeps_important_automated_and_demotes_routine():
         h(99, "Mail", "a", "Security Alerts", "alert@example.test", "2", "Security alert: suspicious sign-in"),
     ]))
     output = E.sender_digest(rows, "fixture")
-    assert output.index("alert@example.test") < output.index("news@example.test")
-    assert "Weekend sale" in output
+    # The security alert is sorted into the attention section, ahead of the newsletter,
+    # which is rolled up by name (a promotion's subject is not worth a line).
+    assert output.index("Security Alerts") < output.index("Shop Newsletter")
+    assert output.index("Needs your attention") < output.index("Newsletters & updates")
     assert "Subject says: “Security alert" in output
 
 
@@ -614,10 +623,10 @@ def test_on_demand_scheduled_and_triage_never_read_raw(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("raw read")))
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_recent())
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_for_period("this month"))
-    assert "nina@example.test" in X.triage_inbox()
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_recent())
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_for_period("this month"))
+    assert "**Nina** · example.test" in X.triage_inbox()
     # The scheduled digest delegates to the same day path. The notification
     # transport is patched; no message is sent in this synthetic test.
     from unittest.mock import AsyncMock

@@ -1005,6 +1005,189 @@ def header_importance(row: dict, *, newest_ts: float | None = None) -> int:
     return score
 
 
+# --- Sectioned inbox digest ----------------------------------------------------
+# A flat list grouped by sender buries "office hours cancelled" between two
+# promotions. The sectioned layout ranks mail by what the person must DO about it.
+# Classification uses headers only (sender, address, subject, unread flag), never
+# message bodies, and subject text is only ever a label, never an instruction.
+_SOCIAL_RE = re.compile(
+    r"facebook|instagram|twitter|linkedin|reddit|discord|tiktok|snapchat|pinterest|youtube|"
+    r"whatsapp|nextdoor|tumblr|bluesky|mastodon|\bthreads\b|\bx\.com\b", re.I)
+_COURSE_RE = re.compile(
+    r"instructure|canvas|edstem|ed discussion|gradescope|piazza|blackboard|moodle|"
+    r"brightspace|coursera|\bcourse", re.I)
+_NEWSLETTER_RE = re.compile(
+    r"substack|newsletter|digest|nytimes|new york times|washington ?post|bloomberg|"
+    r"morning brew|medium\.com|\bnews@|updates@|marketing|promo|\boffers?@|\bdeals?@", re.I)
+_TIME_CHANGE_RE = re.compile(
+    r"\b(?:cancel(?:l?ed)?|resched\w*|postponed|moved to|overdue|final notice|"
+    r"expires?|expiring|missing)\b", re.I)
+_SCHOOL_ACTION_RE = re.compile(
+    r"\b(?:due|deadline|grade[sd]?|exam|midterm|quiz|late|action required|required|reminder|"
+    r"assignment|homework|hw ?\d+|pa ?\d+|lab ?\d+|problem set|pset)\b", re.I)
+# Words that make a display name an ORGANISATION, not a person. "BYU Independent
+# Study" and "Psychology Advising" are not someone waiting on a reply.
+_ORG_NAME_RE = re.compile(
+    r"\b(?:university|college|school|office|department|dept|team|support|services?|advising|"
+    r"announcements?|news|community|security|study|studies|admissions?|center|centre|institute|"
+    r"academy|staff|hr|billing|orders?|notifications?|alerts?|updates?|newsletter|digest|"
+    r"bank|inc|llc|ltd|corp|company|group|club|association|society|program|programs)\b", re.I)
+
+
+def _looks_like_person(name: str, address: str) -> bool:
+    """A display name that reads like a human's: 1-4 plain words, no organisation
+    words, no digits, not a shouted brand. Headers only; deliberately conservative,
+    because mistaking a broadcast for a person floods the attention section."""
+    name = re.sub(r"\s*<[^>]*>", "", name or "").strip()
+    if not name or name.casefold() == (address or "").casefold() or "@" in name:
+        return False
+    words = name.split()
+    if not 1 <= len(words) <= 4 or _ORG_NAME_RE.search(name) or re.search(r"\d", name):
+        return False
+    if any(len(w) > 3 and w.isupper() for w in words):
+        return False                    # NVIDIA, ZIPRECRUITER
+    return all(re.fullmatch(r"[A-Za-z\u00C0-\u024F.'\-]+", w) for w in words)
+_SECURITY_RE = re.compile(
+    r"\b(?:security alert|suspicious|fraud|unauthori[sz]ed|password (?:reset|changed)|"
+    r"payment (?:failed|due|declined)|account (?:locked|suspended)|verify your)\b", re.I)
+_ACCOUNT_RE = re.compile(
+    r"\b(?:receipt|invoice|order|shipped|shipment|delivery|delivered|reservation|itinerary|"
+    r"statement|bill|payment|verification|sign[- ]?in|login|two[- ]factor)\b", re.I)
+
+# Section order is the reading order: what needs the person first, noise last.
+DIGEST_SECTIONS = (
+    ("attention", "\U0001F534 Needs your attention"),
+    ("people", "\U0001F464 From people"),
+    ("school", "\U0001F393 School & courses"),
+    ("accounts", "\U0001F9FE Accounts & receipts"),
+    ("social", "\U0001F4AC Social"),
+    ("news", "\U0001F4F0 Newsletters & updates"),
+)
+_FULL_SECTIONS = {"attention": 10, "people": 10, "school": 10, "accounts": 6}
+
+
+def digest_category(row: dict) -> str:
+    """The section a message belongs in, from its headers alone."""
+    subject = row.get("subject", "") or ""
+    sender = row.get("sender", "") or ""
+    address = (row.get("sender_address", "") or "").lower()
+    domain = address.rpartition("@")[2]
+    identity = f"{sender} {address}"
+    machine = is_machine_sender(sender) or is_machine_sender(address)
+    social = bool(_SOCIAL_RE.search(domain) or _SOCIAL_RE.search(sender))
+    marketing = bool(_MARKETING_SUBJECT.search(subject) or _NEWSLETTER_RE.search(identity))
+    course = bool(_COURSE_RE.search(domain) or _COURSE_RE.search(sender))
+    school = domain.endswith(".edu") or course
+    urgent = bool(_URGENT_SUBJECT.search(subject)) or bool(_TIME_CHANGE_RE.search(subject))
+    human = (not machine and not social and not marketing
+             and _looks_like_person(sender, address))
+
+    # Security and payment problems matter whoever sent them, and even from a
+    # sender that otherwise only sends promotions.
+    if _SECURITY_RE.search(subject) and not social:
+        return "attention"
+    if urgent and not marketing and not social:
+        return "attention"
+    if course and _SCHOOL_ACTION_RE.search(subject) and not marketing:
+        return "attention"
+    if human and row.get("unread") is True:
+        return "attention"          # a real person is waiting on a read
+    if social:
+        return "social"
+    if marketing:
+        return "news"
+    if school:
+        return "school"
+    if human:
+        return "people"
+    if _ACCOUNT_RE.search(subject):
+        return "accounts"
+    return "news"
+
+
+def _short_account(account: str) -> str:
+    """'adnjain@ucsc.edu' -> 'ucsc'; 'Google' -> 'Google'."""
+    account = _digest_text(account, fallback="Mail")
+    if "@" in account:
+        host = account.rpartition("@")[2]
+        return host.split(".")[0] or account
+    return account
+
+
+def _clip(text: str, limit: int = 110) -> str:
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "\u2026"
+
+
+def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
+                     all_accounts: set[str]) -> tuple[list[str], dict[str, int]]:
+    """The digest body: one block per section, plus how many messages each holds."""
+    multi_account = len(all_accounts) > 1
+    entries: dict[str, list[dict]] = {key: [] for key, _ in DIGEST_SECTIONS}
+    for group in shown_groups:
+        best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))
+        shown = best[:3]
+        more = len(group) - len(shown)
+        for index, row in enumerate(shown):
+            entries[digest_category(row)].append(
+                {"row": row, "more": more if index == 0 else 0, "rank": header_importance(row, newest_ts=newest)})
+    counts = {key: len(value) for key, value in entries.items()}
+    # Two different addresses behind one display name must stay distinguishable.
+    addresses_by_name: dict[str, set[str]] = {}
+    for items in entries.values():
+        for item in items:
+            row = item["row"]
+            if row.get("sender_address"):
+                addresses_by_name.setdefault(
+                    _digest_text(row.get("sender", ""), fallback="").casefold(), set()
+                ).add(row["sender_address"].lower())
+    blocks: list[str] = []
+    for key, title in DIGEST_SECTIONS:
+        items = sorted(entries[key], key=lambda e: (-e["rank"], -e["row"]["ts"]))
+        if not items:
+            continue
+        lines = [f"**{title}** ({len(items)})"]
+        if key in _FULL_SECTIONS:
+            limit = _FULL_SECTIONS[key]
+            for item in items[:limit]:
+                row = item["row"]
+                address = row.get("sender_address", "")
+                name = _digest_text(row.get("sender", ""), fallback="")
+                if not address:
+                    who = f"**{name or 'Unknown sender'} (address unavailable)**"
+                else:
+                    who = f"**{name or address}**"
+                    # The sender's domain stays visible where the person may act on
+                    # the message: a look-alike display name is exposed by it. When
+                    # one display name fronts several addresses, show them in full.
+                    if "@" in address and name.casefold() != address:
+                        ambiguous = len(addresses_by_name.get(name.casefold(), ())) > 1
+                        who += f" · {address if ambiguous else address.rpartition('@')[2]}"
+                mark = "\u25CF " if row.get("unread") is True else ""
+                claim = "Subject says: " if _URGENT_SUBJECT.search(row.get("subject", "")) else ""
+                subject = _clip(_subject_text(row.get("subject", "")))
+                where = (f" · {_short_account(row['account'])}"
+                         if multi_account and row.get("account") else "")
+                more = f" (+{item['more']} more from this sender)" if item["more"] else ""
+                lines.append(f"- {mark}{who} \u2014 {claim}\u201c{subject}\u201d{where}{more}")
+            if len(items) > limit:
+                lines.append(f"- \u2026and {len(items) - limit} more in this group")
+        else:
+            # Noise sections name who wrote, not what: one line instead of one per email.
+            names: dict[object, list] = {}
+            for index, item in enumerate(items):
+                row = item["row"]
+                label = _digest_text(row.get("sender", ""), fallback=row.get("sender_address", "") or "Unknown sender")
+                if not row.get("sender_address"):
+                    # No address means no proof two of these are the same sender.
+                    names[("unknown", index)] = [f"{label} (address unavailable)", 1 + item["more"]]
+                else:
+                    entry = names.setdefault(row["sender_address"].lower(), [label, 0])
+                    entry[1] += 1 + item["more"]
+            lines.append(", ".join(f"{label} ({n})" if n > 1 else label for label, n in names.values()))
+        blocks.append("\n".join(lines))
+    return blocks, counts
+
+
 def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                   truncated: int = 0, requested: tuple[float, float] | None = None,
                   max_senders: int = 12,
@@ -1013,8 +1196,14 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                   scan_incomplete_accounts: list[str] | None = None,
                   history_cap_accounts: list[str] | None = None,
                   history_skipped: int = 0, history_attempted: int = 0,
-                  history_incomplete_accounts: list[str] | None = None) -> str:
-    """One note per normalized address, with exact header coverage disclosed."""
+                  history_incomplete_accounts: list[str] | None = None,
+                  layout: str = "sections") -> str:
+    """Header-only inbox digest with exact coverage disclosed.
+
+    ``layout="sections"`` (the default) sorts messages by what needs attention.
+    ``layout="flat"`` is the older one-bullet-per-sender list; the Daily Summary
+    feeds that to a model and keeps it.
+    """
     rows = _unique_records(rows)
     if not rows:
         return f"No emails found for {label}."
@@ -1086,6 +1275,19 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
         meta += (" Reader-switch account IDs differ for otherwise matching "
                  "headers; copies were kept separate, so the represented count "
                  "may include duplicates.")
+    if layout == "sections":
+        blocks, counts = _sectioned_lines(shown_groups, newest, all_accounts)
+        unread = sum(row.get("unread") is True for group in shown_groups for row in group)
+        facts = [f"{represented} email{'s' if represented != 1 else ''}"]
+        if unread:
+            facts.append(f"{unread} unread")
+        if counts["attention"]:
+            facts.append(f"{counts['attention']} need{'s' if counts['attention'] == 1 else ''} attention")
+        footer = ["**Coverage:** " + meta]
+        if len(ordered) > max_senders:
+            footer.append(f"{len(ordered) - max_senders} more sender addresses are included in the counts above.")
+        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts)
+                + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(footer))
     bullets = []
     for group in shown_groups:
         best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))
