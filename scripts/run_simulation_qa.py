@@ -77,9 +77,11 @@ PROFILE_TESTS = {
     },
     "sources": {
         "tests/test_brief_fallback.py",
+        "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
         "tests/test_linked_documents.py",
+        "tests/test_mail_history_wire.py",
         "tests/test_message_attribution.py",
         "tests/test_message_content.py",
         "tests/test_message_digest.py",
@@ -278,6 +280,7 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
@@ -541,6 +544,7 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
@@ -572,6 +576,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-history-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailHistoryMerge.swift",
+                "tests/MailHistoryChecks.swift", "-o", mail_history,
+            ],
+        ),
+        ("native/mail-history-contract", [mail_history]),
         (
             "native/privacy-sync-compile",
             [

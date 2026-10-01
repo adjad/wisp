@@ -17,9 +17,12 @@ Three separate caches, three separate cadences (see MailReader.swift):
     address) out entirely, leaving an account-scoped question nothing to answer
     from.
   • `_history` — up to TWO YEARS back (raised from one, 2026-08-19), header-only,
-    every ~30 min (a scan this deep is too slow to run on the 5-min cadence).
-    `summarize_inbox_for_day` falls back to this when a requested day isn't
-    covered by `_headers`.
+    every ~30 min. Read from Mail's local Envelope Index when it is readable
+    and its account labels can be trusted; otherwise an AppleScript walk that
+    is incremental between full walks (see MailHistoryMerge.swift). Only
+    old-mail lookups use it — `summarize_inbox_for_day` falls back to this when
+    a requested day isn't covered by `_headers` — and the Daily Summary and
+    mail readiness never read it (tests/test_daily_summary_history_independence.py).
   • `_raw_emails` — recent ~50, FULL body content, every 15 min. Stays small
     deliberately: `content of m` is the slow AppleScript call, so two years'
     worth of bodies isn't practical the way two years of headers is — verbatim
@@ -67,9 +70,9 @@ _headers_at: float = 0.0
 # this generation above zero.
 _headers_sync_generation: int = 0
 
-# Same header format, but the ~2-year-back scan (MailReader.swift's
-# historyBatchScript) — a separate cache so its slower cadence can't race/clobber
-# the fast recent one above.
+# Same header format, but the ~2-year-back scan (MailDBReader.readHistory, or
+# MailReader.swift's historyBatchScript walk) — a separate cache so its slower
+# cadence can't race/clobber the fast recent one above.
 _history: str = ""
 _history_at: float = 0.0
 
