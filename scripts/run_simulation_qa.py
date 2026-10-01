@@ -166,6 +166,7 @@ PROFILE_TESTS = {
         "tests/test_router_execution_contract.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
+        "tests/test_fast_path_intent.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",

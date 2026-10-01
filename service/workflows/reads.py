@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import re
+from datetime import date, datetime
 
-from service.router.router import calendar_is_excluded
+from service.router.router import _reminder_is_excluded, calendar_is_excluded
+from service.utterance_shape import deliberate
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -173,8 +175,101 @@ def _stock_read_request(text: str, period: str) -> bool:
     )
 
 
+# A structured read may answer ONLY the request it fully understands. These
+# helpers decide that; anything they decline goes on to the router and the
+# model, which see every clause. Declining is always safe (the request is still
+# answered, one model call slower); answering a different request than the one
+# asked is not.
+_MONTHS = ("january february march april may june july august september october "
+           "november december").split()
+_MONTH_DAY = re.compile(
+    r"\b(?:on\s+|for\s+)?(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\b(?!\s*(?::|am\b|pm\b|o'clock))", re.I)
+_DAY_MONTH = re.compile(
+    r"\b(?:on\s+|for\s+)?(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
+    r"(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\b", re.I)
+# Date words the period grammar cannot express. If one is present and was not
+# resolved to an exact date, the shortcut must not guess a window.
+_UNRESOLVED_DATE = re.compile(
+    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|"
+    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d+|"
+    r"\d{1,2}(?:st|nd|rd|th)\b|\d{1,2}/\d{1,2}|\d{4}-\d{2}-\d{2}|"
+    r"in\s+(?:\d+|a|an|a\s+couple\s+of|a\s+few)\s+(?:days?|weeks?|months?)|"
+    r"(?:the\s+)?day\s+after\s+tomorrow|a\s+week\s+from)\b", re.I)
+_OTHER_SOURCE = re.compile(
+    r"\b(?:messages?|texts?|texted|imessages?|e-?mails?|e-?mailed|inbox|mail|notes?|weather|news|"
+    r"stocks?|forecast|contacts?|files?|who|whom)\b", re.I)
+_SECOND_REQUEST = re.compile(
+    r"\b(?:and|then|also|plus|but|after\s+that)\s+(?:please\s+)?"
+    r"(?:what|show|check|list|who|when|where|how|tell|send|email|text|message|remind|"
+    r"delete|remove|cancel|add|set|create|move|reschedule|archive|mark|forward|reply|"
+    r"summari[sz]e|read|open|call)\b", re.I)
+_EXCLUSION_CUE = re.compile(
+    r"\b(?:do\s*n[o']?t|don[’']?t|without|except|excluding|exclude|skip|ignore|"
+    r"leave\s+out|no)\b", re.I)
+
+
+def _named_date(text: str, today: date) -> str | None:
+    """'October 12' / '12th of Oct' as an exact YYYY-MM-DD, or None. A date that
+    has already passed this year is not guessed into next year."""
+    match = _MONTH_DAY.search(text) or _DAY_MONTH.search(text)
+    if not match:
+        return None
+    month = next((i + 1 for i, name in enumerate(_MONTHS)
+                  if name.startswith(match.group("month")[:3].lower())), None)
+    try:
+        found = date(today.year, month, int(match.group("day")))
+    except (TypeError, ValueError):
+        return None
+    return found.isoformat() if found >= today else None
+
+
+def _calendar_read_args(text: str, period: str, today: date | None = None) -> dict | None:
+    """get_upcoming arguments for a calendar read the shortcut FULLY understands,
+    or None to hand the request on. Handles one source, one clause, one time scope
+    (including 'today and tomorrow' and an exact date), and a reminder exclusion."""
+    today = today or datetime.now().date()
+    if _OTHER_SOURCE.search(text) or _SECOND_REQUEST.search(text):
+        return None
+    reminders_excluded = _reminder_is_excluded(text)
+    if _EXCLUSION_CUE.search(text) and not reminders_excluded:
+        return None
+    scope = text
+    if re.search(r"\btoday\b.*\btomorrow\b|\btomorrow\b.*\btoday\b", scope, re.I):
+        args: dict = {"period": "today and tomorrow"}
+    elif (exact := _named_date(scope, today)) is not None:
+        args = {"period": exact}
+    elif _UNRESOLVED_DATE.search(scope):
+        return None
+    else:
+        args = _source_args("calendar", text, period)
+    if reminders_excluded:
+        args = {**args, "calendar_only": True}
+    return args
+
+
+_NOT_A_SENDER = re.compile(
+    r"\b(?:and|or|then|also|but|yesterday|today|tomorrow|tonight|last|this|next|since|before|after|"
+    r"between|during|from|week|weeks|month|months|year|years|day|days|hour|hours|ago|"
+    r"delete|remove|trash|archive|mark|move|forward|reply|send|unsubscribe|flag|read|unread|"
+    r"summari[sz]e|that|which|who|where|with|about|over|under|only|just)\b", re.I)
+
+
+def _sender_phrase(raw: str) -> str | None:
+    """The tail of 'purchases from X' when it is a plain sender name; otherwise
+    None. Anything carrying a time word, a conjunction or another action means the
+    request has more in it than a sender, and must not be flattened into one."""
+    candidate = raw.strip()
+    if (not candidate or len(candidate.split()) > 4 or _NOT_A_SENDER.search(candidate)
+            or re.search(r"\d{1,2}[/-]\d{1,2}|\d{4}", candidate)):
+        return None
+    return candidate
+
+
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
                  last_stock_response: str = ""):
+    if deliberate(prompt) is not None:
+        return None
     text = _normalize(prompt).strip(" *_.?!")
     read_prefix = re.match(r"(?:can you |could you |please )?(?:what|show|check|list|compare)\b", text, re.I)
     if _OUTBOUND.search(text) and not _INLINE_EMAIL_SUMMARY.match(text) and not read_prefix:
@@ -190,7 +285,13 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if (re.search(r"\b(?:calendar|my schedule)\b", text, re.I)
             and re.search(r"\b(?:what|show|check|list)\b", text, re.I)
             and not calendar_is_excluded(text)):
-        return [("get_upcoming", _source_args("calendar", text, period))], ""
+        # Only a calendar read the shortcut fully understands runs here. A second
+        # source ("and messages"), a named date it cannot resolve, a second request
+        # or an exclusion it cannot honour all continue to the router and the model.
+        args = _calendar_read_args(text, period)
+        if args is None:
+            return None
+        return [("get_upcoming", args)], ""
     if re.search(r"\bstock\s+markets?\b", text, re.I):
         # A market question is not a request for the preceding portfolio's
         # tickers. Preserve only the exact news-topic substitution; other
@@ -236,8 +337,10 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         return [("summarize_emails", _source_args("email", text, period))], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\bpurchases?\s+from\b", text, re.I):
         match = re.search(r"\bpurchases?\s+from\s+([\w -]+)$", text, re.I)
-        if match:
-            return [("view_emails", {"query": match.group(1).strip(), "strict_match": True})], ""
+        sender = _sender_phrase(match.group(1)) if match else None
+        if sender:
+            return [("view_emails", {"query": sender, "strict_match": True})], ""
+        return None
     return None
 
 

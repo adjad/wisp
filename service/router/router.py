@@ -15,6 +15,7 @@ import re
 from dataclasses import dataclass, field, replace
 
 from service.authored_message import authored_message_intent
+from service.utterance_shape import deliberate, mask_quoted
 from service.config import (
     models_config,
     role_to_model,
@@ -3884,7 +3885,12 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         if "notes" not in domains:
             domains.append("notes")
         multi = True
-        topic_force = "get_upcoming"
+        # Forcing get_upcoming is for a message whose CONTENT is an unresolved
+        # fact ("email Mom about my move-in date"). When the sentence dictates what
+        # to say ("email Sam asking to move our meeting"), the topic word is just a
+        # subject, and a forced Calendar read before the send is the wrong contract.
+        # The tools stay on offer; only the forcing goes.
+        topic_force = None if authored_message_intent(t) else "get_upcoming"
     elif needs_generic_topic_lookup:
         # “Email my boss about the project I have been working on” needs
         # project evidence, but it is not a calendar query.  Search durable
@@ -5262,6 +5268,15 @@ def _apply_reminder_exclusion(decision: RouteDecision, text: str) -> None:
                 and "add_calendar_event" not in decision.tool_subset):
             decision.tool_subset.append("add_calendar_event")
     decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+    # get_upcoming returns Reminders as well as Calendar rows unless asked not to.
+    # Withholding the reminder TOOLS does not stop that, so an explicit exclusion
+    # must also narrow the read itself.
+    decision.direct_calls = [
+        (n, {**a, "calendar_only": True}) if n == "get_upcoming" else (n, a)
+        for n, a in decision.direct_calls]
+    decision.tool_argument_bindings = {
+        n: ({**a, "calendar_only": True} if n == "get_upcoming" else a)
+        for n, a in decision.tool_argument_bindings.items()}
     if decision.force_first_tool in forbidden:
         decision.force_first_tool = None
     decision.required_tool_groups = tuple(
@@ -6092,6 +6107,25 @@ def _no_web_public_write_decision(
     return _pin_ling_web_decision(decision)
 
 
+async def _deliberate_decision(text: str, request: "_WebRequest", why: str) -> RouteDecision:
+    """A prohibition ("do not lock my screen") or a sentence about words ('explain
+    the phrase "lock my screen"') must reach the model, which reads the whole
+    sentence. No direct call, forced tool or typed task may act on its keywords.
+    The menu is retrieved from the sentence with quoted words masked, and the tool
+    choice stays automatic."""
+    core = await _semantic_core(mask_quoted(text))
+    decision = _mk("agent", tools=True, expect_tool_first=False, source="default",
+                   reason=f"{why} -> retrieved tools ({len(core)}), model decides")
+    decision.tool_subset = core
+    decision.multi_round = True
+    private = replace(
+        request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+        public_reference=False, inherited=False, clarification=None)
+    # Finalize on the masked sentence: the execution contract re-derives forced
+    # tools from the text, and quoted words must not re-arm what was just disarmed.
+    return _finalize(decision, mask_quoted(text), web_request=private)
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -6099,6 +6133,8 @@ async def route(text: str, *,
                 last_tools: str | None = None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
+    if (why := deliberate(text)) is not None:
+        return await _deliberate_decision(text, request, why)
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
     if (private_read := _strict_private_read_decision(text)) is not None:
