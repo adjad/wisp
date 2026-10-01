@@ -557,8 +557,11 @@ def test_native_reminders_captures_time_before_fetch_for_every_receipt():
     capture = "let snapshotStartedAt = Date().timeIntervalSince1970"
     assert sync.count(capture) == 1
     assert sync.index(capture) < sync.index("guard isAuthorized") < sync.index("store.fetchReminders")
-    # All three outcomes (denied, nil fetch, success) carry the same captured value.
-    assert sync.count('"snapshot_started_at": snapshotStartedAt') == 3
+    # All three outcomes (not authorized, nil fetch, success) carry the same captured
+    # value. The not-authorized outcome builds its diagnostics through
+    # Access.diagnostics, which is handed that same value.
+    assert sync.count('"snapshot_started_at": snapshotStartedAt') == 2
+    assert sync.count("Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt)") == 1
     assert sync.count("post(reminders:") == 3
 
 
