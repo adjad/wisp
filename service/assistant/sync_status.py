@@ -20,15 +20,35 @@ _LABELS = {"calendar": "Calendar", "reminders": "Reminders",
            "browser_history": "Browser History"}
 
 
+# How long a native source (Calendar, Reminders) may stay "syncing" before it is
+# reported as unavailable. A real first read takes seconds. A wait that outlasts
+# this is not a sync in progress: macOS has not been given an answer to the
+# permission prompt, or the app is not reporting at all.
+SYNC_STALL_S = 90.0
+
+
+def _stalled_reason(source: str, raw: dict) -> str:
+    label = _LABELS[source]
+    if not raw.get("last_sync"):
+        return (f"The Wisp app hasn't reported {label} yet. Make sure Wisp is running, "
+                "then try again.")
+    return (f"{label} access hasn't been granted. Open System Settings > Privacy & Security > "
+            f"{label} and turn Wisp on.")
+
+
 def _scheduled_source(source: str) -> dict:
     raw = scheduler.connectors_status().get(source) or {}
+    reason = str(raw.get("reason") or "")
     if raw.get("syncing") or not raw.get("last_sync"):
-        state = "syncing"
+        since = raw.get("syncing_since") or scheduler.STARTED_AT
+        if time.time() - since > SYNC_STALL_S:
+            state, reason = "unavailable", _stalled_reason(source, raw)
+        else:
+            state = "syncing"
     else:
         state = "ready" if raw.get("available") else "unavailable"
     return {"id": source, "label": _LABELS[source], "state": state,
-            "count": int(raw.get("count") or 0),
-            "reason": str(raw.get("reason") or "")}
+            "count": int(raw.get("count") or 0), "reason": reason}
 
 
 def source_status(source: str) -> dict:
@@ -67,7 +87,8 @@ def sources_snapshot(source_ids: Iterable[str] = DAILY_SOURCE_IDS) -> dict:
         source["progress_detail"] = (
             "Current data received" if state == "ready" else
             "Waiting for current data; intermediate progress unavailable" if state == "syncing" else
-            "Turned off" if state == "disabled" else "Could not read this source")
+            "Turned off" if state == "disabled" else
+            (source.get("reason") or "Could not read this source"))
         if source.get("warning"):
             source["progress_detail"] = "Local Mail read complete; server freshness unverified"
         elif source["id"] == "email" and state == "ready":

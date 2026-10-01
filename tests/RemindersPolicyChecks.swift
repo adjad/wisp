@@ -35,6 +35,51 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
             calendarCount: 0, previousRowCount: 0))
         precondition(!RemindersWriter.reminderListsLookTransientlyMissing(
             calendarCount: 2, previousRowCount: 3))
-        print("10 synthetic native policy checks passed")
+        accessChecks()
+        print("synthetic native policy checks passed")
+    }
+
+    // Reminders access: a permission nobody has answered must stop reading as "syncing".
+    static func accessChecks() {
+        typealias A = RemindersWriter.Access
+        func check(_ ok: Bool, _ message: String) { precondition(ok, message) }
+        let g = A.promptGrace, r = A.retryInterval
+
+        // Never asked: ask now and report a short wait.
+        var report = A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: nil, now: 1000)
+        check(report.syncing && report.needsRequest && !report.authorized, "first sight asks and waits")
+
+        // Prompt up, inside the grace window: a genuine wait. Never stack a second request.
+        report = A.report(status: .notDetermined, requestOutstanding: true, lastRequestAt: 1000, now: 1000 + g - 1)
+        check(report.syncing && !report.needsRequest, "a visible prompt is a real wait")
+
+        // Prompt outstanding far too long: stop claiming progress, say where to answer it.
+        report = A.report(status: .notDetermined, requestOutstanding: true, lastRequestAt: 1000, now: 1000 + g + 1)
+        check(!report.syncing && !report.needsRequest, "an unanswered prompt is not a sync")
+        check((report.reason ?? "").contains("System Settings"), "it names where to answer")
+
+        // The request FINISHED but macOS still has no answer (the live failure): terminal, retry later only.
+        report = A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: 1000, now: 1000 + 10)
+        check(!report.syncing && !report.needsRequest, "finished-undecided is terminal and does not hammer")
+        check((report.reason ?? "").contains("Privacy & Security"), "it explains the next step")
+        report = A.report(status: .notDetermined, requestOutstanding: false, lastRequestAt: 1000, now: 1000 + r + 1)
+        check(!report.syncing && report.needsRequest, "it retries after the retry interval")
+
+        // Denied or restricted is terminal immediately and never re-asks.
+        report = A.report(status: .deniedOrRestricted, requestOutstanding: false, lastRequestAt: 1000, now: 1001)
+        check(!report.syncing && !report.needsRequest && !report.authorized, "denied is terminal")
+        check((report.reason ?? "").contains("Reminders"), "denied says what is off")
+
+        // Authorized needs nothing.
+        report = A.report(status: .authorized, requestOutstanding: false, lastRequestAt: 1000, now: 1001)
+        check(report.authorized && !report.syncing && !report.needsRequest, "authorized proceeds")
+
+        // The diagnostics dictionary the backend reads.
+        let diagnostics = A.diagnostics(for: A.report(status: .notDetermined, requestOutstanding: false,
+                                                      lastRequestAt: 1000, now: 1010), snapshotStartedAt: 5)
+        check(diagnostics["authorized"] as? Bool == false, "diagnostics authorized")
+        check(diagnostics["syncing"] as? Bool == false, "diagnostics syncing")
+        check((diagnostics["reason"] as? String)?.isEmpty == false, "diagnostics reason")
+        check(diagnostics["snapshot_started_at"] as? Double == 5, "diagnostics snapshot")
     }
 }
