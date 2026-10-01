@@ -18,6 +18,7 @@ import struct
 import subprocess
 import tempfile
 import time
+from urllib.parse import quote
 
 from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, clean_env,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
@@ -100,8 +101,43 @@ def ad_hoc_preflight(args, env=None):
         raise BuildError("Ad-hoc release requires candidate output and GitHub credentials")
 
 
+def public_release_archive(assets, meta):
+    """Select the app download from the complete, separately verified evidence."""
+    assets.assert_paths_unchanged()
+    archives = [name for name in assets.descriptors if name.endswith(".zip")]
+    if len(archives) != 1:
+        raise BuildError("Public release requires exactly one verified app ZIP")
+    source = archives[0]
+    name = f"01-Wisp-{meta['version']}-{meta['build_number']}-arm64.zip"
+    if Path(name).name != name or any(character in name for character in "\0\r\n"):
+        raise BuildError("Invalid public app download name")
+    descriptor = assets.descriptors[source]
+    return (name, "application/zip", descriptor, assets.digests[source],
+            os.fstat(descriptor).st_size)
+
+
+def create_public_draft(runner, assets, env, tag, meta):
+    """Put the app first on the release page; notes stay in the page body."""
+    app_asset = public_release_archive(assets, meta)
+    repository = "/".join(quote(part, safe="") for part in env["GH_REPO"].split("/"))
+    download = (f"https://github.com/{repository}/releases/download/"
+                f"{quote(tag, safe='')}/{quote(app_asset[0], safe='')}")
+    body = (f"**[Download Wisp for Mac (Apple silicon)]({download})**\n\n".encode()
+            + assets.read_bytes("release-notes.md"))
+    with tempfile.TemporaryFile() as notes:
+        notes.write(body)
+        notes.flush()
+        notes.seek(0)
+        assets.assert_paths_unchanged()
+        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag",
+                   "--draft", "--title", f"Wisp {meta['version']}",
+                   "--notes-file", f"/dev/fd/{notes.fileno()}"], env=env,
+                   pass_fds=(notes.fileno(),))
+    return app_asset
+
+
 def release_ad_hoc(runner, args):
-    """Publish the complete verified asset set; any failed upload stays a draft."""
+    """Publish the verified app ZIP; retain complete evidence in CI artifacts."""
     ad_hoc_preflight(args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
@@ -133,22 +169,11 @@ def release_ad_hoc(runner, args):
                    GH_REPO=os.environ["GITHUB_REPOSITORY"])
         if github_release_for_tag(env, tag):
             raise BuildError("Release already exists; refusing to modify it")
-        notes_descriptor = assets.descriptors["release-notes.md"]
-        assets.assert_paths_unchanged()
-        os.lseek(notes_descriptor, 0, os.SEEK_SET)
-        runner.run("create-draft-release", ["gh", "release", "create", tag, "--verify-tag",
-                   "--draft", "--title", f"Wisp {meta['version']}",
-                   "--notes-file", f"/dev/fd/{notes_descriptor}"], env=env,
-                   pass_fds=(notes_descriptor,))
+        app_asset = create_public_draft(runner, assets, env, tag, meta)
         release_id = created_draft_release_id(env, tag)
         uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
-        # Unlike the signed path, preserve the candidate checksum manifest byte
-        # for byte, including its release-notes entry. Upload every listed file.
-        uploads = assets.upload_assets() + [("release-notes.md", "text/markdown; charset=utf-8",
-            notes_descriptor, assets.digests["release-notes.md"], os.fstat(notes_descriptor).st_size)]
-        for asset in uploads:
-            assets.assert_paths_unchanged()
-            uploader.upload(*asset)
+        assets.assert_paths_unchanged()
+        uploader.upload(*app_asset)
         assets.assert_paths_unchanged()
         runner.run("publish-release", ["gh", "release", "edit", tag, "--draft=false"], env=env)
 
@@ -628,15 +653,11 @@ def release(runner, args):
                                    archive_descriptor=archive_descriptor)
             assets.write_checksums(exclude={"release-notes.md"})
             verify_artifacts(prepared, bound_assets=assets, publication_asset_set=True)
-            notes_descriptor = assets.descriptors["release-notes.md"]
-            os.lseek(notes_descriptor, 0, os.SEEK_SET)
-            notes = f"/dev/fd/{notes_descriptor}"
-            runner.run("create-draft-release", ["gh", "release", "create", tag,
-                "--verify-tag", "--draft", "--title", f"Wisp {meta['version']}",
-                "--notes-file", notes], env=env, pass_fds=(notes_descriptor,))
+            app_asset = create_public_draft(runner, assets, env, tag, meta)
             release_id = created_draft_release_id(env, tag)
             uploader = GitHubReleaseUploader(env["GH_REPO"], release_id, env["GH_TOKEN"])
-            for name, content_type, descriptor, digest, size in assets.upload_assets():
-                uploader.upload(name, content_type, descriptor, digest, size)
+            assets.assert_paths_unchanged()
+            uploader.upload(*app_asset)
+            assets.assert_paths_unchanged()
         install_then_publish(runner, prepared, destination, tag, env)
     print(f"Published verified release {tag}; signed artifacts: {destination}")
