@@ -670,8 +670,9 @@ _DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
 
 def _device_request_clauses(text: str) -> list[str]:
     return [part.strip() for part in re.split(
-        r"[;.!?]|(?:,\s*|\s+(?:and|but|then|also)\s+)(?=(?:please\s+|just\s+)?"
-        r"(?:lock|read|show|check|list|run|do|start|what|how|tell)\b)",
+        r"[;.!?]|(?:,\s*(?:(?:and|but|then|also)\s+)?|\s+(?:and|but|then|also)\s+)"
+        r"(?=(?:please\s+|just\s+)?(?:lock|read|show|check|list|run|do|start|what|how|tell|"
+        r"remind|create|add|send|email|text)\b)",
         mask_quoted(text), flags=re.I) if part.strip()]
 
 
@@ -3949,11 +3950,8 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     if (domains == ["calendar"] and not claims and not writing and not multi
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
         from service.workflows.reads import _calendar_read_args
-        args = _calendar_read_args(t, "")
+        args = _calendar_read_args(t, "", default_days=60)
         if args is not None:
-            # Only an unqualified agenda keeps the existing broad horizon.
-            if args.get("days") == 7:
-                args = {**args, "days": 60}
             return _mk_direct([("get_upcoming", args)],
                               "complete calendar lookup -> get_upcoming (router-direct)")
     # Add each matched domain's write tools when the request actually writes.
@@ -4582,8 +4580,10 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # Device control contributes only when it is NOT the whole request: on its
     # own it keeps its existing unscoped/direct-dispatch route below (which
     # has its own `_direct_device_call` fast path this claim cannot express).
-    # `_DATA_NOUN_RE` mirrors that route's own gate.
-    if _DATA_NOUN_RE.search(t) and (hits := _matched_device_tools(t)):
+    # A second action can say "remind me" without a data noun. Such a clause
+    # still needs the device claim; only the whole single-device ask is direct.
+    if ((_DATA_NOUN_RE.search(t) or len(_device_request_clauses(t)) > 1)
+            and (hits := _matched_device_tools(t))):
         _pre.append(_Claim("device", hits, "affirmative device clause -> scoped tools",
                            expect=False, light=False, multi=True))
     elif (_SYSTEM_CONTROL_RE.search(t) and not _DATA_NOUN_RE.search(t)

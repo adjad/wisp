@@ -242,6 +242,35 @@ def test_calendar_and_device_actions_keep_both_tools_without_partial_dispatch(te
     assert decision.multi_round
 
 
+@pytest.mark.parametrize("text", [
+    "Lock my screen, and remind me to take my medicine tonight",
+    "Lock my screen and remind me to take my medicine tonight",
+    "Lock my screen; remind me to take my medicine tonight",
+    "Remind me to take my medicine tonight, and lock my screen",
+])
+def test_compound_device_and_reminder_keeps_both_tools(text):
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert {"lock_screen", "add_reminder"} <= set(decision.tool_subset or ())
+
+
+@pytest.mark.parametrize("scope,days", [("the next 3 days", 3), ("next 7 days", 7),
+                                       ("the next 7 days", 7), ("next 1 week", 7), ("next 45 days", 45),
+                                       ("next 2 weeks", 14), ("next 60 days", 60)])
+def test_supported_numeric_calendar_scope_is_preserved_at_both_layers(scope, days):
+    text = "what is on my calendar for " + scope
+    assert args(text) == {"days": days}
+    assert route(text).direct_calls == [("get_upcoming", {"days": days})]
+
+
+@pytest.mark.parametrize("scope", ["the next 0 days", "next 61 days", "next 9 weeks",
+                                  "next 3 days and next week", "next 3 days and lock my screen"])
+def test_numeric_calendar_shortcuts_do_not_truncate_or_drop_other_scope(scope):
+    text = "what is on my calendar for " + scope
+    assert reads.compile_read(text) is None
+    assert route(text).direct_calls == []
+
+
 def test_explicit_calendar_year_is_preserved_at_both_layers():
     text = "Show my calendar on October 12, 2027"
     assert reads._calendar_read_args(text, "", date(2026, 9, 30)) == {"period": "2027-10-12"}

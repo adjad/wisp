@@ -209,7 +209,8 @@ def _named_date(text: str, today: date) -> str | None:
     return found.isoformat() if found >= today else None
 
 
-def _calendar_read_args(text: str, period: str, today: date | None = None) -> dict | None:
+def _calendar_read_args(text: str, period: str, today: date | None = None,
+                        *, default_days: int = 7) -> dict | None:
     """get_upcoming arguments for a calendar read the shortcut FULLY understands,
     or None to hand the request on. Handles one source, one clause, one time scope
     (including 'today and tomorrow' and an exact date), and a reminder exclusion."""
@@ -247,14 +248,22 @@ def _calendar_read_args(text: str, period: str, today: date | None = None) -> di
     if title:
         tail = (tail[:title.start()] + tail[title.end():]).strip()
     scope = re.sub(r"^(?:for|on)\s+", "", tail, flags=re.I).strip()
+    numeric = re.fullmatch(r"(?:the\s+)?next\s+(\d+)\s+(days?|weeks?)", scope, re.I)
     if not scope:
-        args: dict = {"days": 7}
+        args: dict = {"days": default_days}
     elif re.fullmatch(r"today\s+and\s+tomorrow|tomorrow\s+and\s+today", scope, re.I):
         args = {"period": "today and tomorrow"}
     elif (exact := _named_date(scope, today)) is not None:
         args = {"period": exact}
     elif re.fullmatch(r"today|tomorrow|(?:this|next)\s+(?:week|month)", scope, re.I):
         args = {"period": scope.lower()}
+    elif numeric:
+        days = int(numeric[1]) * (7 if numeric[2].lower().startswith("week") else 1)
+        # The tool caps its days argument at 60. Do not silently truncate a
+        # larger request or turn a zero-day range into a one-day read.
+        if not 1 <= days <= 60:
+            return None
+        args = {"days": days}
     else:
         return None
     if query:
