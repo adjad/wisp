@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import EventKit
 
@@ -26,6 +27,86 @@ final class RemindersWriter {
             return true
         }
     }
+
+    /// What to tell the backend while Reminders permission is not yet granted.
+    ///
+    /// Live failure this exists for: macOS never recorded an answer
+    /// (EKAuthorizationStatus.notDetermined) yet the app reported
+    /// `syncing: true` every minute, so Reminders read "syncing" forever and
+    /// nothing told the person to grant access. "Not decided" is only a wait
+    /// while a prompt is plausibly on screen; after that it is a state with a
+    /// next step, reported as such.
+    enum Access {
+        enum Status: Equatable { case notDetermined, authorized, deniedOrRestricted }
+
+        struct Report: Equatable {
+            var authorized: Bool
+            var syncing: Bool
+            var needsRequest: Bool
+            var reason: String?
+        }
+
+        /// A prompt that has been outstanding this long is not "syncing".
+        static let promptGrace: TimeInterval = 120
+        /// A finished request that left the status undecided is retried this often, no faster.
+        static let retryInterval: TimeInterval = 300
+
+        static let settingsPath = "System Settings > Privacy & Security > Reminders"
+
+        static func report(status: Status, requestOutstanding: Bool,
+                           lastRequestAt: TimeInterval?, now: TimeInterval) -> Report {
+            switch status {
+            case .authorized:
+                return Report(authorized: true, syncing: false, needsRequest: false, reason: nil)
+            case .deniedOrRestricted:
+                return Report(authorized: false, syncing: false, needsRequest: false,
+                              reason: "Reminders access is turned off for Wisp. Turn it on in \(settingsPath).")
+            case .notDetermined:
+                guard let last = lastRequestAt else {
+                    return Report(authorized: false, syncing: true, needsRequest: true, reason: nil)
+                }
+                if requestOutstanding {
+                    if now - last < promptGrace {
+                        return Report(authorized: false, syncing: true, needsRequest: false, reason: nil)
+                    }
+                    return Report(authorized: false, syncing: false, needsRequest: false,
+                                  reason: "The Reminders permission prompt is still waiting for an answer. "
+                                      + "Look for it, or allow Wisp in \(settingsPath).")
+                }
+                return Report(authorized: false, syncing: false,
+                              needsRequest: now - last >= retryInterval,
+                              reason: "macOS hasn't recorded an answer about Reminders for Wisp. "
+                                  + "Allow it in \(settingsPath); if Wisp isn't listed there, quit and reopen Wisp.")
+            }
+        }
+
+        /// The diagnostics object the backend reads (`record_sync`, sync_status).
+        static func diagnostics(for report: Report, snapshotStartedAt: TimeInterval) -> [String: Any] {
+            var out: [String: Any] = ["authorized": report.authorized, "syncing": report.syncing,
+                                      "snapshot_started_at": snapshotStartedAt]
+            if let reason = report.reason { out["reason"] = reason }
+            return out
+        }
+
+        static func status(of raw: EKAuthorizationStatus) -> Status {
+            if #available(macOS 14.0, *) {
+                switch raw {
+                case .fullAccess: return .authorized
+                case .notDetermined: return .notDetermined
+                default: return .deniedOrRestricted
+                }
+            }
+            switch raw {
+            case .authorized: return .authorized
+            case .notDetermined: return .notDetermined
+            default: return .deniedOrRestricted
+            }
+        }
+    }
+
+    // Main-thread state for the permission request (see Access).
+    private var accessRequestOutstanding = false
+    private var lastAccessRequestAt: TimeInterval?
 
     private var snapshotState = SnapshotState()
     private var consecutiveTransientReports = 0
@@ -240,6 +321,23 @@ final class RemindersWriter {
         }
     }
 
+    /// Ask for access and remember that we did, so a request that finishes without
+    /// a decision is reported as such instead of as an endless sync. A menu-bar app
+    /// is not frontmost, and macOS can leave its prompt hidden behind other
+    /// windows, so it is brought forward first. Main thread only.
+    private func requestAccessTracked() {
+        guard !accessRequestOutstanding else { return }
+        accessRequestOutstanding = true
+        lastAccessRequestAt = Date().timeIntervalSince1970
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        requestAccess { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.accessRequestOutstanding = false
+                self?.sync()
+            }
+        }
+    }
+
     var isAuthorized: Bool {
         let s = EKEventStore.authorizationStatus(for: .reminder)
         if #available(macOS 14.0, *) { return s == .fullAccess }
@@ -254,9 +352,7 @@ final class RemindersWriter {
         changeObserver = NotificationCenter.default.addObserver(
             forName: .EKEventStoreChanged, object: store, queue: .main
         ) { [weak self] _ in self?.scheduleChangeSync() }
-        requestAccess { [weak self] _ in
-            DispatchQueue.main.async { self?.sync() }
-        }
+        DispatchQueue.main.async { [weak self] in self?.requestAccessTracked() }
         for delay in [1.0, 3.0, 6.0, 12.0, 25.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.sync()
@@ -279,9 +375,12 @@ final class RemindersWriter {
         // Capture before the asynchronous fetch: receipt order is not snapshot order.
         let snapshotStartedAt = Date().timeIntervalSince1970
         guard isAuthorized else {
-            post(reminders: [], diagnostics: ["authorized": false,
-                 "snapshot_started_at": snapshotStartedAt,
-                 "syncing": EKEventStore.authorizationStatus(for: .reminder) == .notDetermined],
+            let report = Access.report(
+                status: Access.status(of: EKEventStore.authorizationStatus(for: .reminder)),
+                requestOutstanding: accessRequestOutstanding,
+                lastRequestAt: lastAccessRequestAt, now: snapshotStartedAt)
+            if report.needsRequest { requestAccessTracked() }
+            post(reminders: [], diagnostics: Access.diagnostics(for: report, snapshotStartedAt: snapshotStartedAt),
                  startedAt: snapshotStartedAt, authoritative: false)
             return
         }
