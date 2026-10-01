@@ -132,6 +132,7 @@ PROFILE_TESTS = {
         "tests/test_assistant_migrations.py",
         "tests/test_native_sync_stall.py",
         "tests/test_manual_reminders_survive_sync.py",
+        "tests/test_stale_wisp_only_reminders.py",
         "tests/test_assistant_recovery.py",
         "tests/test_discovery_store.py",
         "tests/test_discovery_approvals.py",

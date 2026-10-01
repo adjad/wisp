@@ -1756,7 +1756,10 @@ class TypedClockContractTests(unittest.TestCase):
             "when_ts": (NOW + timedelta(days=1)).timestamp()}])
         fresh = {"sources": [{"id": "reminders", "state": "ready"}],
                  "reminders_fresh": True}
+        # The fixture's NOW is fixed in the past; pin the clock to it so the
+        # 14-day Wisp-only expiry judges "overdue" against the same instant.
         with patch.object(assistant_tools, "assistant_store", self.assistant), \
+             patch("service.tools.assistant_tools.time.time", return_value=NOW.timestamp()), \
              patch("service.assistant.sync_status.ensure_sources",
                    new_callable=AsyncMock, return_value=fresh):
             result = asyncio.run(assistant_tools.search_reminders("dentist"))
