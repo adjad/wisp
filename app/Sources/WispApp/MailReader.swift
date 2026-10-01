@@ -565,11 +565,7 @@ final class MailReader {
         }
     }
 
-    private enum AccountEnumeration {
-        case accounts([String: String])
-        case unavailable
-        case duplicateLabels
-    }
+    private typealias AccountEnumeration = AccountLabelCache.Enumeration
 
     /// Enabled account names. An unavailable enumeration retains the legacy
     /// unified-inbox fallback for display-only reads. Duplicate labels are
@@ -578,21 +574,14 @@ final class MailReader {
     /// treating the ambiguity as a generic enumeration failure.
     private func accountNames() -> AccountEnumeration {
         let (text, _) = run(accountsScript, tag: "accounts")
-        guard let text else { historyState.observe(nil); return .unavailable }
-        let labels = text.split(separator: "\n").compactMap { line -> String? in
-            let fields = line.components(separatedBy: "\u{01}")
-            return fields.count == 2 ? fields[1] : nil
-        }
-        guard Set(labels.map { $0.lowercased() }).count == labels.count else {
+        let enumeration = AccountLabelCache.enumeration(text)
+        if case .accounts(let accounts) = enumeration {
+            historyState.observe(accounts)
+            if accounts.isEmpty { AccountLabelCache.learn(accounts: accounts) }
+        } else {
             historyState.observe(nil)
-            return .duplicateLabels
         }
-        guard let accounts = AccountLabelCache.parse(text) else {
-            historyState.observe(nil)
-            return .unavailable
-        }
-        historyState.observe(accounts)
-        return .accounts(accounts)
+        return enumeration
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -717,7 +706,15 @@ final class MailReader {
             // considerably faster than the batched history walk this replaces
             // for this tick. See MailDBReader.
             guard self.isMailRunning() else {
-                let generation = self.historyState.capture().generation
+                let captured = self.historyState.capture()
+                // A stale index cannot reintroduce disabled-account rows after
+                // this process observed zero enabled accounts. Unknown later
+                // metadata preserves that boundary until a known nonempty scan.
+                if captured.lastKnownEmpty {
+                    self.postEmptyAccounts(readSource: "local_index")
+                    return
+                }
+                let generation = captured.generation
                 if let (headers, history) = self.dbReader.readHeadersAndHistory() {
                     // A completed read is complete even for an empty or old
                     // index. File modification time cannot tell us whether a
@@ -749,7 +746,7 @@ final class MailReader {
             switch enumeration {
             case .accounts(let accounts):
                 names = accounts.values.sorted()
-                targets = names.isEmpty ? [nil] : names.map { $0 }
+                targets = names.map { $0 }
             case .unavailable:
                 names = []
                 targets = [nil]
@@ -764,7 +761,11 @@ final class MailReader {
             }
             // Published only AFTER learn(), so the history sync never reads
             // the index with names whose labels haven't been learned yet.
-            self.setLastAccountNames(names.isEmpty ? nil : names)
+            self.setLastAccountNames(enumeration == .unavailable ? nil : names)
+            if case .accounts(let accounts) = enumeration, accounts.isEmpty {
+                self.postEmptyAccounts(readSource: "mail_app")
+                return
+            }
 
             var chunks: [String] = []
             var lastFailureCode = 0
@@ -859,9 +860,12 @@ final class MailReader {
                           "failure_reason": "duplicate_account_labels", "complete": false])
                 return
             }
-            guard !names.isEmpty else {
-                self.post(raw: "", coverage: ["accounts": [String](),
-                          "failed_accounts": ["account enumeration"], "complete": false])
+            if names.isEmpty {
+                self.historyState.publishEmptyInventory {
+                    self.post(history: "")
+                    self.post(raw: "", coverage: ["accounts": [String](),
+                              "failed_accounts": [String](), "complete": true])
+                }
                 return
             }
             let targets: [String?] = names.map { $0 }
@@ -967,6 +971,10 @@ final class MailReader {
     private func syncHistoryFromIndex(accounts: [String: String]) -> Bool {
         let captured = historyState.capture()
         guard captured.identities == accounts else { return true } // superseded enumeration
+        if accounts.isEmpty {
+            historyState.publishEmptyInventory { post(history: "") }
+            return true
+        }
         guard let history = dbReader.readTrustedHistory(forAccounts: accounts) else { return false }
         historyState.replace(generation: captured.generation) { post(history: history) }
         return true
@@ -1071,6 +1079,14 @@ final class MailReader {
     }
 
     // MARK: - Posting
+
+    private func postEmptyAccounts(readSource: String) {
+        markHeadersCompleted()
+        historyState.publishEmptyInventory {
+            MailHistoryTransport.postEmptyAccounts(
+                to: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"), readSource: readSource)
+        }
+    }
 
     private func post(headers: String, available: Bool, reason: String,
                       readSource: String, history: String? = nil,

@@ -414,6 +414,11 @@ struct MailIndexHistory {
 /// position in mailbox-creation order) rather than the raw UUID — cosmetic
 /// only, never blocks headers from syncing.
 enum AccountLabelCache {
+    enum Enumeration: Equatable {
+        case accounts([String: String])
+        case unavailable
+        case duplicateLabels
+    }
     // A new key deliberately rejects labels learned by the old positional zip.
     private static let key = "wisp.mailAccountLabels.identity.v1"   // [native ID: name]
 
@@ -436,7 +441,7 @@ enum AccountLabelCache {
 
     /// Each pair comes from id/name properties of the SAME enabled account.
     static func learn(accounts: [String: String]) {
-        guard valid(accounts) else { return }
+        guard accounts.isEmpty || valid(accounts) else { return }
         UserDefaults.standard.set(accounts, forKey: key)
     }
 
@@ -448,6 +453,10 @@ enum AccountLabelCache {
     }
 
     static func parse(_ text: String) -> [String: String]? {
+        // The script starts with "" and appends one pair per enabled account.
+        // Only exact empty SUCCESS means zero accounts; blank/malformed output
+        // and an unavailable script must never authenticate an empty inventory.
+        if text.isEmpty { return [:] }
         var accounts: [String: String] = [:]
         for line in text.split(separator: "\n") {
             let fields = line.components(separatedBy: "\u{01}")
@@ -455,6 +464,17 @@ enum AccountLabelCache {
             accounts[fields[0]] = fields[1]
         }
         return valid(accounts) ? accounts : nil
+    }
+
+    static func enumeration(_ text: String?) -> Enumeration {
+        guard let text else { return .unavailable }
+        let labels = text.split(separator: "\n").compactMap { line -> String? in
+            let fields = line.components(separatedBy: "\u{01}")
+            return fields.count == 2 ? fields[1] : nil
+        }
+        guard Set(labels.map { $0.lowercased() }).count == labels.count else { return .duplicateLabels }
+        guard let accounts = parse(text) else { return .unavailable }
+        return .accounts(accounts)
     }
 
     static func stored() -> [String: String] {

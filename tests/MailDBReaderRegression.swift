@@ -22,6 +22,11 @@ final class UserDefaults {
 @main
 enum MailDBReaderRegression {
     static func main() throws {
+        if CommandLine.arguments.contains("zero-inventory") {
+            precondition(AccountLabelCache.parse("") == [:],
+                         "Successful zero-account output must be known empty, not unavailable")
+            return
+        }
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("wisp-mail-db-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -220,6 +225,17 @@ enum MailDBReaderRegression {
         UserDefaults.standard.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
         let workHome = ["fixture-account": "Work", "other-account": "Home"]
         let reversed = AccountLabelCache.parse("other-account\u{01}Home\nfixture-account\u{01}Work\n")!
+        precondition(AccountLabelCache.enumeration("") == .accounts([:]),
+                     "A successful zero-enabled-account script is a known empty inventory")
+        precondition(AccountLabelCache.enumeration(nil) == .unavailable,
+                     "Script failure remains unavailable rather than empty")
+        for malformed in ["\n", "\r\n", " ", "\t", "id", "id\u{01}", "\u{01}Work",
+                          "id\u{01}Work\nid\u{01}Home\n"] {
+            precondition(AccountLabelCache.enumeration(malformed) == .unavailable,
+                         "Blank, malformed, or duplicate-ID output cannot clear accounts")
+        }
+        precondition(AccountLabelCache.enumeration("id-1\u{01}Work\nid-2\u{01}work\n") == .duplicateLabels,
+                     "Ambiguous labels remain distinct from completed empty enumeration")
         AccountLabelCache.learn(accounts: reversed)
         precondition(reader.readHistory()!.isTrusted(forAccounts: workHome))
         precondition(!reader.readHistory()!.isTrusted(forAccounts:
@@ -278,6 +294,20 @@ enum MailDBReaderRegression {
             let path = CommandLine.arguments[flag + 1]
             precondition(path.hasPrefix("/private/tmp/wisp-pr142-"), "Wire output must use the synthetic artifact directory")
             try JSONSerialization.data(withJSONObject: wireFixtures).write(to: URL(fileURLWithPath: path))
+        }
+        AccountLabelCache.learn(accounts: workHome)
+        AccountLabelCache.learn(accounts: [:])
+        precondition(AccountLabelCache.stored().isEmpty,
+                     "A known empty inventory removes previously learned account labels")
+        AccountLabelCache.learn(accounts: workHome)
+        let unavailableOutputs: [String?] = [nil, "\n", "id\u{01}Work\nid\u{01}Home\n",
+                                            "id-1\u{01}Work\nid-2\u{01}work\n"]
+        for output in unavailableOutputs {
+            if case .accounts(let accounts) = AccountLabelCache.enumeration(output) {
+                AccountLabelCache.learn(accounts: accounts)
+            }
+            precondition(AccountLabelCache.stored() == workHome,
+                         "Failed, malformed, or ambiguous enumeration preserves learned labels")
         }
         print("MailDBReader: regression checks passed")
     }

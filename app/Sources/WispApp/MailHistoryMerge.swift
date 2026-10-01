@@ -6,10 +6,22 @@ import Foundation
 enum MailHistoryTransport {
     static func post(_ history: String, to endpoint: URL, session: URLSession = .shared,
                      completion: @escaping () -> Void = {}) {
+        post(["history": history], to: endpoint, session: session, completion: completion)
+    }
+
+    static func postEmptyAccounts(to endpoint: URL, readSource: String,
+                                  session: URLSession = .shared, completion: @escaping () -> Void = {}) {
+        post(["headers": "", "history": "",
+              "diagnostics": ["available": true, "reason": "", "syncing": false, "read_source": readSource]],
+             to: endpoint, session: session, completion: completion)
+    }
+
+    private static func post(_ payload: [String: Any], to endpoint: URL, session: URLSession,
+                             completion: @escaping () -> Void) {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = try? JSONSerialization.data(withJSONObject: ["history": history])
+        request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         session.dataTask(with: request) { _, _, _ in completion() }.resume()
     }
 }
@@ -21,10 +33,11 @@ final class MailHistoryState {
     private var generation: UInt64 = 0
     private var accounts: [String: MailHistoryAccount] = [:]
     private var identities: [String: String]?
+    private var lastCompletedIdentities: [String: String]?
 
-    func capture() -> (generation: UInt64, accounts: [String: MailHistoryAccount], identities: [String: String]?) {
+    func capture() -> (generation: UInt64, accounts: [String: MailHistoryAccount], identities: [String: String]?, lastKnownEmpty: Bool) {
         lock.lock(); defer { lock.unlock() }
-        return (generation, accounts, identities)
+        return (generation, accounts, identities, lastCompletedIdentities?.isEmpty == true)
     }
 
     /// Every enumeration observation fences work captured with older or
@@ -34,13 +47,28 @@ final class MailHistoryState {
         guard identities != current else { return }
         identities = current
         generation &+= 1
-        if let current { accounts = accounts.filter { current[$0.key] != nil } }
+        if let current {
+            lastCompletedIdentities = current
+            accounts = accounts.filter { current[$0.key] != nil }
+        }
     }
 
     @discardableResult
     func replace(generation expected: UInt64? = nil, enqueue: () -> Void) -> Bool {
         lock.lock(); defer { lock.unlock() }
         guard expected == nil || generation == expected else { return false }
+        generation &+= 1
+        accounts = [:]
+        enqueue()
+        return true
+    }
+
+    /// A completed zero-enabled-account observation is authoritative without
+    /// reading a stale index. Unknown identity is distinct and never clears.
+    @discardableResult
+    func publishEmptyInventory(enqueue: () -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard let identities, identities.isEmpty else { return false }
         generation &+= 1
         accounts = [:]
         enqueue()

@@ -297,6 +297,8 @@ enum MailHistoryChecks {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [CapturedHistoryProtocol.self]
         configuration.urlCache = nil
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
         let session = URLSession(configuration: configuration)
         defer { session.invalidateAndCancel() }
         let endpoint = URL(string: "https://fixture.invalid/assistant/sync/emails")!
@@ -348,6 +350,59 @@ enum MailHistoryChecks {
         check(state.capture().accounts.count == 1 &&
               !state.commit(generation: known.generation, accounts: [:]) { enqueued += 1 } && enqueued == 3,
               "Unavailable identity preserves prior rows while fencing an in-flight walk")
+        var emptyUpdates = 0
+        check(!state.publishEmptyInventory { emptyUpdates += 1 } && emptyUpdates == 0 &&
+              state.capture().accounts.count == 1,
+              "Unknown identity cannot publish an empty inventory or drop prior rows")
+        state.observe(["UUID-THIRD": "Work"])
+        check(!state.publishEmptyInventory { emptyUpdates += 1 } && emptyUpdates == 0,
+              "A nonempty enabled-account inventory cannot publish an empty update")
+        let beforeEmptyInventory = state.capture()
+        state.observe([:])
+        check(state.capture().identities == [:] && state.capture().accounts.isEmpty,
+              "Completed zero-account enumeration removes obsolete native account state")
+        check(state.capture().lastKnownEmpty,
+              "Known empty inventory prevents a later closed-index read from restoring old rows")
+        check(!state.commit(generation: beforeEmptyInventory.generation,
+                            accounts: beforeEmptyInventory.accounts) { emptyUpdates += 1 } && emptyUpdates == 0,
+              "A zero-account observation fences an older captured walk")
+        check(!state.replace(generation: beforeEmptyInventory.generation) { emptyUpdates += 1 } && emptyUpdates == 0,
+              "A zero-account observation fences an older local-index snapshot")
+        let emptyDone = DispatchSemaphore(value: 0)
+        let beforeEmptyRequest = CapturedHistoryProtocol.requests.count
+        check(state.publishEmptyInventory {
+            emptyUpdates += 1
+            MailHistoryTransport.post("", to: endpoint, session: session) { emptyDone.signal() }
+        }, "Known empty inventory publishes under the production state fence")
+        check(emptyDone.wait(timeout: .now() + 5) == .success && emptyUpdates == 1 &&
+              CapturedHistoryProtocol.requests.count == beforeEmptyRequest + 1,
+              "Known empty inventory enqueues exactly one captured production update")
+        let emptyInventoryBody = CapturedHistoryProtocol.requests.last!.httpBody!
+        check((try! JSONSerialization.jsonObject(with: emptyInventoryBody) as! [String: String]) == ["history": ""],
+              "Known zero-account update carries an explicit empty history field")
+        let emptySnapshotDone = DispatchSemaphore(value: 0)
+        let beforeSnapshot = CapturedHistoryProtocol.requests.count
+        check(state.publishEmptyInventory {
+            MailHistoryTransport.postEmptyAccounts(to: endpoint, readSource: "mail_app", session: session) {
+                emptySnapshotDone.signal()
+            }
+        }, "Current zero-account header snapshot is guarded by the production state fence")
+        check(emptySnapshotDone.wait(timeout: .now() + 5) == .success &&
+              CapturedHistoryProtocol.requests.count == beforeSnapshot + 1,
+              "Zero-account headers and history enqueue one compound update")
+        let emptySnapshotBody = CapturedHistoryProtocol.requests.last!.httpBody!
+        let snapshot = try! JSONSerialization.jsonObject(with: emptySnapshotBody) as! [String: Any]
+        let diagnostics = snapshot["diagnostics"] as! [String: Any]
+        check(snapshot["headers"] as? String == "" && snapshot["history"] as? String == "" &&
+              diagnostics["available"] as? Bool == true && diagnostics["syncing"] as? Bool == false &&
+              diagnostics["read_source"] as? String == "mail_app",
+              "Empty headers, history and readiness travel together in the production request")
+        state.observe(nil)
+        check(state.capture().lastKnownEmpty && !state.publishEmptyInventory { emptyUpdates += 1 } && emptyUpdates == 1,
+              "Unavailable metadata preserves the last known empty boundary without another clearing update")
+        state.observe(["UUID-THIRD": "Work"])
+        check(!state.capture().lastKnownEmpty && !state.publishEmptyInventory { emptyUpdates += 1 } && emptyUpdates == 1,
+              "A successful nonempty observation releases the closed-index empty boundary")
         if let flag = CommandLine.arguments.firstIndex(of: "--wire-output"),
            flag + 1 < CommandLine.arguments.count {
             let path = CommandLine.arguments[flag + 1]
@@ -355,7 +410,9 @@ enum MailHistoryChecks {
             let fixtures = ["failed_history": HistoryMerge.render([emptyFailure]),
                             "replacement_history": HistoryMerge.render([newFull]),
                             "positive_post": String(data: CapturedHistoryProtocol.requests[0].httpBody!, encoding: .utf8)!,
-                            "empty_post": String(data: CapturedHistoryProtocol.requests[1].httpBody!, encoding: .utf8)!]
+                            "empty_post": String(data: CapturedHistoryProtocol.requests[1].httpBody!, encoding: .utf8)!,
+                            "empty_inventory_post": String(data: emptyInventoryBody, encoding: .utf8)!,
+                            "empty_accounts_snapshot": String(data: emptySnapshotBody, encoding: .utf8)!]
             try! JSONSerialization.data(withJSONObject: fixtures).write(to: URL(fileURLWithPath: path))
         }
         print("MailHistoryMerge: \(passed) checks passed")

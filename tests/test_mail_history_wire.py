@@ -142,14 +142,22 @@ def persisted_mail(mail, monkeypatch, tmp_path):
 def test_authoritative_empty_post_clears_memory_and_persisted_history(persisted_mail):
     from service.main import assistant_sync_emails
 
-    old = h2(persisted_mail, "Work", "UUID-W", "Obsolete account row", "old") + "\n"
+    # Zero enabled accounts invalidates every former account, independently of
+    # the next recent-header refresh. Seed two account histories to catch a
+    # partial clear that leaves one former account queryable.
+    old = "\n".join([
+        h2(persisted_mail, "Work", "UUID-W", "Obsolete account row", "old"),
+        h2(persisted_mail, "Home", "UUID-H", "Obsolete home row", "old-home"),
+    ]) + "\n"
     E.cache_history_headers(old)
     before = (E._headers, E._raw_emails, E._headers_sync_generation, E.email_sync_state())
     assert cache_store.load("email_history") == old
     assert "Obsolete account row" in summarize(persisted_mail, account="Work")
+    assert "Obsolete home row" in summarize(persisted_mail, account="Home")
     assert asyncio.run(assistant_sync_emails({"history": ""})) == {"ok": True}
     assert E._history == "" and cache_store.load("email_history") == ""
     assert "Obsolete account row" not in summarize(persisted_mail, account="Work")
+    assert "Obsolete home row" not in summarize(persisted_mail, account="Home")
     assert (E._headers, E._raw_emails, E._headers_sync_generation, E.email_sync_state()) == before
 
 
