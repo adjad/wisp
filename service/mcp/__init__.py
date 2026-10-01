@@ -14,13 +14,17 @@ Configured at ~/.moe/mcp.json:
           "command": "npx",
           "args": ["-y", "@notionhq/notion-mcp-server"],
           "env": {"NOTION_TOKEN": "secret_..."},
-          "enabled": true
+          "enabled": true,
+          "trusted_read_only": ["search", "fetch"]
         }
       }
     }
 
 Each server's tools are mirrored into the normal registry as
-`mcp_<server>_<tool>` and gated by the policy engine like everything else.
+`mcp_<server>_<tool>` and gated by the policy engine like everything else. Every
+tool asks before it runs. Only the tools YOU list in a server's
+`trusted_read_only` run unprompted, and only while the server still annotates them
+read-only: a server's own annotation never decides its permissions.
 
 **stdio transport only.** Every MCP server is a local subprocess this machine
 owns. There is no HTTP/SSE transport here on purpose — a remote MCP server
@@ -268,7 +272,7 @@ class MCPManager:
                            + f" (via the '{server.name}' MCP server)")
             REGISTRY[local] = Tool(
                 name=local, description=description, parameters=schema,
-                category=_category_for(spec),
+                category=_category_for(spec, server.config),
                 func=_make_caller(server, spec["name"]),
             )
             self._registered.add(local)
@@ -296,17 +300,41 @@ class MCPManager:
         }
 
 
-def _category_for(spec: dict) -> str:
+def _trusted_read_only(config: dict | None) -> frozenset[str]:
+    """The exact remote tool names the USER has marked safe to run unprompted.
+
+    Only a list of strings in the user's own mcp.json counts; anything else (a
+    bare string, a number, a list holding non-strings) trusts nothing, so a typo
+    can only ever make Wisp ask more, never less.
+    """
+    listed = (config or {}).get("trusted_read_only")
+    if not isinstance(listed, list):
+        return frozenset()
+    return frozenset(name for name in listed if isinstance(name, str) and name)
+
+
+def _category_for(spec: dict, config: dict | None = None) -> str:
     """Map an MCP tool onto a safety category.
 
-    MCP's `readOnlyHint` is an ANNOTATION from the server — a claim, not a
-    guarantee — so it can only ever downgrade to `mcp_read` (allow-tier reads,
-    same as web_fetch or reading the inbox). Everything else, and anything
-    unannotated, is confirm-tier. A server we didn't write doesn't get to
-    self-certify that its `delete_page` tool is harmless.
+    MCP's `readOnlyHint` is an ANNOTATION written by the server: a claim, not a
+    guarantee. A server we didn't write, or one that was compromised or simply
+    wrong, can label a `delete_page` tool read-only, so the label alone can never
+    lower the tier (that let a lying server run mutating tools unprompted, even in
+    view-only mode). A tool runs without asking only when ALL hold:
+
+      * the user named that exact tool in this server's `trusted_read_only` list
+        in mcp.json (the decision is theirs, per server and per tool),
+      * the server still claims it is read-only (if an update flips the claim the
+        tool goes back to asking), and
+      * the server does not also claim it is destructive.
+
+    Everything else, including every unannotated tool, is confirm-tier.
     """
     hints = spec.get("annotations") or {}
-    if isinstance(hints, dict) and hints.get("readOnlyHint") is True:
+    if (isinstance(hints, dict)
+            and hints.get("readOnlyHint") is True
+            and hints.get("destructiveHint") is not True
+            and spec.get("name") in _trusted_read_only(config)):
         return "mcp_read"
     return "mcp_action"
 
