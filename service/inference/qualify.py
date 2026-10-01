@@ -43,6 +43,17 @@ PROBE_CONTEXT_CAP = RECOMMENDED_CONTEXT
 QUALIFICATION_SCHEMA = 1
 _PROBE_DEADLINE_SECONDS = 420.0
 _TRUNCATION_TOLERANCE = 0.92
+# The usage probe deliberately sends MORE than the cap: only an engine that
+# reports holding at least ``cap`` prompt tokens has shown that the cap fits.
+_PROBE_OVERSHOOT = 1.08
+# An engine that refuses the oversize probe is re-tried at these fractions of
+# the cap; the first prompt it accepts is the evidence.
+_STEP_DOWN = (0.95, 0.85, 0.7, 0.5, 0.25, 0.125)
+# Without usage numbers the token count of a prompt is only an estimate. English
+# prose tokenizes at roughly 0.22-0.3 tokens per character; assuming 0.2 makes
+# the estimate a lower bound, so a recalled needle proves at least that many.
+_NEEDLE_TOKENS_PER_CHAR = 0.2
+_NEEDLE_STEPS = (1.0,) + _STEP_DOWN
 
 _TOOL = {"type": "function", "function": {
     "name": "probe_multiply",
@@ -133,12 +144,25 @@ def _prompt_tokens(data: dict[str, Any] | None) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
 
 
-async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, str]:
-    """(effective window in tokens, how it was established).
+def _verified(tokens: int, cap: int) -> int:
+    """The window to record: never more than the engine showed it held."""
+    return (min(tokens, cap) // 256) * 256
 
-    Sends a synthetic prompt sized to 90% of the claimed window and compares the
-    engine's own ``prompt_tokens`` with what was sent. A truncating engine
-    reports fewer tokens than were sent, and that number is its real window.
+
+async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, str]:
+    """(verified window in tokens, how it was established).
+
+    The result is a conservative lower bound on the engine's real window, never
+    the claimed number. An engine's ``usage.prompt_tokens`` counts what it
+    actually held: a truncating engine reports its cut-down count, which can
+    only be at or below its real window. So the probe is sized past the cap,
+    and the recorded window is the reported count, capped and rounded down.
+    The claimed cap is recorded only when the engine reports holding at least
+    that many tokens.
+
+    ``how`` is "measured" (held the whole probe), "truncated" (cut a longer
+    prompt), "rejected" (refused longer prompts), "needle" (no usage numbers;
+    recalled text from the start of a prompt) or "unmeasurable".
     """
     cap = min(claimed, PROBE_CONTEXT_CAP)
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as http:
@@ -149,35 +173,42 @@ async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, 
             # No usable usage numbers: fall back to recalling a needle at the start.
             return await _needle_context(http, ep, model, cap)
         per_char = (mid - tiny) / max(1, len(mid_text))
-        target = int(cap * 0.9)
+        target = int(cap * _PROBE_OVERSHOOT)
         code = "ZEBRA-" + str(int(time.time()) % 9000 + 1000)
         text = _filler(per_char, target, code)
         data = await _completion(http, ep, model, text + "\n\nReply with OK.")
         seen = _prompt_tokens(data)
-        if seen is not None and seen >= target * _TRUNCATION_TOLERANCE:
-            return cap, "measured"
         if seen is not None:
-            return (seen // 256) * 256, "measured"
+            # Fewer tokens than were sent means the engine cut the prompt (and
+            # with it the start, where Wisp's instructions live) at ``seen``.
+            cut = seen < cap and seen < target * _TRUNCATION_TOLERANCE
+            return _verified(seen, cap), "truncated" if cut else "measured"
         # The engine refused the prompt outright (context exceeded): step down.
-        for fraction in (0.5, 0.25):
+        # Whatever it then accepts and reports is what it has shown it holds.
+        for fraction in _STEP_DOWN:
             size = int(cap * fraction)
             data = await _completion(http, ep, model, _filler(per_char, size, code) + "\n\nReply with OK.")
             seen = _prompt_tokens(data)
-            if seen is not None and seen >= size * _TRUNCATION_TOLERANCE:
-                return (size // 256) * 256, "measured"
+            if seen is not None:
+                return _verified(seen, cap), "rejected"
         return 0, "unmeasurable"
 
 
 async def _needle_context(http, ep, model, cap) -> tuple[int, str]:
-    for fraction in (0.9, 0.5, 0.25):
+    """Without usage numbers: the largest prompt whose first line is recalled.
+
+    A recalled needle proves the whole prompt survived, so the window is at
+    least the prompt's size; the size estimate is a deliberate under-count.
+    """
+    for fraction in _NEEDLE_STEPS:
         size = int(cap * fraction)
         code = "ZEBRA-" + str(int(time.time()) % 9000 + 1000)
-        data = await _completion(http, ep, model, _filler(0.25, size, code)
+        data = await _completion(http, ep, model, _filler(_NEEDLE_TOKENS_PER_CHAR, size, code)
                                  + "\n\nWhat is the secret code from the start? Answer with the code only.",
                                  max_tokens=16)
         text = str(((data or {}).get("choices") or [{}])[0].get("message", {}).get("content", ""))
         if code in text:
-            return (size // 256) * 256 if fraction < 0.9 else cap, "needle"
+            return _verified(size, cap), "needle"
     return 0, "unmeasurable"
 
 
@@ -270,10 +301,14 @@ async def qualify(ep: Endpoint, model: str, claimed_context: int) -> Report:
                                            "from the start of a long prompt."))
                 report.hint = context_hint(ep.base_url, 0).replace("0-token", "unknown")
             elif effective < MIN_TOOL_CONTEXT:
+                if how == "rejected":
+                    detail = (f"The app refuses prompts longer than about {effective:,} tokens; Wisp's "
+                              f"tool instructions need at least {MIN_TOOL_CONTEXT:,}.")
+                else:
+                    detail = (f"The app is silently cutting prompts to about {effective:,} tokens; Wisp's "
+                              f"tool instructions need at least {MIN_TOOL_CONTEXT:,}.")
                 report.checks.append(Check(
-                    "context", f"Context window of at least {MIN_TOOL_CONTEXT:,} tokens", False,
-                    f"The app is silently cutting prompts to about {effective:,} tokens; Wisp's tool "
-                    "instructions need more."))
+                    "context", f"Context window of at least {MIN_TOOL_CONTEXT:,} tokens", False, detail))
                 report.hint = context_hint(ep.base_url, effective)
             else:
                 report.checks.append(Check(

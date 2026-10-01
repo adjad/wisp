@@ -196,6 +196,58 @@ def test_engine_that_rejects_oversize_prompts_is_measured_by_stepping_down(engin
     assert not report.qualified and 0 < report.effective_context < q.MIN_TOOL_CONTEXT
 
 
+@pytest.mark.parametrize("ctx", [16384, 15000, 14000, 11111, 9001, 8192])
+def test_recorded_window_never_exceeds_a_truncating_engines_real_window(engine_factory, ctx):
+    """Regression: a probe at 90% of the cap passed on 14k/15k engines, and the
+    whole claimed 16,384 was recorded, so later turns overfilled the engine."""
+    _, ep = engine_factory(ctx=ctx)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    assert report.effective_context <= ctx, report.as_dict()
+    assert report.effective_context > ctx - 256  # conservative, but not needlessly so
+    assert report.qualified, report.as_dict()
+
+
+def test_a_full_16k_engine_still_records_16k(engine_factory):
+    for knobs in ({"ctx": 16384}, {"ctx": 1_000_000}):
+        _, ep = engine_factory(**knobs)
+        report = run(q.qualify(ep, "fake-model", 32768))
+        assert report.qualified and report.effective_context == 16384, (knobs, report.as_dict())
+
+
+@pytest.mark.parametrize("ctx", [16384, 15000, 14000, 9001])
+def test_recorded_window_never_exceeds_a_rejecting_engines_real_window(engine_factory, ctx):
+    _, ep = engine_factory(ctx=ctx, reject_over_ctx=True)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    assert 0 < report.effective_context <= ctx, report.as_dict()
+    assert report.qualified == (report.effective_context >= q.MIN_TOOL_CONTEXT)
+
+
+@pytest.mark.parametrize("ctx", [16384, 15000, 14000, 8192, 4096])
+def test_recorded_window_without_usage_never_exceeds_the_real_window(engine_factory, ctx):
+    _, ep = engine_factory(ctx=ctx, usage=False)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    assert report.effective_context <= ctx, report.as_dict()
+    assert report.qualified == (report.effective_context >= q.MIN_TOOL_CONTEXT)
+
+
+@pytest.mark.parametrize("knobs,wording", [({"ctx": 4096}, "silently cutting prompts to about 4,096"),
+                                           ({"ctx": 7000}, "silently cutting prompts to about 6,912"),
+                                           ({"ctx": 6000, "reject_over_ctx": True}, "refuses prompts longer")])
+def test_a_window_below_the_minimum_fails_in_plain_language(engine_factory, knobs, wording):
+    _, ep = engine_factory(**knobs)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    assert not report.qualified and report.effective_context <= knobs["ctx"]
+    detail = report.checks[0].detail
+    assert wording in detail and f"at least {q.MIN_TOOL_CONTEXT:,}" in detail, detail
+    assert "16384" in report.hint
+
+
+def test_a_smaller_claim_is_never_recorded_above_itself(engine_factory):
+    _, ep = engine_factory()
+    report = run(q.qualify(ep, "fake-model", 12000))
+    assert report.qualified and report.effective_context <= 12000
+
+
 def test_missing_usage_falls_back_to_recalling_text_from_the_start(engine_factory):
     _, good = engine_factory(usage=False)
     assert run(q.qualify(good, "fake-model", 16384)).qualified
@@ -375,6 +427,15 @@ def test_connect_runs_its_own_probe_and_records_the_result(engine_factory, monke
     asyncio.run(main.connect_local_provider_inference(body))
     assert saved["args"][3] == ["reasoning", "agent"]
     assert saved["kwargs"]["qualification"]["qualified"] is True
+
+
+def test_connect_records_only_the_verified_window_of_a_smaller_engine(engine_factory, monkeypatch):
+    import service.main as main
+    engine, _ = engine_factory(ctx=15000)
+    body, saved = _connect(main, engine, ["agent"], monkeypatch)
+    asyncio.run(main.connect_local_provider_inference(body))
+    record = saved["kwargs"]["qualification"]
+    assert record["qualified"] is True and record["effective_context"] <= 15000
 
 
 def test_connect_refuses_tool_roles_on_a_truncating_app_with_the_fix(engine_factory, monkeypatch):
