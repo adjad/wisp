@@ -1,7 +1,65 @@
 import Foundation
 
+/// The production history transport. Empty successful snapshots are updates,
+/// too; unavailable reads never invoke this helper. Session injection allows
+/// captured synthetic requests without contacting the backend.
+enum MailHistoryTransport {
+    static func post(_ history: String, to endpoint: URL, session: URLSession = .shared,
+                     completion: @escaping () -> Void = {}) {
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["history": history])
+        session.dataTask(with: request) { _, _, _ in completion() }.resume()
+    }
+}
+
+/// Serializes local snapshot replacement with captured-walk commit/enqueue.
+/// The lock establishes local ordering only, not backend arrival ordering.
+final class MailHistoryState {
+    private let lock = NSLock()
+    private var generation: UInt64 = 0
+    private var accounts: [String: MailHistoryAccount] = [:]
+    private var identities: [String: String]?
+
+    func capture() -> (generation: UInt64, accounts: [String: MailHistoryAccount], identities: [String: String]?) {
+        lock.lock(); defer { lock.unlock() }
+        return (generation, accounts, identities)
+    }
+
+    /// Every enumeration observation fences work captured with older or
+    /// unknown identity. Missing identity preserves the last known snapshot.
+    func observe(_ current: [String: String]?) {
+        lock.lock(); defer { lock.unlock() }
+        guard identities != current else { return }
+        identities = current
+        generation &+= 1
+        if let current { accounts = accounts.filter { current[$0.key] != nil } }
+    }
+
+    @discardableResult
+    func replace(generation expected: UInt64? = nil, enqueue: () -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard expected == nil || generation == expected else { return false }
+        generation &+= 1
+        accounts = [:]
+        enqueue()
+        return true
+    }
+
+    @discardableResult
+    func commit(generation expected: UInt64, accounts next: [String: MailHistoryAccount],
+                enqueue: () -> Void) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard generation == expected else { return false }
+        accounts = next
+        enqueue()
+        return true
+    }
+}
+
 // Pure bookkeeping for MailReader's AppleScript history walk. Kept free of
-// AppKit, AppleScript and networking so tests/MailHistoryChecks.swift can
+// AppKit and AppleScript so tests/MailHistoryChecks.swift can
 // compile it on its own and exercise every merge rule with plain strings.
 //
 // WHY THIS EXISTS. Measured from the app's own call log: a 500-message
@@ -67,8 +125,11 @@ enum HistoryMerge {
     }
 
     /// The boundary for this account's next walk, or nil for a FULL walk.
-    static func incrementalCutoff(previous: MailHistoryAccount?, now: Double) -> Double? {
+    static func incrementalCutoff(previous: MailHistoryAccount?, currentAccountID: String,
+                                  now: Double) -> Double? {
         guard let previous,
+              !currentAccountID.isEmpty, currentAccountID != "*",
+              previous.accountID == currentAccountID,
               previous.incompleteReason == nil,
               previous.fullWalkAt > 0,
               now >= previous.fullWalkAt,
@@ -80,8 +141,26 @@ enum HistoryMerge {
     /// Fold one walk into the account's previous state.
     static func merge(previous: MailHistoryAccount?, walk: MailHistoryWalk,
                       now: Double, cap: Int) -> MailHistoryAccount {
+        // Display names can be reused after removing an account. Missing IDs
+        // cannot authenticate carryover, including on an empty or failed read.
+        var previous = !walk.accountID.isEmpty && walk.accountID != "*" &&
+            previous?.accountID == walk.accountID ? previous : nil
+        // Native identity authenticates a rename, too. Retained rows must use
+        // its current label so another account cannot inherit the old name.
+        if previous?.label != walk.label, var renamed = previous {
+            renamed.label = walk.label
+            renamed.rows = renamed.rows.map { row in
+                var fields = row.components(separatedBy: "\u{01}")
+                guard fields.count >= 10, fields[0] == "H2", fields[4] == walk.accountID else { return row }
+                fields[3] = safe(walk.label, fallback: "Mail")
+                return fields.joined(separator: "\u{01}")
+            }
+            previous = renamed
+        }
+        var walk = walk
+        if walk.cutoff != nil, previous == nil { walk.failure = "failed" }
         let oldest = ageCutoff(now: now)
-        let accountID = walk.accountID.isEmpty ? (previous?.accountID ?? "") : walk.accountID
+        let accountID = walk.accountID
 
         if let failure = walk.failure {
             // An aborted walk must never quietly shrink history: keep every
@@ -167,6 +246,15 @@ enum HistoryMerge {
         for piece in batch.split(separator: "\n", omittingEmptySubsequences: true) {
             let line = String(piece).trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
             let fields = line.components(separatedBy: "\u{01}")
+            let observedID: String?
+            if fields.first == "H2", fields.count >= 10 { observedID = fields[4] }
+            else if fields.first == "C2", fields.count == 6 { observedID = fields[2] }
+            else { observedID = nil }
+            if let observedID, !walk.accountID.isEmpty, walk.accountID != "*",
+               observedID != walk.accountID {
+                walk.failure = "failed"
+                continue
+            }
             if line.hasPrefix("H2\u{01}") {
                 walk.rows.append(line)
                 if walk.accountID.isEmpty, fields.count > 4 { walk.accountID = fields[4] }

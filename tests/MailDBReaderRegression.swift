@@ -5,6 +5,20 @@
 import Foundation
 import SQLite3
 
+// Same-module in-memory preferences: cache learning never touches user defaults.
+final class UserDefaults {
+    static let standard = UserDefaults()
+    static let argumentDomain = "fixture-arguments"
+    private var values: [String: Any] = [:]
+    private var arguments: [String: Any] = [:]
+    func dictionary(forKey key: String) -> [String: Any]? {
+        (arguments[key] ?? values[key]) as? [String: Any]
+    }
+    func set(_ value: Any?, forKey key: String) { values[key] = value }
+    func setVolatileDomain(_ domain: [String: Any], forName name: String) { arguments = domain }
+    func volatileDomain(forName name: String) -> [String: Any] { arguments }
+}
+
 @main
 enum MailDBReaderRegression {
     static func main() throws {
@@ -21,6 +35,27 @@ enum MailDBReaderRegression {
                          "Fixture SQL failed")
         }
         let reader = MailDBReader(indexPath: path)
+        if let mode = CommandLine.arguments.dropFirst().first, ["identity", "scope"].contains(mode) {
+            sql("CREATE TABLE mailboxes (url TEXT)")
+            sql("CREATE TABLE messages (date_received REAL, read INTEGER, subject INTEGER, sender INTEGER, mailbox INTEGER)")
+            sql("CREATE TABLE subjects (subject TEXT)")
+            sql("CREATE TABLE addresses (address TEXT, comment TEXT)")
+            sql("INSERT INTO mailboxes VALUES ('imap://UUID-W/INBOX'), ('imap://UUID-H/INBOX')")
+            sql("INSERT INTO subjects VALUES ('Sent only')")
+            sql("INSERT INTO addresses VALUES ('me@example.test', 'Me')")
+            UserDefaults.standard.set(["UUID-W": "Home", "UUID-H": "Work"], forKey: "wisp.mailAccountLabels")
+            if mode == "identity" {
+                sql("INSERT INTO messages VALUES (\(Date().timeIntervalSince1970), 1, 1, 1, 1)")
+                precondition(!reader.readHistory()!.isTrusted(forAccounts: ["UUID-H": "Home", "UUID-W": "Work"]),
+                             "Positional labels must never authenticate account identity")
+            } else {
+                sql("INSERT INTO mailboxes VALUES ('imap://UUID-W/All%20Mail')")
+                sql("INSERT INTO messages VALUES (\(Date().timeIntervalSince1970), 1, 1, 1, 3)")
+                precondition(!reader.readHistory()!.history.contains("Sent only"),
+                             "All Mail sent-only rows must never become Inbox history")
+            }
+            return
+        }
         precondition(reader.readHeadersAndHistory() == nil, "Missing schema must fail, not be empty-ready")
         sql("CREATE TABLE mailboxes (url TEXT)")
         precondition(reader.readHeadersAndHistory()?.headers == "", "No mailboxes is a completed empty read")
@@ -69,7 +104,7 @@ enum MailDBReaderRegression {
         precondition(abs(modified.timeIntervalSince(oldDate)) < 1, "Reads must not modify Mail's index")
         let oldArguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
         UserDefaults.standard.setVolatileDomain([
-            "wisp.mailAccountLabels": ["fixture-account": "Same", "other-account": "Same"]
+            "wisp.mailAccountLabels.identity.v1": ["fixture-account": "Same", "other-account": "Same"]
         ], forName: UserDefaults.argumentDomain)
         defer { UserDefaults.standard.setVolatileDomain(oldArguments, forName: UserDefaults.argumentDomain) }
         sql("DELETE FROM messages")
@@ -119,7 +154,7 @@ enum MailDBReaderRegression {
         // History-only entry point (used while Mail is running) and the
         // account-label trust rule that gates it.
         func labels(_ map: [String: String]) {
-            UserDefaults.standard.setVolatileDomain(["wisp.mailAccountLabels": map],
+            UserDefaults.standard.setVolatileDomain(["wisp.mailAccountLabels.identity.v1": map],
                                                     forName: UserDefaults.argumentDomain)
         }
         for mailbox in 1...2 {
@@ -128,34 +163,35 @@ enum MailDBReaderRegression {
         }
         labels(["fixture-account": "Work", "other-account": "Home"])
         let history = reader.readHistory()!
+        var wireFixtures = ["verified_history": history.history]
         precondition(history.history == reader.readHeadersAndHistory()!.history,
                      "History-only and combined reads must render identical history")
         precondition(history.indexAccountCount == 2 && !history.hasUnresolvedLabel,
                      "Both index accounts are counted and resolved")
         precondition(history.labelsByAccountID == ["fixture-account": "Work", "other-account": "Home"],
                      "Every native account carries its learned label")
-        precondition(history.isTrusted(forAccountNames: ["Work", "Home"]),
-                     "Matching count and resolved current labels are trusted")
-        precondition(!history.isTrusted(forAccountNames: ["Work"]),
+        precondition(history.isTrusted(forAccounts: ["fixture-account": "Work", "other-account": "Home"]),
+                     "Exact current native IDs and labels are trusted")
+        precondition(!history.isTrusted(forAccounts: ["fixture-account": "Work"]),
                      "Fewer Mail accounts than index accounts must not be trusted")
-        precondition(!history.isTrusted(forAccountNames: ["Work", "Home", "School"]),
+        precondition(!history.isTrusted(forAccounts: ["fixture-account": "Work", "other-account": "Home", "school-account": "School"]),
                      "More Mail accounts than index accounts must not be trusted")
-        precondition(!history.isTrusted(forAccountNames: ["Work", "School"]),
+        precondition(!history.isTrusted(forAccounts: ["fixture-account": "Work", "other-account": "School"]),
                      "A stale learned label that is no longer a current account must not be trusted")
-        precondition(!history.isTrusted(forAccountNames: []),
+        precondition(!history.isTrusted(forAccounts: [:]),
                      "No account enumeration must not be trusted")
         labels(["fixture-account": "Work"])
         let partial = reader.readHistory()!
-        precondition(partial.hasUnresolvedLabel && !partial.isTrusted(forAccountNames: ["Work", "Home"]),
+        precondition(partial.hasUnresolvedLabel && !partial.isTrusted(forAccounts: ["fixture-account": "Work", "other-account": "Home"]),
                      "A fallback 'Account N' label must not be trusted")
         precondition(partial.history.contains("Account 2"),
                      "The unresolved account keeps its positional fallback label")
         labels(["fixture-account": "Same", "other-account": "Same"])
-        precondition(!reader.readHistory()!.isTrusted(forAccountNames: ["Same", "Other"]),
+        precondition(!reader.readHistory()!.isTrusted(forAccounts: ["fixture-account": "Same", "other-account": "Other"]),
                      "Two native accounts sharing one label must not be trusted")
         labels(["fixture-account": "Work", "other-account": "Home"])
         precondition(reader.orderedAccountUUIDs() == ["fixture-account", "other-account"],
-                     "Positional label order is mailbox-creation order")
+                     "Cosmetic fallback order is mailbox-creation order")
 
         // The per-account history ceiling matches MailReader.historyCap.
         sql("DELETE FROM messages")
@@ -180,6 +216,69 @@ enum MailDBReaderRegression {
             .map { String($0).components(separatedBy: "\u{01}") }
         precondition(cappedHeaders.filter { $0[0] == "H2" && $0[4] == "fixture-account" }.count == 200,
                      "The history ceiling does not change the recent header limit")
-        print("MailDBReader: 41 regression checks passed")
+        // Correct associations remain correct when enumeration order changes.
+        UserDefaults.standard.setVolatileDomain([:], forName: UserDefaults.argumentDomain)
+        let workHome = ["fixture-account": "Work", "other-account": "Home"]
+        let reversed = AccountLabelCache.parse("other-account\u{01}Home\nfixture-account\u{01}Work\n")!
+        AccountLabelCache.learn(accounts: reversed)
+        precondition(reader.readHistory()!.isTrusted(forAccounts: workHome))
+        precondition(!reader.readHistory()!.isTrusted(forAccounts:
+            ["fixture-account": "Home", "other-account": "Work"]), "Swapped names must fail exact identity proof")
+        precondition(!reader.readHistory()!.isTrusted(forAccounts:
+            ["new-account": "Work", "other-account": "Home"]), "Unknown native IDs must fall back")
+        for unsafe in ["\u{01}Work\n", "fixture-account\u{01}\n",
+                       "fixture-account\u{01}Work\nfixture-account\u{01}Home\n",
+                       "fixture-account\u{01}Work\nother-account\u{01}work\n",
+                       "fixture-account\u{01}Bad\rname\n", "id\u{01}Work\u{01}Extra\n"] {
+            precondition(AccountLabelCache.parse(unsafe) == nil, "Unsafe or ambiguous metadata must fail")
+        }
+        AccountLabelCache.learn(accounts: ["fixture-account": "Office", "other-account": "Home"])
+        precondition(reader.readHistory()!.isTrusted(forAccounts:
+            ["fixture-account": "Office", "other-account": "Home"]), "Renaming with the same native ID is safe")
+        AccountLabelCache.learn(accounts: workHome)
+        sql("DELETE FROM messages")
+        let authoritativeEmpty = reader.readHistory()!
+        precondition(authoritativeEmpty.history.isEmpty && authoritativeEmpty.isTrusted(forAccounts: workHome),
+                     "Successful empty scans authenticate the complete account inventory")
+        precondition(reader.readTrustedHistory(forAccounts: workHome) == "",
+                     "The production acceptance seam returns successful empty history")
+        precondition(reader.readTrustedHistory(forAccounts: ["unknown": "Work"]) == nil,
+                     "The acceptance seam declines an unverified inventory")
+        precondition(!authoritativeEmpty.isTrusted(forAccounts:
+            ["fixture-account": "Home", "other-account": "Work"]), "Empty accounts still require exact labels")
+        sql("INSERT INTO mailboxes VALUES ('imap://fixture-account/All%20Mail')")
+        sql("INSERT INTO subjects VALUES ('Sent only')")
+        sql("INSERT INTO messages (date_received, read, subject, sender, mailbox) VALUES (\(base), 1, 3, 1, 3)")
+        precondition(reader.readHistory()!.history.isEmpty, "Sent-only All Mail is outside Inbox history")
+        precondition(reader.readHeadersAndHistory()!.history.contains("Sent only"),
+                     "The existing combined fallback retains its broader scope")
+        sql("INSERT INTO messages (date_received, read, subject, sender, mailbox) VALUES (\(base), 1, 1, 1, 1)")
+        precondition(reader.readHistory()!.history.contains("Fixture subject") &&
+                     !reader.readHistory()!.history.contains("Sent only"), "Inbox membership controls primary scope")
+        wireFixtures["inbox_history"] = reader.readTrustedHistory(forAccounts: workHome)!
+        sql("INSERT INTO mailboxes VALUES ('imap://missing-inbox/All%20Mail')")
+        precondition(reader.readHistory() == nil, "Missing Inbox membership declines rather than clearing history")
+        precondition(reader.readTrustedHistory(forAccounts: workHome) == nil,
+                     "An unavailable source never becomes an empty successful update")
+        sql("DELETE FROM mailboxes WHERE ROWID = 4")
+        sql("INSERT INTO mailboxes VALUES ('imap://fixture-account/INBOX')")
+        precondition(reader.readHistory() == nil, "Ambiguous duplicate Inbox rows decline")
+        sql("DELETE FROM mailboxes WHERE ROWID = 4")
+        sql("DELETE FROM messages")
+        for mailbox in 1...2 {
+            sql("WITH RECURSIVE seq(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM seq WHERE x<16000) " +
+                "INSERT INTO messages (date_received, read, subject, sender, mailbox) " +
+                "SELECT \(base) - x, 1, 1, 1, \(mailbox) FROM seq")
+        }
+        let globalCap = reader.readHistory()!.history.components(separatedBy: "\n")
+        precondition(globalCap.contains(["C2", "Mail", "*", "0", "0", "1"].joined(separator: "\u{01}")),
+                     "The total-row cap remains honestly disclosed")
+        if let flag = CommandLine.arguments.firstIndex(of: "--wire-output"),
+           flag + 1 < CommandLine.arguments.count {
+            let path = CommandLine.arguments[flag + 1]
+            precondition(path.hasPrefix("/private/tmp/wisp-pr142-"), "Wire output must use the synthetic artifact directory")
+            try JSONSerialization.data(withJSONObject: wireFixtures).write(to: URL(fileURLWithPath: path))
+        }
+        print("MailDBReader: regression checks passed")
     }
 }

@@ -60,7 +60,7 @@ final class MailDBReader {
     /// (email_tools._parse_pipe_lines) doesn't need to know which path
     /// produced a given line.
     func readHeadersAndHistory() -> (headers: String, history: String)? {
-        guard let scan = scanIndex() else { return nil }
+        guard let scan = scanIndex(inboxOnly: false) else { return nil }
         return (headersText(scan), historyText(scan))
     }
 
@@ -72,11 +72,17 @@ final class MailDBReader {
     /// locked past the busy timeout). Whether its account LABELS can be
     /// trusted is a separate question — see MailIndexHistory.isTrusted.
     func readHistory() -> MailIndexHistory? {
-        guard let scan = scanIndex() else { return nil }
+        guard let scan = scanIndex(inboxOnly: true) else { return nil }
         return MailIndexHistory(history: historyText(scan),
                                 indexAccountCount: scan.orderedUUIDs.count,
                                 labelsByAccountID: scan.labelByAccount,
                                 hasUnresolvedLabel: scan.hasUnresolvedLabel)
+    }
+
+    /// nil declines the source; an empty string is a successful snapshot.
+    func readTrustedHistory(forAccounts accounts: [String: String]) -> String? {
+        guard let history = readHistory(), history.isTrusted(forAccounts: accounts) else { return nil }
+        return history.history
     }
 
     /// Everything one read of the index learned, before it is rendered.
@@ -98,7 +104,7 @@ final class MailDBReader {
         var empty = false
     }
 
-    private func scanIndex() -> IndexScan? {
+    private func scanIndex(inboxOnly: Bool) -> IndexScan? {
         guard let path = indexPath ?? envelopeIndexPath() else { return nil }
         var db: OpaquePointer?
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
@@ -110,8 +116,16 @@ final class MailDBReader {
 
         let cutoff = Date().timeIntervalSince1970 - Double(historyCutoffDays) * 86400
 
-        guard let mailboxIDs = sourceMailboxIDs(db) else { return nil }
+        guard let mailboxIDs = sourceMailboxIDs(db, inboxOnly: inboxOnly) else { return nil }
         var scan = IndexScan()
+        scan.orderedUUIDs = accountUUIDsByFirstAppearance(db)
+        let labels = AccountLabelCache.stored()
+        // Include empty accounts in the trust proof; message rows are not an
+        // account inventory. Legacy positional preferences are never read.
+        for id in scan.orderedUUIDs {
+            if let label = labels[id] { scan.labelByAccount[id] = label }
+            else { scan.hasUnresolvedLabel = true }
+        }
         guard !mailboxIDs.isEmpty else {
             scan.empty = true
             return scan
@@ -135,9 +149,6 @@ final class MailDBReader {
         var stmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
         defer { sqlite3_finalize(stmt) }
-
-        scan.orderedUUIDs = accountUUIDsByFirstAppearance(db)
-        let labels = AccountLabelCache.stored()
 
         var step = sqlite3_step(stmt)
         while step == SQLITE_ROW {
@@ -293,7 +304,7 @@ final class MailDBReader {
     /// broader than the AppleScript path's strict "received in inbox"
     /// scope, but the alternative is zero data for exactly the accounts
     /// most people actually have.
-    private func sourceMailboxIDs(_ db: OpaquePointer?) -> [Int64]? {
+    private func sourceMailboxIDs(_ db: OpaquePointer?, inboxOnly: Bool) -> [Int64]? {
         var stmt: OpaquePointer?
         let sql = "SELECT ROWID, url FROM mailboxes WHERE url LIKE '%/INBOX' OR url LIKE '%/All%20Mail'"
         guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
@@ -311,22 +322,26 @@ final class MailDBReader {
             if urlString.hasSuffix("/All%20Mail") {
                 allMailByAccount[host] = rowid
             } else {
+                if inboxOnly, inboxByAccount[host] != nil { return nil }
                 inboxByAccount[host] = rowid
             }
         }
         guard step == SQLITE_DONE else { return nil }
+        // All Mail membership cannot prove Inbox membership. Keep the older
+        // broad fallback for combined closed-Mail reads, but never promote it
+        // to authoritative Inbox history. Missing INBOX means fallback, not
+        // a successful empty read that could erase previously held history.
+        if inboxOnly {
+            guard Set(allMailByAccount.keys).isSubset(of: Set(inboxByAccount.keys)) else { return nil }
+            return Array(inboxByAccount.values)
+        }
         let accounts = Set(inboxByAccount.keys).union(allMailByAccount.keys)
         return accounts.compactMap { allMailByAccount[$0] ?? inboxByAccount[$0] }
     }
 
     /// Distinct account UUIDs (parsed from each INBOX mailbox's url host),
-    /// ordered by that mailbox's own ROWID ascending — Mail creates mailbox
-    /// rows in account-creation order, so this is the same order Mail.app's
-    /// AppleScript `accounts` list itself returns in. Used only as the
-    /// POSITIONAL bridge AccountLabelCache needs to turn an AppleScript name
-    /// list into a UUID->name mapping — approximate by construction, but it
-    /// only affects a display label, never which messages are attributed to
-    /// which account (that's the UUID itself, always exact).
+    /// ordered by mailbox ROWID only for stable cosmetic fallback labels.
+    /// This order establishes no relationship with AppleScript enumeration.
     private func accountUUIDsByFirstAppearance(_ db: OpaquePointer?) -> [String] {
         var stmt: OpaquePointer?
         let sql = "SELECT url FROM mailboxes WHERE url LIKE '%/INBOX' ORDER BY ROWID ASC"
@@ -335,7 +350,7 @@ final class MailDBReader {
         var out: [String] = []
         while sqlite3_step(stmt) == SQLITE_ROW {
             guard let c = sqlite3_column_text(stmt, 0) else { continue }
-            if let uuid = URL(string: String(cString: c))?.host { out.append(uuid) }
+            if let uuid = URL(string: String(cString: c))?.host, !out.contains(uuid) { out.append(uuid) }
         }
         return out
     }
@@ -357,9 +372,7 @@ final class MailDBReader {
         return false
     }
 
-    /// Public wrapper so MailReader can feed AccountLabelCache.learn() right
-    /// after a successful AppleScript accountNames() call, without owning
-    /// any SQLite plumbing itself.
+    /// Stable index inventory, also used by synthetic regression fixtures.
     func orderedAccountUUIDs() -> [String] {
         guard let path = indexPath ?? envelopeIndexPath() else { return [] }
         var db: OpaquePointer?
@@ -376,31 +389,18 @@ final class MailDBReader {
 /// decide whether its account labels can be posted.
 struct MailIndexHistory {
     let history: String
-    /// Accounts the index knows about, in the order AccountLabelCache zips
-    /// AppleScript names against.
+    /// Distinct INBOX accounts, including accounts with no messages.
     let indexAccountCount: Int
     /// Native account ID (mailbox URL host) -> the label every row carries.
     let labelsByAccountID: [String: String]
     /// Some row fell back to "Account N" / "Account" / "Mail".
     let hasUnresolvedLabel: Bool
 
-    /// AccountLabelCache.learn zips AppleScript account names POSITIONALLY
-    /// against index UUIDs. A count mismatch (a disabled account, an account
-    /// the index lists that AppleScript doesn't) means that zip may have
-    /// shifted, which would silently file one account's history under
-    /// another's name. So the index's history is only posted when Mail's
-    /// enabled-account count equals the index's account count, every label
-    /// was learned (no fallback), every label is one of Mail's CURRENT
-    /// account names, and no two native accounts share a label. Anything else
-    /// falls back to the AppleScript walk, which labels rows itself.
-    func isTrusted(forAccountNames names: [String]) -> Bool {
-        guard !names.isEmpty, indexAccountCount == names.count, !hasUnresolvedLabel else {
-            return false
-        }
-        let current = Set(names)
-        let labels = Array(labelsByAccountID.values)
-        guard labels.allSatisfy({ current.contains($0) }) else { return false }
-        return Set(labels).count == labels.count
+    /// Exact current native-ID/name associations must match every index
+    /// account. If Mail's ID format differs from index URL hosts, decline.
+    func isTrusted(forAccounts accounts: [String: String]) -> Bool {
+        AccountLabelCache.valid(accounts) && indexAccountCount == accounts.count &&
+            !hasUnresolvedLabel && labelsByAccountID == accounts
     }
 }
 
@@ -414,7 +414,8 @@ struct MailIndexHistory {
 /// position in mailbox-creation order) rather than the raw UUID — cosmetic
 /// only, never blocks headers from syncing.
 enum AccountLabelCache {
-    private static let key = "wisp.mailAccountLabels"   // [uuid: name]
+    // A new key deliberately rejects labels learned by the old positional zip.
+    private static let key = "wisp.mailAccountLabels.identity.v1"   // [native ID: name]
 
     static func label(forURL mailboxURL: String, orderedUUIDs: [String],
                       stored cache: [String: String]? = nil) -> String {
@@ -433,18 +434,27 @@ enum AccountLabelCache {
         return name
     }
 
-    /// Called by MailReader whenever its AppleScript accountNames() call
-    /// succeeds (Mail is open) — positionally zips those names against the
-    /// same mailbox-creation-order UUID list this file derives, then merges
-    /// into the persisted cache. Positional, not name-matched: AppleScript's
-    /// `accounts` exposes no UUID/url property to join on directly.
-    static func learn(names: [String], orderedUUIDs: [String]) {
-        guard !names.isEmpty, !orderedUUIDs.isEmpty else { return }
-        var cache = stored()
-        for (uuid, name) in zip(orderedUUIDs, names) {
-            cache[uuid] = name
+    /// Each pair comes from id/name properties of the SAME enabled account.
+    static func learn(accounts: [String: String]) {
+        guard valid(accounts) else { return }
+        UserDefaults.standard.set(accounts, forKey: key)
+    }
+
+    static func valid(_ accounts: [String: String]) -> Bool {
+        !accounts.isEmpty && accounts.allSatisfy { id, name in
+            !id.isEmpty && !name.isEmpty && !id.contains("\u{01}") && !name.contains("\u{01}") &&
+                !id.contains("\n") && !name.contains("\n") && !id.contains("\r") && !name.contains("\r")
+        } && Set(accounts.values.map { $0.lowercased() }).count == accounts.count
+    }
+
+    static func parse(_ text: String) -> [String: String]? {
+        var accounts: [String: String] = [:]
+        for line in text.split(separator: "\n") {
+            let fields = line.components(separatedBy: "\u{01}")
+            guard fields.count == 2, accounts[fields[0]] == nil else { return nil }
+            accounts[fields[0]] = fields[1]
         }
-        UserDefaults.standard.set(cache, forKey: key)
+        return valid(accounts) ? accounts : nil
     }
 
     static func stored() -> [String: String] {

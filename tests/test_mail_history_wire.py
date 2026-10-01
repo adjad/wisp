@@ -29,6 +29,7 @@ if not os.environ.get("WISP_HOME"):
     os.environ["WISP_HOME"] = _scratch.name
 
 from service.tools import email_tools as E  # noqa: E402
+from service.tools import cache_store  # noqa: E402
 
 FS = "\x01"
 
@@ -127,3 +128,56 @@ def test_total_row_cap_from_the_index_is_disclosed(mail, monkeypatch):
         c2("Mail", "*", 0, 0, cap="1"),
     ]) + "\n")
     assert "History scan reached its limit for Mail" in summarize(mail, account="Work")
+
+
+@pytest.fixture
+def persisted_mail(mail, monkeypatch, tmp_path):
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path / "cache")
+    # Restore every touched in-memory field after this test as well.
+    for field in ("_history", "_history_at", "_headers_at", "_raw_emails", "_raw_emails_at"):
+        monkeypatch.setattr(E, field, getattr(E, field))
+    return mail
+
+
+def test_authoritative_empty_post_clears_memory_and_persisted_history(persisted_mail):
+    from service.main import assistant_sync_emails
+
+    old = h2(persisted_mail, "Work", "UUID-W", "Obsolete account row", "old") + "\n"
+    E.cache_history_headers(old)
+    before = (E._headers, E._raw_emails, E._headers_sync_generation, E.email_sync_state())
+    assert cache_store.load("email_history") == old
+    assert "Obsolete account row" in summarize(persisted_mail, account="Work")
+    assert asyncio.run(assistant_sync_emails({"history": ""})) == {"ok": True}
+    assert E._history == "" and cache_store.load("email_history") == ""
+    assert "Obsolete account row" not in summarize(persisted_mail, account="Work")
+    assert (E._headers, E._raw_emails, E._headers_sync_generation, E.email_sync_state()) == before
+
+
+@pytest.mark.parametrize("update", [
+    {"headers": ""},
+    {"diagnostics": {"available": False, "reason": "synthetic unavailable"}},
+    {},
+])
+def test_updates_without_history_preserve_persisted_rows(persisted_mail, update, monkeypatch):
+    from service.main import assistant_sync_emails
+
+    for field in ("_email_available", "_email_reason", "_email_sync_pending", "_email_read_source"):
+        if hasattr(E, field):
+            monkeypatch.setattr(E, field, getattr(E, field))
+    old = h2(persisted_mail, "Work", "UUID-W", "Retained history", "old") + "\n"
+    E.cache_history_headers(old)
+    assert asyncio.run(assistant_sync_emails(update)) == {"ok": True}
+    assert E._history == old and cache_store.load("email_history") == old
+
+
+@pytest.mark.parametrize("reason", ["failed", "interrupted"])
+def test_persisted_partial_history_retains_rows_and_disclosure(persisted_mail, reason):
+    from service.main import assistant_sync_emails
+
+    # Same-ID failed merge: old rows survive with C3, never an empty clear.
+    wire = "\n".join([h2(persisted_mail, "Work", "UUID-W", "Retained history", "old"),
+                      c2("Work", "UUID-W", 1, 0), c3("Work", "UUID-W", reason)]) + "\n"
+    assert asyncio.run(assistant_sync_emails({"history": wire})) == {"ok": True}
+    assert E._history == wire and cache_store.load("email_history") == wire
+    text = summarize(persisted_mail, account="Work")
+    assert "Retained history" in text and "History scan did not complete for Work" in text

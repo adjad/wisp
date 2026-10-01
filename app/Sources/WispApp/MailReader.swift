@@ -374,17 +374,20 @@ final class MailReader {
         """
     }
 
-    // Enabled accounts, one name per line. Cheap (accounts, not messages), and
+    // Enabled accounts, one native-ID/name pair per line. Cheap (accounts, not messages), and
     // it drives every scan below — a disabled account is skipped here rather
     // than left to fail per-mailbox deeper in.
     private let accountsScript = """
     tell application "Mail"
         set output to ""
+        set FS to ASCII character 1
         repeat with a in accounts
             if enabled of a then
                 set accountName to (name of a) as text
-                if accountName is "" or accountName contains linefeed or accountName contains return then error "Account name cannot be encoded safely."
-                set output to output & accountName & linefeed
+                set accountID to (id of a) as text
+                if accountName is "" or accountName contains FS or accountName contains linefeed or accountName contains return then error "Account name cannot be encoded safely."
+                if accountID is "" or accountID contains FS or accountID contains linefeed or accountID contains return then error "Account identity cannot be encoded safely."
+                set output to output & accountID & FS & accountName & linefeed
             end if
         end repeat
         return output
@@ -456,19 +459,12 @@ final class MailReader {
     private var waitingScans = 0
     private var historyWaitScheduled = false
     private let scanLock = NSLock()
-    // Enabled account names from the most recent successful enumeration in
-    // sync(), right after AccountLabelCache.learn ran with them. The history
-    // sync reuses them instead of sending Mail its own `accounts` event, which
-    // is what lets the local-index history path use no Apple Events at all.
-    // nil until the first enumeration (labels aren't learned yet), and reset
-    // to nil whenever enumeration fails or finds duplicate labels.
+    // Header enumeration completion hint only. History refreshes native-ID/
+    // name pairs before trusting a source; cached names cannot prove identity.
     private var lastAccountNames: [String]?
-    // Per-account result of the last AppleScript history walk, keyed by the
-    // account name it walked. Only the walk reads or writes it (serialized by
-    // historyInFlight); anything else that posts history clears it, so the
-    // next walk starts from a full read instead of stitching onto rows that
-    // are no longer what the backend holds.
-    private var walkHistory: [String: MailHistoryAccount] = [:]
+    // Keyed by native account ID. A replacement snapshot invalidates captured
+    // walks at both state commit and request enqueue.
+    private let historyState = MailHistoryState()
 
     /// Claims a scan slot, or false when one of that kind is already running.
     /// Claim and test are one atomic step: two threads asking at once (a timer
@@ -516,10 +512,6 @@ final class MailReader {
 
     private func setLastAccountNames(_ names: [String]?) {
         scanLock.lock(); lastAccountNames = names; scanLock.unlock()
-    }
-
-    private func resetWalkHistory() {
-        scanLock.lock(); walkHistory = [:]; scanLock.unlock()
     }
 
     // MARK: - Helpers
@@ -574,7 +566,7 @@ final class MailReader {
     }
 
     private enum AccountEnumeration {
-        case names([String])
+        case accounts([String: String])
         case unavailable
         case duplicateLabels
     }
@@ -586,14 +578,21 @@ final class MailReader {
     /// treating the ambiguity as a generic enumeration failure.
     private func accountNames() -> AccountEnumeration {
         let (text, _) = run(accountsScript, tag: "accounts")
-        guard let text else { return .unavailable }
-        let names = text.split(separator: "\n").map(String.init)
-        // Name-based scans cannot distinguish duplicate labels, including
-        // case-only variants under Mail's default string comparison.
-        guard Set(names.map { $0.lowercased() }).count == names.count else {
+        guard let text else { historyState.observe(nil); return .unavailable }
+        let labels = text.split(separator: "\n").compactMap { line -> String? in
+            let fields = line.components(separatedBy: "\u{01}")
+            return fields.count == 2 ? fields[1] : nil
+        }
+        guard Set(labels.map { $0.lowercased() }).count == labels.count else {
+            historyState.observe(nil)
             return .duplicateLabels
         }
-        return .names(names)
+        guard let accounts = AccountLabelCache.parse(text) else {
+            historyState.observe(nil)
+            return .unavailable
+        }
+        historyState.observe(accounts)
+        return .accounts(accounts)
     }
 
     /// Leading epoch-seconds field of a scan line. AppleScript emits these in
@@ -718,6 +717,7 @@ final class MailReader {
             // considerably faster than the batched history walk this replaces
             // for this tick. See MailDBReader.
             guard self.isMailRunning() else {
+                let generation = self.historyState.capture().generation
                 if let (headers, history) = self.dbReader.readHeadersAndHistory() {
                     // A completed read is complete even for an empty or old
                     // index. File modification time cannot tell us whether a
@@ -730,9 +730,9 @@ final class MailReader {
                     // "sync complete" while it still held the restored cache.
                     // This history replaces whatever an AppleScript walk
                     // last posted, so the next walk must not stitch onto it.
-                    self.resetWalkHistory()
                     self.post(headers: headers, available: true, reason: "",
-                              readSource: "local_index", history: history)
+                              readSource: "local_index", history: history,
+                              historyGeneration: generation)
                 } else {
                     self.postDiagnostic(available: false,
                                         reason: "Mail isn't open and its on-disk index isn't readable (Full Disk Access?)")
@@ -747,8 +747,8 @@ final class MailReader {
             let names: [String]
             let targets: [String?]
             switch enumeration {
-            case .names(let accountNames):
-                names = accountNames
+            case .accounts(let accounts):
+                names = accounts.values.sorted()
                 targets = names.isEmpty ? [nil] : names.map { $0 }
             case .unavailable:
                 names = []
@@ -759,8 +759,8 @@ final class MailReader {
                                     reason: "Mail account labels are duplicated. In Mail > Settings > Accounts, rename one of the duplicate account labels so every account name is unique, then refresh Wisp.")
                 return
             }
-            if !names.isEmpty {
-                AccountLabelCache.learn(names: names, orderedUUIDs: self.dbReader.orderedAccountUUIDs())
+            if case .accounts(let accounts) = enumeration {
+                AccountLabelCache.learn(accounts: accounts)
             }
             // Published only AFTER learn(), so the history sync never reads
             // the index with names whose labels haven't been learned yet.
@@ -847,8 +847,8 @@ final class MailReader {
             let enumeration = self.accountNames()
             let names: [String]
             switch enumeration {
-            case .names(let accountNames):
-                names = accountNames
+            case .accounts(let accounts):
+                names = accounts.values.sorted()
             case .unavailable:
                 self.post(raw: "", coverage: ["accounts": [String](),
                           "failed_accounts": ["account enumeration"], "complete": false])
@@ -901,11 +901,8 @@ final class MailReader {
             scanLock.unlock()
             return
         }
-        // The local-index path needs only account LABELS, which exist once
-        // sync() has enumerated accounts and run AccountLabelCache.learn — it
-        // sends Mail no Apple Events, so it never has to wait for headers.
-        // Without names yet, there is nothing to do but wait for that first
-        // header sync, exactly like the AppleScript walk does.
+        // Let launch headers establish readiness before any history work.
+        // A later history tick refreshes native account identity independently.
         let names = lastAccountNames
         if names == nil && !headersCompleted {
             scanLock.unlock()
@@ -928,7 +925,13 @@ final class MailReader {
             // Mail closed: sync() already reads headers AND history from the
             // index on its own 5-minute cadence.
             guard self.isMailRunning() else { return }
-            if let names, self.syncHistoryFromIndex(accountNames: names) { return }
+            // Refresh ID/name pairs before trusting either source. A cached
+            // display-name list cannot detect account replacement or renaming.
+            let enumeration = self.accountNames()
+            if case .accounts(let accounts) = enumeration {
+                AccountLabelCache.learn(accounts: accounts)
+                if self.syncHistoryFromIndex(accounts: accounts) { return }
+            }
             // Fallback: the AppleScript walk. Headers first, always. This walk
             // reads up to two years of mail; the header read it would otherwise
             // queue ahead of is what the Daily Summary and every "check my
@@ -939,7 +942,7 @@ final class MailReader {
                 self.scheduleHistoryRetry()
                 return
             }
-            self.walkHistoryWithAppleScript()
+            self.walkHistoryWithAppleScript(enumeration: enumeration)
         }
     }
 
@@ -961,11 +964,11 @@ final class MailReader {
     /// Returns false (caller falls back to the AppleScript walk) when the
     /// index can't be read (no Full Disk Access, locked past the busy
     /// timeout) or its account labels can't be trusted.
-    private func syncHistoryFromIndex(accountNames names: [String]) -> Bool {
-        guard let index = dbReader.readHistory(),
-              index.isTrusted(forAccountNames: names) else { return false }
-        resetWalkHistory()
-        post(history: index.history)
+    private func syncHistoryFromIndex(accounts: [String: String]) -> Bool {
+        let captured = historyState.capture()
+        guard captured.identities == accounts else { return true } // superseded enumeration
+        guard let history = dbReader.readTrustedHistory(forAccounts: accounts) else { return false }
+        historyState.replace(generation: captured.generation) { post(history: history) }
         return true
     }
 
@@ -973,22 +976,25 @@ final class MailReader {
     /// full walk on first use, after any failed or interrupted account, and at
     /// least every six hours; otherwise only back to just before the newest
     /// row already held (see HistoryMerge).
-    private func walkHistoryWithAppleScript() {
+    private func walkHistoryWithAppleScript(enumeration: AccountEnumeration) {
         Task { @MainActor in SyncProgress.shared.mailHistoryFraction = 0 }
-        let enumeration = accountNames()
         let targets: [String?]
+        let accounts: [String: String]
         switch enumeration {
-        case .names(let names):
-            targets = names.isEmpty ? [nil] : names.map { $0 }
+        case .accounts(let current):
+            accounts = current
+            targets = current.values.sorted().map { $0 }
         case .unavailable:
-            targets = [nil]
+            // Do not replace persisted history with an unauthenticated unified
+            // read or a C3-only failure. Recent header fallback is independent.
+            return
         case .duplicateLabels:
             return  // sync() has already posted the actionable diagnostic.
         }
 
-        scanLock.lock()
-        let previousState = walkHistory
-        scanLock.unlock()
+        let captured = historyState.capture()
+        guard captured.identities == accounts else { return }
+        let previousState = captured.accounts
         let now = Date().timeIntervalSince1970
         var nextState: [String: MailHistoryAccount] = [:]
         var merged: [MailHistoryAccount] = []
@@ -998,10 +1004,11 @@ final class MailReader {
             let label = target ?? "Mail"
             // The unified-inbox fallback has no stable per-account key, so it
             // is always a full walk with nothing carried over.
-            let previous = target.flatMap { previousState[$0] }
-            let cutoff = target == nil ? nil
-                : HistoryMerge.incrementalCutoff(previous: previous, now: now)
-            var walk = MailHistoryWalk(label: label, accountID: target == nil ? "*" : "",
+            let currentID = accounts.first { $0.value == label }?.key ?? ""
+            let previous = currentID.isEmpty ? nil : previousState[currentID]
+            let cutoff = HistoryMerge.incrementalCutoff(previous: previous,
+                                                       currentAccountID: currentID, now: now)
+            var walk = MailHistoryWalk(label: label, accountID: target == nil ? "*" : currentID,
                                        rows: [], attempted: 0, skipped: 0,
                                        reachedCap: false, failure: nil, cutoff: cutoff)
             if interrupted {
@@ -1036,6 +1043,7 @@ final class MailReader {
                         break
                     }
                     if parts.count > 1 { HistoryMerge.absorb(String(parts[1]), into: &walk) }
+                    if walk.failure != nil { break }
 
                     // Progress spans all accounts, so a two-account sync doesn't
                     // run the bar to 100% and then start over.
@@ -1054,17 +1062,19 @@ final class MailReader {
             let account = HistoryMerge.merge(previous: previous, walk: walk,
                                              now: now, cap: historyCap)
             merged.append(account)
-            if let target { nextState[target] = account }
+            if !currentID.isEmpty { nextState[currentID] = account }
         }
 
-        scanLock.lock(); walkHistory = nextState; scanLock.unlock()
-        post(history: HistoryMerge.render(merged))
+        historyState.commit(generation: captured.generation, accounts: nextState) {
+            post(history: HistoryMerge.render(merged))
+        }
     }
 
     // MARK: - Posting
 
     private func post(headers: String, available: Bool, reason: String,
-                      readSource: String, history: String? = nil) {
+                      readSource: String, history: String? = nil,
+                      historyGeneration: UInt64? = nil) {
         // The launch header read has reached a terminal state, so the history
         // walk may start (see syncHistory).
         markHeadersCompleted()
@@ -1081,7 +1091,19 @@ final class MailReader {
         // with the headers so a date lookup cannot see mismatched snapshots.
         if let history { payload["history"] = history }
         req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
-        URLSession.shared.dataTask(with: req).resume()
+        if history != nil {
+            if !historyState.replace(generation: historyGeneration, enqueue: {
+                URLSession.shared.dataTask(with: req).resume()
+            }) {
+                // Preserve successful header readiness independently when an
+                // identity/source observation superseded the history read.
+                payload.removeValue(forKey: "history")
+                req.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+                URLSession.shared.dataTask(with: req).resume()
+            }
+        } else {
+            URLSession.shared.dataTask(with: req).resume()
+        }
     }
 
     private func post(raw: String, coverage: [String: Any] = [:]) {
@@ -1094,13 +1116,7 @@ final class MailReader {
     }
 
     private func post(history: String) {
-        guard !history.isEmpty else { return }
-        let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["history": history])
-        URLSession.shared.dataTask(with: req).resume()
+        MailHistoryTransport.post(history, to: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"))
     }
 
     // Report whether the last inbox read actually succeeded (permission), sent
