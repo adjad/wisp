@@ -54,9 +54,11 @@ def _subject_before_effect(subject: str) -> str:
 def _reminder_parts(text: str) -> tuple[str, str] | None:
     # The golden corpus supports "can u send me a reminder". Normalize only
     # its leading courtesy, never a reminder embedded after another action.
+    # Markdown emphasis is presentation, not an unrelated leading action.
+    normalized = text.lstrip().lstrip("*_").lstrip()
     normalized = re.sub(
         r"^(\s*(?:(?:hey|hi|ok|okay|please)[,\s]+)*)(can|could|would)\s+u\b",
-        r"\1\2 you", text, count=1, flags=re.I)
+        r"\1\2 you", normalized, count=1, flags=re.I)
     return reminder_command_parts(normalized)
 _REFERENCE = re.compile(
     r"\b(?:before|ahead\s+of|earlier\s+than)\s+"
@@ -166,7 +168,9 @@ def _operation_target(text: str, verbs: str) -> str:
     match = re.search(
         rf"\b(?:{verbs})\b\s+(?P<body>[^.?!]{{0,100}}?)\s+reminders?\b", text, re.I)
     if match:
-        return _clean_target(match.group("body"))
+        target = _clean_target(match.group("body"))
+        if target:
+            return target
     match = re.search(r"\breminders?\b\s+(?:called|named|about)\s+(?P<body>[^.?!]+)",
                       text, re.I)
     return _clean_target(match.group("body")) if match else ""
@@ -367,10 +371,11 @@ def compile_task(text: str, *, now: datetime | None = None,
         return None
     if reply := compile_email_reply(text, now=now, turn=turn):
         return reply
-    # An explicit literal-body introducer fixes the outer speech act. A
+    # An addressed literal-body command fixes the outer speech act. A
     # quoted capability question/reminder phrase is message content, not a
     # reminder command to intercept before the addressed send compiler.
-    if _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text):
+    if (_MESSAGE_SEND_INTRO.match(text) or _MESSAGE_SEND_BARE.match(text)
+            or _EMAIL_SEND_INTRO.match(text)):
         literal = (compile_message_send(text, now=now, turn=turn)
                    or compile_email_send(text, now=now, turn=turn))
         if literal:
@@ -391,7 +396,12 @@ def compile_task(text: str, *, now: datetime | None = None,
     # plus notification above). Declining creation must not re-arm another
     # reminder operation on a substring of a compound request.
     if REMINDER_CREATE_RE.search(unquoted) and (
-            not _reminder_parts(text) or _SECONDARY_ACTION.search(unquoted)):
+            _SECONDARY_ACTION.search(unquoted) or (
+                not _reminder_parts(text) and not (re.match(
+                    rf"^\s*{_POLITE}(?:delete|remove|clear|complete|finish|mark|check|"
+                    r"cross|tick|cancel|update|change|rename|reschedule|move)\b",
+                    unquoted.lstrip().lstrip("*_"), re.I)
+                    and re.search(r"\breminders?\s+(?:called|named|about)\s+", unquoted, re.I)))):
         return None
     # Creation precedes update so a subject/reference containing a natural
     # word such as "move-in" cannot be mistaken for the verb "move". The

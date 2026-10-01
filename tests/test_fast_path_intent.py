@@ -437,6 +437,8 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
     ("Remind me to lock my screen tomorrow", "lock my screen"),
     ("Remind me to buy milk and eggs tomorrow", "buy milk and eggs"),
     ("can u send me a reminder to take my medicine tonight", "take my medicine"),
+    ("**Create a reminder tomorrow to send my vaccine report to UCSC.**",
+     "send my vaccine report to UCSC"),
 ])
 def test_actual_http_supported_reminder_has_successful_temporary_readback(
         successful_reminder_endpoint, text, title):
@@ -565,6 +567,28 @@ def test_notification_repair_does_not_promote_unverified_legacy_provenance(
 ])
 def test_notification_support_cannot_hide_a_third_action(text):
     assert compile_task(text, now=NOW) is None
+
+
+def test_markdown_reminder_notification_keeps_the_complete_supported_task():
+    plan = compile_task("**Create a reminder for me to finish a Canvas assignment by tonight "
+                        "and tell Mom about it too through Messages.**", now=NOW)
+    assert plan.intent == "reminder.create"
+    assert plan.subject.value == "finish a Canvas assignment"
+    assert plan.parameters["notify_request"].value.startswith("tell Mom")
+
+
+@pytest.mark.parametrize("title", ["remind me", '"remind me"'])
+def test_reminder_named_remind_me_is_still_an_existing_item_operation(title):
+    plan = compile_task("delete the reminder named " + title, now=NOW)
+    assert plan.intent == "reminder.delete"
+    assert plan.target.value == "remind me"
+
+
+def test_bare_addressed_message_keeps_reminder_words_in_its_literal_body():
+    plan = compile_task("Text Mom remind me to buy bread tomorrow", now=NOW)
+    assert plan.intent == "message.send"
+    assert plan.subject.value == "remind me to buy bread tomorrow"
+    assert plan.recipient.value == "Mom"
 
 
 @pytest.mark.parametrize("text", [
