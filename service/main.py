@@ -261,6 +261,8 @@ def _sync_keep_warm() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from service.identity import refuse_sandbox_on_production_port
+    refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
     global client
@@ -746,6 +748,14 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
         set_roles({role: model for role in setup_guide.TEXT_ROLES})
     _sync_keep_warm()
     return await setup_status()
+
+
+@app.get("/identity")
+async def get_identity() -> dict[str, Any]:
+    """Which backend this is. The app refuses a listener that is not its own (proved
+    from the kernel, not from this answer) and any whose mode is not "production"."""
+    from service.identity import payload
+    return payload()
 
 
 @app.get("/mode")

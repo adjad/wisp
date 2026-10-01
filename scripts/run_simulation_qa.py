@@ -219,6 +219,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_approval_routing.py",
     # Stand-in model loop and executor; the real stream/runner cancellation wiring only.
     "tests/test_agent_disconnect.py",
+    # Pure identity/port policy; the shell checks skip where spawning is forbidden.
+    "tests/test_backend_identity_and_sandbox_isolation.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
     "tests/test_helper_provenance.py",
