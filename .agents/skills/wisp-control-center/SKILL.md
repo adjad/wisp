@@ -143,6 +143,14 @@ If further optimization is needed, profile `./scripts/wisp-build all` internally
 
 ## Ship
 
+For public GitHub releases, publish only the app ZIP as an uploaded asset, retain
+GitHub's automatic source archives, and keep release notes in the page body.
+Put the app download link on the first line and use the public
+`01-Wisp-<version>-<build>-arm64.zip` filename. Complete technical evidence stays
+validated in local and CI artifacts. Add other public assets only when the user
+explicitly requests an exception. Route future Sol work to `gpt-6.1-sol` and
+preserve reasoning effort; follow the repository table for Luna and Astra.
+
 The user has given standing authorization for routine Wisp PR merges. Only the designated Local integration coordinator may deliver a candidate, and only after recorded mechanical validation, required CI passing when configured, either a triggered independent `PASS` or `PASS_WITH_NOTES` or a recorded `Auditor not triggered` rationale for the current commit, and passing specialist QA when triggered. A zero-check PR is CI unavailable/non-passing, not a CI pass. This authorization covers fetch, safe reconciliation, normal commits and non-force pushes, pull-request creation or update, and a synchronous expected-head merge into `main`. It excludes destructive cleanup, force pushes, bypassed checks, unrelated tasks, installed-app replacement, and production deployment.
 
 For each eligible candidate:
