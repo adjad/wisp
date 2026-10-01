@@ -4,8 +4,8 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 
-from service.router.router import _reminder_is_excluded, calendar_is_excluded
-from service.utterance_shape import deliberate, mask_quoted
+from service.router.router import calendar_is_excluded
+from service.utterance_shape import deliberate
 from service.safety.policy import Tier, decide
 from service.tools.registry import DisplayOnlyToolResult, get_tool, run_tool, classify_tool_outcome
 from service.tasks.models import TaskExecution
@@ -184,41 +184,26 @@ _MONTHS = ("january february march april may june july august september october 
            "november december").split()
 _MONTH_DAY = re.compile(
     r"\b(?:on\s+|for\s+)?(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\.?\s+"
-    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\b(?!\s*(?::|am\b|pm\b|o'clock))", re.I)
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\b(?!\s*(?::|am\b|pm\b|o'clock))"
+    r"(?:,?\s+(?P<year>\d{4}))?", re.I)
 _DAY_MONTH = re.compile(
     r"\b(?:on\s+|for\s+)?(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?:of\s+)?"
-    r"(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\b", re.I)
-# Date words the period grammar cannot express. If one is present and was not
-# resolved to an exact date, the shortcut must not guess a window.
-_UNRESOLVED_DATE = re.compile(
-    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekend|"
-    r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d+|"
-    r"\d{1,2}(?:st|nd|rd|th)\b|\d{1,2}/\d{1,2}|\d{4}-\d{2}-\d{2}|"
-    r"in\s+(?:\d+|a|an|a\s+couple\s+of|a\s+few)\s+(?:days?|weeks?|months?)|"
-    r"(?:the\s+)?day\s+after\s+tomorrow|a\s+week\s+from)\b", re.I)
-_OTHER_SOURCE = re.compile(
-    r"\b(?:messages?|texts?|texted|imessages?|e-?mails?|e-?mailed|inbox|mail|notes?|weather|news|"
-    r"stocks?|forecast|contacts?|files?|who|whom)\b", re.I)
-_SECOND_REQUEST = re.compile(
-    r"\b(?:and|then|also|plus|but|after\s+that)\s+(?:please\s+)?"
-    r"(?:what|show|check|list|who|when|where|how|tell|send|email|text|message|remind|"
-    r"delete|remove|cancel|add|set|create|move|reschedule|archive|mark|forward|reply|"
-    r"summari[sz]e|read|open|call)\b", re.I)
-_EXCLUSION_CUE = re.compile(
-    r"\b(?:do\s*n[o']?t|don[’']?t|without|except|excluding|exclude|skip|ignore|"
-    r"leave\s+out|no)\b", re.I)
+    r"(?P<month>" + "|".join(m[:3] + r"[a-z]*" for m in _MONTHS) + r")\b"
+    r"(?:,?\s+(?P<year>\d{4}))?", re.I)
 
 
 def _named_date(text: str, today: date) -> str | None:
     """'October 12' / '12th of Oct' as an exact YYYY-MM-DD, or None. A date that
     has already passed this year is not guessed into next year."""
-    match = _MONTH_DAY.search(text) or _DAY_MONTH.search(text)
+    match = _MONTH_DAY.fullmatch(text) or _DAY_MONTH.fullmatch(text)
     if not match:
+        return None
+    if match.group("month").lower() not in {*_MONTHS, *(m[:3] for m in _MONTHS), "sept"}:
         return None
     month = next((i + 1 for i, name in enumerate(_MONTHS)
                   if name.startswith(match.group("month")[:3].lower())), None)
     try:
-        found = date(today.year, month, int(match.group("day")))
+        found = date(int(match.group("year") or today.year), month, int(match.group("day")))
     except (TypeError, ValueError):
         return None
     return found.isoformat() if found >= today else None
@@ -229,23 +214,52 @@ def _calendar_read_args(text: str, period: str, today: date | None = None) -> di
     or None to hand the request on. Handles one source, one clause, one time scope
     (including 'today and tomorrow' and an exact date), and a reminder exclusion."""
     today = today or datetime.now().date()
-    # Words inside a quoted title ("Do not disturb", "Lunch Oct 5") are a name, not
-    # part of the request, so every completeness check reads the masked sentence.
-    scope = mask_quoted(text)
-    if _OTHER_SOURCE.search(scope) or _SECOND_REQUEST.search(scope):
+    temporal = re.fullmatch(
+        r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:show(?:\s+me)?|check|list)\s+"
+        r"(?P<period>today|tomorrow)[’']s\s+calendar", text.strip(" .!?"), re.I)
+    if temporal:
+        return {"period": temporal.group("period").lower()}
+    # Consume the WHOLE supported request. Anything left over needs semantic
+    # interpretation; keyword blacklists cannot enumerate every second action.
+    match = re.fullmatch(
+        r"(?:please\s+|can\s+you\s+|could\s+you\s+)?(?:"
+        r"what(?:[’']s|\s+is|\s+are)\s+(?:on|in)\s+|"
+        r"(?:show(?:\s+me)?|check|list)\s+|(?:why\s+)?are\s+there\s+no\s+)"
+        r"(?:my\s+|the\s+)?(?:calendar(?:\s+events)?|schedule)\b(?P<tail>.*)",
+        text.strip(" .!?"), re.I)
+    if not match:
         return None
-    reminders_excluded = _reminder_is_excluded(text)
-    if _EXCLUSION_CUE.search(scope) and not reminders_excluded:
-        return None
-    if re.search(r"\btoday\b.*\btomorrow\b|\btomorrow\b.*\btoday\b", scope, re.I):
-        args: dict = {"period": "today and tomorrow"}
+    tail = match.group("tail").strip()
+    # get_upcoming already reads only active commitments, so this exact state
+    # filter is fully represented. Other status predicates remain unresolved.
+    tail = re.sub(r"^that\s+are\s+not\s+cancelled\b|^that\s+are\s+not\s+canceled\b",
+                  "", tail, flags=re.I).strip()
+    exclusion = re.search(
+        r"(?:[,;]\s*|\s+)?(?:do\s+not\s+include|don[’']t\s+include|without|"
+        r"excluding|exclude|skip|leave\s+out|no)\s+reminders?\s*$", tail, re.I)
+    reminders_excluded = exclusion is not None
+    if exclusion:
+        tail = tail[:exclusion.start()].strip()
+    title = re.search(
+        r'''\b(?:named|titled|called)\s+(?:"(?P<double>[^"\n]+)"|“(?P<curly>[^”\n]+)”|'''
+        r"'(?P<single>[^'\n]+)'|`(?P<backtick>[^`\n]+)`)", tail, re.I)
+    query = next((v for v in title.groupdict().values() if v is not None), "") if title else ""
+    if title:
+        tail = (tail[:title.start()] + tail[title.end():]).strip()
+    scope = re.sub(r"^(?:for|on)\s+", "", tail, flags=re.I).strip()
+    if not scope:
+        args: dict = {"days": 7}
+    elif re.fullmatch(r"today\s+and\s+tomorrow|tomorrow\s+and\s+today", scope, re.I):
+        args = {"period": "today and tomorrow"}
     elif (exact := _named_date(scope, today)) is not None:
         args = {"period": exact}
-    elif _UNRESOLVED_DATE.search(scope):
-        return None
+    elif re.fullmatch(r"today|tomorrow|(?:this|next)\s+(?:week|month)", scope, re.I):
+        args = {"period": scope.lower()}
     else:
-        args = _source_args("calendar", text, period)
-    if reminders_excluded:
+        return None
+    if query:
+        args["query"] = query
+    if reminders_excluded or re.search(r"\bcalendar\s+events\b", text, re.I):
         args = {**args, "calendar_only": True}
     return args
 
@@ -254,7 +268,9 @@ _NOT_A_SENDER = re.compile(
     r"\b(?:and|or|then|also|but|yesterday|today|tomorrow|tonight|last|this|next|since|before|after|"
     r"between|during|from|week|weeks|month|months|year|years|day|days|hour|hours|ago|"
     r"delete|remove|trash|archive|mark|move|forward|reply|send|unsubscribe|flag|read|unread|"
-    r"summari[sz]e|that|which|who|where|with|about|over|under|only|just)\b", re.I)
+    r"summari[sz]e|that|which|who|where|with|about|over|under|only|just|accounts?|on|in|at|to|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
+    r"january|february|march|april|may|june|july|august|september|october|november|december)\b", re.I)
 
 
 def _sender_phrase(raw: str) -> str | None:
@@ -263,7 +279,7 @@ def _sender_phrase(raw: str) -> str | None:
     request has more in it than a sender, and must not be flattened into one."""
     candidate = raw.strip()
     if (not candidate or len(candidate.split()) > 4 or _NOT_A_SENDER.search(candidate)
-            or re.search(r"\d{1,2}[/-]\d{1,2}|\d{4}", candidate)):
+            or re.search(r"\d{1,2}[/-]\d{1,2}|\d{4}|[;!?]", candidate)):
         return None
     return candidate
 

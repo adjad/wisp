@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import json
+from dataclasses import replace
 from datetime import date, datetime
 
 import pytest
@@ -195,7 +197,239 @@ def test_a_trailing_pleasantry_does_not_hide_a_prohibition(text):
 
 
 @pytest.mark.parametrize("text", ['Show calendar events named "Do not disturb" tomorrow',
-                                  "Show my calendar events that are not cancelled tomorrow",
                                   'show calendar events named "Lunch Oct 5 and messages" tomorrow'])
 def test_words_inside_a_quoted_title_do_not_stop_a_supported_read(text):
     assert reads.compile_read(text) is not None, text
+
+
+def test_active_calendar_filter_is_already_represented_by_the_tool():
+    assert args("Show my calendar events that are not cancelled tomorrow") == {
+        "period": "tomorrow", "calendar_only": True}
+
+
+@pytest.mark.parametrize("text", [
+    "Do not lock my screen, I am in the middle of a call.",
+    "Do not lock my screen; just explain what that does.",
+    "Do not read my clipboard, it contains private information.",
+    "Do not run a speed test; just explain what it measures.",
+])
+def test_an_explanation_does_not_cancel_a_device_prohibition(text):
+    assert U.is_prohibition(text)
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert decision.force_first_tool is None and not decision.expect_tool_first
+
+
+@pytest.mark.parametrize("text", ['Tell me what "battery" means',
+                                  "Why does my car battery keep dying?"])
+def test_device_discussion_does_not_trigger_a_device_read(text):
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert decision.force_first_tool is None and not decision.expect_tool_first
+
+
+@pytest.mark.parametrize("text", [
+    "Check my calendar tomorrow and lock my screen.",
+    "Check my calendar tomorrow; lock my screen.",
+    "Check my calendar tomorrow, lock my screen.",
+    "Lock my screen and check my calendar tomorrow.",
+])
+def test_calendar_and_device_actions_keep_both_tools_without_partial_dispatch(text):
+    assert reads.compile_read(text) is None
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert {"get_upcoming", "lock_screen"} <= set(decision.tool_subset or ())
+    assert decision.multi_round
+
+
+def test_explicit_calendar_year_is_preserved_at_both_layers():
+    text = "Show my calendar on October 12, 2027"
+    assert reads._calendar_read_args(text, "", date(2026, 9, 30)) == {"period": "2027-10-12"}
+    assert route(text).direct_calls == [("get_upcoming", {"period": "2027-10-12"})]
+
+
+@pytest.mark.parametrize("text", [
+    "Show my calendar from October 12 to October 15",
+    "Show my calendar on October 12 and October 15",
+    "Show my calendar tomorrow and next week",
+])
+def test_unresolved_calendar_scopes_decline_at_both_layers(text):
+    assert reads.compile_read(text) is None
+    assert route(text).direct_calls == []
+
+
+@pytest.mark.parametrize("title", ["Do not disturb", "Lunch Oct 5 and messages"])
+def test_calendar_title_is_passed_verbatim_at_both_layers(title):
+    text = f'Show calendar events named "{title}" tomorrow'
+    expected = {"period": "tomorrow", "query": title, "calendar_only": True}
+    assert args(text) == expected
+    assert route(text).direct_calls == [("get_upcoming", expected)]
+
+
+@pytest.mark.parametrize("tail", ["yesterday", "and delete the old ones", "and archive them",
+                                 "last week", "in my work account", "that are unread", "on Monday",
+                                 "in October", "on 10/12"])
+def test_final_router_inbox_shortcut_declines_unhandled_modifiers(tail):
+    text = "Check my inbox for receipts from Apple " + tail
+    assert R._email_search_query(text) is None
+    assert route(text).direct_calls == []
+
+
+def test_final_router_plain_inbox_search_keeps_its_shortcut():
+    assert route("Check my inbox for receipts from Apple").direct_calls == [
+        ("view_emails", {"query": "Apple", "count": 10, "strict_match": True})]
+
+
+@pytest.fixture
+def inert_endpoint(monkeypatch, tmp_path):
+    """Real /agent, routing and loop; no inference engine or native tool bodies."""
+    import httpx
+    from service import main
+    from service.agent import loop
+    from service.memory import context
+    from service.memory.store import SessionStore
+    from service.tools.registry import REGISTRY
+    from service.safety.policy import Tier, Decision
+
+    streams, calls = [], []
+
+    class Client:
+        async def ensure_only(self, *_args, **_kwargs):
+            pass
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("Unexpected internal model call")
+
+        async def stream_events(self, _model, messages, **kwargs):
+            streams.append({"messages": messages, **kwargs})
+            yield {"kind": "final", "message": {"role": "assistant", "content": "Synthetic explanation."}}
+
+    async def no_engine():
+        pass
+
+    for name, original in tuple(REGISTRY.items()):
+        async def tool(_name=name, **kwargs):
+            calls.append((_name, kwargs))
+            return "Synthetic tool result."
+        monkeypatch.setitem(REGISTRY, name, replace(original, func=tool))
+    store = SessionStore(tmp_path / "endpoint.db")
+    monkeypatch.setattr(main, "client", Client(), raising=False)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(context, "store", store)
+    monkeypatch.setattr(main, "ensure_omlx", no_engine)
+    config = lambda: {"tool_retrieval": {"provider": "lexical"}}
+    monkeypatch.setattr(main, "models_config", config)
+    monkeypatch.setattr(R, "models_config", config)
+    monkeypatch.setattr(loop, "audit", lambda *_a, **_k: None)
+    monkeypatch.setattr(loop, "decide", lambda *_a, **_k: Decision(Tier.ALLOW, "synthetic only"))
+    monkeypatch.setattr(reads, "decide", lambda *_a, **_k: Decision(Tier.ALLOW, "synthetic only"))
+
+    async def request(prompt):
+        # ASGI transport performs HTTP without a socket or app lifespan/native
+        # startup. Root conftest isolates every import-time Wisp store.
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                     base_url="http://fixture.invalid") as client:
+            response = await client.post("/agent", json={"prompt": prompt, "debug": False})
+        assert response.status_code == 200
+        events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+        assert not [ev for ev in events if ev["type"] == "error"], events
+        return events
+
+    return request, streams, calls
+
+
+@pytest.mark.parametrize("text", [
+    "Do not lock my screen, I am in the middle of a call.",
+    "Do not lock my screen; just explain what that does.",
+    "Do not read my clipboard, it contains private information.",
+    "Do not run a speed test; just explain what it measures.",
+    'Tell me what "battery" means', "Why does my car battery keep dying?",
+])
+def test_actual_http_device_denial_or_discussion_executes_nothing(inert_endpoint, text):
+    request, streams, calls = inert_endpoint
+    asyncio.run(request(text))
+    assert calls == []
+    assert streams and all(s.get("tool_choice", "auto") == "auto" for s in streams)
+
+
+@pytest.mark.parametrize("text", ["Check my calendar tomorrow and lock my screen.",
+                                  "Check my calendar tomorrow; lock my screen."])
+def test_actual_http_calendar_compound_reaches_interpretation_with_both_tools(inert_endpoint, text):
+    request, streams, calls = inert_endpoint
+    asyncio.run(request(text))
+    assert calls == []
+    assert streams and streams[0].get("tool_choice", "auto") == "auto"
+    offered = {tool["function"]["name"] for tool in streams[0]["tools"]}
+    assert {"get_upcoming", "lock_screen"} <= offered
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("What's my battery level", ("get_battery_status", {})),
+    ('Show calendar events named "Do not disturb" tomorrow',
+     ("get_upcoming", {"period": "tomorrow", "query": "Do not disturb", "calendar_only": True})),
+    ("Show my calendar on October 12, 2027", ("get_upcoming", {"period": "2027-10-12"})),
+])
+def test_actual_http_positive_controls_detect_the_real_dispatch(inert_endpoint, text, expected):
+    request, _streams, calls = inert_endpoint
+    asyncio.run(request(text))
+    assert calls == [expected]
+
+
+@pytest.mark.parametrize("text", ["Check my inbox for receipts from Apple yesterday",
+                                  "Check my inbox for receipts from Apple and delete the old ones",
+                                  "Show my calendar on October 12 and October 15"])
+def test_actual_http_unresolved_scope_reaches_the_model_without_partial_reads(inert_endpoint, text):
+    request, streams, calls = inert_endpoint
+    asyncio.run(request(text))
+    assert calls == []
+    assert streams and any(text in message.get("content", "") for message in streams[0]["messages"])
+
+
+@pytest.mark.parametrize("text,expected_title", [
+    ('Show calendar events named "Do not disturb" tomorrow', "Do not disturb"),
+    ("Show my calendar on October 12, 2027", "Exact future year"),
+])
+def test_actual_calendar_read_filters_temporary_store_by_title_and_exact_year(monkeypatch, tmp_path, text, expected_title):
+    from unittest.mock import AsyncMock
+    from service.assistant.store import AssistantStore
+    from service.assistant import sync_status
+    from service.tools import assistant_tools, timeranges
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    store = AssistantStore(tmp_path / "calendar.db")
+    store.sync_source("calendar", [
+        {"source_id": "title", "kind": "event", "title": "Do not disturb",
+         "when_ts": datetime(2026, 10, 1, 12).timestamp()},
+        {"source_id": "other", "kind": "event", "title": "Unrelated calendar entry",
+         "when_ts": datetime(2026, 10, 1, 13).timestamp()},
+        {"source_id": "wrong-year", "kind": "event", "title": "Current year decoy",
+         "when_ts": datetime(2026, 10, 12, 12).timestamp()},
+        {"source_id": "exact-year", "kind": "event", "title": "Exact future year",
+         "when_ts": datetime(2027, 10, 12, 12).timestamp()},
+    ])
+    store.sync_source("reminders", [{"source_id": "reminder", "kind": "reminder",
+        "title": "Do not disturb reminder", "when_ts": datetime(2026, 10, 1, 14).timestamp()}])
+    ready = {"sources": [{"id": "calendar", "label": "Calendar", "state": "available"},
+                          {"id": "reminders", "label": "Reminders", "state": "available"}]}
+    monkeypatch.setattr(assistant_tools, "assistant_store", store)
+    monkeypatch.setattr(assistant_tools.time, "time", lambda: NOW.timestamp())
+    monkeypatch.setattr(reads, "datetime", Clock)
+    monkeypatch.setattr(timeranges, "datetime", Clock)
+    monkeypatch.setattr(sync_status, "ensure_sources", AsyncMock(return_value=ready))
+
+    async def emit(_event):
+        pass
+
+    try:
+        result = asyncio.run(reads.execute_read(reads.compile_read(text), emit))
+        assert result.status == "completed"
+        assert expected_title in result.response
+        assert "Unrelated calendar entry" not in result.response
+        assert "Current year decoy" not in result.response
+        assert "Do not disturb reminder" not in result.response
+    finally:
+        store._db.close()

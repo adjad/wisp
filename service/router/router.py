@@ -650,6 +650,30 @@ _DEVICE_WRITE_RE = re.compile(
 _CONDITIONAL_RE = re.compile(
     r"\b(?:if|unless|otherwise|only\s+if|after\s+confirming)\b", re.I)
 
+# Retrieval keywords identify a domain, not permission to execute it. A direct
+# call must consume an entire affirmative request with no unexplained tail.
+_DEVICE_REQUEST_PREFIX = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+_DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
+                                     r"(?:\s+(?:please|now))?[.!?\s]*", re.I))
+                    for name, body in (
+    ("get_battery_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
+     r"how(?:'s|\s+is)\s+my\s+battery(?:\s+doing)?|how\s+much\s+battery\s+do\s+i\s+have|"
+     r"(?:show|check|tell\s+me)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?)"),
+    ("get_volume", r"(?:what(?:'s|\s+is)\s+(?:my|the|the\s+current)\s+volume(?:\s+(?:at|level))?|"
+     r"(?:show|check)\s+(?:my|the)\s+volume|am\s+i\s+muted)"),
+    ("clipboard_read", r"(?:what(?:'s|\s+is)\s+on\s+my\s+clipboard|what\s+did\s+i\s+copy|"
+     r"(?:read|show|check)\s+(?:my|the)\s+clipboard(?:\s+contents)?)"),
+    ("lock_screen", r"lock\s+(?:my|the)\s+(?:screen|mac|computer)"),
+    ("run_speed_test", r"(?:run|do|start)\s+(?:a\s+)?(?:speed\s?test|(?:internet|network|wi-?fi)\s+speed\s?test)"),
+)]
+
+
+def _device_request_clauses(text: str) -> list[str]:
+    return [part.strip() for part in re.split(
+        r"[;.!?]|(?:,\s*|\s+(?:and|but|then|also)\s+)(?=(?:please\s+|just\s+)?"
+        r"(?:lock|read|show|check|list|run|do|start|what|how|tell)\b)",
+        mask_quoted(text), flags=re.I) if part.strip()]
+
 
 def _direct_device_call(t: str) -> list[tuple[str, dict]]:
     """The one zero-argument device tool this request unambiguously names.
@@ -662,44 +686,15 @@ def _direct_device_call(t: str) -> list[tuple[str, dict]]:
     """
     if _DEVICE_WRITE_RE.search(t) or _CONDITIONAL_RE.search(t):
         return []
-    hits = _matched_device_tools(t)
+    hits = [name for name, rx in _DEVICE_REQUESTS if rx.fullmatch(t.strip())]
     return [(hits[0], {})] if len(hits) == 1 else []
 
 
 def _matched_device_tools(t: str) -> list[str]:
     if _DEVICE_WRITE_RE.search(t) or _CONDITIONAL_RE.search(t):
         return []
-    return [name for name, rx in _DIRECT_DEVICE_PATTERNS if rx.search(t)]
-
-
-# Forward-looking window for a calendar-only read, resolved in PYTHON.
-# tools/timeranges.py states the rule this follows: Wisp resolves dates, the
-# model does not — it is "reliably wrong" at date arithmetic, and a wrong
-# boundary is invisible in the output.
-_CALENDAR_WINDOW_PATTERNS: list[tuple[re.Pattern, int]] = [
-    (re.compile(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", re.I), 1),
-    (re.compile(r"\btomorrow\b", re.I), 2),
-    (re.compile(r"\bthis\s+weekend\b", re.I), 7),
-    (re.compile(r"\bthis\s+week\b", re.I), 7),
-    (re.compile(r"\b(?:next|this\s+coming)\s+week\b", re.I), 14),
-    (re.compile(r"\b(?:this|next)\s+month\b", re.I), 30),
-]
-
-
-def _calendar_window_days(t: str) -> int:
-    """Forward window in days for a calendar-only read. An unqualified read
-    uses the tool's widest supported horizon instead of silently meaning seven
-    days.
-
-    Takes the WIDEST matching window when a request names more than one
-    ("today and tomorrow"). A wider window is a superset, and get_upcoming tags
-    every row relative to today, so the narration can still separate them. The
-    opposite error — too narrow — silently drops events the user asked for.
-    """
-    hits = [d for rx, d in _CALENDAR_WINDOW_PATTERNS if rx.search(t)]
-    for match in re.finditer(r"\bnext\s+(\d+)\s+(days?|weeks?)\b", t, re.I):
-        hits.append(min(60, max(1, int(match[1]) * (7 if match[2].lower().startswith('week') else 1))))
-    return max(hits) if hits else 60
+    return list(dict.fromkeys(name for part in _device_request_clauses(t)
+                              for name, rx in _DEVICE_REQUESTS if rx.fullmatch(part)))
 
 
 # "summarize my inbox" and nothing else. Anchored start-to-end on purpose:
@@ -774,7 +769,9 @@ def _email_search_query(text: str) -> str | None:
     vendor = re.fullmatch(
         r"(?:purchases?|orders?|receipts?|transactions?|charges?)\s+from\s+(.+)",
         query, re.I)
-    return (vendor.group(1) if vendor else query).strip()
+    # Import locally to avoid reads -> router's source-exclusion dependency cycle.
+    from service.workflows.reads import _sender_phrase
+    return _sender_phrase(vendor.group(1) if vendor else query)
 
 
 _PRIVATE_QUERY_PREFIX = (
@@ -3913,7 +3910,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     if not subset:
         return _merge_claims(claims)
     # A pure calendar LOOKUP and nothing else -> call get_upcoming here, with the
-    # window resolved in Python (see _calendar_window_days). Every condition
+    # whole scope resolved in Python (see _calendar_read_args). Every condition
     # below is load-bearing:
     #   - `domains == ["calendar"]` — a compound read ("my messages and
     #     calendar") needs the model to call the other sources too, and step 0
@@ -3951,10 +3948,14 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         return d
     if (domains == ["calendar"] and not claims and not writing and not multi
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
-        days = _calendar_window_days(t)
-        return _mk_direct([("get_upcoming", {"days": days} if days else {})],
-                          "calendar lookup -> get_upcoming (router-direct"
-                          + (f", {days}d)" if days else ")"))
+        from service.workflows.reads import _calendar_read_args
+        args = _calendar_read_args(t, "")
+        if args is not None:
+            # Only an unqualified agenda keeps the existing broad horizon.
+            if args.get("days") == 7:
+                args = {**args, "days": 60}
+            return _mk_direct([("get_upcoming", args)],
+                              "complete calendar lookup -> get_upcoming (router-direct)")
     # Add each matched domain's write tools when the request actually writes.
     # This is the whole fix: a compound "summarize my email and send it to X"
     # now carries send_email alongside the summarizers, instead of being handed
@@ -4502,6 +4503,13 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.required_tool_groups = (frozenset({"complete_reminder"}),)
         d.forbidden_tools = frozenset({"cancel_event", "update_event"})
         return d
+    # A complete quoted-title lookup must not acquire extra domains from the
+    # literal title (e.g. "Lunch Oct 5 and messages").
+    from service.workflows.reads import _calendar_read_args
+    calendar_args = _calendar_read_args(t, "")
+    if calendar_args is not None and calendar_args.get("query"):
+        return _mk_direct([("get_upcoming", calendar_args)],
+                          "complete titled calendar lookup -> get_upcoming (router-direct)")
     if query := _email_search_query(t):
         return _mk_direct(
             [("view_emails", {"query": query, "count": 10,
@@ -4575,7 +4583,10 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # own it keeps its existing unscoped/direct-dispatch route below (which
     # has its own `_direct_device_call` fast path this claim cannot express).
     # `_DATA_NOUN_RE` mirrors that route's own gate.
-    if (_SYSTEM_CONTROL_RE.search(t) and not _DATA_NOUN_RE.search(t)
+    if _DATA_NOUN_RE.search(t) and (hits := _matched_device_tools(t)):
+        _pre.append(_Claim("device", hits, "affirmative device clause -> scoped tools",
+                           expect=False, light=False, multi=True))
+    elif (_SYSTEM_CONTROL_RE.search(t) and not _DATA_NOUN_RE.search(t)
             and (direct := _direct_device_call(t))):
         _pre.append(_Claim("device", [n for n, _ in direct],
                            f"device control -> {direct[0][0]} (router-direct)",
@@ -6123,7 +6134,24 @@ async def _deliberate_decision(text: str, request: "_WebRequest", why: str) -> R
         public_reference=False, inherited=False, clarification=None)
     # Finalize on the masked sentence: the execution contract re-derives forced
     # tools from the text, and quoted words must not re-arm what was just disarmed.
-    return _finalize(decision, mask_quoted(text), web_request=private)
+    return _interpretation_only(_finalize(decision, mask_quoted(text), web_request=private))
+
+
+def _interpretation_only(decision: RouteDecision) -> RouteDecision:
+    """Keep the menu/exclusions but never re-arm a declined deterministic call.
+
+    An unmet required group implicitly forces a tool in the agent loop too.
+    """
+    decision.direct_calls = []
+    decision.force_first_tool = None
+    decision.expect_tool_first = False
+    decision.required_tool_groups = ()
+    decision.tool_argument_bindings = {}
+    decision.conditional_tools = ()
+    decision.reminder_action = ""
+    decision.narration_after = frozenset()
+    decision.multi_round = True
+    return decision
 
 
 async def route(text: str, *,
@@ -6142,6 +6170,15 @@ async def route(text: str, *,
     if is_prohibition(text) and any(rx.search(text) for _, rx in _DIRECT_DEVICE_PATTERNS):
         return await _deliberate_decision(
             text, request, "the request prohibits a device action rather than asking for it")
+    clauses = _device_request_clauses(text)
+    device_tools = _matched_device_tools(text)
+    if len(clauses) > 1 and device_tools:
+        from service.workflows.reads import _calendar_read_args
+        if any(_calendar_read_args(clause, "") is not None for clause in clauses):
+            decision = rule_route(text) or _mk_scoped([], "calendar and device interpretation")
+            decision.tool_subset = list(dict.fromkeys(
+                [*(decision.tool_subset or ()), "get_upcoming", *device_tools]))
+            return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
     if (private_read := _strict_private_read_decision(text)) is not None:
