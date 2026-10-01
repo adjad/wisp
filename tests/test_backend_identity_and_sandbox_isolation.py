@@ -171,11 +171,12 @@ def test_the_cleanup_trap_survives_an_unset_server_pid():
     function = re.search(r"cleanup\(\) \{.*?\n\}", text, re.S).group(0)
     script = textwrap.dedent(f"""
         set -euo pipefail
-        sleep 30 & BACKEND_PID=$!
+        # Builtins only: the CI sandbox forbids executing external programs such as sleep.
+        while :; do :; done & BACKEND_PID=$!
         SANDBOX_PID=""
         {function}
         cleanup
-        sleep 0.2
+        wait "$BACKEND_PID" 2>/dev/null || true
         if kill -0 "$BACKEND_PID" 2>/dev/null; then echo STILL_RUNNING; else echo STOPPED; fi
     """)
     result = _bash(script)
