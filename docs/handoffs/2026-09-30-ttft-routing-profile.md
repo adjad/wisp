@@ -14,7 +14,7 @@ availability, descriptions and in-place alias edits remain visible.
 The Orchestrator acknowledged this worker as sole writer for only:
 
 - `service/router/reranker.py`, `lexical_shortlist` only;
-- `tests/test_lexical_routing_reuse.py`;
+- `tests/test_lexical_tool_retrieval.py`, preserving its existing tests;
 - `scripts/bench_routing_overhead.py`;
 - this handoff.
 
@@ -169,7 +169,17 @@ The first sandboxed full regression preflight encountered **14 failures** in
 `test_browser_transport_native.py`: local AF_UNIX binds were rejected with
 `PermissionError: Operation not permitted`, and dependent signed-fixture
 activations timed out. These are disposable fixtures; no browser or Keychain
-is used. This is not recorded as a regression pass. Final exact-SHA mechanical
+is used. The sandboxed run passed 137/140 modules; peer-attribution fixtures also
+failed under the sandbox. A permitted pinned-runtime rerun cleared both native
+fixture modules and passed 139/140 modules, exposing the remaining genuine
+classification failure: the new regression filename was absent from the safe
+full-profile manifest. Neither run is recorded as a regression pass.
+
+The Orchestrator assigned this worker the sole repair and acknowledged moving
+all new inert cases into the existing classified lexical test module, preserving
+its original tests and leaving the shared manifest unchanged. Candidate
+`b95d012aa6fd6f13f4c75341535b54ad0e1abb6c` is superseded by that follow-up repair;
+its evidence cannot approve the new SHA. Final exact-SHA mechanical
 results, environment reruns and configured CI belong in the PR/coordinator
 handoff after candidate freeze; no failed or unavailable check is a CI pass.
 
