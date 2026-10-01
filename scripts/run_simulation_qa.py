@@ -619,6 +619,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/port-guard-contract", [port_guard]),
+        (
             "native/reminders-policy-compile",
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
