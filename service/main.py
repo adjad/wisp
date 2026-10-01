@@ -1838,12 +1838,14 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     Calendar and Reminders syncing independently can't wipe each other out."""
     raw_source = body.get("source", "calendar")
     aliases = {"calendar": "calendar", "apple calendar": "calendar", "apple_calendar": "calendar",
-               "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders",
-               "wisp": "manual", "manual": "manual"}
+               "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders"}
+    # Only the two native stores are authoritative replace-sets. "manual" holds the
+    # user's own Wisp reminders, which exist nowhere upstream: accepting it here let
+    # {"source": "manual", "events": []} delete every one of them.
     source = (aliases.get(raw_source.strip(" \t\r\n").lower())
               if isinstance(raw_source, str) and raw_source.isascii() else None)
     if source is None:
-        raise HTTPException(status_code=422, detail="source must be Calendar, Reminders, or Wisp")
+        raise HTTPException(status_code=422, detail="source must be Calendar or Reminders")
     diagnostics = body.get("diagnostics") or {}
     if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
             or diagnostics.get("available") is False):

@@ -19,6 +19,55 @@ GOOGLE = "AIza" + "Sy" * 17 + "x"
 HF = "hf_" + "abCD12" * 7
 SLACK = "xoxb-" + "1234567890-" * 3
 JWT = "eyJ" + "hbGciOiJIUzI1NiJ9" + ".eyJ" + "zdWIiOiIxMjM0NTY3ODkwIn0" + ".abcdefghij_KLMNOP"
+OPAQUE = "syntheticLocal" + "Credential0123456789"
+
+
+@pytest.mark.parametrize("label", ["api_key", "secret-key", "access_token", "auth-token", "password"])
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quoted_json_and_yaml_assignments_preserve_labels(label, quote):
+    text = f"{quote}{label}{quote}: {quote}{OPAQUE}{quote}"
+    expected = f"{quote}{label}{quote}: {quote}{PLACEHOLDER}{quote}"
+    assert scrub(text) == (expected, 1)
+    assert scrub(expected) == (expected, 0)
+
+
+@pytest.mark.parametrize("depth", [8, 9, 10])
+@pytest.mark.parametrize("container", [dict, list, tuple])
+def test_audit_depth_budget_never_returns_an_unscrubbed_subtree(depth, container):
+    value = OPENROUTER
+    for _ in range(depth):
+        value = {"nested": value} if container is dict else container([value])
+    original = json.dumps(value)
+    assert OPENROUTER not in json.dumps(scrub_obj(value))
+    assert PLACEHOLDER in json.dumps(scrub_obj(value))
+    assert json.dumps(value) == original
+
+
+def test_actual_audit_writer_scrubs_quoted_fields_and_deep_subtrees(tmp_path, monkeypatch):
+    monkeypatch.setattr(audit_module, "AUDIT_DIR", tmp_path)
+    monkeypatch.setattr(audit_module, "AUDIT_LOG", tmp_path / "audit.jsonl")
+    deep = OPENROUTER
+    for _ in range(10):
+        deep = {"nested": [deep]}
+    audit_module.audit("allow", tool="fixture", args={"json": json.dumps({"api_key": OPAQUE}),
+                                                     "deep": deep, "safe": "kept"})
+    text = (tmp_path / "audit.jsonl").read_text()
+    records = [json.loads(line) for line in text.splitlines()]
+    assert len(records) == 1
+    assert records[0]["args"]["safe"] == "kept"
+    assert OPAQUE not in text and OPENROUTER not in text and PLACEHOLDER in text
+
+
+def test_actual_turn_store_and_nonempty_fts_scrub_quoted_json(tmp_path):
+    from service.memory.store import SessionStore
+    sessions = SessionStore(tmp_path / "quoted-sessions.db")
+    sid = sessions.create_session()
+    for role in ("user", "assistant"):
+        sessions.add_turn(sid, role, json.dumps({"api_key": OPAQUE}))
+    rows = sessions._db.execute("SELECT content FROM turns").fetchall()
+    fts = sessions._db.execute("SELECT text FROM memory_turn_fts").fetchall()
+    assert len(rows) == len(fts) == 2
+    assert all(OPAQUE not in row[0] and PLACEHOLDER in row[0] for row in rows + fts)
 
 
 @pytest.mark.parametrize("secret", [OPENROUTER, OPENAI, ANTHROPIC, GITHUB, AWS, GOOGLE, HF, SLACK, JWT])
@@ -100,21 +149,28 @@ def test_turn_store_never_persists_a_credential(tmp_path):
     assert all(OPENROUTER not in " ".join(map(str, r)) for r in fts)
 
 
-def test_agent_answers_a_key_handoff_without_a_model_and_stores_nothing(monkeypatch):
+@pytest.mark.parametrize("prompt,secret", [(f"/connect openrouter {OPENROUTER}", OPENROUTER),
+                                          (json.dumps({"api_key": OPAQUE}), OPAQUE)])
+def test_agent_answers_a_key_handoff_without_a_model_and_stores_nothing(monkeypatch, tmp_path, prompt, secret):
     from fastapi.testclient import TestClient
     from service import main
+    from service.memory.store import SessionStore
     import types
 
     def no_model(*_a, **_k):
         raise AssertionError("a key handoff must not reach routing or a model")
     monkeypatch.setattr(main, "run_agent", no_model, raising=False)
+    monkeypatch.setattr(main, "route", no_model)
     monkeypatch.setattr(main, "client", types.SimpleNamespace(), raising=False)
+    monkeypatch.setattr(main, "store", SessionStore(tmp_path / "handoff.db"))
     with TestClient(main.app).stream("POST", "/agent",
-                                     json={"prompt": f"/connect openrouter {OPENROUTER}"}) as response:
+                                     json={"prompt": prompt}) as response:
         events = [json.loads(line[6:]) for line in response.iter_lines() if line.startswith("data: ")]
     kinds = [e["type"] for e in events]
     assert kinds == ["session", "text", "done"]
-    assert events[1]["text"] == HANDOFF_NOTICE and OPENROUTER not in json.dumps(events)
+    assert events[1]["text"] == HANDOFF_NOTICE and secret not in json.dumps(events)
     sid = events[0]["id"]
     stored = " ".join(t["content"] for t in main.store.turns_from(sid, 0))
-    assert OPENROUTER not in stored and PLACEHOLDER in stored
+    assert secret not in stored and PLACEHOLDER in stored
+    fts = main.store._db.execute("SELECT text FROM memory_turn_fts").fetchall()
+    assert len(fts) == 2 and secret not in json.dumps([tuple(row) for row in fts])
