@@ -9,6 +9,9 @@ context truncation, tool calls written as text, and a missing ``usage`` block.
 import asyncio
 import itertools
 import json
+import socket
+import subprocess
+from copy import deepcopy
 
 import httpx
 import pytest
@@ -129,11 +132,65 @@ class FakeEngine:
         return "".join(out).encode()
 
 
+class SixCharactersPerToken(FakeEngine):
+    """Auditor counterexample: no universal characters-to-tokens lower bound."""
+
+    @staticmethod
+    def _tokens(messages):
+        return sum(len(str(m.get("content") or "")) for m in messages) // 6 + 8 * len(messages)
+
+    def complete(self, body):
+        if self._tokens(body["messages"]) > self.ctx and not self.reject_over_ctx:
+            body = {**body, "messages": [dict(m) for m in body["messages"]]}
+            for message in body["messages"]:
+                message["content"] = str(message.get("content") or "")[-max(0, (self.ctx - 8) * 6):]
+        return super().complete(body)
+
+
+class ArgumentEngine(FakeEngine):
+    """Vary returned arguments independently in plain and fragmented calls."""
+
+    def __init__(self, *, arguments, phase, **knobs):
+        super().__init__(**knobs)
+        self.arguments, self.phase = arguments, phase
+
+    def complete(self, body):
+        code, payload, _ = super().complete({**body, "stream": False})
+        choice = (payload.get("choices") or [{}])[0]
+        message = choice.get("message") or {}
+        calls = message.get("tool_calls") or []
+        is_stream = bool(body.get("stream"))
+        if calls and is_stream == (self.phase == "stream"):
+            calls[0]["function"]["arguments"] = self.arguments
+        if is_stream and code == 200:
+            return code, self._sse(message, choice.get("finish_reason"), payload.get("usage")), True
+        return code, payload, False
+
+
+INVALID_ARGUMENTS = [
+    pytest.param('{"x":17,"y":23}', id="wrong-keys"),
+    pytest.param('{"a":17}', id="missing-b"),
+    pytest.param('{"b":23}', id="missing-a"),
+    pytest.param('{"a":17,"b":23,"extra":0}', id="extra-key"),
+    pytest.param('{"a":17.0,"b":23}', id="float-a"),
+    pytest.param('{"a":17,"b":23.0}', id="float-b"),
+    pytest.param('{"a":true,"b":23}', id="bool-a"),
+    pytest.param('{"a":17,"b":true}', id="bool-b"),
+    pytest.param('{"a":"17","b":23}', id="string"),
+    pytest.param('{"a":null,"b":23}', id="null-value"),
+    pytest.param('[17,23]', id="array"),
+    pytest.param('null', id="null-object"),
+    pytest.param('{"a":17,"b":', id="malformed-json"),
+    pytest.param('{"a":18,"b":23}', id="wrong-operand"),
+]
+
+
 _PORTS = itertools.count(18100)
 _ENGINES: dict[int, FakeEngine] = {}
 
 
 async def _dispatch(request: httpx.Request) -> httpx.Response:
+    assert request.url.host == "127.0.0.1", "Only the synthetic loopback engine is allowed"
     engine = _ENGINES.get(request.url.port)
     if engine is None:
         raise httpx.ConnectError("connection refused", request=request)
@@ -144,6 +201,18 @@ async def _dispatch(request: httpx.Request) -> httpx.Response:
 def engine_factory(monkeypatch):
     """Route every httpx request to the fake engines; open no sockets."""
     from service.inference.attributed_transport import CredentialTransport
+    from service.config import credentials, provider_credentials
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Qualification fixtures forbid real sockets, processes and credentials")
+
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(config, "omlx_api_key", forbidden)
+    monkeypatch.setattr(config, "_credential", forbidden)
+    monkeypatch.setattr(credentials, "resolve", forbidden)
+    monkeypatch.setattr(provider_credentials, "resolve_keychain", forbidden)
 
     async def plain(self, request):
         return await _dispatch(request)
@@ -153,8 +222,8 @@ def engine_factory(monkeypatch):
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", plain)
     monkeypatch.setattr(CredentialTransport, "handle_async_request", credentialed)
 
-    def make(**knobs):
-        engine = FakeEngine(**knobs)
+    def make(*, engine_type=FakeEngine, **knobs):
+        engine = engine_type(**knobs)
         _ENGINES[engine.port] = engine
         ep = endpoint_from_config("local_provider", {
             "enabled": True, "provider": "openai-compatible", "base_url": f"http://127.0.0.1:{engine.port}",
@@ -226,8 +295,8 @@ def test_recorded_window_never_exceeds_a_rejecting_engines_real_window(engine_fa
 def test_recorded_window_without_usage_never_exceeds_the_real_window(engine_factory, ctx):
     _, ep = engine_factory(ctx=ctx, usage=False)
     report = run(q.qualify(ep, "fake-model", 16384))
-    assert report.effective_context <= ctx, report.as_dict()
-    assert report.qualified == (report.effective_context >= q.MIN_TOOL_CONTEXT)
+    assert report.effective_context == 0, report.as_dict()
+    assert not report.qualified
 
 
 @pytest.mark.parametrize("knobs,wording", [({"ctx": 4096}, "silently cutting prompts to about 4,096"),
@@ -248,12 +317,45 @@ def test_a_smaller_claim_is_never_recorded_above_itself(engine_factory):
     assert report.qualified and report.effective_context <= 12000
 
 
-def test_missing_usage_falls_back_to_recalling_text_from_the_start(engine_factory):
-    _, good = engine_factory(usage=False)
-    assert run(q.qualify(good, "fake-model", 16384)).qualified
-    _, cut = engine_factory(usage=False, ctx=2048)
-    report = run(q.qualify(cut, "fake-model", 16384))
-    assert not report.qualified and report.effective_context < q.MIN_TOOL_CONTEXT
+@pytest.mark.parametrize("engine_type,ctx", [(FakeEngine, 1_000_000), (SixCharactersPerToken, 7000)])
+def test_missing_usage_cannot_establish_a_verified_window(engine_factory, engine_type, ctx):
+    engine, ep = engine_factory(engine_type=engine_type, usage=False, ctx=ctx)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    assert not report.qualified and report.effective_context == 0, report.as_dict()
+    assert "token usage" in report.checks[0].detail and "verify" in report.hint
+    assert not any(request.get("tools") for request in engine.requests)
+
+
+def _assert_argument_rejection(report, phase):
+    assert not report.qualified, report.as_dict()
+    check = next((c for c in report.checks if c.id == ("stream" if phase == "stream" else "call")), None)
+    if check is None:
+        # The production stream parser rejects malformed/nonobject arguments
+        # before qualification can append its schema check.
+        assert phase == "stream"
+        error = next(c for c in report.checks if c.id == "error")
+        assert not error.ok and "IncompleteStreamError" in error.detail
+    else:
+        assert not check.ok
+
+
+@pytest.mark.parametrize("phase", ["nonstream", "stream"])
+@pytest.mark.parametrize("arguments", INVALID_ARGUMENTS)
+def test_invalid_arguments_cannot_qualify_in_either_call_path(engine_factory, phase, arguments):
+    engine, ep = engine_factory(engine_type=ArgumentEngine, arguments=arguments, phase=phase)
+    report = run(q.qualify(ep, "fake-model", 16384))
+    _assert_argument_rejection(report, phase)
+    results = [m for request in engine.requests for m in request["messages"] if m["role"] == "tool"]
+    # A stream-only failure follows a separate, valid nonstream call. Invalid
+    # nonstream calls must never receive the fabricated successful result.
+    assert len(results) == (1 if phase == "stream" else 0)
+
+
+@pytest.mark.parametrize("phase", ["nonstream", "stream"])
+@pytest.mark.parametrize("arguments", ['{"b":23,"a":17}', '{"a":23,"b":17}'])
+def test_valid_named_integer_operands_work_in_both_call_paths(engine_factory, phase, arguments):
+    _, ep = engine_factory(engine_type=ArgumentEngine, arguments=arguments, phase=phase)
+    assert run(q.qualify(ep, "fake-model", 16384)).qualified
 
 
 def test_tool_calls_written_as_text_are_diagnosed(engine_factory):
@@ -406,6 +508,70 @@ def test_the_client_refuses_tools_for_an_unqualified_local_provider(overlay):
 
 
 # ------------------------------------------------------------ server connect
+
+@pytest.fixture
+def actual_connection(overlay, engine_factory, monkeypatch):
+    """Actual server, qualification, config setter and returned settings.
+
+    conftest isolates Wisp storage and the quarantine gate before this fixture;
+    engine_factory blocks effects and overlay replaces only storage reads/writes.
+    """
+    import service.main as main
+    monkeypatch.setattr(main, "set_local_provider", config.set_local_provider)
+    monkeypatch.setattr(main, "_qualification_cache", {})
+    monkeypatch.setattr(main, "_local_provider_operation_generation", 0)
+    return main
+
+
+def _actual_body(engine, roles, context=16384):
+    return {"base_url": f"http://127.0.0.1:{engine.port}", "api_prefix": "/v1",
+            "model_id": "fake-model", "context_window": context, "roles": roles}
+
+
+@pytest.mark.parametrize("roles", [["agent"], ["coding"]])
+@pytest.mark.parametrize("engine_type,ctx,usage,qualified,verified", [
+    (FakeEngine, 8191, True, False, 7936),
+    (FakeEngine, 8192, True, True, 8192),
+    (FakeEngine, 16384, True, True, 16384),
+    (FakeEngine, 1_000_000, False, False, 0),
+    (SixCharactersPerToken, 7000, False, False, 0),
+])
+def test_actual_connect_save_requires_measured_context(
+        actual_connection, overlay, engine_factory, roles, engine_type, ctx, usage, qualified, verified):
+    main = actual_connection
+    engine, _ = engine_factory(engine_type=engine_type, ctx=ctx, usage=usage)
+    before = deepcopy(overlay)
+    body = _actual_body(engine, roles)
+    if qualified:
+        response = run(main.connect_local_provider_inference(body))
+        assert response["tools_qualified"] and response["qualified_context"] == verified
+        target = role_target(roles[0])
+        assert "tools" in target.capabilities and target.context_window == verified
+        assert target.endpoint.name == "local_provider"
+    else:
+        with pytest.raises(main.HTTPException) as error:
+            run(main.connect_local_provider_inference(body))
+        assert error.value.status_code == 400
+        assert overlay == before  # actual save was never reached
+    report = next(iter(main._qualification_cache.values()))[1]
+    assert report.qualified == qualified and report.effective_context == verified
+
+
+@pytest.mark.parametrize("phase", ["nonstream", "stream"])
+@pytest.mark.parametrize("roles", [["agent"], ["coding"]])
+@pytest.mark.parametrize("arguments", INVALID_ARGUMENTS)
+def test_actual_connect_save_rejects_invalid_arguments(
+        actual_connection, overlay, engine_factory, roles, phase, arguments):
+    main = actual_connection
+    engine, _ = engine_factory(engine_type=ArgumentEngine, arguments=arguments, phase=phase)
+    before = deepcopy(overlay)
+    with pytest.raises(main.HTTPException) as error:
+        run(main.connect_local_provider_inference(_actual_body(engine, roles)))
+    assert error.value.status_code == 400
+    assert overlay == before
+    report = next(iter(main._qualification_cache.values()))[1]
+    _assert_argument_rejection(report, phase)
+
 
 def _connect(main, engine, roles, monkeypatch, context=16384):
     saved = {}

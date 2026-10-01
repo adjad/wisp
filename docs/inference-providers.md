@@ -90,13 +90,18 @@ app on a numeric `127.0.0.1` port other than 8000 and 8765. Choose what it is fo
 qualification (`service/inference/qualify.py`, also `POST
 /inference/local-provider/qualify` for a dry run). It uses only synthetic prompts:
 
-1. **Real context window.** Wisp sends a prompt sized to 90% of the window you claim and
-   compares the app's reported `prompt_tokens` with what it sent. Some apps silently drop
+1. **Real context window.** Wisp calibrates probe size using reported `prompt_tokens`,
+   then sends an oversized prompt and records only the reported token count, capped by
+   your claim and 16,384, rounded down to a multiple of 256. If the app refuses the
+   prompt, Wisp tries smaller prompts and records what the app reports accepting.
+   Some apps silently drop
    the start of an over-long prompt, which is where Wisp's system prompt and tool
    schemas live; the model then says things like "I don't have access to your calendar".
    Ollama, for example, loads a model with a small default window. The measured window
    must be at least 8,192 tokens (16,384 recommended) and is what Wisp saves, never more
-   than you typed. Apps that report no usage are tested by recalling text from the start.
+   than you typed. Missing or unusable token usage leaves the window unknown and
+   Agent/Coding unqualified; recalling text or estimating characters cannot verify a
+   token minimum for an unknown tokenizer. Reasoning-only connections remain available.
 2. **Tool calling**, through the same client Wisp uses: a structured call with typed
    arguments, a follow-up turn that uses the tool result, a streamed call with
    fragmented arguments, and a no-tool control (advisory only). A model that writes the

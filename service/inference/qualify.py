@@ -49,11 +49,6 @@ _PROBE_OVERSHOOT = 1.08
 # An engine that refuses the oversize probe is re-tried at these fractions of
 # the cap; the first prompt it accepts is the evidence.
 _STEP_DOWN = (0.95, 0.85, 0.7, 0.5, 0.25, 0.125)
-# Without usage numbers the token count of a prompt is only an estimate. English
-# prose tokenizes at roughly 0.22-0.3 tokens per character; assuming 0.2 makes
-# the estimate a lower bound, so a recalled needle proves at least that many.
-_NEEDLE_TOKENS_PER_CHAR = 0.2
-_NEEDLE_STEPS = (1.0,) + _STEP_DOWN
 
 _TOOL = {"type": "function", "function": {
     "name": "probe_multiply",
@@ -160,9 +155,11 @@ async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, 
     The claimed cap is recorded only when the engine reports holding at least
     that many tokens.
 
+    Character ratios only size the probe; they never verify a token count.
+    Without usable reported prompt-token counts, the window is unmeasurable.
+
     ``how`` is "measured" (held the whole probe), "truncated" (cut a longer
-    prompt), "rejected" (refused longer prompts), "needle" (no usage numbers;
-    recalled text from the start of a prompt) or "unmeasurable".
+    prompt), "rejected" (refused longer prompts) or "unmeasurable".
     """
     cap = min(claimed, PROBE_CONTEXT_CAP)
     async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as http:
@@ -170,8 +167,9 @@ async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, 
         mid_text = _filler(0.25, 600, "CALIBRATE")
         mid = _prompt_tokens(await _completion(http, ep, model, mid_text))
         if tiny is None or mid is None or mid <= tiny:
-            # No usable usage numbers: fall back to recalling a needle at the start.
-            return await _needle_context(http, ep, model, cap)
+            # Recall cannot establish a token lower bound for an unknown
+            # tokenizer, even when the first line of a long prompt survives.
+            return 0, "unmeasurable"
         per_char = (mid - tiny) / max(1, len(mid_text))
         target = int(cap * _PROBE_OVERSHOOT)
         code = "ZEBRA-" + str(int(time.time()) % 9000 + 1000)
@@ -194,24 +192,6 @@ async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, 
         return 0, "unmeasurable"
 
 
-async def _needle_context(http, ep, model, cap) -> tuple[int, str]:
-    """Without usage numbers: the largest prompt whose first line is recalled.
-
-    A recalled needle proves the whole prompt survived, so the window is at
-    least the prompt's size; the size estimate is a deliberate under-count.
-    """
-    for fraction in _NEEDLE_STEPS:
-        size = int(cap * fraction)
-        code = "ZEBRA-" + str(int(time.time()) % 9000 + 1000)
-        data = await _completion(http, ep, model, _filler(_NEEDLE_TOKENS_PER_CHAR, size, code)
-                                 + "\n\nWhat is the secret code from the start? Answer with the code only.",
-                                 max_tokens=16)
-        text = str(((data or {}).get("choices") or [{}])[0].get("message", {}).get("content", ""))
-        if code in text:
-            return _verified(size, cap), "needle"
-    return 0, "unmeasurable"
-
-
 def _parse_args(call: dict[str, Any]) -> dict[str, Any] | None:
     try:
         args = json.loads(call["function"]["arguments"])
@@ -221,9 +201,12 @@ def _parse_args(call: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def _is_multiply(call: dict[str, Any]) -> bool:
+    if not isinstance(call, dict) or not isinstance(call.get("function"), dict):
+        return False
     args = _parse_args(call)
-    return (call.get("function", {}).get("name") == "probe_multiply" and args is not None
-            and sorted(args.values()) == [17, 23] and all(type(v) is int for v in args.values()))
+    return (call["function"].get("name") == "probe_multiply" and args is not None
+            and set(args) == {"a", "b"} and all(type(v) is int for v in args.values())
+            and sorted(args.values()) == [17, 23])
 
 
 _TEXT_CALL = re.compile(r"<tool_call>|\"name\"\s*:\s*\"probe_multiply\"|probe_multiply\s*\(", re.I)
@@ -295,11 +278,13 @@ async def qualify(ep: Endpoint, model: str, claimed_context: int) -> Report:
         async with asyncio.timeout(_PROBE_DEADLINE_SECONDS):
             effective, how = await measure_context(ep, model, claimed_context)
             report.effective_context = effective
-            if effective <= 0:
+            if effective <= 0 and how == "unmeasurable":
                 report.checks.append(Check("context", "Reports a usable context window", False,
-                                           "The app did not report token usage and could not recall text "
-                                           "from the start of a long prompt."))
-                report.hint = context_hint(ep.base_url, 0).replace("0-token", "unknown")
+                                           "The app did not report usable prompt-token usage, so its "
+                                           "context window cannot be verified."))
+                report.hint = ("Use an app/model that reports prompt-token usage, then test again. "
+                               "Without measured token counts Wisp cannot verify the context "
+                               "required for tool workloads.")
             elif effective < MIN_TOOL_CONTEXT:
                 if how == "rejected":
                     detail = (f"The app refuses prompts longer than about {effective:,} tokens; Wisp's "
