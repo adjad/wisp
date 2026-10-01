@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import socket
+import subprocess
+
+import pytest
 
 from service.tools import email_tools as E
 from service.tools import email_extras as X
@@ -653,3 +657,95 @@ def test_failed_live_scan_never_presents_restored_headers_as_current(monkeypatch
     assert "Mail" in triage
     asyncio.run(E.run_daily_email_summary())
     publish.assert_not_awaited()
+
+
+@pytest.fixture
+def synthetic_digest_headers(monkeypatch):
+    """Header-only fixture; the repository bootstrap isolates all stored state."""
+    ready_sync(monkeypatch)
+    monkeypatch.setattr(E, "_headers", "")
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_raw_emails", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("synthetic digest must not read bodies, open sockets, or invoke Mail")
+    monkeypatch.setattr(E, "_parse_raw", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+
+
+QUOTED_SOCIAL_ALERTS = [
+    'Maya Chen posted: "Security alert: unusual sign-in activity"',
+    "Maya Chen posted: 'Security alert: verify your account'",
+    "Maya Chen posted: 'Here's why your password was changed'",
+    "Maya's friend posted: 'Here's why your password was changed'",
+    'Maya Chen posted: ‘Here’s why your password was changed’',
+    "Maya Chen posted: 'Maya's account has been locked'",
+    'Maya Chen posted: ‘Maya’s account has been locked’',
+    'Maya Chen shared a post: "Security warning: unauthorized transaction"',
+    'Maya Chen liked a post: "Fraud: your account has been compromised"',
+    'Maya Chen commented on your post: "Your password was changed"',
+    'Maya Chen replied to a comment: "Verify your account to prevent fraud"',
+    'Maya Chen mentioned you in a post: "Someone tried to log in to your account"',
+    'New post from Maya Chen: “Security alert: new sign-in”',
+    'MAYA CHEN SHARED: ‘Security notice: unauthorized purchase’',
+    '"Security alert: unusual sign-in" trending in r/privacy',
+    '“Fraud: your account is locked” recommended in your feed',
+]
+
+
+@pytest.mark.parametrize("subject", QUOTED_SOCIAL_ALERTS)
+def test_quoted_social_security_titles_are_not_account_alerts(synthetic_digest_headers, monkeypatch, subject):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Mail", "a", "LinkedIn",
+                                        "notifications@linkedin.example", "post", subject))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert output.splitlines()[1] == "1 email · 1 unread"
+    assert "**💬 Social** (1)" in output
+    assert "Needs your attention" not in output
+    assert "Subject says:" not in output
+
+
+@pytest.mark.parametrize("sender,address,subject", [
+    ("LinkedIn", "notifications@linkedin.example", "Adi, we noticed a new sign-in to your account"),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in from "Chrome on Mac"'),
+    ("LinkedIn", "security@linkedin.example", "Your password was changed"),
+    ("LinkedIn", "notifications@linkedin.example", "Your verification code for LinkedIn"),
+    ("LinkedIn", "notifications@linkedin.example", "Your account has been locked"),
+    ("LinkedIn", "notifications@linkedin.example", "Security alert: unauthorized transaction"),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in. Maya shared: "a post"'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos"; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Security alert: fraud"; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos; your password was changed from "Chrome"'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: ‘Travel photos; your password was changed from ‘Chrome’'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: “Travel photos; your password was changed’'),
+    ("LinkedIn", "notifications@linkedin.example", '''Maya posted: 'Travel photos; your password was changed from 'Chrome'"device"Mac'''),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in from "Post notification app"'),
+    ("GitHub", "noreply@github.example", 'Security alert: new sign-in from "Chrome on Mac"'),
+    ("GitHub", "noreply@github.example", "Your password was changed"),
+    ("Bank Alerts", "alerts@bank.example", "Fraud alert: unauthorized transaction"),
+])
+def test_authentic_security_alerts_remain_visible(synthetic_digest_headers, monkeypatch, sender, address, subject):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Mail", "a", sender, address, "alert", subject))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert "1 email · 1 unread · 1 needs attention" in output
+    assert "**🔴 Needs your attention** (1)" in output
+    assert subject in output
+
+
+def test_mixed_social_titles_and_four_real_alerts_count_before_clipping(synthetic_digest_headers, monkeypatch):
+    now = datetime.now().timestamp()
+    alerts = ["Security alert: unusual sign-in", "Your password was changed",
+              "Your account has been locked", "Security alert: unauthorized transaction"]
+    monkeypatch.setattr(E, "_headers", "\n".join(
+        h(now - i, "Mail", "a", "LinkedIn", "notifications@linkedin.example", str(i), subject)
+        for i, subject in enumerate(alerts + QUOTED_SOCIAL_ALERTS[:4])))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert "8 emails · 8 unread · 4 need attention" in output
+    assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
+    assert "+1 more from this sender" in output
+    assert output.count("**LinkedIn**") == 3
+    assert "LinkedIn (4)" in output

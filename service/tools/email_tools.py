@@ -1068,6 +1068,41 @@ _ACCOUNT_SECURITY_RE = re.compile(
     r"account (?:(?:has been|was|is) )?(?:locked|suspended|compromised|disabled|restricted)|"
     r"security (?:alert|warning|notice|check)|"
     r"unauthori[sz]ed (?:access|sign[- ]?in|log[- ]?in|activity|charge|transaction|purchase))\b", re.I)
+_QUOTED_SOCIAL_TITLE_RE = re.compile(
+    r'''"[^"]*"|“[^“”]*”|(?<!\w)'(?:[^']|(?<=\w)'(?=\w))*'(?!\w)|‘(?:[^‘’]|(?<=\w)’(?=\w))*’(?!\w)''')
+_UNPAIRED_SOCIAL_QUOTE_RE = re.compile(r'''["“”‘]|(?<!\w)['’]|['’](?!\w)''')
+_SOCIAL_TITLE_PREFIX_RE = re.compile(
+    r"\b(?:posted|shared|liked|commented on|replied to|mentioned you in)"
+    r"(?:\s+(?:a|an|the|your|this|new))?"
+    r"(?:\s+(?:post|comment|thread|discussion|article|video|story|update))?\s*:?\s*$|"
+    r"\b(?:new|recommended|trending)\s+(?:post|comment|thread|discussion|article|video|story|update)"
+    r"(?:\s+(?:from|by|in|on)\s+[^:\n]{1,60})?\s*:\s*$", re.I)
+_SOCIAL_TITLE_SUFFIX_RE = re.compile(
+    r"^\s*(?:is\s+)?(?:trending|recommended)(?:\s+(?:in|on|by|from)\b|[.!]?\s*$)", re.I)
+
+
+def _social_account_security_subject(subject: str) -> str:
+    """Exclude explicitly notified, quoted content from an account-alert match.
+
+    Quotes alone are not enough: genuine alerts quote device names too. Preserve
+    all text outside a framed title, including any separate account warning.
+    This only consumes header text; it neither reads nor interprets mail bodies.
+    """
+    # An unmatched delimiter can make a later device-name quote look like the
+    # end of a post title. Ambiguous headers retain their security wording.
+    unquoted = _QUOTED_SOCIAL_TITLE_RE.sub(lambda match: " " * len(match.group()), subject)
+    if _UNPAIRED_SOCIAL_QUOTE_RE.search(unquoted):
+        return subject
+    def title(match: re.Match) -> str:
+        # Only nearby framing matters; avoid rescanning an entire long subject
+        # for every quoted span. Unknown/distant framing remains conservative.
+        if (_SOCIAL_TITLE_PREFIX_RE.search(subject, max(0, match.start() - 160), match.start())
+                or _SOCIAL_TITLE_SUFFIX_RE.search(subject[match.end():match.end() + 160])):
+            return " " * len(match.group())
+        return match.group()
+    return _QUOTED_SOCIAL_TITLE_RE.sub(title, subject)
+
+
 _ACCOUNT_RE = re.compile(
     r"\b(?:receipt|invoice|order|shipped|shipment|delivery|delivered|reservation|itinerary|"
     r"statement|bill|payment|verification|sign[- ]?in|login|two[- ]factor)\b", re.I)
@@ -1104,7 +1139,8 @@ def digest_category(row: dict) -> str:
     # sender that otherwise only sends promotions. A sign-in alert from a social
     # network is about the reader's account, not social activity, so it keeps its
     # subject in the attention section instead of collapsing into the roll-up.
-    if _ACCOUNT_SECURITY_RE.search(subject):
+    account_subject = _social_account_security_subject(subject) if social else subject
+    if _ACCOUNT_SECURITY_RE.search(account_subject):
         return "attention"
     if _SECURITY_RE.search(subject) and not social:
         return "attention"
