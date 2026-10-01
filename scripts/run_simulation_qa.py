@@ -563,6 +563,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
         ),
         (
+            "native/display-geometry-contract",
+            [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
+        ),
+        (
             "native/mail-db-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
