@@ -309,6 +309,40 @@ enum MailDBReaderRegression {
             precondition(AccountLabelCache.stored() == workHome,
                          "Failed, malformed, or ambiguous enumeration preserves learned labels")
         }
+        // Gmail over IMAP: the INBOX mailbox holds no messages; Inbox membership is a
+        // `labels` row on a message that lives in All Mail. The primary history read
+        // must see those messages, and still exclude All Mail rows with no Inbox label.
+        do {
+            let gmailPath = root.appendingPathComponent("Gmail Envelope Index").path
+            var gdb: OpaquePointer?
+            precondition(sqlite3_open(gmailPath, &gdb) == SQLITE_OK)
+            defer { sqlite3_close(gdb) }
+            func gsql(_ query: String) {
+                precondition(sqlite3_exec(gdb, query, nil, nil, nil) == SQLITE_OK, "Gmail fixture SQL failed")
+            }
+            gsql("CREATE TABLE mailboxes (url TEXT)")
+            gsql("CREATE TABLE messages (date_received REAL, read INTEGER, subject INTEGER, sender INTEGER, mailbox INTEGER)")
+            gsql("CREATE TABLE subjects (subject TEXT)")
+            gsql("CREATE TABLE addresses (address TEXT, comment TEXT)")
+            gsql("CREATE TABLE labels (message_id INTEGER, mailbox_id INTEGER)")
+            gsql("INSERT INTO mailboxes VALUES ('imap://gmail-account/INBOX'), " +
+                 "('imap://gmail-account/%5BGmail%5D/All%20Mail')")
+            gsql("INSERT INTO subjects VALUES ('Inbox labelled'), ('Sent only')")
+            gsql("INSERT INTO addresses VALUES ('sender@example.test', 'Fixture sender')")
+            let now = Date().timeIntervalSince1970
+            gsql("INSERT INTO messages (date_received, read, subject, sender, mailbox) VALUES (\(now - 60), 1, 1, 1, 2)")
+            gsql("INSERT INTO messages (date_received, read, subject, sender, mailbox) VALUES (\(now - 120), 1, 2, 1, 2)")
+            gsql("INSERT INTO labels VALUES (1, 1)")
+            let gmail = MailDBReader(indexPath: gmailPath)
+            let gmailHistory = gmail.readHistory()!.history
+            precondition(gmailHistory.contains("Inbox labelled"),
+                         "Gmail Inbox membership is a label on an All Mail message; an empty INBOX row must not empty the history")
+            precondition(!gmailHistory.contains("Sent only"),
+                         "An All Mail message with no Inbox label stays outside Inbox history")
+            gsql("DROP TABLE labels")
+            precondition(gmail.readHistory()!.history.isEmpty,
+                         "Without a labels table the Inbox-only scope is unchanged")
+        }
         print("MailDBReader: regression checks passed")
     }
 }

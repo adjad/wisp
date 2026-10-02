@@ -136,13 +136,22 @@ final class MailDBReader {
         // when the column exists; a missing ID is safer than failing the scan.
         let hasMessageID = columnExists(db, table: "messages", column: "message_id")
         let messageIDColumn = hasMessageID ? "m.message_id" : "''"
+        // A Gmail-over-IMAP account keeps its real mail in All Mail and marks Inbox
+        // membership with a `labels` row pointing at the INBOX mailbox; the INBOX
+        // mailbox itself holds no messages. Without this, an Inbox-only read of
+        // such an account is a successful EMPTY history that replaces a good one.
+        let inboxByLabel = inboxOnly && columnExists(db, table: "labels", column: "message_id")
+            && columnExists(db, table: "labels", column: "mailbox_id")
+        let membership = inboxByLabel
+            ? "(m.mailbox IN (\(idList)) OR m.ROWID IN (SELECT message_id FROM labels WHERE mailbox_id IN (\(idList))))"
+            : "m.mailbox IN (\(idList))"
         let sql = """
         SELECT m.date_received, m.read, s.subject, a.address, a.comment, mb.url, \(messageIDColumn), m.ROWID
         FROM messages m
         JOIN mailboxes mb ON m.mailbox = mb.ROWID
         LEFT JOIN subjects s ON m.subject = s.ROWID
         LEFT JOIN addresses a ON m.sender = a.ROWID
-        WHERE m.mailbox IN (\(idList)) AND m.date_received > \(cutoff)
+        WHERE \(membership) AND m.date_received > \(cutoff)
         ORDER BY m.date_received DESC
         LIMIT \(totalRowCap)
         """
