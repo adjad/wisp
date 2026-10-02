@@ -311,3 +311,69 @@ def test_config_reread_and_reregistration_revokes_trust(configured_registry, mon
             "command": "synthetic-never-started", "trusted_read_only": listed}}, specs)
         assert _trusted_read_only(loaded["revokefixture"]) == (frozenset({"search"}) if trusted else frozenset())
         _assert_registered_policy(monkeypatch, tools["revokefixture"]["search"], trusted)
+
+
+@pytest.fixture
+def organize_policy_paths(tmp_path, monkeypatch):
+    from pathlib import Path
+    from service.safety import grants
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nested").mkdir()
+    protected = tmp_path / ".ssh"
+    protected.mkdir()
+    (source / "relay").symlink_to(protected, target_is_directory=True)
+    fake_home, cwd = tmp_path / "home", tmp_path / "cwd"
+    fake_home.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {})
+    return source, protected
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+@pytest.mark.parametrize("standing_allow", [False, True])
+@pytest.mark.parametrize("confirm", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_organize_source_relative_protected_destination_is_denied(
+        organize_policy_paths, monkeypatch, full_access, standing_allow, confirm, nested):
+    from pathlib import Path
+    from service.safety import grants
+    source, protected = organize_policy_paths
+    folder = source / "nested" if nested else source
+    destination = "../relay" if nested else "relay"
+    args = {"folder": str(folder), "destination": destination, "pattern": "*.txt",
+            "confirm": confirm, "preview_token": "synthetic-not-executed"}
+    # Match files_tools resolution without invoking organize_files or moving data.
+    assert (Path(args["folder"]).expanduser().resolve() / destination).resolve() == protected.resolve()
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access)
+    if standing_allow:
+        grants._CACHE["organize_files"] = {"allow": [{"scope": ""}], "deny": []}
+        assert grants.check("organize_files", args) == "allow"
+    decision = policy.decide("fs_write", args, "organize_files")
+    assert decision.tier == policy.Tier.DENY, decision
+    assert "protected path" in decision.reason
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+@pytest.mark.parametrize("destination_kind", ["relative", "absolute", "protected_absolute"])
+def test_organize_relative_and_absolute_controls(organize_policy_paths, monkeypatch, full_access, destination_kind):
+    source, protected = organize_policy_paths
+    destination = {"relative": "sorted", "absolute": str(source / "sorted"),
+                   "protected_absolute": str(protected)}[destination_kind]
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access)
+    args = {"folder": str(source), "destination": destination, "confirm": True,
+            "preview_token": "synthetic-not-executed"}
+    expected = policy.Tier.DENY if destination_kind == "protected_absolute" else policy.Tier.CONFIRM
+    assert policy.decide("fs_write", args, "organize_files").tier == expected
+
+
+def test_source_relative_resolution_is_not_applied_to_other_tools(organize_policy_paths, monkeypatch):
+    source, _ = organize_policy_paths
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    args = {"folder": str(source), "destination": "relay"}
+    assert policy.decide("fs_write", args, "synthetic_other_tool").tier == policy.Tier.CONFIRM
