@@ -32,7 +32,11 @@ def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: s
     detail = f"{type(exc).__name__}: {exc}"
 
     if isinstance(exc, ModelLoadError):
-        return str(exc), detail  # already a plain, specific message
+        # Already a plain, specific message. A machine reason code (for example
+        # why peer attribution refused) rides along in the debug detail only.
+        if reason := getattr(exc, "reason", ""):
+            detail = f"{detail} [reason={reason}]"
+        return str(exc), detail
 
     if isinstance(exc, SanitizedHTTPStatusError):
         # The synthetic exception deliberately contains no remote headers,

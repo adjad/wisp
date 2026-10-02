@@ -752,3 +752,133 @@ def test_managed_supervision_refuses_unparsed_environment(managed, unknown):
     state['raw'] = state['raw'].split('environment = {')[0] + unknown
     with pytest.raises(auth.AuthRefused):
         create()
+
+
+# --- 1.2.0: attribution must survive unrelated traffic on the engine port ----
+
+def _peer_args(adapter):
+    return SyntheticSocket(), 1234, (1234, os.getuid(), 100, 0)
+
+
+def test_unrelated_connection_churn_between_snapshots_is_not_a_refusal(managed):
+    """Regression: a second Wisp backend, background capture or any other client
+    opening/closing a connection between the two lsof snapshots used to refuse
+    every turn with 'peer attribution unavailable' (~half of live turns)."""
+    create, state, _ = managed
+    adapter = create()
+    native_run = adapter.prep.run
+    churn = ('p4321\nu' + str(os.getuid()) + '\nf5\ntIPv4\nPTCP\n'
+             'n127.0.0.1:8000->127.0.0.1:60001\nTST=ESTABLISHED\n'
+             'p4322\nu' + str(os.getuid()) + '\nf6\ntIPv4\nPTCP\n'
+             'n127.0.0.1:60001->127.0.0.1:8000\nTST=ESTABLISHED\n')
+    seen = {'established': 0}
+
+    def run(argv):
+        raw = native_run(argv)
+        if '-sTCP:ESTABLISHED' not in argv:
+            return raw
+        seen['established'] += 1
+        # First snapshot is quiet; the second has an unrelated client attached.
+        return raw if seen['established'] == 1 else raw + churn.encode()
+    adapter.prep.run = run
+    assert adapter.connected_peer(*_peer_args(adapter))
+    assert seen['established'] >= 2  # the second snapshot really was taken
+
+
+@pytest.mark.parametrize('tamper', ['server_owner', 'client_owner'])
+def test_own_endpoint_change_between_snapshots_still_refuses(managed, tamper):
+    """The relaxation must not weaken the check: if OUR connection's owner
+    changes between snapshots, that is still a refusal."""
+    create, state, _ = managed
+    adapter = create()
+    native_run = adapter.prep.run
+    seen = {'established': 0}
+
+    def run(argv):
+        raw = native_run(argv)
+        if '-sTCP:ESTABLISHED' not in argv:
+            return raw
+        seen['established'] += 1
+        if seen['established'] == 1:
+            return raw
+        text = raw.decode()
+        if tamper == 'server_owner':
+            text = text.replace('p1234', 'p9999', 1)
+        else:
+            text = text.replace('f9', 'f10', 1)
+        return text.encode()
+    adapter.prep.run = run
+    with pytest.raises(auth.AuthRefused):
+        adapter.connected_peer(*_peer_args(adapter))
+
+
+class _Authority:
+    def __init__(self, *failures):
+        self.failures, self.calls = list(failures), 0
+
+    def connected_peer(self, sock, pid, identity):
+        self.calls += 1
+        if self.failures:
+            raise self.failures.pop(0)
+        return 'owner'
+
+
+@pytest.mark.parametrize('failure', [
+    auth.AuthRefused('native_inspection_unavailable'),
+    auth.AuthRefused('connection_inspection_unavailable'),
+    __import__('subprocess').TimeoutExpired('lsof', 10),
+])
+def test_transient_inspection_failure_is_retried(failure):
+    from service.inference.attributed_transport import connected_peer_with_retry
+    authority = _Authority(failure, failure)
+    assert connected_peer_with_retry(authority, None, 1, None, pause=0) == 'owner'
+    assert authority.calls == 3
+
+
+@pytest.mark.parametrize('reason', [
+    'connected_peer_changed', 'connected_peer_unqualified', 'process_identity_changed',
+    'desktop_listener_changed', 'connection_kernel_unqualified', 'desktop_signature_unqualified'])
+def test_security_refusals_are_never_retried(reason):
+    from service.inference.attributed_transport import connected_peer_with_retry
+    authority = _Authority(auth.AuthRefused(reason), auth.AuthRefused(reason))
+    with pytest.raises(auth.AuthRefused, match=reason):
+        connected_peer_with_retry(authority, None, 1, None, pause=0)
+    assert authority.calls == 1
+
+
+def test_persistent_transient_failure_gives_up_after_bounded_attempts():
+    from service.inference.attributed_transport import connected_peer_with_retry
+    always = [auth.AuthRefused('native_inspection_unavailable')] * 10
+    authority = _Authority(*always)
+    with pytest.raises(auth.AuthRefused):
+        connected_peer_with_retry(authority, None, 1, None, attempts=3, pause=0)
+    assert authority.calls == 3
+
+
+def test_refusal_is_plain_language_and_keeps_reason_for_debug_only():
+    from service.errors import translate
+    from service.inference.attributed_transport import refused, REFUSED_MESSAGE
+    try:
+        try:
+            raise auth.AuthRefused('connected_peer_changed')
+        except auth.AuthRefused:
+            error = refused()
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+    message, detail = translate(error)
+    assert message == REFUSED_MESSAGE
+    assert 'connected_peer_changed' not in message and '_' not in message
+    assert 'reason=connected_peer_changed' in detail
+
+
+def test_health_reports_503_not_500_when_engine_cannot_be_verified(monkeypatch):
+    from fastapi.testclient import TestClient
+    from service import main
+    from service.inference.attributed_transport import refused
+
+    async def boom():
+        raise refused()
+    monkeypatch.setattr(main, 'client', __import__('types').SimpleNamespace(health=boom), raising=False)
+    response = TestClient(main.app, raise_server_exceptions=False).get('/health')
+    assert response.status_code == 503
+    assert 'verify the local AI engine' in response.json()['detail']
