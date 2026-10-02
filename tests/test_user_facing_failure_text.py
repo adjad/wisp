@@ -37,3 +37,19 @@ def test_no_directive_survives_in_the_output():
                 "(do not retry; ask the user for the number)"]:
         out = clean(raw).lower()
         assert "ask the user" not in out and "don't guess" not in out and "do not guess" not in out
+
+
+@pytest.mark.parametrize("raw", [
+    "(the reply was not confirmed as sent: unknown error. Check Mail before trying again; do not retry automatically.)",
+    "(reply outcome unknown — the bridge did not confirm the approved reply. Check Mail before trying again; do not retry automatically.)",
+    "Nothing sent by this attempt: durable delivery claim unavailable or already used. Check the destination before starting another delivery.",
+    "Reminder creation was not verified. I won't retry automatically; check the reminder list before creating another.",
+    "(Outcome unknown; don't retry it automatically.)",
+    "(Do not retry; ask the user for the number)",
+])
+def test_uncertain_effect_and_no_replay_warnings_keep_their_meaning(raw):
+    expected = raw.strip("()").replace("ask the user", "please tell me")
+    expected = expected[0].upper() + expected[1:]
+    if expected[-1] not in ".?!":
+        expected += "."
+    assert clean(raw) == expected

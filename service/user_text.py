@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 
 _GUESS_CLAUSE_RE = re.compile(
-    r"[,;\u2014-]?\s*(?:and\s+)?\b(?:do\s+not|don'?t)\s+(?:guess|retry)(?:\s+one|\s+it)?", re.I)
+    r"[,;\u2014-]?\s*(?:and\s+)?\b(?:do\s+not|don'?t)\s+guess(?:\s+one|\s+it)?", re.I)
 _ASK_FOR_IT_RE = re.compile(r"[\u2014\u2013-]?\s*\bask\s+the\s+user\s+for\s+(?:it|them|that)\b", re.I)
 _ASK_USER_RE = re.compile(r"\bask\s+the\s+user\b\s*", re.I)
 
@@ -19,6 +19,8 @@ def user_facing_failure(result: str) -> str:
     text = str(result or "").strip()
     if text.startswith("(") and text.endswith(")"):
         text = text[1:-1].strip()
+    # Retry prohibitions describe uncertain effects and remain user-facing.
+    # Removing them could suggest repeating an action that already happened.
     cleaned = _GUESS_CLAUSE_RE.sub("", text)
     cleaned = _ASK_FOR_IT_RE.sub(". Please tell me the address or number to use", cleaned)
     cleaned = _ASK_USER_RE.sub("please tell me ", cleaned)
