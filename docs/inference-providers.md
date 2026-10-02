@@ -1,7 +1,8 @@
 # Inference providers
 
-Wisp can bind generation roles to managed local oMLX, a remote oMLX server,
-OpenRouter, or another authenticated OpenAI-compatible chat API. Tool selection,
+Wisp can bind generation roles to managed local oMLX, another local inference app
+(Ollama, LM Studio, llama.cpp, MTPLX or any OpenAI-compatible server on this Mac), a
+remote oMLX server, OpenRouter, or another authenticated OpenAI-compatible chat API. Tool selection,
 confirmation, and execution remain Wisp's existing routing policy. Choosing a
 cloud endpoint sends that role's prompts, conversation context, and any supplied
 tool schemas to the provider; generation may incur provider charges.
@@ -71,6 +72,55 @@ Existing `env:NAME` references remain compatible for previously configured
 endpoints. Prefer `keychain:NAME` for new provider credentials because environment
 variables can be inherited by child processes. Names accept a leading letter
 followed by letters, digits, underscores, or hyphens, up to 64 characters.
+
+## Other local apps, including tools
+
+Settings > Models > Local (or Set Up Inference > Other local apps) connects one
+app on a numeric `127.0.0.1` port other than 8000 and 8765. Choose what it is for:
+
+| Workload | What it does | Needs |
+| --- | --- | --- |
+| Reasoning | Answers without tools | A working streamed reply |
+| Agent | Runs Wisp's tool loop (calendar, mail, messages, files, web, ...) | A passing tool-calling test |
+| Coding | Code questions, with tools when needed | A passing tool-calling test |
+
+`fast`, `router`, `embedding` and `reranker` stay on managed oMLX.
+
+**Tool use is earned, not declared.** Choosing Agent or Coding runs the server's
+qualification (`service/inference/qualify.py`, also `POST
+/inference/local-provider/qualify` for a dry run). It uses only synthetic prompts:
+
+1. **Real context window.** Wisp calibrates probe size using reported `prompt_tokens`,
+   then sends an oversized prompt and records only the reported token count, capped by
+   your claim and 16,384, rounded down to a multiple of 256. If the app refuses the
+   prompt, Wisp tries smaller prompts and records what the app reports accepting.
+   Some apps silently drop
+   the start of an over-long prompt, which is where Wisp's system prompt and tool
+   schemas live; the model then says things like "I don't have access to your calendar".
+   Ollama, for example, loads a model with a small default window. The measured window
+   must be at least 8,192 tokens (16,384 recommended) and is what Wisp saves, never more
+   than you typed. Missing or unusable token usage leaves the window unknown and
+   Agent/Coding unqualified; recalling text or estimating characters cannot verify a
+   token minimum for an unknown tokenizer. Reasoning-only connections remain available.
+2. **Tool calling**, through the same client Wisp uses: a structured call with typed
+   arguments, a follow-up turn that uses the tool result, a streamed call with
+   fragmented arguments, and a no-tool control (advisory only). A model that writes the
+   call as text fails with the fix (for llama.cpp, start with `--jinja`).
+
+On failure Settings shows the failing check and the engine-specific fix, for example
+`OLLAMA_CONTEXT_LENGTH=16384 ollama serve` for Ollama, or Context Length for LM Studio.
+
+The server, not the app UI, decides: a client cannot assert a qualification. A recorded
+qualification counts only for the exact app URL, API prefix and model it was run
+against. Changing any of them (or hand-editing `qualified_capabilities`) returns the
+role to no-tools until it is tested again. Older qualification records that did not
+record the tested API prefix require a fresh test; Wisp does not assume `/v1` for
+missing evidence. Disconnecting clears the saved record.
+
+**What is sent.** With Agent or Coding selected, tool results, meaning your calendar, mail,
+messages, notes and file contents, are sent to the app to answer you. A loopback app without
+an API key is not identity-verified, so connect only one you trust. Skills and active
+workflows stay on managed oMLX.
 
 ## Local models and role behavior
 

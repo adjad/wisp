@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .credentials import resolve as _credential
 
+import time
 import yaml
 
 from service.paths import MOE_DIR
@@ -508,6 +509,29 @@ def set_role(role: str, model: str) -> None:
 CLOUD_ASSIGNABLE_ROLES = ("reasoning", "coding", "research")
 
 
+LOCAL_PROVIDER_ROLES = ("reasoning", "agent", "coding")
+# Roles that run Wisp's tool loop and therefore require a passing qualification.
+LOCAL_PROVIDER_TOOL_ROLES = frozenset({"agent", "coding"})
+# Schema 1 did not bind the API prefix and cannot establish this identity.
+LOCAL_PROVIDER_QUALIFICATION_SCHEMA = 2
+
+
+def local_provider_qualification(endpoint_cfg: dict, model_id: str, base_url: str,
+                                 api_prefix: str) -> dict | None:
+    """Accept only evidence explicitly bound to this exact app, prefix and model."""
+    record = endpoint_cfg.get("qualification") if isinstance(endpoint_cfg, dict) else None
+    if (isinstance(record, dict) and type(record.get("schema")) is int
+            and record["schema"] == LOCAL_PROVIDER_QUALIFICATION_SCHEMA
+            and record.get("qualified") is True
+            and record.get("model_id") == model_id and record.get("base_url") == base_url
+            and isinstance(record.get("api_prefix"), str)
+            and record["api_prefix"] == api_prefix
+            and isinstance(record.get("effective_context"), int)
+            and not isinstance(record.get("effective_context"), bool)):
+        return record
+    return None
+
+
 def local_provider_settings() -> dict:
     """Return display-safe configuration for one external loopback inference app."""
     cfg = models_config().get("inference", {})
@@ -515,51 +539,88 @@ def local_provider_settings() -> dict:
     if not isinstance(endpoint_cfg, dict):
         endpoint_cfg = {}
     bindings = cfg.get("bindings", {})
-    roles = [role for role in ("reasoning",)
+    roles = [role for role in LOCAL_PROVIDER_ROLES
              if isinstance(bindings.get(role), dict)
              and bindings[role].get("endpoint") == "local_provider"]
     enabled = bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True
+    base_url = str(endpoint_cfg.get("base_url", "http://127.0.0.1:8767"))
+    model_id = str(endpoint_cfg.get("model_id", ""))
+    api_prefix = endpoint_cfg.get("api_prefix", "/v1")
+    record = local_provider_qualification(endpoint_cfg, model_id, base_url, api_prefix)
     return {
         "enabled": enabled,
         "active": enabled and bool(roles) and not cloud_super_model_enabled(),
-        "base_url": str(endpoint_cfg.get("base_url", "http://127.0.0.1:8767")),
+        "base_url": base_url,
         "api_prefix": str(endpoint_cfg.get("api_prefix", "/v1")),
-        "model_id": str(endpoint_cfg.get("model_id", "")),
+        "model_id": model_id,
         "context_window": int(endpoint_cfg.get("context_window", 8192)),
         "roles": roles,
         "authenticated": False,
+        "tools_qualified": record is not None,
+        "qualified_context": record["effective_context"] if record else 0,
+        "qualified_at": record.get("tested_at", "") if record else "",
     }
 
 
+def _local_role_reset(role: str) -> dict:
+    return {"endpoint": "local", "model_id": _local_role_model(role),
+            "revision": "", "profile": "", "context_window": None,
+            "qualified_capabilities": [], "dimensions": 0}
+
+
 def set_local_provider(endpoint_cfg: dict, model_id: str, context_window: int,
-                       roles: list[str]) -> None:
-    """Bind only no-tool reasoning until the external app qualifies for tools."""
-    if roles != ["reasoning"]:
-        raise ValueError("The local provider currently supports reasoning only")
-    saved_endpoint = {**endpoint_cfg, "model_id": model_id,
-                      "context_window": context_window}
-    _save_overlay({"inference": {
-        "endpoints": {"local_provider": saved_endpoint},
-        "bindings": {"reasoning": {
-            "endpoint": "local_provider", "model_id": model_id,
-            "revision": "", "profile": "", "context_window": context_window,
-            "qualified_capabilities": [], "dimensions": 0,
-        }},
-    }})
+                       roles: list[str], *, qualification: dict | None = None) -> None:
+    """Bind an external loopback app to the chosen workloads.
+
+    Tool-using workloads (`agent`, `coding`) need a server-recorded passing
+    qualification for this exact app and model; a caller cannot assert one. The
+    saved window is the one the app actually honors, which can be smaller than
+    the window the user typed.
+    """
+    if (not roles or len(set(roles)) != len(roles)
+            or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
+        raise ValueError("Choose Reasoning, Agent, or Coding for the local provider")
+    qualified = bool(qualification and qualification.get("qualified") is True)
+    if LOCAL_PROVIDER_TOOL_ROLES & set(roles) and not qualified:
+        raise ValueError("Agent and Coding need the tool-calling test to pass first")
+    window = context_window
+    if qualified:
+        window = min(context_window, int(qualification["effective_context"]))
+    from service.config.endpoints import endpoint_from_config
+    validated_endpoint = endpoint_from_config("local_provider", endpoint_cfg)
+    api_prefix = validated_endpoint.api_prefix
+    saved_endpoint = {**endpoint_cfg, "base_url": validated_endpoint.base_url,
+                      "api_prefix": api_prefix, "model_id": model_id, "context_window": window}
+    saved_endpoint["qualification"] = ({
+        "schema": LOCAL_PROVIDER_QUALIFICATION_SCHEMA, "qualified": True, "model_id": model_id,
+        "base_url": validated_endpoint.base_url, "api_prefix": api_prefix,
+        "effective_context": int(qualification["effective_context"]),
+        "tested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    } if qualified else None)  # None, not {}: the overlay deep-merges dicts and would keep old keys
+    bindings: dict[str, dict] = {}
+    current = models_config().get("inference", {}).get("bindings", {})
+    for role in LOCAL_PROVIDER_ROLES:
+        if role in roles:
+            bindings[role] = {
+                "endpoint": "local_provider", "model_id": model_id,
+                "revision": "", "profile": "", "context_window": window,
+                "qualified_capabilities": (["tools"] if qualified and role in LOCAL_PROVIDER_TOOL_ROLES
+                                           else []),
+                "dimensions": 0}
+        elif (isinstance(current.get(role), dict)
+              and current[role].get("endpoint") == "local_provider"):
+            bindings[role] = _local_role_reset(role)
+    _save_overlay({"inference": {"endpoints": {"local_provider": saved_endpoint},
+                                 "bindings": bindings}})
 
 
 def disable_local_provider() -> None:
     current = models_config().get("inference", {}).get("bindings", {})
-    bindings = {}
-    if (isinstance(current.get("reasoning"), dict)
-            and current["reasoning"].get("endpoint") == "local_provider"):
-        bindings["reasoning"] = {
-            "endpoint": "local", "model_id": _local_role_model("reasoning"),
-            "revision": "", "profile": "", "context_window": None,
-            "qualified_capabilities": [], "dimensions": 0,
-        }
+    bindings = {role: _local_role_reset(role) for role in LOCAL_PROVIDER_ROLES
+                if isinstance(current.get(role), dict)
+                and current[role].get("endpoint") == "local_provider"}
     _save_overlay({"inference": {
-        "endpoints": {"local_provider": {"enabled": False}},
+        "endpoints": {"local_provider": {"enabled": False, "qualification": None}},
         "bindings": bindings,
     }})
 

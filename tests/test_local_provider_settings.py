@@ -68,15 +68,17 @@ def test_cloud_update_preserves_independent_local_provider_binding(monkeypatch) 
     assert "reasoning" not in bindings
 
 
-def test_local_provider_only_assigns_no_tool_reasoning(monkeypatch) -> None:
+def test_local_provider_reasoning_alone_never_gets_tools(monkeypatch) -> None:
     captured = []
     monkeypatch.setattr(config, "_save_overlay", captured.append)
     config.set_local_provider(_endpoint_cfg(), "Ling", 8192, ["reasoning"])
     binding = captured[0]["inference"]["bindings"]["reasoning"]
     assert binding["endpoint"] == "local_provider"
     assert binding["qualified_capabilities"] == []
-    with pytest.raises(ValueError):
-        config.set_local_provider(_endpoint_cfg(), "Ling", 8192, ["coding"])
+    # Tool-using workloads need a passing, server-recorded qualification.
+    for roles in (["coding"], ["agent"], ["reasoning", "agent"]):
+        with pytest.raises(ValueError):
+            config.set_local_provider(_endpoint_cfg(), "Ling", 8192, roles)
 
 
 def test_super_model_makes_saved_local_binding_inactive(monkeypatch) -> None:
@@ -152,7 +154,7 @@ def test_connect_requires_synthetic_stream_before_saving(monkeypatch) -> None:
 
     monkeypatch.setattr(main, "OMLXClient", FakeClient)
     monkeypatch.setattr(main, "set_local_provider",
-                        lambda *args: captured.update(saved=True))
+                        lambda *args, **kwargs: captured.update(saved=True))
     monkeypatch.setattr(main, "get_local_provider_inference", saved_settings)
     result = asyncio.run(main.connect_local_provider_inference({
         "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
@@ -184,7 +186,7 @@ def test_connect_rejects_empty_streaming_reply(monkeypatch, reply: str) -> None:
             pass
 
     monkeypatch.setattr(main, "OMLXClient", FakeClient)
-    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "set_local_provider", lambda *args, **kwargs: saved.append(args))
     with pytest.raises(main.HTTPException) as error:
         asyncio.run(main.connect_local_provider_inference({
             "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
@@ -217,7 +219,7 @@ def test_connect_accepts_nonempty_final_after_whitespace_chunk(monkeypatch) -> N
         return {"enabled": True}
 
     monkeypatch.setattr(main, "OMLXClient", FakeClient)
-    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "set_local_provider", lambda *args, **kwargs: saved.append(args))
     monkeypatch.setattr(main, "get_local_provider_inference", saved_settings)
     result = asyncio.run(main.connect_local_provider_inference({
         "base_url": "http://127.0.0.1:8767", "api_prefix": "/v1",
@@ -257,7 +259,7 @@ def test_pending_local_connect_cannot_overwrite_newer_routing_choice(
         return {"enabled": not disabled}
 
     monkeypatch.setattr(main, "OMLXClient", FakeClient)
-    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "set_local_provider", lambda *args, **kwargs: saved.append(args))
     monkeypatch.setattr(main, "disable_local_provider", lambda: disabled.append(True))
     monkeypatch.setattr(main, "get_local_provider_inference", settings)
     monkeypatch.setattr(main, "set_role", lambda *args: reassigned.append(args))
@@ -359,7 +361,7 @@ def test_local_connect_has_total_deadline_despite_stream_progress(monkeypatch) -
             pass
 
     monkeypatch.setattr(main, "OMLXClient", FakeClient)
-    monkeypatch.setattr(main, "set_local_provider", lambda *args: saved.append(args))
+    monkeypatch.setattr(main, "set_local_provider", lambda *args, **kwargs: saved.append(args))
     monkeypatch.setattr(main, "_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS", 0.05)
     with pytest.raises(main.HTTPException) as error:
         asyncio.run(main.connect_local_provider_inference({
