@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+import socket
+import subprocess
+
+import pytest
 
 from service.tools import email_tools as E
 from service.tools import email_extras as X
@@ -22,12 +26,13 @@ def test_legacy_rows_without_addresses_do_not_group_on_display_name():
         "[school@example.edu] University | Assignment posted",
     ])
     assert "represented 2 messages from 2 sender notes" in output
-    assert output.count("**University (address unavailable)**") == 2
+    # No address, no proof they are the same sender: never merged, in any section.
+    assert output.count("University (address unavailable)") == 2
 
 
 def test_subject_urgency_is_labeled_as_a_subject_claim():
     output = digest(["[mail] Casey <casey@example.test> | RSVP for Thursday dinner"])
-    assert "**Casey <casey@example.test>**" in output
+    assert "**Casey** · example.test" in output
     assert "Subject says: “RSVP for Thursday dinner”" in output
     assert "Thursday dinner is confirmed" not in output
 
@@ -38,7 +43,7 @@ def test_large_digest_is_bounded_but_discloses_hidden_senders():
     assert "represented 12 messages from 12 sender notes" in output
     assert "truncated 8 messages" in output
     assert "8 more sender addresses" in output
-    assert output.count("\n- **") == 12
+    assert output.count("Sender ") == 12
 
 
 def h(ts: float, account: str, account_id: str, name: str, address: str,
@@ -88,10 +93,14 @@ def test_identity_dedup_and_cross_account_grouping():
     assert len(parsed) == 4
     output = E.sender_digest(parsed, "fixture")
     assert "represented 4 messages from 2 sender notes" in output
-    assert "Nina <nina@example.test>** (3 messages, 3 unread; accounts: Personal, School)" in output
+    # Messages are listed individually, each tagged with its account; one display
+    # name fronting two addresses shows the addresses in full.
+    assert output.count("**Nina** · nina@example.test") == 3
+    assert output.count("**Nina** · other@example.test") == 1
     assert "Project update”" in output
-    assert "Nina <other@example.test>** (1 message" in output
-    assert E.sender_digest(E._filter_account_records(parsed, "School"), "School").count("3 messages") == 0
+    assert "· Personal" in output and "· School" in output
+    school_only = E.sender_digest(E._filter_account_records(parsed, "School"), "School")
+    assert "Personal" not in school_only and school_only.count("**Nina**") == 2
 
 
 def test_explicit_account_scope_does_not_count_other_account(monkeypatch):
@@ -243,7 +252,9 @@ def test_same_message_id_in_different_accounts_is_not_a_duplicate():
         h(100, "School", "a2", "Nina", "nina@example.test", "<same>", "Update"),
     ]))
     assert len(rows) == 2
-    assert "(2 messages, 2 unread; accounts: Personal, School)" in E.sender_digest(rows, "fixture")
+    digest_text = E.sender_digest(rows, "fixture")
+    assert digest_text.count("**Nina** · example.test") == 2
+    assert "· Personal" in digest_text and "· School" in digest_text
 
 
 def test_priority_keeps_important_automated_and_demotes_routine():
@@ -252,8 +263,10 @@ def test_priority_keeps_important_automated_and_demotes_routine():
         h(99, "Mail", "a", "Security Alerts", "alert@example.test", "2", "Security alert: suspicious sign-in"),
     ]))
     output = E.sender_digest(rows, "fixture")
-    assert output.index("alert@example.test") < output.index("news@example.test")
-    assert "Weekend sale" in output
+    # The security alert is sorted into the attention section, ahead of the newsletter,
+    # which is rolled up by name (a promotion's subject is not worth a line).
+    assert output.index("Security Alerts") < output.index("Shop Newsletter")
+    assert output.index("Needs your attention") < output.index("Newsletters & updates")
     assert "Subject says: “Security alert" in output
 
 
@@ -614,10 +627,10 @@ def test_on_demand_scheduled_and_triage_never_read_raw(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     monkeypatch.setattr(E, "_parse_raw", lambda: (_ for _ in ()).throw(AssertionError("raw read")))
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_recent())
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "nina@example.test" in asyncio.run(E.summarize_inbox_for_period("this month"))
-    assert "nina@example.test" in X.triage_inbox()
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_recent())
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_for_day("today"))
+    assert "**Nina** · example.test" in asyncio.run(E.summarize_inbox_for_period("this month"))
+    assert "**Nina** · example.test" in X.triage_inbox()
     # The scheduled digest delegates to the same day path. The notification
     # transport is patched; no message is sent in this synthetic test.
     from unittest.mock import AsyncMock
@@ -644,3 +657,348 @@ def test_failed_live_scan_never_presents_restored_headers_as_current(monkeypatch
     assert "Mail" in triage
     asyncio.run(E.run_daily_email_summary())
     publish.assert_not_awaited()
+
+
+@pytest.fixture
+def synthetic_digest_headers(monkeypatch):
+    """Header-only fixture; the repository bootstrap isolates all stored state."""
+    ready_sync(monkeypatch)
+    monkeypatch.setattr(E, "_headers", "")
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_raw_emails", "")
+    monkeypatch.setattr(E, "_cache_ready", lambda: True)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("synthetic digest must not read bodies, open sockets, or invoke Mail")
+    monkeypatch.setattr(E, "_parse_raw", forbidden)
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+
+
+QUOTED_SOCIAL_ALERTS = [
+    'Maya Chen posted: "Security alert: unusual sign-in activity"',
+    "Maya Chen posted: 'Security alert: verify your account'",
+    "Maya Chen posted: 'Here's why your password was changed'",
+    "Maya's friend posted: 'Here's why your password was changed'",
+    'Maya Chen posted: ‘Here’s why your password was changed’',
+    "Maya Chen posted: 'Maya's account has been locked'",
+    'Maya Chen posted: ‘Maya’s account has been locked’',
+    'Maya Chen shared a post: "Security warning: unauthorized transaction"',
+    'Maya Chen liked a post: "Fraud: your account has been compromised"',
+    'Maya Chen commented on your post: "Your password was changed"',
+    'Maya Chen replied to a comment: "Verify your account to prevent fraud"',
+    'Maya Chen mentioned you in a post: "Someone tried to log in to your account"',
+    'New post from Maya Chen: “Security alert: new sign-in”',
+    'MAYA CHEN SHARED: ‘Security notice: unauthorized purchase’',
+    '"Security alert: unusual sign-in" trending in r/privacy',
+    '“Fraud: your account is locked” recommended in your feed',
+]
+
+
+@pytest.mark.parametrize("subject", QUOTED_SOCIAL_ALERTS)
+def test_quoted_social_security_titles_are_not_account_alerts(synthetic_digest_headers, monkeypatch, subject):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Mail", "a", "LinkedIn",
+                                        "notifications@linkedin.example", "post", subject))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert output.splitlines()[1] == "1 email · 1 unread"
+    assert "**💬 Social** (1)" in output
+    assert "Needs your attention" not in output
+    assert "Subject says:" not in output
+
+
+@pytest.mark.parametrize("sender,address,subject", [
+    ("LinkedIn", "notifications@linkedin.example", "Adi, we noticed a new sign-in to your account"),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in from "Chrome on Mac"'),
+    ("LinkedIn", "security@linkedin.example", "Your password was changed"),
+    ("LinkedIn", "notifications@linkedin.example", "Your verification code for LinkedIn"),
+    ("LinkedIn", "notifications@linkedin.example", "Your account has been locked"),
+    ("LinkedIn", "notifications@linkedin.example", "Security alert: unauthorized transaction"),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in. Maya shared: "a post"'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos"; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Security alert: fraud"; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos; your password was changed'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: "Travel photos; your password was changed from "Chrome"'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: ‘Travel photos; your password was changed from ‘Chrome’'),
+    ("LinkedIn", "notifications@linkedin.example", 'Maya posted: “Travel photos; your password was changed’'),
+    ("LinkedIn", "notifications@linkedin.example", '''Maya posted: 'Travel photos; your password was changed from 'Chrome'"device"Mac'''),
+    ("LinkedIn", "notifications@linkedin.example", 'Security alert: new sign-in from "Post notification app"'),
+    ("GitHub", "noreply@github.example", 'Security alert: new sign-in from "Chrome on Mac"'),
+    ("GitHub", "noreply@github.example", "Your password was changed"),
+    ("Bank Alerts", "alerts@bank.example", "Fraud alert: unauthorized transaction"),
+])
+def test_authentic_security_alerts_remain_visible(synthetic_digest_headers, monkeypatch, sender, address, subject):
+    now = datetime.now().timestamp()
+    monkeypatch.setattr(E, "_headers", h(now, "Mail", "a", sender, address, "alert", subject))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert "1 email · 1 unread · 1 needs attention" in output
+    assert "**🔴 Needs your attention** (1)" in output
+    assert subject in output
+
+
+def test_mixed_social_titles_and_four_real_alerts_count_before_clipping(synthetic_digest_headers, monkeypatch):
+    now = datetime.now().timestamp()
+    alerts = ["Security alert: unusual sign-in", "Your password was changed",
+              "Your account has been locked", "Security alert: unauthorized transaction"]
+    monkeypatch.setattr(E, "_headers", "\n".join(
+        h(now - i, "Mail", "a", "LinkedIn", "notifications@linkedin.example", str(i), subject)
+        for i, subject in enumerate(alerts + QUOTED_SOCIAL_ALERTS[:4])))
+    output = asyncio.run(E.summarize_inbox_recent())
+    assert "8 emails · 8 unread · 4 need attention" in output
+    assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
+    assert "+1 more from this sender" in output
+    assert output.count("**LinkedIn**") == 3
+    assert "LinkedIn (4)" in output
+
+
+@pytest.fixture
+def interactive_digest_isolation(monkeypatch, tmp_path):
+    """Keep the real cache/readiness code; only the native response is synthetic."""
+    from service.assistant import brief as B
+    from service.tools import cache_store
+
+    attempts = {name: 0 for name in ("body", "network", "native", "model")}
+
+    def guard(name):
+        def forbidden(*args, **kwargs):
+            attempts[name] += 1
+            raise AssertionError(f"synthetic digest attempted {name}")
+        return forbidden
+
+    monkeypatch.setattr(E, "_headers", "")
+    monkeypatch.setattr(E, "_history", "")
+    monkeypatch.setattr(E, "_raw_emails", "")
+    monkeypatch.setattr(E, "_headers_at", 0)
+    monkeypatch.setattr(E, "_headers_sync_generation", 0)
+    monkeypatch.setattr(E, "_email_available", None)
+    monkeypatch.setattr(E, "_email_reason", "")
+    monkeypatch.setattr(E, "_email_sync_pending", False)
+    monkeypatch.setattr(E, "_email_read_source", "")
+    monkeypatch.setattr(cache_store, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(E, "_parse_raw", guard("body"))
+    monkeypatch.setattr(E, "_raw_ready", guard("body"))
+    monkeypatch.setattr(socket.socket, "connect", guard("network"))
+    monkeypatch.setattr(socket.socket, "connect_ex", guard("network"))
+    monkeypatch.setattr(socket, "getaddrinfo", guard("network"))
+    monkeypatch.setattr(subprocess, "Popen", guard("native"))
+    monkeypatch.setattr(E, "_c", guard("model"), raising=False)
+    monkeypatch.setattr(B, "_c", guard("model"))
+    yield attempts
+    # Even an effect caught by production fallback code must fail verification.
+    assert attempts == {"body": 0, "network": 0, "native": 0, "model": 0}
+
+
+@pytest.mark.parametrize("initial_source,initial_generation", [("", 0), ("local_index", 1)])
+def test_interactive_digest_refreshes_headers_before_sectioning(
+        interactive_digest_isolation, monkeypatch, initial_source, initial_generation):
+    from service.assistant.hub import hub
+    from service.tools import cache_store
+
+    now = freeze_email_now(monkeypatch)
+    restored = h(now - 86400, "Mail", "a", "Old", "old@example.test", "old", "RESTORED ONLY")
+    refreshed = "\n".join([
+        h(now - 1, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "alert",
+          'Security alert: new sign-in from "Chrome on Mac"'),
+        h(now - 2, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "post",
+          QUOTED_SOCIAL_ALERTS[0]),
+        c2("Mail", "a", 2, 0, False),
+    ])
+    monkeypatch.setattr(E, "_headers", restored)
+    monkeypatch.setattr(E, "_headers_sync_generation", initial_generation)
+    monkeypatch.setattr(E, "_email_available", True)
+    monkeypatch.setattr(E, "_email_read_source", initial_source)
+    assert E.email_sync_state() == ("ready" if initial_generation else "syncing")
+    events = []
+
+    async def receive_header_request(event):
+        assert event == {"type": "sync_assistant_sources_now", "sources": ["email"]}
+        events.append(event)
+        E.cache_emails(refreshed)
+        E.set_email_availability(True, read_source="mail_app")
+
+    monkeypatch.setattr(hub, "publish", receive_header_request)
+    output = asyncio.run(E.summarize_emails())
+    assert len(events) == 1
+    assert E._headers_sync_generation == initial_generation + 1
+    assert E.email_sync_state() == "ready"
+    assert cache_store.load("email_headers") == refreshed
+    assert "2 emails · 2 unread · 1 needs attention" in output
+    assert "**🔴 Needs your attention** (1)" in output
+    assert "**💬 Social** (1)" in output
+    assert 'Security alert: new sign-in from "Chrome on Mac"' in output
+    assert QUOTED_SOCIAL_ALERTS[0] not in output
+    assert "RESTORED ONLY" not in output
+    assert "represented 2 messages" in output
+    assert "local cache" not in output
+
+
+@pytest.mark.parametrize("result", ["empty", "incomplete", "unavailable"])
+def test_interactive_header_refresh_distinguishes_empty_partial_and_unavailable(
+        interactive_digest_isolation, monkeypatch, result):
+    from service.assistant.hub import hub
+
+    events = []
+
+    async def receive_header_request(event):
+        assert event == {"type": "sync_assistant_sources_now", "sources": ["email"]}
+        events.append(event)
+        if result == "unavailable":
+            E.set_email_availability(False, reason="Synthetic account unavailable")
+        else:
+            E.cache_emails(c3("Work", "a", "interrupted") if result == "incomplete" else "")
+            E.set_email_availability(True, read_source="mail_app")
+
+    monkeypatch.setattr(hub, "publish", receive_header_request)
+    output = asyncio.run(E.summarize_emails())
+    assert len(events) == 1
+    if result == "empty":
+        assert E.email_sync_state() == "ready"
+        assert output == "No emails found."
+    elif result == "incomplete":
+        assert E.email_sync_state() == "ready"
+        assert "total coverage is unknown" in output
+        assert "did not complete for Work" in output
+        assert "No emails found" not in output
+    else:
+        assert E.email_sync_state() == "unavailable"
+        assert "Synthetic account unavailable" in output
+        assert "No emails found" not in output
+
+
+def test_interactive_account_filter_counts_and_coverage_use_header_snapshot(
+        interactive_digest_isolation, monkeypatch):
+    from service.assistant.hub import hub
+
+    now = freeze_email_now(monkeypatch)
+    records = [h(now - i, "Work", "a", "LinkedIn", "notifications@linkedin.example", str(i), subject)
+               for i, subject in enumerate([
+                   "Security alert: unusual sign-in", "Your password was changed",
+                   "Your account has been locked", "Security alert: unauthorized transaction",
+                   *QUOTED_SOCIAL_ALERTS[:4]])]
+    records += [records[0], h(now - 20, "Home", "b", "LinkedIn", "other@linkedin.example",
+                              "home", "Your verification code for LinkedIn"),
+                c2("Work", "a", 12, 2, True), c3("Offline", "c", "failed")]
+    E.cache_emails("\n".join(records))
+    E.set_email_availability(True, read_source="mail_app")
+
+    async def unexpected_refresh(event):
+        raise AssertionError(f"ready Mail snapshot must not request refresh: {event}")
+
+    monkeypatch.setattr(hub, "publish", unexpected_refresh)
+    output = asyncio.run(E.summarize_emails(count=50, account="Work"))
+    assert "8 emails · 8 unread · 4 need attention" in output
+    assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
+    assert "+1 more from this sender" in output
+    assert "represented 8 messages" in output
+    assert "skipped 2 malformed headers" in output
+    assert "total truncation is unknown" in output
+    assert "other@linkedin.example" not in output and "Offline" not in output
+    unavailable = asyncio.run(E.summarize_emails(account="Offline"))
+    assert "did not complete for Offline" in unavailable
+    assert "No emails found" not in unavailable
+    unknown = asyncio.run(E.summarize_emails(account="Missing"))
+    assert "Missing" in unknown and "No emails found" not in unknown
+
+
+def test_daily_actual_render_and_interactive_readiness_ignore_proven_poisoned_history(
+        interactive_digest_isolation, monkeypatch):
+    from service.assistant import brief as B
+    from service.assistant import scheduler
+    from service.tools import imessage_tools as M
+
+    class HistoryTouched(AssertionError):
+        pass
+
+    class PoisonedHistory:
+        def fail(self, *args, **kwargs):
+            raise HistoryTouched("mail history touched")
+        __bool__ = __len__ = __contains__ = __str__ = fail
+        split = fail
+
+    poison = PoisonedHistory()
+    # Prove the sentinel fails before using it as a negative control.
+    for use in (lambda: bool(poison), lambda: len(poison), lambda: "x" in poison,
+                lambda: str(poison), lambda: poison.split("\n")):
+        with pytest.raises(HistoryTouched):
+            use()
+
+    now = freeze_email_now(monkeypatch)
+    monkeypatch.setattr(B.time, "time", lambda: now)
+    E.cache_emails("\n".join([
+        h(now - 1, "Work", "a", "LinkedIn", "notifications@linkedin.example", "alert",
+          "Your password was changed"),
+        h(now - 2, "Work", "a", "LinkedIn", "notifications@linkedin.example", "post",
+          QUOTED_SOCIAL_ALERTS[0]),
+        c2("Work", "a", 2, 0, False), c3("Offline", "b", "failed")]))
+    E.set_email_availability(True, read_source="local_index")
+    monkeypatch.setattr(E, "_history", h(now - 3, "Work", "a", "History",
+                                        "history@example.test", "history", "HISTORY ONLY"))
+    monkeypatch.setattr(scheduler, "_sync_status", {
+        source: {"available": True, "count": 0, "last_sync": now,
+                 "diagnostics": {"snapshot_started_at": 4_000_000_000}}
+        for source in ("calendar", "reminders")})
+    monkeypatch.setattr(B.assistant_store, "upcoming", lambda **kwargs: [])
+    monkeypatch.setattr(M, "_parse_lines", lambda: [])
+    monkeypatch.setattr(M, "_lines", "")
+    monkeypatch.setattr(M, "_sync_completed", True)
+    monkeypatch.setattr(M, "_available", True)
+
+    def render():
+        return {"window": B._mail_window(now), "block": B._email_block(now),
+                "email": B._email_section(now),
+                "generated": asyncio.run(B._generate_brief("morning")),
+                "sections": asyncio.run(B._sections("morning", snapshot={"syncing": False}))}
+
+    baseline = render()
+    assert len(baseline["window"]["rows"]) == 2
+    assert "Needs your attention" not in baseline["block"]  # actual flat layout
+    assert baseline["block"].count("**LinkedIn <notifications@linkedin.example>**") == 1
+    assert "Your password was changed" in baseline["block"]
+    assert "Mail scan incomplete for Offline" in baseline["email"]
+    assert "local cache" in baseline["sections"]["FULL"]
+    assert baseline["sections"]["READY"] == "1"
+    assert "HISTORY ONLY" not in baseline["sections"]["FULL"]
+    E.set_email_availability(True, read_source="mail_app")
+    interactive_baseline = asyncio.run(E.summarize_emails())
+    monkeypatch.setattr(E, "_history", poison)
+    monkeypatch.setattr(E, "_parse_history", poison.fail)
+    monkeypatch.setattr(E, "cache_history_headers", poison.fail)
+    monkeypatch.setattr(E, "sender_stats", poison.fail)
+    assert asyncio.run(E.summarize_emails()) == interactive_baseline
+    E.set_email_availability(True, read_source="local_index")
+    assert render() == baseline
+    monkeypatch.setattr(E, "_headers_sync_generation", 0)
+    assert E.email_sync_state() == "syncing"
+    assert B._mail_window(now)["rows"] == []
+    assert "still syncing" in B._email_block(now)
+    held = asyncio.run(B._sections("morning", snapshot={"syncing": True, "sources": []}))
+    assert "READY" not in held
+
+
+@pytest.mark.parametrize("generation,read_source", [(0, ""), (1, "local_index")])
+def test_failed_interactive_refresh_preserves_readiness_and_freshness_limits(
+        interactive_digest_isolation, monkeypatch, generation, read_source):
+    from service.assistant.hub import hub
+
+    now = freeze_email_now(monkeypatch)
+    monkeypatch.setattr(E, "_headers", h(now - 1, "Mail", "a", "Casey", "casey@example.test",
+                                        "restored", "Please review the synthetic update"))
+    monkeypatch.setattr(E, "_headers_sync_generation", generation)
+    E.set_email_availability(True, read_source=read_source)
+    events = []
+
+    async def disconnected_native_adapter(event):
+        assert event == {"type": "sync_assistant_sources_now", "sources": ["email"]}
+        events.append(event)
+        raise RuntimeError("synthetic native adapter disconnected")
+
+    monkeypatch.setattr(hub, "publish", disconnected_native_adapter)
+    output = asyncio.run(E.summarize_emails())
+    assert len(events) == 1 and E._headers_sync_generation == generation
+    if generation:
+        assert "local cache" in output and "Newer messages may be missing" in output
+        assert "Please review the synthetic update" in output
+    else:
+        assert output == E.email_syncing_message()
+        assert "Please review the synthetic update" not in output
+        assert E.email_sync_state() == "syncing"
