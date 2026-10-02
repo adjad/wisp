@@ -28,6 +28,22 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         precondition(RemindersWriter.eligibleForIncompleteSync(
             calendarID: "active-list", reminderCalendarIDs: active,
             completed: false, hasDueDate: true))
+        // Undated reminders: only incomplete, undated rows in a current list.
+        precondition(RemindersWriter.eligibleForUndatedSync(
+            calendarID: "active-list", reminderCalendarIDs: active,
+            completed: false, hasDueDate: false))
+        precondition(!RemindersWriter.eligibleForUndatedSync(
+            calendarID: "active-list", reminderCalendarIDs: active,
+            completed: false, hasDueDate: true), "a dated reminder is not undated")
+        precondition(!RemindersWriter.eligibleForUndatedSync(
+            calendarID: "active-list", reminderCalendarIDs: active,
+            completed: true, hasDueDate: false), "a completed reminder is never listed")
+        precondition(!RemindersWriter.eligibleForUndatedSync(
+            calendarID: "deleted-list", reminderCalendarIDs: active,
+            completed: false, hasDueDate: false), "a removed list's rows are not listed")
+        precondition(!RemindersWriter.eligibleForUndatedSync(
+            calendarID: nil, reminderCalendarIDs: active,
+            completed: false, hasDueDate: false))
         // An empty list set after a snapshot with rows is not authoritative.
         precondition(RemindersWriter.reminderListsLookTransientlyMissing(
             calendarCount: 0, previousRowCount: 3))
