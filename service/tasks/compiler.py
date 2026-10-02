@@ -683,6 +683,22 @@ def extract_event_reference(text: str) -> str:
     return " ".join(match.group("reference").split()) if match else ""
 
 
+def _reminder_temporal_evidence(text: str) -> str:
+    """Retain final dates already consumed by this compiler's subject cleanup."""
+    evidence = reminder_temporal_text(text)
+    parts = _reminder_parts(_unquoted(text))
+    if parts and parts[1]:
+        # Use the SAME bounded suffix grammar/order as _clean_subject, never
+        # arbitrary dates embedded in authored content or inside quoted titles.
+        subject = _TRAILING_TIME.sub("", parts[1].strip().strip('*_'))
+        suffix = _TRAILING_NAMED_DATE.search(subject)
+        named = _NAMED_DATE.search(suffix.group()) if suffix else None
+        retained = {match.group().casefold() for match in _NAMED_DATE.finditer(evidence)}
+        if named and named.group().casefold() not in retained:
+            evidence = evidence.rstrip() + " " + named.group()
+    return evidence
+
+
 def _conflicting_reminder_days(scoped_alerts: str, temporal_text: str, now: datetime) -> bool:
     """Reconcile day constraints without treating subject words as dates.
 
@@ -728,7 +744,7 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
 
     subject = extract_reminder_subject(text)
     reference = extract_event_reference(text)
-    temporal_text = reminder_temporal_text(text)
+    temporal_text = _reminder_temporal_evidence(text)
     unsupported_clock = has_unsupported_alert_clock(temporal_text)
     # A parser finding one valid date is not permission to choose it over
     # another supplied date. Retain the subject and ask for a single alert.
@@ -738,7 +754,7 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     # projection contains header/consumed tail spans; the unchanged fallback
     # still includes arbitrary subject words, so use only its header labels.
     unquoted_request = _unquoted(text)
-    day_constraints = reminder_temporal_text(unquoted_request)
+    day_constraints = _reminder_temporal_evidence(unquoted_request)
     scoped_alerts = day_constraints if day_constraints != unquoted_request else command
     ambiguous_dates = _conflicting_reminder_days(scoped_alerts, day_constraints, now)
     lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None

@@ -625,7 +625,7 @@ def test_conflicting_named_dates_never_choose_the_first_date(successful_reminder
     ("on October 12, 2027", "2027-10-12T09:00"),
 ])
 def test_header_day_constraints_reconcile_before_effects(
-        successful_reminder_endpoint, monkeypatch, header, expected, *, trailing=False):
+        successful_reminder_endpoint, monkeypatch, header, expected, *, trailing=False, prompt=None, subject="study"):
     from service.tasks import reply_engine, compiler, temporal
     request, streams, calls, assistant = successful_reminder_endpoint
     fixed = datetime(2026, 10, 1, 10)
@@ -637,13 +637,13 @@ def test_header_day_constraints_reconcile_before_effects(
 
     for module in (reply_engine, compiler, temporal):
         monkeypatch.setattr(module, "datetime", FixedClock)
-    text = f"Remind me to study {header}" if trailing else f"Remind me {header} to study"
+    text = prompt or (f"Remind me to study {header}" if trailing else f"Remind me {header} to study")
     plan = compile_task(text, now=fixed)
-    assert plan.subject.value == "study"
+    assert plan.subject.value == subject
     events = asyncio.run(request(text))
     if expected:
         assert plan.status == "ready" and plan.temporal.absolute_iso == expected
-        assert calls == [("add_reminder", {"title": "study", "when_iso": expected, "kind": "reminder"})]
+        assert calls == [("add_reminder", {"title": subject, "when_iso": expected, "kind": "reminder"})]
         assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
     else:
         assert plan.status == "waiting_for_input" and plan.missing_slots == ["temporal.time"]
@@ -666,6 +666,39 @@ def test_consumed_trailing_day_constraints_reconcile_before_effects(
         successful_reminder_endpoint, monkeypatch, tail, expected):
     test_header_day_constraints_reconcile_before_effects(
         successful_reminder_endpoint, monkeypatch, tail, expected, trailing=True)
+
+
+@pytest.mark.parametrize("header,day,expected", [
+    ("tomorrow", "October 12, 2027", None),
+    ("Friday", "October 12, 2027", None),
+    ("Tuesday", "October 12, 2027", "2027-10-12T09:00"),
+    ("Friday", "October 9, 2026", "2026-10-09T09:00"),
+    ("tomorrow", "October 2, 2026", "2026-10-02T09:00"),
+    ("tomorrow", "2027-10-12", None),
+    ("Friday", "2027-10-12", None),
+    ("Tuesday", "2027-10-12", "2027-10-12T09:00"),
+    ("tomorrow", "2026-10-02", "2026-10-02T09:00"),
+    ("on October 20, 2027", "October 2", None),
+])
+def test_split_header_and_trailing_date_is_not_discarded(
+        successful_reminder_endpoint, monkeypatch, header, day, expected):
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, header, expected,
+        prompt=f"Remind me {header} to study on {day}")
+
+
+@pytest.mark.parametrize("header,title,suffix,expected", [
+    ("tomorrow ", "review October 12, 2027", "", "2026-10-02T09:00"),
+    ("tomorrow ", "review Friday report", "", "2026-10-02T09:00"),
+    ("", "review Friday tomorrow report", " on October 12, 2027", "2027-10-12T09:00"),
+    ("Tuesday ", "review Friday report", " on October 12, 2027", "2027-10-12T09:00"),
+    ("tomorrow ", "review Friday report", " on October 12, 2027", None),
+])
+def test_split_alert_evidence_excludes_quoted_title_dates(
+        successful_reminder_endpoint, monkeypatch, header, title, suffix, expected):
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, header, expected, subject=title,
+        prompt=f'Remind me {header}to "{title}"{suffix}')
 
 
 @pytest.mark.parametrize("header_clock,title", [
