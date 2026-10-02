@@ -56,6 +56,11 @@ _TEMPORAL_ONLY = re.compile(
     r"\d+(?::\d*)?(?:\s*[ap]\.?m\.?)?|[ap]\.?m\.?|[-–—/])\s*)+", re.I)
 _ALERT_DAY = re.compile(
     r"\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+# Complete existing calendar-day vocabulary, including resolver-supported
+# tomorrow aliases. This excludes clocks/dayparts, offsets and event lead times.
+_LITERAL_DAY = re.compile(
+    rf"{_NAMED_DATE.pattern}|{_ALERT_DAY.pattern}|"
+    r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", re.I)
 _IMMEDIATE_SCOPE = re.compile(r"\b(?:now|immediately|right\s+away|at\s+once)\b", re.I)
 _CONDITIONAL_SCOPE = re.compile(
     r"\b(?:if|unless|otherwise|provided\s+that|depending\s+on)\b", re.I)
@@ -687,6 +692,77 @@ def extract_event_reference(text: str) -> str:
     return " ".join(match.group("reference").split()) if match else ""
 
 
+def _reminder_temporal_evidence(text: str, *, parts: tuple[str, str] | None = None) -> str:
+    """Retain final dates already consumed by this compiler's subject cleanup."""
+    # Split before masking; the introducer's whitespace can otherwise consume
+    # a fully masked title and erase the boundary before its trailing day.
+    parts = parts or _reminder_parts(text)
+    if parts:
+        parts = (_unquoted(parts[0]), _unquoted(parts[1]))
+    named = None
+    outer_day = None
+    if parts:
+        header = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow", parts[0], flags=re.I)
+        tail = _TRAILING_TIME.search(parts[1].rstrip().strip('*_'))
+        outer_day = _ALERT_DAY.search(header) or (tail and _ALERT_DAY.search(tail.group()))
+    if parts and parts[1]:
+        # Use the SAME bounded suffix grammar/order as _clean_subject, never
+        # arbitrary dates embedded in authored content or inside quoted titles.
+        # Keep left padding from quote masking: it is the original boundary
+        # before a suffix when the entire title was quoted.
+        subject = _TRAILING_TIME.sub("", parts[1].rstrip().strip('*_'))
+        suffix = _TRAILING_NAMED_DATE.search(subject)
+        named = _NAMED_DATE.search(suffix.group()) if suffix else None
+    resolution_text = text
+    if named or outer_day or (parts and _NAMED_DATE.search(parts[0])):
+        # A recognized outer day is authoritative. Mask every supported literal
+        # day token before projection, including clock-adjacent relative days
+        # and weekdays. Keep quoted clocks and all subject text behavior.
+        chars = list(text)
+        for start, end in quoted_spans(text):
+            for day in _LITERAL_DAY.finditer(text, start, end):
+                chars[day.start():day.end()] = " " * (day.end() - day.start())
+        resolution_text = "".join(chars)
+    evidence = reminder_temporal_text(resolution_text)
+    retained = {match.group().casefold() for match in _NAMED_DATE.finditer(evidence)}
+    if named and named.group().casefold() not in retained:
+        evidence = evidence.rstrip() + " " + named.group()
+    return evidence
+
+
+def _conflicting_reminder_days(scoped_alerts: str, temporal_text: str, now: datetime) -> bool:
+    """Reconcile day constraints without treating subject words as dates.
+
+    Absolute dates already scoped as alert evidence can repeat consistently.
+    Relative days and weekday labels come from the header and consumed alert
+    spans, never the temporal helper's fallback containing arbitrary title text.
+    A weekday beside an explicit date labels that date, not the next occurrence.
+    Offsets and event-reference lead times are not calendar-day equalities.
+    """
+    dates = re.findall(rf"{_NAMED_DATE.pattern}|{_CALENDAR_DATE}",
+                       _unquoted(temporal_text), re.I)
+    alerts = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
+                    _unquoted(scoped_alerts), flags=re.I)
+    relative = re.findall(r"\b(?:today|tonight|tomorrow)\b", alerts, re.I)
+    weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+    labels = re.findall(r"\b(?:" + "|".join(weekdays) + r")\b", alerts, re.I)
+    if len(dates) + len(relative) + len(labels) < 2:
+        return False
+    chosen = set()
+    for token in dates:
+        resolved, _ = resolve_named_time(token, now=now)
+        if resolved is None:
+            return True
+        chosen.add(resolved.date())
+    chosen.update(now.date() + timedelta(days=word.lower() == "tomorrow") for word in relative)
+    if len(chosen) > 1:
+        return True
+    label_days = {weekdays.index(label.lower()) for label in labels}
+    if len(label_days) > 1:
+        return True
+    return bool(chosen and label_days and next(iter(chosen)).weekday() not in label_days)
+
+
 def compile_reminder_create(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     parts = _reminder_parts(text)
@@ -699,10 +775,21 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
 
     subject = extract_reminder_subject(text)
     reference = extract_event_reference(text)
-    temporal_text = reminder_temporal_text(text)
+    temporal_text = _reminder_temporal_evidence(text)
     unsupported_clock = has_unsupported_alert_clock(temporal_text)
-    lead = parse_lead_seconds(temporal_text) if reference and not unsupported_clock else None
-    resolved, defaulted = ((None, "") if reference or unsupported_clock
+    # A parser finding one valid date is not permission to choose it over
+    # another supplied date. Retain the subject and ask for a single alert.
+    now = now or datetime.now()
+    # Mask quotes BEFORE projection: extraction can otherwise remove quote
+    # delimiters and make title words look like alert evidence. A reduced
+    # projection contains header/consumed tail spans; the unchanged fallback
+    # still includes arbitrary subject words, so use only its header labels.
+    unquoted_request = _unquoted(text)
+    day_constraints = _reminder_temporal_evidence(unquoted_request, parts=parts)
+    scoped_alerts = day_constraints if day_constraints != unquoted_request else command
+    ambiguous_dates = _conflicting_reminder_days(scoped_alerts, day_constraints, now)
+    lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None
+    resolved, defaulted = ((None, "") if reference or unsupported_clock or ambiguous_dates
                            else resolve_named_time(temporal_text, now=now))
     temporal_source = "explicit" if (resolved or reference) else ""
     plan = TaskPlan(

@@ -222,6 +222,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_quarantine.py",
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
+    # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
+    "tests/test_policy_floor_and_mcp_trust.py",
+    # Pure header classification and string layout; no mail, model or network.
+    "tests/test_email_digest_sections.py",
+    "tests/test_email_digest_review_regressions.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
     "tests/test_workflow_inline_delivery.py",
@@ -575,6 +580,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/research-library-contract",
             [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
+        ),
+        (
+            "native/display-geometry-contract",
+            [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
         ),
         (
             "native/mail-db-compile",
