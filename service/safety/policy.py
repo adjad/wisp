@@ -190,17 +190,22 @@ _PATH_DENY = [
 _PATH_ARG_KEYS = ("path", "paths", "source", "src", "destination", "dest", "archive_path",
                   "folder", "directory", "dir", "target", "output", "output_path",
                   "file", "files")
+_PATH_NAME_TOOLS = frozenset({"uninstall_app"})
 
 
-def _path_operands(args: dict) -> list[tuple[str, str]]:
+def _path_operands(args: dict, tool: str | None = None) -> list[tuple[str, str]]:
     """(argument name, value) for every string location in `args`, list items included."""
     found: list[tuple[str, str]] = []
     for key in _PATH_ARG_KEYS:
         value = args.get(key)
-        if isinstance(value, str) and value.strip():
+        # archive_files alone treats an empty/whitespace optional output as
+        # a default beside its first input, not Path('') at cwd.
+        if tool == "archive_files" and key == "archive_path" and isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, str):
             found.append((key, value))
         elif isinstance(value, (list, tuple)):
-            found += [(key, item) for item in value if isinstance(item, str) and item.strip()]
+            found += [(key, item) for item in value if isinstance(item, str)]
     return found
 
 
@@ -418,7 +423,19 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
             return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
-        operands = _path_operands(args)
+        operands = _path_operands(args, tool)
+        if tool in _PATH_NAME_TOOLS and isinstance(args.get("name"), str):
+            # uninstall_app strips/appends .app, then joins each Applications
+            # root. Admit a basename only; an absolute name replaces the root.
+            name = args["name"].strip()
+            if not name or "/" in name or "\x00" in name or name in {".", ".."}:
+                return Decision(Tier.DENY, "uninstall_app requires an application basename, not a path")
+            if not name.endswith(".app"):
+                name += ".app"
+            operands.extend(("name", str(root / name))
+                            for root in (Path("/Applications"), Path.home() / "Applications"))
+        if any("\x00" in operand for _, operand in operands):
+            return Decision(Tier.DENY, "invalid filesystem path: NUL character")
         if (tool == "organize_files" and isinstance(args.get("folder"), str)
                 and isinstance(args.get("destination"), str)):
             # organize_files anchors relative destinations at its resolved
@@ -428,10 +445,16 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
                 if not destination.is_absolute():
                     source = Path(args["folder"]).expanduser().resolve()
                     operands.append(("destination", str(source / destination)))
+            except ValueError:
+                return Decision(Tier.DENY, "invalid filesystem path in organize_files")
             except (OSError, RuntimeError):
                 pass  # retain the ordinary operand checks for unresolvable paths
         for key, operand in operands:
-            for form in _path_forms(operand):
+            try:
+                forms = _path_forms(operand)
+            except ValueError:
+                return Decision(Tier.DENY, f"invalid filesystem path in {key}")
+            for form in forms:
                 if (hit := _any(rules, form)):
                     return Decision(Tier.DENY, f"protected path in {key}: {hit}")
     return None

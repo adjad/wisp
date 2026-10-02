@@ -116,20 +116,25 @@ def test_only_filesystem_categories_are_subject_to_the_floor():
         assert policy._hard_deny(category, {"target": "/etc/hosts", "path": "~/.ssh"}) is None
 
 
-def test_operand_extraction_covers_every_path_bearing_registered_write_tool():
-    """If a write tool gains a new path argument name this fails, instead of silently
-    leaving that operand outside the floor."""
+def test_operand_extraction_covers_path_named_and_explicit_name_bearing_write_tools():
+    """Check path-named schemas plus reviewed name-derived operands.
+
+    A schema's spelling alone cannot prove every tool's path semantics.
+    """
     import re
     import service.tools  # noqa: F401  register the roster
     pathish = re.compile(r"path|file|dir|folder|dest|source|src|target|archive|output", re.I)
     uncovered = {}
+    assert policy._PATH_NAME_TOOLS == {"uninstall_app"}
     for name, tool in REGISTRY.items():
         if tool.category not in ("fs_write", "fs_delete"):
             continue
         props = (tool.parameters or {}).get("properties", {})
         missing = [key for key, spec in props.items()
-                   if pathish.search(key) and spec.get("type") in ("string", "array")
-                   and key not in policy._PATH_ARG_KEYS]
+                   if (pathish.search(key) or (name == "uninstall_app" and key == "name"))
+                   and spec.get("type") in ("string", "array")
+                   and key not in policy._PATH_ARG_KEYS
+                   and not (name in policy._PATH_NAME_TOOLS and key == "name")]
         if missing:
             uncovered[name] = missing
     assert not uncovered, f"path-bearing arguments outside the protected-path floor: {uncovered}"
@@ -377,3 +382,123 @@ def test_source_relative_resolution_is_not_applied_to_other_tools(organize_polic
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     args = {"folder": str(source), "destination": "relay"}
     assert policy.decide("fs_write", args, "synthetic_other_tool").tier == policy.Tier.CONFIRM
+
+
+def _schema_decision(tool, args):
+    from service.tools.registry import _validate_args
+    registered = REGISTRY[tool]
+    assert _validate_args(registered, args) is None
+    return policy.decide(registered.category, args, tool)
+
+
+def _filesystem_mode(monkeypatch, tool, args, mode):
+    from service.safety import grants
+    monkeypatch.setattr(policy, "_FULL_ACCESS", mode == "full")
+    monkeypatch.setattr(policy, "_READ_ONLY", mode == "view")
+    if mode == "grant":
+        assert grants.grant(tool, args, scoped=False)["ok"] is True
+        assert grants.check(tool, args) == "allow"
+
+
+@pytest.mark.parametrize("tool", ["backup_folder", "archive_files"])
+@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
+@pytest.mark.parametrize("spelling", ["", ".", " "])
+def test_empty_and_whitespace_operands_follow_actual_paths(
+        organize_policy_paths, monkeypatch, tool, mode, spelling):
+    source, protected = organize_policy_paths
+    if spelling == " ":
+        # A whitespace-only filename is not empty: this actual entry is a link.
+        monkeypatch.chdir(source)
+        (source / spelling).symlink_to(protected, target_is_directory=True)
+    else:
+        monkeypatch.chdir(protected)
+    args = ({"source": spelling, "destination": str(source / "backup")}
+            if tool == "backup_folder" else {"paths": [spelling], "archive_path": str(source / "copy.zip")})
+    _filesystem_mode(monkeypatch, tool, args, mode)
+    assert _schema_decision(tool, args).tier == policy.Tier.DENY
+
+
+@pytest.mark.parametrize("default", [None, "", "   "])
+@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
+def test_archive_optional_empty_output_keeps_source_parent_default(
+        organize_policy_paths, monkeypatch, default, mode):
+    source, protected = organize_policy_paths
+    monkeypatch.chdir(protected)
+    args = {"paths": [str(source / "notes.txt")]}
+    if default is not None:
+        args["archive_path"] = default
+    _filesystem_mode(monkeypatch, "archive_files", args, mode)
+    expected = policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW
+    assert _schema_decision("archive_files", args).tier == expected
+
+
+@pytest.mark.parametrize("tool", ["backup_folder", "archive_files"])
+def test_empty_required_path_in_ordinary_cwd_keeps_path_semantics(organize_policy_paths, monkeypatch, tool):
+    source, _ = organize_policy_paths
+    monkeypatch.chdir(source)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    args = ({"source": "", "destination": str(source / "backup")}
+            if tool == "backup_folder" else {"paths": [""], "archive_path": str(source / "copy.zip")})
+    assert _schema_decision(tool, args).tier == policy.Tier.CONFIRM
+
+
+@pytest.mark.parametrize("mode", ["normal", "full", "grant", "view"])
+@pytest.mark.parametrize("relative", [False, True])
+def test_uninstall_path_bearing_name_cannot_escape_applications(
+        organize_policy_paths, monkeypatch, mode, relative):
+    source, protected = organize_policy_paths
+    target = protected / "Example.app"
+    target.mkdir()
+    name = str(target) if not relative else ".." + str(target)
+    args = {"name": name}
+    _filesystem_mode(monkeypatch, "uninstall_app", args, mode)
+    assert _schema_decision("uninstall_app", args).tier == policy.Tier.DENY
+
+
+@pytest.mark.parametrize("name", ["Example", "Example.app", "  Example App.app  "])
+@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
+def test_uninstall_ordinary_basename_keeps_existing_authority(organize_policy_paths, monkeypatch, name, mode):
+    args = {"name": name}
+    _filesystem_mode(monkeypatch, "uninstall_app", args, mode)
+    assert _schema_decision("uninstall_app", args).tier == (policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW)
+
+
+@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
+def test_invalid_path_denies_then_ordinary_request_recovers(organize_policy_paths, monkeypatch, mode):
+    source, _ = organize_policy_paths
+    args = {"path": "notes\x00.txt", "content": "synthetic"}
+    _filesystem_mode(monkeypatch, "write_file", args, mode)
+    assert _schema_decision("write_file", args).tier == policy.Tier.DENY
+    args["path"] = str(source / "notes.txt")
+    assert _schema_decision("write_file", args).tier == (policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW)
+
+
+def test_unrelated_name_is_not_a_filesystem_operand(organize_policy_paths, monkeypatch):
+    _, protected = organize_policy_paths
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    assert policy.decide("fs_write", {"name": str(protected)}, "synthetic_unrelated").tier == policy.Tier.CONFIRM
+
+
+def test_uninstall_basename_canonical_target_is_still_checked(organize_policy_paths, monkeypatch):
+    from pathlib import Path
+    _, protected = organize_policy_paths
+    apps = Path.home() / "Applications"
+    apps.mkdir()
+    (apps / "Example.app").symlink_to(protected, target_is_directory=True)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    assert _schema_decision("uninstall_app", {"name": "Example"}).tier == policy.Tier.DENY
+
+
+def test_canonicalization_value_error_is_a_deny_not_an_allow(organize_policy_paths, monkeypatch):
+    def invalid(_operand):
+        raise ValueError("synthetic invalid path")
+    monkeypatch.setattr(policy, "_path_forms", invalid)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    assert _schema_decision("write_file", {"path": "notes.txt", "content": "x"}).tier == policy.Tier.DENY
+
+
+def test_explicit_full_access_floor_override_is_unchanged(organize_policy_paths, monkeypatch):
+    _, protected = organize_policy_paths
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", False)
+    assert _schema_decision("write_file", {"path": str(protected / "x"), "content": "x"}).tier == policy.Tier.ALLOW
