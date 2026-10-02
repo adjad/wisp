@@ -222,6 +222,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_quarantine.py",
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
+    # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
+    "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
     "tests/test_email_digest_sections.py",
     "tests/test_email_digest_review_regressions.py",
