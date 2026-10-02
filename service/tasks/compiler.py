@@ -683,19 +683,41 @@ def extract_event_reference(text: str) -> str:
     return " ".join(match.group("reference").split()) if match else ""
 
 
-def _reminder_temporal_evidence(text: str) -> str:
+def _reminder_temporal_evidence(text: str, *, parts: tuple[str, str] | None = None) -> str:
     """Retain final dates already consumed by this compiler's subject cleanup."""
-    evidence = reminder_temporal_text(text)
-    parts = _reminder_parts(_unquoted(text))
+    # Split before masking; the introducer's whitespace can otherwise consume
+    # a fully masked title and erase the boundary before its trailing day.
+    parts = parts or _reminder_parts(text)
+    if parts:
+        parts = (_unquoted(parts[0]), _unquoted(parts[1]))
+    named = None
+    outer_day = None
+    if parts:
+        header = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow", parts[0], flags=re.I)
+        tail = _TRAILING_TIME.search(parts[1].rstrip().strip('*_'))
+        outer_day = _ALERT_DAY.search(header) or (tail and _ALERT_DAY.search(tail.group()))
     if parts and parts[1]:
         # Use the SAME bounded suffix grammar/order as _clean_subject, never
         # arbitrary dates embedded in authored content or inside quoted titles.
-        subject = _TRAILING_TIME.sub("", parts[1].strip().strip('*_'))
+        # Keep left padding from quote masking: it is the original boundary
+        # before a suffix when the entire title was quoted.
+        subject = _TRAILING_TIME.sub("", parts[1].rstrip().strip('*_'))
         suffix = _TRAILING_NAMED_DATE.search(subject)
         named = _NAMED_DATE.search(suffix.group()) if suffix else None
-        retained = {match.group().casefold() for match in _NAMED_DATE.finditer(evidence)}
-        if named and named.group().casefold() not in retained:
-            evidence = evidence.rstrip() + " " + named.group()
+    resolution_text = text
+    if named or outer_day or (parts and _NAMED_DATE.search(parts[0])):
+        # A recognized outer day is authoritative. Mask only literal DATE
+        # tokens before projection; its fallback can otherwise prefer a title's
+        # first date/ISO token. Keep quoted clocks and all subject text behavior.
+        chars = list(text)
+        for start, end in quoted_spans(text):
+            for date in _NAMED_DATE.finditer(text, start, end):
+                chars[date.start():date.end()] = " " * (date.end() - date.start())
+        resolution_text = "".join(chars)
+    evidence = reminder_temporal_text(resolution_text)
+    retained = {match.group().casefold() for match in _NAMED_DATE.finditer(evidence)}
+    if named and named.group().casefold() not in retained:
+        evidence = evidence.rstrip() + " " + named.group()
     return evidence
 
 
@@ -754,7 +776,7 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     # projection contains header/consumed tail spans; the unchanged fallback
     # still includes arbitrary subject words, so use only its header labels.
     unquoted_request = _unquoted(text)
-    day_constraints = _reminder_temporal_evidence(unquoted_request)
+    day_constraints = _reminder_temporal_evidence(unquoted_request, parts=parts)
     scoped_alerts = day_constraints if day_constraints != unquoted_request else command
     ambiguous_dates = _conflicting_reminder_days(scoped_alerts, day_constraints, now)
     lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None

@@ -693,12 +693,50 @@ def test_split_header_and_trailing_date_is_not_discarded(
     ("", "review Friday tomorrow report", " on October 12, 2027", "2027-10-12T09:00"),
     ("Tuesday ", "review Friday report", " on October 12, 2027", "2027-10-12T09:00"),
     ("tomorrow ", "review Friday report", " on October 12, 2027", None),
+    ("Tuesday ", "review Friday report", " October 12, 2027", "2027-10-12T09:00"),
+    ("tomorrow ", "review Friday report", " October 12, 2027", None),
+    ("", "review October 20, 2027", " October 12, 2027", "2027-10-12T09:00"),
 ])
 def test_split_alert_evidence_excludes_quoted_title_dates(
         successful_reminder_endpoint, monkeypatch, header, title, suffix, expected):
     test_header_day_constraints_reconcile_before_effects(
         successful_reminder_endpoint, monkeypatch, header, expected, subject=title,
         prompt=f'Remind me {header}to "{title}"{suffix}')
+
+
+@pytest.mark.parametrize("quotes", [('"', '"'), ('“', '”'), ('`', '`'), ("'", "'")])
+@pytest.mark.parametrize("title,hour", [
+    ("review October 2, 2026", "09"),
+    ("review 2026-10-02", "09"),
+    ("review October 20, 2027 report", "09"),
+    ("review 2027-10-20 report", "09"),
+    ("review October 12, 2027", "09"),
+    ("review October 2, 2026 at 6pm Friday report", "18"),
+])
+@pytest.mark.parametrize("outer", ["October 12, 2027", "2027-10-12"])
+def test_quoted_title_date_cannot_override_outer_alert(
+        successful_reminder_endpoint, monkeypatch, quotes, title, hour, outer):
+    left, right = quotes
+    subject = title if left in {'"', "'"} else left + title + right
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, "", f"2027-10-12T{hour}:00", subject=subject,
+        prompt=f"Remind me to {left}{title}{right} on {outer}")
+
+
+@pytest.mark.parametrize("header,suffix", [
+    ("tomorrow ", ""), ("Friday ", ""), ("tmrw ", ""),
+    ("", " tomorrow"), ("", " Friday"),
+])
+def test_quoted_date_does_not_override_recognized_relative_day(
+        successful_reminder_endpoint, monkeypatch, header, suffix):
+    # Keep the established clock behavior, changing only literal date authority.
+    control = compile_task(f'Remind me {header}to "review at 6pm"{suffix}',
+                           now=datetime(2026, 10, 1, 10))
+    assert control.status == "ready"
+    title = "review 2027-10-12 at 6pm"
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, "", control.temporal.absolute_iso,
+        subject=title, prompt=f'Remind me {header}to "{title}"{suffix}')
 
 
 @pytest.mark.parametrize("header_clock,title", [
