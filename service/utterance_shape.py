@@ -47,7 +47,8 @@ _MENTION_VERB = re.compile(
     _LEAD + r"(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?"
     r"(?:explain|define|translate|spell|pronounce|say|repeat|echo|quote|type(?:\s+out)?"
     r"|write\s+out|read(?:\s+aloud)?\s+(?:the|this|that)\s+(?:word|phrase|sentence|text|line|string)"
-    r"|what\s+(?:does|do)\b|what\s+is\s+(?:the\s+)?meaning\s+of)\b", re.I)
+    r"|(?:tell\s+me\s+)?what\s+(?:does|do)\b|tell\s+me\s+what\b"
+    r"|what\s+is\s+(?:the\s+)?meaning\s+of)\b", re.I)
 _WORDS_NOUN = re.compile(r"\b(?:the\s+)?(?:word|words|phrase|sentence|string|command|expression|term)\b", re.I)
 # `Say "hi" to Mom` is a message to send, not a mention.
 _RECIPIENT_AFTER_QUOTE = re.compile(r"\b(?:to|for)\s+(?!me\b|us\b|myself\b)[\w@.-]+", re.I)
@@ -75,7 +76,15 @@ def is_prohibition(text: str) -> bool:
     # sentence, and the source-exclusion logic owns that case. A trailing
     # pleasantry ("don't lock my screen, thanks") is not a request.
     later = re.split(r"[;.!?,]|\s+(?:but|and|then|instead|just|rather)\s+", text[match.end():])[1:]
-    return not any(len(re.findall(r"\w+", piece)) >= 2 for piece in later)
+    affirmative = re.compile(
+        r"^\s*(?:(?:please|just|instead|rather)\s+)*(?:"
+        r"is\s+there\b|what(?:[’']s|\s+is|\s+are)\b|"
+        r"(?:show|check|list|search|find|send|email|text|message|remind|"
+        r"delete|remove|cancel|add|set|create|move|archive|forward|reply|lock|"
+        r"read|open|call)\b|tell\s+me\s+(?:my|the|our)\b)", re.I)
+    # Reasons ("I am in a call", "it contains private information") and
+    # explanations of the forbidden action are not permission to perform it.
+    return not any(affirmative.match(piece) for piece in later)
 
 
 def is_mention(text: str) -> bool:

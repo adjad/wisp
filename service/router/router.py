@@ -655,6 +655,31 @@ _DEVICE_WRITE_RE = re.compile(
 _CONDITIONAL_RE = re.compile(
     r"\b(?:if|unless|otherwise|only\s+if|after\s+confirming)\b", re.I)
 
+# Retrieval keywords identify a domain, not permission to execute it. A direct
+# call must consume an entire affirmative request with no unexplained tail.
+_DEVICE_REQUEST_PREFIX = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+_DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
+                                     r"(?:\s+(?:please|now))?[.!?\s]*", re.I))
+                    for name, body in (
+    ("get_battery_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
+     r"how(?:'s|\s+is)\s+my\s+battery(?:\s+doing)?|how\s+much\s+battery\s+do\s+i\s+have|"
+     r"(?:show|check|tell\s+me)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?)"),
+    ("get_volume", r"(?:what(?:'s|\s+is)\s+(?:my|the|the\s+current)\s+volume(?:\s+(?:at|level))?|"
+     r"(?:show|check)\s+(?:my|the)\s+volume|am\s+i\s+muted)"),
+    ("clipboard_read", r"(?:what(?:'s|\s+is)\s+on\s+my\s+clipboard|what\s+did\s+i\s+copy|"
+     r"(?:read|show|check)\s+(?:my|the)\s+clipboard(?:\s+contents)?)"),
+    ("lock_screen", r"lock\s+(?:my|the)\s+(?:screen|mac|computer)"),
+    ("run_speed_test", r"(?:run|do|start)\s+(?:a\s+)?(?:speed\s?test|(?:internet|network|wi-?fi)\s+speed\s?test)"),
+)]
+
+
+def _device_request_clauses(text: str) -> list[str]:
+    return [part.strip() for part in re.split(
+        r"[;.!?]|(?:,\s*(?:(?:and|but|then|also)\s+)?|\s+(?:and|but|then|also)\s+)"
+        r"(?=(?:please\s+|just\s+)?(?:lock|read|show|check|list|run|do|start|what|how|tell|"
+        r"remind|create|add|send|email|text)\b)",
+        mask_quoted(text), flags=re.I) if part.strip()]
+
 
 def _direct_device_call(t: str) -> list[tuple[str, dict]]:
     """The one zero-argument device tool this request unambiguously names.
@@ -667,44 +692,15 @@ def _direct_device_call(t: str) -> list[tuple[str, dict]]:
     """
     if _DEVICE_WRITE_RE.search(t) or _CONDITIONAL_RE.search(t):
         return []
-    hits = _matched_device_tools(t)
+    hits = [name for name, rx in _DEVICE_REQUESTS if rx.fullmatch(t.strip())]
     return [(hits[0], {})] if len(hits) == 1 else []
 
 
 def _matched_device_tools(t: str) -> list[str]:
     if _DEVICE_WRITE_RE.search(t) or _CONDITIONAL_RE.search(t):
         return []
-    return [name for name, rx in _DIRECT_DEVICE_PATTERNS if rx.search(t)]
-
-
-# Forward-looking window for a calendar-only read, resolved in PYTHON.
-# tools/timeranges.py states the rule this follows: Wisp resolves dates, the
-# model does not — it is "reliably wrong" at date arithmetic, and a wrong
-# boundary is invisible in the output.
-_CALENDAR_WINDOW_PATTERNS: list[tuple[re.Pattern, int]] = [
-    (re.compile(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", re.I), 1),
-    (re.compile(r"\btomorrow\b", re.I), 2),
-    (re.compile(r"\bthis\s+weekend\b", re.I), 7),
-    (re.compile(r"\bthis\s+week\b", re.I), 7),
-    (re.compile(r"\b(?:next|this\s+coming)\s+week\b", re.I), 14),
-    (re.compile(r"\b(?:this|next)\s+month\b", re.I), 30),
-]
-
-
-def _calendar_window_days(t: str) -> int:
-    """Forward window in days for a calendar-only read. An unqualified read
-    uses the tool's widest supported horizon instead of silently meaning seven
-    days.
-
-    Takes the WIDEST matching window when a request names more than one
-    ("today and tomorrow"). A wider window is a superset, and get_upcoming tags
-    every row relative to today, so the narration can still separate them. The
-    opposite error — too narrow — silently drops events the user asked for.
-    """
-    hits = [d for rx, d in _CALENDAR_WINDOW_PATTERNS if rx.search(t)]
-    for match in re.finditer(r"\bnext\s+(\d+)\s+(days?|weeks?)\b", t, re.I):
-        hits.append(min(60, max(1, int(match[1]) * (7 if match[2].lower().startswith('week') else 1))))
-    return max(hits) if hits else 60
+    return list(dict.fromkeys(name for part in _device_request_clauses(t)
+                              for name, rx in _DEVICE_REQUESTS if rx.fullmatch(part)))
 
 
 # "summarize my inbox" and nothing else. Anchored start-to-end on purpose:
@@ -779,7 +775,9 @@ def _email_search_query(text: str) -> str | None:
     vendor = re.fullmatch(
         r"(?:purchases?|orders?|receipts?|transactions?|charges?)\s+from\s+(.+)",
         query, re.I)
-    return (vendor.group(1) if vendor else query).strip()
+    # Import locally to avoid reads -> router's source-exclusion dependency cycle.
+    from service.workflows.reads import _sender_phrase
+    return _sender_phrase(vendor.group(1) if vendor else query)
 
 
 _PRIVATE_QUERY_PREFIX = (
@@ -1169,7 +1167,8 @@ async def _semantic_core(text: str) -> list[str]:
 
 
 async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
-                          web_request: _WebRequest | None = None) -> RouteDecision | None:
+                          web_request: _WebRequest | None = None,
+                          strict_reminder: bool = False) -> RouteDecision | None:
     """Route each explicit action independently, then merge a compact menu.
 
     Whole-request retrieval lets the most verbose clause dominate and silently
@@ -1196,13 +1195,26 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
         r"remove|rename|run|save|schedule|send|set|start|stop|store|toggle|"
         r"uninstall|update|write)\b", re.I)
 
-    clauses = clauses or _action_clauses(text)
+    clauses = _action_clauses(text) if clauses is None else clauses
     if len(clauses) < 2:
         return None
+    strict_decisions = []
+    if strict_reminder:
+        strict_decisions = [_complete_reminder_clause(clause) for clause in clauses]
+        if not all(strict_decisions):
+            return None
+        # The loop's groups identify tool names, not separate invocations.
+        # Two reminders (or two sends) cannot share one satisfied obligation.
+        seen: set[str] = set()
+        for child in strict_decisions:
+            names = set(child.tool_subset or ())
+            if seen.intersection(names):
+                return None
+            seen.update(names)
 
     clause_decisions: list[tuple[str, RouteDecision, bool]] = []
     confident_actions = 0
-    for clause in clauses:
+    for index, clause in enumerate(clauses):
         parsed_clause = next((item for item in web_request.continuations if item.text == clause), None) if web_request else None
         if web_request and web_request.allowed and clause == web_request.source:
             request = web_request.source_request()
@@ -1212,7 +1224,9 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             request = web_request
         else:
             request = _classify_web_request(clause)
-        if web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
+        if strict_reminder:
+            decision = strict_decisions[index]
+        elif web_request and web_request.allowed and web_request.delivery and clause == web_request.delivery.text:
             request = web_request
             decision = _public_delivery_decision(web_request)
         elif request.allowed and not request.write_intent:
@@ -1221,7 +1235,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             decision = _mk_scoped(["create_note"], "save public findings as a new note", light=False)
             decision.required_tool_groups = (frozenset({"create_note"}),)
         else:
-            decision = rule_route(clause, web_request=request)
+            decision = _compound_device_write(clause) or rule_route(clause, web_request=request)
         matched_rule = decision is not None
         if decision is not None and decision.needs_tools:
             confident_actions += 1
@@ -1235,7 +1249,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
                 reason="explicit task-list clause -> retrieved tools")
         if decision.tool_subset is None:
             decision.tool_subset = await _semantic_core(clause)
-        finalized = decision if request.allowed else _finalize(decision, clause, web_request=request)
+        finalized = decision if strict_reminder or request.allowed else _finalize(decision, clause, web_request=request)
         clause_decisions.append((clause, finalized, matched_rule))
 
     # Avoid turning ordinary multi-sentence prose into a forced tool workflow.
@@ -1265,6 +1279,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
         reply_analysis = bool(re.search(r"\bwho\s+(?:may|might|could)\s+need\s+a\s+reply\b",
                                         clause, re.I))
         clause_writes = not frozen_source and ((has_write_intent(clause) and not reply_analysis)
+                         or _compound_device_write(clause) is not None
                          or bool(broad_action.search(clause)))
 
         def permitted(name: str) -> bool:
@@ -1338,6 +1353,24 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
     )
     merged.required_tool_groups = tuple(groups)
     merged.conditional_tools = tuple(dict.fromkeys(conditionals))
+    if strict_reminder:
+        # Each child's complete grammar already owns its tools and arguments.
+        # Finalizing the original text again reinterprets future title verbs
+        # (e.g. 'reply to Dan tomorrow') as present outbound authorization.
+        merged.reminder_action = "create"
+        for _, child, _ in clause_decisions:
+            for name, args in child.direct_calls:
+                merged.tool_argument_bindings[name] = dict(args)
+            merged.tool_argument_bindings.update(child.tool_argument_bindings)
+        writes = {name for name in merged_tools if REGISTRY[name].category in mutating_categories}
+        if len(writes) == 1:
+            # Preserve an existing complete write's selection hint beside
+            # independent reads; never choose one of several distinct effects.
+            merged.force_first_tool = next((child.force_first_tool
+                for _, child, _ in clause_decisions if child.force_first_tool in writes), None)
+        merged.forbidden_tools = frozenset().union(*(
+            child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
+        return _pin_ling_web_decision(merged) if web_request and web_request.opted_out else merged
     if web_request and web_request.allowed:
         # Finalize local effects only on their own clause. The original public
         # query must never re-enter generic effect recognition at this boundary.
@@ -4023,7 +4056,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     if not subset:
         return _merge_claims(claims)
     # A pure calendar LOOKUP and nothing else -> call get_upcoming here, with the
-    # window resolved in Python (see _calendar_window_days). Every condition
+    # whole scope resolved in Python (see _calendar_read_args). Every condition
     # below is load-bearing:
     #   - `domains == ["calendar"]` — a compound read ("my messages and
     #     calendar") needs the model to call the other sources too, and step 0
@@ -4061,10 +4094,11 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         return d
     if (domains == ["calendar"] and not claims and not writing and not multi
             and not _AVAILABILITY_RE.search(t) and not _JOIN_CALL_RE.search(t)):
-        days = _calendar_window_days(t)
-        return _mk_direct([("get_upcoming", {"days": days} if days else {})],
-                          "calendar lookup -> get_upcoming (router-direct"
-                          + (f", {days}d)" if days else ")"))
+        from service.workflows.reads import _calendar_read_args
+        args = _calendar_read_args(t, "", default_days=60)
+        if args is not None:
+            return _mk_direct([("get_upcoming", args)],
+                              "complete calendar lookup -> get_upcoming (router-direct)")
     # Add each matched domain's write tools when the request actually writes.
     # This is the whole fix: a compound "summarize my email and send it to X"
     # now carries send_email alongside the summarizers, instead of being handed
@@ -4676,6 +4710,13 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.required_tool_groups = (frozenset({"complete_reminder"}),)
         d.forbidden_tools = frozenset({"cancel_event", "update_event"})
         return d
+    # A complete quoted-title lookup must not acquire extra domains from the
+    # literal title (e.g. "Lunch Oct 5 and messages").
+    from service.workflows.reads import _calendar_read_args
+    calendar_args = _calendar_read_args(t, "")
+    if calendar_args is not None and calendar_args.get("query"):
+        return _mk_direct([("get_upcoming", calendar_args)],
+                          "complete titled calendar lookup -> get_upcoming (router-direct)")
     if query := _email_search_query(t):
         return _mk_direct(
             [("view_emails", {"query": query, "count": 10,
@@ -4748,8 +4789,13 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # Device control contributes only when it is NOT the whole request: on its
     # own it keeps its existing unscoped/direct-dispatch route below (which
     # has its own `_direct_device_call` fast path this claim cannot express).
-    # `_DATA_NOUN_RE` mirrors that route's own gate.
-    if (_SYSTEM_CONTROL_RE.search(t) and not _DATA_NOUN_RE.search(t)
+    # A second action can say "remind me" without a data noun. Such a clause
+    # still needs the device claim; only the whole single-device ask is direct.
+    if ((_DATA_NOUN_RE.search(t) or len(_device_request_clauses(t)) > 1)
+            and (hits := _matched_device_tools(t))):
+        _pre.append(_Claim("device", hits, "affirmative device clause -> scoped tools",
+                           expect=False, light=False, multi=True))
+    elif (_SYSTEM_CONTROL_RE.search(t) and not _DATA_NOUN_RE.search(t)
             and (direct := _direct_device_call(t))):
         _pre.append(_Claim("device", [n for n, _ in direct],
                            f"device control -> {direct[0][0]} (router-direct)",
@@ -6137,6 +6183,16 @@ def _no_web_public_write_decision(
     if not _is_no_web_public_write(text, request):
         return None
 
+    if _REMINDER_CREATE_RE.search(mask_quoted(text)):
+        # A no-browse prefix does not make an incomplete or alternative
+        # reminder continuation safe. Preserve the independently authored
+        # single-reminder path only after consuming that whole continuation.
+        positive = [clause for clause in request.continuations if not clause.negated]
+        if (len(positive) != 1
+                or (local := _complete_reminder_clause(positive[0].text)) is None
+                or local.tool_subset != ["add_reminder"]):
+            return None
+
     checklist = _checklist_route(text)
     if checklist is not None and {"get_upcoming", "search_reminders"}.intersection(
             checklist.tool_subset or ()):
@@ -6297,7 +6353,182 @@ async def _deliberate_decision(text: str, request: "_WebRequest", why: str) -> R
         public_reference=False, inherited=False, clarification=None)
     # Finalize on the masked sentence: the execution contract re-derives forced
     # tools from the text, and quoted words must not re-arm what was just disarmed.
-    return _finalize(decision, mask_quoted(text), web_request=private)
+    return _interpretation_only(_finalize(decision, mask_quoted(text), web_request=private))
+
+
+def _interpretation_only(decision: RouteDecision) -> RouteDecision:
+    """Keep the menu/exclusions but never re-arm a declined deterministic call.
+
+    An unmet required group implicitly forces a tool in the agent loop too.
+    """
+    decision.direct_calls = []
+    decision.force_first_tool = None
+    decision.expect_tool_first = False
+    decision.required_tool_groups = ()
+    decision.tool_argument_bindings = {}
+    decision.conditional_tools = ()
+    decision.reminder_action = ""
+    decision.narration_after = frozenset()
+    decision.multi_round = True
+    return decision
+
+
+def _compound_device_write(clause: str) -> RouteDecision | None:
+    """Bounded affirmative writes, interpreted by the ordinary approved loop.
+
+    These are scoped clause menus, never direct calls or inferred arguments.
+    Full consumption prevents quoted titles, conditions and unexplained tails
+    from arming a device tool beside a reminder.
+    """
+    prefix = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+    suffix = r"(?:\s+(?:please|now))?[.!?\s]*"
+    patterns = (
+        ("set_volume", r"(?:mute(?:\s+(?:(?:my|the)\s+)?(?:volume|sound|audio))?|"
+         r"(?:set|lower|reduce|turn)\s+(?:(?:my|the)\s+)?(?:volume|sound|audio)\s+"
+         r"(?:to|down\s+to)\s+(?:zero|0)(?:\s*(?:percent|%))?)"),
+        ("set_wifi", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
+         r"(?:(?:my|the)\s+)?wi-?fi\s+(?:on|off))|"
+         r"(?:enable|disable)\s+(?:(?:my|the)\s+)?wi-?fi)"),
+    )
+    for name, body in patterns:
+        if re.fullmatch(prefix + body + suffix, clause.strip(), re.I):
+            return _mk_scoped([name], "complete device write clause -> model interprets",
+                              force=name, light=False, multi=True)
+    return None
+
+
+def _complete_companion_read(clause: str) -> RouteDecision | None:
+    """Reuse read intents only after their entire source/filter grammar fits.
+
+    The broader rule router deliberately recognizes substrings. That metadata
+    is reusable here, but only a consumed whole clause can authorize a sibling
+    reminder effect. Unexplained residual prose is not a search/name modifier.
+    """
+    text = clause.strip(" .!?")
+    # 'Check my inbox' is the same unqualified read scope, with its ordinary
+    # route metadata preserved below (not a new router-direct summary call).
+    summary = re.sub(r"^((?:(?:can|could)\s+you\s+|please\s+)?)(?:check|read)\s+",
+                     r"\1summarize ", text, flags=re.I)
+    complete = bool(_DIRECT_SUMMARY_RE.fullmatch(summary)
+                    or _DATED_MESSAGES_SUMMARY_RE.fullmatch(text)
+                    or _INLINE_EMAIL_SUMMARY_RE.fullmatch(text))
+    if match := _RECENT_RE.match(text):
+        suffix = text[match.end():].strip()
+        complete = re.fullmatch(
+            r"(?:(?:across|in)\s+(?:all\s+)?(?:my\s+)?apps)?"
+            r"(?:\s*(?:today|yesterday|lately|this\s+week))?", suffix, re.I) is not None
+    if match := _PEOPLE_QUERY_RE.match(text):
+        suffix = text[match.end():].strip()
+        # Quoted names and one-word/capitalized multiword names are literal
+        # filters; arbitrary trailing prose is not consumed as a person's name.
+        name = r'''(?:"[^"\n]+"|'[^'\n]+'|[A-Za-z'’-]+(?:\s+[A-Z][a-z'’-]+){0,2})'''
+        complete = not suffix or re.fullmatch(r"(?i:named|called)\s+" + name, suffix) is not None
+    return rule_route(text) if complete else None
+
+
+def _complete_reminder_clause(clause: str) -> RouteDecision | None:
+    """Recognize complete clause shapes before a reminder compound gets tools.
+
+    Retrieval and substring rule matches cannot establish a separate action.
+    The generic compound router remains available for other request types.
+    """
+    from service.tasks.compiler import compile_reminder_create, compile_message_send, compile_email_send
+    from service.workflows.reads import _calendar_read_args
+    if plan := compile_reminder_create(clause):
+        if plan.status != "ready":
+            return None
+        decision = _mk_scoped(["add_reminder"], "complete typed reminder clause",
+                              force="add_reminder", light=False)
+        decision.required_tool_groups = (frozenset({"add_reminder"}),)
+        decision.reminder_action = "create"
+        decision.tool_argument_bindings = {"add_reminder": {
+            "title": plan.subject.value, "when_iso": plan.temporal.absolute_iso, "kind": "reminder"}}
+        return decision
+    if device := _compound_device_write(clause):
+        return _finalize(device, clause)
+    if names := {name for name, pattern in _DEVICE_REQUESTS if pattern.fullmatch(clause.strip())}:
+        return _finalize(rule_route(clause), clause)
+    if (args := _calendar_read_args(clause, "")) is not None:
+        return _mk_direct([("get_upcoming", args)], "complete calendar companion read")
+    if read := _complete_companion_read(clause):
+        return _finalize(read, clause)
+    for compiler, name in ((compile_message_send, "send_message"), (compile_email_send, "send_email")):
+        if plan := compiler(clause):
+            if plan.status != "ready":
+                return None
+            recipient = str(plan.recipient.value)
+            literal = bool(re.fullmatch(r"\+?\d[\d ()-]{5,}\d|[^\s@]+@[^\s@]+", recipient))
+            bindings = {"text" if name == "send_message" else "body": plan.subject.value}
+            if name == "send_email":
+                bindings["subject"] = plan.parameters["email_subject"].value
+            if plan.temporal.absolute_iso:
+                name = "schedule_send"
+                bindings = {"channel": "message" if plan.intent == "message.send" else "email",
+                            "body": plan.subject.value, "when": plan.temporal.absolute_iso,
+                            **({"subject": plan.parameters["email_subject"].value}
+                               if plan.intent == "email.send" else {})}
+            if literal:
+                bindings["to"] = recipient
+            tools = [name] if literal else ["lookup_contact", name]
+            decision = _mk_scoped(tools, "complete typed outbound companion clause", light=False, multi=True)
+            decision.required_tool_groups = tuple(frozenset({tool}) for tool in tools)
+            decision.tool_argument_bindings = {name: bindings}
+            return decision
+    if re.fullmatch(
+            r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+            r"(?:show|check|list)\s+(?:my|the)\s+reminders?"
+            r"(?:\s+(?:today|tomorrow|tonight))?[.!?\s]*", clause, re.I):
+        return _finalize(rule_route(clause), clause)
+    return None
+
+
+async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteDecision | None:
+    """One local reminder authorization check before any routing shortcut.
+
+    Source denials subtract authority; they never excuse an unconsumed positive
+    clause. Public-source workflows retain their existing scoped parser.
+    """
+    from service.tasks.compiler import reminder_request_clauses, compile_task
+    clauses = reminder_request_clauses(text)
+    if len(clauses) == 1:
+        return None
+    if (no_web := _no_web_public_write_decision(text, request)) is not None:
+        return no_web  # Independently authored local continuation was consumed.
+    if (request.allowed or request.inherited or request.clarification
+            or request.standalone_offer or request.confirmed_local_request or request.delivery_cancelled):
+        # Delegate only text actually retained by the public-workflow parser.
+        # A recognized source/continuation must not hide a discarded third
+        # clause. Coordinated words inside the retained source remain its query.
+        retained = [request.source, *(clause.text for clause in request.continuations),
+                    *(clause.text for clause in request.presentations)]
+        if request.delivery:
+            retained.append(request.delivery.text)
+        normalize = lambda value: " ".join(value.casefold().split()).strip(" .!?,;*_")
+        if clauses and all(any(normalize(clause) in normalize(part) for part in retained)
+                           for clause in clauses):
+            return None
+    # Only complete denial clauses are constraints, not arbitrary text around
+    # a negative keyword. Retain the original request for downstream exclusions.
+    positive = tuple(clause for clause in clauses if not re.fullmatch(
+        rf"(?:{_TOOL_REJECTION_RE.pattern})(?:\s+events?)?[.!?\s]*", clause, re.I))
+    if len(positive) == 1:
+        return None  # A single ordinary reminder plus understood constraints.
+    receipt = compile_task(text)
+    if (receipt is not None and receipt.intent == "reminder.create"
+            and receipt.status == "ready" and "notify_request" in receipt.parameters
+            and (notification := rule_route(text)) is not None):
+        return _finalize(notification, text, web_request=request)
+    if (complete := await _compound_route(text, clauses=positive,
+                                         web_request=request, strict_reminder=True)) is not None:
+        _apply_calendar_exclusion(complete, text)
+        _apply_reminder_exclusion(complete, text)
+        return complete
+    from service.tools.registry import REGISTRY
+    decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
+    decision.tool_subset = []
+    decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
+    decision.forbidden_tools = frozenset(REGISTRY)
+    return _pin_ling_web_decision(decision) if request.opted_out else decision
 
 
 async def route(text: str, *,
@@ -6316,6 +6547,24 @@ async def route(text: str, *,
     if is_prohibition(text) and any(rx.search(text) for _, rx in _DIRECT_DEVICE_PATTERNS):
         return await _deliberate_decision(
             text, request, "the request prohibits a device action rather than asking for it")
+    # Resolve local temporal possessives before the central boundary. This is
+    # classification only; no shortcut may execute until completeness is known.
+    if request.allowed and not request.explicit and not request.inherited and (
+            _positive_local_calendar_request(text)
+            or _positive_local_reminder_request(text)
+            or _local_schedule_absence_query(text)):
+        request = replace(request, current=False, query=None, inherited=False, clarification=None)
+    if (reminder_boundary := await _reminder_compound_boundary(text, request)) is not None:
+        return reminder_boundary
+    clauses = _device_request_clauses(text)
+    device_tools = _matched_device_tools(text)
+    if len(clauses) > 1 and device_tools and not _REMINDER_CREATE_RE.search(mask_quoted(text)):
+        from service.workflows.reads import _calendar_read_args
+        if any(_calendar_read_args(clause, "") is not None for clause in clauses):
+            decision = rule_route(text) or _mk_scoped([], "calendar and device interpretation")
+            decision.tool_subset = list(dict.fromkeys(
+                [*(decision.tool_subset or ()), "get_upcoming", *device_tools]))
+            return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
     if (private_read := _strict_private_read_decision(text)) is not None:
@@ -6331,15 +6580,6 @@ async def route(text: str, *,
             text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
     if (checklist := _checklist_route(text)) is not None:
         return _finalize(checklist, text, web_request=request)
-    # Calendar is a local/private Wisp source. Temporal possessives such as
-    # "tomorrow's calendar" can otherwise look like a current external query
-    # before the deterministic router gets a chance to claim them.
-    if request.allowed and not request.explicit and not request.inherited and (
-            _positive_local_calendar_request(text)
-            or _positive_local_reminder_request(text)
-            or _local_schedule_absence_query(text)):
-        request = replace(request, current=False, query=None, inherited=False,
-                          clarification=None)
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)
