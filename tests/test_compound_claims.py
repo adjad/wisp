@@ -242,9 +242,12 @@ def test_write_intent_is_per_domain() -> None:
     check("no send_email on a read", "send_email" not in got, f"got {got}")
     check("no trash_file on a read", "trash_file" not in got, f"got {got}")
 
-    # …and a clause that IS an email write still gets the write tools.
+    # The future reminder subject is not a present email-write instruction.
     got = tools_of("summarize my inbox, and remind me to reply to Dan tomorrow")
-    check("'reply to Dan' keeps reply_to_email", "reply_to_email" in got, f"got {got}")
+    check("inbox read and future reminder are both supported",
+          {"summarize_emails", "add_reminder"}.issubset(got), f"got {got}")
+    check("future reply does not authorize a present reply or send",
+          not {"reply_to_email", "send_email", "send_message"}.intersection(got), f"got {got}")
 
     # A compose intent justifies the OUTBOUND tools only — never archiving,
     # flagging or trashing mail nobody mentioned.

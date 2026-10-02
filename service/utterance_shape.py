@@ -29,7 +29,7 @@ import re
 # count; a single-quoted span counts only at word edges so apostrophes ("don't",
 # "Sam's") never open one.
 _QUOTED = re.compile(
-    r'"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|(?<![\w])\'[^\'\n]{2,}\'(?![\w])')
+    r'"[^"]*"|“[^”]*”|`[^`]*`|(?<![\w])\'[^\']{2,}\'(?![\w])')
 
 _LEAD = r"^[\W_]*(?:(?:please|hey|ok(?:ay)?|wisp|and|but|also|actually|now|just)\b[\s,]*)*"
 
