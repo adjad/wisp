@@ -1048,7 +1048,7 @@ def _contact_receipt_destination(binding: dict, receipt: str) -> str:
     closed on ambiguous, truncated, unrelated or unrecognized result formats.
     """
     from service.tasks.engine import _match_tier, _LITERAL_EMAIL, _LITERAL_PHONE
-    match = re.fullmatch(r"([^:\n]+):[ \t]*([^()\n]+?)(?: \(also on ([^()\n]+)\))?",
+    match = re.fullmatch(r"([^:\n]+):[ \t]*([^\n]+?)(?: \(also on ([^\n]+)\))?",
                          receipt.strip())
     if match:
         label, preferred, others = match.groups()
