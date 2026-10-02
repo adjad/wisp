@@ -218,6 +218,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
+    # Pure string redaction plus temporary stores; no real keys, Keychain or model.
+    "tests/test_credential_redaction.py",
+    # Pure compiler classification; no model, sources or effects.
+    "tests/test_workflow_authored_message.py",
     "tests/test_helper_provenance.py",
     "tests/test_node_prep.py",
     "tests/test_primary_credentials.py",

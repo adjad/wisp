@@ -499,6 +499,12 @@ class SessionStore:
                 raise ValueError("Display content requires a matching trusted display-only result")
             display_kind = display_content.artifact_kind
             display_content = str(display_content)
+        elif isinstance(content, str):
+            # Last line of defence before persistence and the full-text index:
+            # a credential that reached here (typed by the user, echoed by a
+            # model, or returned by a tool) is never stored.
+            from service.safety.redaction import scrub
+            content = scrub(content)[0]
         with self._lock:
             # Compute the next idx INSIDE the lock (via SQL) so two concurrent
             # turns on one session can't read the same count and collide on the

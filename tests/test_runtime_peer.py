@@ -57,7 +57,7 @@ async def test_rogue_runtime_connection_gets_zero_bytes(spare_server, monkeypatc
     monkeypatch.setattr(local_peer.Path, 'home', lambda: tmp_path)
     client = OMLXClient(base_url=f'http://127.0.0.1:{port}', api_key='a'*64)
     try:
-        with pytest.raises(ModelLoadError, match='Local inference peer attribution unavailable'):
+        with pytest.raises(ModelLoadError, match="verify the local AI engine"):
             if action == 'health':
                 await client.health()
             elif action == 'prompt':

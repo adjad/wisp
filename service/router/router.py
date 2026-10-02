@@ -14,6 +14,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 
+from service.authored_message import authored_message_intent
 from service.config import (
     models_config,
     role_to_model,
@@ -2457,6 +2458,11 @@ def _source_outbound_subset(text: str, *, last_user: str | None = None,
     read also prevents sending stale calendar, inbox, or market data.
     """
     current = text.strip()
+    if authored_message_intent(current):
+        # "text Dad telling him my schedule changed" writes prose. A source
+        # word in it is the topic, not data to read and deliver, and forcing
+        # the source tools first made the model send a data dump instead.
+        return None
     prior_users = list(recent_users or ([] if last_user is None else [last_user]))
     if last_user and (not prior_users or prior_users[-1] != last_user):
         prior_users.append(last_user)
