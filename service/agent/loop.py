@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from service import debug_capture
+from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import narration_mode, no_thinking_kwargs, role_to_model
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
@@ -1749,7 +1750,7 @@ async def run_agent(
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
-                response = "The action did not return a verified success. I stopped without retrying.\n" + _result
+                response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)
                 await emit({"type": "text", "text": response})
                 return response
         elif _direct_outcome.status in {"succeeded", "planned"}:
@@ -2744,7 +2745,7 @@ async def run_agent(
                 if outcome.effect != "read":
                     # Retrying a write after an uncertain response can create
                     # duplicates; let the user correct the arguments first.
-                    response = "The action did not return a verified success. I stopped without retrying.\n" + result
+                    response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)
                     await emit({"type": "text", "text": response})
                     return response
             elif outcome.status == "succeeded":
