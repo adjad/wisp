@@ -67,6 +67,14 @@ struct SurfaceLayout: Equatable {
     /// way in, and paired with a dwell delay so a brush doesn't open it.
     static let hoverMarginX: CGFloat = 8
     static let hoverMarginY: CGFloat = 6
+    /// Notch only: how far the hover zone reaches past each side of the bar. The
+    /// camera housing is a narrow target, and the menu bar's own items sit well
+    /// beyond this, so wider is safe.
+    static let notchHoverMarginX: CGFloat = 20
+    /// Notch only: the lowest part of the notch (a fraction of its height) does NOT
+    /// open the menu. People cross it on the way to whatever is under the notch, and
+    /// the zone no longer extends below the notch at all.
+    static let notchHoverBottomExclusion: CGFloat = 0.25
     static let floatingGap: CGFloat = 8
     static let floatingBar = CGSize(width: 148, height: 28)
     static let screenMargin: CGFloat = 12
@@ -126,7 +134,7 @@ struct SurfaceLayout: Equatable {
             return SurfaceLayout(style: .notch, isVirtualNotch: physical == nil,
                                  screenFrame: frame, usableFrame: frame, notchSize: notch,
                                  expandedWidth: width, barFrame: bar,
-                                 hoverZone: zone(around: bar, top: frame.maxY))
+                                 hoverZone: notchZone(around: bar, top: frame.maxY))
         }
         let usable = metrics.visibleFrame
         let size = floatingBar
@@ -136,6 +144,19 @@ struct SurfaceLayout: Equatable {
         return SurfaceLayout(style: .floating, isVirtualNotch: false, screenFrame: frame,
                              usableFrame: usable, notchSize: .zero, expandedWidth: width,
                              barFrame: bar, hoverZone: zone(around: bar, top: usable.maxY))
+    }
+
+    /// The notch's hover zone: wide, covering the upper part of the notch and the
+    /// screen's top edge, and stopping above the notch's bottom strip.
+    ///
+    /// The top reaches ONE POINT past the screen edge on purpose. macOS clamps a
+    /// pointer pushed against the top of the screen to y == frame.maxY exactly, and
+    /// CGRect.contains treats its max edge as outside, so the natural gesture (fling
+    /// the pointer to the top-centre) used to miss the zone entirely.
+    private static func notchZone(around bar: CGRect, top: CGFloat) -> CGRect {
+        let lower = bar.minY + bar.height * notchHoverBottomExclusion
+        return CGRect(x: bar.minX - notchHoverMarginX, y: lower,
+                      width: bar.width + 2 * notchHoverMarginX, height: top + 1 - lower)
     }
 
     private static func zone(around bar: CGRect, top: CGFloat) -> CGRect {
