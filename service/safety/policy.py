@@ -416,7 +416,7 @@ ALWAYS_CONFIRM_CATEGORIES = frozenset(
     | _ALWAYS_CONFIRM_TOOL_AUTHORING)
 
 
-def _hard_deny(category: str, args: dict) -> Decision | None:
+def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
 
@@ -430,7 +430,19 @@ def _hard_deny(category: str, args: dict) -> Decision | None:
             return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
-        for key, operand in _path_operands(args):
+        operands = _path_operands(args)
+        if (tool == "organize_files" and isinstance(args.get("folder"), str)
+                and isinstance(args.get("destination"), str)):
+            # organize_files anchors relative destinations at its resolved
+            # source folder, not home/cwd. Keep the generic spellings as well.
+            try:
+                destination = Path(args["destination"]).expanduser()
+                if not destination.is_absolute():
+                    source = Path(args["folder"]).expanduser().resolve()
+                    operands.append(("destination", str(source / destination)))
+            except (OSError, RuntimeError):
+                pass  # retain the ordinary operand checks for unresolvable paths
+        for key, operand in operands:
             for form in _path_forms(operand):
                 if (hit := _any(rules, form)):
                     return Decision(Tier.DENY, f"protected path in {key}: {hit}")
@@ -450,7 +462,7 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     # `disable_safety_floor` only ever meant "let full_access mean literally
     # everything" — outside full_access these checks have always been
     # unconditional, and stay that way.
-    if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args)) is not None:
+    if (_KEEP_FLOOR or not _FULL_ACCESS) and (floor := _hard_deny(category, args, tool)) is not None:
         return floor
 
     if tool == "organize_files":
