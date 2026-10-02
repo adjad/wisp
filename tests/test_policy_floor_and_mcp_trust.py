@@ -615,3 +615,51 @@ def test_derived_output_floor_override_remains_explicit(organize_policy_paths, m
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)
     monkeypatch.setattr(policy, "_KEEP_FLOOR", False)
     assert _schema_decision(tool, args).tier == policy.Tier.ALLOW
+
+
+@pytest.mark.parametrize("variant", ["basename", "qualified_alias", "chain"])
+@pytest.mark.parametrize("mode", ["normal", "full", "grant", "preview"])
+@pytest.mark.parametrize("protected_source", [False, True])
+def test_organize_selected_source_matches_direct_source_floor(
+        organize_policy_paths, monkeypatch, variant, mode, protected_source):
+    source, protected = organize_policy_paths
+    target = (protected if protected_source else source.parent) / "existing.txt"
+    target.touch()
+    selected = source / "relay.txt"
+    if variant == "chain":
+        intermediate = source.parent / "intermediate"
+        intermediate.symlink_to(target)
+        selected.symlink_to(intermediate)
+    else:
+        selected.symlink_to(target)
+    folder = source
+    pattern = "*.txt"
+    if variant == "qualified_alias":
+        folder = source.parent / "source_alias"
+        folder.symlink_to(source, target_is_directory=True)
+        pattern = str(folder / "relay.txt")
+    assert selected.is_file() and selected.resolve() == target.resolve()
+    args = {"folder": str(folder), "destination": str(source.parent / "sorted"),
+            "pattern": pattern, "confirm": mode != "preview",
+            "preview_token": "synthetic-only" if mode != "preview" else ""}
+    _filesystem_mode(monkeypatch, "organize_files", args, mode)
+    direct = {"source": str(selected), "destination": args["destination"]}
+    if protected_source:
+        assert _schema_decision("move_path", direct).tier == policy.Tier.DENY
+    expected = (policy.Tier.DENY if protected_source else
+                policy.Tier.ALLOW if mode == "preview" else policy.Tier.CONFIRM)
+    assert _schema_decision("organize_files", args).tier == expected
+
+
+@pytest.mark.parametrize("excluded", ["unmatched", "nested"])
+def test_organize_unselected_protected_alias_is_not_enumerated(organize_policy_paths, monkeypatch, excluded):
+    source, protected = organize_policy_paths
+    (source / "ordinary.txt").touch()
+    target = protected / "existing.txt"
+    target.touch()
+    alias = source / "other.bin" if excluded == "unmatched" else source / "nested" / "relay.txt"
+    alias.symlink_to(target)
+    args = {"folder": str(source), "destination": "sorted", "pattern": "*.txt", "confirm": True,
+            "preview_token": "synthetic-only"}
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    assert _schema_decision("organize_files", args).tier == policy.Tier.CONFIRM

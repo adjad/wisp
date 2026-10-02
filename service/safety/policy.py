@@ -297,6 +297,7 @@ def _derived_path_operands(tool: str | None, args: dict):
             pattern = glob.name
         for item in source.iterdir():
             if item.is_file() and fnmatch.fnmatch(item.name, pattern):
+                yield "source child", str(item)
                 yield "destination child", str(target / item.name)
 
 
