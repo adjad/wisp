@@ -5,6 +5,7 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 """
 from __future__ import annotations
 
+import os
 import re
 import shlex
 from dataclasses import dataclass
@@ -176,8 +177,56 @@ _SHELL_MUTATE = [
 # filesystem paths that are never writable/deletable
 _PATH_DENY = [
     r"^/System", r"^/usr(?!/local)", r"^/bin", r"^/sbin", r"^/Library/LaunchDaemons",
-    r"^/etc", r"^/var/db", r"\.ssh/", r"Keychains?/", r"\.aws/credentials",
+    # The directory ITSELF counts, not only what is inside it: `~/.ssh` has no
+    # trailing slash, and moving or archiving the directory moves every key in it.
+    r"^/etc", r"^/var/db", r"\.ssh(?:/|$)", r"Keychains?(?:/|$)", r"\.aws/credentials",
 ]
+
+# Every argument name a tool uses to receive a filesystem location. The floor used
+# to read only `path`, so tools whose operands are `source`/`destination`
+# (move_path, backup_folder), `folder` (organize_files) or `paths`/`archive_path`
+# (archive_files) were never checked at all. Matching by argument NAME rather than
+# by tool means a future tool that takes the same arguments is covered too.
+_PATH_ARG_KEYS = ("path", "paths", "source", "src", "destination", "dest", "archive_path",
+                  "folder", "directory", "dir", "target", "output", "output_path",
+                  "file", "files")
+
+
+def _path_operands(args: dict) -> list[tuple[str, str]]:
+    """(argument name, value) for every string location in `args`, list items included."""
+    found: list[tuple[str, str]] = []
+    for key in _PATH_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            found.append((key, value))
+        elif isinstance(value, (list, tuple)):
+            found += [(key, item) for item in value if isinstance(item, str) and item.strip()]
+    return found
+
+
+def _path_forms(raw: str) -> list[str]:
+    """Every spelling of a location the floor must judge, not just the one typed.
+
+    The caller's own spelling, the `~`-expanded form, and the CANONICAL target
+    (symlinks resolved, relative paths anchored both at home and at the working
+    directory because tools resolve them against the latter). macOS's /etc, /var
+    and /tmp are links into /private, so a resolved path also gets its /private
+    prefix removed, which is the spelling the rules are written in.
+    """
+    forms = {raw}
+    expanded = os.path.expanduser(raw)
+    forms.add(expanded)
+    anchors = [Path(expanded)] if os.path.isabs(expanded) else [Path.home() / expanded, Path.cwd() / expanded]
+    for anchor in anchors:
+        forms.add(str(anchor))
+        try:
+            resolved = str(anchor.resolve())
+        except (OSError, RuntimeError):
+            continue  # an unresolvable spelling is still judged on its other forms
+        forms.add(resolved)
+        if resolved.startswith("/private/"):
+            forms.add(resolved[len("/private"):])
+    return sorted(forms)
 
 
 def _load_yaml() -> dict:
@@ -368,9 +417,11 @@ def _hard_deny(category: str, args: dict) -> Decision | None:
         if (hit := _any(_rules("shell_deny", _SHELL_DENY), cmd)):
             return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
-        path = str(args.get("path", ""))
-        if (hit := _any(_rules("path_deny", _PATH_DENY), path)):
-            return Decision(Tier.DENY, f"protected path: {hit}")
+        rules = _rules("path_deny", _PATH_DENY)
+        for key, operand in _path_operands(args):
+            for form in _path_forms(operand):
+                if (hit := _any(rules, form)):
+                    return Decision(Tier.DENY, f"protected path in {key}: {hit}")
     return None
 
 
