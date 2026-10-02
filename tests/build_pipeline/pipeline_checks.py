@@ -1571,6 +1571,8 @@ print('external venv readable; private home and writes denied')
                 if label == "create-draft-release":
                     self.assertIn("--draft", command)
                     self.assertTrue(kwargs["pass_fds"])
+                    descriptor = kwargs["pass_fds"][0]
+                    self.adhoc_notes = os.pread(descriptor, os.fstat(descriptor).st_size, 0).decode()
                     if mutate:
                         mutate()
                 log = checkout / "release-id.log"
@@ -1615,17 +1617,40 @@ print('external venv readable; private home and writes denied')
                 self.adhoc_events, self.adhoc_uploaded, self.adhoc_api_calls = events, uploaded, api.call_count
         return events, uploaded
 
-    def test_ad_hoc_complete_assets_publish_only_after_upload(self):
+    def test_ad_hoc_app_only_publishes_after_upload_with_app_first_notes(self):
         checkout = self.adhoc_fixture()
         events, uploaded = self.run_adhoc_fixture(checkout)
-        listed = {line.split("  ", 1)[1] for line in uploaded["SHA256SUMS"].decode().splitlines()}
-        self.assertEqual(listed, set(uploaded) - {"SHA256SUMS"})
-        for line in uploaded["SHA256SUMS"].decode().splitlines():
-            digest, name = line.split("  ", 1)
-            self.assertEqual(hashlib.sha256(uploaded[name]).hexdigest(), digest)
+        app_name = f"01-Wisp-{p.CONFIG['version']}-{self.meta['build_number']}-arm64.zip"
+        self.assertEqual(set(uploaded), {app_name})
+        self.assertEqual(uploaded[app_name], (self.root / "Wisp.zip").read_bytes())
+        self.assertEqual(self.adhoc_notes.splitlines()[0],
+                         "**[Download Wisp for Mac (Apple silicon)]"
+                         f"(https://github.com/fixture/repo/releases/download/v{p.CONFIG['version']}/{app_name})**")
+        self.assertIn("Ad-hoc fixture notes", self.adhoc_notes)
+        self.assertTrue((self.root / "SHA256SUMS").is_file())
         self.assertEqual(events[-1], "publish-release")
         self.assertLess(events.index("create-draft-release"), events.index("upload"))
         self.assertEqual(self.adhoc_api_calls, 3)
+
+    def test_ad_hoc_unpublished_evidence_is_still_required_and_verified(self):
+        checkout = self.adhoc_fixture()
+        (self.root / "dependencies.json").write_text("tampered evidence")
+        with self.assertRaisesRegex(p.BuildError, "checksum"):
+            self.run_adhoc_fixture(checkout)
+        self.assertEqual(self.adhoc_api_calls, 0)
+        self.assertNotIn("create-draft-release", self.adhoc_events)
+
+    def test_public_download_helper_handles_signed_archive_without_extra_assets(self):
+        self.artifact()
+        signed_name = f"Wisp-{p.CONFIG['version']}-{self.meta['build_number']}-arm64.zip"
+        (self.root / "Wisp.zip").rename(self.root / signed_name)
+        p.checksums(self.root)
+        with p.BoundReleaseAssets(self.root) as assets:
+            app = release.public_release_archive(assets, self.meta)
+            self.assertEqual(app[0], "01-" + signed_name)
+            self.assertEqual(os.pread(app[2], app[4], 0), (self.root / signed_name).read_bytes())
+            self.assertIn("provenance.json", assets.descriptors)
+            self.assertIn("SHA256SUMS", assets.descriptors)
 
     def test_ad_hoc_failed_upload_leaves_draft(self):
         checkout = self.adhoc_fixture()

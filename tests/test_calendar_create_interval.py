@@ -319,3 +319,22 @@ async def test_calendar_approval_binds_start_across_zone_change(
                 "2036-09-28T18:00:00-07:00").timestamp()
     else:
         request.assert_not_awaited()
+
+
+@pytest.mark.parametrize("text", [
+    "Set a reminder on September 28th from 6pm to 7pm to study",
+    "Set a reminder on Oct 5 from 3pm to 4pm to call Sam",
+    "Set a reminder on October 5th between 3pm and 4pm to call Sam",
+])
+def test_a_named_calendar_date_is_temporal_grammar_not_unexplained_prose(text):
+    # The header (everything before the subject) is a creation command plus a
+    # date and a clock range. It must be consumed as one reminder, not handed
+    # back as ambiguous because the month and ordinal day were not in the
+    # eligibility vocabulary.
+    from service.tasks.compiler import reminder_request_clauses
+    assert len(reminder_request_clauses(text)) == 1, text
+
+
+def test_a_bare_may_is_a_verb_not_a_month():
+    from service.tasks.compiler import reminder_request_clauses
+    assert reminder_request_clauses("Remind me may to study") == ()

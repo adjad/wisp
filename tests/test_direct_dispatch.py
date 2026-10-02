@@ -18,8 +18,8 @@ What must keep holding:
     would be silently dropped;
   * device WRITES never pre-dispatch the matching read ("turn the volume up"
     must not fire get_volume);
-  * a calendar-only lookup resolves its `days` window in Python, takes the
-    WIDEST window when several are named, and declines on writes, past-tense
+  * a calendar-only lookup resolves its exact period in Python, preserves both
+    days for today/tomorrow, and declines on writes, past-tense
     questions, and compound multi-domain reads;
   * a summary request dispatches only when it carries NO qualifier the
     summarizer would need an argument for;
@@ -105,22 +105,20 @@ def test_device_writes_never_dispatch_the_read() -> None:
 
 def test_calendar_window_resolved_in_python() -> None:
     print("\ncalendar-only lookup -> get_upcoming with a Python-resolved window")
-    for prompt, days in [
-        ("what's on my calendar today", 1),
-        ("what's on my calendar tomorrow", 2),
-        ("what's on my calendar this week", 7),
-        ("what's on my calendar this month", 30),
+    for prompt, period in [
+        ("what's on my calendar today", "today"),
+        ("what's on my calendar tomorrow", "tomorrow"),
+        ("what's on my calendar this week", "this week"),
+        ("what's on my calendar this month", "this month"),
     ]:
         calls = direct(prompt)
-        check(f"{prompt!r} -> get_upcoming(days={days})",
-              calls == [("get_upcoming", {"days": days})], f"got {calls}")
+        check(f"{prompt!r} -> get_upcoming(period={period})",
+              calls == [("get_upcoming", {"period": period})], f"got {calls}")
 
-    # Widest wins: a wider window is a superset and get_upcoming tags every row
-    # relative to today, so narration can still separate them. Too NARROW would
-    # silently drop events the user asked about.
+    # Exact bounds avoid widening "tomorrow" into today plus tomorrow.
     calls = direct("what's on my calendar today and tomorrow")
-    check("'today and tomorrow' takes the widest window (2d)",
-          calls == [("get_upcoming", {"days": 2})], f"got {calls}")
+    check("'today and tomorrow' preserves both exact days",
+          calls == [("get_upcoming", {"period": "today and tomorrow"})], f"got {calls}")
 
     # No window named at all -> use the broad supported horizon. A silent
     # seven-day default made Wisp claim later events were absent.

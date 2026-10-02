@@ -48,6 +48,10 @@ _sync_status: dict[str, dict] = {
 }
 
 
+# When this backend started: a source the app has never reported is measured from here.
+STARTED_AT = time.time()
+
+
 def record_sync(source: str, count: int, diagnostics: dict | None = None) -> None:
     diagnostics = diagnostics or {}
     # A completed EventKit read with authorized=false is unavailable, not a
@@ -58,9 +62,15 @@ def record_sync(source: str, count: int, diagnostics: dict | None = None) -> Non
     reason = str(diagnostics.get("reason") or (
         "waiting for the app to sync" if syncing else "ok" if available
         else f"{source.title()} could not be read; check access in Settings"))
+    now = time.time()
+    previous = _sync_status.get(source) or {}
+    # The app re-posts the same waiting state every minute, so the clock must keep
+    # the FIRST report of an unbroken wait, or no wait could ever be seen to stall.
+    since = (previous.get("syncing_since") or now) if syncing and previous.get("syncing") else (
+        now if syncing else None)
     _sync_status[source] = {
         "available": available, "syncing": syncing, "reason": reason, "count": count,
-        "last_sync": time.time(), "diagnostics": diagnostics,
+        "last_sync": now, "diagnostics": diagnostics, "syncing_since": since,
     }
 
 

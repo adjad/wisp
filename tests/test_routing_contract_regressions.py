@@ -1004,9 +1004,9 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 ("why are there no reminders tomorrow?", "search_reminders",
                  "search_reminders", []),
                 ("are there no calendar events tomorrow?", "get_upcoming",
-                 None, [("get_upcoming", {"days": 2})]),
+                 None, [("get_upcoming", {"period": "tomorrow", "calendar_only": True})]),
                 ("why are there no calendar events tomorrow?", "get_upcoming",
-                 None, [("get_upcoming", {"days": 2})])):
+                 None, [("get_upcoming", {"period": "tomorrow", "calendar_only": True})])):
             with self.subTest(prompt=prompt):
                 decision = await R.route(prompt)
                 self.assertEqual(decision.tool_subset, [expected_tool])
@@ -1661,7 +1661,11 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(d.tool_argument_bindings, {})
         d = await R.route("can you send texts to Mom and create reminders for tomorrow")
         self.assertNotIn("wisp_capabilities", d.tool_subset)
-        self.assertIn("send_message", d.tool_subset)
+        self.assertEqual(d.tool_subset, [])
+        self.assertEqual(d.required_tool_groups, ())
+        self.assertEqual(d.direct_calls, [])
+        self.assertIsNone(d.force_first_tool)
+        self.assertFalse(d.needs_tools)
 
     def assertClockClarification(self, d):
         self.assertEqual(d.reminder_action, "clarify_time")
@@ -1756,7 +1760,10 @@ class TypedClockContractTests(unittest.TestCase):
             "when_ts": (NOW + timedelta(days=1)).timestamp()}])
         fresh = {"sources": [{"id": "reminders", "state": "ready"}],
                  "reminders_fresh": True}
+        # The fixture's NOW is fixed in the past; pin the clock to it so the
+        # 14-day Wisp-only expiry judges "overdue" against the same instant.
         with patch.object(assistant_tools, "assistant_store", self.assistant), \
+             patch("service.tools.assistant_tools.time.time", return_value=NOW.timestamp()), \
              patch("service.assistant.sync_status.ensure_sources",
                    new_callable=AsyncMock, return_value=fresh):
             result = asyncio.run(assistant_tools.search_reminders("dentist"))

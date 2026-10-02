@@ -308,9 +308,9 @@ def _trusted_read_only(config: dict | None) -> frozenset[str]:
     can only ever make Wisp ask more, never less.
     """
     listed = (config or {}).get("trusted_read_only")
-    if not isinstance(listed, list):
+    if not isinstance(listed, list) or any(not isinstance(name, str) for name in listed):
         return frozenset()
-    return frozenset(name for name in listed if isinstance(name, str) and name)
+    return frozenset(name for name in listed if name)
 
 
 def _category_for(spec: dict, config: dict | None = None) -> str:

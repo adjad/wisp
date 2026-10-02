@@ -9,10 +9,12 @@ H-3: an MCP server's own ``readOnlyHint`` lowered its tools to auto-run, so a se
 that labelled a delete tool read-only ran it unprompted, even in view-only mode.
 """
 import os
+import json
 import types
 
 import pytest
 
+from service import mcp
 from service.mcp import MCPManager, _category_for, _trusted_read_only
 from service.safety import policy
 from service.tools.registry import REGISTRY
@@ -214,3 +216,164 @@ def test_through_the_real_registry_trusted_tools_run_and_the_rest_still_ask(monk
     finally:
         for name in list(manager._registered):
             REGISTRY.pop(name, None)
+
+
+@pytest.fixture
+def configured_registry(tmp_path, monkeypatch):
+    """Real config read/registration/policy, with scratch files and no transport."""
+    from service.safety import grants
+    config_path = tmp_path / "mcp.json"
+    monkeypatch.setattr(mcp, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "_CACHE", {})
+    original_registry = dict(REGISTRY)
+    managers = []
+
+    async def forbidden_start(*args, **kwargs):
+        pytest.fail("synthetic registration must not start an MCP server")
+
+    monkeypatch.setattr(mcp.MCPServer, "start", forbidden_start)
+
+    def register(configs, specs):
+        # Model the registry-removal part of stop/reload without transport.
+        for previous in managers:
+            for name in previous._registered:
+                REGISTRY.pop(name, None)
+        config_path.write_text(json.dumps({"servers": configs}))
+        manager = MCPManager()
+        managers.append(manager)
+        loaded = manager._read_config()
+        assert loaded == configs
+        registered = {}
+        for name, config in loaded.items():
+            server = mcp.MCPServer(name, config)
+            server.tools = specs
+            manager._register(server)
+            assert server.proc is None and not server.running
+            registered[name] = {spec["name"]: REGISTRY[f"mcp_{name}_{spec['name']}".lower()]
+                                for spec in specs}
+        return loaded, registered
+
+    yield register
+    for manager in managers:
+        for name in manager._registered:
+            if name in original_registry:
+                REGISTRY[name] = original_registry[name]
+            else:
+                REGISTRY.pop(name, None)
+
+
+def _assert_registered_policy(monkeypatch, tool, trusted):
+    assert tool.category == ("mcp_read" if trusted else "mcp_action")
+    for view_only in (False, True):
+        monkeypatch.setattr(policy, "_READ_ONLY", view_only)
+        expected = policy.Tier.ALLOW if trusted else (policy.Tier.DENY if view_only else policy.Tier.CONFIRM)
+        assert policy.decide(tool.category, {}, tool.name).tier == expected
+
+
+@pytest.mark.parametrize("bad", [5, True, False, None, {"name": "search"}, ["search"]])
+@pytest.mark.parametrize("bad_first", [False, True])
+def test_mixed_trust_list_fails_closed_through_config_registration_and_policy(
+        configured_registry, monkeypatch, bad, bad_first):
+    listed = [bad, "search"] if bad_first else ["search", bad]
+    configs = {"trustfixture": {"command": "synthetic-never-started", "trusted_read_only": listed}}
+    loaded, registered = configured_registry(configs, [{"name": "search", "annotations": {"readOnlyHint": True}}])
+    assert _trusted_read_only(loaded["trustfixture"]) == frozenset()
+    _assert_registered_policy(monkeypatch, registered["trustfixture"]["search"], False)
+
+
+@pytest.mark.parametrize("annotations,trusted", [
+    ({"readOnlyHint": True}, True), ({}, False), ({"readOnlyHint": False}, False),
+    ({"readOnlyHint": "true"}, False), ({"readOnlyHint": True, "destructiveHint": True}, False),
+])
+def test_configured_trust_is_exact_per_tool_and_server(
+        configured_registry, monkeypatch, annotations, trusted):
+    configs = {
+        "trustfixture": {"command": "synthetic-never-started", "trusted_read_only": ["search", "fetch"]},
+        "otherfixture": {"command": "synthetic-never-started"},
+    }
+    specs = [{"name": name, "annotations": annotations} for name in ("search", "fetch", "sibling")]
+    loaded, registered = configured_registry(configs, specs)
+    assert _trusted_read_only(loaded["trustfixture"]) == frozenset({"search", "fetch"})
+    assert _trusted_read_only(loaded["otherfixture"]) == frozenset()
+    for server_name, tools in registered.items():
+        for name, tool in tools.items():
+            _assert_registered_policy(monkeypatch, tool,
+                                      trusted and server_name == "trustfixture" and name in {"search", "fetch"})
+
+
+@pytest.mark.parametrize("revoked", [[], ["search", 5], ["search", None]])
+def test_config_reread_and_reregistration_revokes_trust(configured_registry, monkeypatch, revoked):
+    specs = [{"name": "search", "annotations": {"readOnlyHint": True}}]
+    for listed, trusted in ((["search"], True), (revoked, False)):
+        loaded, tools = configured_registry({"revokefixture": {
+            "command": "synthetic-never-started", "trusted_read_only": listed}}, specs)
+        assert _trusted_read_only(loaded["revokefixture"]) == (frozenset({"search"}) if trusted else frozenset())
+        _assert_registered_policy(monkeypatch, tools["revokefixture"]["search"], trusted)
+
+
+@pytest.fixture
+def organize_policy_paths(tmp_path, monkeypatch):
+    from pathlib import Path
+    from service.safety import grants
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "nested").mkdir()
+    protected = tmp_path / ".ssh"
+    protected.mkdir()
+    (source / "relay").symlink_to(protected, target_is_directory=True)
+    fake_home, cwd = tmp_path / "home", tmp_path / "cwd"
+    fake_home.mkdir()
+    cwd.mkdir()
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", True)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {})
+    return source, protected
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+@pytest.mark.parametrize("standing_allow", [False, True])
+@pytest.mark.parametrize("confirm", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_organize_source_relative_protected_destination_is_denied(
+        organize_policy_paths, monkeypatch, full_access, standing_allow, confirm, nested):
+    from pathlib import Path
+    from service.safety import grants
+    source, protected = organize_policy_paths
+    folder = source / "nested" if nested else source
+    destination = "../relay" if nested else "relay"
+    args = {"folder": str(folder), "destination": destination, "pattern": "*.txt",
+            "confirm": confirm, "preview_token": "synthetic-not-executed"}
+    # Match files_tools resolution without invoking organize_files or moving data.
+    assert (Path(args["folder"]).expanduser().resolve() / destination).resolve() == protected.resolve()
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access)
+    if standing_allow:
+        grants._CACHE["organize_files"] = {"allow": [{"scope": ""}], "deny": []}
+        assert grants.check("organize_files", args) == "allow"
+    decision = policy.decide("fs_write", args, "organize_files")
+    assert decision.tier == policy.Tier.DENY, decision
+    assert "protected path" in decision.reason
+
+
+@pytest.mark.parametrize("full_access", [False, True])
+@pytest.mark.parametrize("destination_kind", ["relative", "absolute", "protected_absolute"])
+def test_organize_relative_and_absolute_controls(organize_policy_paths, monkeypatch, full_access, destination_kind):
+    source, protected = organize_policy_paths
+    destination = {"relative": "sorted", "absolute": str(source / "sorted"),
+                   "protected_absolute": str(protected)}[destination_kind]
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access)
+    args = {"folder": str(source), "destination": destination, "confirm": True,
+            "preview_token": "synthetic-not-executed"}
+    expected = policy.Tier.DENY if destination_kind == "protected_absolute" else policy.Tier.CONFIRM
+    assert policy.decide("fs_write", args, "organize_files").tier == expected
+
+
+def test_source_relative_resolution_is_not_applied_to_other_tools(organize_policy_paths, monkeypatch):
+    source, _ = organize_policy_paths
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    args = {"folder": str(source), "destination": "relay"}
+    assert policy.decide("fs_write", args, "synthetic_other_tool").tier == policy.Tier.CONFIRM

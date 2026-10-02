@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from service.utterance_shape import deliberate
 from service.authored_message import authored_message_intent
 from service.config import role_to_model
 from service.reminder_intent import REMINDER_CREATE_RE
@@ -2406,6 +2407,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     if prior_display is not None and not isinstance(prior_display, StoredDisplayArtifact):
         raise ValueError("Prior display must come from the server store")
     original = text
+    if deliberate(text) is not None:
+        return None
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     if REMINDER_CREATE_RE.search(text):
         return None
