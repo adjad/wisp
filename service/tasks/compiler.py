@@ -39,8 +39,15 @@ _GROCERY_OBJECT = r"(?:milk|eggs|bread|butter|cheese|rice|apples|bananas|fruit|v
 _GROCERY_LIST = re.compile(
     rf"(?:buy|get|pick\s+up)\s+{_GROCERY_OBJECT}"
     rf"(?:\s*(?:,\s*(?:and\s+)?|and\s+){_GROCERY_OBJECT})+[.!?]*", re.I)
+# A calendar date is bounded temporal grammar too: "September 28th", "Oct 5",
+# "28th", "12th of October". The month must be followed by its day so a bare "may"
+# (a modal verb) is never mistaken for one.
+_MONTH = (r"(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+          r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)")
+_CALENDAR_DATE = (rf"(?:{_MONTH}\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?!\d)|"
+                  rf"\d{{1,2}}(?:st|nd|rd|th)(?:\s+of\s+{_MONTH})?)")
 _TEMPORAL_ONLY = re.compile(
-    r"(?:(?:on|at|by|for|in|from|between|to|and|until|through|till|this|next|later|"
+    rf"(?:(?:{_CALENDAR_DATE}|on|at|by|for|in|from|between|to|and|until|through|till|this|next|later|"
     r"today|tomorrow|tommorow|tommorrow|tmrw|tmrow|tonight|morning|afternoon|evening|night|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"half|a|an|quarter|past|one|two|three|four|five|six|seven|eight|nine|ten|"
