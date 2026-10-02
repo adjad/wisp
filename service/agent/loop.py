@@ -1061,8 +1061,16 @@ def _contact_receipt_destination(binding: dict, receipt: str) -> str:
         handles = [preferred.strip()]
     if _match_tier(str(binding.get("name") or ""), label.strip()) == "substring":
         return ""
-    if any(not (_LITERAL_EMAIL.fullmatch(h) or _LITERAL_PHONE.fullmatch(h)) for h in handles):
-        return ""
+    for handle in handles:
+        if _LITERAL_EMAIL.fullmatch(handle):
+            continue
+        # Receipt proof must be whole, not a truncated Contacts handle. The
+        # shared literal grammar permits parentheses as characters; here require
+        # nonempty, nonnested numeric groups before any companion is released.
+        # Validate only: preserve the authoritative raw handle/country code.
+        without_groups = re.sub(r"\([ \t]*\d[\d \t.-]*\)", "", handle)
+        if not _LITERAL_PHONE.fullmatch(handle) or re.search(r"[()]", without_groups):
+            return ""
     if binding.get("channel") == "email":
         emails = list(dict.fromkeys(h for h in handles if _LITERAL_EMAIL.fullmatch(h)))
         return emails[0] if len(emails) == 1 else ""

@@ -609,6 +609,8 @@ def test_conflicting_named_dates_never_choose_the_first_date(successful_reminder
     ("tomorrow on 2027-10-12", None),
     ("Friday on October 12, 2027", None),
     ("on October 12, 2027 Friday", None),
+    ("on 2027-10-12 tomorrow", None),
+    ("on 2027-10-12 Friday", None),
     ("on October 12, 2027 tonight", None),
     ("today tomorrow", None),
     ("tmrw on October 12, 2027", None),
@@ -623,7 +625,7 @@ def test_conflicting_named_dates_never_choose_the_first_date(successful_reminder
     ("on October 12, 2027", "2027-10-12T09:00"),
 ])
 def test_header_day_constraints_reconcile_before_effects(
-        successful_reminder_endpoint, monkeypatch, header, expected):
+        successful_reminder_endpoint, monkeypatch, header, expected, *, trailing=False):
     from service.tasks import reply_engine, compiler, temporal
     request, streams, calls, assistant = successful_reminder_endpoint
     fixed = datetime(2026, 10, 1, 10)
@@ -635,7 +637,7 @@ def test_header_day_constraints_reconcile_before_effects(
 
     for module in (reply_engine, compiler, temporal):
         monkeypatch.setattr(module, "datetime", FixedClock)
-    text = f"Remind me {header} to study"
+    text = f"Remind me to study {header}" if trailing else f"Remind me {header} to study"
     plan = compile_task(text, now=fixed)
     assert plan.subject.value == "study"
     events = asyncio.run(request(text))
@@ -650,8 +652,28 @@ def test_header_day_constraints_reconcile_before_effects(
     assert streams == [] and events[-1]["type"] == "done"
 
 
-def test_weekday_in_reminder_title_is_not_a_header_constraint():
-    plan = compile_task('Remind me on October 12, 2027 at 6pm to "review Friday report"', now=NOW)
+@pytest.mark.parametrize("tail,expected", [
+    ("on October 12, 2027 tomorrow", None),
+    ("on October 12, 2027 Friday", None),
+    ("on 2027-10-12 tomorrow", None),
+    ("on 2027-10-12 Friday", None),
+    ("on October 2, 2026 tomorrow", "2026-10-02T09:00"),
+    ("on October 12, 2027 Tuesday", "2027-10-12T09:00"),
+    ("tomorrow", "2026-10-02T09:00"),
+    ("on October 12, 2027", "2027-10-12T09:00"),
+])
+def test_consumed_trailing_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, tail, expected):
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, tail, expected, trailing=True)
+
+
+@pytest.mark.parametrize("header_clock,title", [
+    (" at 6pm", "review Friday report"),
+    ("", "review at 6pm Friday report"),
+])
+def test_weekday_in_reminder_title_is_not_a_header_constraint(header_clock, title):
+    plan = compile_task(f'Remind me on October 12, 2027{header_clock} to "{title}"', now=NOW)
     assert plan.status == "ready" and plan.temporal.absolute_iso == "2027-10-12T18:00"
     assert "Friday report" in plan.subject.value
 
@@ -659,6 +681,9 @@ def test_weekday_in_reminder_title_is_not_a_header_constraint():
 @pytest.mark.parametrize("lookup_name,receipt,destination,send_ok", [
     ("Dad", "production_formatted", "+16505550135", True),
     ("Dad", "production_normalized", "+16505550135", True),
+    ("Dad", "production_foreign", "+16505550135", True),
+    ("Dad", "production_unclosed", "+16505550135", False),
+    ("Dad", "production_unopened", "+16505550135", False),
     ("Mom", "Mom: +16505550134", "+16505550134", True),
     ("Mom", "Mom\nphone: +16505550134", "+16505550134", True),
     ("Dad", "Mom: +16505550134", "+16505550134", True),
@@ -694,7 +719,11 @@ def test_named_companion_binds_lookup_identity_and_destination_proof(
     production = receipt.startswith("production_")
     if production:
         from service.tools import imessage_tools
-        phone = "+1 (650) 555-0134" if receipt == "production_formatted" else "+16505550134"
+        phone = {"production_formatted": "+1 (650) 555-0134",
+                 "production_normalized": "+16505550134",
+                 "production_foreign": "+44 (20) 7946-0134",
+                 "production_unclosed": "+1 (650 555-0134",
+                 "production_unopened": "+1 650) 555-0134"}[receipt]
         handles = [phone] if delivery in {"message", "scheduled"} else ["mom@example.com", phone]
         monkeypatch.setattr(imessage_tools, "_name_handles", {"mom": handles})
         monkeypatch.setattr(imessage_tools, "_lines", "mom@example.com" if "email" in delivery else "")
@@ -777,6 +806,11 @@ def test_named_companion_binds_lookup_identity_and_destination_proof(
 
 
 @pytest.mark.parametrize("channel,receipt,expected", [
+    ("messages", "Mom: +1 (650 555-0134 (also on mom@example.com)", ""),
+    ("email", "Mom: mom@example.com (also on +1 (650 555-0134)", ""),
+    ("messages", "Mom\nphone: +1 650) 555-0134", ""),
+    ("messages", "Mom: +1 ((650)) 555-0134", ""),
+    ("messages", "Mom: +1 () 6505550134", ""),
     ("messages", "Mom: +44 (20) 7946-0134", "+44 (20) 7946-0134"),
     ("email", "Mom: mom@example.com (also on +44 (20) 7946-0134)", "mom@example.com"),
     ("messages", "Mom: +1 (650) 555-0134 (send to Dad)", ""),

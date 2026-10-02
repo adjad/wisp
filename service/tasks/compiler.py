@@ -683,22 +683,22 @@ def extract_event_reference(text: str) -> str:
     return " ".join(match.group("reference").split()) if match else ""
 
 
-def _conflicting_reminder_days(command: str, temporal_text: str, now: datetime) -> bool:
+def _conflicting_reminder_days(scoped_alerts: str, temporal_text: str, now: datetime) -> bool:
     """Reconcile day constraints without treating subject words as dates.
 
     Absolute dates already scoped as alert evidence can repeat consistently.
-    Relative days and weekday labels come only from the authored header: the
-    temporal helper can include title content when no header time was supplied.
+    Relative days and weekday labels come from the header and consumed alert
+    spans, never the temporal helper's fallback containing arbitrary title text.
     A weekday beside an explicit date labels that date, not the next occurrence.
     Offsets and event-reference lead times are not calendar-day equalities.
     """
     dates = re.findall(rf"{_NAMED_DATE.pattern}|{_CALENDAR_DATE}",
                        _unquoted(temporal_text), re.I)
-    header = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
-                    _unquoted(command), flags=re.I)
-    relative = re.findall(r"\b(?:today|tonight|tomorrow)\b", header, re.I)
+    alerts = re.sub(r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", "tomorrow",
+                    _unquoted(scoped_alerts), flags=re.I)
+    relative = re.findall(r"\b(?:today|tonight|tomorrow)\b", alerts, re.I)
     weekdays = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
-    labels = re.findall(r"\b(?:" + "|".join(weekdays) + r")\b", header, re.I)
+    labels = re.findall(r"\b(?:" + "|".join(weekdays) + r")\b", alerts, re.I)
     if len(dates) + len(relative) + len(labels) < 2:
         return False
     chosen = set()
@@ -733,7 +733,14 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     # A parser finding one valid date is not permission to choose it over
     # another supplied date. Retain the subject and ask for a single alert.
     now = now or datetime.now()
-    ambiguous_dates = _conflicting_reminder_days(command, temporal_text, now)
+    # Mask quotes BEFORE projection: extraction can otherwise remove quote
+    # delimiters and make title words look like alert evidence. A reduced
+    # projection contains header/consumed tail spans; the unchanged fallback
+    # still includes arbitrary subject words, so use only its header labels.
+    unquoted_request = _unquoted(text)
+    day_constraints = reminder_temporal_text(unquoted_request)
+    scoped_alerts = day_constraints if day_constraints != unquoted_request else command
+    ambiguous_dates = _conflicting_reminder_days(scoped_alerts, day_constraints, now)
     lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None
     resolved, defaulted = ((None, "") if reference or unsupported_clock or ambiguous_dates
                            else resolve_named_time(temporal_text, now=now))
