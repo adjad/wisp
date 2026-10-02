@@ -1791,6 +1791,12 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
         n = assistant_store.sync_source(source, items, diagnostics=diagnostics)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
+    # Reminders only: incomplete reminders with no due date ride along as a separate
+    # list. Absent key = keep the last good list (an unavailable read never empties it).
+    undated = body.get("undated")
+    if source == "reminders" and isinstance(undated, list):
+        assistant_store.replace_undated_reminders(
+            [e for e in undated if isinstance(e, dict)][:200])
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
     await assistant_hub.publish({"type": "changed"})
     return {"ok": True, "synced": n}

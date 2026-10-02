@@ -220,6 +220,13 @@ class AssistantStore:
                         "ON CONFLICT(source_id) DO UPDATE SET recorded_at=MAX("
                         "assistant_reminder_verified.recorded_at,excluded.recorded_at)")
                 self._migrate_reminder_verified_orders()
+                # Incomplete Apple reminders with NO due date. Not commitments: nothing is
+                # scheduled, so they live apart from `commitments` and no time-windowed
+                # query (notifications, overdue, schedules) can ever see them.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_undated_reminders (
+                    source_id TEXT PRIMARY KEY, title TEXT NOT NULL, context TEXT,
+                    synced_at REAL NOT NULL
+                )""")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -1286,6 +1293,32 @@ class AssistantStore:
             self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
         return len(items)
+
+    def replace_undated_reminders(self, items: list[dict]) -> int:
+        """Replace the whole undated-reminder list from one authoritative native read."""
+        now = time.time()
+        rows: dict[str, tuple[str, str, str | None]] = {}
+        for item in items:
+            source_id = str(item.get("source_id") or "").strip()
+            title = str(item.get("title") or "").strip()
+            if not source_id or not title:
+                continue
+            context = item.get("context")
+            rows[source_id] = (source_id, title, str(context) if context else None)
+        with self._write_transaction():
+            self._db.execute("DELETE FROM assistant_undated_reminders")
+            self._db.executemany(
+                "INSERT INTO assistant_undated_reminders(source_id,title,context,synced_at) "
+                "VALUES (?,?,?,?)", [row + (now,) for row in rows.values()])
+        return len(rows)
+
+    def undated_reminders(self, query: str = "") -> list[dict]:
+        """Incomplete Apple reminders with no due date, by title then id."""
+        rows = self._db.execute(
+            "SELECT source_id,title,context FROM assistant_undated_reminders "
+            "ORDER BY title COLLATE NOCASE, source_id").fetchall()
+        needle = (query or "").strip().lower()
+        return [dict(r) for r in rows if not needle or needle in r["title"].lower()]
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
                    context: str | None = None) -> dict:
