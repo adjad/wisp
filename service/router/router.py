@@ -1162,7 +1162,8 @@ async def _semantic_core(text: str) -> list[str]:
 
 
 async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
-                          web_request: _WebRequest | None = None) -> RouteDecision | None:
+                          web_request: _WebRequest | None = None,
+                          strict_reminder: bool = False) -> RouteDecision | None:
     """Route each explicit action independently, then merge a compact menu.
 
     Whole-request retrieval lets the most verbose clause dominate and silently
@@ -1189,9 +1190,20 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
         r"remove|rename|run|save|schedule|send|set|start|stop|store|toggle|"
         r"uninstall|update|write)\b", re.I)
 
-    clauses = clauses or _action_clauses(text)
+    clauses = _action_clauses(text) if clauses is None else clauses
     if len(clauses) < 2:
         return None
+    if strict_reminder:
+        obligations = [_complete_reminder_clause(clause) for clause in clauses]
+        if not all(obligations):
+            return None
+        # The loop's groups identify tool names, not separate invocations.
+        # Two reminders (or two sends) cannot share one satisfied obligation.
+        seen: set[str] = set()
+        for names in obligations:
+            if seen.intersection(names):
+                return None
+            seen.update(names)
 
     clause_decisions: list[tuple[str, RouteDecision, bool]] = []
     confident_actions = 0
@@ -5975,6 +5987,15 @@ def _no_web_public_write_decision(
     if not _is_no_web_public_write(text, request):
         return None
 
+    if _REMINDER_CREATE_RE.search(mask_quoted(text)):
+        # A no-browse prefix does not make an incomplete or alternative
+        # reminder continuation safe. Preserve the independently authored
+        # single-reminder path only after consuming that whole continuation.
+        positive = [clause for clause in request.continuations if not clause.negated]
+        if (len(positive) != 1
+                or _complete_reminder_clause(positive[0].text) != frozenset({"add_reminder"})):
+            return None
+
     checklist = _checklist_route(text)
     if checklist is not None and {"get_upcoming", "search_reminders"}.intersection(
             checklist.tool_subset or ()):
@@ -6179,6 +6200,33 @@ def _compound_device_write(clause: str) -> RouteDecision | None:
     return None
 
 
+def _complete_reminder_clause(clause: str) -> frozenset[str] | None:
+    """Recognize complete clause shapes before a reminder compound gets tools.
+
+    Retrieval and substring rule matches cannot establish a separate action.
+    The generic compound router remains available for other request types.
+    """
+    from service.tasks.compiler import compile_reminder_create, compile_message_send, compile_email_send
+    from service.workflows.reads import _calendar_read_args
+    if plan := compile_reminder_create(clause):
+        return frozenset({"add_reminder"}) if plan.status == "ready" else None
+    if device := _compound_device_write(clause):
+        return frozenset(device.tool_subset)
+    if names := {name for name, pattern in _DEVICE_REQUESTS if pattern.fullmatch(clause.strip())}:
+        return frozenset(names)
+    if _calendar_read_args(clause, "") is not None:
+        return frozenset({"get_upcoming"})
+    for compiler, name in ((compile_message_send, "send_message"), (compile_email_send, "send_email")):
+        if plan := compiler(clause):
+            return frozenset({name}) if plan.status == "ready" else None
+    if re.fullmatch(
+            r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
+            r"(?:show|check|list)\s+(?:my|the)\s+reminders?"
+            r"(?:\s+(?:today|tomorrow|tonight))?[.!?\s]*", clause, re.I):
+        return frozenset({"search_reminders"})
+    return None
+
+
 async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
@@ -6197,7 +6245,7 @@ async def route(text: str, *,
             text, request, "the request prohibits a device action rather than asking for it")
     clauses = _device_request_clauses(text)
     device_tools = _matched_device_tools(text)
-    if len(clauses) > 1 and device_tools:
+    if len(clauses) > 1 and device_tools and not _REMINDER_CREATE_RE.search(mask_quoted(text)):
         from service.workflows.reads import _calendar_read_args
         if any(_calendar_read_args(clause, "") is not None for clause in clauses):
             decision = rule_route(text) or _mk_scoped([], "calendar and device interpretation")
@@ -6234,20 +6282,22 @@ async def route(text: str, *,
     from service.tasks.compiler import reminder_request_clauses
     reminder_clauses = reminder_request_clauses(text)
     if len(reminder_clauses) != 1 and not (
-            request.allowed or request.opted_out or request.inherited
+            request.allowed or request.inherited
             or request.clarification or request.standalone_offer
             or request.confirmed_local_request or request.delivery_cancelled
             or _calendar_is_excluded(text) or _reminder_is_excluded(text)):
         if (complete := await _compound_route(text, clauses=reminder_clauses,
-                                             web_request=request)) is not None:
+                                             web_request=request,
+                                             strict_reminder=True)) is not None:
             return complete
         # Unknown/ambiguous outer text is not authority for a reminder-only
         # write. Ask for its interpretation before any effect can be claimed.
         from service.tools.registry import REGISTRY
         decision = _mk("agent", reason="unresolved reminder task clauses -> clarify before effects")
+        decision.tool_subset = []
         decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
         decision.forbidden_tools = frozenset(REGISTRY)
-        return decision
+        return _pin_ling_web_decision(decision) if request.opted_out else decision
     decision = await _route_request(
         text, web_request=request, last_user=last_user, recent_users=recent_users,
         last_assistant=last_assistant, last_tools=last_tools)

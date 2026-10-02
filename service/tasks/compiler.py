@@ -31,7 +31,7 @@ _COMPOUND_EFFECT = re.compile(
     re.I)
 _CLAUSE_JOIN = re.compile(
     r"[,;]\s*(?:(?:and|then|also|but)\s+)?|[.!?]\s+|"
-    r"\s+(?:and(?:\s+then)?|then|also|but)\s+", re.I)
+    r"\s+(?:and(?:\s+then)?|then|also|but|or)\s+", re.I)
 # Only a proven noun-list grammar may consume an unquoted conjunction as
 # reminder content. Unknown coordination is ambiguous and belongs to the
 # model, not a verb denylist that eventually misses another device action.
@@ -49,6 +49,21 @@ _TEMPORAL_ONLY = re.compile(
     r"\d+(?::\d*)?(?:\s*[ap]\.?m\.?)?|[ap]\.?m\.?|[-–—/])\s*)+", re.I)
 _ALERT_DAY = re.compile(
     r"\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+_IMMEDIATE_SCOPE = re.compile(r"\b(?:now|immediately|right\s+away|at\s+once)\b", re.I)
+_CONDITIONAL_SCOPE = re.compile(
+    r"\b(?:if|unless|otherwise|provided\s+that|depending\s+on)\b", re.I)
+# Receipt requests have no authored body. Consume their complete grammar so
+# 'email Mom saying hello' cannot silently become a generated reminder receipt.
+_RECEIPT_RECIPIENT = (
+    r"(?:\+?\d[\d ()-]{5,}\d|[^\s@]+@[^\s@]+|"
+    r"[A-Z][a-z'’-]+(?:\s+[A-Z][a-z'’-]+){1,2}|[A-Za-z'’-]+)")
+_RECEIPT_REQUEST = re.compile(
+    rf"(?:(?i:let)\s+(?i:my\s+)?{_RECEIPT_RECIPIENT}\s+(?i:know)|"
+    rf"(?i:notify|tell|text|message|email)\s+(?i:my\s+)?{_RECEIPT_RECIPIENT})"
+    r"(?:\s+(?i:about\s+(?:it|this\s+reminder|the\s+reminder)))?"
+    r"(?:\s+(?i:too|as\s+well))?"
+    r"(?:\s+(?i:via|through|using)\s+(?i:messages|imessage|text|email))?"
+    r"[.!?*_\s]*")
 
 
 def _unquoted(text: str) -> str:
@@ -57,11 +72,6 @@ def _unquoted(text: str) -> str:
     for start, end in quoted_spans(text):
         chars[start:end] = " " * (end - start)
     return "".join(chars)
-
-
-def _subject_before_effect(subject: str) -> str:
-    effect = _COMPOUND_EFFECT.search(_unquoted(subject))
-    return subject[:effect.start()] if effect else subject
 
 
 def _reminder_parts(text: str) -> tuple[str, str] | None:
@@ -113,7 +123,8 @@ def _request_clauses(text: str) -> tuple[str, ...]:
     parts = _reminder_parts(text)
     content_start = len(text) - len(parts[1]) if parts and parts[1] else len(text)
     header_alert = bool(parts and (
-        _ALERT_DAY.search(parts[0]) or re.search(r"\b(?:at|in|before|ahead)\b", parts[0], re.I)))
+        _REFERENCE.search(parts[0]) or resolve_named_time(parts[0])[0] is not None
+        or has_unsupported_alert_clock(parts[0])))
     if parts and parts[1]:
         title = _TRAILING_TIME.sub("", parts[1].strip().strip("*_"))
         title = _TRAILING_NAMED_DATE.sub("", title).strip()
@@ -128,8 +139,15 @@ def _request_clauses(text: str) -> tuple[str, ...]:
         # bracket, unquoted coordination is ambiguous (apart from noun lists).
         if (header_alert and match.start() >= content_start
                 and masked[match.start()].isspace()
-                and not _ALERT_DAY.search(masked[content_start:match.start()])):
+                and not _ALERT_DAY.search(masked[content_start:match.start()])
+                and not _IMMEDIATE_SCOPE.search(masked[match.end():])):
             continue
+        if match.group().strip().casefold() == "or":
+            if (match.start() < content_start
+                    and re.search(r"\b(?:at|for)\s+\d{1,2}(?::\d{2})?$", masked[:match.start()], re.I)
+                    and re.match(r"\d{1,2}(?::\d{2})?\b", masked[match.end():])):
+                continue  # An unresolved clock choice, not alternative effects.
+            return ()
         # A comma in an explicit named date and 'between 6 and 7' are grammar,
         # not independent effects. Unsupported ranges still ask for one time.
         if masked[match.start()] == "," and re.match(r"\s*\d{4}\b", masked[match.end():]):
@@ -178,6 +196,17 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
             or _EMAIL_SEND_INTRO.match(text) or deliberate(text) is not None):
         return (text,)
     clauses = _request_clauses(text)
+    masked = _unquoted(text)
+    creation = REMINDER_CREATE_RE.search(masked)
+    # Conditions and alternatives relate whole actions. Do not erase that
+    # relationship by turning their fragments into independent obligations.
+    if creation and (not clauses
+            or _CONDITIONAL_SCOPE.search(masked[:creation.start()])
+            or (len(clauses) > 1 and any(
+                _CONDITIONAL_SCOPE.search(_unquoted(clause))
+                or re.match(r"(?:or|either|alternatively)\b", clause, re.I)
+                for clause in clauses))):
+        return ()
     if parts := _reminder_parts(text):
         if parts[1] and not _reminder_header_consumed(parts[0]):
             return ()
@@ -513,13 +542,11 @@ def compile_task(text: str, *, now: datetime | None = None,
         if literal:
             return literal
     unquoted = _unquoted(text)
-    compound = re.search(
-        r"(?:\band\s+|\.\s+)(?:also\s+)?(?P<notify>(?:let\b.{0,40}?\bknow|notify|tell|text|message|email)\b.*)$",
-        unquoted, re.I)
-    if compound and REMINDER_CREATE_RE.search(text[:compound.start()]):
-        notify_request = text[compound.start("notify"):]
-        plan = (None if len(_request_clauses(notify_request)) != 1
-                else compile_reminder_create(text[:compound.start()], now=now, turn=turn))
+    clauses = reminder_request_clauses(text)
+    if (len(clauses) == 2 and _RECEIPT_REQUEST.fullmatch(clauses[1])
+            and not re.search(rf"\b(?:{_BODY_INTRO})\b", clauses[1], re.I)):
+        notify_request = clauses[1]
+        plan = compile_reminder_create(clauses[0], now=now, turn=turn)
         if plan:
             plan.original_request = text
             plan.parameters["notify_request"] = _slot(notify_request, turn=turn)
@@ -528,7 +555,7 @@ def compile_task(text: str, *, now: datetime | None = None,
     # plus notification above). Declining creation must not re-arm another
     # reminder operation on a substring of a compound request.
     if REMINDER_CREATE_RE.search(unquoted) and (
-            len(reminder_request_clauses(text)) != 1 or (
+            len(clauses) != 1 or (
                 not _reminder_parts(text) and not (re.match(
                     rf"^\s*{_POLITE}(?:delete|remove|clear|complete|finish|mark|check|"
                     r"cross|tick|cancel|update|change|rename|reschedule|move)\b",
@@ -600,7 +627,7 @@ def _clean_subject(value: str) -> str:
 def extract_reminder_subject(text: str) -> str:
     parts = _reminder_parts(text)
     if parts and parts[1]:
-        return _clean_subject(_subject_before_effect(parts[1]))
+        return _clean_subject(parts[1])
     patterns = [
         r"\b(?:remind\s+me|(?:send|give)\s+me\s+(?:an?\s+)?reminder)\b"
         r".*?\bto\s+(?P<subject>.+)$",
@@ -616,10 +643,6 @@ def extract_reminder_subject(text: str) -> str:
         match = re.search(pattern, text, re.I)
         if match:
             subject = match.group("subject")
-            # The supported slice is single-effect.  This also keeps a person
-            # in "ask Trishy" inside the subject instead of making them a
-            # recipient.
-            subject = _subject_before_effect(subject)
             return _clean_subject(subject)
     return ""
 

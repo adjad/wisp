@@ -1661,7 +1661,11 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(d.tool_argument_bindings, {})
         d = await R.route("can you send texts to Mom and create reminders for tomorrow")
         self.assertNotIn("wisp_capabilities", d.tool_subset)
-        self.assertIn("send_message", d.tool_subset)
+        self.assertEqual(d.tool_subset, [])
+        self.assertEqual(d.required_tool_groups, ())
+        self.assertEqual(d.direct_calls, [])
+        self.assertIsNone(d.force_first_tool)
+        self.assertFalse(d.needs_tools)
 
     def assertClockClarification(self, d):
         self.assertEqual(d.reminder_action, "clarify_time")

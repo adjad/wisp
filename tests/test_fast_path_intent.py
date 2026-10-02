@@ -16,7 +16,7 @@ import os
 import tempfile
 import json
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -418,7 +418,8 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
                           ("Remind me to take my medicine tonight", action))
 ])
 def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
-        successful_reminder_endpoint, monkeypatch, text, device, device_args):
+        successful_reminder_endpoint, monkeypatch, text, device, device_args,
+        reminder_title="take my medicine"):
     from service import main
 
     request, streams, calls, assistant = successful_reminder_endpoint
@@ -433,8 +434,10 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
         pending = [name for name in (device, "add_reminder")
                    if name in offered and name not in {name for name, _ in calls}]
         tool_calls = [{"id": "synthetic-" + name, "type": "function", "function": {
-            "name": name, "arguments": json.dumps({"title": "take my medicine",
-                "when_iso": "2026-10-02T20:00", "kind": "reminder"} if name == "add_reminder" else device_args)}}
+            "name": name, "arguments": json.dumps({"title": reminder_title,
+                "when_iso": (datetime.now() + timedelta(days=1)).replace(
+                    hour=20, minute=0).isoformat(timespec="minutes"),
+                "kind": "reminder"} if name == "add_reminder" else device_args)}}
             for name in pending]
         message = ({"role": "assistant", "content": "", "tool_calls": tool_calls} if pending
                    else {"role": "assistant", "content": "Synthetic compound handled."})
@@ -446,6 +449,7 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
     assert {name for name, _ in calls} == {device, "add_reminder"}
     assert next(arguments for name, arguments in calls if name == device) == device_args
     assert len(calls) == 2
+    assert next(arguments for name, arguments in calls if name == "add_reminder")["title"] == reminder_title
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
     assert not any(event["type"] == "task_plan" for event in events)
     assert streams and streams[0]["calls_before"] == 0
@@ -467,6 +471,108 @@ def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert not any(event["type"] == "task_plan" for event in events)
     assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("text", [
+    "Remind me to take medicine tonight or mute my volume",
+    "Remind me to take medicine tonight or mute my volume; do not browse",
+    "Without browsing, remind me to take medicine tonight or mute my volume",
+    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not browse",
+    "Remind me to take medicine or mute my volume tonight",
+    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo",
+    "Frobnicate the gizmo; mute my volume; remind me to take medicine tonight",
+    "Remind me to take medicine tonight; frobnicate the gizmo; turn off Wi-Fi",
+    "Remind me to take medicine tonight; show my calendar tomorrow; lock my screen; frobnicate the gizmo",
+    "If I am home, remind me to take medicine tonight and mute my volume",
+    "If I am home remind me to take medicine tonight and mute my volume",
+    "Remind me to take medicine tonight; if I am home, mute my volume",
+    "Remind me to take medicine tonight and mute my volume unless a call is active",
+    "Remind me to take medicine tonight and text +15555550123 if I am home",
+    "Remind me tomorrow to buy milk and frobnicate the gizmo now",
+    "Remind me to take medicine tonight and remind me",
+    "Remind me to take medicine tonight and remind me to buy milk tomorrow",
+    "Remind me to take medicine tonight and send messages to Mom frobnicate the gizmo",
+    "Remind me to take medicine tonight and email Mom saying hello",
+    "Remind me to take medicine tonight and email Mom Saying Hello",
+    "Remind me to take medicine tonight and email Mom that says hello",
+    "Remind me to take medicine tonight and email Mom: hello",
+    "Can you send texts to Mom and create reminders for tomorrow",
+])
+def test_unresolved_reminder_compound_withholds_effects_from_eager_model(
+        successful_reminder_endpoint, monkeypatch, text):
+    from service import main
+    request, streams, calls, assistant = successful_reminder_endpoint
+    approvals = []
+
+    async def confirm(self, item):
+        approvals.append(item)
+        return True
+
+    async def eager(_model, messages, **kwargs):
+        streams.append({"messages": messages, **kwargs})
+        offered = {item["function"]["name"] for item in kwargs.get("tools", [])}
+        if "add_reminder" in offered:
+            message = {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "premature-reminder", "type": "function", "function": {
+                    "name": "add_reminder", "arguments": json.dumps({
+                        "title": "take medicine", "when_iso": "2099-10-02T20:00"})}}]}
+        else:
+            message = {"role": "assistant", "content": "Please clarify the requested actions."}
+        yield {"kind": "final", "message": message}
+
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
+    monkeypatch.setattr(main.client, "stream_events", eager)
+    assert compile_task(text, now=NOW) is None
+    decision = route(text)
+    assert decision.direct_calls == []
+    assert decision.force_first_tool is None
+    assert decision.required_tool_groups == ()
+    assert decision.tool_subset == []
+    events = asyncio.run(request(text))
+    assert calls == [] and approvals == []
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert streams and all(not stream.get("tools") for stream in streams)
+    assert not any(event["type"] == "task_plan" for event in events)
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("when", ["tomorrow", "at 6pm tomorrow", "on October 12, 2027"])
+@pytest.mark.parametrize("title", ["buy milk and text +15555550123",
+                                  "buy milk and message +15555550123",
+                                  "review the contract and email +15555550123",
+                                  "call Mom and tell her the news"])
+def test_future_coordinated_subject_is_one_reminder_without_current_notification(
+        successful_reminder_endpoint, monkeypatch, when, title):
+    from service import main
+    request, streams, calls, assistant = successful_reminder_endpoint
+    approvals = []
+    async def confirm(self, item):
+        approvals.append(item)
+        return True
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
+    text = f"Remind me {when} to {title}"
+    plan = compile_task(text, now=NOW)
+    assert plan is not None and plan.subject.value == title
+    assert "notify_request" not in plan.parameters
+    events = asyncio.run(request(text))
+    assert len(calls) == 1 and calls[0][0] == "add_reminder"
+    assert calls[0][1]["title"] == title
+    assert assistant._db.execute("SELECT title FROM commitments").fetchone()[0] == title
+    assert streams == [] and approvals == []
+    sid = next(event["id"] for event in events if event["type"] == "session")
+    assert main.store.active_workflow(sid) is None
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("text,device,device_args,title", [
+    ("Remind me tomorrow to buy milk and mute my volume now", "set_volume", {"level": 0}, "buy milk"),
+    ("Remind me at 6pm tomorrow to study and turn off Wi-Fi now", "set_wifi", {"on": False}, "study"),
+    ("Remind me on October 12, 2027 to study and disable Wi-Fi now", "set_wifi", {"on": False}, "study"),
+])
+def test_explicit_current_scope_escapes_future_reminder_subject(
+        successful_reminder_endpoint, monkeypatch, text, device, device_args, title):
+    test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
+        successful_reminder_endpoint, monkeypatch, text, device, device_args, reminder_title=title)
 
 
 @pytest.mark.parametrize("text", [
@@ -527,6 +633,8 @@ def test_actual_http_tonight_respects_future_and_past_clocks_in_both_zones(
     ("Remind me to take my medicine tonight", "take my medicine"),
     ('Remind me to "buy milk and lock my screen" tomorrow', "buy milk and lock my screen"),
     ('Remind me to "call Mom and tell her the news" tomorrow', "call Mom and tell her the news"),
+    ('Remind me tomorrow to "buy milk and mute my volume now"', "buy milk and mute my volume now"),
+    ('Remind me tomorrow to "buy milk or eggs if available"', "buy milk or eggs if available"),
     ("Remind me to lock my screen tomorrow", "lock my screen"),
     ("Remind me to mute my volume tomorrow", "mute my volume"),
     ("Remind me to turn off Wi-Fi tomorrow", "turn off Wi-Fi"),
@@ -671,6 +779,26 @@ def test_markdown_reminder_notification_keeps_the_complete_supported_task():
     assert plan.intent == "reminder.create"
     assert plan.subject.value == "finish a Canvas assignment"
     assert plan.parameters["notify_request"].value.startswith("tell Mom")
+
+
+@pytest.mark.parametrize("notification", [
+    "notify me", "text +1 650 555 0134", "email mom@example.com",
+    "tell Mom about it too through Messages", "let mom know about this reminder as well",
+    "tell Jane Smith about the reminder via email",
+])
+def test_complete_receipt_notification_grammar_preserves_supported_requests(notification):
+    plan = compile_task("Remind me to take medicine tonight and " + notification, now=NOW)
+    assert plan.intent == "reminder.create"
+    assert plan.parameters["notify_request"].value == notification
+
+
+@pytest.mark.parametrize("notification", [
+    "text Mom saying hello", 'text Mom "hello"', "tell Mom the news",
+    "email Mom saying hello", "notify Mom about the weather",
+    "email Mom Saying Hello", "tell Mom Saying Hello", "message Mom Saying Hello",
+])
+def test_authored_outbound_content_is_not_replaced_by_a_receipt(notification):
+    assert compile_task("Remind me to take medicine tonight and " + notification, now=NOW) is None
 
 
 @pytest.mark.parametrize("title", ["remind me", '"remind me"'])
