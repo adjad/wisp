@@ -404,6 +404,18 @@ _TRIAGE_CATEGORIES = {"email_triage"}
 _ALWAYS_CONFIRM_TOOL_AUTHORING = {"tool_authoring"}
 
 
+# EVERY category that must be confirmed on every call. One definition, read by
+# both decide() (a standing grant cannot lift these) and grants (an allow rule
+# cannot be stored for, or honoured on, a tool in one of these). Before this
+# existed grantability was a hand-kept list of tool names that missed
+# update_event, clear_reminders, clear_past_reminders, forward_email and
+# http_request (audit H-1), and decide() consulted grants against a different,
+# smaller set. A new tool in any of these categories is covered automatically.
+ALWAYS_CONFIRM_CATEGORIES = frozenset(
+    _ALWAYS_CONFIRM | _ALWAYS_CONFIRM_OUTBOUND | _ALWAYS_CONFIRM_CALENDAR
+    | _ALWAYS_CONFIRM_TOOL_AUTHORING)
+
+
 def _hard_deny(category: str, args: dict) -> Decision | None:
     """The unconditional safety floor: rules nothing can override — not
     full_access, not a standing grant, not the user clicking "always allow".
@@ -497,7 +509,7 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
         verdict = grants.check(tool, args)
         if verdict == "deny":
             return Decision(Tier.DENY, f"you blocked {tool} for this target")
-        if verdict == "allow" and category not in _ALWAYS_CONFIRM and not destructive:
+        if verdict == "allow" and category not in ALWAYS_CONFIRM_CATEGORIES and not destructive:
             return Decision(Tier.ALLOW, f"you allowed {tool} for this target")
 
     # Irreversible and unbounded: always show the exact command, in every access
