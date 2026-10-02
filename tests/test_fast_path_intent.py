@@ -419,14 +419,19 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
 ])
 def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
         successful_reminder_endpoint, monkeypatch, text, device, device_args,
-        reminder_title="take my medicine"):
+        reminder_title="take my medicine", read_alternatives=False):
     from service import main
 
     request, streams, calls, assistant = successful_reminder_endpoint
 
     decision = route(text)
     assert decision.direct_calls == []
-    assert {frozenset({device}), frozenset({"add_reminder"})} <= set(decision.required_tool_groups)
+    if read_alternatives:
+        assert frozenset({"add_reminder"}) in decision.required_tool_groups
+        assert any(device in group and "add_reminder" not in group
+                   for group in decision.required_tool_groups)
+    else:
+        assert {frozenset({device}), frozenset({"add_reminder"})} <= set(decision.required_tool_groups)
 
     async def interpret(_model, messages, **kwargs):
         streams.append({"messages": messages, "calls_before": len(calls), **kwargs})
@@ -455,6 +460,150 @@ def test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
     assert streams and streams[0]["calls_before"] == 0
     offered = {tool["function"]["name"] for stream in streams for tool in stream["tools"]}
     assert {device, "add_reminder"} <= offered
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("companion,tool,arguments", [
+    ("Summarize my inbox", "summarize_emails", {}),
+    ("Check my email", "summarize_emails", {}),
+    ("What's new across my apps", "get_recent_activity", {}),
+    ("Who do I know named Sarah", "list_contacts", {"query": "Sarah"}),
+    ("Show my calendar tomorrow", "get_upcoming", {"period": "tomorrow"}),
+])
+@pytest.mark.parametrize("read_first", [True, False])
+def test_actual_http_complete_read_and_future_reminder_keep_both_actions(
+        successful_reminder_endpoint, monkeypatch, companion, tool, arguments, read_first):
+    reminder = "Remind me to reply to Dan tomorrow"
+    text = f"{companion}; {reminder}" if read_first else f"{reminder}; {companion}"
+    decision = route(text)
+    assert {"reply_to_email", "send_email", "send_message"}.isdisjoint(decision.tool_subset)
+    test_actual_http_reminder_compound_cannot_complete_only_the_reminder(
+        successful_reminder_endpoint, monkeypatch, text, tool, arguments,
+        reminder_title="reply to Dan", read_alternatives=True)
+
+
+@pytest.mark.parametrize("send,body", [
+    ('Text +16505550134 saying "hello"', "hello"),
+    ('Text +16505550134 Saying "hello"', "hello"),
+    ('Message +16505550134 saying "hello"', "hello"),
+    ('Message +16505550134 Saying "hello"', "hello"),
+    ('iMessage +16505550134 saying "hello"', "hello"),
+    ('iMessage +16505550134 Saying "hello"', "hello"),
+    ("Text +16505550134 saying hello", "hello"),
+    ('Text +16505550134 "now"', "now"),
+    ("Text +16505550134 saying now", "now"),
+    ("Text +16505550134 saying immediately", "immediately"),
+])
+@pytest.mark.parametrize("send_first", [True, False])
+@pytest.mark.parametrize("separator", ["; ", " and ", ". "])
+def test_actual_http_typed_send_companion_uses_send_group_and_exact_approved_body(
+        successful_reminder_endpoint, monkeypatch, send, body, send_first, separator):
+    from service import main
+    from service.agent import loop
+    from service.safety.policy import Tier, Decision
+    from service.tools.registry import REGISTRY
+    request, streams, calls, assistant = successful_reminder_endpoint
+    reminder = "Remind me to buy milk tomorrow"
+    text = separator.join((send, reminder) if send_first else (reminder, send))
+    approvals = []
+
+    async def confirm(self, preview):
+        approvals.append(preview)
+        return True
+
+    async def inert_send(**kwargs):
+        calls.append(("send_message", kwargs))
+        return "Message sent to " + kwargs["to"] + ": " + kwargs["text"]
+
+    async def interpret(_model, messages, **kwargs):
+        streams.append({"messages": messages, "calls_before": len(calls), **kwargs})
+        offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
+        pending = [name for name in ("send_message", "add_reminder")
+                   if name in offered and name not in {name for name, _ in calls}]
+        # Typed bindings, not model guesses, must reach approval and execution.
+        args = {"send_message": {"to": "+19999999999", "text": "Wrong model text"},
+                "add_reminder": {"title": "Wrong model title", "when_iso": "2099-01-01T09:00"}}
+        tool_calls = [{"id": "synthetic-" + name, "type": "function", "function": {
+            "name": name, "arguments": json.dumps(args[name])}} for name in pending]
+        yield {"kind": "final", "message": (
+            {"role": "assistant", "content": "", "tool_calls": tool_calls} if pending else
+            {"role": "assistant", "content": "Both synthetic actions completed."})}
+
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
+    monkeypatch.setitem(REGISTRY, "send_message", replace(REGISTRY["send_message"], func=inert_send))
+    monkeypatch.setattr(loop, "decide", lambda _category, _args, *, tool=None: Decision(
+        Tier.CONFIRM if tool == "send_message" else Tier.ALLOW, "synthetic only"))
+    monkeypatch.setattr(main.client, "stream_events", interpret)
+    assert compile_task(text, now=NOW) is None
+    decision = route(text)
+    assert set(decision.tool_subset) == {"add_reminder", "send_message"}
+    assert set(decision.required_tool_groups) == {
+        frozenset({"add_reminder"}), frozenset({"send_message"})}
+    events = asyncio.run(request(text))
+    assert len(calls) == 2 and {name for name, _ in calls} == {"add_reminder", "send_message"}
+    sent = next(arguments for name, arguments in calls if name == "send_message")
+    assert sent == {"to": "+16505550134", "text": body}
+    assert len(approvals) == 1 and approvals[0]["args"] == sent
+    assert assistant._db.execute("SELECT title FROM commitments").fetchall()[0][0] == "buy milk"
+    assert streams[0]["calls_before"] == 0
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("body", ["hello; remind me tomorrow to buy milk",
+                                  "hello\nremind me tomorrow to buy milk and text Mom"])
+def test_actual_http_whole_quoted_message_preserves_all_literal_reminder_words(
+        successful_reminder_endpoint, monkeypatch, body):
+    from service import main
+    request, streams, calls, assistant = successful_reminder_endpoint
+    approvals = []
+
+    async def confirm(self, preview):
+        approvals.append(preview)
+        return True
+
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
+    events = asyncio.run(request(f'Text +16505550134 saying "{body}"'))
+    assert calls == [("send_message", {"to": "+16505550134", "text": body})]
+    assert len(approvals) == 1 and approvals[0]["args"]["text"] == body
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert streams == [] and events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("send_first", [True, False])
+@pytest.mark.parametrize("separator", ["; ", " and ", ". "])
+def test_scheduled_send_companion_retains_its_own_clock_and_body(send_first, separator):
+    from service.tasks.compiler import reminder_request_clauses
+    reminder = "Remind me to call Dad tomorrow"
+    send = 'Text +16505550134 tomorrow morning saying "hello"'
+    expected = (send, reminder) if send_first else (reminder, send)
+    text = separator.join(expected)
+    assert reminder_request_clauses(text) == expected
+    decision = route(text)
+    assert set(decision.tool_subset) == {"add_reminder", "schedule_send"}
+    assert set(decision.required_tool_groups) == {
+        frozenset({"add_reminder"}), frozenset({"schedule_send"})}
+    scheduled = decision.tool_argument_bindings["schedule_send"]
+    assert scheduled["body"] == "hello" and scheduled["to"] == "+16505550134"
+    assert scheduled["channel"] == "message" and scheduled["when"]
+    assert decision.direct_calls == []
+
+
+@pytest.mark.parametrize("text,title", [
+    ("Remind me at 6 or 7 tomorrow to call clinic", "call clinic"),
+    ("Set a reminder on October 12th from 6pm to 7pm to study", "study"),
+    ("Set a reminder on October 12th between 6pm and 7pm to study", "study"),
+])
+def test_actual_http_alternative_clock_keeps_typed_specific_time_question(
+        successful_reminder_endpoint, text, title):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    plan = compile_task(text, now=NOW)
+    assert plan.intent == "reminder.create" and plan.subject.value == title
+    assert plan.missing_slots == ["temporal.time"]
+    events = asyncio.run(request(text))
+    assert calls == [] and streams == []
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert any(event["type"] == "task_plan" for event in events)
+    assert "When should I remind you?" in " ".join(event.get("text", "") for event in events)
     assert events[-1]["type"] == "done"
 
 
@@ -497,6 +646,19 @@ def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
     "Remind me to take medicine tonight and email Mom that says hello",
     "Remind me to take medicine tonight and email Mom: hello",
     "Can you send texts to Mom and create reminders for tomorrow",
+    "Summarize my inbox frobnicate the gizmo; remind me to call Dan tomorrow",
+    "Check my email frobnicate the gizmo; remind me to call Dan tomorrow",
+    "What's new across my apps frobnicate the gizmo; remind me to call Dan tomorrow",
+    "Who do I know named Sarah frobnicate the gizmo; remind me to call Dan tomorrow",
+    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not show calendar",
+    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not show reminders",
+    "Remind me to take medicine tonight and",
+    "Remind me tomorrow to study and",
+    'Text +16505550134 saying "hello"; frobnicate the gizmo; remind me tomorrow to buy milk',
+    "Remind me to take medicine tonight and text +16505550134 now",
+    "Remind me to take medicine tonight and text +16505550134 immediately",
+    "Remind me tomorrow to buy milk and text +16505550134 now",
+    "Search the web for weather; remind me to take medicine tonight; frobnicate the gizmo",
 ])
 def test_unresolved_reminder_compound_withholds_effects_from_eager_model(
         successful_reminder_endpoint, monkeypatch, text):
@@ -511,11 +673,16 @@ def test_unresolved_reminder_compound_withholds_effects_from_eager_model(
     async def eager(_model, messages, **kwargs):
         streams.append({"messages": messages, **kwargs})
         offered = {item["function"]["name"] for item in kwargs.get("tools", [])}
-        if "add_reminder" in offered:
+        if len(streams) == 1:
             message = {"role": "assistant", "content": "", "tool_calls": [{
                 "id": "premature-reminder", "type": "function", "function": {
                     "name": "add_reminder", "arguments": json.dumps({
-                        "title": "take medicine", "when_iso": "2099-10-02T20:00"})}}]}
+                            "title": "take medicine", "when_iso": "2099-10-02T20:00"})}}, {
+                    "id": "premature-device", "type": "function", "function": {
+                        "name": "set_volume", "arguments": json.dumps({"level": 0})}}, {
+                    "id": "premature-send", "type": "function", "function": {
+                        "name": "send_message", "arguments": json.dumps({
+                            "to": "+16505550134", "text": "Unwanted synthetic send"})}}]}
         else:
             message = {"role": "assistant", "content": "Please clarify the requested actions."}
         yield {"kind": "final", "message": message}

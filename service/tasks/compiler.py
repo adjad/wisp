@@ -7,7 +7,7 @@ import re
 from service.utterance_shape import deliberate, quoted_spans
 from service.reminder_intent import (
     CAPABILITY_INVENTORY_RE, REMINDER_CREATE_RE, has_unsupported_alert_clock,
-    reminder_command_parts, reminder_temporal_text,
+    reminder_command_parts, reminder_temporal_text, _NAMED_DATE,
 )
 from service.tasks.models import SlotValue, TaskPlan, TemporalValue
 from service.tasks.temporal import (
@@ -41,7 +41,7 @@ _GROCERY_LIST = re.compile(
     rf"(?:\s*(?:,\s*(?:and\s+)?|and\s+){_GROCERY_OBJECT})+[.!?]*", re.I)
 _TEMPORAL_ONLY = re.compile(
     r"(?:(?:on|at|by|for|in|from|between|to|and|until|through|till|this|next|later|"
-    r"today|tomorrow|tonight|morning|afternoon|evening|night|"
+    r"today|tomorrow|tommorow|tommorrow|tmrw|tmrow|tonight|morning|afternoon|evening|night|"
     r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|"
     r"half|a|an|quarter|past|one|two|three|four|five|six|seven|eight|nine|ten|"
     r"eleven|twelve|fifteen|twenty|thirty|forty|fifty|sixty|oh|o['’]?clock|"
@@ -114,6 +114,8 @@ def _request_clauses(text: str) -> tuple[str, ...]:
     silently turned into a title. Offsets refer to the original authored text.
     """
     masked = _unquoted(text)
+    if re.search(r"\b(?:and(?:\s+then)?|or|then|also|but)[.!?*_\s]*$", masked, re.I):
+        return ()  # An unfinished connector has not supplied its second task.
     # A closing courtesy belongs to the preceding clause, not a new task.
     courtesy = re.search(r"(?:,\s*|\s+)(?:please|thanks|thank\s+you)[.!?*_\s]*$", masked, re.I)
     if courtesy:
@@ -131,7 +133,13 @@ def _request_clauses(text: str) -> tuple[str, ...]:
         if _GROCERY_LIST.fullmatch(title):
             return (text,)
     boundaries = []
-    for match in _CLAUSE_JOIN.finditer(masked):
+    # Quoted spans are opaque, not whitespace belonging to a following join.
+    # Otherwise the leading \s+ in ' and ' consumes the whole masked body in
+    # 'text Mom saying "hello" and remind me ...', dropping authored content.
+    join_mask = list(masked)
+    for start, end in quoted_spans(text):
+        join_mask[start:end] = "\0" * (end - start)
+    for match in _CLAUSE_JOIN.finditer("".join(join_mask)):
         if match.start() < courtesy_end:
             continue
         # A schedule BEFORE the infinitive scopes coordinated future content.
@@ -163,8 +171,12 @@ def _request_clauses(text: str) -> tuple[str, ...]:
     if parts and parts[1]:
         temporal = re.compile(_TRAILING_TIME.pattern.replace(
             r"\s*[.!?]*$", r"(?![\w'’])"), re.I)
-        for match in temporal.finditer(masked, content_start):
-            tail = masked[match.end():]
+        # A separate companion owns its own clock/body grammar. Do not apply
+        # reminder-title tail validation to 'text Mom tomorrow saying hello'.
+        reminder_end = min((left for left, _ in boundaries if left >= content_start),
+                           default=len(masked))
+        for match in temporal.finditer(masked, content_start, reminder_end):
+            tail = masked[match.end():reminder_end]
             if ((header_alert and not _ALERT_DAY.search(match.group()))
                     or _TEMPORAL_ONLY.fullmatch(tail.strip(" .!?*_"))):
                 continue
@@ -191,10 +203,11 @@ def reminder_request_clauses(text: str) -> tuple[str, ...]:
     Literal addressed sends and named existing-item operations are not outer
     creation requests. A single future subject remains one reminder clause.
     """
-    if (CAPABILITY_INVENTORY_RE.search(text)
-            or _MESSAGE_SEND_INTRO.match(text) or _MESSAGE_SEND_BARE.match(text)
-            or _EMAIL_SEND_INTRO.match(text) or deliberate(text) is not None):
+    if CAPABILITY_INVENTORY_RE.search(text) or deliberate(text) is not None:
         return (text,)
+    addressed = _MESSAGE_SEND_INTRO.match(text) or _EMAIL_SEND_INTRO.match(text)
+    if addressed and CAPABILITY_INVENTORY_RE.fullmatch(addressed.group("body")):
+        return (text,)  # A complete authored capability question is literal content.
     clauses = _request_clauses(text)
     masked = _unquoted(text)
     creation = REMINDER_CREATE_RE.search(masked)
@@ -241,7 +254,12 @@ def _reminder_header_consumed(command: str) -> bool:
     # Named dates are consumed as a whole, including a year/comma. Everything
     # else must consist solely of bounded temporal tokens, not arbitrary words
     # whose presence a permissive time search would otherwise ignore.
-    rest = _TRAILING_NAMED_DATE.sub("", " " + rest).strip()
+    # Consume the date using the same lexer as reminder temporal parsing.
+    # The remaining clock tokens may be unresolved (a range, for example);
+    # completeness does not mean that a single executable time was supplied.
+    rest = _NAMED_DATE.sub("", rest).strip()
+    rest = re.sub(r"\b(\d{1,2}(?::\d{2})?)\s+or\s+\d{1,2}(?::\d{2})?\b",
+                  r"\1", rest, flags=re.I)
     return not rest or _TEMPORAL_ONLY.fullmatch(rest) is not None
 
 # A send whose body has to be READ from somewhere stays on the workflow path,
@@ -278,7 +296,7 @@ _MESSAGE_SEND_INTRO = re.compile(
     rf"send\s+(?P<who_b>{_WHO}?)\s+an?\s+(?:text|message|imessage)|"
     rf"(?:text|message|imessage)\s+(?P<who_c>{_WHO}?))"
     rf"(?:\s+(?P<when>{_WHEN_PHRASE}))?"
-    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I)
+    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I | re.S)
 _EMAIL_SEND_INTRO = re.compile(
     rf"^\s*{_POLITE}"
     rf"(?:send\s+(?:an?\s+)?e-?mail\s+to\s+(?P<who>{_WHO}?)|"
@@ -286,13 +304,13 @@ _EMAIL_SEND_INTRO = re.compile(
     rf"e-?mail\s+(?P<who_c>{_WHO}?))"
     r"(?:\s+about\s+(?P<subject>[^:]{1,60}?))?"
     rf"(?:\s+(?P<when>{_WHEN_PHRASE}))?"
-    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I)
+    rf"\s+(?:{_BODY_INTRO})\s+(?P<body>.+)$", re.I | re.S)
 # Without an introducer the recipient is a single token, so "text mom I'll be
 # late" cannot swallow the first words of its own body.  `message` is excluded
 # here because a bare "message ..." is too easily an ordinary noun.
 _MESSAGE_SEND_BARE = re.compile(
     rf"^\s*{_POLITE}(?:text|imessage)\s+"
-    r"(?P<who>[A-Za-z0-9'’.\-+@_]+)\s+(?P<body>.+)$", re.I)
+    r"(?P<who>[A-Za-z0-9'’.\-+@_]+)\s+(?P<body>.+)$", re.I | re.S)
 
 _DELETE_REMINDER = re.compile(
     r"\b(?:delete|remove|clear)\b[^.?!]{0,120}\breminders?\b|"
@@ -455,6 +473,8 @@ def _scheduled_at(when_text: str, *, now: datetime | None) -> str:
 
 def _outbound_plan(match: re.Match, text: str, *, channel: str,
                    now: datetime | None, turn: int) -> TaskPlan | None:
+    if len(reminder_request_clauses(text)) != 1:
+        return None  # Outer reminder coordination is not part of this send body.
     groups = match.groupdict()
     who = next((groups[key] for key in ("who", "who_b", "who_c")
                 if groups.get(key)), "")
@@ -462,6 +482,10 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
     body = _clean_body(groups.get("body") or "")
     if not who or not body:
         return None
+    raw_body = _unquoted(groups.get("body") or "").strip(" .!?")
+    if (match.re is _MESSAGE_SEND_BARE and raw_body
+            and (_IMMEDIATE_SCOPE.fullmatch(raw_body) or _TEMPORAL_ONLY.fullmatch(raw_body))):
+        return None  # Bare timing is not an authored message; quotes/introducer disambiguate.
     # Bare source deliveries remain owned by the grounded workflow. With an
     # explicit body introducer, inspect the speech act instead of rejecting
     # ordinary literal sentences merely for containing "email" or "mail".
