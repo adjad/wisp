@@ -5,9 +5,11 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shlex
+from itertools import chain
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -190,17 +192,22 @@ _PATH_DENY = [
 _PATH_ARG_KEYS = ("path", "paths", "source", "src", "destination", "dest", "archive_path",
                   "folder", "directory", "dir", "target", "output", "output_path",
                   "file", "files")
+_PATH_NAME_TOOLS = frozenset({"uninstall_app"})
 
 
-def _path_operands(args: dict) -> list[tuple[str, str]]:
+def _path_operands(args: dict, tool: str | None = None) -> list[tuple[str, str]]:
     """(argument name, value) for every string location in `args`, list items included."""
     found: list[tuple[str, str]] = []
     for key in _PATH_ARG_KEYS:
         value = args.get(key)
-        if isinstance(value, str) and value.strip():
+        # archive_files alone treats an empty/whitespace optional output as
+        # a default beside its first input, not Path('') at cwd.
+        if tool == "archive_files" and key == "archive_path" and isinstance(value, str) and not value.strip():
+            continue
+        if isinstance(value, str):
             found.append((key, value))
         elif isinstance(value, (list, tuple)):
-            found += [(key, item) for item in value if isinstance(item, str) and item.strip()]
+            found += [(key, item) for item in value if isinstance(item, str)]
     return found
 
 
@@ -219,14 +226,79 @@ def _path_forms(raw: str) -> list[str]:
     anchors = [Path(expanded)] if os.path.isabs(expanded) else [Path.home() / expanded, Path.cwd() / expanded]
     for anchor in anchors:
         forms.add(str(anchor))
-        try:
-            resolved = str(anchor.resolve())
-        except (OSError, RuntimeError):
-            continue  # an unresolvable spelling is still judged on its other forms
+        # Admission catches resolution failures and denies; raw spelling alone
+        # cannot certify an unresolved symlink or inaccessible derived target.
+        resolved = str(anchor.resolve())
         forms.add(resolved)
         if resolved.startswith("/private/"):
             forms.add(resolved[len("/private"):])
     return sorted(forms)
+
+
+def _derived_path_operands(tool: str | None, args: dict):
+    """Mirror deterministic output naming, without importing/executing tools.
+
+    Only organize_files enumerates immediate matching source files, just as
+    its preview does. This is admission-time checking, not recursive scanning
+    or a binding of paths against changes between confirmation and execution.
+    """
+    if tool == "archive_files":
+        paths, output = args.get("paths"), args.get("archive_path", "")
+        if not isinstance(paths, list) or not paths or not isinstance(paths[0], str) or not isinstance(output, str):
+            return
+        first = Path(paths[0]).expanduser()
+        if output.strip():
+            target = Path(output).expanduser()
+            if target.suffix != ".zip":
+                target = target.with_suffix(".zip")
+        else:
+            target = first.parent / f"{first.stem or first.name}.zip"
+        yield "archive output", str(target)
+    elif tool in {"convert_file", "write_document", "spreadsheet_ops", "encrypt_file"}:
+        if not isinstance(args.get("path"), str):
+            return
+        target = Path(args["path"]).expanduser()
+        if tool == "convert_file":
+            fmt = args.get("to_format", "")
+            if not isinstance(fmt, str):
+                return
+            target = target.with_suffix("." + fmt.strip().lower().lstrip("."))
+        elif tool == "encrypt_file":
+            target = target.with_suffix(target.suffix + (".dec" if args.get("decrypt", False) else ".enc"))
+        else:
+            suffix = ".docx" if tool == "write_document" else ".xlsx"
+            if target.suffix.lower() != suffix:
+                target = target.with_suffix(suffix)
+        yield "derived output", str(target)
+    elif tool == "move_path":
+        if not isinstance(args.get("source"), str) or not isinstance(args.get("destination"), str):
+            return
+        source = Path(args["source"]).expanduser()
+        target = Path(args["destination"]).expanduser()
+        if args["destination"].endswith(("/", os.sep)) or target.is_dir():
+            yield "destination child", str(target / source.name)
+    elif tool == "organize_files":
+        if not all(isinstance(args.get(key), str) for key in ("folder", "destination", "pattern")):
+            return
+        source = Path(args["folder"]).expanduser().resolve()
+        if not source.is_dir():
+            return
+        target = Path(args["destination"]).expanduser()
+        if not target.is_absolute():
+            target = source / target
+        target = target.resolve()
+        if source == target:
+            return
+        pattern = args["pattern"]
+        if "/" in pattern:
+            glob = Path(pattern).expanduser()
+            if glob.parent.resolve() != source:
+                return
+            pattern = glob.name
+        for item in source.iterdir():
+            if item.is_file() and fnmatch.fnmatch(item.name, pattern):
+                yield "source child", str(item)
+                yield "destination child", str(target / item.name)
 
 
 def _load_yaml() -> dict:
@@ -430,7 +502,19 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
             return Decision(Tier.DENY, f"matches blocked pattern: {hit}")
     if category in ("fs_write", "fs_delete"):
         rules = _rules("path_deny", _PATH_DENY)
-        operands = _path_operands(args)
+        operands = _path_operands(args, tool)
+        if tool in _PATH_NAME_TOOLS and isinstance(args.get("name"), str):
+            # uninstall_app strips/appends .app, then joins each Applications
+            # root. Admit a basename only; an absolute name replaces the root.
+            name = args["name"].strip()
+            if not name or "/" in name or "\x00" in name or name in {".", ".."}:
+                return Decision(Tier.DENY, "uninstall_app requires an application basename, not a path")
+            if not name.endswith(".app"):
+                name += ".app"
+            operands.extend(("name", str(root / name))
+                            for root in (Path("/Applications"), Path.home() / "Applications"))
+        if any("\x00" in operand for _, operand in operands):
+            return Decision(Tier.DENY, "invalid filesystem path: NUL character")
         if (tool == "organize_files" and isinstance(args.get("folder"), str)
                 and isinstance(args.get("destination"), str)):
             # organize_files anchors relative destinations at its resolved
@@ -440,12 +524,19 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
                 if not destination.is_absolute():
                     source = Path(args["folder"]).expanduser().resolve()
                     operands.append(("destination", str(source / destination)))
-            except (OSError, RuntimeError):
-                pass  # retain the ordinary operand checks for unresolvable paths
-        for key, operand in operands:
-            for form in _path_forms(operand):
-                if (hit := _any(rules, form)):
-                    return Decision(Tier.DENY, f"protected path in {key}: {hit}")
+            except (ValueError, OSError, RuntimeError):
+                return Decision(Tier.DENY, "filesystem source path could not be safely resolved")
+        try:
+            # Check raw operands first, before deriving or listing anything.
+            for key, operand in chain(operands, _derived_path_operands(tool, args)):
+                if "\x00" in operand:
+                    return Decision(Tier.DENY, "invalid derived filesystem path: NUL character")
+                forms = _path_forms(operand)
+                for form in forms:
+                    if (hit := _any(rules, form)):
+                        return Decision(Tier.DENY, f"protected path in {key}: {hit}")
+        except (ValueError, OSError, RuntimeError):
+            return Decision(Tier.DENY, "filesystem output path could not be safely resolved")
     return None
 
 
