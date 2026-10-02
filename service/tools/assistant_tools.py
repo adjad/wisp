@@ -364,20 +364,25 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     items = _without_withheld_sources(items, withheld)
     notice = ("Wisp could not check " + " and ".join(s["label"] for s in unavailable)
               + ". Check its access in Settings; this schedule may be incomplete.\n") if unavailable else ""
+    # A pending Reminders sync is secondary to a calendar question, so it trails
+    # the answer instead of leading it. A source Wisp could NOT check stays first:
+    # that can make the whole schedule incomplete.
+    reminder_note = ""
     if reminders_pending and "reminders" not in unavailable_ids:
-        notice += ("Wisp has not received a current Reminders read yet, so Apple "
-                   "Reminders items are not shown here. Try again in a moment.\n")
+        reminder_note = ("\nWisp has not received a current Reminders read yet, so Apple "
+                         "Reminders items are not shown here. Try again in a moment.")
     # `upcoming()` normally makes this redundant, but the tool must not
     # describe a just-elapsed entry as "upcoming" when a source returns one.
     items = _collapse_schedule_rows(
         [item for item in items if float(item.get("when_ts") or 0) >= now])
     if not items:
-        if notice:
-            return notice + "No scheduled items were found in the sources that could be checked."
+        if notice or reminder_note:
+            return (notice + "No scheduled items were found in the sources that could be checked."
+                    + reminder_note)
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
-        apple_reminders_checked="reminders" not in withheld)
+        apple_reminders_checked="reminders" not in withheld) + reminder_note
 
 
 @register(
