@@ -32,9 +32,16 @@ _PREFIXED = (
 )
 _PEM = r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
 _BEARER = r"(?i:\bBearer)\s+[A-Za-z0-9._~+/=-]{20,}"
+# Share the complete label grammar between serialized assignments and typed
+# audit dictionaries. Qualifiers (OPENAI_, client_, aws_) are identifiers, not
+# arbitrary prose; metadata suffixes such as token_count do not match.
+_CREDENTIAL_LABEL = (
+    r"(?:(?:[a-z][a-z0-9]*[_-])+)?"
+    r"(?:api[_-]?key|secret(?:[_-]?(?:access[_-]?)?key)?|"
+    r"(?:access|auth|refresh)[_-]?token|token|passw(?:or)?d|passwd)")
+_CREDENTIAL_FIELD = re.compile(_CREDENTIAL_LABEL, re.I)
 _ASSIGNED = re.compile(
-    r"(?i)\b((?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|"
-    r"token|passw(?:or)?d|passwd)[\"']?\s*[:=]\s*[\"']?)([^\s\"'`,;]{12,})")
+    rf"(?i)\b({_CREDENTIAL_LABEL}[\"']?\s*[:=]\s*[\"']?)([^\s\"'`,;]{{12,}})")
 _TOKEN = re.compile("|".join([_PEM, _BEARER, *_PREFIXED]), re.S)
 
 # After removing credentials, a message this short that began as a slash
@@ -76,7 +83,13 @@ def scrub_obj(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, str):
         return scrub(value)[0]
     if isinstance(value, dict):
-        return {k: scrub_obj(v, _depth + 1) for k, v in value.items()}
+        # A typed password/API-key field establishes sensitivity even when its
+        # value is opaque or short. Drop credential containers as a whole too;
+        # recurse normally through siblings so useful audit metadata survives.
+        return {k: (PLACEHOLDER if isinstance(k, str)
+                    and _CREDENTIAL_FIELD.fullmatch(k)
+                    and v is not None and not isinstance(v, bool)
+                    else scrub_obj(v, _depth + 1)) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [scrub_obj(v, _depth + 1) for v in value]
     return value

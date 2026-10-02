@@ -121,7 +121,7 @@ def test_email_invalid_ids_and_schema_fall_back_deterministically(monkeypatch):
     for _response in range(3):
         output = asyncio.run(email_tools.summarize_inbox_recent())
         assert output.index("Project update") < output.index("Project notes")
-        assert "alex@fixture.test" in output
+        assert "**Alex** · fixture.test" in output
         assert "fabricated dentist" not in output
     chat.assert_not_awaited()
 

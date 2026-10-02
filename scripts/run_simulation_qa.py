@@ -77,9 +77,11 @@ PROFILE_TESTS = {
     },
     "sources": {
         "tests/test_brief_fallback.py",
+        "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
         "tests/test_linked_documents.py",
+        "tests/test_mail_history_wire.py",
         "tests/test_message_attribution.py",
         "tests/test_message_content.py",
         "tests/test_message_digest.py",
@@ -130,6 +132,7 @@ PROFILE_TESTS = {
         "tests/test_assistant_migrations.py",
         "tests/test_native_sync_stall.py",
         "tests/test_manual_reminders_survive_sync.py",
+        "tests/test_stale_wisp_only_reminders.py",
         "tests/test_assistant_recovery.py",
         "tests/test_discovery_store.py",
         "tests/test_discovery_approvals.py",
@@ -169,6 +172,7 @@ PROFILE_TESTS = {
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
         "tests/test_fast_path_intent.py",
+        "tests/test_reminder_compound_allowance.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
@@ -224,6 +228,11 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_agent_disconnect.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
+    # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
+    "tests/test_policy_floor_and_mcp_trust.py",
+    # Pure header classification and string layout; no mail, model or network.
+    "tests/test_email_digest_sections.py",
+    "tests/test_email_digest_review_regressions.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
     "tests/test_helper_provenance.py",
@@ -288,6 +297,7 @@ _NATIVE_PASSED = re.compile(
 _LEGACY_PROMPTS_VALIDATED = re.compile(r"\bok:\s*(?P<passed>\d+)\s+prompts validated\b")
 _NATIVE_GATE_DEPENDENCIES = {
     "native/mail-db-contract": "native/mail-db-compile",
+    "native/mail-history-contract": "native/mail-history-compile",
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
@@ -553,6 +563,7 @@ def _dependencies() -> dict[str, str]:
 def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     module_cache = str(build_dir / "module-cache")
     mail_db = str(build_dir / "mail-db-regression")
+    mail_history = str(build_dir / "mail-history")
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
@@ -578,6 +589,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
         ),
         (
+            "native/display-geometry-contract",
+            [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
+        ),
+        (
             "native/mail-db-compile",
             [
                 TRUSTED_SWIFTC, "-module-cache-path", module_cache,
@@ -586,6 +601,16 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/mail-db-contract", [mail_db]),
+        (
+            "native/mail-history-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/MailHistoryMerge.swift",
+                "tests/MailHistoryChecks.swift", "-o", mail_history,
+            ],
+        ),
+        ("native/mail-history-contract", [mail_history]),
         (
             "native/privacy-sync-compile",
             [
