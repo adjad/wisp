@@ -56,6 +56,11 @@ _TEMPORAL_ONLY = re.compile(
     r"\d+(?::\d*)?(?:\s*[ap]\.?m\.?)?|[ap]\.?m\.?|[-–—/])\s*)+", re.I)
 _ALERT_DAY = re.compile(
     r"\b(?:today|tomorrow|tonight|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
+# Complete existing calendar-day vocabulary, including resolver-supported
+# tomorrow aliases. This excludes clocks/dayparts, offsets and event lead times.
+_LITERAL_DAY = re.compile(
+    rf"{_NAMED_DATE.pattern}|{_ALERT_DAY.pattern}|"
+    r"\b(?:tommorow|tommorrow|tmrw|tmrow)\b", re.I)
 _IMMEDIATE_SCOPE = re.compile(r"\b(?:now|immediately|right\s+away|at\s+once)\b", re.I)
 _CONDITIONAL_SCOPE = re.compile(
     r"\b(?:if|unless|otherwise|provided\s+that|depending\s+on)\b", re.I)
@@ -706,13 +711,13 @@ def _reminder_temporal_evidence(text: str, *, parts: tuple[str, str] | None = No
         named = _NAMED_DATE.search(suffix.group()) if suffix else None
     resolution_text = text
     if named or outer_day or (parts and _NAMED_DATE.search(parts[0])):
-        # A recognized outer day is authoritative. Mask only literal DATE
-        # tokens before projection; its fallback can otherwise prefer a title's
-        # first date/ISO token. Keep quoted clocks and all subject text behavior.
+        # A recognized outer day is authoritative. Mask every supported literal
+        # day token before projection, including clock-adjacent relative days
+        # and weekdays. Keep quoted clocks and all subject text behavior.
         chars = list(text)
         for start, end in quoted_spans(text):
-            for date in _NAMED_DATE.finditer(text, start, end):
-                chars[date.start():date.end()] = " " * (date.end() - date.start())
+            for day in _LITERAL_DAY.finditer(text, start, end):
+                chars[day.start():day.end()] = " " * (day.end() - day.start())
         resolution_text = "".join(chars)
     evidence = reminder_temporal_text(resolution_text)
     retained = {match.group().casefold() for match in _NAMED_DATE.finditer(evidence)}

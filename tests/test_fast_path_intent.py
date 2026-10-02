@@ -739,6 +739,54 @@ def test_quoted_date_does_not_override_recognized_relative_day(
         subject=title, prompt=f'Remind me {header}to "{title}"{suffix}')
 
 
+@pytest.mark.parametrize("quotes", [('"', '"'), ('“', '”'), ('`', '`'), ("'", "'")])
+@pytest.mark.parametrize("literal_day", [
+    "today", "tonight", "tomorrow", "tommorow", "tommorrow", "tmrw", "tmrow",
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
+    "October 20, 2027", "2027-10-20",
+    "October 20, 2027 Friday tomorrow", "2027-10-20 Sunday tonight",
+])
+@pytest.mark.parametrize("outer,expected_day", [
+    ("tomorrow", "2026-10-02"), ("Tuesday", "2026-10-06"),
+    ("on October 12, 2027", "2027-10-12"), ("on 2027-10-12", "2027-10-12"),
+])
+@pytest.mark.parametrize("trailing", [False, True])
+@pytest.mark.parametrize("clock_first", [False, True])
+def test_literal_day_provenance_preserves_outer_day_and_clock_control(
+        successful_reminder_endpoint, monkeypatch, quotes, literal_day, outer,
+        expected_day, trailing, clock_first):
+    left, right = quotes
+    header, suffix = ("", " " + outer) if trailing else (outer + " ", "")
+    control = compile_task(f"Remind me {header}to {left}review at 6pm report{right}{suffix}",
+                           now=datetime(2026, 10, 1, 10))
+    assert control.status == "ready"
+    assert control.temporal.absolute_iso[:10] == expected_day
+    title = (f"review at 6pm {literal_day} report" if clock_first
+             else f"review {literal_day} at 6pm report")
+    subject = title if left in {'"', "'"} else left + title + right
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, "", control.temporal.absolute_iso,
+        subject=subject, prompt=f"Remind me {header}to {left}{title}{right}{suffix}")
+
+
+@pytest.mark.parametrize("quotes", [('"', '"'), ('“', '”'), ('`', '`'), ("'", "'")])
+@pytest.mark.parametrize("title,outer,expected", [
+    ("review at 6pm Friday report", "Tuesday", "2026-10-06T18:00"),
+    ("review 2027-10-12 at 6pm Friday report", "Tuesday", "2026-10-06T18:00"),
+    ("review at 6pm tomorrow report", "Monday", "2026-10-05T18:00"),
+])
+def test_auditor_exact_quoted_day_suffix_cases(
+        successful_reminder_endpoint, monkeypatch, quotes, title, outer, expected):
+    left, right = quotes
+    control = compile_task(f"Remind me to {left}review at 6pm{right} {outer}",
+                           now=datetime(2026, 10, 1, 10))
+    assert control.status == "ready" and control.temporal.absolute_iso == expected
+    subject = title if left in {'"', "'"} else left + title + right
+    test_header_day_constraints_reconcile_before_effects(
+        successful_reminder_endpoint, monkeypatch, "", expected, subject=subject,
+        prompt=f"Remind me to {left}{title}{right} {outer}")
+
+
 @pytest.mark.parametrize("header_clock,title", [
     (" at 6pm", "review Friday report"),
     ("", "review at 6pm Friday report"),
