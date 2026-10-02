@@ -1357,6 +1357,14 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             for name, args in child.direct_calls:
                 merged.tool_argument_bindings[name] = dict(args)
             merged.tool_argument_bindings.update(child.tool_argument_bindings)
+        if any("_recipient_lookup" in fixed for fixed in merged.tool_argument_bindings.values()):
+            # Contact identity is a prerequisite even when the independent
+            # reminder was authored first. Never create it before resolving
+            # whether the named outbound companion has a usable destination.
+            merged.required_tool_groups = tuple(
+                group for group in groups if "lookup_contact" in group) + tuple(
+                group for group in groups if "lookup_contact" not in group)
+            merged.force_first_tool = "lookup_contact"
         writes = {name for name in merged_tools if REGISTRY[name].category in mutating_categories}
         if len(writes) == 1:
             # Preserve an existing complete write's selection hint beside
@@ -6299,6 +6307,12 @@ def _complete_reminder_clause(clause: str) -> RouteDecision | None:
             decision = _mk_scoped(tools, "complete typed outbound companion clause", light=False, multi=True)
             decision.required_tool_groups = tuple(frozenset({tool}) for tool in tools)
             decision.tool_argument_bindings = {name: bindings}
+            if not literal:
+                decision.tool_argument_bindings["lookup_contact"] = {"name": recipient}
+                # Trusted execution metadata, never an argument passed to a
+                # tool. The loop must verify an actual matching lookup result
+                # before the named destination can reach outbound approval.
+                bindings["_recipient_lookup"] = {"name": recipient, "channel": plan.channel.value}
             return decision
     if re.fullmatch(
             r"(?:please\s+|(?:can|could|would)\s+you\s+)?"

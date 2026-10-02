@@ -697,8 +697,13 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     reference = extract_event_reference(text)
     temporal_text = reminder_temporal_text(text)
     unsupported_clock = has_unsupported_alert_clock(temporal_text)
-    lead = parse_lead_seconds(temporal_text) if reference and not unsupported_clock else None
-    resolved, defaulted = ((None, "") if reference or unsupported_clock
+    # A parser finding one valid date is not permission to choose it over
+    # another supplied date. Retain the subject and ask for a single alert.
+    date_tokens = re.findall(rf"{_NAMED_DATE.pattern}|{_CALENDAR_DATE}",
+                             _unquoted(temporal_text), re.I)
+    ambiguous_dates = len(date_tokens) > 1
+    lead = parse_lead_seconds(temporal_text) if reference and not (unsupported_clock or ambiguous_dates) else None
+    resolved, defaulted = ((None, "") if reference or unsupported_clock or ambiguous_dates
                            else resolve_named_time(temporal_text, now=now))
     temporal_source = "explicit" if (resolved or reference) else ""
     plan = TaskPlan(

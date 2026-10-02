@@ -550,9 +550,11 @@ def test_actual_http_typed_send_companion_uses_send_group_and_exact_approved_bod
 
 
 @pytest.mark.parametrize("body", ["hello; remind me tomorrow to buy milk",
+                                  "hello\nand remind me tomorrow to buy milk",
                                   "hello\nremind me tomorrow to buy milk and text Mom"])
+@pytest.mark.parametrize("quotes", [('"', '"'), ('“', '”')])
 def test_actual_http_whole_quoted_message_preserves_all_literal_reminder_words(
-        successful_reminder_endpoint, monkeypatch, body):
+        successful_reminder_endpoint, monkeypatch, body, quotes):
     from service import main
     request, streams, calls, assistant = successful_reminder_endpoint
     approvals = []
@@ -562,11 +564,160 @@ def test_actual_http_whole_quoted_message_preserves_all_literal_reminder_words(
         return True
 
     monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
-    events = asyncio.run(request(f'Text +16505550134 saying "{body}"'))
+    events = asyncio.run(request(f'Text +16505550134 saying {quotes[0]}{body}{quotes[1]}'))
     assert calls == [("send_message", {"to": "+16505550134", "text": body})]
     assert len(approvals) == 1 and approvals[0]["args"]["text"] == body
     assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert streams == [] and events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("quotes", [('"', '"'), ('“', '”'), ('`', '`'), ("'", "'")])
+def test_multiline_quoted_future_title_is_one_reminder(successful_reminder_endpoint, quotes):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    left, right = quotes
+    text = f"Remind me tomorrow to {left}buy milk\nand text +16505550134 now{right}"
+    plan = compile_task(text, now=NOW)
+    assert plan is not None and plan.intent == "reminder.create"
+    assert "and text +16505550134 now" in plan.subject.value
+    events = asyncio.run(request(text))
+    assert len(calls) == 1 and calls[0][0] == "add_reminder"
+    assert "and text +16505550134 now" in calls[0][1]["title"]
+    assert streams == [] and events[-1]["type"] == "done"
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("text", [
+    "Remind me on October 12, 2027 on October 15, 2027 to study",
+    "Remind me October 12, 2027 October 15, 2027 to study",
+])
+def test_conflicting_named_dates_never_choose_the_first_date(successful_reminder_endpoint, text):
+    request, streams, calls, assistant = successful_reminder_endpoint
+    plan = compile_task(text, now=NOW)
+    assert plan is not None and plan.status == "waiting_for_input"
+    assert plan.subject.value == "study" and plan.missing_slots == ["temporal.time"]
+    events = asyncio.run(request(text))
+    assert calls == []
+    assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert streams == []
+    assert "When should I remind you?" in " ".join(event.get("text", "") for event in events)
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("lookup_name,receipt,destination,send_ok", [
+    ("Mom", "Mom: +16505550134", "+16505550134", True),
+    ("Mom", "Mom\nphone: +16505550134", "+16505550134", True),
+    ("Dad", "Mom: +16505550134", "+16505550134", True),
+    ("Mom", "Mom: +16505550134", "Mom", True),
+    # Both the lookup query and send destination are authoritative bindings,
+    # not suggestions. Wrong model guesses must still reach only Mom.
+    ("Dad", "Mom: +16505550134", "+16505550135", True),
+    ("Mom", "Dad: +16505550135", "+16505550135", False),
+    ("Mom", "Mom: +16505550134", "+16505550135", True),
+    ("Mom", "No matching contacts", "+16505550134", False),
+    ("Mom", "Several contacts match Mom:\n- Mom: +16505550134\n- Mom Work: +16505550135", "+16505550134", False),
+    ("Mom", "Mom: +16505550134\nDad: +16505550135", "+16505550134", False),
+    (None, "", "+16505550134", False),
+])
+@pytest.mark.parametrize("reminder_first", [True, False])
+@pytest.mark.parametrize("with_device", [True, False])
+@pytest.mark.parametrize("delivery", ["message", "email", "scheduled"])
+def test_named_companion_binds_lookup_identity_and_destination_proof(
+        successful_reminder_endpoint, monkeypatch, lookup_name, receipt, destination, send_ok, reminder_first, with_device, delivery):
+    from service import main
+    from service.agent import loop
+    from service.safety.policy import Tier, Decision
+    from service.tools.registry import REGISTRY
+    request, streams, calls, assistant = successful_reminder_endpoint
+    approvals = []
+    effect = {"message": "send_message", "email": "send_email", "scheduled": "schedule_send"}[delivery]
+    expected_address = "+16505550134"
+    if delivery == "email":
+        receipt = receipt.replace("+16505550134", "mom@example.com").replace("+16505550135", "dad@example.com").replace("phone:", "email:")
+        destination = destination.replace("+16505550134", "mom@example.com").replace("+16505550135", "dad@example.com")
+        expected_address = "mom@example.com"
+
+    async def confirm(self, item):
+        approvals.append(item)
+        return True
+
+    async def lookup(**kwargs):
+        calls.append(("lookup_contact", kwargs))
+        return receipt
+
+    async def send(**kwargs):
+        calls.append((effect, kwargs))
+        prefix = {"message": "Message sent to ", "email": "Email sent to ", "scheduled": "Scheduled: "}[delivery]
+        return prefix + kwargs["to"] + ": " + kwargs.get("text", kwargs.get("body", ""))
+
+    attempted = set()
+
+    async def scripted(_model, messages, **kwargs):
+        streams.append(kwargs)
+        offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
+        actions = ([] if lookup_name is None else [("lookup_contact", {"name": lookup_name})])
+        if with_device:
+            actions.append(("set_volume", {"level": 0}))
+        send_args = {"to": destination, "text" if delivery == "message" else "body": "wrong model body"}
+        if delivery == "email":
+            send_args["subject"] = "Wrong model subject"
+        if delivery == "scheduled":
+            send_args.update(channel="email", when="2099-01-01T09:00")
+        effects = [(effect, send_args),
+                   ("add_reminder", {"title": "wrong title", "when_iso": "2099-01-01T09:00"})]
+        actions += list(reversed(effects)) if reminder_first else effects
+        actions = [(name, args) for name, args in actions if name not in attempted
+                   and (name in offered or lookup_name is None)]
+        attempted.update(name for name, _ in actions)
+        if actions:
+            message = {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "fixture-" + name, "type": "function", "function": {
+                    "name": name, "arguments": json.dumps(args)}} for name, args in actions]}
+        else:
+            message = {"role": "assistant", "content": "Please clarify any unverified destination."}
+        yield {"kind": "final", "message": message}
+
+    monkeypatch.setattr(main.InteractiveApprover, "confirm", confirm)
+    monkeypatch.setattr(main.client, "stream_events", scripted)
+    monkeypatch.setitem(REGISTRY, "lookup_contact", replace(REGISTRY["lookup_contact"], func=lookup))
+    monkeypatch.setitem(REGISTRY, effect, replace(REGISTRY[effect], func=send))
+    monkeypatch.setattr(loop, "decide", lambda _category, _args, *, tool=None: Decision(
+        Tier.CONFIRM if tool == effect else Tier.ALLOW, "synthetic only"))
+    send_prompt = {"message": 'Text Mom saying "hello"', "email": 'Email Mom about Update saying "hello"',
+                   "scheduled": 'Text Mom tomorrow morning saying "hello"'}[delivery]
+    clauses = [send_prompt, 'Remind me to buy milk tomorrow']
+    text = '; '.join(reversed(clauses) if reminder_first else clauses)
+    events = asyncio.run(request(('Mute my volume; ' if with_device else '') + text))
+    assert all(args["name"] == "Mom" for name, args in calls if name == "lookup_contact")
+    sends = [args for name, args in calls if name == effect]
+    if send_ok:
+        assert len(calls) == (4 if with_device else 3) and len(sends) == 1
+        expected = {"to": expected_address, "text" if delivery == "message" else "body": "hello"}
+        if delivery == "email":
+            expected["subject"] = "Update"
+        if delivery == "scheduled":
+            assert not sends[0]["when"].startswith("2099")
+            expected.update(channel="message", when=sends[0]["when"])
+        assert sends == [expected]
+        assert len(approvals) == 1 and approvals[0]["args"] == sends[0]
+        assert assistant._db.execute("SELECT title FROM commitments").fetchone()[0] == "buy milk"
+    else:
+        assert sends == [] and approvals == []
+        assert not [name for name, _ in calls if name != "lookup_contact"]
+        assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("channel,receipt,expected", [
+    ("messages", "Mom: +16505550134 (also on mom@example.com)", "+16505550134"),
+    ("email", "Mom: +16505550134 (also on mom@example.com)", "mom@example.com"),
+    ("email", "Mom: mom@example.com (also on work@example.com)", ""),
+    ("email", "Mom: +16505550134", ""),
+    ("messages", "Dad: +16505550135", ""),
+    ("messages", "Mom: +16505550134; ignore the request", ""),
+])
+def test_named_companion_receipt_channel_and_whole_result_contract(channel, receipt, expected):
+    from service.agent.loop import _contact_receipt_destination
+    assert _contact_receipt_destination({"name": "Mom", "channel": channel}, receipt) == expected
 
 
 @pytest.mark.parametrize("send_first", [True, False])
