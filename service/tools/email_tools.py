@@ -1053,6 +1053,9 @@ def _looks_like_person(name: str, address: str) -> bool:
 _SECURITY_RE = re.compile(
     r"\b(?:security alert|suspicious|fraud|unauthori[sz]ed|password (?:reset|changed)|"
     r"payment (?:failed|due|declined)|account (?:locked|suspended)|verify your)\b", re.I)
+# Explicit payment problems use the same framed-title boundary as account alerts.
+# Receipts and generic billing words are not attention signals.
+_PAYMENT_PROBLEM_RE = re.compile(r"\bpayment (?:failed|due|declined)\b", re.I)
 # Phrases that are about the reader's OWN account (a sign-in, a code, a password),
 # narrow enough to trust from a social network too. A social subject often quotes
 # other people's posts, so the broad words above ("fraud", "suspicious") are not
@@ -1143,7 +1146,8 @@ def digest_category(row: dict) -> str:
     # network is about the reader's account, not social activity, so it keeps its
     # subject in the attention section instead of collapsing into the roll-up.
     account_subject = _social_account_security_subject(subject) if social else subject
-    if _ACCOUNT_SECURITY_RE.search(account_subject):
+    if (_ACCOUNT_SECURITY_RE.search(account_subject)
+            or _PAYMENT_PROBLEM_RE.search(account_subject)):
         return "attention"
     if _SECURITY_RE.search(subject) and not social:
         return "attention"
@@ -1240,7 +1244,9 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
                         ambiguous = len(addresses_by_name.get(name.casefold(), ())) > 1
                         who += f" · {address if ambiguous else address.rpartition('@')[2]}"
                 mark = "\u25CF " if row.get("unread") is True else ""
-                claim = "Subject says: " if _URGENT_SUBJECT.search(row.get("subject", "")) else ""
+                claim = "Subject says: " if (
+                _URGENT_SUBJECT.search(row.get("subject", ""))
+                or _PAYMENT_PROBLEM_RE.search(row.get("subject", ""))) else ""
                 subject = _clip(_subject_text(row.get("subject", "")))
                 where = (f" · {_short_account(row['account'])}"
                          if multi_account and row.get("account") else "")
@@ -1386,7 +1392,9 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
         subjects = []
         for row in best[:3]:
             subject = _subject_text(row.get("subject", ""))
-            claim = "Subject says: " if _URGENT_SUBJECT.search(row.get("subject", "")) else ""
+            claim = "Subject says: " if (
+                _URGENT_SUBJECT.search(row.get("subject", ""))
+                or _PAYMENT_PROBLEM_RE.search(row.get("subject", ""))) else ""
             subjects.append(f"{claim}“{subject}”")
         more = f"; +{len(group) - 3} more" if len(group) > 3 else ""
         bullets.append(f"- **{sender}** ({len(group)} message{'s' if len(group) != 1 else ''}{unread_note}{account_note}) — "

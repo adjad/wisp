@@ -1002,3 +1002,118 @@ def test_failed_interactive_refresh_preserves_readiness_and_freshness_limits(
         assert output == E.email_syncing_message()
         assert "Please review the synthetic update" not in output
         assert E.email_sync_state() == "syncing"
+
+
+@pytest.mark.parametrize("subject", [
+    "Payment failed for your LinkedIn Premium subscription",
+    "Payment due for your LinkedIn Premium subscription",
+    "Payment declined for your LinkedIn Premium subscription",
+    "PAYMENT FAILED for your LinkedIn Premium subscription",
+])
+def test_interactive_social_payment_problem_preserves_subject(
+        interactive_digest_isolation, monkeypatch, subject):
+    now = freeze_email_now(monkeypatch)
+    E.cache_emails(h(now, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "billing", subject))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "1 email · 1 unread · 1 needs attention" in output
+    assert "**🔴 Needs your attention** (1)" in output
+    assert subject in output and "Subject says:" in output
+    assert "represented 1 message from 1 sender note" in output
+    from service.assistant import brief as B
+    assert f"Subject says: “{subject}”" in B._email_block(now)
+
+
+@pytest.mark.parametrize("problem", ["Payment failed", "Payment due", "Payment declined"])
+@pytest.mark.parametrize("title", [
+    'Maya posted: "{} for your LinkedIn Premium subscription"',
+    "Maya shared a post: '{} for your LinkedIn Premium subscription'",
+    'Maya liked a post: “{} for your LinkedIn Premium subscription”',
+    'Maya posted: ‘{} for your LinkedIn Premium subscription’',
+])
+def test_interactive_framed_payment_problem_is_social_title(
+        interactive_digest_isolation, monkeypatch, problem, title):
+    now = freeze_email_now(monkeypatch)
+    subject = title.format(problem)
+    E.cache_emails(h(now, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "post", subject))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "1 email · 1 unread" in output and "needs attention" not in output
+    assert "**💬 Social** (1)" in output and "Needs your attention" not in output
+    assert subject not in output and "Subject says:" not in output
+
+
+@pytest.mark.parametrize("subject", [
+    'Maya posted: "Payment failed"; payment due for your subscription',
+    'Payment declined for your subscription. Maya shared: "travel photos"',
+    'Maya posted: “Payment declined”; your password was changed',
+    'Payment failed for your subscription from "Chrome on Mac"',
+    'Maya posted: "Payment failed for your subscription',
+    'Maya posted: “Payment due for your subscription’',
+    'Maya said: "Payment declined for your subscription"',
+])
+def test_interactive_payment_mask_preserves_outside_and_ambiguous_warnings(
+        interactive_digest_isolation, monkeypatch, subject):
+    now = freeze_email_now(monkeypatch)
+    E.cache_emails(h(now, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "alert", subject))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "1 email · 1 unread · 1 needs attention" in output
+    assert "**🔴 Needs your attention** (1)" in output and subject in output
+
+
+@pytest.mark.parametrize("subject", [
+    "Your LinkedIn Premium payment receipt",
+    "Fraud trends in the news",
+    "A suspicious new trend",
+])
+def test_social_payment_repair_does_not_promote_receipts_or_broad_warning_words(
+        interactive_digest_isolation, monkeypatch, subject):
+    now = freeze_email_now(monkeypatch)
+    E.cache_emails(h(now, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "activity", subject))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "**💬 Social** (1)" in output and "Needs your attention" not in output
+
+
+@pytest.mark.parametrize("sender,address,subject", [
+    ("Shop Newsletter", "newsletter@shop.example", "Payment failed for your subscription"),
+    ("LinkedIn", "notifications@linkedin.example", "Security alert: unauthorized transaction"),
+])
+def test_interactive_payment_repair_retains_non_social_and_security_controls(
+        interactive_digest_isolation, monkeypatch, sender, address, subject):
+    now = freeze_email_now(monkeypatch)
+    E.cache_emails(h(now, "Mail", "a", sender, address, "alert", subject))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "1 email · 1 unread · 1 needs attention" in output and subject in output
+
+
+def test_interactive_payment_count_folding_clipping_coverage_and_daily_flat(
+        interactive_digest_isolation, monkeypatch):
+    from service.assistant import brief as B
+
+    now = freeze_email_now(monkeypatch)
+    problems = ["Payment failed", "Payment due", "Payment declined"]
+    long_warning = "Payment failed for your subscription: " + "synthetic details " * 12
+    records = [h(now - i, "Work", "a", "LinkedIn", "notifications@linkedin.example", str(i), subject)
+               for i, subject in enumerate([
+                   *[p + " for your LinkedIn Premium subscription" for p in problems], long_warning,
+                   *['Maya posted: "' + p + ' for your subscription"' for p in problems],
+                   QUOTED_SOCIAL_ALERTS[0]])]
+    E.cache_emails("\n".join(records + [c2("Work", "a", 10, 2, True)]))
+    E.set_email_availability(True, read_source="mail_app")
+    output = asyncio.run(E.summarize_emails())
+    assert "8 emails · 8 unread · 4 need attention" in output
+    assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
+    assert "+1 more from this sender" in output
+    assert output.count("**LinkedIn**") == 3
+    assert "represented 8 messages from 1 sender note" in output
+    assert "skipped 2 malformed headers" in output and "total truncation is unknown" in output
+    flat = B._email_block(now)
+    assert "**LinkedIn <notifications@linkedin.example>** (8 messages, 8 unread)" in flat
+    assert "Needs your attention" not in flat and "+5 more" in flat
+    # The full subject drives categorization; the existing presentation limit remains.
+    clipped = E.sender_digest(E._parse_header_records(records[3]), "long payment warning")
+    assert "1 email · 1 unread · 1 needs attention" in clipped
+    assert long_warning not in clipped and "…" in clipped
