@@ -379,13 +379,18 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
     request, streams, calls = inert_endpoint
     assistant = AssistantStore(tmp_path / "successful-reminders.db")
     monkeypatch.setattr(main, "assistant_store", assistant)
-    class FixtureClock(datetime):
+    # "tonight" resolves against the engine's clock: after roughly 8 PM it has no
+    # upcoming default time and the engine rightly asks instead of creating. CI runs
+    # at any hour, so pin the clock to 10:00 today. Today (not a fixed date), so the
+    # reminder is still in the real future for the store's own checks.
+    morning = datetime.now().replace(hour=10, minute=0, second=0, microsecond=0)
+
+    class MorningClock(datetime):
         @classmethod
         def now(cls, tz=None):
-            return NOW if tz is None else NOW.astimezone(tz)
-    # /agent enters through reply_engine, which passes now into the task engine.
-    # Keep successful 'tonight' controls future on UTC and evening CI runners.
-    monkeypatch.setattr(reply_engine, "datetime", FixtureClock)
+            return morning if tz is None else morning.astimezone(tz)
+
+    monkeypatch.setattr(reply_engine, "datetime", MorningClock)
 
     async def persist_reminder(**kwargs):
         calls.append(("add_reminder", kwargs))
