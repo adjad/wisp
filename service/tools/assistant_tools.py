@@ -854,6 +854,11 @@ async def clear_past_reminders(query: str = "", days: int = 365) -> str:
 
 
 _REMINDER_SOURCES = frozenset({"manual", "reminders"})
+# A Wisp-only record has no Apple copy to reconcile against, so deleting the
+# reminder in Reminders.app never retires it. Once it is this far overdue it is
+# kept (clear_reminders / clear_past_reminders still see it) but no longer
+# listed as a current reminder by a read.
+STALE_WISP_ONLY_DAYS = 14
 _REMINDER_SCOPES = frozenset({"today", "tomorrow", "past_due", "upcoming", "all"})
 
 
@@ -893,6 +898,28 @@ def reminders_matching(scope: str = "all", query: str = "",
     return items
 
 
+def _drop_stale_wisp_only(items: list[dict], now: float | None = None
+                          ) -> tuple[list[dict], int]:
+    """Split off long-overdue Wisp-only records; return (kept, hidden count)."""
+    cutoff = (time.time() if now is None else float(now)) - STALE_WISP_ONLY_DAYS * 86400
+    kept = []
+    for item in items:
+        sources = {str(item.get("source") or "")} | set(item.get("duplicate_sources") or [])
+        wisp_only = "manual" in sources and not ({"reminders", "calendar"} & sources)
+        if wisp_only and float(item.get("when_ts") or 0) < cutoff:
+            continue
+        kept.append(item)
+    return kept, len(items) - len(kept)
+
+
+def _stale_note(hidden: int) -> str:
+    if not hidden:
+        return ""
+    return (f"\n{hidden} older Wisp-only record{'s' if hidden != 1 else ''} overdue by more "
+            f"than {STALE_WISP_ONLY_DAYS} days {'are' if hidden != 1 else 'is'} not listed "
+            "(no Apple Reminders copy is confirmed). Ask to clear past-due items to remove them.")
+
+
 @register(
     "search_reminders",
     "Search current Apple Reminders and retained Wisp-only reminder records "
@@ -930,7 +957,8 @@ async def search_reminders(query: str, scope: str = "all") -> str:
         notice = ""
     # Wisp's own records remain searchable while Apple Reminders cannot be
     # verified; only the native snapshot is withheld.
-    items = reminders_matching(scope, query)
+    items, hidden = _drop_stale_wisp_only(reminders_matching(scope, query))
+    stale_note = _stale_note(hidden)
     if notice:
         items = _without_withheld_sources(items, {"reminders"})
         wisp_lines = []
@@ -938,13 +966,14 @@ async def search_reminders(query: str, scope: str = "all") -> str:
             when = datetime.fromtimestamp(float(item["when_ts"]))
             wisp_lines.append(f"- {item['title']} — {when:%a %b %-d, %Y at %-I:%M %p}")
         if not wisp_lines:
-            return notice + f"\nNo Wisp-only reminder record matches {query!r}."
+            return notice + f"\nNo Wisp-only reminder record matches {query!r}." + stale_note
         return (notice + "\nWisp-only records (Apple copy not confirmed because "
                 "Apple Reminders couldn't be checked; they may still be active):\n"
-                + "\n".join(wisp_lines))
+                + "\n".join(wisp_lines) + stale_note)
     if not items:
         return (f"A current Reminders read found no active match for {query!r}. "
-                "An older remembered item does not establish a current reminder.")
+                "An older remembered item does not establish a current reminder."
+                + stale_note)
     native_lines, wisp_lines = [], []
     for item in items:
         sources = {str(item.get("source") or "")}
@@ -963,7 +992,7 @@ async def search_reminders(query: str, scope: str = "all") -> str:
                         "Apple mirrors and others live Wisp reminders. Do not "
                         "delete them without exact user selection.\n"
                         + "\n".join(wisp_lines))
-    return "\n".join(sections)
+    return "\n".join(sections) + stale_note
 
 
 @register(

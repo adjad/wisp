@@ -198,7 +198,8 @@ def _email_block(now: float) -> str:
                          scan_cap_accounts=window["scan_cap_accounts"],
                          scan_incomplete_accounts=window["scan_incomplete_accounts"],
                          scan_skipped=window["scan_skipped"],
-                         scan_attempted=window["scan_attempted"])
+                         scan_attempted=window["scan_attempted"],
+                         layout="flat")   # model input: keep the stable one-line-per-sender form
     warning = email_freshness_warning()
     return "EMAIL — " + text + ("\n" + warning if warning else "")
 

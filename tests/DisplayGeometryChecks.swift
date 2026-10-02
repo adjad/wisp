@@ -36,9 +36,17 @@ struct DisplayGeometryChecks {
         check(abs(l.barFrame.midX - l.usableFrame.midX) <= 1, "\(name): bar centred")
         check(l.barFrame.maxY <= l.usableFrame.maxY + 0.5, "\(name): bar inside the display")
         check(d.frame.contains(l.barFrame), "\(name): bar on screen")
-        // The hover zone always contains the bar and is easier to hit than it.
-        check(l.hoverZone.contains(l.barFrame), "\(name): zone contains bar")
-        check(l.hoverZone.width > l.barFrame.width && l.hoverZone.height > l.barFrame.height, "\(name): zone is forgiving")
+        // The hover zone is easier to hit than the bar. On a notch it is wider than the
+        // bar, covers the top of the notch and the screen's top edge, and leaves out the
+        // notch's bottom strip; on a monitor it is the bar plus a margin.
+        check(l.hoverZone.width > l.barFrame.width, "\(name): zone is wider than the bar")
+        check(l.hoverZone.minX < l.barFrame.minX && l.hoverZone.maxX > l.barFrame.maxX, "\(name): zone reaches past both sides")
+        if style == .notch {
+            hoverZoneChecks(name, l, d)
+        } else {
+            check(l.hoverZone.contains(l.barFrame), "\(name): zone contains the capsule")
+            check(l.hoverZone.height > l.barFrame.height, "\(name): zone is forgiving")
+        }
         // Expanded panel: centred, inside the screen, whatever the content height.
         for h in [120, 300, 640, 4000] as [CGFloat] {
             let f = l.expandedFrame(contentHeight: h)
@@ -109,6 +117,40 @@ struct DisplayGeometryChecks {
 
         hoverChecks()
         print("PASS: display geometry — 8 notched MacBooks, 3 notchless MacBooks, 7 monitor placements, target selection, hover intent")
+    }
+
+    /// The notch's hover zone: most of the notch, never its bottom strip, and the top edge.
+    static func hoverZoneChecks(_ name: String, _ l: SurfaceLayout, _ d: DisplayMetrics) {
+        let bar = l.barFrame, zone = l.hoverZone
+        let midX = bar.midX
+        // THE regression: macOS pins a pointer pushed to the top of the screen at exactly
+        // frame.maxY, and CGRect.contains treats its max edge as outside.
+        check(zone.contains(CGPoint(x: midX, y: d.frame.maxY)), "\(name): pointer pinned to the top edge opens")
+        check(zone.contains(CGPoint(x: bar.minX + 1, y: d.frame.maxY)) && zone.contains(CGPoint(x: bar.maxX - 1, y: d.frame.maxY)),
+              "\(name): top edge opens across the whole notch")
+        // Most of the notch: everything above the bottom strip.
+        let strip = bar.height * SurfaceLayout.notchHoverBottomExclusion
+        for fraction in [0.3, 0.5, 0.75, 0.99] as [CGFloat] {
+            check(zone.contains(CGPoint(x: midX, y: bar.minY + bar.height * fraction)), "\(name): \(fraction) up the notch opens")
+        }
+        check(zone.contains(CGPoint(x: bar.minX, y: bar.maxY - 2)) && zone.contains(CGPoint(x: bar.maxX, y: bar.maxY - 2)),
+              "\(name): the notch's side edges open")
+        // The bottom strip, and everything under the notch, does not.
+        check(!zone.contains(CGPoint(x: midX, y: bar.minY + strip - 0.5)), "\(name): bottom strip does not open")
+        check(!zone.contains(CGPoint(x: midX, y: bar.minY)), "\(name): the notch's bottom edge does not open")
+        check(!zone.contains(CGPoint(x: midX, y: bar.minY - 1)) && !zone.contains(CGPoint(x: midX, y: bar.minY - 12)),
+              "\(name): nothing below the notch opens")
+        check(zone.minY >= bar.minY, "\(name): the zone never extends below the notch")
+        check(zone.maxY > d.frame.maxY, "\(name): the zone reaches past the screen's top edge")
+        // Wider than before (8 pt each side), without reaching the menu bar's own items.
+        check(zone.minX <= bar.minX - 16 && zone.maxX >= bar.maxX + 16, "\(name): generous sideways reach")
+        check(zone.width <= bar.width + 64, "\(name): not so wide it hijacks menu bar items")
+        check(zone.contains(CGPoint(x: bar.minX - 10, y: d.frame.maxY - 4)), "\(name): just beside the notch opens")
+        check(!zone.contains(CGPoint(x: bar.minX - 60, y: d.frame.maxY - 4)), "\(name): well away from the notch does not")
+        check(!zone.contains(CGPoint(x: bar.maxX + 60, y: d.frame.maxY - 4)), "\(name): well away (right) does not")
+        // Strictly bigger usable target than the old zone over the part that matters.
+        let oldTop = CGRect(x: bar.minX - 8, y: bar.minY - 6, width: bar.width + 16, height: bar.height + 6)
+        check(zone.width > oldTop.width, "\(name): wider than the old zone")
     }
 
     static func hoverChecks() {
