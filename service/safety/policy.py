@@ -5,9 +5,11 @@ service/config/policy.yaml but ships with safe defaults so it works standalone.
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shlex
+from itertools import chain
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -224,14 +226,78 @@ def _path_forms(raw: str) -> list[str]:
     anchors = [Path(expanded)] if os.path.isabs(expanded) else [Path.home() / expanded, Path.cwd() / expanded]
     for anchor in anchors:
         forms.add(str(anchor))
-        try:
-            resolved = str(anchor.resolve())
-        except (OSError, RuntimeError):
-            continue  # an unresolvable spelling is still judged on its other forms
+        # Admission catches resolution failures and denies; raw spelling alone
+        # cannot certify an unresolved symlink or inaccessible derived target.
+        resolved = str(anchor.resolve())
         forms.add(resolved)
         if resolved.startswith("/private/"):
             forms.add(resolved[len("/private"):])
     return sorted(forms)
+
+
+def _derived_path_operands(tool: str | None, args: dict):
+    """Mirror deterministic output naming, without importing/executing tools.
+
+    Only organize_files enumerates immediate matching source files, just as
+    its preview does. This is admission-time checking, not recursive scanning
+    or a binding of paths against changes between confirmation and execution.
+    """
+    if tool == "archive_files":
+        paths, output = args.get("paths"), args.get("archive_path", "")
+        if not isinstance(paths, list) or not paths or not isinstance(paths[0], str) or not isinstance(output, str):
+            return
+        first = Path(paths[0]).expanduser()
+        if output.strip():
+            target = Path(output).expanduser()
+            if target.suffix != ".zip":
+                target = target.with_suffix(".zip")
+        else:
+            target = first.parent / f"{first.stem or first.name}.zip"
+        yield "archive output", str(target)
+    elif tool in {"convert_file", "write_document", "spreadsheet_ops", "encrypt_file"}:
+        if not isinstance(args.get("path"), str):
+            return
+        target = Path(args["path"]).expanduser()
+        if tool == "convert_file":
+            fmt = args.get("to_format", "")
+            if not isinstance(fmt, str):
+                return
+            target = target.with_suffix("." + fmt.strip().lower().lstrip("."))
+        elif tool == "encrypt_file":
+            target = target.with_suffix(target.suffix + (".dec" if args.get("decrypt", False) else ".enc"))
+        else:
+            suffix = ".docx" if tool == "write_document" else ".xlsx"
+            if target.suffix.lower() != suffix:
+                target = target.with_suffix(suffix)
+        yield "derived output", str(target)
+    elif tool == "move_path":
+        if not isinstance(args.get("source"), str) or not isinstance(args.get("destination"), str):
+            return
+        source = Path(args["source"]).expanduser()
+        target = Path(args["destination"]).expanduser()
+        if args["destination"].endswith(("/", os.sep)) or target.is_dir():
+            yield "destination child", str(target / source.name)
+    elif tool == "organize_files":
+        if not all(isinstance(args.get(key), str) for key in ("folder", "destination", "pattern")):
+            return
+        source = Path(args["folder"]).expanduser().resolve()
+        if not source.is_dir():
+            return
+        target = Path(args["destination"]).expanduser()
+        if not target.is_absolute():
+            target = source / target
+        target = target.resolve()
+        if source == target:
+            return
+        pattern = args["pattern"]
+        if "/" in pattern:
+            glob = Path(pattern).expanduser()
+            if glob.parent.resolve() != source:
+                return
+            pattern = glob.name
+        for item in source.iterdir():
+            if item.is_file() and fnmatch.fnmatch(item.name, pattern):
+                yield "destination child", str(target / item.name)
 
 
 def _load_yaml() -> dict:
@@ -445,18 +511,19 @@ def _hard_deny(category: str, args: dict, tool: str | None = None) -> Decision |
                 if not destination.is_absolute():
                     source = Path(args["folder"]).expanduser().resolve()
                     operands.append(("destination", str(source / destination)))
-            except ValueError:
-                return Decision(Tier.DENY, "invalid filesystem path in organize_files")
-            except (OSError, RuntimeError):
-                pass  # retain the ordinary operand checks for unresolvable paths
-        for key, operand in operands:
-            try:
+            except (ValueError, OSError, RuntimeError):
+                return Decision(Tier.DENY, "filesystem source path could not be safely resolved")
+        try:
+            # Check raw operands first, before deriving or listing anything.
+            for key, operand in chain(operands, _derived_path_operands(tool, args)):
+                if "\x00" in operand:
+                    return Decision(Tier.DENY, "invalid derived filesystem path: NUL character")
                 forms = _path_forms(operand)
-            except ValueError:
-                return Decision(Tier.DENY, f"invalid filesystem path in {key}")
-            for form in forms:
-                if (hit := _any(rules, form)):
-                    return Decision(Tier.DENY, f"protected path in {key}: {hit}")
+                for form in forms:
+                    if (hit := _any(rules, form)):
+                        return Decision(Tier.DENY, f"protected path in {key}: {hit}")
+        except (ValueError, OSError, RuntimeError):
+            return Decision(Tier.DENY, "filesystem output path could not be safely resolved")
     return None
 
 

@@ -502,3 +502,116 @@ def test_explicit_full_access_floor_override_is_unchanged(organize_policy_paths,
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)
     monkeypatch.setattr(policy, "_KEEP_FLOOR", False)
     assert _schema_decision("write_file", {"path": str(protected / "x"), "content": "x"}).tier == policy.Tier.ALLOW
+
+
+_DERIVED_CASES = [
+    "archive_omitted", "archive_empty", "archive_spaces", "archive_replace", "archive_upper",
+    "convert_docx", "convert_jpeg", "convert_jpg", "document", "document_upper",
+    "sheet", "sheet_upper", "encrypt", "decrypt", "move_directory", "move_slash",
+    "organize_relative", "organize_absolute", "organize_glob",
+]
+
+
+def _derived_fixture(source, case):
+    """Pure transcription of reviewed output naming; never invoke an action."""
+    path = source / "input.txt"
+    path.touch()
+    if case.startswith("archive"):
+        args = {"paths": [str(path)]}
+        output = source / "input.zip"
+        if case in {"archive_empty", "archive_spaces"}:
+            args["archive_path"] = "" if case == "archive_empty" else "   "
+        if case in {"archive_replace", "archive_upper"}:
+            args["archive_path"] = str(source / ("archive.raw" if case == "archive_replace" else "archive.ZIP"))
+            output = source / "archive.zip"
+        return "archive_files", args, output
+    if case.startswith("convert"):
+        fmt = {"convert_docx": " .DOCX ", "convert_jpeg": "JPEG", "convert_jpg": ".JPG"}[case]
+        return "convert_file", {"path": str(path), "to_format": fmt}, path.with_suffix("." + fmt.strip().lower().lstrip("."))
+    if case.startswith("document"):
+        path = source / ("new.DOCX" if case.endswith("upper") else "new.raw")
+        return "write_document", {"path": str(path), "title": "Synthetic"}, path if case.endswith("upper") else path.with_suffix(".docx")
+    if case.startswith("sheet"):
+        path = source / ("new.XLSX" if case.endswith("upper") else "new.raw")
+        return "spreadsheet_ops", {"path": str(path), "headers": ["Synthetic"]}, path if case.endswith("upper") else path.with_suffix(".xlsx")
+    if case in {"encrypt", "decrypt"}:
+        args = {"path": str(path), "password": "synthetic-not-used"}
+        if case == "decrypt":
+            args["decrypt"] = True
+        return "encrypt_file", args, path.with_suffix(path.suffix + (".dec" if case == "decrypt" else ".enc"))
+    destination = source / "sorted"
+    destination.mkdir()
+    if case.startswith("move"):
+        return "move_path", {"source": str(path), "destination": str(destination) + ("/" if case.endswith("slash") else "")}, destination / path.name
+    pattern = str(path) if case == "organize_glob" else "input.txt"
+    return "organize_files", {"folder": str(source), "destination": "sorted" if case == "organize_relative" else str(destination),
+                              "pattern": pattern, "confirm": True, "preview_token": "synthetic-only"}, destination / path.name
+
+
+@pytest.mark.parametrize("case", _DERIVED_CASES)
+@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
+@pytest.mark.parametrize("protected_output", [False, True])
+def test_exact_derived_outputs_are_admitted_before_effects(
+        organize_policy_paths, monkeypatch, case, mode, protected_output):
+    source, protected = organize_policy_paths
+    tool, args, output = _derived_fixture(source, case)
+    if protected_output:
+        output.symlink_to(protected / "not-created")
+        assert output.is_symlink() and not output.exists()
+        assert policy._hard_deny("fs_write", {"path": str(output)}).tier == policy.Tier.DENY
+    _filesystem_mode(monkeypatch, tool, args, mode)
+    expected = (policy.Tier.DENY if protected_output else
+                policy.Tier.CONFIRM if mode == "normal" or tool == "organize_files" else policy.Tier.ALLOW)
+    assert _schema_decision(tool, args).tier == expected
+
+
+@pytest.mark.parametrize("confirm,token", [(False, ""), (True, ""), (True, "synthetic")])
+@pytest.mark.parametrize("protected_output", [False, True])
+def test_organize_child_floor_precedes_independent_preview_contract(
+        organize_policy_paths, monkeypatch, confirm, token, protected_output):
+    source, protected = organize_policy_paths
+    tool, args, output = _derived_fixture(source, "organize_relative")
+    if protected_output:
+        output.symlink_to(protected / "not-created")
+    args.update(confirm=confirm, preview_token=token)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    expected = (policy.Tier.DENY if protected_output or (confirm and not token) else
+                policy.Tier.CONFIRM if confirm else policy.Tier.ALLOW)
+    assert _schema_decision(tool, args).tier == expected
+
+
+@pytest.mark.parametrize("error", [ValueError, OSError, RuntimeError])
+def test_derived_resolution_failure_denies_and_next_request_recovers(
+        organize_policy_paths, monkeypatch, error):
+    source, _ = organize_policy_paths
+    tool, args, _ = _derived_fixture(source, "archive_omitted")
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    original = policy._derived_path_operands
+
+    def failed(*_args):
+        raise error("synthetic resolution failure")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(policy, "_derived_path_operands", failed)
+        assert _schema_decision(tool, args).tier == policy.Tier.DENY
+    assert policy._derived_path_operands is original
+    assert _schema_decision(tool, args).tier == policy.Tier.CONFIRM
+
+
+def test_organize_checks_only_immediate_matching_children(organize_policy_paths, monkeypatch):
+    source, protected = organize_policy_paths
+    tool, args, output = _derived_fixture(source, "organize_relative")
+    (output.parent / "unmatched.txt").symlink_to(protected / "not-created")
+    nested = source / "nested"
+    (nested / "input.txt").touch()
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False)
+    assert _schema_decision(tool, args).tier == policy.Tier.CONFIRM
+
+
+def test_derived_output_floor_override_remains_explicit(organize_policy_paths, monkeypatch):
+    source, protected = organize_policy_paths
+    tool, args, output = _derived_fixture(source, "archive_empty")
+    output.symlink_to(protected / "not-created")
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
+    monkeypatch.setattr(policy, "_KEEP_FLOOR", False)
+    assert _schema_decision(tool, args).tier == policy.Tier.ALLOW
