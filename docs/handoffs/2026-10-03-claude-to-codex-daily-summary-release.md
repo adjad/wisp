@@ -26,9 +26,9 @@ pill), and releases it again with this commit. All other paths stay released.
 The AM/PM toggle is replaced by an Auto switch on the Daily Summary pill, on by
 default. Wisp generates a summary at 8 AM and 8 PM when Auto is on.
 
-- Branch `claude/auto-daily-summary`, commit `f0e5e64`, based on `origin/main` at `73b0a83`.
+- Branch `claude/auto-daily-summary`, feature commit `f0e5e64` (layout fix follows in `c08873e`), based on `origin/main` at `73b0a83`.
 - Local worktree: `.claude/worktrees/auto-daily-summary`.
-- Not pushed. No pull request.
+- Pushed to `origin/claude/auto-daily-summary`. No pull request yet.
 - Installed: Wisp 1.1.5 build 1021 (`f0e5e64`, clean clone, `dirty: false`), live on this Mac.
 
 ## Released paths
@@ -63,5 +63,4 @@ default. Wisp generates a summary at 8 AM and 8 PM when Auto is on.
 ## Integration dependencies
 
 - Conflicts: any open work touching the paths above, especially `OverlayView.swift` and `scheduler.py`, which `origin/main` changed recently.
-- The branch must be pushed before Codex can see it from `origin`.
 - The Local checkout's `main` is stale and the user's `AGENTS.md` and `.claude/settings.local.json` edits are uncommitted there. Do not stash or discard them.
