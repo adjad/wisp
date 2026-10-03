@@ -514,6 +514,12 @@ LOCAL_PROVIDER_ROLES = ("reasoning", "agent", "coding")
 LOCAL_PROVIDER_TOOL_ROLES = frozenset({"agent", "coding"})
 # Schema 1 did not bind the API prefix and cannot establish this identity.
 LOCAL_PROVIDER_QUALIFICATION_SCHEMA = 2
+# Every role a provider connection can bind or reset, plus `general`, which
+# set_roles also points `agent` at. Connecting rewrites the whole provider role
+# set (selected roles bind, any other provider-bound role resets), so a change to
+# any of these while a connection test is pending must supersede that test.
+PROVIDER_CONNECTION_ROLES = (frozenset(LOCAL_PROVIDER_ROLES) | frozenset(CLOUD_ASSIGNABLE_ROLES)
+                             | {"general"})
 
 
 def local_provider_qualification(endpoint_cfg: dict, model_id: str, base_url: str,

@@ -44,6 +44,7 @@ from service.config import (
     set_local_provider,
     LOCAL_PROVIDER_ROLES,
     LOCAL_PROVIDER_TOOL_ROLES,
+    PROVIDER_CONNECTION_ROLES,
     set_role,
     set_roles,
 )
@@ -575,6 +576,26 @@ async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]
 # app, model and claimed window; never trusted across those.
 _QUALIFICATION_TTL_SECONDS = 600.0
 _qualification_cache: dict[tuple, tuple[float, qualification.Report]] = {}
+# Revocation and publication order. All three are guarded by
+# _local_provider_operation_lock, and that lock is only ever held for the short
+# synchronous sections below, never across an await.
+#   epoch      advanced by an explicit Disconnect; a result measured in an older
+#              epoch is never published, and the cache is emptied with the bump, so
+#              every cached entry belongs to the current epoch.
+#   ticket     handed out when a probe starts; of two probes for the same app only
+#              the newer ticket may leave reusable evidence, whatever order they
+#              finish in.
+_qualification_epoch = 0
+_qualification_ticket = 0
+_qualification_published: dict[tuple, int] = {}
+
+
+def _revoke_qualification_evidence_unlocked() -> None:
+    """Explicit Disconnect: nothing measured before now may be reused or published later."""
+    global _qualification_epoch
+    _qualification_epoch += 1
+    _qualification_cache.clear()
+    _qualification_published.clear()
 
 
 def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
@@ -590,10 +611,15 @@ def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
 
 async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
                                   *, fresh: bool) -> qualification.Report:
+    global _qualification_ticket
     key = (provider_endpoint.base_url, provider_endpoint.api_prefix, model_id, context_window)
-    cached = _qualification_cache.get(key)
-    if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
-        return cached[1]
+    with _local_provider_operation_lock:
+        epoch = _qualification_epoch
+        cached = _qualification_cache.get(key)
+        if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
+            return cached[1]
+        _qualification_ticket += 1
+        ticket = _qualification_ticket
     probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
     try:
         if model_id not in await probe.models():
@@ -607,7 +633,13 @@ async def _qualify_local_provider(provider_endpoint, model_id: str, context_wind
     finally:
         await probe.aclose()
     report = await qualification.qualify(provider_endpoint, model_id, context_window)
-    _qualification_cache[key] = (time.monotonic(), report)
+    with _local_provider_operation_lock:
+        # The caller always gets its own report. It becomes reusable evidence only if
+        # no Disconnect happened while it was measured and no newer probe of the same
+        # app has already published.
+        if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+            _qualification_cache[key] = (time.monotonic(), report)
+            _qualification_published[key] = ticket
     return report
 
 
@@ -701,6 +733,7 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
 async def disconnect_local_provider_inference() -> dict[str, Any]:
     with _local_provider_operation_lock:
         _supersede_local_provider_probe_unlocked()
+        _revoke_qualification_evidence_unlocked()
         disable_local_provider()
     return await get_local_provider_inference()
 
@@ -709,7 +742,10 @@ async def disconnect_local_provider_inference() -> dict[str, Any]:
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
     if role and model:
-        if role == "reasoning":
+        if role in PROVIDER_CONNECTION_ROLES:
+            # A pending provider connection will rewrite these bindings when it saves.
+            # Supersede it under the same lock as the new choice, so the older
+            # connection fails its generation check instead of undoing this one.
             with _local_provider_operation_lock:
                 _supersede_local_provider_probe_unlocked()
                 set_role(role, model)
