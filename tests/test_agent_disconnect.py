@@ -442,3 +442,264 @@ def test_noncooperative_runner_deadline_is_reported_without_masking_cancellation
             await asyncio.wait_for(asyncio.gather(*runners), 2)
         assert runners[0].done() and not idle.foreground_busy()
     asyncio.run(scenario())
+
+
+# --- F4: every workflow the request owns is settled, not only workflow_turn ---------
+#
+# Two more real, persisted workflows run inside /agent: the receipt notification a
+# completed typed task sends ("...and text Mom when it's done"), and the earlier
+# stored-news branch. Both are saved as `running` before their execution is awaited,
+# so a disconnect during that await must settle them like the main workflow. A row
+# left `running` makes the next "yes" look like a duplicate of a live delivery.
+
+def _workflow_rows(sid):
+    return [dict(r) for r in main.store._db.execute(
+        "SELECT id, status, state_json FROM workflows WHERE session_id=? ORDER BY created_at",
+        (sid,)).fetchall()]
+
+
+def _completed_task_with_notification(monkeypatch):
+    """A typed task that completes and asks for a receipt notification afterwards."""
+    plan = types.SimpleNamespace(
+        id="task-1", status="running", intent="reminder.create", claimed_calls=[],
+        parameters={"notify_request": types.SimpleNamespace(value="text Mom when it is done")},
+        to_dict=lambda: {"status": plan.status})
+    turn = types.SimpleNamespace(executable=True, response="", plan=plan, event="planned", trace=[])
+    task_statuses = []
+    task_runs = []
+
+    async def prepare(*a, **k):
+        return turn
+
+    async def execute_completed(plan_, emit, approver, **k):
+        task_runs.append(plan_.id)
+        return types.SimpleNamespace(finalize=True, status="completed", tool_calls=[],
+                                     response="Reminder created: call the dentist.")
+
+    def finish_task(store, sid, plan_, *, status, result=""):
+        plan_.status = status                  # what the real finish_task does first
+        task_statuses.append(status)
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", prepare)
+    monkeypatch.setattr(main, "execute_task", execute_completed)
+    monkeypatch.setattr(main, "finish_task", finish_task)
+    return plan, task_statuses, task_runs
+
+
+def _stand_in_delivery(monkeypatch, isolated, mode):
+    """Stand-in for execute_workflow with the real event order: tool_call, approval,
+    durable claim, then the send. mode: 'approval' waits for the person, 'result'
+    is approved and claimed but the send never returns, 'complete' succeeds."""
+    runs = []
+
+    async def executor(plan, emit, approver, *, store=None, session_id="", **kw):
+        runs.append(plan.id)
+        isolated.runner = asyncio.current_task()
+        isolated.approver = approver
+        cid = f"workflow_{plan.id}_0"
+        call = {"id": cid, "name": "send_message", "args": {"to": "+15550100", "text": "x"}}
+        await emit({"type": "tool_call", **call})
+        try:
+            if mode == "complete":
+                result = {"id": cid, "name": "send_message", "result": "Message sent to Mom.",
+                          "status": "succeeded"}
+                await emit({"type": "tool_result", **result})
+                return types.SimpleNamespace(status="completed", response="Message sent to Mom.",
+                                             tool_calls=[call], tool_results=[result])
+            approved = await approver.confirm({"id": cid, "tool": "send_message",
+                                               "args": call["args"], "reason": "sends"})
+            assert approved
+            assert store.claim_workflow_effect(session_id, plan.id, f"workflow_effect:{plan.id}",
+                                               revision=plan.revision)
+            await emit({"type": "status", "text": "sending"})
+            await asyncio.Future()             # the send never reports back
+        except asyncio.CancelledError:
+            isolated.cancelled = True
+            raise
+    monkeypatch.setattr("service.workflows.executor.execute_workflow", executor)
+    return runs
+
+
+def _assert_next_yes_is_not_a_duplicate_of_a_live_run(sid, plan_id):
+    from service.workflows.engine import prepare_turn
+    active = main.store.active_workflow(sid)
+    assert active is None or active["status"] != "running"
+    assert main.store.workflow_state(sid, plan_id)["status"] != "running"
+    turn = prepare_turn(main.store, sid, "yes")
+    assert turn is None or turn.event != "already_running", turn and turn.response
+    # Nothing is re-run: an observed or claimed send is never repeated automatically.
+    assert turn is None or turn.decision is None
+
+
+@pytest.mark.parametrize("transport", ["iterator", "asgi"])
+def test_disconnect_while_the_receipt_notification_awaits_approval_settles_it(
+        isolated, monkeypatch, transport):
+    task, task_statuses, task_runs = _completed_task_with_notification(monkeypatch)
+    runs = _stand_in_delivery(monkeypatch, isolated, "approval")
+
+    async def scenario():
+        def check_running(seen):
+            sid = next(e["id"] for e in seen if e["type"] == "session")
+            assert [r["status"] for r in _workflow_rows(sid)] == ["running"], \
+                "precondition: the notification is persisted and mid-run"
+        if transport == "asgi":
+            seen = await serve_synthetic(await main.agent({"prompt": "remind me to call the dentist"}),
+                                         on_confirm=check_running)
+        else:
+            iterator = await start("remind me to call the dentist")
+            seen = await read_until(iterator, "confirm")
+            check_running(seen)
+            await iterator.aclose()
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        await asyncio.sleep(0.2)
+        assert isolated.cancelled and isolated.runner.done()
+        assert not main.SESSIONS and not idle.foreground_busy()
+        assert task_statuses == ["completed"] and task.status == "completed", \
+            "the completed typed task must not be re-marked because its notification stopped"
+        rows = _workflow_rows(sid)
+        assert len(rows) == 1 and rows[0]["status"] != "running", rows
+        assert runs == [rows[0]["id"]] and task_runs == ["task-1"], "nothing may be replayed"
+        assert not main.store.workflow_effect_claimed(rows[0]["id"])
+        saved = turns(sid)
+        assert [role for role, _ in saved] == ["user", "assistant"]
+        assert "disconnected before it finished" in saved[-1][1]
+        assert "Sending was already attempted" not in saved[-1][1], \
+            "nothing was sent while the approval was still open"
+        _assert_next_yes_is_not_a_duplicate_of_a_live_run(sid, rows[0]["id"])
+        assert runs == [rows[0]["id"]]
+    asyncio.run(scenario())
+
+
+def test_disconnect_while_the_receipt_notification_awaits_its_result_settles_it_uncertain(
+        isolated, monkeypatch):
+    task, task_statuses, task_runs = _completed_task_with_notification(monkeypatch)
+    runs = _stand_in_delivery(monkeypatch, isolated, "result")
+
+    async def scenario():
+        iterator = await start("remind me to call the dentist")
+        seen = await read_until(iterator, "confirm")
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        confirm = seen[-1]
+        assert isolated.approver.resolve(confirm["id"], True)
+        await read_until(iterator, "status")   # approved, claimed, send in flight
+        plan_id = _workflow_rows(sid)[0]["id"]
+        assert main.store.workflow_effect_claimed(plan_id)
+        await iterator.aclose()
+        await asyncio.sleep(0.2)
+        assert isolated.cancelled and isolated.runner.done() and not main.SESSIONS
+        assert task_statuses == ["completed"] and task.status == "completed"
+        row = main.store.workflow_state(sid, plan_id)
+        assert row["status"] == "failed" and row["last_error"] == "delivery outcome uncertain", row
+        assert main.store.workflow_effect_claimed(plan_id), "a claim is never released"
+        note = turns(sid)[-1][1]
+        assert "Sending was already attempted; its outcome is unknown" in note
+        _assert_next_yes_is_not_a_duplicate_of_a_live_run(sid, plan_id)
+        assert runs == [plan_id] and task_runs == ["task-1"], "the send must never be replayed"
+    asyncio.run(scenario())
+
+
+def test_disconnect_during_the_news_workflow_settles_it(isolated, monkeypatch):
+    """The stored-news branch runs before workflow_turn exists. The real planner
+    persists a running plan; only the news-reference predicate is short-circuited."""
+    from service.workflows import engine
+    monkeypatch.setattr(engine, "prepare_news_selector_guard",
+                        lambda store, sid, prompt: engine.prepare_turn(store, sid, prompt))
+    runs = _stand_in_delivery(monkeypatch, isolated, "approval")
+
+    async def scenario():
+        iterator = await start("text Mom a summary of my emails")
+        seen = await read_until(iterator, "confirm")
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        rows = _workflow_rows(sid)
+        assert [r["status"] for r in rows] == ["running"], "precondition: news workflow mid-run"
+        await iterator.aclose()
+        await asyncio.sleep(0.2)
+        assert isolated.cancelled and isolated.runner.done() and not main.SESSIONS
+        assert main.store.workflow_state(sid, rows[0]["id"])["status"] != "running"
+        assert "disconnected before it finished" in turns(sid)[-1][1]
+        _assert_next_yes_is_not_a_duplicate_of_a_live_run(sid, rows[0]["id"])
+        assert runs == [rows[0]["id"]]
+    asyncio.run(scenario())
+
+
+def _count_finishes(monkeypatch):
+    finished = []
+    real = main.finish_workflow
+
+    def counting(store, sid, plan, captured):
+        finished.append(plan.id)
+        return real(store, sid, plan, captured)
+    monkeypatch.setattr(main, "finish_workflow", counting)
+    return finished
+
+
+def test_a_completed_notification_is_not_resettled_when_the_turn_then_fails(isolated, monkeypatch):
+    task, task_statuses, _ = _completed_task_with_notification(monkeypatch)
+    runs = _stand_in_delivery(monkeypatch, isolated, "complete")
+    finished = _count_finishes(monkeypatch)
+    real_add_turn = main.store.add_turn
+    failures = []
+
+    def add_turn_failing_once(sid, role, content, *a, **k):
+        if role == "assistant" and not failures:
+            failures.append(content)
+            raise RuntimeError("synthetic persistence failure after delivery")
+        return real_add_turn(sid, role, content, *a, **k)
+    monkeypatch.setattr(main.store, "add_turn", add_turn_failing_once)
+
+    async def scenario():
+        iterator = await start("remind me to call the dentist")
+        seen = [json.loads(c[6:]) async for c in iterator]
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        assert failures and any(e["type"] == "error" for e in seen), "the failure path ran"
+        rows = _workflow_rows(sid)
+        assert [r["status"] for r in rows] == ["completed"], rows
+        assert finished == [rows[0]["id"]], "a normally finished plan is never settled again"
+        assert task_statuses == ["completed"] and runs == [rows[0]["id"]]
+        assert not main.SESSIONS
+    asyncio.run(scenario())
+
+
+def test_a_normal_turn_with_a_notification_finishes_each_plan_exactly_once(isolated, monkeypatch):
+    task, task_statuses, _ = _completed_task_with_notification(monkeypatch)
+    runs = _stand_in_delivery(monkeypatch, isolated, "complete")
+    finished = _count_finishes(monkeypatch)
+
+    async def scenario():
+        iterator = await start("remind me to call the dentist")
+        seen = [json.loads(c[6:]) async for c in iterator]
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        assert seen[-1]["type"] == "done"
+        rows = _workflow_rows(sid)
+        assert [r["status"] for r in rows] == ["completed"]
+        assert finished == [rows[0]["id"]] and runs == [rows[0]["id"]]
+        assert task_statuses == ["completed"]
+        assert not any("could not be completed" in text for _, text in turns(sid))
+        assert not main.SESSIONS and not idle.foreground_busy()
+    asyncio.run(scenario())
+
+
+def test_a_settlement_persistence_failure_does_not_mask_the_cancellation(isolated, monkeypatch):
+    task, task_statuses, _ = _completed_task_with_notification(monkeypatch)
+    _stand_in_delivery(monkeypatch, isolated, "approval")
+    attempted = []
+
+    def failing_finish(store, sid, plan, captured):
+        attempted.append(plan.id)
+        raise RuntimeError("synthetic settlement write failure")
+    monkeypatch.setattr(main, "finish_workflow", failing_finish)
+
+    async def scenario():
+        iterator = await start("remind me to call the dentist")
+        seen = await read_until(iterator, "confirm")
+        sid = next(e["id"] for e in seen if e["type"] == "session")
+        plan_id = _workflow_rows(sid)[0]["id"]
+        await iterator.aclose()
+        await asyncio.sleep(0.2)
+        assert attempted == [plan_id], "settlement must have tried the notification"
+        assert isolated.runner.cancelled(), "the CancelledError must still propagate"
+        assert not main.SESSIONS and not idle.foreground_busy()
+        assert task_statuses == ["completed"]
+        saved = turns(sid)
+        assert [role for role, _ in saved] == ["user", "assistant"], \
+            "one failed write must not skip the rest of the best-effort settlement"
+    asyncio.run(scenario())
