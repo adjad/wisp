@@ -188,21 +188,7 @@ private enum SettingsResponseError: LocalizedError {
 
 @MainActor
 final class SettingsLoader: ObservableObject {
-    private struct LocalSavedBinding: Equatable {
-        let baseURL: String
-        let apiPrefix: String
-        let modelID: String
-        let contextWindow: Int
-        let roles: Set<String>
-
-        /// The backend saves the window it MEASURED, which is never larger than the one
-        /// requested, so a saved binding satisfies a request when its window is not larger.
-        func satisfies(_ requested: LocalSavedBinding) -> Bool {
-            baseURL == requested.baseURL && apiPrefix == requested.apiPrefix
-                && modelID == requested.modelID && roles == requested.roles
-                && contextWindow <= requested.contextWindow
-        }
-    }
+    private typealias LocalSavedBinding = SettingsResponseValidator.LocalBinding
 
     struct LocalQualificationCheck: Identifiable, Equatable {
         let id: String
@@ -364,16 +350,14 @@ final class SettingsLoader: ObservableObject {
         localProviderBaseURL = object["base_url"] as? String ?? localProviderBaseURL
         localProviderAPIPrefix = object["api_prefix"] as? String ?? localProviderAPIPrefix
         localProviderModelID = object["model_id"] as? String ?? localProviderModelID
-        localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
+        localProviderContextWindow = SettingsResponseValidator.contextValue(object["context_window"], minimum: 512)
+            ?? localProviderContextWindow
         let savedRoles = Set(object["roles"] as? [String] ?? [])
         localProviderSavedAssigned = localProviderConnected && !savedRoles.isEmpty
-        savedLocalBinding = localProviderSavedAssigned
-            ? LocalSavedBinding(baseURL: CloudCredentialStore.normalizedBaseURL(localProviderBaseURL),
-                                apiPrefix: localProviderAPIPrefix, modelID: localProviderModelID,
-                                contextWindow: localProviderContextWindow, roles: savedRoles)
-            : nil
-        localProviderToolsQualified = localProviderConnected && (object["tools_qualified"] as? Bool ?? false)
-        localProviderQualifiedContext = object["qualified_context"] as? Int ?? 0
+        savedLocalBinding = SettingsResponseValidator.localBinding(object)
+        localProviderToolsQualified = localProviderConnected
+            && SettingsResponseValidator.toolQualificationContext(object) != nil
+        localProviderQualifiedContext = SettingsResponseValidator.contextValue(object["qualified_context"]) ?? 0
         localProviderStateUnknown = false
         localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
         localProviderStatus = !localProviderConnected ? "Not connected"
@@ -388,14 +372,9 @@ final class SettingsLoader: ObservableObject {
                                            baseURL: String, apiPrefix: String,
                                            modelID: String, contextWindow: Int,
                                            roles: Set<String>) -> Bool {
-        // The saved window is the measured one, so it may be smaller than requested.
-        let saved = object["context_window"] as? Int ?? 0
-        return object["enabled"] as? Bool == true
-            && Set(object["roles"] as? [String] ?? []) == roles
-            && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
-            && object["api_prefix"] as? String == apiPrefix
-            && object["model_id"] as? String == modelID
-            && saved >= 512 && saved <= contextWindow
+        SettingsResponseValidator.localProviderMatches(object, requested: LocalSavedBinding(
+            baseURL: baseURL, apiPrefix: apiPrefix, modelID: modelID,
+            contextWindow: contextWindow, roles: roles))
     }
 
     private static let localToolRoles: Set<String> = ["agent", "coding"]
@@ -477,9 +456,6 @@ final class SettingsLoader: ObservableObject {
                 } else if await refreshLocalProvider() {
                     self.roles = (await client.models()).roles
                     await refreshCloud()
-                    let saved = savedLocalBinding?.satisfies(requestedBinding) ?? false
-                    let newlyCommitted = saved && priorStateKnown
-                        && !(priorBinding?.satisfies(requestedBinding) ?? false)
                     var httpStatus: Int?
                     if let settingsError = error as? CloudSettingsError,
                        case let .http(statusCode, _) = settingsError {
@@ -488,22 +464,25 @@ final class SettingsLoader: ObservableObject {
                     // Local probe 4xx errors occur before persistence. A 5xx
                     // can follow the save, and a lost/malformed reply leaves
                     // the commit outcome uncertain until this validated GET.
-                    if newlyCommitted && (httpStatus.map { $0 >= 500 } ?? true) {
+                    switch SettingsResponseValidator.localSaveRecovery(
+                        priorStateKnown: priorStateKnown, prior: priorBinding,
+                        refreshed: savedLocalBinding, requested: requestedBinding, httpStatus: httpStatus) {
+                    case .recoveredReply:
                         localProviderStatus = "Connection saved; Wisp recovered after losing the reply."
-                    } else if httpStatus == 400 {
+                    case .currentTestFailed:
                         localProviderStatus = "The current local provider test failed: \(failure) "
                             + (localProviderSavedAssigned
                                ? "The earlier saved assignment remains."
                                : "Nothing is assigned to this app.")
-                    } else if httpStatus != nil {
+                    case .outcomeUnknown:
                         localProviderStatus = "Wisp could not confirm whether the current local provider test completed. "
                             + (localProviderSavedAssigned
                                ? "The saved assignment remains."
                                : "No assignment is confirmed.")
-                    } else {
-                        localProviderStatus = saved
-                            ? "The saved assignment matches this request, but Wisp could not confirm this test completed."
-                            : failure
+                    case .savedMatchUnconfirmed:
+                        localProviderStatus = "The saved assignment matches this request, but Wisp could not confirm this test completed."
+                    case .failed:
+                        localProviderStatus = failure
                     }
                 } else {
                     localProviderStateUnknown = true
@@ -535,6 +514,9 @@ final class SettingsLoader: ObservableObject {
                     "base_url": origin, "api_prefix": prefix, "model_id": model,
                     "context_window": window,
                 ], timeout: 420)  // a cold model load plus a full-window prompt can take a while
+                guard SettingsResponseValidator.validQualificationResponse(object, requestedContext: window) else {
+                    throw SettingsResponseError.invalid
+                }
                 let rows = (object["checks"] as? [[String: Any]] ?? []).compactMap { row -> LocalQualificationCheck? in
                     guard let id = row["id"] as? String, let label = row["label"] as? String,
                           let ok = row["ok"] as? Bool else { return nil }
@@ -542,8 +524,8 @@ final class SettingsLoader: ObservableObject {
                                                    detail: row["detail"] as? String ?? "",
                                                    required: row["required"] as? Bool ?? true)
                 }
-                let qualified = object["qualified"] as? Bool ?? false
-                let effective = object["effective_context"] as? Int ?? 0
+                let qualified = SettingsResponseValidator.qualificationSucceeded(object)
+                let effective = SettingsResponseValidator.contextValue(object["effective_context"]) ?? 0
                 localProviderQualification = LocalQualification(
                     qualified: qualified, effectiveContext: effective,
                     hint: object["hint"] as? String ?? "", checks: rows)

@@ -114,7 +114,6 @@ malformed["active"] = true
 check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
       "Active disabled Local provider accepted")
 
-print("\(checks) settings checks passed")
 
 // Multi-role local provider (Reasoning + Agent + Coding) and optional tool fields.
 var multi = local
@@ -155,3 +154,200 @@ badReport["checks"] = [["id": "context", "label": "Context", "ok": 1]]
 check(!SettingsResponseValidator.valid(badReport, path: "inference/local-provider/qualify"), "Numeric ok accepted")
 badReport["checks"] = [["label": "Context", "ok": true]]
 check(!SettingsResponseValidator.valid(badReport, path: "inference/local-provider/qualify"), "Check without id accepted")
+
+// Context values must be checked before NSNumber integer conversion.
+let invalidContextValues: [Any] = [
+    true, 8192.5, -0.5, -1, 262_145, NSNumber(value: UInt64.max),
+    NSNumber(value: Double.greatestFiniteMagnitude), NSNumber(value: Double.nan),
+    NSNumber(value: Double.infinity), NSNumber(value: -Double.infinity),
+]
+for value in invalidContextValues {
+    var candidate = report
+    candidate["effective_context"] = value
+    check(!SettingsResponseValidator.valid(candidate, path: "inference/local-provider/qualify"),
+          "Invalid effective_context accepted")
+    candidate["qualified"] = false
+    check(!SettingsResponseValidator.valid(candidate, path: "inference/local-provider/qualify"),
+          "Failure report accepted an invalid effective_context")
+    candidate = report
+    candidate["qualified_context"] = value
+    check(!SettingsResponseValidator.valid(candidate, path: "inference/local-provider/qualify"),
+          "Invalid optional report context accepted")
+    for state in [local, inactiveLocal, disabledLocal] {
+        var settings = state
+        settings["qualified_context"] = value
+        check(!SettingsResponseValidator.valid(settings, path: "inference/local-provider"),
+              "Invalid qualified_context accepted")
+    }
+    for (path, state) in [("inference/local-provider", local), ("inference/cloud", cloud)] {
+        var settings = state
+        settings["context_window"] = value
+        check(!SettingsResponseValidator.valid(settings, path: path), "Invalid context_window accepted")
+    }
+}
+for value in [512, 262_144] {
+    var settings = local
+    settings["context_window"] = value
+    check(SettingsResponseValidator.valid(settings, path: "inference/local-provider"), "Window boundary rejected")
+}
+for value in [8_192, 262_144] {
+    var candidate = report
+    candidate["effective_context"] = NSNumber(value: Double(value))
+    check(SettingsResponseValidator.qualificationSucceeded(candidate), "Integral measured context rejected")
+}
+for value in [0, 512, 8_191] {
+    var candidate = report
+    candidate["effective_context"] = value
+    check(!SettingsResponseValidator.valid(candidate, path: "inference/local-provider/qualify"),
+          "Insufficient tool context accepted as qualified")
+}
+
+var inconsistent = report
+inconsistent["checks"] = [[String: Any]]()
+check(!SettingsResponseValidator.qualificationSucceeded(inconsistent), "Empty checks invented success")
+inconsistent["checks"] = [["id": "call", "label": "Tool call", "ok": false]]
+check(!SettingsResponseValidator.valid(inconsistent, path: "inference/local-provider/qualify"),
+      "Failed default-required check accepted as qualified")
+inconsistent["checks"] = [["id": "call", "label": "Tool call", "ok": false, "required": true]]
+check(!SettingsResponseValidator.qualificationSucceeded(inconsistent), "Failed required check invented success")
+inconsistent = report
+inconsistent["qualified"] = false
+check(!SettingsResponseValidator.valid(inconsistent, path: "inference/local-provider/qualify"),
+      "All passing required checks contradicted the qualified flag")
+for required in [1, "false", NSNull(), NSNumber(value: 0.0)] as [Any] {
+    inconsistent = report
+    inconsistent["checks"] = [["id": "context", "label": "Context", "ok": true, "required": required]]
+    check(!SettingsResponseValidator.valid(inconsistent, path: "inference/local-provider/qualify"),
+          "Malformed required flag accepted")
+}
+var defaultRequired = report
+defaultRequired["checks"] = [["id": "context", "label": "Context", "ok": true]]
+check(SettingsResponseValidator.qualificationSucceeded(defaultRequired), "Missing required did not default to true")
+var advisory = report
+advisory["checks"] = (report["checks"] as! [[String: Any]]) + [
+    ["id": "restraint", "label": "Restraint", "ok": false, "required": false],
+]
+check(SettingsResponseValidator.qualificationSucceeded(advisory), "Advisory failure blocked valid success")
+advisory["checks"] = [["id": "restraint", "label": "Restraint", "ok": true, "required": false]]
+check(!SettingsResponseValidator.qualificationSucceeded(advisory), "Advisory-only report invented required evidence")
+for id in ["context", "error", "deadline"] {
+    var failure = report
+    failure["qualified"] = false
+    failure["effective_context"] = 0
+    failure["checks"] = [["id": id, "label": "Failed check", "ok": false]]
+    check(SettingsResponseValidator.valid(failure, path: "inference/local-provider/qualify"),
+          "Legitimate failure report rejected")
+    check(!SettingsResponseValidator.qualificationSucceeded(failure), "Failure report invented test success")
+}
+check(SettingsResponseValidator.validQualificationResponse(report, requestedContext: 32_768),
+      "Healthy current test response rejected")
+check(!SettingsResponseValidator.validQualificationResponse(report, requestedContext: 8_192),
+      "Measured context above the current request accepted")
+check(!SettingsResponseValidator.validQualificationResponse(report, requestedContext: 262_145),
+      "Out-of-range test request accepted")
+
+// GET validation and POST matching share the production binding contract.
+for roles in [["agent"], ["coding"], ["reasoning", "agent", "coding"]] {
+    var settings = local
+    settings["roles"] = roles
+    settings["tools_qualified"] = true
+    settings["qualified_context"] = 16_384
+    settings["context_window"] = 16_384
+    let requested = SettingsResponseValidator.LocalBinding(
+        baseURL: "http://127.0.0.1:8767", apiPrefix: "/v1", modelID: "example",
+        contextWindow: 32_768, roles: Set(roles))
+    check(SettingsResponseValidator.valid(settings, path: "inference/local-provider"), "Qualified tool state rejected")
+    check(SettingsResponseValidator.localProviderMatches(settings, requested: requested),
+          "min(requested, measured) saved window rejected")
+    var missing = settings
+    missing.removeValue(forKey: "tools_qualified")
+    check(!SettingsResponseValidator.valid(missing, path: "inference/local-provider"), "Missing tool qualification accepted")
+    check(!SettingsResponseValidator.localProviderMatches(missing, requested: requested), "Missing tool proof matched a save")
+    missing = settings
+    missing.removeValue(forKey: "qualified_context")
+    check(!SettingsResponseValidator.valid(missing, path: "inference/local-provider"), "Missing measured context accepted")
+    for flag in [false, 1, "true"] as [Any] {
+        var bad = settings
+        bad["tools_qualified"] = flag
+        check(!SettingsResponseValidator.valid(bad, path: "inference/local-provider"), "Invalid tool success flag accepted")
+        check(!SettingsResponseValidator.localProviderMatches(bad, requested: requested), "Unqualified save matched")
+    }
+    for measured in [0, 8_191] {
+        var bad = settings
+        bad["qualified_context"] = measured
+        check(!SettingsResponseValidator.valid(bad, path: "inference/local-provider"), "Insufficient measured context accepted")
+    }
+    for saved in [512, 8_191, 32_768] {
+        var bad = settings
+        bad["context_window"] = saved
+        check(!SettingsResponseValidator.valid(bad, path: "inference/local-provider"), "Inconsistent saved tool context accepted")
+    }
+    var smaller = settings
+    smaller["context_window"] = 8_192
+    check(SettingsResponseValidator.valid(smaller, path: "inference/local-provider"), "Bounded saved GET state rejected")
+    check(!SettingsResponseValidator.localProviderMatches(smaller, requested: requested),
+          "Save did not enforce min(requested, measured)")
+    let smallerRequest = SettingsResponseValidator.LocalBinding(
+        baseURL: requested.baseURL, apiPrefix: requested.apiPrefix, modelID: requested.modelID,
+        contextWindow: 8_192, roles: requested.roles)
+    check(SettingsResponseValidator.localProviderMatches(smaller, requested: smallerRequest), "Smaller requested window rejected")
+    var paused = settings
+    paused["active"] = false
+    paused.removeValue(forKey: "tools_qualified")
+    paused.removeValue(forKey: "qualified_context")
+    check(SettingsResponseValidator.valid(paused, path: "inference/local-provider"), "Inactive legacy state rejected")
+    check(!SettingsResponseValidator.localProviderMatches(paused, requested: requested), "Inactive unqualified state invented save success")
+    var wrongIdentity = settings
+    wrongIdentity["api_prefix"] = "/alternate"
+    check(!SettingsResponseValidator.localProviderMatches(wrongIdentity, requested: requested), "Different prefix matched")
+}
+let legacyRequest = SettingsResponseValidator.LocalBinding(
+    baseURL: "http://127.0.0.1:8767", apiPrefix: "/v1", modelID: "example",
+    contextWindow: 8_192, roles: ["reasoning"])
+check(SettingsResponseValidator.localProviderMatches(local, requested: legacyRequest), "Legacy Reasoning reply rejected")
+check(SettingsResponseValidator.localBinding(disabledLocal) == nil, "Disabled state invented a saved assignment")
+check(SettingsResponseValidator.localBinding(inactiveLocal) == nil, "Unassigned state invented a saved assignment")
+var measuredState = local
+measuredState["roles"] = ["agent"]
+measuredState["context_window"] = 16_384
+measuredState["tools_qualified"] = true
+measuredState["qualified_context"] = 16_384
+let savedBinding = SettingsResponseValidator.localBinding(measuredState)!
+let toolRequest = SettingsResponseValidator.LocalBinding(
+    baseURL: savedBinding.baseURL, apiPrefix: savedBinding.apiPrefix, modelID: savedBinding.modelID,
+    contextWindow: 32_768, roles: ["agent"])
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: savedBinding,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: nil) == .savedMatchUnconfirmed,
+      "Older matching saved binding invented current-test success")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: false, prior: nil,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: nil) == .savedMatchUnconfirmed,
+      "Unknown prior state invented a new commit")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: nil,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: nil) == .recoveredReply,
+      "Lost-reply recovery for a new validated binding rejected")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: nil,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: 503) == .recoveredReply,
+      "Post-save server failure recovery rejected")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: nil,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: 400) == .currentTestFailed,
+      "Failed current test was replaced by saved-state success")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: savedBinding,
+      refreshed: savedBinding, requested: toolRequest, httpStatus: 409) == .outcomeUnknown,
+      "Newer-state conflict invented success")
+check(SettingsResponseValidator.localSaveRecovery(priorStateKnown: true, prior: nil,
+      refreshed: nil, requested: toolRequest, httpStatus: nil) == .failed,
+      "Unconfirmed assignment invented success")
+var malformedGET = measuredState
+malformedGET["qualified_context"] = 8_192.5
+check(SettingsResponseValidator.localBinding(malformedGET) == nil,
+      "Malformed GET supplied reconciliation evidence")
+check(!SettingsResponseValidator.localProviderMatches(malformedGET, requested: toolRequest),
+      "Malformed POST supplied current save success")
+var staleFailure = report
+staleFailure["qualified"] = false
+staleFailure["checks"] = [["id": "call", "label": "Tool call", "ok": false]]
+check(SettingsResponseValidator.valid(staleFailure, path: "inference/local-provider/qualify"),
+      "Valid current failure after an earlier saved pass rejected")
+check(!SettingsResponseValidator.qualificationSucceeded(staleFailure), "Earlier saved proof invented current test success")
+
+print("\(checks) settings checks passed")
