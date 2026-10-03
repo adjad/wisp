@@ -1092,33 +1092,94 @@ async def agent(body: dict[str, Any]):
         idle.begin_foreground()
         workflow_turn = None
         task_turn = None
+        # Every workflow revision this request persisted as running and executes:
+        # the typed workflow_turn, a completed task's receipt notification and the
+        # stored-news branch. Each entry remembers the revision it owns and where
+        # its own tool events begin in `captured`, so settlement judges a plan only
+        # by what that plan observed, never by an earlier step's send.
+        owned_workflows: list[dict[str, Any]] = []
+
+        def own_workflow(plan) -> dict[str, Any]:
+            entry = {"plan": plan, "revision": plan.revision, "finished": False,
+                     "calls_from": len(captured["tool_calls"]),
+                     "results_from": len(captured["tool_results"])}
+            owned_workflows.append(entry)
+            return entry
+
+        def observed_by(entry: dict[str, Any]) -> dict[str, Any]:
+            results = captured["tool_results"][entry["results_from"]:]
+            return {"tool_calls": captured["tool_calls"][entry["calls_from"]:],
+                    "tool_results": results,
+                    "denied": any("denied" in str(item.get("result", "")).lower()
+                                  for item in results)}
+
+        def finish_owned(entry: dict[str, Any], observed: dict[str, Any]) -> None:
+            """The normal path's finish; a plan finished here is never settled again."""
+            finish_workflow(store, sid, entry["plan"], observed)
+            entry["finished"] = True
 
         def settle_unfinished(message: str) -> None:
             """Leave durable state honest when a turn stops without finishing.
 
             Shared by a failed turn and a cancelled one (the app disconnected). A
-            typed task or workflow still marked running is settled, the user's
-            message is saved (it was never saved before, leaving a hole in the
-            history), and an honest assistant note records that it did not finish.
+            typed task still marked running and every owned workflow revision this
+            request left running are settled, the user's message is saved (it was
+            never saved before, leaving a hole in the history), and an honest
+            assistant note records that it did not finish. Each write is separately
+            best effort, so one failure cannot skip the rest, and none can raise.
             Synchronous on purpose: nothing here can be interrupted a second time.
+
+            A workflow goes through the same finish_workflow the normal path uses,
+            fed only its own observed calls/results: an observed effect call without
+            a verified success settles as "delivery outcome uncertain". A durable
+            effect claim is never released and nothing is re-run here; the claim
+            keeps blocking any repeat of that delivery.
             """
             if test_mode:
                 return
+            uncertain_send = False
             try:
                 if task_turn and task_turn.executable and task_turn.plan.status == "running":
                     finish_task(store, sid, task_turn.plan, status="failed", result=message)
-                if (workflow_turn and workflow_turn.decision
-                        and workflow_turn.plan.status == "running"):
-                    finish_workflow(store, sid, workflow_turn.plan, captured)
+            except Exception:  # noqa: BLE001 — persistence must not mask the real error
+                pass
+            try:
+                uncertain_send = bool(
+                    task_turn and task_turn.plan.status != "completed"
+                    and task_turn.plan.intent in {"email.reply", "email.send", "message.send"}
+                    and task_turn.plan.claimed_calls)
+            except Exception:  # noqa: BLE001
+                pass
+            for entry in owned_workflows:
+                plan = entry["plan"]
+                try:
+                    # Only a revision this request still owns: one finished normally,
+                    # or advanced by anyone else, is left exactly as it is.
+                    if (entry["finished"] or plan.status != "running"
+                            or plan.revision != entry["revision"]):
+                        continue
+                    finish_workflow(store, sid, plan, observed_by(entry))
+                    entry["finished"] = True
+                except Exception:  # noqa: BLE001
+                    pass
+                # Reached only for a plan this settlement handled (finished plans
+                # `continue` above and already reported their own outcome).
+                try:
+                    if store.workflow_effect_claimed(plan.id) and plan.status != "completed":
+                        uncertain_send = True
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
                 persist_user_turn()
-                uncertain_send = (task_turn and task_turn.plan.intent in {
-                    "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
                 store.add_turn(sid, "assistant",
                                f"(This request could not be completed — {message} "
                                + ("Sending was already attempted; its outcome is unknown. "
                                   "Check before requesting another send.)" if uncertain_send else
                                   "Check any actions already reported before retrying.)"))
-            except Exception:  # noqa: BLE001 — persistence must not mask the real error
+            except Exception:  # noqa: BLE001
                 pass
 
         try:
@@ -1169,11 +1230,12 @@ async def agent(body: dict[str, Any]):
                     return
                 if news_turn.decision:
                     from service.workflows.executor import execute_workflow
+                    news_owned = own_workflow(news_turn.plan)
                     execution = await execute_workflow(
                         news_turn.plan, emit, approver, test_mode=test_mode, store=store,
                         session_id=sid)
                     if not test_mode:
-                        finish_workflow(store, sid, news_turn.plan, {
+                        finish_owned(news_owned, {
                             "tool_calls": execution.tool_calls,
                             "tool_results": execution.tool_results,
                             "denied": execution.status == "denied"})
@@ -1223,12 +1285,13 @@ async def agent(body: dict[str, Any]):
                     if notification_plan.status == "ready":
                         notification_plan.status = "running"
                     store.save_workflow(sid, notification_plan.to_dict())
+                    notification_owned = own_workflow(notification_plan)
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
                         delivered = await execute_workflow(
                             notification_plan, emit, approver, store=store,
                             session_id=sid)
-                        finish_workflow(store, sid, notification_plan, {
+                        finish_owned(notification_owned, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
                         execution.response += "\n\nNotification: " + delivered.response
@@ -1250,6 +1313,10 @@ async def agent(body: dict[str, Any]):
             # instead of being classified as a new isolated request.
             workflow_turn = prepare_turn(
                 store, sid, prompt, persist=not test_mode)
+            # Only a turn that starts execution owns its revision; a response-only
+            # turn (e.g. "already running") may describe another request's plan.
+            workflow_owned = (own_workflow(workflow_turn.plan)
+                              if workflow_turn and workflow_turn.decision else None)
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
@@ -1268,7 +1335,7 @@ async def agent(body: dict[str, Any]):
                     workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
                     session_id=sid)
                 if not test_mode:
-                    finish_workflow(store, sid, workflow_turn.plan, {
+                    finish_owned(workflow_owned, {
                         "tool_calls": execution.tool_calls,
                         "tool_results": execution.tool_results,
                         "denied": execution.status == "denied"})
@@ -1653,8 +1720,8 @@ async def agent(body: dict[str, Any]):
             # Skipped in test mode — a dry run must leave no trace (see the
             # endpoint docstring): nothing was actually asked or answered.
             if not test_mode:
-                if workflow_turn and workflow_turn.decision:
-                    finish_workflow(store, sid, workflow_turn.plan, captured)
+                if workflow_owned is not None:
+                    finish_owned(workflow_owned, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
                 from service.tools.registry import DisplayOnlyToolResult
                 persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
