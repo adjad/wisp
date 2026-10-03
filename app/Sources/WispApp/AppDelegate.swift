@@ -50,16 +50,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let autoCollapseDelay: TimeInterval = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The app bundle launches a helper whose `ps comm` is exactly
-        // `omlx-server`; PortGuard inspects that value, not the parent bundle
-        // path. Without this exemption every Wisp launch terminated the real
-        // oMLX listener and left /health returning 500 until oMLX was reopened.
-        PortGuard.reserve(port: 8000, exemptExecutablePrefixes: [
-            "/Applications/oMLX.app",
-            "\(NSHomeDirectory())/Applications/oMLX.app",
-            "omlx-server",
-        ])
-        PortGuard.reserve(port: 8765, exemptExecutablePrefixes: [])
+        // One Wisp at a time. A second launch used to terminate the first one's
+        // backend and race it for the port; now it hands over to the running app.
+        let peers = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .map(\.processIdentifier)
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        if SingleInstance.shouldYield(bundleIdentifier: Bundle.main.bundleIdentifier,
+                                      selfPID: selfPID, peers: peers) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                .first { $0.processIdentifier != selfPID }?
+                .activate(options: [])
+            NSApp.terminate(nil)
+            return
+        }
+        // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
+        // cleared by killing whatever listened (which took out MTPLX and Homebrew oMLX
+        // along with the odd stray server). oMLX's own peer attribution refuses an
+        // engine it cannot verify, with a message that says so.
+        //
+        // Port 8765 is Wisp's backend. Wisp never signals a program it does not own:
+        // a stranger there is reported, and only Wisp's OWN backend is reclaimed, and
+        // only when it has stopped answering. "Own" is BackendOwnership's policy: exactly
+        // the process incarnation the previous launch's receipt names. Without a matching
+        // receipt (including a backend left by an older Wisp) it is a conflict.
+        // Loaded only here, after the single-instance hand-over, so a yielding second
+        // launch touches nothing.
+        let launchReceipt = BackendLaunchReceiptStore.defaultDirectory()
+            .map { BackendLaunchReceiptStore.shared.configure(directory: $0) } ?? .unusable
+        let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
+        switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes, receipt: launchReceipt) {
+        case .conflict(let foreign):
+            backend.portConflict = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
+                                                                    ownedPrefixes: ownedPrefixes))
+            }
+        case .owned(let own):
+            Task { [backend] in
+                if !(await backend.isResponsive()) {
+                    // Judged against the receipt `own` was classified with; terminateOwned
+                    // re-reads the kernel facts (and start time) right before signalling.
+                    PortGuard.terminateOwned(own, ownedPrefixes: ownedPrefixes, receipt: launchReceipt)
+                }
+            }
+        case .free, .unknown:
+            break
+        }
         // A10 WP3: inert unless the user enabled a browser (default off).
         backend.extraEnvironment = {
             BrowserBridgeActivation.shared.controlPathForBackend()
@@ -677,6 +714,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    /// A program that is not Wisp's own holds the backend port. Wisp does not stop
+    /// it: the person decides.
+    private func presentPortConflict(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Wisp can't start its service"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Quit Wisp")
+        alert.addButton(withTitle: "Keep Wisp Open")
+        if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
     }
 
     @objc private func openSetupGuide() {
