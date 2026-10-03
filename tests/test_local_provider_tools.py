@@ -29,11 +29,13 @@ class FakeEngine:
     ('structured' | 'text' | 'none'), usage (report prompt_tokens or not)."""
 
     def __init__(self, ctx=1_000_000, tools="structured", usage=True, reject_over_ctx=False,
-                 call_for_hello=False, long_answer=0):
+                 call_for_hello=False, long_answer=0, api_prefix="/v1"):
         self.ctx, self.tools, self.usage = ctx, tools, usage
         self.reject_over_ctx, self.call_for_hello = reject_over_ctx, call_for_hello
         self.long_answer = long_answer
+        self.api_prefix = api_prefix
         self.requests = []
+        self.wire_requests = []
         self.port = next(_PORTS)
         self.closed = False
 
@@ -42,12 +44,13 @@ class FakeEngine:
 
     def respond(self, request: httpx.Request) -> httpx.Response:
         """Answer one HTTP request exactly as an OpenAI-compatible server would."""
+        self.wire_requests.append((request.method, request.url.path))
         if self.closed:
             raise httpx.ConnectError("connection refused", request=request)
-        if request.method == "GET" and request.url.path == "/v1/models":
+        if request.method == "GET" and request.url.path == self.api_prefix + "/models":
             return httpx.Response(200, json={"object": "list",
                                              "data": [{"id": "fake-model", "object": "model"}]})
-        if request.method == "POST" and request.url.path == "/v1/chat/completions":
+        if request.method == "POST" and request.url.path == self.api_prefix + "/chat/completions":
             body = json.loads(request.content)
             self.requests.append(body)
             code, payload, stream = self.complete(body)
@@ -214,11 +217,13 @@ def engine_factory(monkeypatch):
     monkeypatch.setattr(credentials, "resolve", forbidden)
     monkeypatch.setattr(provider_credentials, "resolve_keychain", forbidden)
 
+    transport = httpx.MockTransport(_dispatch)
+
     async def plain(self, request):
-        return await _dispatch(request)
+        return await transport.handle_async_request(request)
 
     async def credentialed(self, request):
-        return await _dispatch(request)
+        return await transport.handle_async_request(request)
     monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", plain)
     monkeypatch.setattr(CredentialTransport, "handle_async_request", credentialed)
 
@@ -227,7 +232,7 @@ def engine_factory(monkeypatch):
         _ENGINES[engine.port] = engine
         ep = endpoint_from_config("local_provider", {
             "enabled": True, "provider": "openai-compatible", "base_url": f"http://127.0.0.1:{engine.port}",
-            "api_prefix": "/v1", "credential_ref": "none", "readiness_timeout": 10})
+            "api_prefix": engine.api_prefix, "credential_ref": "none", "readiness_timeout": 10})
         return engine, ep
     yield make
     _ENGINES.clear()
@@ -507,6 +512,231 @@ def test_the_client_refuses_tools_for_an_unqualified_local_provider(overlay):
         client._fit_request("m", [{"role": "user", "content": "hi"}], [q._TOOL], 64)
 
 
+# ------------------------------------------------ persisted prefix identity
+
+@pytest.fixture
+def persisted_qualification(tmp_path, monkeypatch, engine_factory):
+    """Actual temporary YAML persistence and qualification; no writer mocks."""
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "config.yaml")
+    monkeypatch.setattr(config, "OMLX_SETTINGS", tmp_path / "unused-settings.json")
+    monkeypatch.setattr(config, "OMLX_MODEL_SETTINGS", tmp_path / "unused-model-settings.json")
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    config.set_roles({"agent": "managed-agent", "coding": "managed-coding",
+                      "reasoning": "managed-reasoning"})
+
+    def qualify_and_save(prefix="/v1", roles=("agent", "coding")):
+        engine, ep = engine_factory(ctx=16384, api_prefix=prefix)
+        report = run(q.qualify(ep, "fake-model", 16384))
+        assert report.qualified and report.effective_context == 16384
+        config.set_local_provider({**ENDPOINT, "base_url": ep.base_url,
+                                   "api_prefix": prefix}, "fake-model", 16384,
+                                  list(roles), qualification=report.as_dict())
+        engine.qualification_report = report.as_dict()
+        return engine
+
+    yield qualify_and_save
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+
+
+def _reload_qualification():
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    return config._user_overlay()["inference"]["endpoints"]["local_provider"]
+
+
+def _asgi_qualification_settings():
+    # Real GET route after atomic configuration writes and cache reload.
+    import service.main as main
+
+    async def get():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                     base_url="http://127.0.0.1:18888") as client:
+            response = await client.get("/inference/local-provider")
+            assert response.status_code == 200
+            return response.json()
+    return run(get())
+
+
+@pytest.mark.parametrize("prefix", ["/v1", "/alternate/v2"])
+def test_persisted_prefix_matches_settings_and_runtime_identity(persisted_qualification, prefix):
+    engine = persisted_qualification(prefix)
+    record = _reload_qualification()["qualification"]
+    assert record["schema"] == q.QUALIFICATION_SCHEMA == 2
+    assert record["api_prefix"] == prefix
+    before_requests = len(engine.wire_requests)
+    settings = _asgi_qualification_settings()
+    assert settings["tools_qualified"] and settings["qualified_context"] == 16384
+    assert settings["api_prefix"] == prefix
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert target.endpoint.api_prefix == prefix
+        assert "tools" in target.capabilities and target.context_window == 16384
+    assert len(engine.wire_requests) == before_requests
+
+
+@pytest.mark.parametrize("prefix,changed", [("/v1", "/alternate/v2"),
+                                             ("/alternate/v2", "/v1"),
+                                             ("/v1", "/V1")])
+def test_persisted_prefix_only_change_revokes_tools(persisted_qualification, prefix, changed):
+    engine = persisted_qualification(prefix)
+    saved_before = config.USER_CONFIG.read_bytes()
+    overlay_before = deepcopy(config._user_overlay())
+    identities = {role: role_target(role).identity for role in ("agent", "coding")}
+    before_requests = len(engine.wire_requests)
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"api_prefix": changed}}}})
+    endpoint = _reload_qualification()
+    expected = deepcopy(overlay_before)
+    expected["inference"]["endpoints"]["local_provider"]["api_prefix"] = changed
+    assert config._user_overlay() == expected  # exactly one persisted field changed
+    assert endpoint["qualification"]["api_prefix"] == prefix
+    settings = _asgi_qualification_settings()
+    assert not settings["tools_qualified"] and settings["qualified_context"] == 0
+    assert settings["qualified_at"] == ""
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert target.identity != identities[role] and "tools" not in target.capabilities
+        client = q.OMLXClient(target=target)
+        with pytest.raises(endpoints.EndpointConfigurationError):
+            client._fit_request("fake-model", [{"role": "user", "content": "hello"}], [q._TOOL], 64)
+        run(client.aclose())
+    assert len(engine.wire_requests) == before_requests
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"api_prefix": prefix}}}})
+    _reload_qualification()
+    assert config.USER_CONFIG.read_bytes() == saved_before
+    assert _asgi_qualification_settings()["tools_qualified"]
+    assert all("tools" in role_target(role).capabilities for role in ("agent", "coding"))
+
+
+@pytest.mark.parametrize("mutation", [
+    {"schema": 1}, {"schema": 0}, {"schema": 3}, {"schema": None}, {"schema": 2.0},
+    {"api_prefix": None}, {"api_prefix": 1}, {"api_prefix": "/unmatched"},
+    {"qualified": False}, {"effective_context": True}, {"effective_context": None},
+    {"effective_context": "16384"}, {"effective_context": 16384.0},
+])
+@pytest.mark.parametrize("prefix", ["/v1", "/alternate/v2"])
+def test_persisted_qualification_record_requires_explicit_matching_evidence(
+        persisted_qualification, prefix, mutation):
+    persisted_qualification(prefix)
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"qualification": mutation}}}})
+    _reload_qualification()
+    settings = _asgi_qualification_settings()
+    assert not settings["tools_qualified"] and settings["qualified_context"] == 0
+    assert settings["qualified_at"] == ""
+    assert all("tools" not in role_target(role).capabilities for role in ("agent", "coding"))
+
+
+@pytest.mark.parametrize("field", ["api_prefix", "schema"])
+@pytest.mark.parametrize("prefix", ["/v1", "/alternate/v2"])
+def test_persisted_qualification_record_missing_identity_is_not_defaulted(
+        persisted_qualification, prefix, field):
+    persisted_qualification(prefix)
+    saved = deepcopy(config._user_overlay())
+    del saved["inference"]["endpoints"]["local_provider"]["qualification"][field]
+    # Clear the deep-merged record, then persist the missing-field input through
+    # the actual atomic writer rather than inventing a record default.
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"qualification": None}}}})
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {
+        "qualification": saved["inference"]["endpoints"]["local_provider"]["qualification"]}}}})
+    _reload_qualification()
+    settings = _asgi_qualification_settings()
+    assert not settings["tools_qualified"] and settings["qualified_context"] == 0
+    assert all("tools" not in role_target(role).capabilities for role in ("agent", "coding"))
+
+
+@pytest.mark.parametrize("field,value", [("base_url", "http://127.0.0.1:12345"),
+                                         ("model_id", "other-model")])
+def test_persisted_qualification_record_url_and_model_still_fail_closed(
+        persisted_qualification, field, value):
+    persisted_qualification()
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {field: value}}}})
+    if field == "model_id":
+        config._save_overlay({"inference": {"bindings": {
+            role: {"model_id": value} for role in ("agent", "coding")}}})
+    _reload_qualification()
+    assert not _asgi_qualification_settings()["tools_qualified"]
+    assert all("tools" not in role_target(role).capabilities for role in ("agent", "coding"))
+
+
+def test_persisted_prefix_matching_record_clamps_context(persisted_qualification):
+    persisted_qualification("/alternate/v2")
+    config._save_overlay({"inference": {"bindings": {
+        role: {"context_window": 65536} for role in ("agent", "coding")}}})
+    _reload_qualification()
+    assert _asgi_qualification_settings()["qualified_context"] == 16384
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert "tools" in target.capabilities and target.context_window == 16384
+
+
+def test_persisted_prefix_default_is_resolved_only_for_endpoint(persisted_qualification):
+    engine = persisted_qualification()
+    endpoint = {key: value for key, value in ENDPOINT.items() if key != "api_prefix"}
+    endpoint["base_url"] = f"http://127.0.0.1:{engine.port}"
+    config.set_local_provider(endpoint, "fake-model", 16384, ["agent"],
+                              qualification=engine.qualification_report)
+    saved = _reload_qualification()
+    assert saved["api_prefix"] == saved["qualification"]["api_prefix"] == "/v1"
+    assert _asgi_qualification_settings()["tools_qualified"]
+
+
+@pytest.mark.parametrize("record_prefix,qualified", [("/v1", True),
+                                                     ("/alternate/v2", False),
+                                                     (None, False)])
+def test_persisted_endpoint_prefix_default_does_not_default_record_evidence(
+        persisted_qualification, record_prefix, qualified):
+    engine = persisted_qualification(record_prefix or "/v1")
+    saved = deepcopy(config._user_overlay())
+    endpoint = saved["inference"]["endpoints"]["local_provider"]
+    del endpoint["api_prefix"]
+    if record_prefix is None:
+        del endpoint["qualification"]["api_prefix"]
+    # Replace the endpoint through the actual writer to remove its prefix field.
+    config._save_overlay({"inference": {"endpoints": {"local_provider": None}}})
+    config._save_overlay({"inference": {"endpoints": {"local_provider": endpoint}}})
+    _reload_qualification()
+    before_requests = len(engine.wire_requests)
+    settings = _asgi_qualification_settings()
+    assert settings["api_prefix"] == "/v1"
+    assert settings["tools_qualified"] is qualified
+    assert settings["qualified_context"] == (16384 if qualified else 0)
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert target.endpoint.api_prefix == "/v1"
+        assert ("tools" in target.capabilities) is qualified
+    assert len(engine.wire_requests) == before_requests
+
+
+@pytest.mark.parametrize("prefix", ["/v1", "/alternate/v2"])
+def test_persisted_prefix_identity_uses_the_validated_origin(
+        persisted_qualification, prefix):
+    engine = persisted_qualification(prefix)
+    origin = f"http://127.0.0.1:{engine.port}"
+    # The real probe used the validated origin; a trailing slash is an accepted
+    # representation of that same origin, not a different API prefix.
+    config.set_local_provider({**ENDPOINT, "base_url": origin + "/", "api_prefix": prefix},
+                              "fake-model", 16384, ["agent", "coding"],
+                              qualification=engine.qualification_report)
+    endpoint = _reload_qualification()
+    settings = _asgi_qualification_settings()
+    targets = {role: role_target(role) for role in ("agent", "coding")}
+    print(json.dumps({"persisted_endpoint": endpoint, "settings": settings,
+                      "runtime": {role: {"base_url": target.endpoint.base_url,
+                                         "api_prefix": target.endpoint.api_prefix,
+                                         "capabilities": target.capabilities,
+                                         "context_window": target.context_window}
+                                  for role, target in targets.items()},
+                      "measured_report": engine.qualification_report}))
+    assert endpoint["base_url"] == endpoint["qualification"]["base_url"] == origin
+    assert settings["tools_qualified"]
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert target.endpoint.base_url == origin
+        assert target.endpoint.api_prefix == prefix
+        assert "tools" in target.capabilities and target.context_window == 16384
+
+
 # ------------------------------------------------------------ server connect
 
 @pytest.fixture
@@ -709,3 +939,149 @@ def test_user_facing_errors_do_not_expose_the_internal_endpoint_name():
     message, _ = translate(IncompleteStreamError("Remote inference output exceeded the allowed size"),
                            endpoint_name="local_provider")
     assert "local_provider" not in message and "local app" in message
+
+
+# ------------------------------------------------ actual persisted HTTP routes
+
+@pytest.fixture
+def persisted_http_provider(tmp_path, monkeypatch, engine_factory):
+    """Use real HTTP handlers, real qualification and the atomic YAML writer."""
+    import service.main as main
+
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "config.yaml")
+    monkeypatch.setattr(config, "OMLX_SETTINGS", tmp_path / "unused-settings.json")
+    monkeypatch.setattr(config, "OMLX_MODEL_SETTINGS", tmp_path / "unused-model-settings.json")
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    config.set_roles({"agent": "managed-agent", "coding": "managed-coding",
+                      "reasoning": "managed-reasoning"})
+    monkeypatch.setattr(main, "_qualification_cache", {})
+    monkeypatch.setattr(main, "_local_provider_operation_generation", 0)
+    assert main.set_local_provider is config.set_local_provider
+    assert main.qualification.qualify is q.qualify
+
+    async def request(method, path, body=None):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                     base_url="http://127.0.0.1:18888") as client:
+            return await client.request(method, path, json=body)
+
+    def connect(*, prefix="/v1", slash=False, roles=("agent", "coding"), **knobs):
+        engine, ep = engine_factory(api_prefix=prefix, ctx=16384, **knobs)
+        body = {"base_url": ep.base_url + ("/" if slash else ""),
+                "api_prefix": prefix, "model_id": " fake-model ",
+                "context_window": 32768, "roles": list(roles),
+                # These client claims must never become the saved evidence.
+                "qualification": {"qualified": True, "effective_context": 262144,
+                                  "api_prefix": "/client-claim", "model_id": "client-model"},
+                "qualified_capabilities": ["tools"]}
+        response = run(request("POST", "/inference/local-provider", body))
+        return engine, ep, response
+
+    yield main, request, connect
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+
+
+@pytest.mark.parametrize("prefix", ["/v1", "/alternate/v2"])
+@pytest.mark.parametrize("slash", [False, True])
+@pytest.mark.parametrize("roles", [("agent",), ("coding",), ("reasoning", "agent", "coding")])
+def test_actual_http_connect_get_and_roles_agree_on_normalized_identity(
+        persisted_http_provider, prefix, slash, roles):
+    main, request, connect = persisted_http_provider
+    engine, ep, response = connect(prefix=prefix, slash=slash, roles=roles)
+    assert response.status_code == 200, response.text
+    saved = _reload_qualification()
+    record = saved["qualification"]
+    before = len(engine.wire_requests)
+    get = run(request("GET", "/inference/local-provider"))
+    assert get.status_code == 200
+    settings = get.json()
+    assert response.json() == settings
+    assert saved["base_url"] == record["base_url"] == settings["base_url"] == ep.base_url
+    assert saved["api_prefix"] == record["api_prefix"] == settings["api_prefix"] == prefix
+    assert record["schema"] == q.QUALIFICATION_SCHEMA == 2
+    assert record["model_id"] == settings["model_id"] == "fake-model"
+    assert record["effective_context"] == settings["qualified_context"] == 16384
+    assert settings["tools_qualified"] and set(settings["roles"]) == set(roles)
+    for role in roles:
+        target = role_target(role)
+        assert target.endpoint.base_url == ep.base_url and target.endpoint.api_prefix == prefix
+        assert target.model_id == "fake-model" and target.context_window == 16384
+        assert ("tools" in target.capabilities) is (role in {"agent", "coding"})
+    assert len(engine.wire_requests) == before
+    assert ("GET", prefix + "/models") in engine.wire_requests
+    assert all(path.startswith(prefix + "/") for _, path in engine.wire_requests)
+    assert any(body.get("stream") for body in engine.requests)
+    assert any(body.get("tools") for body in engine.requests)
+    print(json.dumps({"post": response.json(), "get": settings,
+                      "record": record, "wire": engine.wire_requests}))
+
+
+@pytest.mark.parametrize("prefix,changed", [("/v1", "/alternate/v2"),
+                                             ("/alternate/v2", "/v1"),
+                                             ("/v1", "/V1")])
+def test_actual_http_saved_prefix_mutation_revokes_and_restoration_retains_tools(
+        persisted_http_provider, prefix, changed):
+    _, request, connect = persisted_http_provider
+    engine, _, response = connect(prefix=prefix, slash=True)
+    assert response.status_code == 200
+    original = config.USER_CONFIG.read_bytes()
+    before = len(engine.wire_requests)
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"api_prefix": changed}}}})
+    _reload_qualification()
+    get = run(request("GET", "/inference/local-provider"))
+    assert get.status_code == 200 and not get.json()["tools_qualified"]
+    assert get.json()["qualified_context"] == 0 and get.json()["qualified_at"] == ""
+    for role in ("agent", "coding"):
+        target = role_target(role)
+        assert target.endpoint.api_prefix == changed and "tools" not in target.capabilities
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"api_prefix": prefix}}}})
+    _reload_qualification()
+    assert config.USER_CONFIG.read_bytes() == original
+    assert run(request("GET", "/inference/local-provider")).json()["tools_qualified"]
+    assert all("tools" in role_target(role).capabilities for role in ("agent", "coding"))
+    assert len(engine.wire_requests) == before
+
+
+@pytest.mark.parametrize("mutation", [
+    {"schema": True}, {"schema": "2"}, {"qualified": 1}, {"qualified": None},
+    {"model_id": None}, {"base_url": None}, {"api_prefix": False},
+])
+def test_actual_http_saved_identity_rejects_additional_malformed_types(
+        persisted_http_provider, mutation):
+    _, request, connect = persisted_http_provider
+    engine, _, response = connect(prefix="/alternate/v2", slash=True)
+    assert response.status_code == 200
+    before = len(engine.wire_requests)
+    config._save_overlay({"inference": {"endpoints": {"local_provider": {"qualification": mutation}}}})
+    _reload_qualification()
+    get = run(request("GET", "/inference/local-provider"))
+    assert get.status_code == 200 and not get.json()["tools_qualified"]
+    assert get.json()["qualified_context"] == 0 and get.json()["qualified_at"] == ""
+    assert all("tools" not in role_target(role).capabilities for role in ("agent", "coding"))
+    assert len(engine.wire_requests) == before
+
+
+def test_actual_http_reasoning_only_normalizes_without_recording_tool_evidence(
+        persisted_http_provider):
+    _, request, connect = persisted_http_provider
+    engine, ep, response = connect(prefix="/alternate/v2", slash=True, roles=("reasoning",),
+                                    tools="text", usage=False)
+    assert response.status_code == 200, response.text
+    saved = _reload_qualification()
+    settings = run(request("GET", "/inference/local-provider")).json()
+    assert saved["base_url"] == settings["base_url"] == ep.base_url
+    assert saved["api_prefix"] == settings["api_prefix"] == "/alternate/v2"
+    assert saved["qualification"] is None and not settings["tools_qualified"]
+    assert settings["roles"] == ["reasoning"]
+    assert "tools" not in role_target("reasoning").capabilities
+    assert len(engine.requests) == 1 and not engine.requests[0].get("tools")
+
+
+def test_actual_http_failed_tool_probe_ignores_client_claim_and_preserves_settings(
+        persisted_http_provider):
+    _, _, connect = persisted_http_provider
+    before = config.USER_CONFIG.read_bytes()
+    _, _, response = connect(prefix="/alternate/v2", slash=True, tools="text")
+    assert response.status_code == 400 and "can't run Wisp's tools" in response.json()["detail"]
+    assert config.USER_CONFIG.read_bytes() == before

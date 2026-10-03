@@ -167,12 +167,12 @@ def role_target(role: str) -> Target:
     if ep.name == "local_provider":
         # An unauthenticated loopback app earns tool use only from a recorded,
         # server-run qualification that still describes THIS app and model. A
-        # changed model or URL, or a hand-edited `tools`, silently loses it, and
+        # changed model, URL or API prefix, or a hand-edited `tools`, loses it, and
         # the window can never exceed what the app was measured to honor.
         from service.config import local_provider_qualification
         record = local_provider_qualification(
             cfg.get("inference", {}).get("endpoints", {}).get("local_provider", {}),
-            model, ep.base_url)
+            model, ep.base_url, ep.api_prefix)
         if record is None:
             capabilities = [c for c in capabilities if c != "tools"]
         else:

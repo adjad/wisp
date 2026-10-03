@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from service.config import LOCAL_PROVIDER_QUALIFICATION_SCHEMA as QUALIFICATION_SCHEMA
 from service.config.endpoints import Endpoint, EndpointConfigurationError, Target
 from service.inference.omlx_client import OMLXClient
 
@@ -40,7 +41,6 @@ MIN_TOOL_CONTEXT = 8192
 RECOMMENDED_CONTEXT = 16384
 # Verifying more than this only adds minutes of prefill; Wisp does not need it.
 PROBE_CONTEXT_CAP = RECOMMENDED_CONTEXT
-QUALIFICATION_SCHEMA = 1
 _PROBE_DEADLINE_SECONDS = 420.0
 _TRUNCATION_TOLERANCE = 0.92
 # The usage probe deliberately sends MORE than the cap: only an engine that

@@ -512,13 +512,20 @@ CLOUD_ASSIGNABLE_ROLES = ("reasoning", "coding", "research")
 LOCAL_PROVIDER_ROLES = ("reasoning", "agent", "coding")
 # Roles that run Wisp's tool loop and therefore require a passing qualification.
 LOCAL_PROVIDER_TOOL_ROLES = frozenset({"agent", "coding"})
+# Schema 1 did not bind the API prefix and cannot establish this identity.
+LOCAL_PROVIDER_QUALIFICATION_SCHEMA = 2
 
 
-def local_provider_qualification(endpoint_cfg: dict, model_id: str, base_url: str) -> dict | None:
-    """The recorded qualification, only while it still describes this exact app and model."""
+def local_provider_qualification(endpoint_cfg: dict, model_id: str, base_url: str,
+                                 api_prefix: str) -> dict | None:
+    """Accept only evidence explicitly bound to this exact app, prefix and model."""
     record = endpoint_cfg.get("qualification") if isinstance(endpoint_cfg, dict) else None
-    if (isinstance(record, dict) and record.get("schema") == 1 and record.get("qualified") is True
+    if (isinstance(record, dict) and type(record.get("schema")) is int
+            and record["schema"] == LOCAL_PROVIDER_QUALIFICATION_SCHEMA
+            and record.get("qualified") is True
             and record.get("model_id") == model_id and record.get("base_url") == base_url
+            and isinstance(record.get("api_prefix"), str)
+            and record["api_prefix"] == api_prefix
             and isinstance(record.get("effective_context"), int)
             and not isinstance(record.get("effective_context"), bool)):
         return record
@@ -538,7 +545,8 @@ def local_provider_settings() -> dict:
     enabled = bool(endpoint_cfg) and endpoint_cfg.get("enabled", True) is True
     base_url = str(endpoint_cfg.get("base_url", "http://127.0.0.1:8767"))
     model_id = str(endpoint_cfg.get("model_id", ""))
-    record = local_provider_qualification(endpoint_cfg, model_id, base_url)
+    api_prefix = endpoint_cfg.get("api_prefix", "/v1")
+    record = local_provider_qualification(endpoint_cfg, model_id, base_url, api_prefix)
     return {
         "enabled": enabled,
         "active": enabled and bool(roles) and not cloud_super_model_enabled(),
@@ -578,10 +586,14 @@ def set_local_provider(endpoint_cfg: dict, model_id: str, context_window: int,
     window = context_window
     if qualified:
         window = min(context_window, int(qualification["effective_context"]))
-    saved_endpoint = {**endpoint_cfg, "model_id": model_id, "context_window": window}
+    from service.config.endpoints import endpoint_from_config
+    validated_endpoint = endpoint_from_config("local_provider", endpoint_cfg)
+    api_prefix = validated_endpoint.api_prefix
+    saved_endpoint = {**endpoint_cfg, "base_url": validated_endpoint.base_url,
+                      "api_prefix": api_prefix, "model_id": model_id, "context_window": window}
     saved_endpoint["qualification"] = ({
-        "schema": 1, "qualified": True, "model_id": model_id,
-        "base_url": endpoint_cfg["base_url"],
+        "schema": LOCAL_PROVIDER_QUALIFICATION_SCHEMA, "qualified": True, "model_id": model_id,
+        "base_url": validated_endpoint.base_url, "api_prefix": api_prefix,
         "effective_context": int(qualification["effective_context"]),
         "tested_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
     } if qualified else None)  # None, not {}: the overlay deep-merges dicts and would keep old keys

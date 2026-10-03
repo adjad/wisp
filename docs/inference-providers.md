@@ -111,9 +111,11 @@ On failure Settings shows the failing check and the engine-specific fix, for exa
 `OLLAMA_CONTEXT_LENGTH=16384 ollama serve` for Ollama, or Context Length for LM Studio.
 
 The server, not the app UI, decides: a client cannot assert a qualification. A recorded
-qualification counts only for the exact app URL and model it was run against, so
-changing either (or hand-editing `qualified_capabilities`) silently returns the role to
-no-tools until it is tested again. Disconnecting clears it.
+qualification counts only for the exact app URL, API prefix and model it was run
+against. Changing any of them (or hand-editing `qualified_capabilities`) returns the
+role to no-tools until it is tested again. Older qualification records that did not
+record the tested API prefix require a fresh test; Wisp does not assume `/v1` for
+missing evidence. Disconnecting clears the saved record.
 
 **What is sent.** With Agent or Coding selected, tool results, meaning your calendar, mail,
 messages, notes and file contents, are sent to the app to answer you. A loopback app without
