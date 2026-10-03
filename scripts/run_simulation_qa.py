@@ -640,6 +640,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
                 "-module-cache-path", module_cache,
                 "app/Sources/WispApp/PortGuard.swift",
+                "app/Sources/WispApp/BackendOwnership.swift",
                 "tests/PortGuardChecks.swift", "-o", port_guard,
             ],
         ),

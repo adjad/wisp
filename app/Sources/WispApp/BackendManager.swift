@@ -52,6 +52,8 @@ final class BackendManager {
     /// browser is enabled. The variable carries only a socket path, never a secret.
     var extraEnvironment: () -> [String: String] = { [:] }
     var didLaunchBackend: (pid_t) -> Void = { _ in }
+    /// Where this manager records which process it launched (see BackendOwnership).
+    var receiptStore = BackendLaunchReceiptStore.shared
 
     private func enforceCredentialState() -> Bool {
         let allowed = credentialState.observe(try? BackendCredentials.generation())
@@ -122,6 +124,7 @@ final class BackendManager {
             "--port", "8765",
         ]
         let configDigest = Self.configurationDigest()
+        let launchNonce = UUID().uuidString
         let snapshot: BackendCredentials.Snapshot
         let credentialPipe = Pipe()
         defer {
@@ -134,6 +137,8 @@ final class BackendManager {
                                                        generation: snapshot.generation)
             proc.environment?["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
             proc.environment?.merge(extraEnvironment()) { _, new in new }
+            // Echoed by /identity; only this launch's receipt carries it.
+            proc.environment?[BackendOwnership.nonceEnvironmentKey] = launchNonce
             proc.standardInput = credentialPipe
         } catch {
             // Re-arm recovery if the marker appeared during the credential read.
@@ -168,6 +173,12 @@ final class BackendManager {
                 return
             }
             try proc.run()
+            // Record exactly which process this is before anything can judge the port.
+            // Without that record Wisp could neither reclaim nor trust it, so it stops.
+            guard recordLaunchReceipt(pid: proc.processIdentifier, root: root, nonce: launchNonce) else {
+                if proc.isRunning { proc.terminate() }
+                return
+            }
             // Only this exact child may later connect to the app's bridge socket.
             didLaunchBackend(proc.processIdentifier)
             do {
@@ -181,6 +192,7 @@ final class BackendManager {
             process = proc
             credentialState.didLaunch(generation: snapshot.generation)
             let healthy = await waitUntilHealthy(timeout: 20, process: proc)
+            if healthy { refreshLaunchReceipt(pid: proc.processIdentifier) }
             if healthy, let configDigest, proc.isRunning, enforceCredentialState() {
                 do {
                     try Self.publishRuntimeReceipt(generation: snapshot.generation, pid: proc.processIdentifier,
@@ -204,6 +216,27 @@ final class BackendManager {
             }
             _ = enforceCredentialState()
         }
+    }
+
+    /// The receipt names the child by pid, kernel start time and executable path, plus
+    /// the nonce it was given. Kept in memory even if persisting it fails.
+    private func recordLaunchReceipt(pid: Int32, root: URL, nonce: String) -> Bool {
+        guard let start = BackendOwnership.startTime(pid: pid),
+              let path = PortGuard.executablePath(pid: pid) else { return false }
+        try? receiptStore.record(.init(pid: pid, start: start, executablePath: path,
+                                       backendRoot: root.resolvingSymlinksInPath().path, nonce: nonce))
+        return true
+    }
+
+    /// A framework Python re-executes itself at startup, which changes the executable
+    /// path the kernel reports but not the pid or start time. Once the backend answers,
+    /// re-record that path for the SAME incarnation (never for a different process).
+    private func refreshLaunchReceipt(pid: Int32) {
+        guard case .present(let launched) = receiptStore.current, launched.pid == pid,
+              BackendOwnership.startTime(pid: pid) == launched.start,
+              let path = PortGuard.executablePath(pid: pid), path != launched.executablePath else { return }
+        try? receiptStore.record(.init(pid: pid, start: launched.start, executablePath: path,
+                                       backendRoot: launched.backendRoot, nonce: launched.nonce))
     }
 
     func stop() {
@@ -338,7 +371,9 @@ final class BackendManager {
         generation: String = "absent"
     ) -> [String: String] {
         // The bridge endpoint is chosen by the app for each launch; an inherited one is ignored.
-        BackendCredentials.injecting(credentials, into: base.filter { $0.key != "WISP_BROWSER_BRIDGE_CONTROL" }).merging([
+        BackendCredentials.injecting(credentials, into: base.filter {
+            $0.key != "WISP_BROWSER_BRIDGE_CONTROL" && $0.key != BackendOwnership.nonceEnvironmentKey
+        }).merging([
             "WISP_CREDENTIAL_GENERATION": generation,
             "PYTHONUNBUFFERED": "1",
             "PYTHONPYCACHEPREFIX": (home as NSString)
