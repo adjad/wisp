@@ -1006,7 +1006,7 @@ def test_actual_http_connect_get_and_roles_agree_on_normalized_identity(
     for role in roles:
         target = role_target(role)
         assert target.endpoint.base_url == ep.base_url and target.endpoint.api_prefix == prefix
-        assert target.model_id == "fake-model" and target.context_window == 16384
+        assert target.model == "fake-model" and target.context_window == 16384
         assert ("tools" in target.capabilities) is (role in {"agent", "coding"})
     assert len(engine.wire_requests) == before
     assert ("GET", prefix + "/models") in engine.wire_requests
