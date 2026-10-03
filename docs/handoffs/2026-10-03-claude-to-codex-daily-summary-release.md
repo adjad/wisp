@@ -12,6 +12,15 @@ record, so the Control Center must relay it for an acknowledgement.
 Not acknowledged here: the "native repair handoff". No such document was found in
 `docs/handoffs/`, the repo, or the session, so nothing was read or accepted.
 
+## Update: OverlayView.swift reclaimed for one fix
+
+The user reported the Daily Summary pill rendering as a large circle in the
+installed build. Cause: the divider between the two halves was a bare
+`Rectangle()`, which fills all available height. No Codex acknowledgement or
+edit existed on this path or branch, so Claude reclaimed `OverlayView.swift`
+alone, fixed it (fixed-height divider plus `fixedSize(vertical: true)` on the
+pill), and releases it again with this commit. All other paths stay released.
+
 ## Outcome delivered
 
 The AM/PM toggle is replaced by an Auto switch on the Daily Summary pill, on by

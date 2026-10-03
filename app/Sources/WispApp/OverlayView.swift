@@ -161,7 +161,9 @@ struct OverlayView: View {
                 }
                 .buttonStyle(.plain).help("Summarize today's calendar + email now")
 
-                Rectangle().fill(Theme.chipStroke).frame(width: 1)
+                // A bare Rectangle is greedy: with no height it fills the whole
+                // header and turns the capsule into a circle.
+                Rectangle().fill(Theme.chipStroke).frame(width: 1, height: 16)
 
                 Button(action: { model.toggleSummaryAuto() }) {
                     HStack(spacing: 4) {
@@ -183,6 +185,7 @@ struct OverlayView: View {
                 .accessibilityValue(model.summaryAuto ? "On" : "Off")
                 .accessibilityAddTraits(.isToggle)
             }
+            .fixedSize(horizontal: false, vertical: true)
             .background(Capsule().fill(Theme.chipFill))
             .clipShape(Capsule())
             .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
