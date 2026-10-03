@@ -11,6 +11,7 @@ import json
 import hashlib
 import re
 import time
+import uuid
 from collections import Counter
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -2314,7 +2315,7 @@ async def run_agent(
                 else:
                     _lines.append(_calendar_create_preview(_bargs))
             _batch_action = {
-                "id": "batch_calendar", "tool": "calendar_changes", "args": {},
+                "id": f"batch_calendar_{uuid.uuid4().hex[:8]}", "tool": "calendar_changes", "args": {},
                 "reason": f"changes your calendar in {len(_batch_calls)} ways — "
                           "always confirmed",
                 "preview": "\n".join(_lines),

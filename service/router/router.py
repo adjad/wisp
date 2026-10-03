@@ -4340,6 +4340,13 @@ _COMPOSE_BODY_CUE = re.compile(
 _COMPOSE_LEAD_RE = re.compile(
     r"^\s*(?:(?:please|can\s+you|could\s+you|ok|okay)\s+)*"
     r"(?:send|email|e-?mail|text|message|imessage|dm|write|shoot|drop|draft|compose)\b", re.I)
+_COMPOSE_HEADER_RE = re.compile(
+    r"\s*(?:(?:please|can\s+you|could\s+you|ok|okay)\s+)*"
+    r"(?:(?P<direct>e-?mail|text|message|imessage|dm)\s+(?:to\s+)?RECIPIENT|"
+    r"(?:send|shoot|drop|write|draft|compose)\s+"
+    r"(?:(?:(?:an?|the)\s+)?(?P<before>e-?mail|text|message|imessage|dm)\s+"
+    r"(?:to\s+)?RECIPIENT|RECIPIENT\s+(?:(?:an?|the)\s+)?"
+    r"(?P<after>e-?mail|text|message|imessage|dm)))\s*", re.I)
 # A weekday or "tomorrow" inside the body ("asking to move our meeting to Friday")
 # is content, so only real schedule cues mean "send this later".
 _SEND_LATER_CUE_RE = re.compile(
@@ -4349,26 +4356,32 @@ _SEND_LATER_CUE_RE = re.compile(
 
 
 def _explicit_address_compose(t: str) -> RouteDecision | None:
-    from service.authored_message import _MESSAGE_NOUN, _OUTBOUND_LEAD, _PAYLOAD_WORD
     if (not _COMPOSE_LEAD_RE.match(t) or _SEND_LATER_CUE_RE.search(t)
             or _SCHEDULE_ACTION_RE.search(t) or _REMINDER_CREATE_RE.search(t)):
-        return None
-    emails = {m.group(0).lower() for m in _EMAIL_ADDRESS_RE.finditer(t)}
-    phones = [m.group(0).strip() for m in _PHONE_NUMBER_RE.finditer(t)]
-    if len(emails) == 1 and not phones:
-        channel, target = "email", next(iter(emails))
-    elif len(phones) == 1 and not emails:
-        channel, target = "messages", phones[0]
-    else:
         return None
     cue = _COMPOSE_BODY_CUE.search(t)
     if not cue or len(re.findall(r"\w+", t[cue.end():])) < 2:
         return None
-    lead = t[:cue.start()].replace(target, " ")
-    lead = _MESSAGE_NOUN.sub(" ", _OUTBOUND_LEAD.sub("", lead, count=1))
-    if _PAYLOAD_WORD.search(lead):
+    # Only an operative header can bind a literal recipient. An address in
+    # authored prose is never destination/channel evidence or contact proof.
+    header = mask_quoted(t[:cue.start()])
+    emails = list(_EMAIL_ADDRESS_RE.finditer(header))
+    phones = list(_PHONE_NUMBER_RE.finditer(header))
+    if len(emails) == 1 and not phones:
+        channel, match = "email", emails[0]
+    elif len(phones) == 1 and not emails:
+        channel, match = "messages", phones[0]
+    else:
         return None
-    draft_only = bool(_DRAFT_ONLY_RE.search(t))
+    shape = _COMPOSE_HEADER_RE.fullmatch(
+        header[:match.start()] + "RECIPIENT" + header[match.end():])
+    if not shape:
+        return None
+    kind = next(value for value in shape.groups() if value).lower().replace("-", "")
+    if channel != ("email" if kind == "email" else "messages"):
+        return None
+    target = match.group().lower() if channel == "email" else match.group().strip()
+    draft_only = bool(_DRAFT_ONLY_RE.search(header))
     if channel == "email":
         tools = ["draft_email"] if draft_only else ["send_email", "draft_email"]
     else:
@@ -5760,9 +5773,16 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     # instead of using the address the user supplied. Bind and require the
     # actual send for imperative email requests; drafts/scheduled sends retain
     # their own effect tools and confirmation behavior.
-    if (SEND_EMAIL_RE.search(t) and _outbound_channel(t) == "email"
-            and not re.search(r"\b(?:draft|compose|schedule)\b", t, re.I)
-            and (address := _EMAIL_ADDRESS_RE.search(t))):
+    # The final contract must not reintroduce a body-only address after the
+    # compose shortcut correctly declines it. Preserve independent clauses;
+    # narrow only a leading authored-message header with a known boundary.
+    literal_request = _without_message_body(t)
+    if _COMPOSE_LEAD_RE.match(t) and (cue := _COMPOSE_BODY_CUE.search(t)):
+        literal_request = t[:cue.start()]
+    literal_request = mask_quoted(literal_request)
+    if (SEND_EMAIL_RE.search(literal_request) and _outbound_channel(literal_request) == "email"
+            and not re.search(r"\b(?:draft|compose|schedule)\b", literal_request, re.I)
+            and (address := _EMAIL_ADDRESS_RE.search(literal_request))):
         require("send_email")
         decision.tool_argument_bindings.setdefault("send_email", {})[
             "to"] = address.group(0).rstrip(".,;:!?")
