@@ -1258,14 +1258,27 @@ def test_qualification_response_contexts_close_and_never_save(
     before = config.USER_CONFIG.read_bytes()
     from service.inference.attributed_transport import CredentialTransport
     closures = []
+    context_exits = []
+    provider_close = CredentialTransport.aclose
+    context_exit = httpx.AsyncHTTPTransport.__aexit__
 
-    def observed_close(close, kind):
-        async def record(transport):
-            closures.append(kind)
-            await close(transport)
-        return record
-    for kind, transport in [("context", httpx.AsyncHTTPTransport), ("provider", CredentialTransport)]:
-        monkeypatch.setattr(transport, "aclose", observed_close(transport.aclose, kind))
+    async def observed_provider_close(transport):
+        result = await provider_close(transport)
+        closures.append("provider")
+        return result
+
+    async def observed_context_exit(transport, exc_type, exc_value, exc_traceback):
+        arguments = (exc_type, exc_value, exc_traceback)
+        observed = {"arguments": arguments, "completed": False}
+        context_exits.append(observed)
+        result = await context_exit(transport, *arguments)
+        observed["completed"] = True
+        observed["result"] = result
+        closures.append("context")
+        return result
+
+    monkeypatch.setattr(CredentialTransport, "aclose", observed_provider_close)
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "__aexit__", observed_context_exit)
     # The qualifier's original total deadline covers context and tool checks.
     # Model discovery occurs before that scope; give only that request an outer
     # test deadline, without claiming a new production model-list deadline.
@@ -1295,7 +1308,28 @@ def test_qualification_response_contexts_close_and_never_save(
     assert engine.blocked.closes == 1 and engine.blocked.iterations == 0
     assert closures.count("provider") == (2 if phase == "tool" else 1)
     assert closures.count("context") == (0 if phase == "model" else 1)
+    assert len(context_exits) == closures.count("context")
+    assert all(observed["completed"] for observed in context_exits)
+    for observed in context_exits:
+        exc_type, exc_value, exc_traceback = observed["arguments"]
+        if phase == "context":
+            assert exc_type is asyncio.CancelledError
+            assert isinstance(exc_value, asyncio.CancelledError) and exc_traceback is not None
+        else:
+            # The healthy context measurement finished before the tool phase.
+            assert (exc_type, exc_value, exc_traceback) == (None, None, None)
     assert config.USER_CONFIG.read_bytes() == before
+    print(json.dumps({"qualification_cleanup": {
+        "phase": phase, "termination": termination, "response_closes": engine.blocked.closes,
+        "provider_closes_completed": closures.count("provider"),
+        "context_exits_completed": closures.count("context"), "persistence_unchanged": True,
+        "actual_exit_arguments": [{
+            "exception_type": observed["arguments"][0].__name__ if observed["arguments"][0] else None,
+            "exception_value": repr(observed["arguments"][1]),
+            "traceback_present": observed["arguments"][2] is not None,
+            "original_exit_return": repr(observed["result"]),
+        } for observed in context_exits],
+    }}))
 
 
 @pytest.mark.parametrize("phase", ["context", "tool"])
