@@ -26,7 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from sandbox import inject, proxy
-from sandbox._backend_guard import SandboxBindError, canonical_port, lifespan_bind, startup_bind
+from sandbox._backend_guard import SandboxBindError, app_lookup_config, canonical_port, lifespan_bind, startup_bind
 from sandbox.outbound import OutboundConsumer
 from sandbox.sync import CADENCES, SyncScheduler
 from sandbox.world import World
@@ -389,11 +389,13 @@ if STATIC_DIR.exists():
     _app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 
 
-def app():
+def _app_factory():
     """Uvicorn factory: --factory --lifespan on (including reload/workers).
 
-    CLI --port / --port=, UVICORN_PORT, and uvicorn.run(..., port=...) are
-    resolved by Uvicorn itself. Unknown runners, preloaded configurations,
+    Public entry is the canonical import string "sandbox.server:app", through
+    Uvicorn0.49 CLI or uvicorn.run. Attribute lookup validates before the outer
+    bind/supervisor/finally block, including cached imports. This factory adds
+    child defenses. Unknown runners, preloaded configurations,
     Unix/fd binds, disabled lifespan, and disagreeing inherited sockets are
     refused. No world/client/scheduler exists until the guarded lifespan.
     """
@@ -424,3 +426,16 @@ def app():
         await _app(scope, receive, send)
 
     return guarded
+
+
+def __getattr__(name: str):
+    """Expose the public factory only through a validated Config lookup.
+
+    Do not cache/assign `app` in this module: Uvicorn's outer load_app must
+    revalidate every invocation before bind_socket or its UDS cleanup scope.
+    Use the canonical string, not an imported callable or a private export.
+    """
+    if name != "app":
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    app_lookup_config()
+    return _app_factory

@@ -334,3 +334,277 @@ def test_server_safe_request_reaches_original_route_without_a_real_socket(inert_
     assert messages[0]["type"] == "http.response.start" and messages[0]["status"] == 200
     assert messages[1]["body"] == b'{"fixture":"synthetic"}'
     assert events.count("snapshot") == 1
+
+
+# F3-A/F3-B: exercise installed outer run/CLI, not a replacement of run.
+@pytest.fixture
+def outer_uvicorn(monkeypatch, tmp_path, request):
+    import contextlib
+    import hashlib
+    import json
+    import signal
+    from types import SimpleNamespace
+
+    main_module = importlib.import_module("uvicorn.main")
+    config_module = importlib.import_module("uvicorn.config")
+    server_module = importlib.import_module("uvicorn.server")
+    loop_module = importlib.import_module("uvicorn.loops.asyncio")
+    product = importlib.import_module("sandbox.server")
+    leaves = []
+    product_events = []
+    invocations = []
+    actual_run = main_module.run
+    actual_startup = Server.startup
+    actual_bind = Config.bind_socket
+
+    def record(name, *args):
+        leaves.append({"leaf": name, "args": [str(value) for value in args]})
+
+    class LeafView:
+        # Narrow module-local leaf view; other libraries see the real modules.
+        def __init__(self, original, **overrides):
+            self.original, self.overrides = original, overrides
+        def __getattr__(self, name):
+            return self.overrides[name] if name in self.overrides else getattr(self.original, name)
+
+    class InertSocket:
+        def __init__(self, family=socket.AF_INET, *args, **kwargs):
+            self.family = family
+            self.address = None
+            record("socket.allocate", family)
+        def bind(self, address):
+            record("socket.bind", address)
+            self.address = address
+        def setsockopt(self, *args):
+            record("socket.setsockopt", *args)
+        def getsockname(self):
+            return self.address
+        def set_inheritable(self, value):
+            record("socket.inherit", value)
+        def close(self):
+            record("socket.close")
+
+    def fromfd(*args):
+        record("socket.fromfd", *args)
+        return InertSocket(socket.AF_UNIX)
+
+    socket_view = LeafView(socket, socket=InertSocket, fromfd=fromfd)
+    monkeypatch.setattr(config_module, "socket", socket_view)
+    monkeypatch.setattr(server_module, "socket", socket_view)
+
+    def remove(path):
+        record("unlink.not-owned-by-run", path)  # never actually unlink a sentinel
+    def chmod(path, mode):
+        record("chmod.not-owned-by-run", path, mode)
+    monkeypatch.setattr(main_module, "os", LeafView(os, remove=remove))
+    monkeypatch.setattr(config_module, "os", LeafView(os, chmod=chmod))
+    monkeypatch.setattr(server_module, "os", LeafView(os, chmod=chmod))
+
+    def signal_registration(sig, handler):
+        record("signal.registration", sig)
+        return signal.SIG_DFL
+    monkeypatch.setattr(server_module, "signal", LeafView(signal, signal=signal_registration))
+
+    class ListenerServer:
+        def __init__(self, listeners):
+            self.sockets = listeners
+        def close(self):
+            record("loop.listener.close")
+        async def wait_closed(self):
+            record("loop.listener.wait_closed")
+
+    def owned_loop():
+        # Actual owned event loop; replace only its socket-opening leaves.
+        loop = asyncio.SelectorEventLoop()
+        async def create_server(protocol_factory, *, sock=None, host=None, port=None, **kwargs):
+            record("loop.create_server", host, port, sock is not None)
+            if sock is None:
+                sock = InertSocket()
+                sock.bind((host, port))
+            return ListenerServer([sock])
+        async def create_unix_server(protocol_factory, *, path=None, **kwargs):
+            record("loop.create_unix_server", path)
+            sock = InertSocket(socket.AF_UNIX)
+            sock.bind(path)
+            return ListenerServer([sock])
+        loop.create_server = create_server
+        loop.create_unix_server = create_unix_server
+        return loop
+    monkeypatch.setattr(loop_module, "asyncio_loop_factory", lambda use_subprocess=False: owned_loop)
+
+    def supervisor(kind):
+        class InertSupervisor:
+            def __init__(self, config, target, sockets):
+                record(f"{kind}.supervisor.allocate")
+                self.config, self.target, self.sockets = config, target, sockets
+            def run(self):
+                record(f"{kind}.supervisor.process_start")
+                # No subprocess/supervision loop. Call the actual child runner
+                # once with the inert parent listener to exercise its guards.
+                self.target(sockets=self.sockets)
+        return InertSupervisor
+    monkeypatch.setattr(main_module, "ChangeReload", supervisor("reload"))
+    monkeypatch.setattr(main_module, "Multiprocess", supervisor("workers"))
+
+    class World:
+        def __init__(self):
+            product_events.append("world")
+    class Client:
+        async def aclose(self):
+            product_events.append("client.close")
+    def client():
+        product_events.append("client")
+        return Client()
+    class Sync:
+        def __init__(self, world, client):
+            product_events.append("sync")
+        def start(self):
+            product_events.append("sync.start")
+        async def stop(self):
+            product_events.append("sync.stop")
+    class Outbound:
+        def __init__(self, world, client, *, sync):
+            product_events.append("outbound")
+        def start(self):
+            product_events.append("outbound.start")
+        async def stop(self):
+            product_events.append("outbound.stop")
+    monkeypatch.setattr(product, "World", World)
+    monkeypatch.setattr(product.proxy, "make_client", client)
+    monkeypatch.setattr(product, "SyncScheduler", Sync)
+    monkeypatch.setattr(product, "OutboundConsumer", Outbound)
+
+    def run(**kwargs):
+        invocations.append({"entry": "actual uvicorn.main.run", "kwargs": kwargs})
+        assert main_module.run is actual_run
+        assert Server.startup is actual_startup and Config.bind_socket is actual_bind
+        # Limit zero exercises real main_loop/shutdown without accepting work.
+        actual_run("sandbox.server:app", factory=True, loop="asyncio", http="h11", ws="none",
+                   log_config=None, limit_max_requests=0, **kwargs)
+
+    def cli(args, env=None):
+        from click.testing import CliRunner
+        invocations.append({"entry": "actual Uvicorn CLI -> actual run", "args": args, "env": env or {}})
+        assert main_module.run is actual_run
+        return CliRunner().invoke(main_module.main, ["sandbox.server:app", "--factory",
+            "--loop", "asyncio", "--http", "h11", "--ws", "none", "--limit-max-requests", "0", *args], env=env)
+
+    try:
+        yield SimpleNamespace(run=run, cli=cli, leaves=leaves, product=product_events, module=product)
+    finally:
+        directory = Path(os.environ["TMPDIR"]) / "outer-leaf-receipts"
+        directory.mkdir(exist_ok=True)
+        name = hashlib.sha256(request.node.nodeid.encode()).hexdigest() + ".json"
+        (directory / name).write_text(json.dumps({"case": request.node.nodeid, "invocations": invocations,
+            "inert_effect_leaves": leaves, "product_fixture_events": product_events,
+            "run_startup_bind_functions_preserved": main_module.run is actual_run and
+                Server.startup is actual_startup and Config.bind_socket is actual_bind,
+            "real_network_or_product_processes": False}, indent=2) + "\n")
+
+
+OUTER_MODES = [{"reload": False, "workers": 1}, {"reload": True}, {"workers": 2}]
+
+
+@pytest.mark.parametrize("mode", OUTER_MODES)
+@pytest.mark.parametrize("port", [8000, 8765, "08765", " 8000 ", "+8765", 0, 65536, True])
+def test_actual_outer_run_forbidden_ports_reach_no_bind_supervisor_or_cleanup_leaf(outer_uvicorn, mode, port):
+    with pytest.raises(SandboxBindError):
+        outer_uvicorn.run(port=port, **mode)
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+    assert "app" not in vars(outer_uvicorn.module), "public app must never be cached"
+
+
+@pytest.mark.parametrize("mode", OUTER_MODES)
+@pytest.mark.parametrize("transport", ["uds", "fd", "uds-and-fd"])
+def test_actual_outer_run_unsupported_bind_keeps_existing_sentinel_and_hits_zero_leaves(outer_uvicorn, tmp_path, mode, transport):
+    sentinel = tmp_path / "existing-not-owned-by-run"
+    sentinel.write_bytes(b"preserve this existing entry\n")
+    before_mode = sentinel.stat().st_mode
+    options = {}
+    if "uds" in transport:
+        options["uds"] = str(sentinel)
+    if "fd" in transport:
+        options["fd"] = 3
+    with pytest.raises(SandboxBindError):
+        outer_uvicorn.run(port=8766, **mode, **options)
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+    assert sentinel.read_bytes() == b"preserve this existing entry\n" and sentinel.stat().st_mode == before_mode
+
+
+@pytest.mark.parametrize("switches", [[], ["--reload"], ["--workers", "2"]])
+@pytest.mark.parametrize("value", ["08765", "08000", " 8765 ", "+8000", "0", "65536", "abc"])
+def test_actual_outer_cli_rejects_port_aliases_before_any_effect(outer_uvicorn, switches, value):
+    result = outer_uvicorn.cli(["--port", value, *switches])
+    assert result.exit_code != 0
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+
+
+@pytest.mark.parametrize("env_mode", [{}, {"UVICORN_RELOAD": "1"}, {"UVICORN_WORKERS": "2"}])
+@pytest.mark.parametrize("value", ["08765", " 8000 ", "+8765", "0"])
+def test_actual_outer_cli_environment_unsafe_ports_reach_zero_leaves(outer_uvicorn, env_mode, value):
+    result = outer_uvicorn.cli([], env={"UVICORN_PORT": value, **env_mode})
+    assert result.exit_code != 0
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+
+
+@pytest.mark.parametrize("switches", [[], ["--reload"], ["--workers", "2"]])
+@pytest.mark.parametrize("transport", ["uds", "fd"])
+def test_actual_outer_cli_unsupported_bind_preserves_existing_sentinel(outer_uvicorn, tmp_path, switches, transport):
+    sentinel = tmp_path / "existing-cli-entry"
+    sentinel.write_text("not created by this run")
+    result = outer_uvicorn.cli(["--port=8766", "--" + transport, str(sentinel) if transport == "uds" else "3", *switches])
+    assert result.exit_code != 0
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+    assert sentinel.read_text() == "not created by this run"
+
+
+@pytest.mark.parametrize("mode", OUTER_MODES)
+@pytest.mark.parametrize("lifespan", ["auto", "on"])
+@pytest.mark.parametrize("port", [8775, 8766])
+def test_actual_outer_run_valid_tcp_lifespan_and_supervisor_modes_keep_child_guards(outer_uvicorn, mode, lifespan, port):
+    outer_uvicorn.run(port=port, lifespan=lifespan, **mode)
+    names = [row["leaf"] for row in outer_uvicorn.leaves]
+    assert "loop.create_server" in names
+    assert "unlink.not-owned-by-run" not in names and "chmod.not-owned-by-run" not in names
+    assert outer_uvicorn.product == ["world", "client", "sync", "outbound", "sync.start", "outbound.start",
+                                     "outbound.stop", "sync.stop", "client.close"]
+    if mode.get("reload"):
+        assert "socket.bind" in names and "reload.supervisor.process_start" in names
+    elif mode.get("workers", 1) > 1:
+        assert "socket.bind" in names and "workers.supervisor.process_start" in names
+    else:
+        assert not any("supervisor" in name for name in names)
+    assert "app" not in vars(outer_uvicorn.module)
+
+
+@pytest.mark.parametrize("switches,env", [([], {"UVICORN_PORT": "8766"}),
+    (["--port=8775", "--lifespan=auto", "--reload"], {}),
+    (["--port", "8766", "--lifespan", "on", "--workers", "2"], {"UVICORN_PORT": "8765"})])
+def test_actual_outer_cli_valid_resolution_and_precedence_reach_inert_child(outer_uvicorn, switches, env):
+    result = outer_uvicorn.cli(switches, env=env)
+    assert result.exit_code == 0, result.output
+    assert outer_uvicorn.product[-1] == "client.close"
+    assert any(row["leaf"] == "loop.create_server" for row in outer_uvicorn.leaves)
+
+
+@pytest.mark.parametrize("mode", OUTER_MODES)
+def test_actual_outer_lifespan_off_refuses_before_bind_supervision_or_cleanup(outer_uvicorn, mode):
+    with pytest.raises(SandboxBindError):
+        outer_uvicorn.run(port=8766, lifespan="off", **mode)
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+
+
+def test_cached_import_and_prior_valid_run_do_not_authorize_a_new_unsafe_outer_run(outer_uvicorn, tmp_path):
+    outer_uvicorn.run(port=8766)
+    assert outer_uvicorn.product[-1] == "client.close"
+    outer_uvicorn.leaves.clear()
+    outer_uvicorn.product.clear()
+    sentinel = tmp_path / "cached-import-sentinel"
+    sentinel.write_bytes(b"still present")
+    with pytest.raises(SandboxBindError):
+        outer_uvicorn.run(port=8765, reload=True)
+    with pytest.raises(SandboxBindError):
+        outer_uvicorn.run(port=8766, uds=str(sentinel))
+    assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
+    assert sentinel.read_bytes() == b"still present"
+    assert "app" not in vars(outer_uvicorn.module)

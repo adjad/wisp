@@ -1,10 +1,18 @@
 """Canonical sandbox binds; no service imports or state initialization.
 
 The shell uses the same strict decimal syntax before it can invoke Python.
-The server factory reads Uvicorn's *resolved* Config in its real load/serve
-callchain, not a guessed argv/default or a SANDBOX_PORT claim. It also checks
-inherited reload/worker sockets. Unsupported/preloaded/custom runners fail
-closed; update the guard and its offline controls when changing server APIs.
+The public server attribute lookup validates the resolved Config *before*
+Uvicorn0.49 enters bind/supervisor/cleanup. The factory and lifespan retain
+their independent child checks, including inherited reload/worker sockets.
+There is no globally cached public app attribute: each canonical import-string
+lookup must validate its own configuration, even after this module is cached.
+
+Supported entry: Uvicorn0.49 CLI or uvicorn.run("sandbox.server:app", ...), with
+fresh Config, TCP and lifespan auto/on. Callable/preloaded/custom runners and
+private exports are not supported entrypoints. The bounded saved-test lane is
+CPython3.13; Desktop CPython3.14 qualification remains separate isolated QA.
+Private Uvicorn methods/code objects are a fail-closed compatibility contract;
+runtime upgrades require the full outer-run and child controls before use.
 """
 from __future__ import annotations
 
@@ -42,6 +50,37 @@ def validate_config(config: Any) -> int:
     if config.lifespan not in {"on", "auto"}:
         raise SandboxBindError("Sandbox startup requires lifespan validation")
     return canonical_port(config.port, what="sandbox server bind")
+
+
+def app_lookup_config() -> Any:
+    """Resolved Config at the public lookup, before outer bind/finally.
+
+    Uvicorn0.49 run calls Config.load_app before constructing Server and
+    entering its try/finally. Config.load repeats the lookup in each child.
+    Checking only module import or the later factory would miss cached imports
+    or reload/worker parent binds. No installed dependency is modified.
+    """
+    from uvicorn.config import Config
+
+    method = getattr(Config, "load_app", None)
+    code = getattr(method, "__code__", None)
+    if code is None:
+        raise SandboxBindError("Unsupported Uvicorn sandbox lookup runtime")
+    configs = []
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            if frame.f_code is code:
+                obj = frame.f_locals.get("self")
+                if isinstance(obj, Config):
+                    configs.append(obj)
+            frame = frame.f_back
+        if len(configs) != 1 or configs[0].app != "sandbox.server:app":
+            raise SandboxBindError("Missing or ambiguous actual Uvicorn app lookup context")
+        validate_config(configs[0])
+        return configs[0]
+    finally:
+        del frame
 
 
 @dataclass(frozen=True)
