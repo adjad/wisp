@@ -11,25 +11,33 @@
 # to send, from the user's real accounts. The guard below exists so that
 # can never happen by accident.
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
-# Refuse the real Wisp's ports BEFORE anything is created or started. A sandbox
-# backend on 8765 would be trusted by the real app; a sandbox server aimed at the real
-# backend would act as a second app on its event stream. (Same rule as
-# sandbox/guard.py, repeated here so it holds even without a Python environment.)
-for _port in "${WISP_BACKEND_PORT:-8775}" "${SANDBOX_PORT:-8766}"; do
+# Validate the actual bind values before commands, state paths, or startup.
+# Only canonical decimal TCP ports are accepted. In particular, integer aliases
+# such as 08765, +8765, and whitespace must never evade the production-port rule.
+validate_port() {
+  local _port="$1" _name="$2"
   case "$_port" in
     8765|8000)
       echo "refusing to run the sandbox: port $_port belongs to the real Wisp (use 8775 / 8766)" >&2
       exit 1 ;;
   esac
-done
+  if [[ ! "$_port" =~ ^[1-9][0-9]{0,4}$ ]] || (( 10#$_port > 65535 )); then
+    echo "refusing to run the sandbox: $_name must be a canonical decimal port in 1..65535 (excluding 8000 / 8765)" >&2
+    exit 1
+  fi
+}
+validate_port "${WISP_BACKEND_PORT-8775}" WISP_BACKEND_PORT
+validate_port "${SANDBOX_PORT-8766}" SANDBOX_PORT
+BACKEND_PORT="${WISP_BACKEND_PORT-8775}"
+export WISP_BACKEND_PORT="$BACKEND_PORT"
+export SANDBOX_PORT="${SANDBOX_PORT-8766}"
+
+cd "$(dirname "$0")/.."
 
 export WISP_SANDBOX_HOME="${WISP_SANDBOX_HOME:-$HOME/.wisp-sandbox}"
 export WISP_HOME="${WISP_HOME:-$WISP_SANDBOX_HOME/moe}"
-BACKEND_PORT="${WISP_BACKEND_PORT:-8775}"
 export WISP_BACKEND_URL="http://127.0.0.1:${BACKEND_PORT}"
-SANDBOX_PORT="${SANDBOX_PORT:-8766}"
 
 resolved_wisp_home="$(python3 -c "import os; print(os.path.realpath(os.path.expanduser(os.environ['WISP_HOME'])))")"
 resolved_real_home="$(python3 -c "import os; print(os.path.realpath(os.path.expanduser('~/.moe')))")"
@@ -87,7 +95,7 @@ if ! curl -sf "$WISP_BACKEND_URL/mode" >/dev/null 2>&1; then
   exit 1
 fi
 
-.venv/bin/uvicorn sandbox.server:app --port "$SANDBOX_PORT" --reload \
+.venv/bin/uvicorn sandbox.server:app --factory --lifespan on --port "$SANDBOX_PORT" --reload \
   >"$WISP_SANDBOX_HOME/sandbox.log" 2>&1 &
 SANDBOX_PID=$!
 

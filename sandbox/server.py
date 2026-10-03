@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from sandbox import inject, proxy
+from sandbox._backend_guard import SandboxBindError, canonical_port, lifespan_bind, startup_bind
 from sandbox.outbound import OutboundConsumer
 from sandbox.sync import CADENCES, SyncScheduler
 from sandbox.world import World
@@ -35,6 +36,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # This server has its own guard; service.main lifespan does not protect it.
+    lifespan_bind()
     world = World()
     client = proxy.make_client()
     sync = SyncScheduler(world, client)
@@ -53,7 +56,7 @@ async def lifespan(app: FastAPI):
         await client.aclose()
 
 
-app = FastAPI(title="Wisp Sandbox", lifespan=lifespan)
+_app = FastAPI(title="Wisp Sandbox", lifespan=lifespan)
 
 
 def _world(request: Request) -> World:
@@ -70,12 +73,12 @@ def _outbound(request: Request) -> OutboundConsumer:
 
 # --- world read / stream / reset -------------------------------------------
 
-@app.get("/sandbox/world")
+@_app.get("/sandbox/world")
 async def get_world(request: Request) -> JSONResponse:
     return JSONResponse(_world(request).snapshot())
 
 
-@app.get("/sandbox/world/stream")
+@_app.get("/sandbox/world/stream")
 async def world_stream(request: Request) -> StreamingResponse:
     world = _world(request)
     q = world.subscribe()
@@ -99,7 +102,7 @@ async def world_stream(request: Request) -> StreamingResponse:
                                      "X-Accel-Buffering": "no"})
 
 
-@app.post("/sandbox/world/reset")
+@_app.post("/sandbox/world/reset")
 async def reset_world(request: Request) -> dict:
     body = await _json_body(request)
     await _world(request).reset(rebase=bool(body.get("rebase")))
@@ -115,7 +118,7 @@ async def _json_body(request: Request) -> dict:
 
 # --- act-as writes -----------------------------------------------------
 
-@app.post("/sandbox/messages")
+@_app.post("/sandbox/messages")
 async def send_as(request: Request) -> dict:
     """The user acting as any character — 'send as Mom' — appends directly
     to a thread. Distinct from an outbound `send_message` action, which is
@@ -154,7 +157,7 @@ async def send_as(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/threads")
+@_app.post("/sandbox/threads")
 async def create_thread(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -173,7 +176,7 @@ async def create_thread(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/emails")
+@_app.post("/sandbox/emails")
 async def add_email(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -195,7 +198,7 @@ async def add_email(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/emails/{email_id}")
+@_app.post("/sandbox/emails/{email_id}")
 async def patch_email(email_id: str, request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -213,7 +216,7 @@ async def patch_email(email_id: str, request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/notes")
+@_app.post("/sandbox/notes")
 async def add_note(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -230,7 +233,7 @@ async def add_note(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/notes/{note_id}")
+@_app.post("/sandbox/notes/{note_id}")
 async def edit_note(note_id: str, request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -249,7 +252,7 @@ async def edit_note(note_id: str, request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/calendar")
+@_app.post("/sandbox/calendar")
 async def add_calendar(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -271,7 +274,7 @@ async def add_calendar(request: Request) -> dict:
     return {"ok": True}
 
 
-@app.delete("/sandbox/calendar/{event_id}")
+@_app.delete("/sandbox/calendar/{event_id}")
 async def delete_calendar(event_id: str, request: Request) -> dict:
     world = _world(request)
 
@@ -287,7 +290,7 @@ async def delete_calendar(event_id: str, request: Request) -> dict:
     return {"ok": True}
 
 
-@app.post("/sandbox/browser")
+@_app.post("/sandbox/browser")
 async def add_browser(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -305,7 +308,7 @@ async def add_browser(request: Request) -> dict:
 
 # --- sync / status / clock / injection ----------------------------------
 
-@app.post("/sandbox/sync/{source}")
+@_app.post("/sandbox/sync/{source}")
 async def force_sync(source: str, request: Request) -> dict:
     sync = _sync(request)
     sources = list(CADENCES) if source == "all" else [source]
@@ -314,7 +317,7 @@ async def force_sync(source: str, request: Request) -> dict:
     return {"ok": True, "synced": sources}
 
 
-@app.get("/sandbox/status")
+@_app.get("/sandbox/status")
 async def status(request: Request) -> dict:
     world = _world(request)
     outbound = _outbound(request)
@@ -328,7 +331,7 @@ async def status(request: Request) -> dict:
     }
 
 
-@app.post("/sandbox/clock")
+@_app.post("/sandbox/clock")
 async def set_clock(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -350,7 +353,7 @@ async def set_clock(request: Request) -> dict:
     return {"ok": True, "clock": world.state["clock"]}
 
 
-@app.post("/sandbox/inject")
+@_app.post("/sandbox/inject")
 async def set_injection(request: Request) -> dict:
     body = await _json_body(request)
     world = _world(request)
@@ -363,19 +366,19 @@ async def set_injection(request: Request) -> dict:
     return {"ok": True, "injection": world.state["injection"]}
 
 
-@app.get("/sandbox/actions")
+@_app.get("/sandbox/actions")
 async def get_actions(request: Request) -> dict:
     return {"actions": _world(request).state.get("action_log", [])}
 
 
-@app.get("/sandbox/notifications")
+@_app.get("/sandbox/notifications")
 async def get_notifications(request: Request) -> dict:
     return {"notifications": _world(request).state.get("notifications", [])}
 
 
 # --- reverse proxy -------------------------------------------------------
 
-@app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+@_app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
 async def proxy_api(path: str, request: Request):
     return await proxy.proxy_request(request.app.state.client, path, request)
 
@@ -383,4 +386,32 @@ async def proxy_api(path: str, request: Request):
 # --- static (mounted last so it never shadows the routes above) --------
 
 if STATIC_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+    _app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
+
+
+def app():
+    """Uvicorn factory: --factory --lifespan on (including reload/workers).
+
+    CLI --port / --port=, UVICORN_PORT, and uvicorn.run(..., port=...) are
+    resolved by Uvicorn itself. Unknown runners, preloaded configurations,
+    Unix/fd binds, disabled lifespan, and disagreeing inherited sockets are
+    refused. No world/client/scheduler exists until the guarded lifespan.
+    """
+    binding = startup_bind()
+
+    async def guarded(scope, receive, send):
+        port = binding.check()
+        if scope["type"] == "lifespan":
+            if lifespan_bind() is not binding.config:
+                raise SandboxBindError("Sandbox startup configuration changed")
+        elif scope["type"] in {"http", "websocket"}:
+            address = scope.get("server")
+            if not isinstance(address, (tuple, list)) or len(address) != 2:
+                raise SandboxBindError("Missing actual sandbox request bind")
+            if canonical_port(address[1], what="sandbox request bind") != port:
+                raise SandboxBindError("Sandbox request arrived on a different bind")
+        else:
+            raise SandboxBindError("Unknown sandbox server scope")
+        await _app(scope, receive, send)
+
+    return guarded
