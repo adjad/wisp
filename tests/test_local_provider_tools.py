@@ -55,7 +55,7 @@ class FakeEngine:
             self.requests.append(body)
             code, payload, stream = self.complete(body)
             content = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
-            return httpx.Response(code, content=content, headers={
+            return httpx.Response(code, stream=httpx.ByteStream(content), headers={
                 "content-type": "text/event-stream" if stream else "application/json"})
         return httpx.Response(404, json={"error": "nope"})
 
@@ -1085,3 +1085,247 @@ def test_actual_http_failed_tool_probe_ignores_client_claim_and_preserves_settin
     _, _, response = connect(prefix="/alternate/v2", slash=True, tools="text")
     assert response.status_code == 400 and "can't run Wisp's tools" in response.json()["detail"]
     assert config.USER_CONFIG.read_bytes() == before
+
+
+# ------------------------------------------------ qualification raw body budget
+
+class QualificationBody(httpx.AsyncByteStream):
+    """Lazily yield raw bytes; observe consumption/closure without sockets."""
+
+    def __init__(self, chunks=(), *, endless=False, waiting=False, failure=False):
+        self.chunks = chunks
+        self.endless, self.waiting, self.failure = endless, waiting, failure
+        self.iterations = self.bytes_yielded = self.closes = 0
+        self.entered = asyncio.Event()
+
+    async def __aiter__(self):
+        self.entered.set()
+        if self.waiting:
+            await asyncio.Event().wait()
+        if self.failure:
+            raise httpx.ReadError("SYNTHETIC_PRIVATE_BODY https://private.invalid/secret")
+        if self.endless:
+            while True:
+                await asyncio.sleep(0)
+                self.iterations += 1
+                self.bytes_yielded += len(self.chunks[0])
+                yield self.chunks[0]
+        else:
+            for chunk in self.chunks:
+                await asyncio.sleep(0)
+                self.iterations += 1
+                self.bytes_yielded += len(chunk)
+                yield chunk
+
+    async def aclose(self):
+        self.closes += 1
+
+
+@pytest.fixture
+def qualification_wire(engine_factory):
+    """Retain all existing effect refusals, but exercise the real raw response."""
+    _, ep = engine_factory()
+
+    async def complete(stream, headers=None, status=200):
+        requests = []
+
+        def dispatch(request):
+            requests.append(request)
+            return httpx.Response(status, headers=headers, stream=stream)
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(dispatch),
+                                     trust_env=False, follow_redirects=False) as client:
+            result = await q._completion(client, ep, "fake-model", "Synthetic calibration")
+        assert len(requests) == 1
+        assert requests[0].url.path == "/v1/chat/completions"
+        assert requests[0].headers["accept-encoding"] == "identity"
+        return result
+    return complete
+
+
+@pytest.mark.parametrize("headers", [
+    {"content-length": "4194305"}, {"content-length": "9" * 5000},
+    {"content-length": "-1"}, {"content-length": "1.0"},
+    {"content-length": "+2"}, {"content-length": ""},
+    {"content-length": "1, 1"}, {"content-length": "1 2"},
+    {"content-encoding": "gzip"}, {"content-encoding": "deflate"},
+    {"content-encoding": "br"}, {"content-encoding": "identity, gzip"},
+])
+def test_qualification_headers_reject_before_raw_iteration(qualification_wire, headers):
+    # Even a malformed compressed body must never reach a decoder/iterator.
+    body = QualificationBody([b"SYNTHETIC_PRIVATE_BODY"])
+    assert run(qualification_wire(body, headers)) is None
+    assert body.iterations == 0 and body.closes == 1
+
+
+def test_qualification_compression_bomb_rejects_before_decode(qualification_wire, monkeypatch):
+    import gzip
+    bomb = gzip.compress(b"x" * (8 * 1024 * 1024))
+    assert len(bomb) < 10000
+    body = QualificationBody([bomb])
+
+    def forbidden_decode(*args, **kwargs):
+        raise AssertionError("compressed qualification body reached a decoder")
+    monkeypatch.setattr(httpx._decoders.GZipDecoder, "decode", forbidden_decode)
+    assert run(qualification_wire(body, {"content-encoding": "gzip"})) is None
+    assert body.iterations == 0 and body.closes == 1
+
+
+@pytest.mark.parametrize("endless", [False, True])
+def test_qualification_undeclared_overflow_stops_before_parse(qualification_wire, monkeypatch, endless):
+    chunk = b"x" * (1024 * 1024)
+    body = QualificationBody([chunk] * 9, endless=endless)
+    parsed = []
+    loads = q.json.loads
+
+    def observe(value, *args, **kwargs):
+        parsed.append(value)
+        return loads(value, *args, **kwargs)
+    monkeypatch.setattr(q.json, "loads", observe)
+    assert run(qualification_wire(body)) is None
+    assert body.iterations == 5 and body.bytes_yielded == 5 * len(chunk)
+    assert body.closes == 1 and parsed == []
+
+
+@pytest.mark.parametrize("raw", [b"{broken", b"[]", b"null", b"42", b'"text"', b"\xff"])
+def test_qualification_invalid_json_is_closed_and_unusable(qualification_wire, raw):
+    body = QualificationBody([raw])
+    assert run(qualification_wire(body)) is None
+    assert body.iterations == 1 and body.closes == 1
+
+
+def test_qualification_large_json_is_not_parsed(qualification_wire, monkeypatch):
+    # A well-formed JSON object beyond the ceiling still cannot be accumulated.
+    body = QualificationBody([b'{"answer":"', b"x" * (4 * 1024 * 1024), b'"}'])
+
+    def forbidden_parse(*args, **kwargs):
+        raise AssertionError("oversized qualification JSON reached parsing")
+    monkeypatch.setattr(q.json, "loads", forbidden_parse)
+    assert run(qualification_wire(body)) is None
+    assert body.iterations == 2 and body.closes == 1
+
+
+@pytest.mark.parametrize("encoding", [None, "identity", "Identity"])
+def test_qualification_fragmented_healthy_response(qualification_wire, encoding):
+    raw = b'{"usage":{"prompt_tokens":1234},"choices":[]}'
+    body = QualificationBody([raw[:9], raw[9:27], raw[27:]])
+    headers = {"content-length": "000" + str(len(raw))}
+    if encoding is not None:
+        headers["content-encoding"] = encoding
+    assert run(qualification_wire(body, headers)) == {"usage": {"prompt_tokens": 1234}, "choices": []}
+    assert body.iterations == 3 and body.closes == 1
+
+
+def test_qualification_exact_byte_ceiling_is_accepted(qualification_wire):
+    raw = b"{}" + b" " * (4 * 1024 * 1024 - 2)
+    body = QualificationBody([raw[:100], raw[100:]])
+    assert run(qualification_wire(body, {"content-length": str(len(raw))})) == {}
+    assert body.closes == 1
+
+
+@pytest.mark.parametrize("status", [302, 400, 500])
+def test_qualification_status_rejection_does_not_read_or_follow(qualification_wire, status):
+    body = QualificationBody([b"SYNTHETIC_PRIVATE_BODY"])
+    assert run(qualification_wire(body, {"location": "https://private.invalid/secret"}, status)) is None
+    assert body.iterations == 0 and body.closes == 1
+
+
+class WaitingQualificationEngine(FakeEngine):
+    """Block one actual model/context/tool response; other phases stay healthy."""
+
+    def __init__(self, phase, *, failure=False):
+        super().__init__()
+        self.phase, self.failure = phase, failure
+        self.blocked = None
+
+    def respond(self, request):
+        body = json.loads(request.content) if request.method == "POST" else {}
+        phase = ("model" if request.method == "GET" else
+                 "tool" if body.get("tools") else "context")
+        if phase != self.phase:
+            return super().respond(request)
+        self.wire_requests.append((request.method, request.url.path))
+        self.blocked = QualificationBody(waiting=not self.failure, failure=self.failure)
+        return httpx.Response(200, stream=self.blocked)
+
+
+@pytest.mark.parametrize("phase", ["model", "context", "tool"])
+@pytest.mark.parametrize("termination", ["cancel", "deadline"])
+def test_qualification_response_contexts_close_and_never_save(
+        persisted_http_provider, engine_factory, monkeypatch, phase, termination):
+    main, request, _ = persisted_http_provider
+    engine, _ = engine_factory(engine_type=WaitingQualificationEngine, phase=phase)
+    before = config.USER_CONFIG.read_bytes()
+    from service.inference.attributed_transport import CredentialTransport
+    closures = []
+
+    def observed_close(close, kind):
+        async def record(transport):
+            closures.append(kind)
+            await close(transport)
+        return record
+    for kind, transport in [("context", httpx.AsyncHTTPTransport), ("provider", CredentialTransport)]:
+        monkeypatch.setattr(transport, "aclose", observed_close(transport.aclose, kind))
+    # The qualifier's original total deadline covers context and tool checks.
+    # Model discovery occurs before that scope; give only that request an outer
+    # test deadline, without claiming a new production model-list deadline.
+    monkeypatch.setattr(q, "_PROBE_DEADLINE_SECONDS", 0.05)
+
+    async def attempt():
+        task = asyncio.create_task(request("POST", "/inference/local-provider", _actual_body(engine, ["agent"])))
+        while engine.blocked is None:
+            await asyncio.sleep(0)
+        await engine.blocked.entered.wait()
+        if termination == "cancel":
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif phase == "model":
+            with pytest.raises(TimeoutError):
+                async with asyncio.timeout(0.05):
+                    await task
+        else:
+            response = await task
+            assert response.status_code == 400
+            assert "too slow" in response.json()["detail"]
+            report = next(iter(main._qualification_cache.values()))[1].as_dict()
+            assert not report["qualified"] and report["checks"][-1]["id"] == "deadline"
+            assert "SYNTHETIC_PRIVATE_BODY" not in json.dumps(report)
+    run(attempt())
+    assert engine.blocked.closes == 1 and engine.blocked.iterations == 0
+    assert closures.count("provider") == (2 if phase == "tool" else 1)
+    assert closures.count("context") == (0 if phase == "model" else 1)
+    assert config.USER_CONFIG.read_bytes() == before
+
+
+@pytest.mark.parametrize("phase", ["context", "tool"])
+def test_qualification_stream_failure_is_sanitized_and_never_saved(
+        persisted_http_provider, engine_factory, phase):
+    main, request, _ = persisted_http_provider
+    engine, _ = engine_factory(engine_type=WaitingQualificationEngine, phase=phase, failure=True)
+    before = config.USER_CONFIG.read_bytes()
+    response = run(request("POST", "/inference/local-provider", _actual_body(engine, ["agent"])))
+    assert response.status_code == 400
+    report = next(iter(main._qualification_cache.values()))[1].as_dict()
+    assert not report["qualified"] and report["checks"][-1]["id"] == "error"
+    for rendered in (json.dumps(report), response.text):
+        assert "SYNTHETIC_PRIVATE_BODY" not in rendered and "private.invalid" not in rendered
+    assert engine.blocked.closes == 1 and config.USER_CONFIG.read_bytes() == before
+
+
+def test_context_calibration_ignores_environment_proxy_and_redirect_policy(engine_factory, monkeypatch):
+    _, ep = engine_factory()
+    monkeypatch.setenv("HTTP_PROXY", "http://private.invalid:9999")
+    monkeypatch.setenv("ALL_PROXY", "http://private.invalid:9999")
+    monkeypatch.setenv("NO_PROXY", "")
+    observed = []
+    initialize = httpx.AsyncClient.__init__
+
+    def record(client, *args, **kwargs):
+        observed.append(kwargs)
+        initialize(client, *args, **kwargs)
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", record)
+    effective, how = run(q.measure_context(ep, "fake-model", 16384))
+    assert effective == 16384 and how == "measured"
+    assert len(observed) == 1 and observed[0]["trust_env"] is False
+    assert observed[0]["follow_redirects"] is False

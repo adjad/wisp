@@ -42,6 +42,7 @@ RECOMMENDED_CONTEXT = 16384
 # Verifying more than this only adds minutes of prefill; Wisp does not need it.
 PROBE_CONTEXT_CAP = RECOMMENDED_CONTEXT
 _PROBE_DEADLINE_SECONDS = 420.0
+_CONTEXT_RESPONSE_BYTES = 4 * 1024 * 1024
 _TRUNCATION_TOLERANCE = 0.92
 # The usage probe deliberately sends MORE than the cap: only an engine that
 # reports holding at least ``cap`` prompt tokens has shown that the cap fits.
@@ -119,18 +120,35 @@ def _filler(tokens_per_char: float, tokens: int, needle: str) -> str:
 
 async def _completion(http: httpx.AsyncClient, ep: Endpoint, model: str, content: str,
                       max_tokens: int = 4) -> dict[str, Any] | None:
-    response = await http.post(
-        ep.base_url + ep.api_prefix + "/chat/completions",
-        json={"model": model, "max_tokens": max_tokens, "stream": False, "temperature": 0,
-              "messages": [{"role": "user", "content": content}]},
-        headers={"Accept-Encoding": "identity"})
-    if response.status_code != 200 or len(response.content) > 4 * 1024 * 1024:
-        return None
-    try:
-        data = response.json()
-    except ValueError:
-        return None
-    return data if isinstance(data, dict) else None
+    async with http.stream(
+            "POST", ep.base_url + ep.api_prefix + "/chat/completions",
+            json={"model": model, "max_tokens": max_tokens, "stream": False, "temperature": 0,
+                  "messages": [{"role": "user", "content": content}]},
+            headers={"Accept-Encoding": "identity"}, follow_redirects=False) as response:
+        # A request preference does not prevent a server sending compressed data.
+        # Reject before decoding or consuming a body, including error responses.
+        if (response.status_code != 200
+                or response.headers.get("content-encoding", "identity").lower() != "identity"):
+            return None
+        length = response.headers.get("content-length")
+        if length is not None:
+            if not length.isascii() or not length.isdigit():
+                return None
+            normalized = length.lstrip("0") or "0"
+            if (len(normalized) > len(str(_CONTEXT_RESPONSE_BYTES))
+                    or int(normalized) > _CONTEXT_RESPONSE_BYTES):
+                return None
+        body = bytearray()
+        async for part in response.aiter_raw():
+            if len(part) > _CONTEXT_RESPONSE_BYTES - len(body):
+                return None
+            body.extend(part)
+        try:
+            data = json.loads(body)
+        except ValueError:
+            return None
+        return data if isinstance(data, dict) else None
+
 
 
 def _prompt_tokens(data: dict[str, Any] | None) -> int | None:
@@ -162,7 +180,8 @@ async def measure_context(ep: Endpoint, model: str, claimed: int) -> tuple[int, 
     prompt), "rejected" (refused longer prompts) or "unmeasurable".
     """
     cap = min(claimed, PROBE_CONTEXT_CAP)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0)) as http:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0), trust_env=False,
+                                 follow_redirects=False) as http:
         tiny = _prompt_tokens(await _completion(http, ep, model, "Say OK."))
         mid_text = _filler(0.25, 600, "CALIBRATE")
         mid = _prompt_tokens(await _completion(http, ep, model, mid_text))
