@@ -97,7 +97,9 @@ malformed = local
 malformed["authenticated"] = 0
 check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
       "Numeric Local authentication state accepted")
-for roles in [["reasoning", "reasoning"], ["coding"], ["reasoning", "coding"]] {
+// Coding and Agent are valid Local roles now (they require a passing tool test on the
+// backend); duplicates are still invalid.
+for roles in [["reasoning", "reasoning"], ["coding", "coding"], ["fast"]] {
     malformed = local
     malformed["roles"] = roles
     check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provider"),
@@ -113,3 +115,43 @@ check(!SettingsResponseValidator.valid(malformed, path: "inference/local-provide
       "Active disabled Local provider accepted")
 
 print("\(checks) settings checks passed")
+
+// Multi-role local provider (Reasoning + Agent + Coding) and optional tool fields.
+var multi = local
+multi["roles"] = ["reasoning", "agent", "coding"]
+multi["tools_qualified"] = true
+multi["qualified_context"] = 16_384
+check(SettingsResponseValidator.valid(multi, path: "inference/local-provider"), "Multi-role Local rejected")
+for roles in [["agent"], ["coding"], ["reasoning", "agent"]] {
+    multi["roles"] = roles
+    check(SettingsResponseValidator.valid(multi, path: "inference/local-provider"), "Roles \(roles) rejected")
+}
+for roles in [["fast"], ["router"], ["embedding"], ["agent", "agent"], ["nope"]] {
+    multi["roles"] = roles
+    check(!SettingsResponseValidator.valid(multi, path: "inference/local-provider"), "Roles \(roles) accepted")
+}
+multi["roles"] = ["agent"]
+multi["tools_qualified"] = 1
+check(!SettingsResponseValidator.valid(multi, path: "inference/local-provider"), "Numeric tools_qualified accepted")
+multi["tools_qualified"] = true
+multi["qualified_context"] = true
+check(!SettingsResponseValidator.valid(multi, path: "inference/local-provider"), "Boolean qualified_context accepted")
+var activeUnassigned = local
+activeUnassigned["roles"] = [String]()
+check(!SettingsResponseValidator.valid(activeUnassigned, path: "inference/local-provider"), "Active with no role accepted")
+
+let report: [String: Any] = [
+    "qualified": true, "effective_context": 16_384, "claimed_context": 32_768, "hint": "", "seconds": 18.0,
+    "checks": [["id": "context", "label": "Context", "ok": true, "detail": "", "required": true]],
+]
+check(SettingsResponseValidator.valid(report, path: "inference/local-provider/qualify"), "Report rejected")
+for key in ["qualified", "effective_context", "checks"] {
+    var partial = report
+    partial.removeValue(forKey: key)
+    check(!SettingsResponseValidator.valid(partial, path: "inference/local-provider/qualify"), "Report missing \(key) accepted")
+}
+var badReport = report
+badReport["checks"] = [["id": "context", "label": "Context", "ok": 1]]
+check(!SettingsResponseValidator.valid(badReport, path: "inference/local-provider/qualify"), "Numeric ok accepted")
+badReport["checks"] = [["label": "Context", "ok": true]]
+check(!SettingsResponseValidator.valid(badReport, path: "inference/local-provider/qualify"), "Check without id accepted")

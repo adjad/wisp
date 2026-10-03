@@ -193,6 +193,30 @@ final class SettingsLoader: ObservableObject {
         let apiPrefix: String
         let modelID: String
         let contextWindow: Int
+        let roles: Set<String>
+
+        /// The backend saves the window it MEASURED, which is never larger than the one
+        /// requested, so a saved binding satisfies a request when its window is not larger.
+        func satisfies(_ requested: LocalSavedBinding) -> Bool {
+            baseURL == requested.baseURL && apiPrefix == requested.apiPrefix
+                && modelID == requested.modelID && roles == requested.roles
+                && contextWindow <= requested.contextWindow
+        }
+    }
+
+    struct LocalQualificationCheck: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let ok: Bool
+        let detail: String
+        let required: Bool
+    }
+
+    struct LocalQualification: Equatable {
+        let qualified: Bool
+        let effectiveContext: Int
+        let hint: String
+        let checks: [LocalQualificationCheck]
     }
 
     @Published var installed: [String] = []
@@ -226,6 +250,10 @@ final class SettingsLoader: ObservableObject {
     @Published var localProviderSavedAssigned = false
     @Published var localProviderStateUnknown = true
     @Published var localProviderSaving = false
+    @Published var localProviderToolsQualified = false
+    @Published var localProviderQualifiedContext = 0
+    @Published var localProviderTesting = false
+    @Published var localProviderQualification: LocalQualification?
     @Published var localProviderStatus = "Checking local connection…"
     private var savedLocalBinding: LocalSavedBinding?
     var localProviderDisplayStatus: String {
@@ -338,29 +366,39 @@ final class SettingsLoader: ObservableObject {
         localProviderModelID = object["model_id"] as? String ?? localProviderModelID
         localProviderContextWindow = object["context_window"] as? Int ?? localProviderContextWindow
         let savedRoles = Set(object["roles"] as? [String] ?? [])
-        localProviderSavedAssigned = localProviderConnected && savedRoles.contains("reasoning")
+        localProviderSavedAssigned = localProviderConnected && !savedRoles.isEmpty
         savedLocalBinding = localProviderSavedAssigned
             ? LocalSavedBinding(baseURL: CloudCredentialStore.normalizedBaseURL(localProviderBaseURL),
                                 apiPrefix: localProviderAPIPrefix, modelID: localProviderModelID,
-                                contextWindow: localProviderContextWindow)
+                                contextWindow: localProviderContextWindow, roles: savedRoles)
             : nil
+        localProviderToolsQualified = localProviderConnected && (object["tools_qualified"] as? Bool ?? false)
+        localProviderQualifiedContext = object["qualified_context"] as? Int ?? 0
         localProviderStateUnknown = false
         localProviderRoles = localProviderConnected ? savedRoles : ["reasoning"]
         localProviderStatus = !localProviderConnected ? "Not connected"
-            : localProviderSavedAssigned ? "Configured; use Test & Save to recheck"
-            : "Select Use for reasoning, then Test & Save"
+            : localProviderSavedAssigned
+            ? (localProviderToolsQualified
+               ? "Tools verified at \(localProviderQualifiedContext.formatted()) tokens"
+               : "Configured; use Test & Save to recheck")
+            : "Choose what to use it for, then Test & Save"
     }
 
     private func matchesLocalProviderState(_ object: [String: Any],
                                            baseURL: String, apiPrefix: String,
-                                           modelID: String, contextWindow: Int) -> Bool {
-        object["enabled"] as? Bool == true
-            && Set(object["roles"] as? [String] ?? []).contains("reasoning")
+                                           modelID: String, contextWindow: Int,
+                                           roles: Set<String>) -> Bool {
+        // The saved window is the measured one, so it may be smaller than requested.
+        let saved = object["context_window"] as? Int ?? 0
+        return object["enabled"] as? Bool == true
+            && Set(object["roles"] as? [String] ?? []) == roles
             && CloudCredentialStore.normalizedBaseURL(object["base_url"] as? String ?? "") == baseURL
             && object["api_prefix"] as? String == apiPrefix
             && object["model_id"] as? String == modelID
-            && object["context_window"] as? Int == contextWindow
+            && saved >= 512 && saved <= contextWindow
     }
+
+    private static let localToolRoles: Set<String> = ["agent", "coding"]
 
     func discoverLocalProviderModels() {
         localProviderSaving = true
@@ -391,12 +429,17 @@ final class SettingsLoader: ObservableObject {
         let prefix = localProviderAPIPrefix
         let model = localProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines)
         let window = localProviderContextWindow
+        let requestedRoles = localProviderRoles
+        let needsTools = !requestedRoles.isDisjoint(with: Self.localToolRoles)
         let requestedBinding = LocalSavedBinding(baseURL: origin, apiPrefix: prefix,
-                                                 modelID: model, contextWindow: window)
+                                                 modelID: model, contextWindow: window,
+                                                 roles: requestedRoles)
         let priorStateKnown = !localProviderStateUnknown
         let priorBinding = savedLocalBinding
         localProviderSaving = true
-        localProviderStatus = "Checking the local inference app…"
+        localProviderStatus = needsTools
+            ? "Testing tool calling… this can take up to a minute."
+            : "Checking the local inference app…"
         Task {
             await PendingConfigWrites.shared.begin()
             var didSendRequest = false
@@ -407,21 +450,24 @@ final class SettingsLoader: ObservableObject {
                       url.user == nil, url.password == nil,
                       url.path.isEmpty || url.path == "/",
                       url.query == nil, url.fragment == nil,
-                      !model.isEmpty, localProviderRoles.contains("reasoning") else {
+                      !model.isEmpty, !requestedRoles.isEmpty else {
                     throw CloudSettingsError.message(
-                        "Use an app on a distinct 127.0.0.1 port and select its exact model for Reasoning.")
+                        "Use an app on a distinct 127.0.0.1 port, select its exact model, and choose what to use it for.")
                 }
                 didSendRequest = true
                 let object = try await request("POST", path: "inference/local-provider", body: [
                     "base_url": origin, "api_prefix": prefix, "model_id": model,
-                    "context_window": window, "roles": ["reasoning"],
-                ])
+                    "context_window": window, "roles": requestedRoles.sorted(),
+                ], timeout: needsTools ? 420 : 40)
                 guard matchesLocalProviderState(object, baseURL: origin, apiPrefix: prefix,
-                                                modelID: model, contextWindow: window) else {
+                                                modelID: model, contextWindow: window,
+                                                roles: requestedRoles) else {
                     throw SettingsResponseError.invalid
                 }
                 applyLocalProviderState(object)
-                localProviderStatus = "Streaming reply verified"
+                localProviderStatus = needsTools
+                    ? "Tools verified at \(localProviderQualifiedContext.formatted()) tokens"
+                    : "Streaming reply verified"
                 self.roles = (await client.models()).roles
                 await refreshCloud()
             } catch {
@@ -431,9 +477,9 @@ final class SettingsLoader: ObservableObject {
                 } else if await refreshLocalProvider() {
                     self.roles = (await client.models()).roles
                     await refreshCloud()
-                    let saved = savedLocalBinding == requestedBinding
+                    let saved = savedLocalBinding?.satisfies(requestedBinding) ?? false
                     let newlyCommitted = saved && priorStateKnown
-                        && priorBinding != requestedBinding
+                        && !(priorBinding?.satisfies(requestedBinding) ?? false)
                     var httpStatus: Int?
                     if let settingsError = error as? CloudSettingsError,
                        case let .http(statusCode, _) = settingsError {
@@ -447,16 +493,16 @@ final class SettingsLoader: ObservableObject {
                     } else if httpStatus == 400 {
                         localProviderStatus = "The current local provider test failed: \(failure) "
                             + (localProviderSavedAssigned
-                               ? "The earlier saved Reasoning assignment remains."
-                               : "No Reasoning assignment is saved.")
+                               ? "The earlier saved assignment remains."
+                               : "Nothing is assigned to this app.")
                     } else if httpStatus != nil {
                         localProviderStatus = "Wisp could not confirm whether the current local provider test completed. "
                             + (localProviderSavedAssigned
-                               ? "The saved Reasoning assignment remains."
-                               : "No Reasoning assignment is confirmed.")
+                               ? "The saved assignment remains."
+                               : "No assignment is confirmed.")
                     } else {
                         localProviderStatus = saved
-                            ? "The saved Reasoning assignment matches this request, but Wisp could not confirm this test completed."
+                            ? "The saved assignment matches this request, but Wisp could not confirm this test completed."
                             : failure
                     }
                 } else {
@@ -469,9 +515,52 @@ final class SettingsLoader: ObservableObject {
         }
     }
 
+    /// Run the backend's tool-calling qualification without saving anything. Takes up to a
+    /// minute on a large model; uses only synthetic prompts.
+    func testLocalProviderTools() {
+        let origin = CloudCredentialStore.normalizedBaseURL(localProviderBaseURL)
+        let model = localProviderModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty else {
+            localProviderStatus = "Choose the app's exact model first."
+            return
+        }
+        localProviderTesting = true
+        localProviderQualification = nil
+        localProviderStatus = "Testing tool calling… this can take up to a minute."
+        let window = localProviderContextWindow
+        let prefix = localProviderAPIPrefix
+        Task {
+            do {
+                let object = try await request("POST", path: "inference/local-provider/qualify", body: [
+                    "base_url": origin, "api_prefix": prefix, "model_id": model,
+                    "context_window": window,
+                ], timeout: 420)  // a cold model load plus a full-window prompt can take a while
+                let rows = (object["checks"] as? [[String: Any]] ?? []).compactMap { row -> LocalQualificationCheck? in
+                    guard let id = row["id"] as? String, let label = row["label"] as? String,
+                          let ok = row["ok"] as? Bool else { return nil }
+                    return LocalQualificationCheck(id: id, label: label, ok: ok,
+                                                   detail: row["detail"] as? String ?? "",
+                                                   required: row["required"] as? Bool ?? true)
+                }
+                let qualified = object["qualified"] as? Bool ?? false
+                let effective = object["effective_context"] as? Int ?? 0
+                localProviderQualification = LocalQualification(
+                    qualified: qualified, effectiveContext: effective,
+                    hint: object["hint"] as? String ?? "", checks: rows)
+                localProviderStatus = qualified
+                    ? "This app can run Wisp's tools (\(effective.formatted())-token window)."
+                    : "This app can't run Wisp's tools yet."
+            } catch {
+                localProviderStatus = error.localizedDescription
+            }
+            localProviderTesting = false
+        }
+    }
+
     func disconnectLocalProvider() {
         localProviderSaving = true
-        localProviderStatus = "Returning Reasoning to Wisp’s managed model…"
+        localProviderStatus = "Returning everything to Wisp’s managed model…"
+        localProviderQualification = nil
         Task {
             await PendingConfigWrites.shared.begin()
             do {
@@ -514,10 +603,11 @@ final class SettingsLoader: ObservableObject {
     }
 
     private func request(_ method: String, path: String,
-                         body: [String: Any]? = nil) async throws -> [String: Any] {
+                         body: [String: Any]? = nil,
+                         timeout: TimeInterval = 40) async throws -> [String: Any] {
         var request = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
         request.httpMethod = method
-        request.timeoutInterval = 40
+        request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -1080,7 +1170,7 @@ struct SettingsView: View {
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text("Local")
                                             .font(.system(size: 15, weight: .semibold))
-                                        Text("Connect Ling or another OpenAI-compatible app running on this Mac.")
+                                        Text("Connect Ollama, LM Studio, llama.cpp, Ling, or another OpenAI-compatible app running on this Mac.")
                                             .font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
@@ -1130,22 +1220,71 @@ struct SettingsView: View {
                                             .monospacedDigit().frame(width: 130, alignment: .trailing)
                                     }
                                 }
-                                Toggle("Use for reasoning", isOn: Binding(
-                                    get: { loader.localProviderRoles.contains("reasoning") },
-                                    set: { enabled in
-                                        loader.localProviderRoles = enabled ? ["reasoning"] : []
-                                    }))
-                                    .toggleStyle(.checkbox)
-                                    .disabled(loader.localProviderStateUnknown
-                                              || loader.localProviderConnected
-                                              && loader.localProviderSavedAssigned)
+                                Text("What you set the app to load. Wisp measures the real window when it tests tool use and saves the smaller of the two.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("Use this app for")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    ForEach([("reasoning", "Reasoning", "Answers questions; no tools."),
+                                             ("agent", "Agent", "Runs Wisp's tools: calendar, mail, messages, files, and more."),
+                                             ("coding", "Coding", "Code questions, with tools when needed.")],
+                                            id: \.0) { role, title, detail in
+                                        Toggle(isOn: Binding(
+                                            get: { loader.localProviderRoles.contains(role) },
+                                            set: { enabled in
+                                                if enabled { loader.localProviderRoles.insert(role) }
+                                                else { loader.localProviderRoles.remove(role) }
+                                            })) {
+                                            HStack(spacing: 6) {
+                                                Text(title).font(.system(size: 13, weight: .medium))
+                                                Text(detail).font(.caption).foregroundStyle(.secondary)
+                                            }
+                                        }
+                                        .toggleStyle(.checkbox)
+                                    }
+                                }
+                                .disabled(loader.localProviderStateUnknown || loader.localProviderSaving
+                                          || loader.localProviderTesting)
+                                HStack {
+                                    Button("Test Tool Calling") { loader.testLocalProviderTools() }
+                                        .disabled(loader.localProviderSaving || loader.localProviderTesting
+                                                  || loader.localProviderModelID.isEmpty
+                                                  || loader.localProviderStateUnknown)
+                                    if loader.localProviderTesting { ProgressView().controlSize(.small) }
+                                    Text("Checks the real context window and that the model can call tools. Uses only made-up prompts.")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                if let report = loader.localProviderQualification {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ForEach(report.checks) { check in
+                                            Label(check.label, systemImage: check.ok ? "checkmark.circle.fill"
+                                                  : check.required ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+                                                .font(.caption)
+                                                .foregroundStyle(check.ok ? Color.green
+                                                                 : check.required ? Color.red : Color.orange)
+                                            if !check.ok && !check.detail.isEmpty {
+                                                Text(check.detail).font(.caption2).foregroundStyle(.secondary)
+                                                    .padding(.leading, 22)
+                                                    .fixedSize(horizontal: false, vertical: true)
+                                            }
+                                        }
+                                        if !report.hint.isEmpty {
+                                            Text(report.hint).font(.caption).foregroundStyle(.primary)
+                                                .padding(8)
+                                                .background(RoundedRectangle(cornerRadius: 6).fill(Color.orange.opacity(0.12)))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                }
                                 Text(loader.localProviderStateUnknown
-                                     ? "Wisp cannot confirm the current Reasoning assignment. Use Refresh models before changing this connection."
+                                     ? "Wisp cannot confirm the current assignment. Use Refresh models before changing this connection."
                                      : loader.localProviderConnected && !loader.localProviderSavedAssigned
-                                     ? "This app is connected but no longer assigned. Select Use for reasoning, then Test & Save to rebind it. Wisp does not automatically send earlier conversation summaries or remembered facts."
-                                     : loader.localProviderConnected
-                                     ? "Disconnect to stop using this app for reasoning. Wisp does not automatically send earlier conversation summaries or remembered facts to this app. Follow-ups may need context repeated."
-                                     : "Reasoning prompts are sent to this app when Super Model is off. Wisp does not automatically send earlier conversation summaries or remembered facts. Routing, summary generation, and tool use stay with managed models. A loopback app without an API key is not identity-verified; connect only one you trust.")
+                                     ? "This app is connected but nothing is assigned to it. Choose what to use it for, then Test & Save."
+                                     : loader.localProviderRoles.contains("agent") || loader.localProviderRoles.contains("coding")
+                                     ? "With Agent or Coding selected, the results of Wisp's tools — your calendar, mail, messages, notes and files — are sent to this app to answer you. Wisp tests tool calling first and saves the context window the app really uses. Routing, summaries, search and memory still use Wisp's managed models, and skills stay on this Mac's managed model. A local app without an API key is not identity-verified; connect only one you trust."
+                                     : "Reasoning prompts are sent to this app when Super Model is off. Wisp does not automatically send earlier conversation summaries or remembered facts. Routing, summary generation, and tool use stay with managed models. A local app without an API key is not identity-verified; connect only one you trust.")
                                     .font(.caption2).foregroundStyle(.secondary)
                                     .fixedSize(horizontal: false, vertical: true)
                                 HStack {
@@ -1162,9 +1301,10 @@ struct SettingsView: View {
                                         loader.connectLocalProvider()
                                     }
                                     .buttonStyle(.borderedProminent)
-                                    .disabled(loader.localProviderSaving || loader.localProviderStateUnknown
+                                    .disabled(loader.localProviderSaving || loader.localProviderTesting
+                                              || loader.localProviderStateUnknown
                                               || loader.localProviderModelID.isEmpty
-                                              || !loader.localProviderRoles.contains("reasoning"))
+                                              || loader.localProviderRoles.isEmpty)
                                 }
                             }
                             .padding(4)
