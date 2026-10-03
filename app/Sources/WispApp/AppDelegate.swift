@@ -70,9 +70,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // engine it cannot verify, with a message that says so.
         //
         // Port 8765 is Wisp's backend. Wisp never signals a program it does not own:
-        // a stranger there is reported, and only Wisp's OWN backend (proved by the
-        // kernel-reported executable path inside its backend directory) is reclaimed,
-        // and only when it has stopped answering.
+        // a stranger there is reported, and only Wisp's OWN backend is reclaimed, and
+        // only when it has stopped answering. "Own" is BackendOwnership's policy: exactly
+        // the process incarnation the previous launch's receipt names. Without a matching
+        // receipt (including a backend left by an older Wisp) it is a conflict.
+        // Loaded only here, after the single-instance hand-over, so a yielding second
+        // launch touches nothing.
+        let launchReceipt = BackendLaunchReceiptStore.defaultDirectory()
+            .map { BackendLaunchReceiptStore.shared.configure(directory: $0) } ?? .unusable
         let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
         // From here on, every request to the backend port goes out only while the
         // program there is proven to be Wisp's own backend (see BackendTrust).
@@ -84,16 +89,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
         }
-        switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes) {
+        switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes, receipt: launchReceipt) {
         case .conflict(let foreign):
             backend.portConflict = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.presentPortConflict(port: 8765, listeners: foreign)
+                self?.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
+                                                                    ownedPrefixes: ownedPrefixes))
             }
         case .owned(let own):
             Task { [backend] in
                 if !(await backend.isResponsive()) {
-                    PortGuard.terminateOwned(own, ownedPrefixes: ownedPrefixes)
+                    // Judged against the receipt `own` was classified with; terminateOwned
+                    // re-reads the kernel facts (and start time) right before signalling.
+                    PortGuard.terminateOwned(own, ownedPrefixes: ownedPrefixes, receipt: launchReceipt)
                 }
             }
         case .free, .unknown:
@@ -736,13 +744,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop
     /// it: the person decides.
-    private func presentPortConflict(port: Int, listeners: [PortGuard.Listener]) {
+    private func presentPortConflict(_ message: String) {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Wisp can't start its service"
-        alert.informativeText = "Another program is already using port \(port): "
-            + "\(PortGuard.describe(listeners)). Wisp did not stop it, because it isn't Wisp's. "
-            + "Quit that program, then reopen Wisp."
+        alert.informativeText = message
         alert.addButton(withTitle: "Quit Wisp")
         alert.addButton(withTitle: "Keep Wisp Open")
         if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }

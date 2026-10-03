@@ -10,13 +10,19 @@ import Foundation
 // one's backend and then raced against its shutdown.
 //
 // The policy now is: Wisp signals ONLY a process that provably is its own backend,
-// never a stranger. Ownership is the kernel-reported executable path
-// (proc_pidpath), which a process cannot claim by naming itself, and must lie
-// inside Wisp's own backend directory. Anything else is reported to the user.
+// never a stranger. "Provably" is BackendOwnership's one policy: the exact process
+// incarnation (pid + kernel start time) recorded in Wisp's launch receipt. An
+// executable inside Wisp's backend directory is necessary but never sufficient: the
+// backend runs on a generic Python interpreter that other programs can run too.
+// Anything else, including a backend left by an older Wisp that wrote no receipt, is
+// reported to the user and left running.
 enum PortGuard {
     struct Listener: Equatable {
         let pid: Int32
         let path: String
+        /// Kernel start time when listed. Re-checked before any signal: a recycled pid
+        /// has a different one.
+        var start: BackendOwnership.StartTime? = nil
     }
 
     enum Verdict: Equatable {
@@ -30,15 +36,23 @@ enum PortGuard {
         case conflict([Listener])
     }
 
-    /// Pure policy: classifies listeners, signals nothing.
-    static func verdict(listeners: [Listener]?, ownedPrefixes: [String]) -> Verdict {
+    /// Pure policy: classifies listeners, signals nothing. A listener is owned only
+    /// when BackendOwnership says it is Wisp's backend.
+    static func verdict(listeners: [Listener]?, ownedPrefixes: [String],
+                        receipt: BackendOwnership.ReceiptState,
+                        facts: (Int32) -> BackendOwnership.ProcessFacts?) -> Verdict {
         guard let listeners else { return .unknown }
         if listeners.isEmpty { return .free }
-        let foreign = listeners.filter { !isOwned($0, ownedPrefixes: ownedPrefixes) }
+        let foreign = listeners.filter {
+            BackendOwnership.verdict(listener: $0, receipt: receipt, facts: facts($0.pid),
+                                     ownedPrefixes: ownedPrefixes) != .wispBackend
+        }
         return foreign.isEmpty ? .owned(listeners) : .conflict(foreign)
     }
 
-    static func isOwned(_ listener: Listener, ownedPrefixes: [String]) -> Bool {
+    /// Whether the executable lies inside Wisp's backend directory. NECESSARY for
+    /// ownership, never sufficient on its own (see BackendOwnership).
+    static func executableInOwnedDirectory(_ listener: Listener, ownedPrefixes: [String]) -> Bool {
         // An empty prefix would match every path; a relative or unresolved path
         // proves nothing about where the executable really is.
         listener.path.hasPrefix("/") && !listener.path.contains("/../")
@@ -56,26 +70,44 @@ enum PortGuard {
         return prefixes
     }
 
-    static func check(port: Int, ownedPrefixes: [String],
-                      listeners: (Int) -> [Listener]? = PortGuard.listeners(port:)) -> Verdict {
-        verdict(listeners: listeners(port), ownedPrefixes: ownedPrefixes)
+    static func check(port: Int, ownedPrefixes: [String], receipt: BackendOwnership.ReceiptState,
+                      listeners: (Int) -> [Listener]? = PortGuard.listeners(port:),
+                      facts: (Int32) -> BackendOwnership.ProcessFacts? = BackendOwnership.processFacts(pid:)) -> Verdict {
+        verdict(listeners: listeners(port), ownedPrefixes: ownedPrefixes, receipt: receipt, facts: facts)
     }
 
-    /// Terminate listeners that are still provably Wisp's own backend. Ownership
-    /// is re-verified immediately before each signal so a pid that was recycled
-    /// since the listing is never signalled. Returns the pids signalled.
+    /// Terminate listeners that are still provably Wisp's own backend. Ownership is
+    /// re-verified from fresh kernel facts immediately before each signal, including
+    /// the start time seen at listing, so a pid that was recycled since the listing is
+    /// never signalled. Returns the pids signalled.
     @discardableResult
     static func terminateOwned(_ listeners: [Listener], ownedPrefixes: [String],
-                               pathOf: (Int32) -> String? = PortGuard.executablePath(pid:),
+                               receipt: BackendOwnership.ReceiptState,
+                               facts: (Int32) -> BackendOwnership.ProcessFacts? = BackendOwnership.processFacts(pid:),
                                signal: (Int32, Int32) -> Int32 = { kill($0, $1) }) -> [Int32] {
         var signalled: [Int32] = []
         for listener in listeners where listener.pid > 1 {
-            guard let current = pathOf(listener.pid), current == listener.path,
-                  isOwned(Listener(pid: listener.pid, path: current), ownedPrefixes: ownedPrefixes)
+            guard let listedStart = listener.start, let current = facts(listener.pid),
+                  current.executablePath == listener.path, current.start == listedStart,
+                  BackendOwnership.verdict(listener: listener, receipt: receipt, facts: current,
+                                           ownedPrefixes: ownedPrefixes) == .wispBackend
             else { continue }
             if signal(listener.pid, SIGTERM) == 0 { signalled.append(listener.pid) }
         }
         return signalled
+    }
+
+    /// What the person is told when the port is held by something Wisp cannot prove is
+    /// its own. A program running from Wisp's own folder is most likely a backend left by
+    /// an earlier Wisp (one that wrote no launch receipt), so the advice says so.
+    static func conflictMessage(port: Int, listeners: [Listener], ownedPrefixes: [String]) -> String {
+        let named = "Another program is already using port \(port): \(describe(listeners))."
+        if listeners.contains(where: { executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }) {
+            return named + " It runs from Wisp's folder, but this Wisp didn't start it, so Wisp can't confirm "
+                + "it is its own service and did not stop it. If an earlier copy of Wisp left it running, quit it "
+                + "in Activity Monitor (or restart your Mac), then reopen Wisp."
+        }
+        return named + " Wisp did not stop it, because it isn't Wisp's. Quit that program, then reopen Wisp."
     }
 
     static func describe(_ listeners: [Listener]) -> String {
@@ -109,7 +141,9 @@ enum PortGuard {
         let pids = Set(parsed.compactMap { $0 })
         // A listener whose path cannot be read cannot be shown to be Wisp's, so it
         // is carried with an empty path and classified as foreign.
-        return pids.sorted().map { Listener(pid: $0, path: executablePath(pid: $0) ?? "") }
+        return pids.sorted().map {
+            Listener(pid: $0, path: executablePath(pid: $0) ?? "", start: BackendOwnership.startTime(pid: $0))
+        }
     }
 
     /// The kernel's own record of the executable a process is running.

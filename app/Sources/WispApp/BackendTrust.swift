@@ -61,7 +61,7 @@ enum BackendTrust {
                        identity: IdentityResult) -> Verdict {
         guard let listeners else { return .refused(.cannotInspect) }
         if listeners.isEmpty { return .unreachable }
-        let foreign = listeners.filter { !PortGuard.isOwned($0, ownedPrefixes: ownedPrefixes) }
+        let foreign = listeners.filter { !PortGuard.executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }
         if !foreign.isEmpty { return .refused(.foreignListener(foreign)) }
         let pids = listeners.map(\.pid)
         switch identity {
@@ -190,7 +190,7 @@ actor BackendTrustGate {
             return BackendTrust.decide(listeners: listeners, ownedPrefixes: ownedPrefixes, identity: .failed)
         }
         // A stranger is refused without being asked anything: nothing is sent to it.
-        if found.contains(where: { !PortGuard.isOwned($0, ownedPrefixes: ownedPrefixes) }) {
+        if found.contains(where: { !PortGuard.executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }) {
             return BackendTrust.decide(listeners: found, ownedPrefixes: ownedPrefixes, identity: .failed)
         }
         let incarnations = found.map { processIncarnation($0.pid) }
