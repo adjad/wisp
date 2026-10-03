@@ -7,8 +7,9 @@ started on 8765 while the real app was open, or any other program that took the 
 could therefore make the real app act.
 
 Two things make that refusable. The app proves the LISTENER is its own backend from
-the kernel's record of the executable (that part does not trust this module at all),
-and it asks this endpoint which MODE the backend is in, so a backend that is Wisp's
+its launch receipt and the kernel's record of that process (pid and start time; that
+part does not trust this module, which only echoes the receipt's launch nonce), and it
+asks this endpoint which MODE the backend is in, so a backend that is Wisp's
 code but running against a sandbox world is refused too. A sandbox backend also
 refuses to start on a production port, as defence in depth.
 """
@@ -40,8 +41,17 @@ def mode() -> str:
     return "sandbox" if is_sandbox() else "production"
 
 
+# The app passes each backend it launches a random nonce and records it in its launch
+# receipt. Echoing it lets the app tell its own launch from another process.
+LAUNCH_NONCE_ENV = "WISP_LAUNCH_NONCE"
+
+
 def payload() -> dict:
-    return {"service": "wisp-backend", "mode": mode(), "pid": os.getpid()}
+    body = {"service": "wisp-backend", "mode": mode(), "pid": os.getpid()}
+    nonce = os.environ.get(LAUNCH_NONCE_ENV)
+    if nonce:
+        body["launch_nonce"] = nonce
+    return body
 
 
 def bind_port(argv: list[str] | None = None) -> int | None:

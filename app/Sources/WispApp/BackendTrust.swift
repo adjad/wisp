@@ -10,14 +10,18 @@ import Darwin
 // act or could receive the data it syncs.
 //
 // This file decides whether the program on the port is Wisp's OWN backend. The proof
-// comes from the kernel, not from the program's own words:
+// comes from the kernel and from Wisp's own launch record, not from the program's words:
 //   1. every process listening on the port must be running an executable inside Wisp's
-//      own backend directory (proc_pidpath, the same ownership test PortGuard uses to
-//      decide what Wisp may ever signal); and
-//   2. that backend must report mode "production" from /identity, which also refuses
-//      Wisp's own code running against a sandbox world, and must be one of the listeners.
-// A backend that predates /identity (it answers 404) is accepted on the strength of (1)
-// alone, so updating the app never strands a still-running older backend.
+//      own backend directory (necessary, never sufficient: the backend runs on a generic
+//      Python interpreter other programs can run too); and
+//   2. it must be exactly the process incarnation Wisp's launch receipt names (pid and
+//      kernel start time), the same BackendOwnership policy PortGuard uses to decide what
+//      Wisp may ever signal. A listener that fails this is refused WITHOUT being asked
+//      anything; no receipt (a backend left by a build that wrote none) fails closed; and
+//   3. that backend must report mode "production" from /identity, which also refuses
+//      Wisp's own code running against a sandbox world, must be one of the listeners, and
+//      must echo the launch nonce the receipt recorded. A 404 is accepted only from the
+//      exact launched incarnation of (2).
 //
 // Pure policy here (testable without a network); BackendTrustGate and
 // BackendTrustProtocol below apply it to every request the app makes to that port.
@@ -28,6 +32,8 @@ enum BackendTrust {
         let service: String
         let mode: String
         let pid: Int32
+        /// The nonce this backend was launched with (absent from older backends).
+        var launchNonce: String? = nil
     }
 
     /// What asking the backend "who are you?" produced.
@@ -45,6 +51,11 @@ enum BackendTrust {
         case notWispBackend
         case wrongMode(String)
         case pidMismatch
+        /// Running from Wisp's folder, but not the process Wisp's launch receipt names
+        /// (or there is no usable receipt). Never contacted.
+        case unproven([PortGuard.Listener])
+        /// The launched process answered without this launch's nonce.
+        case launchMismatch
     }
 
     enum Verdict: Equatable {
@@ -57,17 +68,38 @@ enum BackendTrust {
     }
 
     /// Pure policy. Fails closed: anything not positively proven is not trusted.
+    /// `identity` is `.failed` when nothing was (or could be) asked.
     static func decide(listeners: [PortGuard.Listener]?, ownedPrefixes: [String],
-                       identity: IdentityResult) -> Verdict {
+                       identity: IdentityResult, receipt: BackendOwnership.ReceiptState,
+                       facts: (Int32) -> BackendOwnership.ProcessFacts?) -> Verdict {
         guard let listeners else { return .refused(.cannotInspect) }
         if listeners.isEmpty { return .unreachable }
         let foreign = listeners.filter { !PortGuard.executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }
         if !foreign.isEmpty { return .refused(.foreignListener(foreign)) }
+        let evidence: BackendOwnership.Identity
+        switch identity {
+        case .failed: evidence = .notAsked
+        case .missing: evidence = .missing
+        case .answered(let answer): evidence = .answered(nonce: answer.launchNonce)
+        }
+        var unproven: [PortGuard.Listener] = []
+        for listener in listeners {
+            switch BackendOwnership.verdict(listener: listener, receipt: receipt, facts: facts(listener.pid),
+                                            identity: evidence, ownedPrefixes: ownedPrefixes) {
+            case .wispBackend: continue
+            case .notWisp(.processGone): return .refused(.cannotInspect)
+            case .notWisp(.nonceMismatch): return .refused(.launchMismatch)
+            case .notWisp(.foreignExecutable): return .refused(.foreignListener([listener]))
+            case .notWisp: unproven.append(listener)
+            }
+        }
+        if !unproven.isEmpty { return .refused(.unproven(unproven)) }
         let pids = listeners.map(\.pid)
         switch identity {
         case .failed:
             return .unreachable
         case .missing:
+            // Only the exact launched incarnation reaches here (checked above).
             return .trusted(pids: pids)
         case .answered(let answer):
             guard answer.service == "wisp-backend" else { return .refused(.notWispBackend) }
@@ -83,7 +115,9 @@ enum BackendTrust {
               let service = object["service"] as? String, let mode = object["mode"] as? String,
               let pid = (object["pid"] as? NSNumber), CFGetTypeID(pid) != CFBooleanGetTypeID(),
               pid.int64Value > 0, pid.int64Value <= Int64(Int32.max) else { return nil }
-        return Identity(service: service, mode: mode, pid: Int32(pid.int64Value))
+        let nonce = object["launch_nonce"]
+        guard nonce == nil || nonce is String else { return nil }
+        return Identity(service: service, mode: mode, pid: Int32(pid.int64Value), launchNonce: nonce as? String)
     }
 
     /// What to tell the person. Plain language, names the program, never says "refused: 4".
@@ -104,6 +138,11 @@ enum BackendTrust {
                 why = "The service there is a \(mode) copy of Wisp, not the one for your real data."
             case .pidMismatch:
                 why = "The program that answered isn't the one listening on the port."
+            case .unproven(let listeners):
+                why = "It is being used by \(PortGuard.describe(listeners)), which this Wisp didn't start, so Wisp "
+                    + "can't confirm it is its own service. It may be left over from an earlier copy of Wisp."
+            case .launchMismatch:
+                why = "The service there wasn't started by this copy of Wisp."
             }
             return "Wisp stopped talking to the program on port \(productionPort), so it can't act on "
                 + "your Mail, Messages or Calendar through it. \(why) Quit it and reopen Wisp."
@@ -166,45 +205,44 @@ actor BackendTrustGate {
                                         userInfo: ["message": BackendTrust.describe(verdict)])
     }
 
+    /// A process incarnation: the kernel start time (see BackendOwnership.StartTime).
+    typealias Incarnation = BackendOwnership.StartTime
+
+    static func incarnation(pid: Int32) -> Incarnation? { BackendOwnership.startTime(pid: pid) }
+
     /// One full check against the live system.
-    struct Incarnation: Equatable {
-        let seconds: UInt64
-        let microseconds: UInt64
-    }
-
-    static func incarnation(pid: Int32) -> Incarnation? {
-        var info = proc_bsdinfo()
-        let size = MemoryLayout<proc_bsdinfo>.size
-        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, Int32(size)) == Int32(size) else { return nil }
-        return Incarnation(seconds: info.pbi_start_tvsec, microseconds: info.pbi_start_tvusec)
-    }
-
     static func verify(port: Int, ownedPrefixes: [String],
                        inspect: (() -> [PortGuard.Listener]?)? = nil,
-                       processIncarnation: (Int32) -> Incarnation? = incarnation,
+                       facts: (Int32) -> BackendOwnership.ProcessFacts? = BackendOwnership.processFacts(pid:),
+                       receipt: () -> BackendOwnership.ReceiptState = { BackendLaunchReceiptStore.shared.current },
                        identity: (() async -> BackendTrust.IdentityResult)? = nil) async -> BackendTrust.Verdict {
         let inspect = inspect ?? { PortGuard.listeners(port: port) }
         var listeners = inspect()
         if listeners == nil { listeners = inspect() }   // one retry under load
-        guard let found = listeners, !found.isEmpty else {
-            return BackendTrust.decide(listeners: listeners, ownedPrefixes: ownedPrefixes, identity: .failed)
+        let launched = receipt()
+        func decide(_ listeners: [PortGuard.Listener]?, _ answer: BackendTrust.IdentityResult) -> BackendTrust.Verdict {
+            BackendTrust.decide(listeners: listeners, ownedPrefixes: ownedPrefixes, identity: answer,
+                                receipt: launched, facts: facts)
         }
-        // A stranger is refused without being asked anything: nothing is sent to it.
-        if found.contains(where: { !PortGuard.executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }) {
-            return BackendTrust.decide(listeners: found, ownedPrefixes: ownedPrefixes, identity: .failed)
-        }
-        let incarnations = found.map { processIncarnation($0.pid) }
+        guard let found = listeners, !found.isEmpty else { return decide(listeners, .failed) }
+        // A stranger, or anything that is not exactly the launched process, is refused
+        // without being asked anything: nothing is sent to it.
+        let unasked = decide(found, .failed)
+        if case .refused = unasked { return unasked }
+        let incarnations = found.map { facts($0.pid)?.start }
         guard incarnations.allSatisfy({ $0 != nil }) else { return .refused(.cannotInspect) }
         let answer = await (identity ?? { await fetchIdentity(port: port) })()
         // Identity is asynchronous. Inspect again before allowing the private request,
-        // including kernel start times: a reused pid is not the same process.
+        // including kernel start times (a reused pid is not the same process) and the
+        // receipt itself (a launch meanwhile names a different process).
         let current = inspect()
-        let verdict = BackendTrust.decide(listeners: current, ownedPrefixes: ownedPrefixes, identity: answer)
-        guard verdict.isTrusted else { return verdict }
-        guard current == found, found.map({ processIncarnation($0.pid) }) == incarnations else {
+        guard current == found, found.map({ facts($0.pid)?.start }) == incarnations, receipt() == launched else {
+            if let current, !current.isEmpty, current != found, case .refused(let why) = decide(current, .failed) {
+                return .refused(why)   // name a replacement stranger plainly
+            }
             return .refused(.cannotInspect)
         }
-        return verdict
+        return decide(current, answer)
     }
 
     static func fetchIdentity(port: Int) async -> BackendTrust.IdentityResult {

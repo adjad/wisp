@@ -228,6 +228,8 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_agent_disconnect.py",
     # Pure identity/port policy; the shell checks skip where spawning is forbidden.
     "tests/test_backend_identity_and_sandbox_isolation.py",
+    # Environment-variable echo only; no server, socket or process.
+    "tests/test_identity_launch_nonce.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
