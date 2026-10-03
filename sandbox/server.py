@@ -400,11 +400,20 @@ def app():
     binding = startup_bind()
 
     async def guarded(scope, receive, send):
-        port = binding.check()
         if scope["type"] == "lifespan":
-            if lifespan_bind() is not binding.config:
-                raise SandboxBindError("Sandbox startup configuration changed")
+            try:
+                binding.check()
+                if lifespan_bind() is not binding.config:
+                    raise SandboxBindError("Sandbox startup configuration changed")
+            except SandboxBindError as error:
+                # Raising before FastAPI handles lifespan can be mistaken for an
+                # unsupported protocol. An explicit failure stops Uvicorn even
+                # if its lifespan setting changed after the factory was loaded.
+                await receive()
+                await send({"type": "lifespan.startup.failed", "message": str(error)})
+                return
         elif scope["type"] in {"http", "websocket"}:
+            port = binding.check()
             address = scope.get("server")
             if not isinstance(address, (tuple, list)) or len(address) != 2:
                 raise SandboxBindError("Missing actual sandbox request bind")

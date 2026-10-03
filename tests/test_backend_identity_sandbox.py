@@ -67,7 +67,7 @@ def test_full_launcher_valid_ports_keep_both_bind_arguments_with_mocked_leaves(t
         dirname() { builtin printf '%s\n' "$FIXTURE_ROOT/sandbox"; }
         python3() {
           case "$2" in
-            *realpath*) builtin printf '%s\n' "$WISP_HOME" ;;
+            *WISP_HOME*) builtin printf '%s\n' "$WISP_HOME" ;;
             *) builtin printf '%s/.moe\n' "$HOME" ;;
           esac
         }
