@@ -79,6 +79,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let launchReceipt = BackendLaunchReceiptStore.defaultDirectory()
             .map { BackendLaunchReceiptStore.shared.configure(directory: $0) } ?? .unusable
         let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
+        // From here on, every request to the backend port goes out only while the
+        // program there is proven to be Wisp's own backend (see BackendTrust).
+        BackendTrustConfiguration.set(ownedPrefixes: ownedPrefixes)
+        BackendTrustProtocol.enforcedPort = BackendTrust.productionPort
+        URLProtocol.registerClass(BackendTrustProtocol.self)
+        NotificationCenter.default.addObserver(
+            forName: .wispBackendRefused, object: nil, queue: .main) { [weak self] note in
+            let message = note.userInfo?["message"] as? String ?? ""
+            MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
+        }
         switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes, receipt: launchReceipt) {
         case .conflict(let foreign):
             backend.portConflict = true
@@ -714,6 +724,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private var lastRefusalShown = ""
+
+    /// The app has just refused to talk to the program on the backend port. Shown once
+    /// per distinct reason, never repeatedly while it stays refused.
+    private func presentBackendRefusal(_ message: String) {
+        guard !message.isEmpty, message != lastRefusalShown else { return }
+        lastRefusalShown = message
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Wisp isn't using its service"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Quit Wisp")
+        if alert.runModal() == .alertSecondButtonReturn { NSApp.terminate(nil) }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop

@@ -27,6 +27,11 @@ from starlette.requests import Request
 from starlette.responses import StreamingResponse
 
 BACKEND_URL = os.environ.get("WISP_BACKEND_URL", "http://127.0.0.1:8775")
+# Pointed at the REAL backend, this process would be a second "app" on its event
+# stream, claiming real outbound sends and acknowledging them without sending.
+from sandbox.guard import refuse_production  # noqa: E402
+
+refuse_production(BACKEND_URL, what="WISP_BACKEND_URL")
 
 _HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",

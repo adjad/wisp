@@ -13,6 +13,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Refuse the real Wisp's ports BEFORE anything is created or started. A sandbox
+# backend on 8765 would be trusted by the real app; a sandbox server aimed at the real
+# backend would act as a second app on its event stream. (Same rule as
+# sandbox/guard.py, repeated here so it holds even without a Python environment.)
+for _port in "${WISP_BACKEND_PORT:-8775}" "${SANDBOX_PORT:-8766}"; do
+  case "$_port" in
+    8765|8000)
+      echo "refusing to run the sandbox: port $_port belongs to the real Wisp (use 8775 / 8766)" >&2
+      exit 1 ;;
+  esac
+done
+
 export WISP_SANDBOX_HOME="${WISP_SANDBOX_HOME:-$HOME/.wisp-sandbox}"
 export WISP_HOME="${WISP_HOME:-$WISP_SANDBOX_HOME/moe}"
 BACKEND_PORT="${WISP_BACKEND_PORT:-8775}"
@@ -48,9 +60,15 @@ echo "sandbox server: http://127.0.0.1:$SANDBOX_PORT"
 
 .venv/bin/uvicorn service.main:app --port "$BACKEND_PORT" >"$WISP_SANDBOX_HOME/backend.log" 2>&1 &
 BACKEND_PID=$!
+# Initialised BEFORE the trap exists: under `set -u` an interrupt or a failed health
+# check before the sandbox server starts made the cleanup die on an unset variable,
+# leaving the backend running (audit M-8).
+SANDBOX_PID=""
 
 cleanup() {
-  kill "$BACKEND_PID" "$SANDBOX_PID" 2>/dev/null || true
+  for _pid in "${BACKEND_PID:-}" "${SANDBOX_PID:-}"; do
+    [ -n "$_pid" ] && kill "$_pid" 2>/dev/null || true
+  done
 }
 trap cleanup INT TERM EXIT
 

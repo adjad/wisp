@@ -203,9 +203,10 @@ def test_the_real_agent_handler_stamps_its_approver_with_the_request_id(monkeypa
 
     async def scenario():
         response = await main.agent({"prompt": "hello there", "test_mode": True})
+        # The request registers when its body is first consumed, not before.
+        await response.body_iterator.__anext__()
         registered = list(main.SESSIONS)
-        async for _ in response.body_iterator:
-            break
+        await response.body_iterator.aclose()
         return registered
     registered = asyncio.run(scenario())
     assert len(created) == 1 and len(registered) == 1
