@@ -1,9 +1,9 @@
 {
   "schema": "wisp.release_performance.bundle/1",
   "corpus": {
-    "version": "release_v1",
+    "version": "release_v2",
     "description": "Synthetic scenarios for the pre-release Wisp performance benchmark. All leaf data below is fictional: reserved 555-01xx numbers, example.com addresses, invented people and places. No real contact, calendar, Mail or Messages data is read or needed.",
-    "qualification_note": "Version 1 has not been exercised against a live attributed environment. The first real run is the qualification run: it carries no baseline and therefore cannot pass. Any change to a scenario expectation is a new corpus version, never an edit of this one.",
+    "qualification_note": "Version 2 has not been exercised against a live attributed environment. The first real run is the qualification run: it carries no baseline and therefore cannot pass. Version 2 supersedes version 1 (which an independent audit blocked): it adds the engine finish_reason gate and the complete denial lifecycle for the approval scenario. Any change to a scenario expectation is a new corpus version, never an edit of this one.",
     "leaf_data": {
       "contacts": {
         "+15555550123": "Alex Rivera",
@@ -64,6 +64,7 @@
         "Wisp couldn't verify the local AI engine",
         "peer attribution unavailable"
       ],
+      "acceptable_finish_reasons": ["stop", "tool_calls", "function_call"],
       "false_success_patterns": [
         "\\b(?:i(?:'ve| have)?|we(?:'ve| have)?)\\s+(?:just\\s+)?(?:sent|texted|messaged|delivered)\\b",
         "\\b(?:message|text|email)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:sent|delivered)\\b",
@@ -189,7 +190,8 @@
           "approval": {
             "tool": "send_message",
             "action": "deny",
-            "args_any_regex": ["(?i)ten minutes|10 minutes|10 min"]
+            "args_any_regex": ["(?i)ten minutes|10 minutes|10 min"],
+            "args_groups": [["(?i)alex rivera", "15555550123"]]
           },
           "tool_calls": {"forbid_successful_effect_results": true},
           "answer": {"forbid_false_success": true}
@@ -211,7 +213,7 @@
     ]
   },
   "policy": {
-    "version": "release_policy_v1",
+    "version": "release_policy_v2",
     "description": "Reviewable, versioned release gate. These values are policy, not harness constants: changing any of them is a new policy version with a new hash, and receipts are bound to that hash.",
     "min_measured_samples": 20,
     "warmup_samples": 2,
@@ -229,7 +231,16 @@
       "baseline_correctness_failure": "INCONCLUSIVE",
       "unverifiable_expectation": "INCONCLUSIVE",
       "missing_or_unapproved_baseline": "INCONCLUSIVE",
-      "unknown_gating_metric": "INCONCLUSIVE"
+      "unknown_gating_metric": "INCONCLUSIVE",
+      "lifecycle_blocked_effect": "BLOCK",
+      "baseline_lifecycle_effect": "INCONCLUSIVE",
+      "integrity_failure": "INCONCLUSIVE"
+    },
+    "environment": {
+      "weights_identity": "full_sha256",
+      "compare_before_and_after": true,
+      "residency": "exactly_the_named_model_before_and_after_on_both_backends",
+      "child_runtime_identical_across_sides": true
     },
     "execution": {
       "accepted_mode": "actual_candidate_isolated_attributed",
@@ -243,7 +254,8 @@
     },
     "comparability_invariants": [
       "lane", "execution_mode", "hardware", "os", "engine", "model",
-      "generation_settings", "cache_warmup_treatment", "harness_sha256", "corpus_sha256", "policy_sha256"
+      "generation_settings", "cache_warmup_treatment", "child_runtime", "containment",
+      "harness_sha256", "corpus_sha256", "policy_sha256"
     ],
     "advisory": {
       "binding": false,

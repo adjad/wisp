@@ -10,7 +10,9 @@ Two real jobs live here, and one rule runs through both:
 * `check` is the release gate. It re-derives every timing, grade and verdict
   from the raw JSONL and refuses anything it cannot verify. It exits nonzero
   for BLOCK, INCONCLUSIVE, refused or missing evidence, and it never accepts a
-  fake-model or offline-fixture result as a performance PASS.
+  fake-model or offline-fixture result as a performance PASS. It requires the
+  receipt digest the measurement owner recorded, accepts only a receipt from
+  the live measurement class, and its result says whether it authorizes a release.
 
 The rule: a sample that is empty, truncated, failed, refused, cancelled, past
 its deadline or a false success is a FAILURE. It never contributes a latency
@@ -38,10 +40,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-HARNESS_VERSION = "release_performance/1"
+HARNESS_VERSION = "release_performance/2"
 BUNDLE_SCHEMA = "wisp.release_performance.bundle/1"
-SAMPLE_SCHEMA = "wisp.release_performance.sample/1"
-RECEIPT_SCHEMA = "wisp.release_performance.receipt/1"
+SAMPLE_SCHEMA = "wisp.release_performance.sample/2"
+RECEIPT_SCHEMA = "wisp.release_performance.receipt/2"
 BASELINE_SCHEMA = "wisp.release_performance.baseline/1"
 
 ACTUAL_MODE = "actual_candidate_isolated_attributed"
@@ -57,6 +59,9 @@ VERDICT_EXIT = {"PASS": EXIT_PASS, "BLOCK": EXIT_BLOCK, "INCONCLUSIVE": EXIT_INC
 GATING_METRICS = ("first_visible_answer_s", "first_model_delta_s", "total_completion_s",
                   "approval_boundary_s", "request_latency_s")
 SIDES = ("candidate", "baseline")
+# Every instrumented surface. A surface a candidate lacks is UNKNOWN, never zero.
+SURFACES = ("engine_http", "engine_completion", "authority_load", "process_check", "binding_check", "peer_check")
+LIVE_DEPS_CLASS = "LiveDeps"   # the only measurement source a release check accepts
 FULL_SHA = re.compile(r"[0-9a-f]{40}")
 MS = 1_000_000
 
@@ -188,9 +193,17 @@ def validate_bundle(bundle: dict) -> list[str]:
         if (policy.get("outcomes") or {}).get(key) != "BLOCK":
             problems.append(f"outcomes.{key} must be BLOCK")
     for key in ("missing_or_unapproved_baseline", "unverifiable_expectation",
-                "baseline_correctness_failure", "unknown_gating_metric"):
+                "baseline_correctness_failure", "unknown_gating_metric", "baseline_lifecycle_effect",
+                "integrity_failure"):
         if (policy.get("outcomes") or {}).get(key) != "INCONCLUSIVE":
             problems.append(f"outcomes.{key} must be INCONCLUSIVE")
+    if (policy.get("outcomes") or {}).get("lifecycle_blocked_effect") != "BLOCK":
+        problems.append("outcomes.lifecycle_blocked_effect must be BLOCK")
+    environment = policy.get("environment") or {}
+    if environment.get("weights_identity") != "full_sha256" or environment.get("compare_before_and_after") is not True:
+        problems.append("environment must require full weight digests compared before and after")
+    if not (corpus.get("sentinels") or {}).get("acceptable_finish_reasons"):
+        problems.append("corpus.sentinels.acceptable_finish_reasons missing")
     return problems
 
 
@@ -348,16 +361,19 @@ def derive_metrics(spec: dict, analysis: dict, driver: dict) -> dict:
 # --------------------------------------------------------------------------
 
 _ENGINE_STATE_CHANGE = re.compile(r"/v1/models/[^/]+/(?:load|unload)$")
-_INSTRUMENT_KINDS = {"engine_http": "engine_http", "authority_load": "authority_load",
-                     "process_check": "process_check", "binding_check": "binding_check",
-                     "peer_check": "peer_check"}
+_INSTRUMENT_KINDS = {name: name for name in SURFACES}
+_COUNT_NAMES = ("engine_http_calls", "chat_calls", "engine_state_changes", "authority_loads",
+                "process_checks", "binding_checks", "peer_checks", "blocked_effects",
+                "completion_reasons", "other_side_engine_requests", "instrumentation_records")
 
 
-def instrument_counts(window_events: list[dict] | None, unavailable: list[str] | None) -> dict:
+def instrument_counts(window_events: list[dict] | None, unavailable: list[str] | None,
+                      other_window: list[dict] | None = None,
+                      other_unavailable: list[str] | None = None) -> dict:
+    """Counts for one sample window. `other_window` is the idle backend's window: it shares the engine,
+    so any request it makes while this sample runs can contaminate the measurement."""
     if window_events is None or unavailable is None:
-        return {name: UNKNOWN for name in
-                ("engine_http_calls", "chat_calls", "engine_state_changes", "authority_loads",
-                 "process_checks", "binding_checks", "peer_checks", "blocked_effects")}
+        return {name: UNKNOWN for name in _COUNT_NAMES}
     missing = set(unavailable)
 
     def count(kind: str, predicate: Callable[[dict], bool] = lambda e: True) -> Any:
@@ -365,6 +381,12 @@ def instrument_counts(window_events: list[dict] | None, unavailable: list[str] |
             return UNKNOWN
         return sum(1 for e in window_events if e.get("kind") == kind and predicate(e))
 
+    completions: Any = UNKNOWN
+    if "engine_completion" not in missing:
+        completions = [e.get("finish_reason") for e in window_events if e.get("kind") == "engine_completion"]
+    other: Any = UNKNOWN
+    if other_window is not None and other_unavailable is not None and "engine_http" not in set(other_unavailable):
+        other = sum(1 for e in other_window if e.get("kind") == "engine_http" and e.get("method") != "GET")
     return {
         "engine_http_calls": count("engine_http"),
         "chat_calls": count("engine_http", lambda e: e.get("method") == "POST"
@@ -377,6 +399,11 @@ def instrument_counts(window_events: list[dict] | None, unavailable: list[str] |
         "peer_checks": count("peer_check"),
         # The effect guard is the harness's own code, so it is always available.
         "blocked_effects": sum(1 for e in window_events if e.get("kind") == "effect_blocked"),
+        # The finish_reason of every engine chat response, observed passively. UNKNOWN when the surface is missing.
+        "completion_reasons": completions,
+        "other_side_engine_requests": other,
+        # A cost proxy for instrumentation itself (see docs, measurement boundary).
+        "instrumentation_records": len(window_events),
     }
 
 
@@ -433,6 +460,72 @@ def _tool_checks(rules: Any, analysis: dict, corpus: dict, reasons: list[str]) -
         for result in analysis["tool_results"]:
             if result["id"] in ids and "denied" not in result["result"].casefold():
                 reasons.append(f"effect_result_without_denial:{ids[result['id']]}")
+
+
+def _approval_checks(approval: dict, analysis: dict, driver: dict, reasons: list[str]) -> None:
+    """The unapproved request must stop at the REAL approval boundary: one confirmation, one accepted denial
+    bound to the same session and action, and a terminal tool result that says the action did not happen."""
+    confirms = [c for c in analysis["confirms"] if c["tool"] == approval["tool"]]
+    if not confirms:
+        reasons.append("approval_boundary_not_reached")
+    elif len(confirms) > 1:
+        reasons.append("duplicate_confirmation")
+    unexpected = [c for c in analysis["confirms"] if c["tool"] != approval["tool"]]
+    if unexpected:
+        reasons.append("unexpected_confirm:" + ",".join(str(c["tool"]) for c in unexpected))
+    approvals = driver.get("approvals") or []
+    if any(a.get("approved") is not False for a in approvals):
+        reasons.append("harness_approved_an_effect")
+    if len(confirms) != 1:
+        return
+    confirm = confirms[0]
+    blob = json.dumps(confirm["args"], sort_keys=True)
+    patterns = approval.get("args_any_regex") or []
+    if patterns and not any(re.search(p, blob) for p in patterns):
+        reasons.append("approval_arguments_mismatch")
+    for group in approval.get("args_groups") or []:      # every group must be satisfied by at least one pattern
+        if not any(re.search(p, blob) for p in group):
+            reasons.append("approval_arguments_mismatch")
+            break
+    mine = [a for a in approvals if a.get("action_id") == confirm["id"]]
+    if len(mine) != len(approvals):
+        reasons.append("denial_for_another_action")
+    if not mine:
+        reasons.append("denial_not_recorded")
+    elif len(mine) > 1:
+        reasons.append("duplicate_denial")
+    else:
+        record = mine[0]
+        if record.get("approved") is False and record.get("accepted") is not True:
+            reasons.append("denial_not_accepted")
+        if not analysis["session_id"] or record.get("session_id") != analysis["session_id"]:
+            reasons.append("denial_session_mismatch")
+    results = [r for r in analysis["tool_results"] if r["id"] == confirm["id"]]
+    if not results:
+        reasons.append("denial_result_missing")
+    elif not any("denied" in r["result"].casefold() for r in results):
+        reasons.append("denial_result_not_a_denial")
+
+
+def _completion_checks(instrument: dict, expect: dict, sentinels: dict, reasons: list[str],
+                       unverifiable: list[str]) -> None:
+    """A terminal `done` proves the loop finished, not that the model's answer was complete. The engine's own
+    finish_reason is observed passively; a length-terminated answer is a truncated answer."""
+    chats = instrument.get("chat_calls", UNKNOWN)
+    if chats == UNKNOWN or chats == 0:
+        return          # an unknown call count is already unverifiable through the model_calls rule
+    completions = instrument.get("completion_reasons", UNKNOWN)
+    if completions == UNKNOWN:
+        unverifiable.append("completion_status")
+        return
+    if len(completions) != chats:
+        unverifiable.append("completion_status_incomplete")
+    acceptable = set(sentinels.get("acceptable_finish_reasons") or [])
+    for reason in completions:
+        if reason in (None, ""):
+            unverifiable.append("completion_status_missing")
+        elif reason not in acceptable:
+            reasons.append(f"incomplete_completion:{reason}")
 
 
 def grade_sample(spec: dict, analysis: dict, driver: dict, instrument: dict, corpus: dict) -> dict:
@@ -528,21 +621,11 @@ def grade_sample(spec: dict, analysis: dict, driver: dict, instrument: dict, cor
 
         approval = expect.get("approval")
         if approval:
-            confirms = [c for c in analysis["confirms"] if c["tool"] == approval["tool"]]
-            if not confirms:
-                reasons.append("approval_boundary_not_reached")
-            else:
-                blob = json.dumps(confirms[0]["args"], sort_keys=True)
-                patterns = approval.get("args_any_regex") or []
-                if patterns and not any(re.search(p, blob) for p in patterns):
-                    reasons.append("approval_arguments_mismatch")
-            unexpected = [c for c in analysis["confirms"] if c["tool"] != approval["tool"]]
-            if unexpected:
-                reasons.append("unexpected_confirm:" + ",".join(str(c["tool"]) for c in unexpected))
-            if any(a.get("approved") for a in driver.get("approvals", [])):
-                reasons.append("harness_approved_an_effect")
+            _approval_checks(approval, analysis, driver, reasons)
         elif analysis["confirms"]:
             reasons.append("unexpected_confirm:" + ",".join(str(c["tool"]) for c in analysis["confirms"]))
+        elif driver.get("approvals"):
+            reasons.append("approval_without_a_confirm")
 
         calls_rule = expect.get("model_calls")
         if calls_rule:
@@ -555,6 +638,13 @@ def grade_sample(spec: dict, analysis: dict, driver: dict, instrument: dict, cor
                 if "min" in calls_rule and chats < calls_rule["min"]:
                     reasons.append(f"model_calls:{chats}<min_{calls_rule['min']}")
 
+    if spec.get("kind") != "http":
+        _completion_checks(instrument, expect, sentinels, reasons, unverifiable)
+    other = instrument.get("other_side_engine_requests", UNKNOWN)
+    if other == UNKNOWN:
+        unverifiable.append("other_side_engine_activity")
+    elif other:
+        unverifiable.append("shared_engine_interference")
     if instrument.get("engine_state_changes") not in (0, UNKNOWN):
         reasons.append("engine_state_change")
     if instrument.get("blocked_effects") not in (0, UNKNOWN, None):
@@ -697,7 +787,7 @@ def find_model_dir(model_dirs: list[str], model_id: str) -> Path | None:
 
 
 def collect_environment(model_id: str, lane: str, warmups: int, *, runner: Callable = run_cmd,
-                        home: Path | None = None,
+                        home: Path | None = None, hash_weights: bool = True,
                         plist: Path = Path("/Applications/oMLX.app/Contents/Info.plist")) -> dict:
     """Identity of everything that can move a latency number besides the code.
 
@@ -720,7 +810,10 @@ def collect_environment(model_id: str, lane: str, warmups: int, *, runner: Calla
     config = _read_json(model_dir / "config.json") if model_dir else None
     weights = []
     if model_dir:
-        weights = sorted((p.name, p.stat().st_size) for p in model_dir.glob("*.safetensors"))
+        # Names and sizes cannot tell a same-named, same-sized artifact from a replaced one, so the policy
+        # identity is the full content digest of every weight file. UNKNOWN (never skipped) when not hashed.
+        weights = [[p.name, p.stat().st_size, sha256_file(p) if hash_weights else UNKNOWN]
+                   for p in sorted(model_dir.glob("*.safetensors"))]
     try:
         import plistlib
         info = plistlib.loads(Path(plist).read_bytes())
@@ -747,12 +840,13 @@ def collect_environment(model_id: str, lane: str, warmups: int, *, runner: Calla
                   "quantization": (config or {}).get("quantization") or (config or {}).get("quantization_config") or UNKNOWN,
                   "weights_manifest": {"files": weights,
                                        "sha256": canonical_sha(weights) if weights else UNKNOWN,
-                                       "note": "names and sizes only; weight contents are not hashed"}},
+                                       "note": "name, size and full SHA-256 of every weight file"}},
         "generation_settings": {
             "model_settings": ({k: model_settings.get(k) for k in _GENERATION_KEYS if k in model_settings}
                                if isinstance(model_settings, dict) else UNKNOWN),
             "engine_sampling_defaults": settings.get("sampling") or UNKNOWN,
-            "request_temperature": "omitted by Wisp; the engine profile applies"},
+            "request_settings": "not declared here: the sampling fields of every engine chat request are "
+                                "observed per call and compared across sides (request_identity)"},
         "cache_warmup_treatment": {
             "engine_cache_settings": settings.get("cache") or UNKNOWN,
             "cache_cleared_before_run": False,
@@ -772,6 +866,8 @@ def cohort_key(receipt: dict) -> dict:
             "engine": environment.get("engine"), "model": environment.get("model"),
             "generation_settings": environment.get("generation_settings"),
             "cache_warmup_treatment": environment.get("cache_warmup_treatment"),
+            "child_runtime": receipt.get("runtime_identity"),
+            "containment": receipt.get("containment"),
             "harness_sha256": (receipt.get("harness") or {}).get("script_sha256"),
             "corpus_sha256": (receipt.get("corpus") or {}).get("sha256"),
             "policy_sha256": (receipt.get("policy") or {}).get("sha256")}
@@ -847,24 +943,149 @@ class EffectBlocked(PermissionError):
     pass
 
 
-ALLOWED_EXEC = frozenset({"/usr/sbin/lsof", "/bin/ps"})  # engine attribution inspection only
 LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+# The engine operations a benchmarked Wisp may issue. Everything else sent to the engine port (a model load or
+# unload, a settings write, an admin call) is refused BEFORE it is transmitted, and recorded.
+ENGINE_ALLOWED_OPS = (("GET", r"/health"), ("GET", r"/v1/models"), ("GET", r"/v1/models/status"),
+                      ("POST", r"/v1/chat/completions"), ("POST", r"/v1/embeddings"), ("POST", r"/v1/rerank"))
+
+# The exact argument shapes of the read-only inspectors the engine attribution runs at the base commit. A
+# program name alone is not a capability: lsof and ps can each do more than inspect.
+EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
+    "/usr/sbin/lsof": (r"-nP -a -iTCP:[0-9]{1,5} -sTCP:LISTEN -Fpufn",
+                       r"-nP -a -p [1-9][0-9]* -d txt -Fn",
+                       r"-nP -a -iTCP -sTCP:LISTEN -Fpufn",
+                       r"-nP -a -iTCP:[0-9]{1,5} -sTCP:ESTABLISHED -FpufPtTn -Ts"),
+    "/bin/ps": (r"-ww -p [1-9][0-9]* -o ppid=,uid=,comm=",),
+}
+ALLOWED_EXEC = frozenset(EXEC_GRAMMAR)
+
+
+class FsPolicy:
+    """Where the spawned backend may read and write.
+
+    Writes are allowed only inside the throwaway WISP_HOME (which also holds TMPDIR), plus the one credential
+    lease file the product itself creates. Under the real HOME, reads are limited to the exact configuration
+    inputs the attributed engine path needs (the engine settings and authorization record) and to the code and
+    interpreter the child runs. Everything else under the real HOME is refused and recorded. Python-level
+    only: native code that opens files itself is outside this boundary.
+    """
+
+    def __init__(self, *, home: str | os.PathLike, read_roots=(), write_roots=(), read_exact=(),
+                 write_exact=(), mkdir_exact=(), labels: dict | None = None) -> None:
+        self.labels = dict(labels or {})
+        self.home = self.absolute(home)
+        self.read_roots = self._both(read_roots)
+        self.write_roots = self._both(write_roots)
+        self.read_exact = self._both(read_exact)
+        self.write_exact = self._both(write_exact)
+        self.mkdir_exact = self._both(mkdir_exact)
+
+    @staticmethod
+    def absolute(path: str | os.PathLike) -> str:
+        return os.path.normpath(os.path.join(os.getcwd(), os.fsdecode(os.fspath(path))))
+
+    @classmethod
+    def _both(cls, paths) -> tuple[str, ...]:
+        out: list[str] = []
+        for path in paths:
+            absolute = cls.absolute(path)
+            for form in (absolute, os.path.realpath(absolute)):
+                if form not in out:
+                    out.append(form)
+        return tuple(out)
+
+    @staticmethod
+    def _under(path: str, roots) -> bool:
+        return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
+
+    def read_allowed(self, path: str) -> bool:
+        if not self._under(path, [self.home]):
+            return True
+        return (self._under(path, self.read_roots) or self._under(path, self.write_roots)
+                or path in self.read_exact or path in self.write_exact)
+
+    def write_allowed(self, path: str) -> bool:
+        real = os.path.realpath(path)
+        return (real.startswith("/dev/") or self._under(real, self.write_roots) or real in self.write_exact
+                or path in self.write_exact)
+
+    def mkdir_allowed(self, path: str) -> bool:
+        return self.write_allowed(path) or path in self.mkdir_exact or os.path.realpath(path) in self.mkdir_exact
+
+    def portable(self) -> dict:
+        """The policy WITHOUT per-run paths, so two children of one run (different worktree roots) have the
+        same containment identity and a different policy has a different one."""
+        def relative(paths) -> list[str]:
+            return sorted({("~" + path[len(self.home):]) if path == self.home or path.startswith(self.home + os.sep)
+                           else path for path in paths})
+        return {"real_home_denied_by_default": True, "read_roots": self.labels.get("read_roots", []),
+                "write_roots": self.labels.get("write_roots", []), "read_exact": relative(self.read_exact),
+                "write_exact": relative(self.write_exact), "mkdir_exact": relative(self.mkdir_exact)}
+
+    def describe(self) -> dict:
+        return {"home": self.home, "read_roots": list(self.read_roots), "write_roots": list(self.write_roots),
+                "read_exact": list(self.read_exact), "write_exact": list(self.write_exact),
+                "mkdir_exact": list(self.mkdir_exact)}
+
+
+def build_fs_policy(root: Path, home: Path, *, real_home: Path | None = None) -> FsPolicy:
+    real_home = Path(real_home) if real_home else Path.home()
+    interpreter = [sys.prefix, sys.base_prefix, sys.exec_prefix]
+    interpreter += [entry for entry in sys.path if entry and os.path.isdir(entry)]
+    return FsPolicy(
+        home=real_home,
+        read_roots=[root, *interpreter],
+        write_roots=[home],
+        read_exact=[real_home / ".omlx" / "settings.json", real_home / ".omlx" / "model_settings.json",
+                    real_home / ".moe" / "omlx-runtime-authorization.json",
+                    real_home / ".moe" / ".credential-generation",
+                    real_home / ".moe" / ".helper-transaction.json"],
+        write_exact=[real_home / ".moe" / ".provisioning.lock"],   # the credential lease the product creates
+        mkdir_exact=[real_home / ".moe"],
+        labels={"read_roots": ["child_worktree", "interpreter_prefixes", "sys.path"],
+                "write_roots": ["throwaway_wisp_home"]})
+
+
+_FS_FUNCS: dict[str, tuple[str, tuple[tuple[int, str], ...]]] = {
+    "mkdir": ("mkdir", ((0, "path"),)),
+    "rmdir": ("write", ((0, "path"),)), "remove": ("write", ((0, "path"),)), "unlink": ("write", ((0, "path"),)),
+    "truncate": ("write", ((0, "path"),)), "chmod": ("write", ((0, "path"),)), "chown": ("write", ((0, "path"),)),
+    "utime": ("write", ((0, "path"),)),
+    "rename": ("write", ((0, "src"), (1, "dst"))), "replace": ("write", ((0, "src"), (1, "dst"))),
+    "link": ("write", ((0, "src"), (1, "dst"))), "symlink": ("write", ((1, "dst"),)),
+    "listdir": ("read", ((0, "path"),)), "scandir": ("read", ((0, "path"),)),
+}
 
 
 class EffectGuard:
     """Refuses real-world effects while leaving the attribution path intact.
 
-    Blocks any process other than the two read-only inspectors the engine
-    attribution uses, any network connection except loopback to the engine
-    port, and any httpx request to anywhere else. Raw libuv sockets opened by
-    a C extension are not interceptable from Python; the httpx and stdlib
-    socket layers cover every path Wisp's own code uses.
+    Blocks, before they happen: any process whose complete argument vector is not one of the read-only
+    inspector shapes (and any shell or executable override); any connection except loopback to the engine
+    port; any engine request that is not an explicitly permitted inference or status operation; any other
+    HTTP request; and, when a policy is given, filesystem reads and writes outside it. Every refusal is
+    recorded. Raw sockets or files opened by a C extension are not interceptable from Python.
     """
 
-    def __init__(self, emit: Callable[..., None], *, allowed_exec: frozenset[str] = ALLOWED_EXEC,
-                 allowed_ports: set[int] | frozenset[int] = frozenset({8000})) -> None:
-        self.emit, self.allowed_exec, self.allowed_ports = emit, allowed_exec, set(allowed_ports)
+    def __init__(self, emit: Callable[..., None], *,
+                 exec_grammar: dict[str, tuple[str, ...] | None] | None = None,
+                 allowed_ports: set[int] | frozenset[int] = frozenset({8000}),
+                 engine_ops: tuple[tuple[str, str], ...] = ENGINE_ALLOWED_OPS,
+                 fs: FsPolicy | None = None) -> None:
+        self.emit, self.allowed_ports = emit, set(allowed_ports)
+        self.exec_grammar = dict(EXEC_GRAMMAR if exec_grammar is None else exec_grammar)
+        self.engine_ops, self.fs = tuple(engine_ops), fs
         self._originals: list[tuple[Any, str, Any]] = []
+
+    def policy_description(self) -> dict:
+        return {"exec": {k: (list(v) if v is not None else None) for k, v in sorted(self.exec_grammar.items())},
+                "engine_ops": [list(op) for op in self.engine_ops], "ports": sorted(self.allowed_ports),
+                "fs": self.fs.portable() if self.fs else None}
+
+    def policy_sha256(self) -> str:
+        return canonical_sha(self.policy_description())
 
     def _block(self, what: str, target: str) -> None:
         self.emit("effect_blocked", what=what, target=target)
@@ -882,19 +1103,95 @@ class EffectGuard:
             self._block(what, f"{host}:{port}")
         self._block(what, repr(address)[:80])
 
+    def _check_engine_op(self, method: str, path: str) -> None:
+        method = str(method).upper()
+        if not any(method == m and re.fullmatch(pattern, path) for m, pattern in self.engine_ops):
+            self._block("engine_operation", f"{method} {path}"[:160])
+
+    def _check_exec(self, bound: dict) -> None:
+        argv_in = bound.get("args")
+        argv = [argv_in] if isinstance(argv_in, (str, bytes, os.PathLike)) else list(argv_in or [])
+        first = os.fsdecode(argv[0]) if argv else ""
+        if bound.get("shell"):
+            self._block("exec", f"shell=True {first}"[:120])
+        executable = bound.get("executable")
+        if executable is not None and os.fsdecode(executable) != first:
+            self._block("exec", f"executable override {os.fsdecode(executable)} for {first}"[:160])
+        if first not in self.exec_grammar:
+            self._block("exec", first or "<empty>")
+        patterns = self.exec_grammar[first]
+        rest = " ".join(os.fsdecode(a) for a in argv[1:])
+        if patterns is not None and not any(re.fullmatch(p, rest) for p in patterns):
+            self._block("exec", f"{first} {rest}"[:160])
+
+    def _install_fs(self) -> None:
+        import builtins
+        import io
+        fs, guard = self.fs, self
+
+        def check(kind: str, value: Any) -> None:
+            if value is None or isinstance(value, int):
+                return
+            try:
+                path = fs.absolute(value)
+            except TypeError:
+                return
+            allowed = {"write": fs.write_allowed, "mkdir": fs.mkdir_allowed}.get(kind, fs.read_allowed)(path)
+            if not allowed:
+                guard._block("fs_read" if kind == "read" else "fs_write", path)
+
+        original_open = builtins.open
+
+        def guarded_open(file, mode="r", *a, **k):
+            check("write" if any(c in str(mode) for c in "wax+") else "read", file)
+            return original_open(file, mode, *a, **k)
+
+        self._patch(builtins, "open", guarded_open)
+        self._patch(io, "open", guarded_open)
+        original_os_open = os.open
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+
+        def guarded_os_open(path, flags, *a, **k):
+            check("write" if flags & write_flags else "read", path)
+            return original_os_open(path, flags, *a, **k)
+
+        self._patch(os, "open", guarded_os_open)
+        for name, (kind, slots) in _FS_FUNCS.items():
+            original = getattr(os, name, None)
+            if original is None:
+                continue
+
+            def make(original, kind, slots):
+                def guarded(*args, **kwargs):
+                    for position, keyword in slots:
+                        check(kind, args[position] if len(args) > position else kwargs.get(keyword))
+                    return original(*args, **kwargs)
+                return guarded
+
+            self._patch(os, name, make(original, kind, slots))
+
     def install(self) -> "EffectGuard":
+        import inspect
         import socket
         import subprocess as sp
         guard = self
         original_init = sp.Popen.__init__
+        signature = inspect.signature(original_init)
 
-        def popen_init(self_, args, *a, **k):
-            argv = [args] if isinstance(args, (str, bytes, os.PathLike)) else list(args)
-            first = os.fspath(argv[0]) if argv else ""
-            first = first.decode() if isinstance(first, bytes) else first
-            if first not in guard.allowed_exec:
-                guard._block("exec", first or "<empty>")
-            return original_init(self_, args, *a, **k)
+        def popen_init(self_, *args, **kwargs):
+            try:
+                arguments = signature.bind(self_, *args, **kwargs).arguments
+            except TypeError:
+                guard._block("exec", "unparseable Popen call")
+            bound: dict[str, Any] = {}
+            for name, value in arguments.items():
+                kind = signature.parameters[name].kind
+                if kind is inspect.Parameter.VAR_KEYWORD:
+                    bound.update(value)
+                elif kind is not inspect.Parameter.VAR_POSITIONAL:
+                    bound[name] = value
+            guard._check_exec(bound)
+            return original_init(self_, *args, **kwargs)
 
         original_connect, original_connect_ex = socket.socket.connect, socket.socket.connect_ex
 
@@ -909,9 +1206,23 @@ class EffectGuard:
         self._patch(sp.Popen, "__init__", popen_init)
         self._patch(socket.socket, "connect", connect)
         self._patch(socket.socket, "connect_ex", connect_ex)
-        for name in ("system", "posix_spawn", "posix_spawnp", "execv", "execve", "execvp"):
+        for name in ("system", "posix_spawn", "posix_spawnp", "execv", "execve", "execvp", "execvpe", "execl",
+                     "execle", "execlp", "execlpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv",
+                     "spawnve", "spawnvp", "spawnvpe", "fork", "forkpty"):
             if hasattr(os, name):
                 self._patch(os, name, lambda *a, _n=name, **k: guard._block("exec", f"os.{_n}"))
+        import http.client
+        original_putrequest = http.client.HTTPConnection.putrequest
+
+        def putrequest(self_, method, url, *a, **k):
+            if self_.host not in LOCAL_HOSTS or self_.port not in guard.allowed_ports:
+                guard._block("http", f"{self_.host}:{self_.port}")
+            guard._check_engine_op(method, str(url).split("?", 1)[0])
+            return original_putrequest(self_, method, url, *a, **k)
+
+        self._patch(http.client.HTTPConnection, "putrequest", putrequest)
+        if self.fs is not None:
+            self._install_fs()
         try:
             import httpx
         except ImportError:
@@ -924,6 +1235,7 @@ class EffectGuard:
                     host, port = request.url.host, request.url.port or (443 if request.url.scheme == "https" else 80)
                     if host not in LOCAL_HOSTS or port not in guard.allowed_ports:
                         guard._block("http", f"{host}:{port}")
+                    guard._check_engine_op(request.method, request.url.path)
                 if is_async:
                     async def send(self_, request, *a, **k):
                         check(request)
@@ -954,13 +1266,20 @@ class EffectGuard:
 # --------------------------------------------------------------------------
 
 class InstrumentRecorder:
+    """Append-only, line-buffered JSONL log of one backend's whole lifetime.
+
+    Every record carries a gap-free sequence number and a timestamp taken under the same lock, so the file
+    is totally ordered and a missing record is detectable from the file alone."""
+
     def __init__(self, path: Path | str) -> None:
         self._lock = threading.Lock()
+        self._seq = 0
         self._file = open(path, "a", buffering=1, encoding="utf-8")
 
     def emit(self, kind: str, **fields: Any) -> None:
-        record = {"kind": kind, "t_ns": time.monotonic_ns(), "pid": os.getpid(), **fields}
         with self._lock:
+            record = {"kind": kind, "seq": self._seq, "t_ns": time.monotonic_ns(), "pid": os.getpid(), **fields}
+            self._seq += 1
             self._file.write(json.dumps(record, sort_keys=True, default=str) + "\n")
 
     def close(self) -> None:
@@ -985,13 +1304,157 @@ def _wrap_sync(recorder: InstrumentRecorder, kind: str, fn: Callable, describe: 
     return wrapper
 
 
+_REQUEST_FIELDS = ("model", "temperature", "top_p", "top_k", "min_p", "presence_penalty", "repetition_penalty",
+                   "max_tokens", "stream", "n", "reasoning_effort")
+_TEE_LINE_LIMIT = 1 << 16
+_TEE_BODY_LIMIT = 4 << 20
+
+
+def request_settings(content: Any) -> dict | None:
+    """The sampling and model fields of an engine chat request. Never the messages, the tools' content or any
+    credential. None when the body is unavailable or not JSON."""
+    try:
+        body = json.loads(content)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(body, dict):
+        return None
+    out: dict[str, Any] = {k: body[k] for k in _REQUEST_FIELDS if k in body}
+    kwargs = body.get("chat_template_kwargs")
+    if isinstance(kwargs, dict):
+        out["chat_template_kwargs"] = {str(k): v for k, v in sorted(kwargs.items(), key=lambda kv: str(kv[0]))
+                                       if isinstance(v, (bool, int, float, str))}
+    out["tool_count"] = len(body["tools"]) if isinstance(body.get("tools"), list) else 0
+    return out
+
+
+class CompletionParser:
+    """Passive reader of an engine chat response: the last finish_reason, from an SSE stream or a JSON body.
+
+    Memory is bounded: a stream keeps only one partial line, a JSON body is capped. It never raises."""
+
+    def __init__(self) -> None:
+        self.mode: str | None = None
+        self.reason: Any = None
+        self.saw_data = False
+        self.choices = 0
+        self.bad = False
+        self.truncated = False
+        self._line = b""
+        self._body = bytearray()
+
+    def _choices(self, data: Any) -> None:
+        rows = data.get("choices") if isinstance(data, dict) else None
+        if not isinstance(rows, list):
+            self.bad = True
+            return
+        self.choices = max(self.choices, len(rows))
+        for row in rows:
+            if isinstance(row, dict) and row.get("finish_reason"):
+                self.reason = row["finish_reason"]
+
+    def feed(self, chunk: bytes) -> None:
+        if self.mode is None:
+            head = chunk.lstrip()[:1]
+            if not head:
+                return
+            self.mode = "json" if head == b"{" else "sse"
+        if self.mode == "json":
+            if len(self._body) + len(chunk) <= _TEE_BODY_LIMIT:
+                self._body.extend(chunk)
+            else:
+                self.truncated = True
+            return
+        self._line += chunk
+        *lines, self._line = self._line.split(b"\n")
+        if len(self._line) > _TEE_LINE_LIMIT:
+            self._line, self.truncated = b"", True
+        for line in lines:
+            self._sse(line)
+
+    def _sse(self, line: bytes) -> None:
+        line = line.strip()
+        if not line.startswith(b"data:"):
+            return
+        payload = line[5:].strip()
+        if not payload or payload == b"[DONE]":
+            return
+        self.saw_data = True
+        try:
+            self._choices(json.loads(payload))
+        except ValueError:
+            self.bad = True
+
+    def result(self) -> tuple[Any, int, str]:
+        if self.mode == "sse" and self._line.strip():
+            self._sse(self._line)
+            self._line = b""
+        if self.mode == "json" and not self.truncated:
+            try:
+                self._choices(json.loads(bytes(self._body)))
+            except ValueError:
+                self.bad = True
+        if self.mode is None or self.bad or (self.mode == "sse" and not self.saw_data):
+            return None, self.choices, "unparseable"
+        if self.truncated and self.reason is None:
+            return None, self.choices, "capture_truncated"
+        return self.reason, self.choices, "ok" if self.reason else "none"
+
+
+_TEE_CLASS: Any = None
+
+
+def _completion_tee(recorder: InstrumentRecorder, inner: Any) -> Any:
+    """Wrap a response byte stream so the engine's finish_reason is recorded. Every byte passes through
+    unchanged and in order; the record is written when the stream closes."""
+    global _TEE_CLASS
+    if _TEE_CLASS is None:
+        import httpx
+
+        class CompletionTee(httpx.AsyncByteStream):
+            def __init__(self, recorder: InstrumentRecorder, inner: Any) -> None:
+                self.recorder, self.inner, self.parser = recorder, inner, CompletionParser()
+                self.exhausted = self.emitted = False
+
+            async def __aiter__(self):
+                async for chunk in self.inner:
+                    self.parser.feed(chunk)
+                    yield chunk
+                self.exhausted = True
+
+            async def aclose(self):
+                try:
+                    await self.inner.aclose()
+                finally:
+                    self._finish()
+
+            def _finish(self):
+                if self.emitted:
+                    return
+                self.emitted = True
+                reason, choices, parse = self.parser.result()
+                self.recorder.emit("engine_completion", finish_reason=reason, n_choices=choices, parse=parse,
+                                   complete_stream=self.exhausted)
+
+        _TEE_CLASS = CompletionTee
+    return _TEE_CLASS(recorder, inner)
+
+
 def _wrap_async_request(recorder: InstrumentRecorder, fn: Callable) -> Callable:
     import functools
 
     @functools.wraps(fn)
     async def wrapper(self_, request, *args, **kwargs):
         start = time.monotonic_ns()
-        fields = {"method": str(request.method), "path": str(request.url.path)}
+        fields: dict[str, Any] = {"method": str(request.method), "path": str(request.url.path)}
+        chat = fields["method"] == "POST" and fields["path"].endswith("/chat/completions")
+        if chat:
+            try:
+                content = request.content
+            except Exception:  # noqa: BLE001 - a streamed request body is simply not observable
+                content = None
+            settings = request_settings(content)
+            fields["request_settings"] = UNKNOWN if settings is None else settings
         try:
             response = await fn(self_, request, *args, **kwargs)
         except BaseException as exc:
@@ -1000,6 +1463,8 @@ def _wrap_async_request(recorder: InstrumentRecorder, fn: Callable) -> Callable:
             raise
         recorder.emit("engine_http", t_start_ns=start, t_headers_ns=time.monotonic_ns(),
                       status=getattr(response, "status_code", None), **fields)
+        if chat and hasattr(response, "stream"):
+            response.stream = _completion_tee(recorder, response.stream)
         return response
     return wrapper
 
@@ -1017,7 +1482,7 @@ def install_instrumentation(recorder: InstrumentRecorder, attributed_transport: 
     transport = getattr(at, "CredentialTransport", None)
     if transport is not None and hasattr(transport, "handle_async_request"):
         transport.handle_async_request = _wrap_async_request(recorder, transport.handle_async_request)
-        available.add("engine_http")
+        available.update(("engine_http", "engine_completion"))
 
     authority = getattr(at, "RuntimeAuthority", None)
     if authority is not None and hasattr(authority, "load"):
@@ -1044,11 +1509,22 @@ def install_instrumentation(recorder: InstrumentRecorder, attributed_transport: 
         managed.connected_peer = _wrap_sync(recorder, "peer_check", managed.connected_peer, lambda a, k: {})
         available.add("peer_check")
 
-    names = ["engine_http", "authority_load", "process_check", "binding_check", "peer_check"]
-    return sorted(available), [n for n in names if n not in available]
+    return sorted(available), [n for n in SURFACES if n not in available]
+
+
+def runtime_identity() -> dict:
+    """What this interpreter actually is. Reported by the CHILD about itself, never inferred by the parent."""
+    executable = Path(sys.executable).resolve()
+    try:
+        digest = sha256_file(executable)
+    except OSError:
+        digest = UNKNOWN
+    return {"python_version": sys.version.split()[0], "implementation": sys.implementation.name,
+            "executable": str(executable), "executable_sha256": digest, "platform": sys.platform}
 
 
 ACTIVE_GUARD: EffectGuard | None = None  # kept reachable so a test can undo what serve_main installs
+RESIDENCY_PROBE_PATH = "/__release_probe/residency"
 
 
 def serve_main(args: argparse.Namespace) -> int:
@@ -1056,24 +1532,40 @@ def serve_main(args: argparse.Namespace) -> int:
     root = Path(args.root).resolve()
     sys.path.insert(0, str(root))
     os.chdir(root)
-    os.environ["WISP_HOME"] = str(Path(args.home).resolve())
+    home = Path(args.home).resolve()
+    os.environ["WISP_HOME"] = str(home)
     recorder = InstrumentRecorder(args.instrument_out)
     global ACTIVE_GUARD
-    ACTIVE_GUARD = EffectGuard(recorder.emit, allowed_ports={args.engine_port}).install()
+    guard = EffectGuard(recorder.emit, allowed_ports={args.engine_port}, fs=build_fs_policy(root, home))
+    # The header is always the first record: identity of this exact child, written before anything can fail.
+    recorder.emit("header", root=str(root), harness=HARNESS_VERSION, run_id=getattr(args, "run_id", ""),
+                  side=getattr(args, "side", ""), effect_guard=True, guard_policy_sha256=guard.policy_sha256(),
+                  runtime=runtime_identity())
+    ACTIVE_GUARD = guard.install()
     import importlib
     try:
         at = importlib.import_module("service.inference.attributed_transport")
         lp = importlib.import_module("service.inference.local_peer")
     except ImportError as exc:
-        recorder.emit("header", pid=os.getpid(), error=f"import failed: {exc}", available=[],
-                      unavailable=["engine_http", "authority_load", "process_check",
-                                   "binding_check", "peer_check"])
+        recorder.emit("surfaces", error=f"import failed: {exc}", available=[], unavailable=list(SURFACES))
         raise
     available, unavailable = install_instrumentation(recorder, at, lp)
-    recorder.emit("header", pid=os.getpid(), root=str(root), harness=HARNESS_VERSION,
-                  available=available, unavailable=unavailable, effect_guard=True)
+    recorder.emit("surfaces", available=available, unavailable=unavailable)
     import uvicorn
-    uvicorn.run("service.main:app", host="127.0.0.1", port=args.port, log_level="warning")
+    main_module = importlib.import_module("service.main")
+    app = main_module.app
+
+    async def residency():
+        """Resident model ids as the candidate's OWN attributed client reports them. The harness never sends
+        the engine credential itself."""
+        from fastapi.responses import JSONResponse
+        try:
+            return {"loaded": sorted(await main_module.client.loaded_models())}
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse(status_code=503, content={"error": type(exc).__name__})
+
+    app.add_api_route(RESIDENCY_PROBE_PATH, residency, methods=["GET"], include_in_schema=False)
+    uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="warning")
     return 0
 
 
@@ -1129,10 +1621,16 @@ class HttpTurnDriver:
                                 reply = await client.post("/agent/approve", json={
                                     "session_id": session, "action_id": event.get("id"),
                                     "approved": False, "scope": "once"})
-                                sink["approvals"].append({"t_ns": self.clock_ns() - start,
-                                                          "action_id": event.get("id"), "approved": False,
-                                                          "accepted": bool(reply.json().get("ok"))
-                                                          if reply.status_code == 200 else False})
+                                try:
+                                    reply_body = reply.json()
+                                except ValueError:
+                                    reply_body = None
+                                # `accepted` is True only when the real endpoint matched a pending action.
+                                sink["approvals"].append({
+                                    "t_ns": self.clock_ns() - start, "action_id": event.get("id"),
+                                    "session_id": session, "approved": False, "status_code": reply.status_code,
+                                    "accepted": reply.status_code == 200 and isinstance(reply_body, dict)
+                                    and reply_body.get("ok") is True})
                             elif kind == "done":
                                 break
                         sink["stream_closed_ns"] = self.clock_ns() - start
@@ -1195,13 +1693,34 @@ def parse_ps_time(text: str) -> float | None:
     return days * 86400 + seconds
 
 
+TERMINATE_WAIT_S = 15.0     # bounded teardown: ask politely, then insist
+KILL_WAIT_S = 5.0
+CHILD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+# The only parent variables a backend inherits. No credential, loader, bridge, proxy or interpreter setting.
+CHILD_ENV_FROM_PARENT = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE")
+
+
+def child_environment(home: Path, parent: dict | None = None) -> dict:
+    """The complete environment of a spawned backend: an explicit allowlist, nothing ambient.
+
+    HOME is kept on purpose: the engine settings and authorization record the attributed path needs live under
+    the real HOME, and a fake HOME would not be a real measurement. WISP_HOME and TMPDIR point into the
+    throwaway directory, and no bytecode is written into the verified worktree."""
+    source = os.environ if parent is None else parent
+    env = {key: source[key] for key in CHILD_ENV_FROM_PARENT if key in source}
+    env.update({"PATH": CHILD_PATH, "WISP_HOME": str(home), "TMPDIR": str(Path(home) / "tmp"),
+                "PYTHONDONTWRITEBYTECODE": "1"})
+    return env
+
+
 class BackendProcess:
     """One isolated backend spawned from one verified worktree."""
 
     def __init__(self, side: str, root: Path, port: int, home: Path, instrument_path: Path,
-                 python: str, runner: Callable = run_cmd) -> None:
+                 python: str, runner: Callable = run_cmd, run_id: str = "") -> None:
         self.side, self.root, self.port, self.home = side, Path(root), port, Path(home)
         self.instrument_path, self.python, self.runner = Path(instrument_path), python, runner
+        self.run_id = run_id
         self.proc: subprocess.Popen | None = None
         self.base_url = f"http://127.0.0.1:{port}"
 
@@ -1212,14 +1731,17 @@ class BackendProcess:
     def command(self) -> list[str]:
         return [self.python, str(Path(__file__).resolve()), "serve", "--root", str(self.root),
                 "--port", str(self.port), "--home", str(self.home),
-                "--instrument-out", str(self.instrument_path), "--engine-port", "8000"]
+                "--instrument-out", str(self.instrument_path), "--engine-port", "8000",
+                "--run-id", self.run_id, "--side", self.side]
 
     def start(self) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
-        env = {k: v for k, v in os.environ.items() if k not in ("WISP_BACKEND_URL",)}
-        env["WISP_HOME"] = str(self.home)
-        self.proc = subprocess.Popen(self.command(), cwd=str(self.root), env=env,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        (self.home / "tmp").mkdir(exist_ok=True)
+        # A new session makes the child the leader of a process group that holds only what it spawns, so
+        # teardown can end the descendants without touching any process this harness does not own.
+        self.proc = subprocess.Popen(self.command(), cwd=str(self.root), env=child_environment(self.home),
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     start_new_session=True)
 
     def wait_ready(self, timeout_s: float = 90.0) -> bool:
         import httpx
@@ -1245,15 +1767,77 @@ class BackendProcess:
         value = parse_ps_time(out) if code == 0 else None
         return UNKNOWN if value is None else value
 
-    def stop(self) -> None:
-        if self.proc is None:
-            return
-        self.proc.terminate()
+    def stop(self) -> dict:
+        """Bounded teardown of this child and the process group it leads. Never raises for an ordinary
+        failure: the outcome is returned so the caller can keep tearing down the other backend and seal the
+        evidence. `ok` is True only if the child has exited and every step succeeded."""
+        import signal
+        result: dict[str, Any] = {"side": self.side, "pid": self.pid, "terminated": False, "killed": False,
+                                  "exited": None, "errors": [], "ok": False}
+        proc = self.proc
+        if proc is None:
+            return {**result, "exited": True, "ok": True}
+        group = None
         try:
-            self.proc.wait(timeout=15)
+            if os.getpgid(proc.pid) == proc.pid:     # only a group this child leads
+                group = proc.pid
+        except OSError:
+            pass
+
+        def send(sig: int, label: str) -> bool:
+            try:
+                os.killpg(group, sig) if group else proc.send_signal(sig)
+                return True
+            except ProcessLookupError:
+                return True
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"{label}:{type(exc).__name__}")
+                return False
+
+        result["terminated"] = send(signal.SIGTERM, "terminate")
+        try:
+            proc.wait(timeout=TERMINATE_WAIT_S)
         except subprocess.TimeoutExpired:
-            self.proc.kill()
-            self.proc.wait(timeout=5)
+            result["killed"] = send(signal.SIGKILL, "kill")
+            try:
+                proc.wait(timeout=KILL_WAIT_S)
+            except Exception as exc:  # noqa: BLE001
+                result["errors"].append(f"wait:{type(exc).__name__}")
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"wait:{type(exc).__name__}")
+        if group is not None:
+            try:                                      # anything still in the group after the leader exits
+                os.killpg(group, 0)
+            except OSError:
+                pass
+            else:
+                send(signal.SIGKILL, "descendants")
+        try:
+            result["exited"] = proc.poll() is not None
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(f"poll:{type(exc).__name__}")
+            result["exited"] = False
+        result["ok"] = bool(result["exited"]) and not result["errors"]
+        return result
+
+
+def stop_all(backends: dict[str, Any]) -> tuple[dict[str, dict], BaseException | None]:
+    """Attempt teardown of EVERY owned backend, whatever happens to the others. Returns the per-backend
+    outcomes and any non-ordinary exception (an interrupt) to re-raise AFTER the evidence is sealed."""
+    outcome: dict[str, dict] = {}
+    pending: BaseException | None = None
+    for side, backend in backends.items():
+        try:
+            reported = backend.stop()
+            outcome[side] = reported if isinstance(reported, dict) else {"side": side, "ok": True, "errors": []}
+        except Exception as exc:  # noqa: BLE001
+            outcome[side] = {"side": side, "pid": getattr(backend, "pid", None), "ok": False, "exited": None,
+                             "errors": [f"stop:{type(exc).__name__}"]}
+        except BaseException as exc:  # noqa: BLE001 - still tear the rest down, then re-raise
+            outcome[side] = {"side": side, "pid": getattr(backend, "pid", None), "ok": False, "exited": None,
+                             "errors": [f"stop:{type(exc).__name__}"]}
+            pending = pending or exc
+    return outcome, pending
 
 
 class LiveDeps:
@@ -1277,7 +1861,9 @@ class LiveDeps:
         return collect_environment(model_id, lane, warmups)
 
     def preflight(self, lane: str, model_id: str) -> list[dict]:
-        """Exact missing prerequisites. Reads state only; it never loads, unloads or configures anything."""
+        """Exact missing prerequisites. It sends nothing to the engine: no request, no credential. Whether the
+        engine holds exactly the named model is asked of each spawned backend through the candidate's own
+        attributed client (`residency`), never by this harness."""
         import socket
         missing: list[dict] = []
         manifest = Path.home() / ".moe" / "omlx-runtime-authorization.json"
@@ -1292,19 +1878,29 @@ class LiveDeps:
                 probe.settimeout(0.5)
                 if probe.connect_ex(("127.0.0.1", port)) == 0:
                     missing.append({"id": "backend_port_in_use", "detail": f"{side} port {port} is occupied"})
-        engine = engine_resident_models()
-        if engine is None:
-            missing.append({"id": "engine_unreachable_on_8000",
-                            "detail": "no attributed oMLX engine answered on 127.0.0.1:8000"})
-        elif engine != [model_id]:
-            missing.append({"id": "resident_model_mismatch",
-                            "detail": f"resident models are {engine}; expected exactly {[model_id]}"})
+        with socket.socket() as probe:               # a bare TCP connect: no bytes are sent
+            probe.settimeout(1.0)
+            if probe.connect_ex(("127.0.0.1", 8000)) != 0:
+                missing.append({"id": "engine_unreachable_on_8000",
+                                "detail": "nothing is listening on 127.0.0.1:8000"})
         return missing
 
-    def spawn_backend(self, side: str, root: Path, home: Path, instrument_path: Path) -> BackendProcess:
-        backend = BackendProcess(side, root, self.ports[side], home, instrument_path, self.python)
+    def spawn_backend(self, side: str, root: Path, home: Path, instrument_path: Path,
+                      run_id: str = "") -> BackendProcess:
+        backend = BackendProcess(side, root, self.ports[side], home, instrument_path, self.python, run_id=run_id)
         backend.start()
         return backend
+
+    def residency(self, backend: BackendProcess) -> Any:
+        """Resident model ids per the candidate's own attributed client, or None if it cannot say."""
+        import httpx
+        try:
+            reply = httpx.get(backend.base_url + RESIDENCY_PROBE_PATH, timeout=30.0)
+            body = reply.json()
+            loaded = body.get("loaded") if reply.status_code == 200 and isinstance(body, dict) else None
+            return sorted(str(m) for m in loaded) if isinstance(loaded, list) else None
+        except (httpx.HTTPError, ValueError):
+            return None
 
     def make_driver(self, backend: BackendProcess) -> HttpTurnDriver:
         return HttpTurnDriver(backend.base_url)
@@ -1316,22 +1912,6 @@ class LiveDeps:
             statuses.append(httpx.post(backend.base_url + payload["path"], json=payload["body"],
                                        timeout=30.0).status_code)
         return statuses
-
-
-def engine_resident_models(timeout_s: float = 5.0) -> list[str] | None:
-    """Resident model ids per the engine's own status endpoint, or None if unreachable.
-    A read-only status call made only by a live release run."""
-    import urllib.request
-    try:
-        settings = json.loads((Path.home() / ".omlx" / "settings.json").read_text())
-        key = ((settings.get("auth") or {}).get("api_key")) or ""
-        request = urllib.request.Request("http://127.0.0.1:8000/v1/models/status",
-                                         headers={"Authorization": f"Bearer {key}"})
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:
-            payload = json.loads(response.read())
-        return sorted(m["id"] for m in payload.get("models", []) if m.get("loaded"))
-    except (OSError, ValueError, KeyError):
-        return None
 
 
 # --------------------------------------------------------------------------
@@ -1353,15 +1933,39 @@ def read_instrument_lines(path: Path) -> list[dict]:
 
 
 def instrument_header(records: list[dict]) -> dict | None:
-    for record in records:
-        if record.get("kind") == "header":
-            return record
-    return None
+    """The header record merged with the `surfaces` record that follows it, or None if there is no header.
+    A surfaces record that is missing means NO surface is available."""
+    header = next((r for r in records if r.get("kind") == "header"), None)
+    if header is None:
+        return None
+    surfaces = next((r for r in records if r.get("kind") == "surfaces"), None)
+    merged = dict(header)
+    merged["available"] = list(surfaces.get("available") or []) if surfaces else []
+    merged["unavailable"] = list(surfaces["unavailable"]) if surfaces and "unavailable" in surfaces \
+        else list(SURFACES)
+    return merged
 
 
 def window_events(records: list[dict], start_ns: int, end_ns: int) -> list[dict]:
-    return [r for r in records if r.get("kind") not in ("header", "_unparseable")
-            and start_ns <= r.get("t_ns", -1) <= end_ns]
+    return [r for r in records if r.get("kind") not in ("header", "surfaces", "_unparseable")
+            and isinstance(r.get("t_ns"), int) and start_ns <= r["t_ns"] <= end_ns]
+
+
+def sample_instrument(logs: dict[str, list[dict]], side: str, bounds: dict) -> dict:
+    """The instrumentation view of one sample: its own side's window AND the idle side's window (which shares
+    the engine). One implementation, used by the run and by the checker, from the COMPLETE logs."""
+    other = SIDES[1] if side == SIDES[0] else SIDES[0]
+
+    def view(name: str) -> tuple[list[dict], list[str]]:
+        records = logs.get(name) or []
+        header = instrument_header(records)
+        unavailable = header["unavailable"] if header else list(SURFACES)
+        return window_events(records, bounds["start_ns"], bounds["end_ns"]), unavailable
+
+    window, unavailable = view(side)
+    other_window, other_unavailable = view(other)
+    return {"window": window, "unavailable": unavailable,
+            "other_window": other_window, "other_unavailable": other_unavailable}
 
 
 # --------------------------------------------------------------------------
@@ -1373,7 +1977,8 @@ def finalize_sample(*, spec: dict, corpus: dict, driver_sink: dict, instrument: 
     """Derive timings, counts and the grade from raw material. The checker calls this same
     function on the stored raw data and demands identical output."""
     analysis = analyze_events(driver_sink["events"])
-    counts = instrument_counts(instrument.get("window"), instrument.get("unavailable"))
+    counts = instrument_counts(instrument.get("window"), instrument.get("unavailable"),
+                               instrument.get("other_window"), instrument.get("other_unavailable"))
     grade = grade_sample(spec, analysis, driver_sink, counts, corpus)
     metrics = derive_metrics(spec, analysis, driver_sink)
     if grade["correct"]:
@@ -1434,7 +2039,8 @@ def summarize(samples: list[dict], bundle: dict) -> dict:
                             for m in spec.get("required_metrics") or []},
                 "diagnostics": {name: aggregate_counts([s["diagnostics"].get(name, UNKNOWN) for s in correct])
                                 for name in ("engine_http_calls", "chat_calls", "authority_loads",
-                                             "process_checks", "binding_checks", "peer_checks")},
+                                             "process_checks", "binding_checks", "peer_checks",
+                                             "instrumentation_records")},
                 "backend_cpu": aggregate_cpu([s["diagnostics"].get("backend_cpu_s", UNKNOWN) for s in correct]),
             }
         out[spec["id"]] = per_side
@@ -1452,12 +2058,40 @@ def is_regression(candidate_ns: Any, baseline_ns: Any, policy: dict) -> Any:
     return delta > relative * baseline_ns and delta > absolute
 
 
-def decide(summary: dict, bundle: dict, baseline: dict) -> dict:
+def lifecycle_summary(logs: dict[str, list[dict]]) -> dict:
+    """Effects over each backend's WHOLE lifetime (startup, warmup, idle intervals, teardown), not only the
+    measured windows. A refused effect and any engine-state mutation are recorded wherever they happened."""
+    out: dict[str, Any] = {}
+    for side in SIDES:
+        records = logs.get(side) or []
+        blocked = [r for r in records if r.get("kind") == "effect_blocked"]
+        http = [r for r in records if r.get("kind") == "engine_http"]
+        out[side] = {
+            "records": len(records), "blocked_effects": len(blocked),
+            "blocked_targets": sorted({f"{r.get('what')}:{r.get('target')}" for r in blocked})[:20],
+            "engine_state_changes": sum(1 for r in http if r.get("method") == "POST"
+                                        and bool(_ENGINE_STATE_CHANGE.search(str(r.get("path", ""))))),
+            "engine_mutating_calls": sum(
+                1 for r in http if r.get("method") != "GET"
+                and not any(str(r.get("path", "")).endswith(tail)
+                            for tail in ("/chat/completions", "/embeddings", "/rerank")))}
+    return out
+
+
+def decide(summary: dict, bundle: dict, baseline: dict, lifecycle: dict | None = None) -> dict:
     """Policy verdict from the summary. BLOCK beats INCONCLUSIVE beats PASS."""
     policy = bundle["policy"]
     block: list[dict] = []
     inconclusive: list[dict] = []
     comparison: dict[str, Any] = {}
+    for side, row in (lifecycle or {}).items():
+        if row["blocked_effects"] or row["engine_state_changes"] or row["engine_mutating_calls"]:
+            detail = (f"{side} backend: {row['blocked_effects']} refused effects {row['blocked_targets']}, "
+                      f"{row['engine_state_changes']} engine state changes, {row['engine_mutating_calls']} mutating calls")
+            if side == "candidate":
+                block.append({"code": "lifecycle_blocked_effect", "detail": detail})
+            else:
+                inconclusive.append({"code": "baseline_lifecycle_effect", "detail": detail})
     for spec in required_scenarios(bundle):
         sid = spec["id"]
         cand, base = summary[sid]["candidate"], summary[sid]["baseline"]
@@ -1584,7 +2218,8 @@ def effective_verdict(decision: dict, mode: str, fake_model: bool) -> dict:
     return result
 
 
-def apply_context_rules(decision: dict, baseline_state: dict, cohort: dict, lane: str, policy: dict) -> dict:
+def apply_context_rules(decision: dict, baseline_state: dict, cohort: dict, lane: str, policy: dict,
+                        findings: Any = ()) -> dict:
     """Rules that depend on WHERE and AGAINST WHAT a measurement ran. One implementation, used by both the
     run and the checker, so a receipt's own verdict can never disagree with the checker's."""
     verdict, reasons = decision["verdict"], list(decision["reasons"])
@@ -1604,13 +2239,110 @@ def apply_context_rules(decision: dict, baseline_state: dict, cohort: dict, lane
     gate = policy["lanes"].get(lane) or {}
     if not gate.get("release_gate"):
         demote("lane_is_not_a_release_gate", str(gate.get("label", lane)))
+    for finding in findings:      # the measurement is not comparable or not verifiable: never a PASS
+        demote(finding["code"], finding["detail"])
     return {**decision, "verdict": verdict, "reasons": reasons}
+
+
+ENV_COHORT_FIELDS = ("hardware", "os", "engine", "model", "generation_settings", "cache_warmup_treatment")
+_CHILD_RUNTIME_KEYS = ("python_version", "implementation", "executable_sha256", "platform")
+
+
+def environment_fingerprint(environment: Any) -> dict:
+    environment = environment if isinstance(environment, dict) else {}
+    return {key: environment.get(key, UNKNOWN) for key in ENV_COHORT_FIELDS}
+
+
+def child_runtime(headers: dict[str, dict | None]) -> Any:
+    """The interpreter the CANDIDATE child reported about itself, portable fields only."""
+    runtime = ((headers.get("candidate") or {}).get("runtime"))
+    if not isinstance(runtime, dict):
+        return UNKNOWN
+    return {key: runtime.get(key, UNKNOWN) for key in _CHILD_RUNTIME_KEYS}
+
+
+def containment_identity(headers: dict[str, dict | None]) -> Any:
+    digest = (headers.get("candidate") or {}).get("guard_policy_sha256")
+    return {"guard_policy_sha256": digest} if isinstance(digest, str) else UNKNOWN
+
+
+def request_identity(samples: list[dict], events: dict[str, dict], logs: dict[str, list[dict]]) -> dict:
+    """The model and sampling fields of every engine chat request inside a measured window, per scenario and
+    side. This is what actually reached the engine, not what the corpus says should."""
+    models: set[str] = set()
+    signatures: dict[str, dict[str, set[str]]] = {}
+    unknown = False
+    for sample in samples:
+        raw = events.get(sample.get("id"))
+        if sample.get("phase") != "measured" or raw is None or not isinstance(raw.get("bounds"), dict):
+            continue
+        for event in sample_instrument(logs, sample["side"], raw["bounds"])["window"]:
+            if not (event.get("kind") == "engine_http" and event.get("method") == "POST"
+                    and str(event.get("path", "")).endswith("/chat/completions")):
+                continue
+            settings = event.get("request_settings", UNKNOWN)
+            if not isinstance(settings, dict) or "model" not in settings:
+                unknown = True
+                continue
+            models.add(str(settings["model"]))
+            signatures.setdefault(sample["scenario"], {}).setdefault(sample["side"], set()).add(
+                canonical_json(settings).decode())
+    return {"unknown": unknown, "models": sorted(models),
+            "signatures": {sc: {side: sorted(v) for side, v in sorted(rows.items())}
+                           for sc, rows in sorted(signatures.items())}}
+
+
+def integrity_findings(*, model_id: str, env_before: Any, env_after: Any, residency: dict,
+                       headers: dict[str, dict | None], requests: dict) -> list[dict]:
+    """Everything that makes a measurement non-comparable or unverifiable even though every sample graded
+    correct. Each is a reason the run cannot be a PASS; none is a candidate defect, so none is a BLOCK."""
+    found: list[dict] = []
+
+    def add(code: str, detail: str) -> None:
+        found.append({"code": code, "detail": detail})
+
+    before, after = environment_fingerprint(env_before), environment_fingerprint(env_after)
+    if not isinstance(env_after, dict) or not env_after:
+        add("environment_after_unavailable", "the environment was not re-collected after the run")
+    elif before != after:
+        add("environment_changed_during_run",
+            "engine, model, settings, hardware or OS identity differs before and after the run")
+    for moment in ("before", "after"):
+        per_side = residency.get(moment) or {}
+        for side in SIDES:
+            value = per_side.get(side)
+            if value is None:
+                add("residency_unverified", f"{moment}/{side}: the resident model set could not be read")
+            elif value != [model_id]:
+                add("residency_not_exclusive", f"{moment}/{side}: resident {value}, expected exactly {[model_id]}")
+    runtimes = {side: (headers.get(side) or {}).get("runtime") for side in SIDES}
+    for side, runtime in runtimes.items():
+        if not isinstance(runtime, dict) or has_unknown({k: runtime.get(k, UNKNOWN) for k in _CHILD_RUNTIME_KEYS}):
+            add("child_runtime_unverified", f"{side} backend did not report a complete runtime identity")
+    if all(isinstance(r, dict) for r in runtimes.values()) and \
+            {k: runtimes["candidate"].get(k) for k in _CHILD_RUNTIME_KEYS} != \
+            {k: runtimes["baseline"].get(k) for k in _CHILD_RUNTIME_KEYS}:
+        add("child_runtime_differs_between_sides", "candidate and baseline children ran different interpreters")
+    guards = {side: (headers.get(side) or {}).get("guard_policy_sha256") for side in SIDES}
+    if not all(isinstance(g, str) for g in guards.values()):
+        add("containment_unverified", "a backend did not report its containment policy")
+    elif guards["candidate"] != guards["baseline"]:
+        add("containment_differs_between_sides", "candidate and baseline ran under different containment policies")
+    if requests.get("unknown"):
+        add("request_settings_unverified", "an engine chat request's model and sampling fields were not observed")
+    wrong = [m for m in requests.get("models", []) if m != model_id]
+    if wrong:
+        add("model_mismatch", f"engine chat requests named {wrong}, the declared model is {model_id!r}")
+    for scenario, per_side in (requests.get("signatures") or {}).items():
+        if per_side.get("candidate") != per_side.get("baseline"):
+            add("request_settings_differ", f"{scenario}: candidate and baseline sent different sampling settings")
+    return found
 
 
 def build_receipt(*, run_id: str, mode: str, fake_model: bool, lane: str, bundle: dict, bundle_problems: list[str],
                   subjects: dict, environment: dict, protocol: dict, raw_files: dict, summary: dict,
                   decision: dict, baseline_state: dict, generated_at_ts: float, missing: list[dict],
-                  aborted: bool, runtime: dict, evidence: dict) -> dict:
+                  aborted: bool, runtime: dict, evidence: dict, extra: dict | None = None) -> dict:
     here = Path(__file__).resolve()
     return {
         "schema": RECEIPT_SCHEMA,
@@ -1638,7 +2370,35 @@ def build_receipt(*, run_id: str, mode: str, fake_model: bool, lane: str, bundle
         "baseline_binding": {"approved": bool(baseline_state.get("approved")),
                              "sha256": baseline_state.get("sha256")},
         "prerequisites_missing": missing, "aborted": aborted,
+        **(extra or {}),
     }
+
+
+def sample_identity(run_id: str, side: str, item: dict, slot: int, prompt: str, started_ns: int, ended_ns: int) -> dict:
+    return {"run_id": run_id, "id": sample_id(side, item["scenario"], item["phase"], item["rep"]),
+            "side": side, "scenario": item["scenario"], "phase": item["phase"], "rep": item["rep"],
+            "variant": item["variant"], "order_slot": slot, "started_ns": started_ns, "ended_ns": ended_ns,
+            "prompt_sha256": sha256_bytes(prompt.encode())}
+
+
+_DRIVER_KEYS = ("approvals", "deadline", "cancelled", "transport_error", "http", "latency_ns",
+                "stream_closed_ns", "abs_start_ns", "abs_end_ns")
+
+
+def sample_bounds(sink: dict, started_ns: int, ended_ns: int) -> dict:
+    return {"start_ns": sink["abs_start_ns"] if isinstance(sink.get("abs_start_ns"), int) else started_ns,
+            "end_ns": sink["abs_end_ns"] if isinstance(sink.get("abs_end_ns"), int) else ended_ns}
+
+
+def build_sample_record(spec: dict, corpus: dict, identity: dict, driver_sink: dict, logs: dict,
+                        backend_cpu: Any) -> dict:
+    """One graded sample from raw material and the COMPLETE instrumentation logs. Used by the run (after
+    teardown, when the logs are complete) and by the checker, so they cannot disagree."""
+    bounds = sample_bounds(driver_sink, identity["started_ns"], identity["ended_ns"])
+    record, _analysis = finalize_sample(spec=spec, corpus=corpus, driver_sink=driver_sink, identity=identity,
+                                        instrument=sample_instrument(logs, identity["side"], bounds))
+    record["diagnostics"]["backend_cpu_s"] = backend_cpu
+    return record
 
 
 async def run_release(opts: dict, deps: Any, bundle: dict, *,
@@ -1693,24 +2453,32 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
                 "schedule_sha256": canonical_sha(schedule), "scenario_ids": selected,
                 "required_scenario_ids": required_ids, "partial": partial}
     started_ts = deps.now()
-    missing = list(deps.preflight(lane, opts["model_id"]))
-    environment = deps.collect_environment(opts["model_id"], lane, policy["warmup_samples"]) if not missing else {}
+    model_id = opts["model_id"]
+    missing = list(deps.preflight(lane, model_id))
+    environment = deps.collect_environment(model_id, lane, policy["warmup_samples"]) if not missing else {}
     backends: dict[str, Any] = {}
     homes: dict[str, Path] = {}
-    samples: list[dict] = []
+    runs: list[dict] = []
     aborted = False
     runtime: dict[str, Any] = {}
+    residency: dict[str, dict] = {"before": {}, "after": {}}
     try:
         if not missing:
             import tempfile
             for side in SIDES:
                 homes[side] = Path(tempfile.mkdtemp(prefix=f"wisp-release-{side}-"))
-                (homes[side] / "config.yaml").write_text(render_role_config(opts["model_id"]))
+                (homes[side] / "config.yaml").write_text(render_role_config(model_id))
                 backends[side] = deps.spawn_backend(side, Path(opts[f"{side}_root"]), homes[side],
-                                                    raw_dir / f"instrumentation.{side}.jsonl")
+                                                    raw_dir / f"instrumentation.{side}.jsonl", run_id=run_id)
             for side, backend in backends.items():
                 if not backend.wait_ready():
                     missing.append({"id": "backend_not_ready", "detail": f"{side} backend did not become ready"})
+            if not missing:
+                residency["before"] = {side: deps.residency(backend) for side, backend in backends.items()}
+                for side, value in residency["before"].items():
+                    if value != [model_id]:
+                        missing.append({"id": "resident_model_mismatch",
+                                        "detail": f"{side}: resident models are {value}; expected exactly {[model_id]}"})
             if not missing:
                 payloads = render_leaf_payloads(corpus, deps.now())
                 for side, backend in backends.items():
@@ -1722,7 +2490,7 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
             drivers = {side: deps.make_driver(backends[side]) for side in SIDES}
             runtime = {side: {"root": str(Path(opts[f"{side}_root"]).resolve()), "port": getattr(backends[side], "port", None),
                               "python": getattr(backends[side], "python", None)} for side in SIDES}
-            with (raw_dir / "samples.jsonl").open("a", buffering=1) as samples_file, \
+            with (raw_dir / "started.jsonl").open("a", buffering=1) as started_file, \
                     (raw_dir / "events.jsonl").open("a", buffering=1) as events_file:
                 for item in schedule:
                     spec = specs[item["scenario"]]
@@ -1732,55 +2500,67 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
                         sink = HttpTurnDriver.new_sink()
                         cpu_before = backend.cpu_seconds()
                         started_ns = deps.clock_ns()
+                        # Written BEFORE dispatch: even a hard kill leaves the in-flight sample identified.
+                        started_file.write(json.dumps(
+                            {"id": sample_id(side, item["scenario"], item["phase"], item["rep"]),
+                             "side": side, "started_ns": started_ns}, sort_keys=True) + "\n")
+                        interrupted: BaseException | None = None
                         try:
                             if spec["kind"] == "http":
                                 await driver.run_http(spec, sink)
                             else:
                                 await driver.run_turn(spec, prompt, sink)
+                        except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+                            sink["cancelled"] = True
+                            interrupted = exc
                         finally:
                             ended_ns = deps.clock_ns()
                         cpu_after = backend.cpu_seconds()
-                        records = tails[side].refresh()
-                        header = instrument_header(records)
-                        unavailable = header["unavailable"] if header else \
-                            ["engine_http", "authority_load", "process_check", "binding_check", "peer_check"]
-                        window = window_events(records, sink["abs_start_ns"] or started_ns,
-                                               sink["abs_end_ns"] or ended_ns)
-                        identity = {"run_id": run_id, "id": sample_id(side, item["scenario"], item["phase"], item["rep"]),
-                                    "side": side, "scenario": item["scenario"], "phase": item["phase"],
-                                    "rep": item["rep"], "variant": item["variant"], "order_slot": slot,
-                                    "started_ns": started_ns, "ended_ns": ended_ns,
-                                    "prompt_sha256": sha256_bytes(prompt.encode())}
-                        record, _analysis = finalize_sample(
-                            spec=spec, corpus=corpus, driver_sink=sink,
-                            instrument={"window": window, "unavailable": unavailable}, identity=identity)
-                        record["diagnostics"]["backend_cpu_s"] = (
-                            UNKNOWN if UNKNOWN in (cpu_before, cpu_after) else round(cpu_after - cpu_before, 3))
-                        events_file.write(json.dumps({"id": identity["id"], "events": sink["events"],
-                                                      "driver": {k: sink[k] for k in
-                                                                 ("approvals", "deadline", "cancelled", "transport_error",
-                                                                  "http", "latency_ns", "stream_closed_ns")},
-                                                      "instrument": {"unavailable": unavailable, "window": window}},
-                                                     sort_keys=True) + "\n")
-                        samples_file.write(json.dumps(record, sort_keys=True) + "\n")
-                        samples.append(record)
-                        progress({"sample": identity["id"], "outcome": record["outcome"]})
+                        identity = sample_identity(run_id, side, item, slot, prompt, started_ns, ended_ns)
+                        cpu = UNKNOWN if UNKNOWN in (cpu_before, cpu_after) else round(cpu_after - cpu_before, 3)
+                        # The partial stream of an interrupted sample is persisted here, synchronously, before
+                        # the interruption propagates; it is graded as cancelled and never as a success.
+                        events_file.write(json.dumps(
+                            {"id": identity["id"], "identity": identity, "events": sink["events"],
+                             "driver": {k: sink.get(k) for k in _DRIVER_KEYS},
+                             "bounds": sample_bounds(sink, started_ns, ended_ns), "backend_cpu_s": cpu},
+                            sort_keys=True) + "\n")
+                        runs.append({"spec": spec, "identity": identity, "sink": sink, "cpu": cpu})
+                        for tail in tails.values():
+                            tail.refresh()
+                        provisional, _ = finalize_sample(
+                            spec=spec, corpus=corpus, driver_sink=sink, identity=identity,
+                            instrument=sample_instrument({k: t.records for k, t in tails.items()}, side,
+                                                         sample_bounds(sink, started_ns, ended_ns)))
+                        progress({"sample": identity["id"], "outcome": provisional["outcome"], "provisional": True})
+                        if interrupted is not None:
+                            raise interrupted
+            residency["after"] = {side: deps.residency(backend) for side, backend in backends.items()}
     except (KeyboardInterrupt, asyncio.CancelledError):
         aborted = True
     finally:
-        for backend in backends.values():
-            backend.stop()
+        teardown, pending_interrupt = stop_all(backends)
 
     after = {side: deps.verify_subject(Path(opts[f"{side}_root"]), opts[f"{side}_sha"]) for side in SIDES}
+    environment_after = deps.collect_environment(model_id, lane, policy["warmup_samples"]) if backends else {}
+    logs = {side: read_instrument_lines(raw_dir / f"instrumentation.{side}.jsonl") for side in SIDES}
+    headers = {side: instrument_header(logs[side]) for side in SIDES}
+    samples = [build_sample_record(r["spec"], corpus, r["identity"], r["sink"], logs, r["cpu"]) for r in runs]
+    with (raw_dir / "samples.jsonl").open("a") as samples_file:
+        for record in samples:
+            samples_file.write(json.dumps(record, sort_keys=True) + "\n")
+    write_json(raw_dir / "environment.json", {"before": environment, "after": environment_after,
+                                              "residency": residency})
     write_json(raw_dir / "provenance.json", {
         "run_id": run_id, "started_at": iso(started_ts), "schedule": schedule,
         "preflight_missing": missing, "subjects_before": before, "subjects_after": after,
-        "baseline_refusals": baseline_refusals, "harness_version": HARNESS_VERSION,
+        "baseline_refusals": baseline_refusals, "harness_version": HARNESS_VERSION, "teardown": teardown,
         "scenario_variants": {s: specs[s]["variants"] for s in selected},
         "note": "Throwaway state only. No user data, no secrets, no engine settings were read into this record."})
     summary = summarize(samples, bundle) if samples else {}
+    lifecycle = lifecycle_summary(logs)
     if samples and not aborted:
-        decision = decide(summary, bundle, baseline_state) if not partial else \
+        decision = decide(summary, bundle, baseline_state, lifecycle) if not partial else \
             {"verdict": "INCONCLUSIVE", "reasons": [{"code": "partial_run", "detail": "not a full release measurement"}],
              "comparison": {}}
     else:
@@ -1788,12 +2568,23 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
         if aborted:
             reasons.append({"code": "aborted", "detail": "the run was interrupted"})
         decision = {"verdict": "INCONCLUSIVE", "reasons": reasons, "comparison": {}}
+    requests = request_identity(samples, {r["identity"]["id"]: {"bounds": sample_bounds(
+        r["sink"], r["identity"]["started_ns"], r["identity"]["ended_ns"])} for r in runs}, logs)
+    findings = integrity_findings(model_id=model_id, env_before=environment, env_after=environment_after,
+                                  residency=residency, headers=headers, requests=requests)
+    unresolved = [side for side, row in teardown.items() if not row.get("ok")]
+    if unresolved:
+        findings.append({"code": "teardown_unresolved",
+                         "detail": f"backend teardown did not complete cleanly: {unresolved}"})
     cohort = cohort_key({"lane": lane, "execution_mode": mode, "environment": environment,
                          "harness": {"script_sha256": harness_sha256()},
                          "corpus": {"sha256": bundle["corpus_sha256"]},
-                         "policy": {"sha256": bundle["policy_sha256"]}})
+                         "policy": {"sha256": bundle["policy_sha256"]},
+                         "runtime_identity": child_runtime(headers), "containment": containment_identity(headers)})
     if samples and not aborted and not partial:
-        decision = apply_context_rules(decision, baseline_state, cohort, lane, policy)
+        decision = apply_context_rules(decision, baseline_state, cohort, lane, policy, findings)
+    elif unresolved:     # a partial, aborted or prerequisite-missing run is already non-passing; still say so
+        decision = {**decision, "reasons": decision["reasons"] + [f for f in findings if f["code"] == "teardown_unresolved"]}
     decision = effective_verdict(decision, mode, fake_model)
     chats = {side: sum(1 for s in samples if s["side"] == side and s["phase"] == "measured"
                        and isinstance(s["diagnostics"].get("chat_calls"), int)
@@ -1804,9 +2595,14 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
                       "verified_before": before[s], "verified_after": after[s]} for s in SIDES},
         environment=environment, protocol=protocol, raw_files=raw_manifest(raw_dir), summary=summary,
         decision=decision, baseline_state=baseline_state, generated_at_ts=deps.now(), missing=missing,
-        aborted=aborted, runtime=runtime, evidence={"attributed_engine_samples": chats})
+        aborted=aborted, runtime=runtime, evidence={"attributed_engine_samples": chats},
+        extra={"measurement_source": {"deps_class": type(deps).__name__, "release_capable": bool(mode == ACTUAL_MODE)},
+               "runtime_identity": child_runtime(headers), "containment": containment_identity(headers),
+               "lifecycle": lifecycle, "teardown": teardown})
     receipt_path = out / "receipt.json"
     write_json(receipt_path, receipt)
+    if pending_interrupt is not None:
+        raise pending_interrupt
     return VERDICT_EXIT[decision["verdict"]], receipt_path
 
 
@@ -1814,54 +2610,171 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
 # The receipt checker: every conclusion is re-derived from the raw files
 # --------------------------------------------------------------------------
 
-def load_raw(raw_dir: Path) -> tuple[list[dict], dict[str, dict], dict[str, list[dict]]]:
-    def lines(path: Path) -> list[dict]:
-        out = []
-        for line in path.read_text().splitlines() if path.is_file() else []:
-            if line.strip():
-                out.append(json.loads(line))
-        return out
-    samples = lines(raw_dir / "samples.jsonl")
-    events = {r["id"]: r for r in lines(raw_dir / "events.jsonl")}
-    instrumentation = {side: lines(raw_dir / f"instrumentation.{side}.jsonl") for side in SIDES}
-    return samples, events, instrumentation
+def _json_lines(path: Path) -> list[dict]:
+    out: list[dict] = []
+    for line in path.read_text().splitlines() if path.is_file() else []:
+        if line.strip():
+            out.append(json.loads(line))
+    return out
+
+
+def load_raw(raw_dir: Path) -> dict:
+    """Everything the checker re-derives from. Duplicate sample or event records are reported, never merged."""
+    samples = _json_lines(raw_dir / "samples.jsonl")
+    event_rows = _json_lines(raw_dir / "events.jsonl")
+    events: dict[str, dict] = {}
+    duplicates: list[str] = []
+    for row in event_rows:
+        if row["id"] in events:
+            duplicates.append(row["id"])
+        events[row["id"]] = row
+    return {"samples": samples, "events": events, "event_order": [r["id"] for r in event_rows],
+            "duplicate_event_ids": duplicates,
+            "logs": {side: _json_lines(raw_dir / f"instrumentation.{side}.jsonl") for side in SIDES},
+            "started": _json_lines(raw_dir / "started.jsonl"),
+            "environment": json.loads((raw_dir / "environment.json").read_text())
+            if (raw_dir / "environment.json").is_file() else None,
+            "provenance": json.loads((raw_dir / "provenance.json").read_text())
+            if (raw_dir / "provenance.json").is_file() else None}
 
 
 _IDENTITY_FIELDS = ("run_id", "id", "side", "scenario", "phase", "rep", "variant", "order_slot",
                     "started_ns", "ended_ns", "prompt_sha256")
-_DERIVED_COUNTS = ("engine_http_calls", "chat_calls", "engine_state_changes", "authority_loads",
-                   "process_checks", "binding_checks", "peer_checks", "blocked_effects")
+_DERIVED_COUNTS = _COUNT_NAMES
+_DEADLINE_SLACK_NS = 5_000_000_000
 
 
-def verify_derivations(samples: list[dict], events: dict[str, dict], instrumentation: dict[str, list[dict]],
+def _is_ns(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def verify_logs(logs: dict[str, list[dict]], *, run_id: str, roots: dict[str, Any]) -> list[str]:
+    """Each backend's log must be one complete, ordered, gap-free record of that exact child."""
+    problems: list[str] = []
+    for side in SIDES:
+        records = logs.get(side) or []
+        if not records:
+            problems.append(f"{side}:log_empty")
+            continue
+        header = records[0]
+        if header.get("kind") != "header" or sum(1 for r in records if r.get("kind") == "header") != 1:
+            problems.append(f"{side}:header_not_first_and_unique")
+            continue
+        if [r.get("seq") for r in records] != list(range(len(records))):
+            problems.append(f"{side}:sequence_has_gaps_or_reordering")
+        stamps = [r.get("t_ns") for r in records]
+        if not all(_is_ns(t) for t in stamps) or any(b < a for a, b in zip(stamps, stamps[1:])):
+            problems.append(f"{side}:timestamps_invalid_or_not_monotonic")
+        if any(r.get("pid") != header.get("pid") for r in records):
+            problems.append(f"{side}:records_from_more_than_one_process")
+        if header.get("run_id") != run_id:
+            problems.append(f"{side}:header_run_id_mismatch")
+        if header.get("side") != side:
+            problems.append(f"{side}:header_side_mismatch")
+        if header.get("effect_guard") is not True:
+            problems.append(f"{side}:effect_guard_not_recorded")
+        if header.get("root") != roots.get(side):
+            problems.append(f"{side}:header_root_mismatch")
+        if sum(1 for r in records if r.get("kind") == "surfaces") != 1:
+            problems.append(f"{side}:surfaces_record_missing_or_duplicated")
+        elif "engine_http" not in (instrument_header(records) or {}).get("available", []):
+            problems.append(f"{side}:engine_http_not_instrumented")
+        if any(r.get("kind") == "_unparseable" for r in records):
+            problems.append(f"{side}:unparseable_record")
+    return problems
+
+
+def verify_sample_binding(samples: list[dict], raw: dict, schedule: list[dict], bundle: dict,
+                          run_id: str) -> list[str]:
+    """Every raw sample must be exactly the scheduled one: same position, variant, slot and prompt bytes, with
+    sane clocks, no overlap with its neighbours and nothing outside its own interval."""
+    problems: list[str] = []
+    specs = scenario_by_id(bundle)
+    expected = [(item, slot, side) for item in schedule for slot, side in enumerate(item["order"])]
+    if len(samples) != len(expected):
+        problems.append(f"sample_count:{len(samples)}!={len(expected)}")
+    ids = [s.get("id") for s in samples]
+    if len(set(ids)) != len(ids):
+        problems.append("duplicate_sample_ids")
+    if raw["duplicate_event_ids"]:
+        problems.append("duplicate_event_records:" + ",".join(sorted(set(raw["duplicate_event_ids"]))[:5]))
+    if raw["event_order"] != ids:
+        problems.append("event_records_do_not_match_samples_in_order")
+    started_ids = [r.get("id") for r in raw["started"]]
+    if started_ids != ids:
+        problems.append("started_records_do_not_match_samples_in_order")
+    previous_end = None
+    for index, (sample, (item, slot, side)) in enumerate(zip(samples, expected)):
+        spec, sid = specs[item["scenario"]], sample.get("id")
+        want = {"run_id": run_id, "id": sample_id(side, item["scenario"], item["phase"], item["rep"]),
+                "side": side, "scenario": item["scenario"], "phase": item["phase"], "rep": item["rep"],
+                "variant": item["variant"], "order_slot": slot,
+                "prompt_sha256": sha256_bytes(spec["variants"][item["variant"]].encode())}
+        for key, value in want.items():
+            if sample.get(key) != value or type(sample.get(key)) is not type(value):
+                problems.append(f"{sid}:{key}_is_not_the_scheduled_value")
+        started, ended = sample.get("started_ns"), sample.get("ended_ns")
+        if not (_is_ns(started) and _is_ns(ended) and ended >= started):
+            problems.append(f"{sid}:sample_clock_invalid")
+            continue
+        if previous_end is not None and started < previous_end:
+            problems.append(f"{sid}:overlaps_or_precedes_the_previous_sample")
+        previous_end = ended
+        row = raw["events"].get(sid)
+        if row is None:
+            continue
+        if {k: row.get("identity", {}).get(k) for k in _IDENTITY_FIELDS} != {k: sample.get(k) for k in _IDENTITY_FIELDS}:
+            problems.append(f"{sid}:raw_identity_differs_from_sample")
+        driver = row.get("driver") or {}
+        bounds = row.get("bounds") or {}
+        a, b = driver.get("abs_start_ns"), driver.get("abs_end_ns")
+        if not (_is_ns(a) and _is_ns(b) and started <= a <= b <= ended):
+            problems.append(f"{sid}:driver_interval_outside_the_sample")
+            continue
+        if bounds != {"start_ns": a, "end_ns": b}:
+            problems.append(f"{sid}:window_bounds_not_the_driver_interval")
+        span = b - a
+        times = [e.get("t_ns") for e in row.get("events") or []]
+        times += [x.get("t_ns") for x in driver.get("approvals") or []]
+        times += [driver[k] for k in ("latency_ns", "stream_closed_ns") if driver.get(k) is not None]
+        if not all(_is_ns(t) and t <= span for t in times):
+            problems.append(f"{sid}:event_time_outside_the_sample_interval")
+        event_times = [e.get("t_ns") for e in row.get("events") or []]
+        if any(_is_ns(x) and _is_ns(y) and y < x for x, y in zip(event_times, event_times[1:])):
+            problems.append(f"{sid}:events_not_in_time_order")
+        deadline = spec.get("deadline_s")
+        if deadline and span > deadline * 1_000_000_000 + _DEADLINE_SLACK_NS and not driver.get("deadline"):
+            problems.append(f"{sid}:ran_past_its_deadline_without_recording_it")
+    return problems
+
+
+def verify_derivations(samples: list[dict], events: dict[str, dict], logs: dict[str, list[dict]],
                        bundle: dict) -> list[str]:
+    """Regrade every sample from its raw events and the COMPLETE logs; windows are rebuilt from the
+    persisted bounds, never taken from anything the run stored."""
     problems: list[str] = []
     specs, corpus = scenario_by_id(bundle), bundle["corpus"]
-    file_lines = {side: {canonical_json(r) for r in records} for side, records in instrumentation.items()}
     for sample in samples:
         sid = sample.get("id")
         spec, raw = specs.get(sample.get("scenario")), events.get(sid)
         if spec is None:
             problems.append(f"unknown_scenario:{sid}")
             continue
-        if raw is None:
+        if raw is None or not isinstance(raw.get("bounds"), dict):
             problems.append(f"events_missing:{sid}")
             continue
         sink = {"events": raw["events"], **raw["driver"]}
-        window = raw["instrument"]["window"]
-        for event in window:
-            if canonical_json(event) not in file_lines.get(sample["side"], set()):
-                problems.append(f"window_event_not_in_instrumentation:{sid}")
-                break
         identity = {k: sample.get(k) for k in _IDENTITY_FIELDS}
         recomputed, _ = finalize_sample(spec=spec, corpus=corpus, driver_sink=sink, identity=identity,
-                                        instrument={"window": window, "unavailable": raw["instrument"]["unavailable"]})
+                                        instrument=sample_instrument(logs, sample["side"], raw["bounds"]))
         for field in ("outcome", "grade", "metrics_ns"):
             if recomputed[field] != sample.get(field):
                 problems.append(f"derivation_mismatch:{sid}:{field}")
         recorded = sample.get("diagnostics") or {}
         if any(recorded.get(k) != recomputed["diagnostics"].get(k) for k in _DERIVED_COUNTS):
             problems.append(f"derivation_mismatch:{sid}:diagnostics")
+        if recorded.get("backend_cpu_s") != raw.get("backend_cpu_s"):
+            problems.append(f"derivation_mismatch:{sid}:backend_cpu_s")
     return problems
 
 
@@ -1871,9 +2784,16 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
     Exit codes: 0 PASS, 1 BLOCK, 2 INCONCLUSIVE, 3 refused evidence, 4 usage.
     Nothing is accepted on the receipt's word: sample grades, timings, summaries and the verdict are
     recomputed from the raw files, and the raw files are bound by digest.
+
+    Authenticity: the receipt's SHA-256 MUST be supplied from a record the measurement owner made when the
+    run finished. It is what ties this package to a run; without it nothing here is accepted. Only a receipt
+    produced by the live dependency class is accepted. `accept_fixture_source` is an API-only seam for the
+    offline tests: the command line cannot set it, and a result obtained through it never authorizes a release.
     """
     refusals: list[dict] = []
-    result: dict[str, Any] = {"receipt": str(opts.receipt), "refusals": refusals, "verdict": None, "reasons": []}
+    result: dict[str, Any] = {"receipt": str(opts.receipt), "refusals": refusals, "verdict": None, "reasons": [],
+                              "authorizes_release": False}
+    fixture_source = getattr(opts, "accept_fixture_source", None)
 
     def refuse(code: str, detail: str = "") -> None:
         refusals.append({"code": code, "detail": detail})
@@ -1882,6 +2802,8 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
         if refusals:
             result["verdict"] = "REFUSED"
             return EXIT_REFUSED, result
+        result["authorizes_release"] = result["verdict"] == "PASS" and fixture_source is None
+        result["fixture_source"] = fixture_source is not None
         return VERDICT_EXIT[result["verdict"]], result
 
     receipt_path = Path(opts.receipt)
@@ -1894,7 +2816,9 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
     except ValueError:
         refuse("receipt_unreadable")
         return finish()
-    if opts.expect_receipt_sha256 and sha256_bytes(raw_bytes) != opts.expect_receipt_sha256:
+    if not opts.expect_receipt_sha256:
+        refuse("receipt_digest_not_bound", "a release check needs the digest the measurement owner recorded")
+    elif sha256_bytes(raw_bytes) != opts.expect_receipt_sha256:
         refuse("receipt_digest_mismatch")
     if receipt.get("schema") != RECEIPT_SCHEMA:
         refuse("not_a_release_receipt", f"schema={receipt.get('schema')!r}")
@@ -1919,6 +2843,11 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
         return finish()
     policy = bundle["policy"]
 
+    source = receipt.get("measurement_source") or {}
+    wanted_source = fixture_source or LIVE_DEPS_CLASS
+    if source.get("deps_class") != wanted_source or source.get("release_capable") is not True:
+        refuse("measurement_source_not_release_capable",
+               f"deps_class={source.get('deps_class')!r}, release_capable={source.get('release_capable')!r}")
     if receipt.get("execution_mode") != ACTUAL_MODE:
         refuse("not_an_actual_measurement", f"execution_mode={receipt.get('execution_mode')!r}")
     if (receipt.get("inference") or {}).get("fake_model") is not False:
@@ -1998,30 +2927,48 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
         refuse("schedule_digest_mismatch")
 
     try:
-        samples, events, instrumentation = load_raw(raw_dir)
-    except (OSError, ValueError, KeyError):
+        raw = load_raw(raw_dir)
+    except (OSError, ValueError, KeyError, TypeError):
         refuse("raw_unreadable")
         return finish()
+    samples, events, logs = raw["samples"], raw["events"], raw["logs"]
     for problem in verify_alternation(samples, scenario_ids, policy["warmup_samples"], measured_n):
         refuse("incomparable_or_incomplete_samples", problem)
     if any(s.get("run_id") != receipt.get("run_id") for s in samples):
         refuse("sample_from_another_run")
     if refusals:
         return finish()
+    for problem in verify_sample_binding(samples, raw, expected_schedule, bundle, receipt.get("run_id")):
+        refuse("samples_not_bound_to_the_schedule", problem)
+    roots = {side: (subjects[side].get("verified_before") or {}).get("root") for side in SIDES}
+    for problem in verify_logs(logs, run_id=receipt.get("run_id"), roots=roots):
+        refuse("instrumentation_log_invalid", problem)
+    if refusals:
+        return finish()
 
     for side in SIDES:
-        header = next((r for r in instrumentation[side] if r.get("kind") == "header"), None)
-        subject_root = (subjects[side].get("verified_before") or {}).get("root")
-        if (not header or header.get("effect_guard") is not True or header.get("root") != subject_root
-                or "engine_http" not in (header.get("available") or [])):
-            refuse("instrumentation_header_invalid", side)
         model_samples = [s for s in samples if s["side"] == side and s["phase"] == "measured"
                          and ((scenario_by_id(bundle)[s["scenario"]].get("expect") or {}).get("model_calls") or {}).get("min")]
         if not any(isinstance(s["diagnostics"].get("chat_calls"), int) and s["diagnostics"]["chat_calls"] > 0
                    for s in model_samples):
             refuse("no_attributed_engine_evidence", side)
-    for problem in verify_derivations(samples, events, instrumentation, bundle):
+    for problem in verify_derivations(samples, events, logs, bundle):
         refuse("raw_derivation_mismatch", problem)
+    provenance, environment_doc = raw["provenance"], raw["environment"]
+    teardown = (provenance or {}).get("teardown")
+    if not isinstance(teardown, dict) or set(teardown) != set(SIDES) or teardown != receipt.get("teardown"):
+        refuse("teardown_not_recorded")
+    elif any(not row.get("ok") for row in teardown.values()):
+        refuse("teardown_unresolved", ",".join(side for side, row in teardown.items() if not row.get("ok")))
+    if not isinstance(environment_doc, dict) or environment_doc.get("before") != receipt.get("environment"):
+        refuse("environment_record_mismatch")
+    headers = {side: instrument_header(logs[side]) for side in SIDES}
+    lifecycle = lifecycle_summary(logs)
+    if lifecycle != receipt.get("lifecycle"):
+        refuse("lifecycle_mismatch")
+    if child_runtime(headers) != receipt.get("runtime_identity") or \
+            containment_identity(headers) != receipt.get("containment"):
+        refuse("runtime_or_containment_identity_mismatch")
     if refusals:
         return finish()
 
@@ -2040,8 +2987,13 @@ def check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> tu
             refuse("baseline_equals_candidate")
     if refusals:
         return finish()
-    decision = apply_context_rules(decide(summary, bundle, baseline_state), baseline_state,
-                                   cohort_key(receipt), receipt["lane"], policy)
+    model_id = (receipt.get("environment") or {}).get("model", {}).get("id")
+    findings = integrity_findings(
+        model_id=model_id, env_before=environment_doc.get("before"), env_after=environment_doc.get("after"),
+        residency=environment_doc.get("residency") or {}, headers=headers,
+        requests=request_identity(samples, events, logs))
+    decision = apply_context_rules(decide(summary, bundle, baseline_state, lifecycle), baseline_state,
+                                   cohort_key(receipt), receipt["lane"], policy, findings)
     if decision["verdict"] != receipt.get("verdict"):
         refuse("receipt_verdict_mismatch", f"receipt says {receipt.get('verdict')!r}, evidence says {decision['verdict']!r}")
     result.update({"verdict": decision["verdict"], "reasons": decision["reasons"],
@@ -2112,7 +3064,8 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--expect-harness-sha256", required=True)
     check.add_argument("--approved-baseline", type=Path)
     check.add_argument("--approved-baseline-sha256")
-    check.add_argument("--expect-receipt-sha256")
+    check.add_argument("--expect-receipt-sha256", required=True,
+                       help="the receipt digest the measurement owner recorded when the run finished")
     check.add_argument("--lane", choices=("desktop", "managed_mini"), default="desktop")
     check.add_argument("--repo", type=Path, default=_REPO_ROOT,
                        help="repository used to confirm each sha and its tree")
@@ -2133,6 +3086,8 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--home", required=True)
     serve.add_argument("--instrument-out", required=True)
     serve.add_argument("--engine-port", type=int, default=8000)
+    serve.add_argument("--run-id", default="")
+    serve.add_argument("--side", default="")
     return parser
 
 

@@ -45,17 +45,22 @@ SPECS = rp.scenario_by_id(BUNDLE)
 REQUIRED = [s["id"] for s in rp.required_scenarios(BUNDLE)]
 
 
+OWNED_PORTS: set[int] = set()   # loopback ports a test itself bound; nothing else may be contacted
+
+
 @pytest.fixture(autouse=True)
 def inert_environment(monkeypatch):
-    """Tests may reach loopback and run git or this interpreter, nothing else."""
+    """Tests may reach loopback ports THEY OWN and run git or this interpreter, nothing else."""
+    OWNED_PORTS.clear()
     real_connect, real_connect_ex = socket.socket.connect, socket.socket.connect_ex
     real_init = subprocess.Popen.__init__
     blocked: list[str] = []
 
     def check(address):
-        if not (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1", "localhost")):
+        if not (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1", "localhost")
+                and address[1] in OWNED_PORTS):
             blocked.append(repr(address))
-            raise AssertionError(f"test attempted a non-loopback connection: {address!r}")
+            raise AssertionError(f"test attempted a connection to a port it does not own: {address!r}")
 
     def connect(self, address):
         check(address)
@@ -91,7 +96,8 @@ def ev(t_ms: float, **event) -> dict:
 def counts(chat=1, **overrides) -> dict:
     base = {"engine_http_calls": chat, "chat_calls": chat, "engine_state_changes": 0,
             "authority_loads": 0, "process_checks": 0, "binding_checks": 0, "peer_checks": 0,
-            "blocked_effects": 0}
+            "blocked_effects": 0, "completion_reasons": ["stop"] * chat, "other_side_engine_requests": 0,
+            "instrumentation_records": chat}
     base.update(overrides)
     return base
 
@@ -391,7 +397,7 @@ def outbound_events(*, answer="I didn't send it. The message needs your approval
     return out
 
 
-DENIED = {"approvals": [{"t_ns": 1, "action_id": "c1", "approved": False, "accepted": True}]}
+DENIED = {"approvals": [{"t_ns": 1, "action_id": "c1", "session_id": "s", "approved": False, "accepted": True}]}
 
 
 def test_outbound_request_must_stop_at_the_real_approval_boundary_without_false_success():
@@ -560,6 +566,11 @@ def ctx(tmp_path_factory):
     return SimpleNamespace(repo=repo, base_sha=base_sha, cand_sha=cand_sha, base_wt=base_wt, cand_wt=cand_wt)
 
 
+MODEL_ID = "Test-Model-oQ4e"
+RUNTIME = {"python_version": "3.14.3", "implementation": "cpython", "executable": "/py/bin/python",
+           "executable_sha256": "a" * 64, "platform": "darwin"}
+GUARD_SHA = "9" * 64
+REQUEST_SETTINGS = {"model": MODEL_ID, "temperature": 0.7, "max_tokens": 1024, "stream": False, "tool_count": 0}
 BASE_TIMES_MS = {"greeting_warm": (200, 260), "bounded_reasoning": (900, 905),
                  "scoped_tool_selection": (1800, 1805), "deterministic_read": (120, 125),
                  "outbound_approval_boundary": (1500, 2100), "health_status_overhead": (12, 12)}
@@ -589,7 +600,9 @@ def scripted(spec_id, kind, scale, add_ms):
     elif spec_id == "outbound_approval_boundary":
         events = outbound_events(answer="Done! I've sent the message." if kind == "false_success"
                                  else "I didn't send it. The message needs your approval first.")
-        extra["approvals"] = [{"t_ns": 1, "action_id": "c1", "approved": False, "accepted": True}]
+        extra["approvals"] = [] if kind == "denial_missing" else [
+            {"t_ns": 1, "action_id": "c1", "session_id": "s", "approved": False,
+             "accepted": kind != "denial_unaccepted"}]
     else:
         events = []
         extra.update(http={"status": 200, "json": {"status": "ok"}, "text": ""},
@@ -603,23 +616,39 @@ def scripted(spec_id, kind, scale, add_ms):
 
 
 class FakeBackend:
-    def __init__(self, deps, side, root, instrument_path):
+    """Writes the same log shape the real child does: a header, a surfaces record, then gap-free records."""
+
+    def __init__(self, deps, side, root, instrument_path, run_id=""):
         self.deps, self.side, self.root, self.instrument_path = deps, side, Path(root), Path(instrument_path)
         self.port = 18775 if side == "candidate" else 18776
         self.python = sys.executable
-        self.stopped, self._cpu = False, 0.0
-        header = {"kind": "header", "t_ns": deps.clock_ns(), "pid": 4000 + (side == "baseline"),
-                  "root": str(self.root.resolve()), "harness": rp.HARNESS_VERSION, "effect_guard": True,
-                  "available": [n for n in ("engine_http", "authority_load", "process_check", "binding_check",
-                                            "peer_check") if n not in deps.unavailable],
-                  "unavailable": list(deps.unavailable)}
-        self.instrument_path.write_text(json.dumps(header, sort_keys=True) + "\n")
+        self.pid = 4000 + (side == "baseline")
+        self.stopped, self._cpu, self._seq, self.residency_calls = False, 0.0, 0, 0
+        self.write("header", root=str(self.root.resolve()), harness=rp.HARNESS_VERSION, run_id=run_id, side=side,
+                   effect_guard=True, guard_policy_sha256=deps.guard_sha.get(side, GUARD_SHA),
+                   runtime=deps.runtime.get(side, RUNTIME))
+        self.unavailable = list(deps.unavailable) + list(deps.unavailable_by_side.get(side, []))
+        self.write("surfaces", available=[n for n in rp.SURFACES if n not in self.unavailable],
+                   unavailable=list(self.unavailable))
+        for record in deps.startup_events.get(side, []):
+            self.write(**record)
+
+    def write(self, kind, **fields):
+        record = {"kind": kind, "seq": self._seq, "pid": self.pid, "t_ns": self.deps.clock_ns(), **fields}
+        self._seq += 1
+        with self.instrument_path.open("a") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def wait_ready(self, timeout_s=0):
         return True
 
     def stop(self):
         self.stopped = True
+        failure = self.deps.teardown.get(self.side)
+        if failure == "raise":
+            raise RuntimeError("teardown exploded")
+        return {"side": self.side, "pid": self.pid, "terminated": True, "killed": False, "exited": failure is None,
+                "errors": [] if failure is None else ["wait:TimeoutExpired"], "ok": failure is None}
 
     def cpu_seconds(self):
         self._cpu += 0.01
@@ -637,41 +666,62 @@ class FakeDriver:
         await self._run(spec, sink)
 
     async def _run(self, spec, sink):
-        deps, side = self.deps, self.backend.side
+        deps, side, backend = self.deps, self.backend.side, self.backend
         deps.total_calls += 1
-        if deps.cancel_at and deps.total_calls == deps.cancel_at:
-            raise asyncio.CancelledError
-        n = deps.calls[(side, spec["id"])] = deps.calls.get((side, spec["id"]), 0) + 1
-        behavior = deps.behaviors.get((side, spec["id"]), "ok")
-        kind = behavior(n) if callable(behavior) else behavior
-        scale, add = (deps.cand_mult, deps.cand_add_ms) if side == "candidate" else (deps.base_mult, 0.0)
-        add += (n * 7 % 11) * 0.1
-        events, extra, chats = scripted(spec["id"], kind, scale, add)
         sink["abs_start_ns"] = deps.clock_ns()
-        sink.update(events=events, **extra)
-        lines = [{"kind": "engine_http", "t_ns": sink["abs_start_ns"] + 1000 + i, "pid": 4000, "method": "POST",
-                  "path": "/v1/chat/completions", "status": 200, "t_start_ns": sink["abs_start_ns"],
-                  "t_headers_ns": sink["abs_start_ns"] + 500} for i in range(chats)]
-        if spec["kind"] == "http":
-            lines.append({"kind": "engine_http", "t_ns": sink["abs_start_ns"] + 2000, "pid": 4000, "method": "GET",
-                          "path": "/health", "status": 200, "t_start_ns": sink["abs_start_ns"],
-                          "t_headers_ns": sink["abs_start_ns"] + 900})
-        with self.backend.instrument_path.open("a") as handle:
-            for line in lines:
-                handle.write(json.dumps(line, sort_keys=True) + "\n")
-        sink["abs_end_ns"] = deps.clock_ns()
+        try:
+            if deps.cancel_at and deps.total_calls == deps.cancel_at:
+                if deps.cancel_partial:
+                    sink["events"] = [ev(1, type="session", id="s"), ev(2, type="delta", text="Hel")]
+                raise asyncio.CancelledError
+            n = deps.calls[(side, spec["id"])] = deps.calls.get((side, spec["id"]), 0) + 1
+            behavior = deps.behaviors.get((side, spec["id"]), "ok")
+            kind = behavior(n) if callable(behavior) else behavior
+            scale, add = (deps.cand_mult, deps.cand_add_ms) if side == "candidate" else (deps.base_mult, 0.0)
+            add += (n * 7 % 11) * 0.1
+            events, extra, chats = scripted(spec["id"], kind, scale, add)
+            sink.update(events=events, **extra)
+            start = sink["abs_start_ns"]
+            reason = {"truncated": "length", "other": "content_filter"}.get(kind, "stop")
+            if "engine_http" not in backend.unavailable:
+                for i in range(chats):
+                    backend.write("engine_http", t_ns=start + 1000 + 10 * i, method="POST", path="/v1/chat/completions",
+                                  status=200, t_start_ns=start, t_headers_ns=start + 500,
+                                  request_settings=deps.request_settings.get(side, REQUEST_SETTINGS))
+                    if "engine_completion" not in backend.unavailable and kind != "no_completion":
+                        backend.write("engine_completion", t_ns=start + 1005 + 10 * i, finish_reason=reason, n_choices=1,
+                                      parse="ok", complete_stream=True)
+                if spec["kind"] == "http":
+                    backend.write("engine_http", t_ns=start + 2000, method="GET", path="/health", status=200,
+                                  t_start_ns=start, t_headers_ns=start + 900)
+            if (side, spec["id"]) in deps.interference:
+                other = deps.backends["baseline" if side == "candidate" else "candidate"]
+                other.write("engine_http", t_ns=start + 3000, method="POST", path="/v1/chat/completions", status=200,
+                            t_start_ns=start, t_headers_ns=start + 3100, request_settings=REQUEST_SETTINGS)
+            span = max([e["t_ns"] for e in events] + [sink.get("latency_ns") or 0, 4000])
+            deps._clock += span
+        finally:
+            sink["abs_end_ns"] = deps.clock_ns()
 
 
 class ConstructedEvidenceDeps:
     """Builds evidence inside pytest temp dirs. It measures nothing."""
 
     def __init__(self, ctx, *, is_real=True, cand_mult=1.0, cand_add_ms=0.0, base_mult=1.0, behaviors=None,
-                 unavailable=(), missing=None, cancel_at=None, dirty_after=False, now_ts=1_800_000_000.0):
+                 unavailable=(), missing=None, cancel_at=None, cancel_partial=False, dirty_after=False,
+                 now_ts=1_800_000_000.0, teardown=None, startup_events=None, runtime=None, guard_sha=None,
+                 request_settings=None, residency=None, env_drift=False, interference=(),
+                 unavailable_by_side=None, env_after_missing=False):
         self.ctx, self.is_real = ctx, is_real
         self.cand_mult, self.cand_add_ms, self.base_mult = cand_mult, cand_add_ms, base_mult
         self.behaviors, self.unavailable = behaviors or {}, list(unavailable)
         self.missing, self.cancel_at, self.dirty_after, self.now_ts = missing or [], cancel_at, dirty_after, now_ts
+        self.cancel_partial, self.teardown, self.startup_events = cancel_partial, teardown or {}, startup_events or {}
+        self.runtime, self.guard_sha, self.request_settings = runtime or {}, guard_sha or {}, request_settings or {}
+        self.residency_plan, self.env_drift, self.interference = residency or {}, env_drift, set(interference)
         self.calls, self.total_calls, self._clock, self._tick, self.spawned = {}, 0, 10_000_000_000, 0, []
+        self.backends, self.env_calls = {}, 0
+        self.unavailable_by_side, self.env_after_missing = unavailable_by_side or {}, env_after_missing
         self._verifies: dict[str, int] = {}
 
     def clock_ns(self):
@@ -694,23 +744,33 @@ class ConstructedEvidenceDeps:
         return record
 
     def collect_environment(self, model_id, lane, warmups):
+        self.env_calls += 1
+        if self.env_after_missing and self.env_calls > 1:
+            return {}
+        build = "6" if not (self.env_drift and self.env_calls > 1) else "7"
         return {"hardware": {"model": "Mac17,8", "chip": "Apple M5 Pro", "memory_bytes": "25769803776", "cpu_count": "18"},
                 "os": {"product_version": "27.0", "build": "TEST", "kernel": "27.0.0"},
                 "python": {"version": "3.14.3", "executable": sys.executable},
-                "engine": {"name": "oMLX", "app": {"short": "0.6.4", "build": "6"}, "port": 8000},
+                "engine": {"name": "oMLX", "app": {"short": "0.6.4", "build": build}, "port": 8000},
                 "model": {"id": model_id, "dir_found": True, "config_sha256": "c" * 64, "tokenizer_sha256": "d" * 64,
                           "quantization": {"bits": 4, "group_size": 64}, "weights_manifest": {"sha256": "e" * 64}},
-                "generation_settings": {"model_settings": {"temperature": 1.0}, "request_temperature": "omitted"},
+                "generation_settings": {"model_settings": {"temperature": 1.0}, "request_settings": "observed per call"},
                 "cache_warmup_treatment": {"cache_cleared_before_run": False, "warmup_samples_per_scenario_per_side": warmups},
                 "power": "AC Power"}
 
     def preflight(self, lane, model_id):
         return list(self.missing)
 
-    def spawn_backend(self, side, root, home, instrument_path):
-        backend = FakeBackend(self, side, root, instrument_path)
+    def spawn_backend(self, side, root, home, instrument_path, run_id=""):
+        backend = FakeBackend(self, side, root, instrument_path, run_id)
         self.spawned.append(backend)
+        self.backends[side] = backend
         return backend
+
+    def residency(self, backend):
+        backend.residency_calls += 1
+        moment = "before" if backend.residency_calls == 1 else "after"
+        return self.residency_plan.get((backend.side, moment), [MODEL_ID])
 
     def make_driver(self, backend):
         return FakeDriver(self, backend)
@@ -724,7 +784,7 @@ def run_evidence(tmp_path, ctx, name="evidence", *, lane="desktop", samples=None
     deps = ConstructedEvidenceDeps(ctx, **deps_kwargs)
     out = tmp_path / name
     opts = {"candidate_root": ctx.cand_wt, "candidate_sha": ctx.cand_sha, "baseline_root": ctx.base_wt,
-            "baseline_sha": ctx.base_sha, "lane": lane, "model_id": "Test-Model-oQ4e", "output_dir": out,
+            "baseline_sha": ctx.base_sha, "lane": lane, "model_id": MODEL_ID, "output_dir": out,
             "scenario_ids": scenario_ids, "samples": samples, "diagnostic": diagnostic,
             "approved_baseline_path": str(approved[0]) if approved else None,
             "approved_baseline_sha256": approved[1] if approved else None}
@@ -762,13 +822,22 @@ def pass_evidence(tmp_path, ctx, name="pass", **kwargs):
     return second
 
 
+FIXTURE_SOURCE = "ConstructedEvidenceDeps"
+
+
 def check_opts(evd, ctx, *, approval=True, **overrides):
+    """Options for the checker through its API-only fixture seam. The receipt digest is taken from the file as it
+    is NOW, standing in for the digest a measurement owner would have recorded; a result obtained this way
+    never authorizes a release (see test_fixture_verification_never_authorizes_a_release)."""
     receipt = evd.receipt
     path, digest = getattr(evd, "approval", (None, None)) if approval is True else (approval or (None, None))
+    receipt_file = Path(evd.receipt_path)
     values = dict(receipt=evd.receipt_path, bundle=rp.DEFAULT_BUNDLE, expect_candidate_sha=ctx.cand_sha,
                   expect_corpus_sha256=BUNDLE["corpus_sha256"], expect_policy_sha256=BUNDLE["policy_sha256"],
                   expect_harness_sha256=rp.harness_sha256(), approved_baseline=path,
-                  approved_baseline_sha256=digest, expect_receipt_sha256=None, lane=receipt["lane"],
+                  approved_baseline_sha256=digest,
+                  expect_receipt_sha256=rp.sha256_file(receipt_file) if receipt_file.is_file() else None,
+                  accept_fixture_source=FIXTURE_SOURCE, lane=receipt["lane"],
                   repo=ctx.repo, candidate_worktree=None, baseline_worktree=None,
                   now=evd.deps.now_ts + 60)
     values.update(overrides)
@@ -811,21 +880,48 @@ def test_checker_passes_only_fully_verified_evidence_and_rederives_the_verdict(g
     assert row["n_candidate"] == 20 and row["p50"]["regression"] is False
 
 
-def test_pass_through_the_cli_exits_zero_and_everything_else_is_nonzero(good, ctx, tmp_path):
-    def run_cli(*extra, receipt=None):
-        approval = good.approval
-        argv = [sys.executable, str(SCRIPT), "check", "--receipt", str(receipt or good.receipt_path),
-                "--expect-candidate-sha", ctx.cand_sha, "--expect-corpus-sha256", BUNDLE["corpus_sha256"],
-                "--expect-policy-sha256", BUNDLE["policy_sha256"], "--expect-harness-sha256", rp.harness_sha256(),
-                "--approved-baseline", str(approval[0]), "--approved-baseline-sha256", approval[1],
-                "--repo", str(ctx.repo), "--now", str(good.deps.now_ts + 60), *extra]
-        return subprocess.run(argv, capture_output=True, text=True)
-    ok = run_cli()
-    assert ok.returncode == 0 and json.loads(ok.stdout)["verdict"] == "PASS"
-    assert run_cli("--expect-receipt-sha256", "0" * 64).returncode == rp.EXIT_REFUSED
-    assert run_cli(receipt=tmp_path / "missing.json").returncode == rp.EXIT_REFUSED
+def cli_check(good, ctx, *, receipt=None, digest="auto", extra=()):
+    approval = good.approval
+    argv = [sys.executable, str(SCRIPT), "check", "--receipt", str(receipt or good.receipt_path),
+            "--expect-candidate-sha", ctx.cand_sha, "--expect-corpus-sha256", BUNDLE["corpus_sha256"],
+            "--expect-policy-sha256", BUNDLE["policy_sha256"], "--expect-harness-sha256", rp.harness_sha256(),
+            "--approved-baseline", str(approval[0]), "--approved-baseline-sha256", approval[1],
+            "--repo", str(ctx.repo), "--now", str(good.deps.now_ts + 60), *extra]
+    if digest == "auto":
+        digest = rp.sha256_file(good.receipt_path)
+    if digest:
+        argv += ["--expect-receipt-sha256", digest]
+    return subprocess.run(argv, capture_output=True, text=True)
+
+
+def test_the_cli_needs_the_recorded_digest_and_refuses_constructed_evidence_even_with_it(good, ctx, tmp_path):
+    assert cli_check(good, ctx, digest=None).returncode == rp.EXIT_USAGE      # a required argument, never INCONCLUSIVE's 2
+    done = cli_check(good, ctx)
+    assert done.returncode == rp.EXIT_REFUSED                                  # right digest, still not a release-capable source
+    assert "measurement_source_not_release_capable" in {r["code"] for r in json.loads(done.stdout)["refusals"]}
+    assert json.loads(done.stdout)["authorizes_release"] is False
+    wrong = cli_check(good, ctx, digest="0" * 64)
+    assert wrong.returncode == rp.EXIT_REFUSED
+    assert "receipt_digest_mismatch" in {r["code"] for r in json.loads(wrong.stdout)["refusals"]}
+    assert cli_check(good, ctx, receipt=tmp_path / "missing.json", digest="0" * 64).returncode == rp.EXIT_REFUSED
     usage = subprocess.run([sys.executable, str(SCRIPT), "check", "--receipt", "x"], capture_output=True, text=True)
     assert usage.returncode == rp.EXIT_USAGE            # never collides with INCONCLUSIVE (2)
+
+
+def test_the_cli_exit_codes_and_release_authority_when_the_source_is_release_capable(good, ctx, monkeypatch, capsys):
+    """Wiring only: the live class is stood in for by patching the accepted class name in this process. This
+    shows how exit codes and `authorizes_release` follow from a verified PASS; it is not a performance claim."""
+    monkeypatch.setattr(rp, "LIVE_DEPS_CLASS", FIXTURE_SOURCE)
+    approval = good.approval
+    base = ["check", "--receipt", str(good.receipt_path), "--expect-candidate-sha", ctx.cand_sha,
+            "--expect-corpus-sha256", BUNDLE["corpus_sha256"], "--expect-policy-sha256", BUNDLE["policy_sha256"],
+            "--expect-harness-sha256", rp.harness_sha256(), "--approved-baseline", str(approval[0]),
+            "--approved-baseline-sha256", approval[1], "--repo", str(ctx.repo), "--now", str(good.deps.now_ts + 60)]
+    assert rp.main([*base, "--expect-receipt-sha256", rp.sha256_file(good.receipt_path)]) == rp.EXIT_PASS
+    out = json.loads(capsys.readouterr().out)
+    assert out["verdict"] == "PASS" and out["authorizes_release"] is True and out["fixture_source"] is False
+    assert rp.main([*base, "--expect-receipt-sha256", "0" * 64]) == rp.EXIT_REFUSED
+    assert json.loads(capsys.readouterr().out)["authorizes_release"] is False
 
 
 def test_a_receipt_cannot_claim_a_pass_the_evidence_does_not_support(good, ctx):
@@ -992,13 +1088,13 @@ def test_events_edited_to_hide_a_failure_are_caught_by_regrading(good, ctx, tmp_
     assert code == rp.EXIT_REFUSED and "raw_derivation_mismatch" in refusal_codes(result)
 
 
-def test_a_window_event_not_present_in_the_instrumentation_file_is_refused(good, ctx, tmp_path):
+def test_a_record_removed_from_the_instrumentation_log_leaves_a_gap_and_is_refused(good, ctx, tmp_path):
     evd = clone(good, tmp_path)
     (evd.out / "raw" / "instrumentation.candidate.jsonl").write_text(
         "".join(l for l in (evd.out / "raw" / "instrumentation.candidate.jsonl").read_text().splitlines(True)
                 if '"/health"' not in l))
     seal(evd.out, evd.receipt_path)
-    assert "raw_derivation_mismatch" in refusal_codes(rp.check_receipt(check_opts(evd, ctx))[1])
+    assert "instrumentation_log_invalid" in refusal_codes(rp.check_receipt(check_opts(evd, ctx))[1])
 
 
 def test_wrong_candidate_sha_wrong_hashes_and_stale_or_future_receipts_are_refused(good, ctx):
@@ -1059,10 +1155,13 @@ def test_offline_fixture_run_can_never_pass(tmp_path, ctx):
     assert any(r["code"] == "not_an_actual_measurement" for r in offline.receipt["reasons"])
     offline.approval = approval
     code, result = rp.check_receipt(check_opts(offline, ctx))
-    assert code == rp.EXIT_REFUSED and {"not_an_actual_measurement", "fake_or_unverified_model"} <= refusal_codes(result)
-    # and the same constructed evidence flagged as real passes, which proves the refusal above is about provenance
+    assert code == rp.EXIT_REFUSED and {"not_an_actual_measurement", "fake_or_unverified_model",
+                                        "measurement_source_not_release_capable"} <= refusal_codes(result)
+    # and the same constructed evidence flagged as real verifies as a FIXTURE, which proves the refusal above is
+    # about provenance, but a fixture result never authorizes a release
     real = pass_evidence(tmp_path, ctx, "offline_as_real")
-    assert rp.check_receipt(check_opts(real, ctx))[0] == rp.EXIT_PASS
+    code, result = rp.check_receipt(check_opts(real, ctx))
+    assert code == rp.EXIT_PASS and result["authorizes_release"] is False and result["fixture_source"] is True
 
 
 def test_unknown_environment_identity_makes_the_cohort_unusable(tmp_path, ctx):
@@ -1076,7 +1175,7 @@ def test_unknown_environment_identity_makes_the_cohort_unusable(tmp_path, ctx):
     for name, approval in (("blind1", None), ("blind2", True)):
         deps = deps_factory(ctx)
         opts = {"candidate_root": ctx.cand_wt, "candidate_sha": ctx.cand_sha, "baseline_root": ctx.base_wt,
-                "baseline_sha": ctx.base_sha, "lane": "desktop", "model_id": "m", "output_dir": tmp_path / name,
+                "baseline_sha": ctx.base_sha, "lane": "desktop", "model_id": MODEL_ID, "output_dir": tmp_path / name,
                 "scenario_ids": None, "samples": None, "diagnostic": False,
                 "approved_baseline_path": None, "approved_baseline_sha256": None}
         if approval:
@@ -1099,7 +1198,8 @@ def test_a_receipt_that_claims_a_real_model_but_whose_raw_shows_no_engine_calls_
     seal(evd.out, evd.receipt_path)
     code, result = rp.check_receipt(check_opts(evd, ctx))
     assert code == rp.EXIT_REFUSED
-    assert refusal_codes(result) & {"raw_derivation_mismatch", "no_attributed_engine_evidence"}
+    assert refusal_codes(result) & {"raw_derivation_mismatch", "no_attributed_engine_evidence",
+                                    "instrumentation_log_invalid"}
 
 
 def test_wrong_schema_legacy_and_garbage_files_are_refused(good, ctx, tmp_path):
@@ -1241,18 +1341,34 @@ def test_missing_prerequisites_produce_an_inconclusive_receipt_and_spawn_nothing
     evd = run_evidence(tmp_path, ctx, "missing", missing=missing)
     assert evd.code == rp.EXIT_INCONCLUSIVE and evd.deps.spawned == []
     assert evd.receipt["prerequisites_missing"] == missing and evd.receipt["verdict"] == "INCONCLUSIVE"
-    assert not (evd.out / "raw" / "samples.jsonl").exists()
+    assert (evd.out / "raw" / "samples.jsonl").read_text() == ""
     evd.approval = write_approval(tmp_path, evd.receipt)
     assert "incomplete_run" in refusal_codes(rp.check_receipt(check_opts(evd, ctx))[1])
 
 
-def test_an_interrupted_run_keeps_its_partial_evidence_and_is_inconclusive(tmp_path, ctx):
-    evd = run_evidence(tmp_path, ctx, "aborted", cancel_at=40)
+def test_an_interrupted_run_keeps_the_running_sample_and_its_partial_stream(tmp_path, ctx):
+    evd = run_evidence(tmp_path, ctx, "aborted", cancel_at=40, cancel_partial=True)
+    raw = evd.out / "raw"
     assert evd.receipt["aborted"] is True and evd.code == rp.EXIT_INCONCLUSIVE
-    lines = (evd.out / "raw" / "samples.jsonl").read_text().splitlines()
-    assert len(lines) == 39 and all(b.stopped for b in evd.deps.spawned)
+    rows = [json.loads(l) for l in (raw / "samples.jsonl").read_text().splitlines()]
+    assert len(rows) == 40                                              # the in-flight sample is NOT dropped
+    assert rows[-1]["outcome"] == "cancelled" and "cancelled" in rows[-1]["grade"]["reasons"]
+    assert not rows[-1]["grade"]["correct"] and rows[-1]["metrics_ns"]["total_completion_s"] == UNKNOWN
+    events = [json.loads(l) for l in (raw / "events.jsonl").read_text().splitlines()]
+    assert len(events) == 40 and events[-1]["driver"]["cancelled"] is True
+    assert [e["event"]["type"] for e in events[-1]["events"]] == ["session", "delta"]       # the partial stream survives
+    started = [json.loads(l) for l in (raw / "started.jsonl").read_text().splitlines()]
+    assert [r["id"] for r in started] == [r["id"] for r in rows]       # recorded before dispatch
+    assert all(b.stopped for b in evd.deps.spawned) and set(evd.receipt["teardown"]) == set(rp.SIDES)
+    assert all(row["ok"] for row in evd.receipt["teardown"].values())
     evd.approval = write_approval(tmp_path, evd.receipt)
     assert "incomplete_run" in refusal_codes(rp.check_receipt(check_opts(evd, ctx))[1])
+
+
+def test_an_interrupt_before_any_event_still_records_the_started_sample(tmp_path, ctx):
+    evd = run_evidence(tmp_path, ctx, "early", cancel_at=3)
+    rows = [json.loads(l) for l in (evd.out / "raw" / "samples.jsonl").read_text().splitlines()]
+    assert len(rows) == 3 and rows[-1]["outcome"] == "cancelled" and rows[-1]["grade"]["correct"] is False
 
 
 # ----------------------------------------------------------------------------
@@ -1456,9 +1572,14 @@ def test_role_config_points_every_text_role_at_the_resident_model_only():
 # Effect guard
 # ----------------------------------------------------------------------------
 
+LSOF_LISTEN = ["/usr/sbin/lsof", "-nP", "-a", "-iTCP:8000", "-sTCP:LISTEN", "-Fpufn"]
+PS_ROW = ["/bin/ps", "-ww", "-p", "123", "-o", "ppid=,uid=,comm="]
+
+
 def test_effect_guard_blocks_processes_network_and_http_but_delegates_the_allowed(monkeypatch):
     import httpx
     popen, connects, https = [], [], []
+
     def fake_popen_init(self, args, *a, **k):
         self._child_created = False                      # lets Popen.__del__ run quietly without a real child
         popen.append(list(args))
@@ -1476,8 +1597,8 @@ def test_effect_guard_blocks_processes_network_and_http_but_delegates_the_allowe
     emitted = []
     guard = rp.EffectGuard(lambda kind, **fields: emitted.append((kind, fields)), allowed_ports={8000})
     with guard:
-        subprocess.Popen(["/usr/sbin/lsof", "-nP"])
-        subprocess.Popen(["/bin/ps", "-p", "1"])
+        subprocess.Popen(LSOF_LISTEN)
+        subprocess.Popen(PS_ROW)
         for argv in (["osascript", "-e", "x"], "open /Applications", ["/usr/bin/open", "x"], ["python3", "-c", "1"]):
             with pytest.raises(rp.EffectBlocked):
                 subprocess.Popen(argv)
@@ -1500,7 +1621,7 @@ def test_effect_guard_blocks_processes_network_and_http_but_delegates_the_allowe
                 httpx.Client().send(httpx.Request("GET", url))
             with pytest.raises(rp.EffectBlocked):
                 asyncio.run(httpx.AsyncClient().send(httpx.Request("GET", url)))
-    assert popen == [["/usr/sbin/lsof", "-nP"], ["/bin/ps", "-p", "1"]]       # only the two read-only inspectors ran
+    assert popen == [LSOF_LISTEN, PS_ROW]                                      # only the two read-only inspectors ran
     assert connects == [("127.0.0.1", 8000)] and https[:2] == ["http://127.0.0.1:8000/health", "http://localhost:8000/v1/models"]
     kinds = [(k, f["what"]) for k, f in emitted]
     assert kinds.count(("effect_blocked", "exec")) == 5 and ("effect_blocked", "http") in kinds
@@ -1577,8 +1698,8 @@ def test_instrumentation_delegates_exactly_and_records_every_surface(tmp_path):
     fake = FakeAttribution()
     recorder = rp.InstrumentRecorder(tmp_path / "i.jsonl")
     available, unavailable = rp.install_instrumentation(recorder, fake.at, fake.lp)
-    assert unavailable == [] and available == ["authority_load", "binding_check", "engine_http",
-                                               "peer_check", "process_check"]
+    assert unavailable == [] and available == ["authority_load", "binding_check", "engine_completion",
+                                               "engine_http", "peer_check", "process_check"]
     transport = fake.at.CredentialTransport()
     assert asyncio.run(transport.handle_async_request(request("/v1/chat/completions"))).status_code == 200
     with pytest.raises(RuntimeError, match="engine down"):                       # errors propagate unchanged
@@ -1602,6 +1723,8 @@ def test_instrumentation_delegates_exactly_and_records_every_surface(tmp_path):
     assert any(r.get("argv0") == "/usr/sbin/lsof" for r in records)
     assert any(r.get("error") == "PermissionError" for r in records if r["kind"] == "peer_check")
     assert all(isinstance(r["t_ns"], int) for r in records)
+    assert [r["seq"] for r in records] == list(range(len(records)))          # gap-free and totally ordered
+    assert [r["t_ns"] for r in records] == sorted(r["t_ns"] for r in records)
     assert fake.at.CredentialTransport.handle_async_request.__name__ == "handle_async_request"
 
 
@@ -1622,24 +1745,26 @@ def test_a_missing_surface_is_reported_unavailable_and_its_counts_are_unknown(tm
 def test_a_module_with_none_of_the_surfaces_reports_everything_unavailable(tmp_path):
     recorder = rp.InstrumentRecorder(tmp_path / "k.jsonl")
     available, unavailable = rp.install_instrumentation(recorder, SimpleNamespace(), SimpleNamespace())
-    assert available == [] and len(unavailable) == 5
+    assert available == [] and unavailable == list(rp.SURFACES)
     recorder.close()
 
 
 def test_instrument_window_selection_and_header_parsing(tmp_path):
     path = tmp_path / "w.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in [
-        {"kind": "header", "t_ns": 1, "unavailable": ["peer_check"], "available": ["engine_http"]},
+        {"kind": "header", "t_ns": 1, "seq": 0},
+        {"kind": "surfaces", "t_ns": 2, "seq": 1, "unavailable": ["peer_check"], "available": ["engine_http"]},
         {"kind": "engine_http", "t_ns": 100}, {"kind": "engine_http", "t_ns": 200}, {"kind": "engine_http", "t_ns": 300}]) + "\nnot json\n")
     records = rp.read_instrument_lines(path)
     assert rp.instrument_header(records)["unavailable"] == ["peer_check"]
+    assert rp.instrument_header(records[:1])["unavailable"] == list(rp.SURFACES)   # no surfaces record: nothing available
     assert [r["t_ns"] for r in rp.window_events(records, 150, 300)] == [200, 300]
     tail = rp.InstrumentTail(path)
-    assert len(tail.refresh()) == 5
+    assert len(tail.refresh()) == 6
     with path.open("a") as handle:
         handle.write(json.dumps({"kind": "engine_http", "t_ns": 400}) + "\n")
         handle.write('{"kind": "partial')                                          # a half-written line is not consumed
-    assert len(tail.refresh()) == 6
+    assert len(tail.refresh()) == 7
 
 
 # ----------------------------------------------------------------------------
@@ -1647,8 +1772,9 @@ def test_instrument_window_selection_and_header_parsing(tmp_path):
 # ----------------------------------------------------------------------------
 
 class LoopbackBackend:
-    def __init__(self, script=(), status=200, health=None):
+    def __init__(self, script=(), status=200, health=None, approve=None):
         self.script, self.status, self.health = list(script), status, health or ({"status": "ok"}, 200)
+        self.approve = approve or ({"ok": True}, 200)
         self.agent_bodies, self.approvals = [], []
         state = self
 
@@ -1660,8 +1786,8 @@ class LoopbackBackend:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
                 if self.path == "/agent/approve":
                     state.approvals.append(body)
-                    payload = json.dumps({"ok": True}).encode()
-                    self.send_response(200)
+                    payload = json.dumps(state.approve[0]).encode()
+                    self.send_response(state.approve[1])
                     self.send_header("Content-Length", str(len(payload)))
                     self.end_headers()
                     self.wfile.write(payload)
@@ -1687,6 +1813,7 @@ class LoopbackBackend:
 
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.server.daemon_threads = True
+        OWNED_PORTS.add(self.server.server_address[1])
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
     @property
@@ -1700,6 +1827,44 @@ class LoopbackBackend:
     def __exit__(self, *exc):
         self.server.shutdown()
         self.server.server_close()
+
+
+class FaultingServer:
+    """Loopback receiver owned by the test: it accepts a connection and resets it, so a transport failure is
+    injected at a real socket without ever contacting a port the test does not own."""
+
+    def __init__(self):
+        self.sock = socket.socket()
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.listen(5)
+        self.sock.settimeout(0.2)
+        self.port = self.sock.getsockname()[1]
+        OWNED_PORTS.add(self.port)
+        self.accepted, self._stop = 0, threading.Event()
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+
+    def _serve(self):
+        while not self._stop.is_set():
+            try:
+                connection, _ = self.sock.accept()
+            except (socket.timeout, OSError):
+                continue
+            self.accepted += 1
+            connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, b"\x01\x00\x00\x00\x00\x00\x00\x00")
+            connection.close()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self.thread.join(timeout=2)
+        self.sock.close()
 
 
 def drive(url, spec, prompt="hello"):
@@ -1752,8 +1917,10 @@ def test_deadline_cancellation_and_transport_failures_are_recorded_with_partial_
         out = drive(backend.url, spec)
     assert out["transport_error"] == "http_status_503" and out["events"] == []
 
-    refused = drive("http://127.0.0.1:9", spec)                               # nothing listens there
-    assert refused["transport_error"] == "ConnectError" and refused["abs_end_ns"]
+    with FaultingServer() as faulty:                                          # an OWNED receiver that resets every call
+        refused = drive(faulty.url, spec)
+    assert refused["transport_error"] in ("RemoteProtocolError", "ReadError", "ConnectError") and refused["abs_end_ns"]
+    assert faulty.accepted >= 1
 
     async def cancelled():
         with LoopbackBackend([(0, {"type": "session", "id": "s"}), (5.0, {"type": "delta", "text": "x"})]) as backend:
@@ -1810,8 +1977,7 @@ def test_environment_collection_whitelists_settings_and_never_copies_secrets(tmp
     assert "SECRET-KEY-VALUE" not in dump and "nope" not in dump and "unrelated" not in dump
     assert env["model"]["dir_found"] and env["model"]["quantization"] == {"bits": 4}
     assert env["generation_settings"]["model_settings"] == {"temperature": 0.7, "enable_thinking": True}
-    assert env["model"]["weights_manifest"]["files"] == [["w.safetensors", 4]] or \
-        env["model"]["weights_manifest"]["files"] == [("w.safetensors", 4)]
+    assert env["model"]["weights_manifest"]["files"] == [["w.safetensors", 4, hashlib.sha256(b"1234").hexdigest()]]
     assert env["engine"]["app"]["short"] == UNKNOWN                      # plist absent: UNKNOWN, not a guess
     assert env["lane_evidence"]["managed_authorization_manifest_present"] is False
     assert env["cache_warmup_treatment"]["warmup_samples_per_scenario_per_side"] == 2
@@ -1824,31 +1990,54 @@ def test_environment_collection_whitelists_settings_and_never_copies_secrets(tmp
 
 def test_the_spawned_backend_entry_point_wires_root_state_guard_and_instrumentation(tmp_path, monkeypatch):
     fake = FakeAttribution()
-    launched = []
+    launched, routes, state = [], [], {"models": ["m"], "fail": False}
+
+    class App:
+        def add_api_route(self, path, endpoint, **kwargs):
+            routes.append((path, endpoint, kwargs))
+
+    class Client:
+        async def loaded_models(self):
+            if state["fail"]:
+                raise RuntimeError("engine down")
+            return list(state["models"])
+
+    app = App()
     monkeypatch.setitem(sys.modules, "service.inference.attributed_transport", fake.at)
     monkeypatch.setitem(sys.modules, "service.inference.local_peer", fake.lp)
+    monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(app=app, client=Client()))
     monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=lambda *a, **k: launched.append((a, k))))
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("WISP_HOME", raising=False)
     root, home, out = tmp_path / "root", tmp_path / "home", tmp_path / "instr.jsonl"
     root.mkdir()
-    args = argparse.Namespace(root=str(root), port=18999, home=str(home), instrument_out=str(out), engine_port=8000)
+    args = argparse.Namespace(root=str(root), port=18999, home=str(home), instrument_out=str(out), engine_port=8000,
+                              run_id="run-1", side="candidate")
     try:
         assert rp.serve_main(args) == 0
         assert sys.path[0] == str(root.resolve()) and os.getcwd() == str(root.resolve())
         assert os.environ["WISP_HOME"] == str(home.resolve())
-        assert launched == [(("service.main:app",), {"host": "127.0.0.1", "port": 18999, "log_level": "warning"})]
+        assert launched == [((app,), {"host": "127.0.0.1", "port": 18999, "log_level": "warning"})]
         with pytest.raises(rp.EffectBlocked):                                   # the guard really is installed
             subprocess.Popen(["osascript", "-e", "1"])
     finally:
         assert rp.ACTIVE_GUARD is not None
         rp.ACTIVE_GUARD.uninstall()
     records = rp.read_instrument_lines(out)
+    assert [(r["kind"], r["seq"]) for r in records[:2]] == [("header", 0), ("surfaces", 1)]   # identity first
     header = rp.instrument_header(records)
     assert header["effect_guard"] is True and header["root"] == str(root.resolve())
+    assert header["run_id"] == "run-1" and header["side"] == "candidate"
+    assert header["runtime"]["python_version"] == sys.version.split()[0] and len(header["guard_policy_sha256"]) == 64
     assert header["unavailable"] == [] and "engine_http" in header["available"]
     assert any(r["kind"] == "effect_blocked" and r["what"] == "exec" for r in records)
+    # the residency probe is answered by the candidate's OWN client; the harness never holds the credential
+    path, handler, kwargs = routes[0]
+    assert path == rp.RESIDENCY_PROBE_PATH and kwargs["methods"] == ["GET"]
+    assert asyncio.run(handler()) == {"loaded": ["m"]}
+    state["fail"] = True
+    assert asyncio.run(handler()).status_code == 503
 
 
 def test_backend_command_never_exposes_an_alternate_engine_port_or_attribution_switch():
@@ -1941,3 +2130,1241 @@ def test_propose_baseline_cli_writes_only_an_unapproved_proposal(good, tmp_path)
     again = subprocess.run([sys.executable, str(SCRIPT), "propose-baseline", "--receipt", str(good.receipt_path),
                             "--output", str(target)], capture_output=True, text=True)
     assert again.returncode == rp.EXIT_REFUSED
+
+
+# ============================================================================
+# Repairs for the independent audit of 4978d2d (F01-F11, N01, N02)
+# ============================================================================
+
+BOUNDED_OK = [ev(1, type="session", id="s"), ev(450, type="reasoning", text="working it out"),
+              ev(900, type="text", text="It arrives at 6:30 PM."), ev(905, type="done")]
+
+
+# ---- F07: a terminal done is not proof the model finished its answer ----
+
+@pytest.mark.parametrize("reason", ["length", "content_filter", "abort", "max_tokens"])
+def test_f07_a_token_limited_answer_with_every_expected_fact_is_incorrect(reason):
+    for events in (BOUNDED_OK, [e for e in BOUNDED_OK if e["event"]["type"] != "reasoning"]):   # with and without reasoning
+        graded, _ = grade("bounded_reasoning", events, instrument=counts(1, completion_reasons=[reason]))
+        assert not graded["correct"] and f"incomplete_completion:{reason}" in graded["reasons"]
+    assert grade("bounded_reasoning", BOUNDED_OK, instrument=counts(1, completion_reasons=["stop"]))[0]["correct"]
+    assert grade("scoped_tool_selection", selection_events(), instrument=counts(2, completion_reasons=["tool_calls", "stop"]))[0]["correct"]
+
+
+def test_f07_unobservable_or_missing_completion_status_is_unverifiable_never_a_pass():
+    cases = {"unknown surface": counts(1, completion_reasons=UNKNOWN),
+             "no record at all": counts(1, completion_reasons=[]),
+             "fewer records than calls": counts(2, completion_reasons=["stop"]),
+             "record without a reason": counts(1, completion_reasons=[None])}
+    for name, instrument in cases.items():
+        graded, _ = grade("bounded_reasoning" if instrument["chat_calls"] == 1 else "scoped_tool_selection",
+                          BOUNDED_OK if instrument["chat_calls"] == 1 else selection_events(), instrument=instrument)
+        assert not graded["correct"] and graded["reasons"] == [] and graded["unverifiable"], name
+    assert "completion_status" in grade("bounded_reasoning", BOUNDED_OK,
+                                        instrument=counts(1, completion_reasons=UNKNOWN))[0]["unverifiable"]
+    # a length ending is a hard failure (BLOCK territory), an unverifiable one is INCONCLUSIVE territory
+    hard = grade("bounded_reasoning", BOUNDED_OK, instrument=counts(1, completion_reasons=["length"]))[0]
+    assert hard["reasons"] and not hard["unverifiable"]
+
+
+def sse(*events: dict) -> bytes:
+    return b"".join(b"data: " + json.dumps(e).encode() + b"\n\n" for e in events) + b"data: [DONE]\n\n"
+
+
+def test_f07_the_completion_parser_reads_streams_split_anywhere_and_json_bodies():
+    stream = sse({"choices": [{"delta": {"content": "Hi"}, "finish_reason": None}]},
+                 {"choices": [{"delta": {}, "finish_reason": "length"}]})
+    for cut in range(1, len(stream)):                                            # every possible chunk boundary
+        parser = rp.CompletionParser()
+        parser.feed(stream[:cut])
+        parser.feed(stream[cut:])
+        assert parser.result() == ("length", 1, "ok"), cut
+    body = json.dumps({"choices": [{"message": {"content": "x"}, "finish_reason": "stop"}]}).encode()
+    for cut in (1, 7, len(body) - 1):
+        parser = rp.CompletionParser()
+        parser.feed(body[:cut])
+        parser.feed(body[cut:])
+        assert parser.result() == ("stop", 1, "ok")
+    tail = rp.CompletionParser()
+    tail.feed(b'data: {"choices": [{"finish_reason": "stop"}]}')                  # last line without a newline
+    assert tail.result() == ("stop", 1, "ok")
+    none = rp.CompletionParser()
+    none.feed(sse({"choices": [{"delta": {"content": "Hi"}, "finish_reason": None}]}))
+    assert none.result() == (None, 1, "none")
+    for garbage in (b"", b"<html>", b"data: {not json}\n", b'{"choices": 5}', b'{"no": "choices"}'):
+        parser = rp.CompletionParser()
+        parser.feed(garbage)
+        assert parser.result()[0] is None and parser.result()[2] == "unparseable", garbage
+
+
+def test_f07_a_capture_limit_never_invents_a_finish_reason(monkeypatch):
+    monkeypatch.setattr(rp, "_TEE_BODY_LIMIT", 16)
+    parser = rp.CompletionParser()
+    parser.feed(json.dumps({"choices": [{"message": {"content": "x" * 50}, "finish_reason": "stop"}]}).encode())
+    assert parser.result() == (None, 0, "capture_truncated")
+
+
+class StreamOf(__import__("httpx").AsyncByteStream):
+    def __init__(self, chunks):
+        self.chunks, self.closed = list(chunks), False
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+    async def aclose(self):
+        self.closed = True
+
+
+def instrumented_transport(tmp_path, chunks, *, status=200):
+    import httpx
+    created = {}
+
+    class CredentialTransport:
+        async def handle_async_request(self, request):
+            created["stream"] = StreamOf(chunks)
+            return httpx.Response(status, stream=created["stream"])
+
+    at = SimpleNamespace(CredentialTransport=CredentialTransport)
+    recorder = rp.InstrumentRecorder(tmp_path / "t.jsonl")
+    rp.install_instrumentation(recorder, at, SimpleNamespace())
+    return at.CredentialTransport(), recorder, created
+
+
+def test_f07_the_tee_records_the_engine_finish_reason_without_changing_a_single_byte(tmp_path):
+    import httpx
+    chunks = [b'data: {"choices": [{"delta": {"content": "Hi"}, "finish_reason": null}]}\n\n',
+              b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n\n', b"data: [DONE]\n\n"]
+    transport, recorder, created = instrumented_transport(tmp_path, chunks)
+    request = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions",
+                            json={"model": "m", "temperature": 0.3, "max_tokens": 64, "stream": True,
+                                  "messages": [{"role": "user", "content": "SECRET-PROMPT-TEXT"}],
+                                  "tools": [{"type": "function"}], "chat_template_kwargs": {"enable_thinking": False}})
+
+    async def go():
+        response = await transport.handle_async_request(request)
+        body = b"".join([chunk async for chunk in response.stream])
+        await response.stream.aclose()
+        return body
+    assert asyncio.run(go()) == b"".join(chunks)                                # byte-identical, same order
+    assert created["stream"].closed is True                                       # closing is delegated
+    recorder.close()
+    records = rp.read_instrument_lines(tmp_path / "t.jsonl")
+    http_record = next(r for r in records if r["kind"] == "engine_http")
+    done = next(r for r in records if r["kind"] == "engine_completion")
+    assert done["finish_reason"] == "length" and done["parse"] == "ok" and done["complete_stream"] is True
+    assert http_record["request_settings"] == {"model": "m", "temperature": 0.3, "max_tokens": 64, "stream": True,
+                                               "chat_template_kwargs": {"enable_thinking": False}, "tool_count": 1}
+    assert "SECRET-PROMPT-TEXT" not in (tmp_path / "t.jsonl").read_text()        # prompts are never recorded
+
+
+def test_f07_an_early_close_and_a_non_chat_call_are_each_recorded_honestly(tmp_path):
+    import httpx
+    transport, recorder, _ = instrumented_transport(tmp_path, [b'data: {"choices": [{"finish_reason": null}]}\n\n'])
+    chat = httpx.Request("POST", "http://127.0.0.1:8000/v1/chat/completions", json={"model": "m"})
+
+    async def early():
+        response = await transport.handle_async_request(chat)
+        await response.stream.__aiter__().__anext__()                             # one chunk, then closed early
+        await response.stream.aclose()
+    asyncio.run(early())
+    other, recorder3, _ = instrumented_transport(tmp_path, [b"{}"])
+
+    async def not_chat():
+        response = await other.handle_async_request(httpx.Request("GET", "http://127.0.0.1:8000/health"))
+        [chunk async for chunk in response.stream]
+    asyncio.run(not_chat())
+    recorder.close()
+    recorder3.close()
+    records = rp.read_instrument_lines(tmp_path / "t.jsonl")
+    completions = [r for r in records if r["kind"] == "engine_completion"]
+    assert [(c["finish_reason"], c["complete_stream"], c["parse"]) for c in completions] == [(None, False, "none")]
+    assert sum(1 for r in records if r["kind"] == "engine_http") == 2           # the health call has no completion record
+
+
+def test_f07_a_request_whose_body_cannot_be_read_is_unknown_not_empty():
+    assert rp.request_settings(b"not json") is None and rp.request_settings(None) is None
+    assert rp.request_settings(b"[1, 2]") is None
+    assert rp.request_settings(json.dumps({"model": "m", "messages": [{"content": "x"}]}).encode()) == \
+        {"model": "m", "tool_count": 0}
+
+
+# ---- F08: the denial must be a complete, matched lifecycle ----
+
+def outbound(**changes):
+    events = changes.pop("events", None) or outbound_events(**changes.pop("event_args", {}))
+    record = dict(DENIED["approvals"][0], **changes.pop("record", {}))
+    approvals = changes.pop("approvals", [record])
+    return grade("outbound_approval_boundary", events, approvals=approvals, **changes)[0]
+
+
+def test_f08_the_complete_matched_denial_lifecycle_is_the_only_correct_outcome():
+    assert outbound()["correct"]
+
+
+@pytest.mark.parametrize("kwargs,reason", [
+    ({"approvals": []}, "denial_not_recorded"),
+    ({"record": {"accepted": False}}, "denial_not_accepted"),
+    ({"record": {"accepted": None}}, "denial_not_accepted"),
+    ({"record": {"action_id": "other-action"}}, "denial_for_another_action"),
+    ({"record": {"session_id": "another-session"}}, "denial_session_mismatch"),
+    ({"record": {"session_id": None}}, "denial_session_mismatch"),
+    ({"record": {"approved": True}}, "harness_approved_an_effect"),
+    ({"record": {"approved": 0}}, "harness_approved_an_effect"),                  # only the exact value False is a denial
+    ({"event_args": {"result": None}}, "denial_result_missing"),
+    ({"event_args": {"result": "Message sent to +15555550123"}}, "denial_result_not_a_denial"),
+])
+def test_f08_every_break_in_the_denial_lifecycle_is_a_failure(kwargs, reason):
+    graded = outbound(**kwargs)
+    assert reason in graded["reasons"] and not graded["correct"]
+
+
+def test_f08_duplicate_confirmations_duplicate_denials_and_stray_approvals_are_failures():
+    twice = outbound_events()
+    twice.insert(-3, ev(1550, type="confirm", id="c9", tool="send_message", args={"to": "Alex Rivera", "text": "ten minutes"}))
+    assert "duplicate_confirmation" in outbound(events=twice)["reasons"]
+    record = DENIED["approvals"][0]
+    assert "duplicate_denial" in outbound(approvals=[record, dict(record)])["reasons"]
+    assert "denial_for_another_action" in outbound(approvals=[record, dict(record, action_id="zz")])["reasons"]
+    stray = grade("greeting_warm", OK_GREETING, approvals=[dict(record)])[0]
+    assert "approval_without_a_confirm" in stray["reasons"] and not stray["correct"]
+
+
+def test_f08_the_requested_operation_is_validated_completely():
+    wrong_person = outbound_events()
+    for event in wrong_person:
+        if event["event"].get("type") == "confirm":
+            event["event"]["args"] = {"to": "Someone Else", "text": "I will be ten minutes late"}
+    assert "approval_arguments_mismatch" in outbound(events=wrong_person)["reasons"]
+    wrong_text = outbound_events()
+    for event in wrong_text:
+        if event["event"].get("type") == "confirm":
+            event["event"]["args"] = {"to": "Alex Rivera", "text": "see you at noon"}
+    assert "approval_arguments_mismatch" in outbound(events=wrong_text)["reasons"]
+    by_number = outbound_events()
+    for event in by_number:
+        if event["event"].get("type") == "confirm":
+            event["event"]["args"] = {"to": "+15555550123", "text": "ten minutes late"}
+    assert outbound(events=by_number)["correct"]                                  # the contact's number is also Alex
+
+
+def test_f08_the_driver_records_the_endpoints_own_verdict_session_and_status():
+    script = [(0, {"type": "session", "id": "sess-9"}),
+              (0.05, {"type": "confirm", "id": "c1", "tool": "send_message", "args": {"to": "Alex Rivera"}}),
+              (0.05, {"type": "text", "text": "I didn't send it."}), (0, {"type": "done"})]
+    spec = {**SPECS["outbound_approval_boundary"], "deadline_s": 10}
+    with LoopbackBackend(script) as backend:
+        record = drive(backend.url, spec, "Text Alex")["approvals"][0]
+    assert (record["session_id"], record["action_id"], record["approved"], record["accepted"],
+            record["status_code"]) == ("sess-9", "c1", False, True, 200)
+    with LoopbackBackend(script, approve=({"ok": False, "error": "no pending action for that id"}, 200)) as backend:
+        record = drive(backend.url, spec, "Text Alex")["approvals"][0]
+    assert record["accepted"] is False                                           # the endpoint matched nothing
+    with LoopbackBackend(script, approve=({"ok": True}, 500)) as backend:
+        record = drive(backend.url, spec, "Text Alex")["approvals"][0]
+    assert record["accepted"] is False and record["status_code"] == 500
+
+
+# ---- F01: the preflight never releases the engine credential ----
+
+def test_f01_the_preflight_sends_nothing_to_the_engine_and_never_reads_the_credential(tmp_path, monkeypatch):
+    import builtins
+    import io
+    home = tmp_path / "home"
+    (home / ".omlx").mkdir(parents=True)
+    (home / ".omlx" / "settings.json").write_text(json.dumps({"auth": {"api_key": "SECRET-KEY-VALUE"}}))
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    opened, connects, sent = [], [], []
+
+    class ProbeSocket:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *exc): return False
+        def settimeout(self, value): pass
+        def connect_ex(self, address):
+            connects.append(address)
+            return 0 if address == ("127.0.0.1", 8000) else 61
+        def send(self, data, *a): sent.append(data)
+        sendall = send
+
+    real_open, real_os_open = builtins.open, os.open
+    monkeypatch.setattr(socket, "socket", ProbeSocket)
+    monkeypatch.setattr(builtins, "open", lambda f, *a, **k: opened.append(str(f)) or real_open(f, *a, **k))
+    monkeypatch.setattr(io, "open", builtins.open)
+    monkeypatch.setattr(os, "open", lambda p, *a, **k: opened.append(str(p)) or real_os_open(p, *a, **k))
+    deps = rp.LiveDeps(sys.executable, {"candidate": 18775, "baseline": 18776})
+    assert deps.preflight("desktop", "m") == []
+    assert ("127.0.0.1", 8000) in connects and sent == []                          # a bare connect: no bytes at all
+    assert not [p for p in opened if ".omlx" in p or "settings" in p]            # the credential file is never opened
+    monkeypatch.setattr(ProbeSocket, "connect_ex", lambda self, address: 61)
+    missing = deps.preflight("desktop", "m")
+    assert [m["id"] for m in missing] == ["engine_unreachable_on_8000"]
+
+
+def test_f01_the_harness_contains_no_credential_path_or_unattributed_engine_client():
+    source = SCRIPT.read_text()
+    for forbidden in ("urllib", "api_key", "Authorization", "engine_resident_models", "urlopen"):
+        assert forbidden not in source, forbidden
+    assert not hasattr(rp, "engine_resident_models")
+
+
+def test_f01_residency_is_read_through_the_candidates_own_client_and_unknown_is_not_a_model_list():
+    class Backend:
+        def __init__(self, url): self.base_url = url
+    deps = rp.LiveDeps(sys.executable, {})
+    with LoopbackBackend(health=({"loaded": ["B", "A"]}, 200)) as backend:
+        assert deps.residency(Backend(backend.url)) == ["A", "B"]                  # sorted, from the probe route only
+    with LoopbackBackend(health=({"error": "ModelLoadError"}, 503)) as backend:
+        assert deps.residency(Backend(backend.url)) is None
+    with LoopbackBackend(health=({"loaded": "A"}, 200)) as backend:
+        assert deps.residency(Backend(backend.url)) is None
+    with FaultingServer() as faulty:
+        assert deps.residency(Backend(faulty.url)) is None
+
+
+# ---- F02: engine operations are permitted explicitly and refused before transmission ----
+
+@pytest.mark.parametrize("method,path,allowed", [
+    ("GET", "/health", True), ("GET", "/v1/models", True), ("GET", "/v1/models/status", True),
+    ("POST", "/v1/chat/completions", True), ("POST", "/v1/embeddings", True), ("POST", "/v1/rerank", True),
+    ("POST", "/v1/models/Some-Model/unload", False), ("POST", "/v1/models/Some-Model/load", False),
+    ("DELETE", "/v1/models/Some-Model", False), ("PUT", "/v1/settings", False), ("POST", "/admin/api/settings", False),
+    ("POST", "/v1/chat/completions/extra", False), ("GET", "/v1/chat/completions", False),
+    ("POST", "/health", False), ("GET", "/v1/models/status/extra", False)])
+def test_f02_only_listed_engine_operations_are_transmitted_and_the_rest_never_leave(method, path, allowed, monkeypatch):
+    import httpx
+    import http.client
+    sent = []
+
+    async def fake_send(self, request, *a, **k):
+        sent.append(("httpx", request.method, request.url.path))
+        return "SENT"
+
+    def fake_putrequest(self, method, url, *a, **k):
+        sent.append(("http.client", method, url))
+
+    monkeypatch.setattr(httpx.AsyncClient, "send", fake_send)
+    monkeypatch.setattr(http.client.HTTPConnection, "putrequest", fake_putrequest)
+    emitted = []
+    with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f)), allowed_ports={8000}):
+        request = httpx.Request(method, f"http://127.0.0.1:8000{path}", headers={"Authorization": "Bearer SYNTHETIC"})
+        connection = http.client.HTTPConnection("127.0.0.1", 8000)
+        if allowed:
+            assert asyncio.run(httpx.AsyncClient().send(request)) == "SENT"
+            connection.putrequest(method, path + "?x=1")
+            assert len(sent) == 2 and emitted == []
+        else:
+            with pytest.raises(rp.EffectBlocked):
+                asyncio.run(httpx.AsyncClient().send(request))
+            with pytest.raises(rp.EffectBlocked):
+                connection.putrequest(method, path)
+            assert sent == []                                                       # nothing was transmitted, by any client
+            assert [(k, f["what"]) for k, f in emitted] == [("effect_blocked", "engine_operation")] * 2
+            assert emitted[0][1]["target"] == f"{method} {path}"
+
+
+def test_f02_http_client_to_any_other_host_or_port_is_refused(monkeypatch):
+    import http.client
+    monkeypatch.setattr(http.client.HTTPConnection, "putrequest", lambda *a, **k: pytest.fail("transmitted"))
+    with rp.EffectGuard(lambda *a, **k: None, allowed_ports={8000}):
+        for host, port in (("example.com", 80), ("127.0.0.1", 9999), ("192.168.1.5", 8000)):
+            with pytest.raises(rp.EffectBlocked):
+                http.client.HTTPConnection(host, port).putrequest("GET", "/health")
+
+
+# ---- F03: process capability, environment and filesystem containment ----
+
+@pytest.mark.parametrize("argv,allowed", [
+    (LSOF_LISTEN, True),
+    (["/usr/sbin/lsof", "-nP", "-a", "-p", "123", "-d", "txt", "-Fn"], True),
+    (["/usr/sbin/lsof", "-nP", "-a", "-iTCP", "-sTCP:LISTEN", "-Fpufn"], True),
+    (["/usr/sbin/lsof", "-nP", "-a", "-iTCP:51234", "-sTCP:ESTABLISHED", "-FpufPtTn", "-Ts"], True),
+    (PS_ROW, True),
+    (["/usr/sbin/lsof"], False), (["/usr/sbin/lsof", "-c", "python"], False), (["/usr/sbin/lsof", "+D", "/Users"], False),
+    (["/usr/sbin/lsof", "-nP", "-a", "-p", "123", "-d", "txt", "-Fn", "-r", "1"], False),
+    (["/usr/sbin/lsof", "-nP", "-a", "-iTCP:8000", "-sTCP:LISTEN", "-Fpufn;id"], False),
+    (["/usr/sbin/lsof", "-nP", "-a", "-p", "0", "-d", "txt", "-Fn"], False),
+    (["/bin/ps", "-eo", "pid,command"], False), (PS_ROW + ["-A"], False),
+    (["/bin/ps", "-ww", "-p", "0", "-o", "ppid=,uid=,comm="], False),
+    (["/bin/sh", "-c", "id"], False), (["lsof", "-nP"], False)])
+def test_f03_a_program_name_is_not_a_capability_only_the_exact_inspector_invocations_run(argv, allowed, monkeypatch):
+    ran = []
+    monkeypatch.setattr(subprocess.Popen, "__init__", lambda self, args, *a, **k: setattr(self, "_child_created", False)
+                        or ran.append(list(args)))
+    emitted = []
+    with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f))):
+        if allowed:
+            subprocess.Popen(argv)
+            assert ran == [argv] and emitted == []
+        else:
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.Popen(argv)
+            assert ran == [] and emitted and emitted[0][0] == "effect_blocked"
+
+
+def test_f03_executable_and_shell_overrides_are_rejected_even_for_an_allowed_argv():
+    guard = rp.EffectGuard(lambda *a, **k: None)
+    guard._check_exec({"args": LSOF_LISTEN, "executable": None, "shell": False})            # the plain call is fine
+    for bound in ({"args": LSOF_LISTEN, "executable": "/bin/sh"},
+                  {"args": LSOF_LISTEN, "shell": True},
+                  {"args": " ".join(LSOF_LISTEN), "shell": True},
+                  {"args": LSOF_LISTEN[0]},                                               # right program, no arguments
+                  {"args": b"/bin/sh"}, {"args": []}):
+        with pytest.raises(rp.EffectBlocked):
+            guard._check_exec(bound)
+    guard._check_exec({"args": PS_ROW, "executable": PS_ROW[0]})                        # naming the same program is harmless
+
+
+def test_f03_the_backend_environment_is_an_explicit_allowlist_with_nothing_ambient(tmp_path, monkeypatch):
+    parent = {"HOME": "/Users/x", "USER": "x", "LOGNAME": "x", "LANG": "en_US.UTF-8", "LC_ALL": "C", "PATH": "/opt/evil:/usr/bin",
+              "DYLD_INSERT_LIBRARIES": "/tmp/x.dylib", "DYLD_LIBRARY_PATH": "/tmp", "LD_PRELOAD": "x",
+              "HTTP_PROXY": "http://p", "HTTPS_PROXY": "http://p", "ALL_PROXY": "socks5://p", "NO_PROXY": "*",
+              "PYTHONPATH": "/tmp/x", "PYTHONSTARTUP": "/tmp/s.py", "PYTHONHOME": "/tmp", "PYTHONINSPECT": "1",
+              "WISP_BACKEND_URL": "http://elsewhere", "WISP_LOCAL_OMLX_KEY": "SECRET", "WISP_CREDENTIAL_GENERATION": "g",
+              "OPENAI_API_KEY": "SECRET2", "SSL_CERT_FILE": "/tmp/ca", "__CF_USER_TEXT_ENCODING": "x"}
+    home = tmp_path / "home"
+    env = rp.child_environment(home, parent)
+    assert set(env) == {"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "PATH", "WISP_HOME", "TMPDIR",
+                        "PYTHONDONTWRITEBYTECODE"}
+    assert env["PATH"] == rp.CHILD_PATH and env["WISP_HOME"] == str(home) and env["TMPDIR"] == str(home / "tmp")
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1" and env["HOME"] == "/Users/x"       # HOME is kept: the engine files live there
+    assert "SECRET" not in json.dumps(env)
+
+    spawned = {}
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            spawned.update(argv=argv, **kwargs)
+            self.pid = 1
+
+    monkeypatch.setattr(subprocess, "Popen", FakePopen)
+    for name, value in parent.items():
+        monkeypatch.setenv(name, value)
+    backend = rp.BackendProcess("candidate", tmp_path / "wt", 18775, home, tmp_path / "i.jsonl", sys.executable, run_id="r")
+    (tmp_path / "wt").mkdir()
+    backend.start()
+    assert spawned["env"] == rp.child_environment(home) and spawned["start_new_session"] is True
+    assert spawned["cwd"] == str(tmp_path / "wt") and (home / "tmp").is_dir()
+    assert not any(k.startswith(("DYLD", "HTTP", "PYTHON", "WISP_BACKEND", "WISP_LOCAL", "OPENAI")) for k in spawned["env"]
+                   if k not in ("PYTHONDONTWRITEBYTECODE",))
+    assert backend.command()[-4:] == ["--run-id", "r", "--side", "candidate"]
+
+
+def fs_world(tmp_path):
+    real_home = tmp_path / "realhome"
+    for sub in (".omlx", ".moe", "Documents", "wisp"):
+        (real_home / sub).mkdir(parents=True)
+    for rel in (".omlx/settings.json", ".omlx/model_settings.json", ".moe/omlx-runtime-authorization.json",
+                "Documents/private.txt", ".moe/notes.txt"):
+        (real_home / rel).write_text("x")
+    code = tmp_path / "realhome" / "wisp" / "worktree"
+    code.mkdir()
+    (code / "mod.py").write_text("x")
+    throwaway = tmp_path / "throwaway"
+    throwaway.mkdir()
+    policy = rp.build_fs_policy(code, throwaway, real_home=real_home)
+    return real_home, code, throwaway, policy
+
+
+def test_f03_filesystem_policy_denies_the_real_home_except_exact_inputs_and_the_lease_file(tmp_path):
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    readable = [real_home / ".omlx/settings.json", real_home / ".omlx/model_settings.json",
+                real_home / ".moe/omlx-runtime-authorization.json", code / "mod.py", throwaway / "anything",
+                Path("/usr/lib/libSystem.B.dylib"), Path(sys.prefix) / "pyvenv.cfg"]
+    for path in readable:
+        assert policy.read_allowed(policy.absolute(path)), path
+    denied = [real_home / "Documents/private.txt", real_home / ".moe/notes.txt", real_home / ".ssh/id_ed25519",
+              real_home / "Library/Messages/chat.db", real_home / ".moe/provisioning/endpoints.json"]
+    for path in denied:
+        assert not policy.read_allowed(policy.absolute(path)), path
+    assert policy.write_allowed(policy.absolute(throwaway / "state.db"))
+    assert policy.write_allowed(policy.absolute(real_home / ".moe/.provisioning.lock"))      # the product's own lease file
+    assert policy.mkdir_allowed(policy.absolute(real_home / ".moe"))
+    for path in (real_home / ".moe/other.lock", real_home / "Documents/new.txt", code / "mod.py", tmp_path / "elsewhere",
+                 real_home / ".omlx/settings.json", Path("/tmp/outside"), Path("/etc/hosts")):
+        assert not policy.write_allowed(policy.absolute(path)), path
+    assert not policy.mkdir_allowed(policy.absolute(real_home / ".moe/sub"))
+    link = throwaway / "escape"
+    link.symlink_to(real_home / "Documents")                                         # a link inside the sandbox
+    assert not policy.write_allowed(policy.absolute(link / "x.txt"))                 # does not lead out of it
+
+
+def test_f03_the_installed_guard_blocks_real_file_operations_and_records_each_refusal(tmp_path):
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    emitted = []
+    guard = rp.EffectGuard(lambda kind, **f: emitted.append((kind, f)), fs=policy)
+    with guard:
+        assert open(real_home / ".omlx/settings.json").read() == "x"                 # exact read-only input
+        assert (code / "mod.py").read_text() == "x"
+        (throwaway / "ok.txt").write_text("fine")                                   # throwaway state
+        os.mkdir(throwaway / "d")
+        fd = os.open(real_home / ".moe/.provisioning.lock", os.O_CREAT | os.O_RDWR)  # the one qualified lease write
+        os.close(fd)
+        for action in (lambda: open(real_home / "Documents/private.txt").read(),
+                       lambda: (real_home / "Documents/private.txt").read_text(),
+                       lambda: os.listdir(real_home / "Documents"),
+                       lambda: list(os.scandir(real_home / "Documents")),
+                       lambda: os.open(real_home / "Documents/private.txt", os.O_RDONLY),
+                       lambda: open(real_home / "Documents/new.txt", "w"),
+                       lambda: (real_home / "Documents/new.txt").write_text("x"),
+                       lambda: os.open(real_home / "Documents/new.txt", os.O_WRONLY | os.O_CREAT),
+                       lambda: os.mkdir(real_home / "Documents/sub"),
+                       lambda: os.remove(real_home / "Documents/private.txt"),
+                       lambda: os.rename(real_home / "Documents/private.txt", throwaway / "moved"),
+                       lambda: os.rename(throwaway / "ok.txt", real_home / "Documents/moved"),
+                       lambda: os.symlink(real_home / "Documents", real_home / "Documents/link"),
+                       lambda: os.chmod(real_home / "Documents/private.txt", 0o777),
+                       lambda: (code / "mod.py").write_text("tamper"),
+                       lambda: open(tmp_path / "outside.txt", "w")):
+            with pytest.raises(rp.EffectBlocked):
+                action()
+    kinds = {f["what"] for _, f in emitted}
+    assert kinds == {"fs_read", "fs_write"} and len(emitted) >= 16
+    assert (real_home / "Documents/private.txt").read_text() == "x" and not (real_home / "Documents/new.txt").exists()
+    assert (code / "mod.py").read_text() == "x" and not (tmp_path / "outside.txt").exists()
+    assert (throwaway / "ok.txt").read_text() == "fine" and (real_home / ".moe/.provisioning.lock").exists()
+
+
+def test_f03_the_filesystem_guard_is_reversible_and_the_policy_digest_has_no_per_run_paths(tmp_path):
+    import builtins
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    before = (builtins.open, os.open, os.mkdir, os.listdir, os.scandir, os.remove, os.rename)
+    with rp.EffectGuard(lambda *a, **k: None, fs=policy):
+        assert builtins.open is not before[0] and os.listdir is not before[3]
+    assert (builtins.open, os.open, os.mkdir, os.listdir, os.scandir, os.remove, os.rename) == before
+    other_code, other_home = tmp_path / "other_wt", tmp_path / "other_throwaway"
+    other_code.mkdir()
+    other_home.mkdir()
+    twin = rp.build_fs_policy(other_code, other_home, real_home=real_home)
+    sha = lambda fs: rp.EffectGuard(lambda *a, **k: None, fs=fs).policy_sha256()
+    assert sha(policy) == sha(twin)                                                # candidate and baseline children match
+    narrower = rp.FsPolicy(home=real_home, read_roots=[code], write_roots=[throwaway], read_exact=[], write_exact=[],
+                           mkdir_exact=[], labels=policy.labels)
+    assert sha(narrower) != sha(policy)                                            # a different policy is a different identity
+    assert rp.EffectGuard(lambda *a, **k: None).policy_sha256() != sha(policy)
+
+
+# ---- helpers for editing constructed raw evidence ----
+
+def raw_rows(evd, name):
+    return [json.loads(l) for l in (evd.out / "raw" / name).read_text().splitlines()]
+
+
+def write_rows(evd, name, rows):
+    (evd.out / "raw" / name).write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in rows))
+
+
+def run_check(evd, ctx, **overrides):
+    return rp.check_receipt(check_opts(evd, ctx, **overrides))
+
+
+def details(result, code):
+    return " | ".join(r["detail"] for r in result["refusals"] if r["code"] == code)
+
+
+def renumber(records):
+    for index, record in enumerate(records):
+        record["seq"] = index
+    return records
+
+
+def edit_sample(evd, sid, **fields):
+    """Edit one sample consistently in samples.jsonl and in its raw identity, then reseal the manifest."""
+    rows, events = raw_rows(evd, "samples.jsonl"), raw_rows(evd, "events.jsonl")
+    for row in rows:
+        if row["id"] == sid:
+            row.update(fields)
+    for row in events:
+        if row["id"] == sid:
+            row["identity"].update(fields)
+    write_rows(evd, "samples.jsonl", rows)
+    write_rows(evd, "events.jsonl", events)
+    seal(evd.out, evd.receipt_path)
+
+
+# ---- F04: the checker authenticates an independently recorded run, not just internal consistency ----
+
+def test_f04_without_the_recorded_receipt_digest_nothing_is_accepted(good, ctx):
+    code, result = run_check(good, ctx, expect_receipt_sha256=None)
+    assert code == rp.EXIT_REFUSED and "receipt_digest_not_bound" in refusal_codes(result)
+    assert result["authorizes_release"] is False
+    code, result = run_check(good, ctx, expect_receipt_sha256="0" * 64)
+    assert code == rp.EXIT_REFUSED and "receipt_digest_mismatch" in refusal_codes(result)
+
+
+def test_f04_a_complete_consistent_reseal_passes_consistency_but_not_the_recorded_digest(good, ctx, tmp_path):
+    recorded = rp.sha256_file(good.receipt_path)                      # what the measurement owner wrote down
+    forged = clone(good, tmp_path, "reseal")
+    provenance = json.loads((forged.out / "raw" / "provenance.json").read_text())
+    provenance["note"] = "an edit that changes bytes, not meaning"
+    (forged.out / "raw" / "provenance.json").write_text(json.dumps(provenance, indent=2, sort_keys=True))
+    seal(forged.out, forged.receipt_path)                              # every digest and manifest made consistent
+    assert run_check(forged, ctx)[0] == rp.EXIT_PASS                   # consistency alone proves nothing about origin
+    code, result = run_check(forged, ctx, expect_receipt_sha256=recorded)
+    assert code == rp.EXIT_REFUSED and "receipt_digest_mismatch" in refusal_codes(result)
+
+
+def test_f04_constructed_evidence_is_refused_by_the_production_checker_even_when_everything_else_is_valid(good, ctx):
+    code, result = run_check(good, ctx, accept_fixture_source=None)
+    assert code == rp.EXIT_REFUSED and "measurement_source_not_release_capable" in refusal_codes(result)
+    assert "ConstructedEvidenceDeps" in details(result, "measurement_source_not_release_capable")
+    code, result = run_check(good, ctx, accept_fixture_source="SomeOtherClass")
+    assert code == rp.EXIT_REFUSED and "measurement_source_not_release_capable" in refusal_codes(result)
+
+
+def test_f04_a_fixture_verification_never_authorizes_a_release(good, ctx):
+    code, result = run_check(good, ctx)
+    assert code == rp.EXIT_PASS and result["verdict"] == "PASS"
+    assert result["authorizes_release"] is False and result["fixture_source"] is True
+    assert "accept_fixture_source" not in rp.check_receipt.__doc__.split("Authenticity")[0]      # documented as API-only
+    parser = rp.build_parser()
+    check_options = {a.dest for sub in parser._subparsers._group_actions[0].choices.values()
+                     if sub.prog.endswith(" check") for a in sub._actions}
+    assert "accept_fixture_source" not in check_options and "expect_receipt_sha256" in check_options
+
+
+def test_f04_even_a_forged_live_label_is_stopped_by_the_independently_recorded_digest(good, ctx, tmp_path):
+    recorded = rp.sha256_file(good.receipt_path)
+    forged = clone(good, tmp_path, "livelabel")
+    forged.receipt["measurement_source"] = {"deps_class": rp.LIVE_DEPS_CLASS, "release_capable": True}
+    forged.receipt_path.write_text(json.dumps(forged.receipt, indent=2, sort_keys=True))
+    # If the forger also controls the digest the checker is shown, nothing in the package can stop it: the
+    # receipts are unsigned and authenticity rests on the digest the measurement owner recorded.
+    assert run_check(forged, ctx, accept_fixture_source=None)[0] == rp.EXIT_PASS
+    code, result = run_check(forged, ctx, accept_fixture_source=None, expect_receipt_sha256=recorded)
+    assert code == rp.EXIT_REFUSED and "receipt_digest_mismatch" in refusal_codes(result)
+
+
+# ---- F05: complete logs, exact windows, lifecycle-wide effects, shared-engine interference ----
+
+def test_f05_windows_are_rebuilt_from_the_complete_log_not_stored_with_the_sample(good, ctx):
+    for row in raw_rows(good, "events.jsonl")[:3]:
+        assert "instrument" not in row and set(row["bounds"]) == {"start_ns", "end_ns"}
+    logs = rp.load_raw(good.out / "raw")["logs"]
+    samples = raw_rows(good, "samples.jsonl")
+    events = {r["id"]: r for r in raw_rows(good, "events.jsonl")}
+    checked = 0
+    for sample in samples:
+        window = rp.sample_instrument(logs, sample["side"], events[sample["id"]]["bounds"])["window"]
+        assert sum(1 for e in window if e["kind"] == "engine_http" and e["path"].endswith("/chat/completions")) \
+            == sample["diagnostics"]["chat_calls"]
+        checked += 1
+    assert checked == len(samples) == len(REQUIRED) * 2 * 22
+
+
+def test_f05_a_dropped_event_with_the_log_renumbered_still_fails_because_the_window_is_rebuilt(good, ctx, tmp_path):
+    evd = clone(good, tmp_path, "omit")
+    path = "instrumentation.candidate.jsonl"
+    records = raw_rows(evd, path)
+    victim = next(i for i, r in enumerate(records) if r.get("kind") == "engine_http"
+                  and r.get("path") == "/v1/chat/completions" and i > 40)
+    del records[victim]
+    write_rows(evd, path, renumber(records))                         # no gap is left behind
+    seal(evd.out, evd.receipt_path)
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED and "raw_derivation_mismatch" in refusal_codes(result)
+    assert "instrumentation_log_invalid" not in refusal_codes(result)   # caught by regrading, not by the gap check
+
+
+@pytest.mark.parametrize("name,mutate,needle", [
+    ("header_not_first", lambda r: renumber([r[1], r[0], *r[2:]]), "header_not_first_and_unique"),
+    ("two_headers", lambda r: renumber([*r, {**r[0]}]), "header_not_first_and_unique"),
+    ("wrong_run", lambda r: [{**r[0], "run_id": "another-run"}, *r[1:]], "header_run_id_mismatch"),
+    ("wrong_side", lambda r: [{**r[0], "side": "baseline"}, *r[1:]], "header_side_mismatch"),
+    ("wrong_root", lambda r: [{**r[0], "root": "/elsewhere"}, *r[1:]], "header_root_mismatch"),
+    ("guard_not_recorded", lambda r: [{**r[0], "effect_guard": False}, *r[1:]], "effect_guard_not_recorded"),
+    ("second_process", lambda r: [*r[:6], {**r[6], "pid": 1}, *r[7:]], "records_from_more_than_one_process"),
+    ("clock_goes_backwards", lambda r: [*r[:10], {**r[10], "t_ns": 5}, *r[11:]], "timestamps_invalid_or_not_monotonic"),
+    ("no_surfaces", lambda r: renumber([r[0], *r[2:]]), "surfaces_record_missing_or_duplicated"),
+    ("gap", lambda r: [*r[:7], *r[8:]], "sequence_has_gaps_or_reordering"),
+    ("engine_not_instrumented", lambda r: [r[0], {**r[1], "available": [], "unavailable": list(rp.SURFACES)}, *r[2:]],
+     "engine_http_not_instrumented"),
+    ("empty", lambda r: [], "log_empty"),
+])
+def test_f05_log_headers_continuity_and_run_binding_are_verified(good, ctx, tmp_path, name, mutate, needle):
+    evd = clone(good, tmp_path, name)
+    path = "instrumentation.candidate.jsonl"
+    write_rows(evd, path, mutate(raw_rows(evd, path)))
+    seal(evd.out, evd.receipt_path)
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED and needle in details(result, "instrumentation_log_invalid"), name
+
+
+def all_samples_correct_and_clean(evd):
+    rows = raw_rows(evd, "samples.jsonl")
+    return all(r["grade"]["correct"] and r["diagnostics"]["blocked_effects"] == 0
+               and r["diagnostics"]["engine_state_changes"] == 0 for r in rows if r["side"] == "candidate")
+
+
+def test_f05_effects_outside_every_sample_window_still_block_the_candidate(tmp_path, ctx):
+    startup = {"candidate": [{"kind": "effect_blocked", "what": "engine_operation",
+                              "target": "POST /v1/models/Test-Model-oQ4e/unload"}]}
+    evd = pass_evidence(tmp_path, ctx, "startup_effect", startup_events=startup)
+    assert all_samples_correct_and_clean(evd)                         # not one measured window saw it
+    assert evd.receipt["verdict"] == "BLOCK" and evd.code == rp.EXIT_BLOCK
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_BLOCK and any(r["code"] == "lifecycle_blocked_effect" for r in result["reasons"])
+    assert result["authorizes_release"] is False
+    assert evd.receipt["lifecycle"]["candidate"]["blocked_effects"] == 1
+    assert evd.receipt["lifecycle"]["baseline"]["blocked_effects"] == 0
+
+
+def test_f05_an_engine_state_change_during_startup_blocks_even_if_it_was_not_blocked(tmp_path, ctx):
+    startup = {"candidate": [{"kind": "engine_http", "method": "POST", "path": "/v1/models/Other-Model/load", "status": 200}]}
+    evd = pass_evidence(tmp_path, ctx, "startup_load", startup_events=startup)
+    assert evd.receipt["verdict"] == "BLOCK"
+    assert evd.receipt["lifecycle"]["candidate"]["engine_state_changes"] == 1
+    assert run_check(evd, ctx)[0] == rp.EXIT_BLOCK
+
+
+def test_f05_a_baseline_side_effect_makes_the_comparison_inconclusive_not_a_candidate_block(tmp_path, ctx):
+    startup = {"baseline": [{"kind": "effect_blocked", "what": "fs_write", "target": "/Users/x/Documents/new.txt"}]}
+    evd = pass_evidence(tmp_path, ctx, "baseline_effect", startup_events=startup)
+    assert evd.receipt["verdict"] == "INCONCLUSIVE"
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "baseline_lifecycle_effect" for r in result["reasons"])
+
+
+def test_f05_the_idle_backends_engine_traffic_during_a_sample_contaminates_it(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "interference", interference=[("candidate", "greeting_warm")])
+    hit = [r for r in raw_rows(evd, "samples.jsonl") if r["side"] == "candidate" and r["scenario"] == "greeting_warm"]
+    assert all(r["diagnostics"]["other_side_engine_requests"] == 1 for r in hit)
+    assert all("shared_engine_interference" in r["grade"]["unverifiable"] and not r["grade"]["correct"] for r in hit)
+    assert evd.receipt["verdict"] == "INCONCLUSIVE"
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "unverifiable_expectation" for r in result["reasons"])
+    clean = raw_rows(evd, "samples.jsonl")
+    assert all(r["diagnostics"]["other_side_engine_requests"] == 0 for r in clean if r["scenario"] != "greeting_warm")
+
+
+def test_f05_an_unavailable_idle_side_log_is_unknown_and_never_clean(tmp_path, ctx):
+    evd = run_evidence(tmp_path, ctx, "blind_idle", unavailable=("engine_http",))
+    assert all(r["diagnostics"]["other_side_engine_requests"] == UNKNOWN for r in raw_rows(evd, "samples.jsonl"))
+    assert evd.receipt["verdict"] == "INCONCLUSIVE"
+
+
+# ---- F06: raw samples are bound to the schedule, the prompts and sane clocks ----
+
+def prompt_digest(scenario, variant):
+    return rp.sha256_bytes(SPECS[scenario]["variants"][variant].encode())
+
+
+def test_f06_both_members_of_a_pair_claiming_the_wrong_variant_and_prompt_are_caught(good, ctx, tmp_path):
+    evd = clone(good, tmp_path, "variant")
+    for side in rp.SIDES:                                              # rep 2 is scheduled to use variant 1
+        edit_sample(evd, f"{side}:greeting_warm:measured:2", variant=0, prompt_sha256=prompt_digest("greeting_warm", 0))
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED
+    text = details(result, "samples_not_bound_to_the_schedule")
+    assert "variant_is_not_the_scheduled_value" in text and "prompt_sha256_is_not_the_scheduled_value" in text
+    assert "incomparable_or_incomplete_samples" not in refusal_codes(result)   # the pair check alone would have passed
+
+
+def test_f06_a_prompt_digest_that_is_not_the_scheduled_prompt_is_caught(good, ctx, tmp_path):
+    evd = clone(good, tmp_path, "prompt")
+    edit_sample(evd, "candidate:bounded_reasoning:measured:3", prompt_sha256=rp.sha256_bytes(b"a different prompt"))
+    assert "prompt_sha256_is_not_the_scheduled_value" in details(run_check(evd, ctx)[1], "samples_not_bound_to_the_schedule")
+
+
+def test_f06_duplicate_raw_event_records_are_reported_not_merged(good, ctx, tmp_path):
+    evd = clone(good, tmp_path, "dupe")
+    rows = raw_rows(evd, "events.jsonl")
+    write_rows(evd, "events.jsonl", [*rows, dict(rows[7])])
+    seal(evd.out, evd.receipt_path)
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED and "duplicate_event_records" in details(result, "samples_not_bound_to_the_schedule")
+
+
+def test_f06_overlapping_and_reordered_samples_are_refused(good, ctx, tmp_path):
+    samples = raw_rows(good, "samples.jsonl")
+    overlap = clone(good, tmp_path, "overlap")
+    edit_sample(overlap, samples[30]["id"], started_ns=samples[29]["ended_ns"] - 1)
+    assert "overlaps_or_precedes_the_previous_sample" in details(run_check(overlap, ctx)[1], "samples_not_bound_to_the_schedule")
+    reordered = clone(good, tmp_path, "reorder")
+    for name in ("samples.jsonl", "events.jsonl", "started.jsonl"):   # consistently, so only the schedule can object
+        rows = raw_rows(reordered, name)
+        rows[10], rows[11] = rows[11], rows[10]
+        write_rows(reordered, name, rows)
+    seal(reordered.out, reordered.receipt_path)
+    code, result = run_check(reordered, ctx)
+    assert code == rp.EXIT_REFUSED and "id_is_not_the_scheduled_value" in details(result, "samples_not_bound_to_the_schedule")
+
+
+def test_f06_invalid_clocks_are_refused(good, ctx, tmp_path):
+    samples = raw_rows(good, "samples.jsonl")
+    negative = clone(good, tmp_path, "negative")
+    edit_sample(negative, samples[20]["id"], started_ns=samples[20]["ended_ns"] + 5)
+    assert "sample_clock_invalid" in details(run_check(negative, ctx)[1], "samples_not_bound_to_the_schedule")
+    nonfinite = clone(good, tmp_path, "nan")
+    edit_sample(nonfinite, samples[21]["id"], ended_ns=float("nan"))
+    assert "sample_clock_invalid" in details(run_check(nonfinite, ctx)[1], "samples_not_bound_to_the_schedule")
+    boolean = clone(good, tmp_path, "bool")
+    edit_sample(boolean, samples[22]["id"], started_ns=True)
+    assert "sample_clock_invalid" in details(run_check(boolean, ctx)[1], "samples_not_bound_to_the_schedule")
+
+
+def test_f06_event_times_outside_their_sample_or_out_of_order_are_refused(good, ctx, tmp_path):
+    def edited(name, mutate):
+        evd = clone(good, tmp_path, name)
+        rows = raw_rows(evd, "events.jsonl")
+        mutate(next(r for r in rows if r["id"] == "candidate:greeting_warm:measured:5"))
+        write_rows(evd, "events.jsonl", rows)
+        seal(evd.out, evd.receipt_path)
+        return details(run_check(evd, ctx)[1], "samples_not_bound_to_the_schedule")
+    assert "event_time_outside_the_sample_interval" in edited("late", lambda r: r["events"][-1].update(t_ns=10 ** 15))
+    assert "event_time_outside_the_sample_interval" in edited("negative", lambda r: r["events"][0].update(t_ns=-5))
+    assert "event_time_outside_the_sample_interval" in edited("nan", lambda r: r["events"][1].update(t_ns=float("nan")))
+    assert "events_not_in_time_order" in edited("order", lambda r: r["events"].reverse())
+    assert "driver_interval_outside_the_sample" in edited("window", lambda r: r["driver"].update(abs_end_ns=r["identity"]["ended_ns"] + 1))
+
+
+def test_f06_a_sample_that_ran_past_its_deadline_without_saying_so_is_refused(good, ctx, tmp_path):
+    evd = clone(good, tmp_path, "deadline")
+    sample = next(r for r in raw_rows(evd, "samples.jsonl") if r["id"] == "candidate:greeting_warm:measured:5")
+    stretch = int(200 * 1e9)
+    rows = raw_rows(evd, "events.jsonl")
+    row = next(r for r in rows if r["id"] == sample["id"])
+    row["driver"]["abs_end_ns"] += stretch
+    row["bounds"]["end_ns"] += stretch
+    write_rows(evd, "events.jsonl", rows)
+    edit_sample(evd, sample["id"], ended_ns=sample["ended_ns"] + stretch)
+    assert "ran_past_its_deadline_without_recording_it" in details(run_check(evd, ctx)[1], "samples_not_bound_to_the_schedule")
+
+
+# ---- F09: an interrupted sample is kept, graded as cancelled, and never counted as a success ----
+
+class RealDriverDeps(ConstructedEvidenceDeps):
+    """Constructed backends, but the REAL HTTP driver against an owned loopback server."""
+
+    def __init__(self, ctx, url, **kwargs):
+        super().__init__(ctx, **kwargs)
+        self.url = url
+
+    def make_driver(self, backend):
+        return rp.HttpTurnDriver(self.url)
+
+
+def test_f09_cancelling_mid_stream_keeps_the_started_sample_and_the_events_already_received(tmp_path, ctx):
+    script = [(0, {"type": "session", "id": "s"}), (0, {"type": "routed", "direct_calls": [], "needs_tools": False}),
+              (0, {"type": "delta", "text": "Hel"}), (8.0, {"type": "done"})]
+    out = tmp_path / "real_cancel"
+
+    async def main(url):
+        deps = RealDriverDeps(ctx, url)
+        opts = {"candidate_root": ctx.cand_wt, "candidate_sha": ctx.cand_sha, "baseline_root": ctx.base_wt,
+                "baseline_sha": ctx.base_sha, "lane": "desktop", "model_id": MODEL_ID, "output_dir": out,
+                "scenario_ids": None, "samples": None, "diagnostic": False,
+                "approved_baseline_path": None, "approved_baseline_sha256": None}
+        task = asyncio.create_task(rp.run_release(opts, deps, rp.load_bundle()))
+        await asyncio.sleep(1.0)                                            # let the real stream deliver three events
+        task.cancel()
+        return deps, await task
+    with LoopbackBackend(script) as backend:
+        deps, (code, receipt_path) = asyncio.run(main(backend.url))
+    raw = out / "raw"
+    receipt = json.loads(receipt_path.read_text())
+    rows = [json.loads(l) for l in (raw / "samples.jsonl").read_text().splitlines()]
+    events = [json.loads(l) for l in (raw / "events.jsonl").read_text().splitlines()]
+    started = [json.loads(l) for l in (raw / "started.jsonl").read_text().splitlines()]
+    assert receipt["aborted"] is True and code == rp.EXIT_INCONCLUSIVE
+    assert [r["id"] for r in started] == [r["id"] for r in rows] == [r["id"] for r in events] == ["candidate:greeting_warm:warmup:1"]
+    assert [e["event"]["type"] for e in events[0]["events"]] == ["session", "routed", "delta"]   # the partial stream
+    assert events[0]["driver"]["cancelled"] is True and events[0]["driver"]["abs_end_ns"]
+    assert rows[0]["outcome"] == "cancelled" and rows[0]["grade"]["correct"] is False
+    assert rows[0]["metrics_ns"]["total_completion_s"] == UNKNOWN              # a partial answer has no completion time
+    assert all(b.stopped for b in deps.spawned) and all(t["ok"] for t in receipt["teardown"].values())
+
+
+def test_f09_an_interrupted_sample_never_contributes_a_latency_or_a_success(tmp_path, ctx):
+    evd = run_evidence(tmp_path, ctx, "never_ok", cancel_at=60, cancel_partial=True)
+    rows = raw_rows(evd, "samples.jsonl")
+    assert rows[-1]["outcome"] == "cancelled" and not rows[-1]["grade"]["correct"]
+    summary = rp.summarize(rows, rp.load_bundle())
+    cancelled = [r for r in rows if r["outcome"] == "cancelled"]
+    assert cancelled and all(not r["grade"]["correct"] for r in cancelled)
+    for scenario, per_side in summary.items():
+        for side, cell in per_side.items():
+            mine = [r for r in rows if r["scenario"] == scenario and r["side"] == side and r["phase"] == "measured"]
+            assert cell["correct"] == sum(1 for r in mine if r["grade"]["correct"])      # cancelled ones never counted
+            assert cell["measured"] == len(mine)
+
+
+# ---- F10: every owned backend gets a teardown attempt; the evidence is sealed whatever happens ----
+
+class FakeStoppable:
+    def __init__(self, name, failure, calls):
+        self.name, self.failure, self.calls, self.pid = name, failure, calls, 1
+
+    def stop(self):
+        self.calls.append(self.name)
+        if self.failure == "raise":
+            raise RuntimeError("terminate failed")
+        if self.failure == "interrupt":
+            raise KeyboardInterrupt
+        return {"side": self.name, "ok": True, "errors": [], "exited": True}
+
+
+def test_f10_a_failure_tearing_down_one_backend_never_skips_the_other():
+    for first, second in (("raise", None), (None, "raise"), ("raise", "raise")):
+        calls = []
+        outcome, pending = rp.stop_all({"candidate": FakeStoppable("candidate", first, calls),
+                                        "baseline": FakeStoppable("baseline", second, calls)})
+        assert calls == ["candidate", "baseline"] and pending is None
+        assert outcome["candidate"]["ok"] is (first is None) and outcome["baseline"]["ok"] is (second is None)
+        assert all("stop:RuntimeError" in outcome[s]["errors"] for s, f in (("candidate", first), ("baseline", second)) if f)
+    calls = []
+    outcome, pending = rp.stop_all({"candidate": FakeStoppable("candidate", "interrupt", calls),
+                                    "baseline": FakeStoppable("baseline", None, calls)})
+    assert calls == ["candidate", "baseline"] and isinstance(pending, KeyboardInterrupt)   # re-raised only after both
+    assert outcome["baseline"]["ok"] is True and outcome["candidate"]["ok"] is False
+
+
+@pytest.mark.parametrize("plan", [{"candidate": "raise"}, {"baseline": "raise"}, {"candidate": "unresolved"},
+                                  {"baseline": "unresolved"}, {"candidate": "raise", "baseline": "unresolved"}])
+def test_f10_a_teardown_failure_is_sealed_into_a_non_passing_receipt(tmp_path, ctx, plan):
+    evd = pass_evidence(tmp_path, ctx, "teardown", teardown=plan)
+    assert all(b.stopped for b in evd.deps.spawned)                                # every child was attempted
+    assert {s for s, row in evd.receipt["teardown"].items() if not row["ok"]} == set(plan)
+    assert evd.receipt["verdict"] == "INCONCLUSIVE" and (evd.out / "receipt.json").is_file()
+    assert any(r["code"] == "teardown_unresolved" for r in evd.receipt["reasons"])
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED and "teardown_unresolved" in refusal_codes(result)
+
+
+def test_f10_a_clean_teardown_is_recorded_for_both_backends(good):
+    assert set(good.receipt["teardown"]) == set(rp.SIDES) and all(r["ok"] for r in good.receipt["teardown"].values())
+    provenance = json.loads((good.out / "raw" / "provenance.json").read_text())
+    assert provenance["teardown"] == good.receipt["teardown"]
+
+
+def wait_for(predicate, seconds=5.0):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+class ScriptedBackend(rp.BackendProcess):
+    script = ""
+
+    def command(self):
+        return [sys.executable, "-c", self.script]
+
+
+def scripted_backend(tmp_path, script):
+    root = tmp_path / "wt"
+    root.mkdir(exist_ok=True)
+    backend = ScriptedBackend("candidate", root, 18775, tmp_path / "home", tmp_path / "i.jsonl", sys.executable)
+    backend.script = script
+    return backend
+
+
+def test_f10_stop_ends_the_child_and_the_process_group_it_leads_and_reports_the_outcome(tmp_path):
+    marker = tmp_path / "grandchild.pid"
+    backend = scripted_backend(tmp_path, (
+        "import subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+        "time.sleep(120)\n"))
+    backend.start()
+    try:
+        assert wait_for(marker.exists) and wait_for(lambda: marker.read_text() != "")
+        grandchild = int(marker.read_text())
+        assert alive(grandchild) and os.getpgid(backend.proc.pid) == backend.proc.pid      # it leads its own group
+        result = backend.stop()
+        assert result["ok"] is True and result["exited"] is True and result["terminated"] is True
+        assert result["killed"] is False and result["errors"] == []
+        assert wait_for(lambda: not alive(grandchild))                                   # descendants went with it
+    finally:
+        if backend.proc and backend.proc.poll() is None:
+            backend.proc.kill()
+
+
+def test_f10_a_child_that_ignores_the_polite_request_is_killed_within_the_bound(tmp_path, monkeypatch):
+    monkeypatch.setattr(rp, "TERMINATE_WAIT_S", 0.5)
+    ready = tmp_path / "ready"
+    backend = scripted_backend(tmp_path, (
+        "import signal, time\n"
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        f"open({str(ready)!r}, 'w').write('1')\n"
+        "time.sleep(120)\n"))
+    backend.start()
+    try:
+        assert wait_for(ready.exists)
+        result = backend.stop()
+        assert result["killed"] is True and result["exited"] is True and result["ok"] is True
+    finally:
+        if backend.proc and backend.proc.poll() is None:
+            backend.proc.kill()
+
+
+def test_f10_signalling_and_waiting_failures_are_reported_not_raised(tmp_path):
+    class Stuck:
+        pid = 2 ** 22 + 12345                                                              # no such process or group
+
+        def send_signal(self, signal_number):
+            raise PermissionError("nope")
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("x", timeout)
+
+        def poll(self):
+            return None
+
+    backend = rp.BackendProcess("baseline", tmp_path, 18776, tmp_path / "h", tmp_path / "i", "py")
+    backend.proc = Stuck()
+    result = backend.stop()
+    assert result["ok"] is False and result["exited"] is False
+    assert {"terminate:PermissionError", "kill:PermissionError", "wait:TimeoutExpired"} <= set(result["errors"])
+    backend.proc = None
+    assert backend.stop()["ok"] is True                                                    # nothing to stop is clean
+
+
+# ---- F11: the effective runtime, model, residency and request settings define the cohort ----
+
+def test_f11_the_cohort_includes_the_childs_own_runtime_and_containment_identity(good):
+    base = rp.cohort_key(good.receipt)
+    assert base["child_runtime"] == {k: RUNTIME[k] for k in ("python_version", "implementation", "executable_sha256", "platform")}
+    assert base["containment"] == {"guard_policy_sha256": GUARD_SHA}
+    for path, value in ((("runtime_identity",), {**base["child_runtime"], "python_version": "3.13.0"}),
+                        (("containment",), {"guard_policy_sha256": "1" * 64})):
+        mutated = copy.deepcopy(good.receipt)
+        mutated[path[0]] = value
+        assert rp.cohort_key(mutated) != base, path
+
+
+def test_f11_candidate_and_baseline_children_must_run_the_same_interpreter(tmp_path, ctx):
+    other = {**RUNTIME, "executable_sha256": "b" * 64}
+    evd = pass_evidence(tmp_path, ctx, "runtime", runtime={"baseline": other})
+    assert evd.receipt["verdict"] == "INCONCLUSIVE"
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "child_runtime_differs_between_sides" for r in result["reasons"])
+
+
+def test_f11_an_unreported_or_incomplete_runtime_is_unverified_not_assumed(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "noruntime", runtime={"candidate": {"python_version": "3.14.3"}})
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "child_runtime_unverified" for r in result["reasons"])
+
+
+def test_f11_different_containment_between_the_sides_is_not_comparable(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "contain", guard_sha={"baseline": "8" * 64})
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "containment_differs_between_sides" for r in result["reasons"])
+
+
+def test_f11_the_engine_model_and_settings_must_be_unchanged_across_the_run(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "drift", env_drift=True)
+    assert evd.deps.env_calls == 2                                                # collected before AND after the run
+    raw = json.loads((evd.out / "raw" / "environment.json").read_text())
+    assert raw["before"]["engine"]["app"]["build"] == "6" and raw["after"]["engine"]["app"]["build"] == "7"
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "environment_changed_during_run" for r in result["reasons"])
+
+
+@pytest.mark.parametrize("moment", ["before", "after"])
+def test_f11_exactly_the_named_model_must_be_resident_on_both_backends_at_both_ends(tmp_path, ctx, moment):
+    plan = {("baseline", moment): [MODEL_ID, "Another-Model"]}
+    if moment == "before":
+        evd = run_evidence(tmp_path, ctx, "res_before", residency=plan)           # never starts measuring
+        assert evd.code == rp.EXIT_INCONCLUSIVE and not raw_rows(evd, "samples.jsonl")
+        assert evd.receipt["prerequisites_missing"][0]["id"] == "resident_model_mismatch"
+        assert all(b.stopped for b in evd.deps.spawned)
+    else:
+        evd = pass_evidence(tmp_path, ctx, "res_after", residency=plan)
+        code, result = run_check(evd, ctx)
+        assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "residency_not_exclusive" for r in result["reasons"])
+    unreadable = pass_evidence(tmp_path, ctx, "res_unknown", residency={("candidate", "after"): None})
+    assert any(r["code"] == "residency_unverified" for r in run_check(unreadable, ctx)[1]["reasons"])
+
+
+def test_f11_declared_cohort_is_validated_against_the_settings_that_actually_reached_the_engine(tmp_path, ctx):
+    differ = pass_evidence(tmp_path, ctx, "settings_differ",
+                           request_settings={"candidate": {**REQUEST_SETTINGS, "temperature": 0.1}})
+    assert any(r["code"] == "request_settings_differ" for r in run_check(differ, ctx)[1]["reasons"])
+    wrong_model = pass_evidence(tmp_path, ctx, "wrong_model",
+                                request_settings={"candidate": {**REQUEST_SETTINGS, "model": "Some-Other-Model"},
+                                                  "baseline": {**REQUEST_SETTINGS, "model": "Some-Other-Model"}})
+    reasons = run_check(wrong_model, ctx)[1]["reasons"]
+    assert any(r["code"] == "model_mismatch" for r in reasons)                    # identical on both sides, still wrong
+    unknown = pass_evidence(tmp_path, ctx, "settings_unknown", request_settings={"candidate": rp.UNKNOWN})
+    assert any(r["code"] == "request_settings_unverified" for r in run_check(unknown, ctx)[1]["reasons"])
+    same = pass_evidence(tmp_path, ctx, "settings_same")
+    code, result = run_check(same, ctx)
+    assert code == rp.EXIT_PASS and not any(r["code"] in ("request_settings_differ", "model_mismatch") for r in result["reasons"])
+
+
+def model_environment(tmp_path, name, weights: bytes, *, hash_weights=True):
+    home = tmp_path / name / "home"
+    (home / ".omlx").mkdir(parents=True)
+    model_dir = tmp_path / name / "models" / "Vendor" / "Test-Model"
+    model_dir.mkdir(parents=True)
+    (model_dir / "config.json").write_text(json.dumps({"quantization": {"bits": 4}}))
+    (model_dir / "w.safetensors").write_bytes(weights)
+    (home / ".omlx" / "settings.json").write_text(json.dumps({"model": {"model_dirs": [str(tmp_path / name / "models")]}}))
+    stub = lambda argv, timeout=10: (0, "value\n", "")
+    return rp.collect_environment("Test-Model", "desktop", 2, runner=stub, home=home,
+                                  plist=tmp_path / "none.plist", hash_weights=hash_weights)
+
+
+def test_f11_a_same_named_same_sized_model_artifact_with_different_contents_is_a_different_cohort(tmp_path):
+    first = model_environment(tmp_path, "a", b"1234")
+    second = model_environment(tmp_path, "b", b"5678")                                # same name, same size, other bytes
+    assert first["model"]["weights_manifest"]["files"][0][1] == second["model"]["weights_manifest"]["files"][0][1] == 4
+    assert first["model"]["weights_manifest"]["sha256"] != second["model"]["weights_manifest"]["sha256"]
+    assert rp.environment_fingerprint(first) != rp.environment_fingerprint(second)
+    assert rp.environment_fingerprint(first) == rp.environment_fingerprint(model_environment(tmp_path, "c", b"1234"))
+    unhashed = model_environment(tmp_path, "d", b"1234", hash_weights=False)
+    assert rp.has_unknown(rp.environment_fingerprint(unhashed))                       # never silently trusted
+
+
+def test_f11_environment_fingerprint_ignores_only_what_cannot_change_a_latency():
+    env = {key: {"k": key} for key in rp.ENV_COHORT_FIELDS}
+    assert rp.environment_fingerprint({**env, "power": "Battery", "python": {"x": 1}}) == rp.environment_fingerprint(env)
+    for key in rp.ENV_COHORT_FIELDS:
+        assert rp.environment_fingerprint({**env, key: {"k": "changed"}}) != rp.environment_fingerprint(env), key
+    assert rp.has_unknown(rp.environment_fingerprint({}))
+
+
+# ---- N01 and N02 ----
+
+def test_n01_the_inert_environment_refuses_loopback_ports_the_test_does_not_own(inert_environment):
+    with pytest.raises(AssertionError, match="does not own"):
+        socket.socket().connect(("127.0.0.1", 9))
+    inert_environment.clear()                                                       # that refusal is the expected outcome here
+    with FaultingServer() as owned:
+        probe = socket.socket()
+        try:
+            probe.connect(("127.0.0.1", owned.port))                                  # a port the test itself bound
+        finally:
+            probe.close()
+        assert wait_for(lambda: owned.accepted >= 1)
+
+
+def test_n02_the_measurement_boundary_is_documented_and_instrumentation_volume_is_reported(good):
+    doc = (ROOT / "docs" / "RELEASE_PERFORMANCE_BENCHMARK.md").read_text()
+    section = doc.split("## Measurement boundary", 1)[1].split("\n## ", 1)[0]
+    for phrase in ("instrumented", "not uninstrumented application latency", "response tee", "identically instrumented",
+                   "diagnostics", "never gate", "does not characterize", "attribution is never disabled"):
+        assert phrase in section, phrase
+    rows = raw_rows(good, "samples.jsonl")
+    assert all(isinstance(r["diagnostics"]["instrumentation_records"], int) for r in rows)
+    assert good.receipt["summary"]["greeting_warm"]["candidate"]["diagnostics"]["instrumentation_records"]["p50"] >= 1
+    assert "instrumentation_records" not in rp.GATING_METRICS                          # volume is a diagnostic, never a gate
+
+
+@pytest.mark.parametrize("edit,needle", [
+    (lambda b: b["corpus"]["sentinels"].pop("acceptable_finish_reasons"), "acceptable_finish_reasons"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("lifecycle_blocked_effect", "INCONCLUSIVE"), "lifecycle_blocked_effect"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("integrity_failure", "BLOCK"), "integrity_failure"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("baseline_lifecycle_effect", "BLOCK"), "baseline_lifecycle_effect"),
+    (lambda b: b["policy"]["environment"].__setitem__("weights_identity", "names_and_sizes"), "full weight digests"),
+    (lambda b: b["policy"]["environment"].__setitem__("compare_before_and_after", False), "full weight digests"),
+    (lambda b: b["policy"].pop("environment"), "full weight digests")])
+def test_the_new_policy_requirements_cannot_be_weakened(edit, needle):
+    bundle = copy.deepcopy(BUNDLE)
+    edit(bundle)
+    assert any(needle in problem for problem in rp.validate_bundle(bundle))
+
+
+def test_f02_denied_engine_requests_never_reach_an_owned_receiver_and_permitted_ones_do():
+    import httpx
+    import http.client
+    emitted = []
+    with LoopbackBackend(health=({"status": "ok"}, 200)) as receiver:
+        port = receiver.server.server_address[1]
+        base = f"http://127.0.0.1:{port}"
+        guard = rp.EffectGuard(lambda kind, **fields: emitted.append((kind, fields)), allowed_ports={port})
+        with guard:
+            assert httpx.Client().get(base + "/health").json() == {"status": "ok"}        # a permitted read arrives
+            assert httpx.Client(timeout=3).post(base + "/v1/chat/completions", json={"model": "m"}).status_code == 200
+            sent_before = list(receiver.agent_bodies)
+            for method, path in (("POST", "/v1/models/Some-Model/unload"), ("POST", "/v1/models/Some-Model/load"),
+                                 ("PUT", "/admin/api/settings"), ("DELETE", "/v1/models/Some-Model")):
+                with pytest.raises(rp.EffectBlocked):
+                    httpx.Client().request(method, base + path, json={"x": 1}, headers={"Authorization": "Bearer SYNTHETIC"})
+                with pytest.raises(rp.EffectBlocked):
+                    asyncio.run(httpx.AsyncClient().request(method, base + path, json={"x": 1}))
+                with pytest.raises(rp.EffectBlocked):
+                    http.client.HTTPConnection("127.0.0.1", port).request(method, path, body=b"{}")
+        assert receiver.agent_bodies == sent_before == [{"model": "m"}]                  # only the permitted chat call
+    assert [f["what"] for k, f in emitted] == ["engine_operation"] * 12
+    # and the refusals are what makes the whole run non-passing
+    logs = {"candidate": [{"kind": "header"}, *[{"kind": k, **f} for k, f in emitted]], "baseline": []}
+    life = rp.lifecycle_summary(logs)
+    assert life["candidate"]["blocked_effects"] == 12 and life["baseline"]["blocked_effects"] == 0
+    summary = rp.summarize(world(1000.0, 1000.0), BUNDLE)
+    assert rp.decide(summary, BUNDLE, APPROVED, {"candidate": {**life["candidate"]}, "baseline": life["baseline"]})["verdict"] == "BLOCK"
+    clean = rp.lifecycle_summary({"candidate": [{"kind": "header"}], "baseline": []})
+    assert rp.decide(summary, BUNDLE, APPROVED, clean)["verdict"] == "PASS"
+    baseline_side = rp.decide(summary, BUNDLE, APPROVED, {"candidate": clean["candidate"], "baseline": life["candidate"]})
+    assert baseline_side["verdict"] == "INCONCLUSIVE"
+    assert any(r["code"] == "baseline_lifecycle_effect" for r in baseline_side["reasons"])
+
+
+def test_f10_a_child_that_does_not_lead_its_own_group_is_signalled_alone_never_its_group(tmp_path):
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])        # shares the test's group
+    try:
+        assert os.getpgid(child.pid) != child.pid
+        backend = rp.BackendProcess("candidate", tmp_path, 18775, tmp_path / "h", tmp_path / "i", sys.executable)
+        backend.proc = child
+        result = backend.stop()
+        assert result["ok"] is True and result["exited"] is True and child.poll() is not None
+        assert os.getpgrp() == os.getpgid(0)                                                # we are plainly still here
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+# ---- gaps found by mutation testing: each test below kills a mutant that the first suite let survive ----
+
+def test_f05_an_idle_side_whose_engine_log_is_unavailable_makes_the_active_samples_unverifiable(tmp_path, ctx):
+    evd = run_evidence(tmp_path, ctx, "idle_blind", unavailable_by_side={"baseline": ["engine_http"]})
+    mine = [r for r in raw_rows(evd, "samples.jsonl") if r["side"] == "candidate" and r["scenario"] == "greeting_warm"]
+    assert all(r["diagnostics"]["chat_calls"] >= 1 and r["diagnostics"]["other_side_engine_requests"] == UNKNOWN for r in mine)
+    assert all("other_side_engine_activity" in r["grade"]["unverifiable"] and not r["grade"]["correct"] for r in mine)
+    assert not any("shared_engine_interference" in r["grade"]["unverifiable"] for r in mine)
+
+
+def test_f05_a_receipts_lifecycle_record_that_hides_an_effect_is_refused(tmp_path, ctx):
+    startup = {"candidate": [{"kind": "effect_blocked", "what": "engine_operation", "target": "POST /v1/models/x/unload"}]}
+    evd = pass_evidence(tmp_path, ctx, "hide_lifecycle", startup_events=startup)
+    assert run_check(evd, ctx)[0] == rp.EXIT_BLOCK
+    evd.receipt["lifecycle"]["candidate"]["blocked_effects"] = 0
+    evd.receipt["lifecycle"]["candidate"]["blocked_targets"] = []
+    evd.receipt_path.write_text(json.dumps(evd.receipt, indent=2, sort_keys=True))
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_REFUSED and "lifecycle_mismatch" in refusal_codes(result)
+
+
+def test_f06_event_and_started_records_must_follow_the_sample_order_each_on_its_own(good, ctx, tmp_path):
+    for name, code in (("events.jsonl", "event_records_do_not_match_samples_in_order"),
+                       ("started.jsonl", "started_records_do_not_match_samples_in_order")):
+        evd = clone(good, tmp_path, "order_" + name.split(".")[0])
+        rows = raw_rows(evd, name)
+        rows[10], rows[11] = rows[11], rows[10]                    # only this file is out of order
+        write_rows(evd, name, rows)
+        seal(evd.out, evd.receipt_path)
+        result = run_check(evd, ctx)[1]
+        assert code in details(result, "samples_not_bound_to_the_schedule"), name
+
+
+def test_f11_an_environment_that_could_not_be_recollected_after_the_run_is_not_comparable(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "env_gone", env_after_missing=True)
+    assert raw_rows_json(evd, "environment.json")["after"] == {}
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "environment_after_unavailable" for r in result["reasons"])
+
+
+def raw_rows_json(evd, name):
+    return json.loads((evd.out / "raw" / name).read_text())
