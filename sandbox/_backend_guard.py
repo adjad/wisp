@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import re
 import socket
+import sys
 from dataclasses import dataclass
 from types import FrameType
 from typing import Any
@@ -52,6 +53,13 @@ def validate_config(config: Any) -> int:
     return canonical_port(config.port, what="sandbox server bind")
 
 
+def validate_runtime(uvicorn_version: str, implementation: str, python_version: tuple[int, int]) -> None:
+    # Outer load_app ordering and child code-object contracts are specific to
+    # this reviewed runtime. Upgrade this policy only with new compatibility QA.
+    if uvicorn_version != "0.49.0" or implementation != "cpython" or python_version not in {(3, 13), (3, 14)}:
+        raise SandboxBindError("Unsupported sandbox runtime; qualify Uvicorn/Python before use")
+
+
 def app_lookup_config() -> Any:
     """Resolved Config at the public lookup, before outer bind/finally.
 
@@ -60,8 +68,10 @@ def app_lookup_config() -> Any:
     Checking only module import or the later factory would miss cached imports
     or reload/worker parent binds. No installed dependency is modified.
     """
+    import uvicorn
     from uvicorn.config import Config
 
+    validate_runtime(uvicorn.__version__, sys.implementation.name, sys.version_info[:2])
     method = getattr(Config, "load_app", None)
     code = getattr(method, "__code__", None)
     if code is None:

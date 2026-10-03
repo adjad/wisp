@@ -350,8 +350,19 @@ def outer_uvicorn(monkeypatch, tmp_path, request):
     server_module = importlib.import_module("uvicorn.server")
     loop_module = importlib.import_module("uvicorn.loops.asyncio")
     product = importlib.import_module("sandbox.server")
-    leaves = []
-    product_events = []
+    all_leaves = []
+    all_product_events = []
+    class ReceiptWindow(list):
+        def __init__(self, history):
+            super().__init__()
+            self.history = history
+        def append(self, value):
+            self.history.append(value)
+            super().append(value)
+    # Current windows may reset for cached-run refusal assertions, but raw
+    # histories retain every positive and negative invocation's leaf events.
+    leaves = ReceiptWindow(all_leaves)
+    product_events = ReceiptWindow(all_product_events)
     invocations = []
     actual_run = main_module.run
     actual_startup = Server.startup
@@ -497,6 +508,7 @@ def outer_uvicorn(monkeypatch, tmp_path, request):
         name = hashlib.sha256(request.node.nodeid.encode()).hexdigest() + ".json"
         (directory / name).write_text(json.dumps({"case": request.node.nodeid, "invocations": invocations,
             "inert_effect_leaves": leaves, "product_fixture_events": product_events,
+            "all_inert_effect_leaves": all_leaves, "all_product_fixture_events": all_product_events,
             "run_startup_bind_functions_preserved": main_module.run is actual_run and
                 Server.startup is actual_startup and Config.bind_socket is actual_bind,
             "real_network_or_product_processes": False}, indent=2) + "\n")
@@ -608,3 +620,19 @@ def test_cached_import_and_prior_valid_run_do_not_authorize_a_new_unsafe_outer_r
     assert outer_uvicorn.leaves == [] and outer_uvicorn.product == []
     assert sentinel.read_bytes() == b"still present"
     assert "app" not in vars(outer_uvicorn.module)
+
+
+@pytest.mark.parametrize("version,implementation,python_version", [
+    ("0.50.0", "cpython", (3, 13)), ("0.48.0", "cpython", (3, 14)),
+    ("unknown", "cpython", (3, 13)), ("0.49.0", "pypy", (3, 13)),
+    ("0.49.0", "cpython", (3, 12)), ("0.49.0", "cpython", (3, 15))])
+def test_unqualified_runtime_contract_fails_closed(version, implementation, python_version):
+    from sandbox._backend_guard import validate_runtime
+    with pytest.raises(SandboxBindError, match="Unsupported sandbox runtime"):
+        validate_runtime(version, implementation, python_version)
+
+
+@pytest.mark.parametrize("python_version", [(3, 13), (3, 14)])
+def test_documented_runtime_contract_has_no_unknown_version_fallback(python_version):
+    from sandbox._backend_guard import validate_runtime
+    validate_runtime("0.49.0", "cpython", python_version)
