@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from service import idle
 from service.assistant.store import assistant_store
@@ -34,7 +34,12 @@ _last_brief_loaded = False
 # this is ~10 minutes, which covers a slow multi-account Mail read without
 # retrying a genuinely broken source every 30s until midnight.
 _MAX_BRIEF_ATTEMPTS = 20
-_brief_attempts: dict[date, int] = {}
+_brief_attempts: dict[tuple[date, str], int] = {}
+
+# The two daily briefs: (slot, part_of_day, hour it becomes due). Each fires
+# once, within BRIEF_WINDOW_H hours of its hour.
+BRIEF_SLOTS = (("am", "morning", 8), ("pm", "evening", 20))
+BRIEF_WINDOW_H = 4
 
 TICK_S = 30.0
 
@@ -217,21 +222,44 @@ def _record_brief_date(day: date) -> None:
         pass
 
 
+def next_brief_at(now: datetime) -> datetime:
+    """When the next scheduled brief is due, for the app to show."""
+    for _slot, _part, hour in BRIEF_SLOTS:
+        due = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+        if now < due:
+            return due
+    first = BRIEF_SLOTS[0][2]
+    return (now.replace(hour=first, minute=0, second=0, microsecond=0)
+            + timedelta(days=1))
+
+
+def _slot_completed(slot: str, today: str) -> bool:
+    done = assistant_store.completion("daily_brief:" + slot)
+    if done is not None and done >= today:
+        return True
+    # A pre-slot completion row was written by one brief a day, mostly the morning.
+    legacy = assistant_store.completion("daily_brief")
+    return slot == "am" and legacy is not None and legacy >= today
+
+
 async def _maybe_daily_brief() -> None:
-    from service.config import get_daily_summary_hour
-    hour = get_daily_summary_hour()
-    now = datetime.now()
-    # Fire once per day, only within a 4-hour window after the configured hour,
-    # so opening Wisp at 3pm doesn't retroactively fire the 8am brief.
-    completed = assistant_store.completion("daily_brief")
-    if (not (hour <= now.hour < hour + 4) or _brief_date() == now.date()
-            or (completed is not None and completed >= now.date().isoformat())
-            or assistant_store.event_by_key("daily_brief:" + now.date().isoformat())):
+    from service.assistant.brief import brief_already_published, run_scheduled_brief
+    from service.config import get_daily_summary_auto
+    if not get_daily_summary_auto():
         return
-    attempts = _brief_attempts.get(now.date(), 0) + 1
-    _brief_attempts[now.date()] = attempts
-    from service.assistant.brief import run_scheduled_brief
-    # The legacy file is read for migration compatibility only. New completion
-    # lives in the event receipt transaction; exhausting retries is not delivery.
-    if attempts <= _MAX_BRIEF_ATTEMPTS:
-        await run_scheduled_brief("morning" if hour < 12 else "evening")
+    now = datetime.now()
+    today = now.date().isoformat()
+    for slot, part_of_day, hour in BRIEF_SLOTS:
+        # Fire once per slot, only within a few hours after its hour, so
+        # opening Wisp at 3pm doesn't retroactively fire the 8am brief.
+        if (not (hour <= now.hour < hour + BRIEF_WINDOW_H)
+                or (slot == "am" and _brief_date() == now.date())
+                or _slot_completed(slot, today)
+                or brief_already_published(today, slot)):
+            continue
+        attempts = _brief_attempts.get((now.date(), slot), 0) + 1
+        _brief_attempts[(now.date(), slot)] = attempts
+        # The legacy file is read for migration compatibility only. New completion
+        # lives in the event receipt transaction; exhausting retries is not delivery.
+        if attempts <= _MAX_BRIEF_ATTEMPTS:
+            await run_scheduled_brief(part_of_day)

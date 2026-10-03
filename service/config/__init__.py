@@ -95,16 +95,16 @@ def _save_overlay(update: dict) -> None:
     models_config.cache_clear()
 
 
-def get_daily_summary_hour() -> int:
-    """Hour (0-23) the scheduled daily brief fires. 8 = 8am (AM), 20 = 8pm (PM).
-    Persisted in the user overlay so it survives repackaging."""
-    return int(models_config().get("daily_summary_hour", 8))
+def get_daily_summary_auto() -> bool:
+    """Whether Wisp generates the daily summary by itself, at 8am and 8pm.
+    On unless the user switched it off. Persisted in the user overlay so it
+    survives repackaging."""
+    return bool(models_config().get("daily_summary_auto", True))
 
 
-def set_daily_summary_hour(hour: int) -> int:
-    hour = 20 if int(hour) >= 12 else 8   # only two choices: 8am or 8pm
-    _save_overlay({"daily_summary_hour": hour})
-    return hour
+def set_daily_summary_auto(enabled: bool) -> bool:
+    _save_overlay({"daily_summary_auto": bool(enabled)})
+    return bool(enabled)
 
 
 def omlx_base_url() -> str:

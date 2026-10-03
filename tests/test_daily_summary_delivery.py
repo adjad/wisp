@@ -1717,7 +1717,7 @@ class TestScheduledDelivery:
 
         # …and the day stays open, so the real brief can still go out.
         with patch.object(B, "run_scheduled_brief", AsyncMock(return_value=False)), \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
+             patch("service.config.get_daily_summary_auto", lambda: True), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
             await scheduler._maybe_daily_brief()
         assert scheduler._brief_date() is None
@@ -1728,7 +1728,7 @@ class TestScheduledDelivery:
                  "MESSAGES": "1 recent message in Trishe.", "READY": "1"}
         with patch.object(B, "_sections", AsyncMock(return_value=ready)), \
              patch.object(hub, "publish", wraps=hub.publish) as publish, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
+             patch("service.config.get_daily_summary_auto", lambda: True), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
             await scheduler._maybe_daily_brief()
             assert publish.await_count == 1
@@ -1736,10 +1736,11 @@ class TestScheduledDelivery:
             assert event["type"] == "daily_brief" and event["text"] == "Your day."
 
             assert scheduler._brief_date() is None
-            assert scheduler.assistant_store.completion("daily_brief") is None
+            assert scheduler.assistant_store.completion("daily_brief:am") is None
             row = scheduler.assistant_store.pending_events()[0]
             scheduler.assistant_store.acknowledge_event(row["id"], "daily_brief")
-            assert scheduler.assistant_store.completion("daily_brief") == "2026-09-08"
+            assert scheduler.assistant_store.completion("daily_brief:am") == "2026-09-08"
+            assert scheduler.assistant_store.completion("daily_brief:pm") is None
 
             # A relaunch inside the window re-reads the date from disk instead of
             # firing again. This is the run of false "ready" pings.
@@ -1751,18 +1752,68 @@ class TestScheduledDelivery:
     @pytest.mark.asyncio
     async def test_a_source_that_never_finishes_gives_the_day_up(self):
         with patch.object(B, "run_scheduled_brief", AsyncMock(return_value=False)) as run, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
+             patch("service.config.get_daily_summary_auto", lambda: True), \
              patch.object(scheduler, "datetime", _clock_at(8, 5)):
             for _ in range(scheduler._MAX_BRIEF_ATTEMPTS + 5):
                 await scheduler._maybe_daily_brief()
         assert run.await_count == scheduler._MAX_BRIEF_ATTEMPTS
         assert scheduler._brief_date() is None
-        assert scheduler.assistant_store.completion("daily_brief") is None
+        assert scheduler.assistant_store.completion("daily_brief:am") is None
+
+    @pytest.mark.asyncio
+    async def test_the_evening_slot_fires_at_8pm_and_is_independent_of_the_morning(self):
+        ready = {"FULL": "Your evening.", "READY": "1"}
+        with patch.object(B, "_sections", AsyncMock(return_value=ready)), \
+             patch.object(hub, "publish", wraps=hub.publish) as publish, \
+             patch("service.config.get_daily_summary_auto", lambda: True):
+            for hour, part, slot in ((8, "morning", "am"), (20, "evening", "pm")):
+                monkeypatch_clock = _clock_at(hour, 5)
+                with patch.object(scheduler, "datetime", monkeypatch_clock), \
+                     patch.object(B, "datetime", monkeypatch_clock):
+                    await scheduler._maybe_daily_brief()
+                    await scheduler._maybe_daily_brief()   # a second tick must not repeat it
+                event = publish.await_args.args[0]
+                assert event["part_of_day"] == part
+                assert publish.await_args.kwargs["target"]["slot"] == slot
+            assert publish.await_count == 2
+            for row in scheduler.assistant_store.pending_events():
+                scheduler.assistant_store.acknowledge_event(row["id"], "daily_brief")
+        assert scheduler.assistant_store.completion("daily_brief:am") == "2026-09-08"
+        assert scheduler.assistant_store.completion("daily_brief:pm") == "2026-09-08"
+
+    @pytest.mark.asyncio
+    async def test_nothing_fires_when_auto_is_off(self):
+        with patch.object(B, "run_scheduled_brief", AsyncMock()) as run, \
+             patch("service.config.get_daily_summary_auto", lambda: False):
+            for hour in (8, 20):
+                with patch.object(scheduler, "datetime", _clock_at(hour, 5)):
+                    await scheduler._maybe_daily_brief()
+        run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_pre_slot_receipt_still_covers_the_morning_only(self):
+        legacy_day = "2026-09-08"
+        scheduler.assistant_store._db.execute(
+            "INSERT INTO assistant_completion VALUES ('daily_brief',?,0)", (legacy_day,))
+        with patch.object(B, "run_scheduled_brief", AsyncMock(return_value=False)) as run, \
+             patch("service.config.get_daily_summary_auto", lambda: True):
+            with patch.object(scheduler, "datetime", _clock_at(8, 5)):
+                await scheduler._maybe_daily_brief()
+            assert run.await_count == 0
+            with patch.object(scheduler, "datetime", _clock_at(20, 5)):
+                await scheduler._maybe_daily_brief()
+            assert run.await_count == 1
+
+    def test_the_next_brief_is_the_next_8am_or_8pm(self):
+        from datetime import datetime as D
+        assert scheduler.next_brief_at(D(2026, 9, 8, 7, 0)) == D(2026, 9, 8, 8, 0)
+        assert scheduler.next_brief_at(D(2026, 9, 8, 8, 5)) == D(2026, 9, 8, 20, 0)
+        assert scheduler.next_brief_at(D(2026, 9, 8, 21, 0)) == D(2026, 9, 9, 8, 0)
 
     @pytest.mark.asyncio
     async def test_nothing_fires_outside_the_window(self):
         with patch.object(B, "run_scheduled_brief", AsyncMock()) as run, \
-             patch("service.config.get_daily_summary_hour", lambda: 8), \
+             patch("service.config.get_daily_summary_auto", lambda: True), \
              patch.object(scheduler, "datetime", _clock_at(15, 0)):
             await scheduler._maybe_daily_brief()
         run.assert_not_awaited()
@@ -1796,3 +1847,36 @@ def _clock_at(hour: int, minute: int):
         def now(cls, tz=None):
             return datetime(2026, 9, 8, hour, minute)
     return Clock
+
+
+class TestSummaryScheduleEndpoint:
+    """The Auto switch's backend: GET/POST /assistant/summary_schedule."""
+
+    @pytest.mark.asyncio
+    async def test_auto_is_on_by_default_and_reports_the_next_run(self):
+        from service import main
+        with patch("service.config.get_daily_summary_auto", lambda: True):
+            state = await main.get_summary_schedule()
+        assert state["enabled"] is True and state["next"]
+
+    @pytest.mark.asyncio
+    async def test_turning_auto_off_saves_it_and_drops_the_next_run(self):
+        from service import main
+        saved = {}
+        with patch("service.config.set_daily_summary_auto",
+                   lambda value: saved.setdefault("auto", value)), \
+             patch("service.config.get_daily_summary_auto", lambda: saved.get("auto", True)):
+            state = await main.set_summary_schedule({"enabled": False})
+        assert saved == {"auto": False}
+        assert state == {"enabled": False, "next": None}
+
+    @pytest.mark.asyncio
+    async def test_a_non_boolean_is_rejected_rather_than_saved(self):
+        from fastapi import HTTPException
+        from service import main
+        with patch("service.config.set_daily_summary_auto") as save:
+            for bad in ({}, {"enabled": "yes"}, {"period": "PM"}):
+                with pytest.raises(HTTPException) as err:
+                    await main.set_summary_schedule(bad)
+                assert err.value.status_code == 400
+        save.assert_not_called()

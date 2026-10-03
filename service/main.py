@@ -1914,24 +1914,30 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
             **({} if ok else {"error": "sources syncing"})}
 
 
+def _summary_schedule_state() -> dict[str, Any]:
+    from datetime import datetime as _dt
+    from service.assistant.scheduler import next_brief_at
+    from service.config import get_daily_summary_auto
+    enabled = get_daily_summary_auto()
+    return {"enabled": enabled,
+            "next": next_brief_at(_dt.now()).isoformat() if enabled else None}
+
+
 @app.get("/assistant/summary_schedule")
 async def get_summary_schedule() -> dict[str, Any]:
-    from service.config import get_daily_summary_hour
-    hour = get_daily_summary_hour()
-    return {"hour": hour, "period": "AM" if hour < 12 else "PM"}
+    """Whether the daily summary generates itself at 8 AM and 8 PM, and when
+    the next one is due."""
+    return _summary_schedule_state()
 
 
 @app.post("/assistant/summary_schedule")
 async def set_summary_schedule(body: dict[str, Any]) -> dict[str, Any]:
-    """Set the scheduled daily-brief time. Accepts {"period":"AM"|"PM"} or
-    {"hour": 8|20}."""
-    from service.config import set_daily_summary_hour
-    if "period" in body:
-        hour = 8 if str(body["period"]).upper() == "AM" else 20
-    else:
-        hour = int(body.get("hour", 8))
-    hour = set_daily_summary_hour(hour)
-    return {"hour": hour, "period": "AM" if hour < 12 else "PM"}
+    """Turn automatic daily summaries on or off: {"enabled": true|false}."""
+    from service.config import set_daily_summary_auto
+    if not isinstance(body.get("enabled"), bool):
+        raise HTTPException(status_code=400, detail="enabled must be true or false.")
+    set_daily_summary_auto(body["enabled"])
+    return _summary_schedule_state()
 
 
 @app.post("/assistant/sync/emails")

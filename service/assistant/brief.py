@@ -2066,6 +2066,20 @@ def brief_without_model() -> str:
                 "your brief together. Try again once it's back up.")
 
 
+def brief_slot(part_of_day: str) -> str:
+    """The scheduled brief's slot: "am" for the morning run, "pm" for evening."""
+    return "pm" if part_of_day == "evening" else "am"
+
+
+def brief_already_published(day: str, slot: str) -> bool:
+    """Whether this slot's brief for `day` already went out. Before slots, one
+    brief a day was keyed on the date alone, and those were mostly morning
+    briefs, so an old receipt for today still covers the am slot."""
+    if assistant_store.event_by_key(f"daily_brief:{day}:{slot}"):
+        return True
+    return slot == "am" and bool(assistant_store.event_by_key("daily_brief:" + day))
+
+
 async def run_scheduled_brief(part_of_day: str) -> bool:
     """Scheduler entry: compose the brief and push it to the app as a
     'daily_brief' event carrying the full text plus two notification bodies —
@@ -2082,7 +2096,8 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
     pings came from (see scheduler._maybe_daily_brief for the persisted date).
     """
     day = datetime.now().date().isoformat()
-    if assistant_store.event_by_key("daily_brief:" + day):
+    slot = brief_slot(part_of_day)
+    if brief_already_published(day, slot):
         return True
     sections = await _sections(part_of_day)
     if not sections.get("READY") or not sections.get("FULL", "").strip():
@@ -2094,5 +2109,6 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
         "text": sections["FULL"],
         "today_summary": sections.get("TODAY", ""),
         "messages_summary": sections.get("MESSAGES", ""),
-    }, dedupe_key="daily_brief:" + day, target={"type": "brief", "date": day})
+    }, dedupe_key=f"daily_brief:{day}:{slot}",
+        target={"type": "brief", "date": day, "slot": slot})
     return True

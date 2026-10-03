@@ -132,9 +132,9 @@ struct OverlayView: View {
               : "Create a multi-source, cited research report")
     }
 
-    // "Daily Summary" button + an AM/PM toggle for when the scheduled brief
-    // fires (8am vs 8pm). Tapping the button builds the combined calendar+email
-    // brief on demand and drops it into the transcript.
+    // Daily Summary is a split pill. The left half builds the combined
+    // calendar+email brief now and drops it into the transcript. The right half
+    // is the Auto switch: on (the default), Wisp generates one at 8 AM and 8 PM.
     private var dailySummaryControl: some View {
         HStack(spacing: 6) {
             Button("Today", systemImage: "calendar.day.timeline.left") { TodayWindow.show() }
@@ -145,35 +145,60 @@ struct OverlayView: View {
                 .background(Capsule().fill(Theme.chipFill))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 .help("Plan study and project time around your calendar")
-            Button(action: { model.runDailySummary() }) {
-                HStack(spacing: 4) {
-                    Image(systemName: "sun.max").font(.system(size: 11))
-                    Text("Daily Summary").font(.system(size: 11, weight: .medium))
-                }
-                .foregroundStyle(Theme.textSecondary)
-                .padding(.horizontal, 9).padding(.vertical, 4)
-                .background(Capsule().fill(Theme.chipFill))
-                .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            }
-            .buttonStyle(.plain).help("Summarize today's calendar + email now")
-
-            // AM / PM segmented toggle for the scheduled brief time.
             HStack(spacing: 0) {
-                ForEach(["AM", "PM"], id: \.self) { p in
-                    Button(action: { model.setSummaryPeriod(p) }) {
-                        Text(p).font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(model.summaryPeriod == p ? Color.black : Theme.textMuted)
-                            .frame(width: 22, height: 18)
-                            .background(model.summaryPeriod == p ? Theme.accent : Color.clear)
+                Button(action: { model.runDailySummary() }) {
+                    HStack(spacing: 4) {
+                        if model.dailySummaryRunning {
+                            ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 11, height: 11)
+                        } else {
+                            Image(systemName: "sun.max").font(.system(size: 11))
+                        }
+                        Text("Daily Summary").font(.system(size: 11, weight: .medium))
                     }
-                    .buttonStyle(.plain)
+                    .foregroundStyle(Theme.textSecondary)
+                    .padding(.leading, 9).padding(.trailing, 8).padding(.vertical, 4)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain).help("Summarize today's calendar + email now")
+
+                Rectangle().fill(Theme.chipStroke).frame(width: 1)
+
+                Button(action: { model.toggleSummaryAuto() }) {
+                    HStack(spacing: 4) {
+                        Circle()
+                            .fill(model.summaryAuto ? Theme.textPrimary : Theme.textMuted)
+                            .frame(width: 6, height: 6)
+                        Image(systemName: model.summaryAuto ? "repeat" : "slash.circle")
+                            .font(.system(size: 10))
+                        Text("Auto").font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(model.summaryAuto ? Theme.textPrimary : Theme.textMuted)
+                    .padding(.leading, 8).padding(.trailing, 9).padding(.vertical, 4)
+                    .background(model.summaryAuto ? Color.white.opacity(0.1) : Color.clear)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(autoSummaryHelp)
+                .accessibilityLabel("Automatic daily summary")
+                .accessibilityValue(model.summaryAuto ? "On" : "Off")
+                .accessibilityAddTraits(.isToggle)
             }
             .background(Capsule().fill(Theme.chipFill))
             .clipShape(Capsule())
             .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
-            .help("When the daily brief is delivered: 8 AM or 8 PM")
         }
+    }
+
+    private var autoSummaryHelp: String {
+        guard model.summaryAuto else {
+            return "Auto daily summary is off — click to have one generated at 8 AM and 8 PM"
+        }
+        guard let next = model.summaryNext else {
+            return "Auto daily summary is on (8 AM and 8 PM) — click to turn off"
+        }
+        let day = Calendar.current.isDateInToday(next) ? "today" : "tomorrow"
+        let time = next.formatted(date: .omitted, time: .shortened)
+        return "Auto daily summary is on — next \(day) at \(time). Click to turn off"
     }
 
     private var windowControls: some View {
@@ -579,7 +604,7 @@ struct OverlayView: View {
     // Model/routing detail used to be its own wrapping pill up in the header
     // (the main source of clutter) — it lives here now, folded into the one
     // status line that was already at the bottom, so nothing is lost, it's
-    // just no longer competing for space with Daily Summary / AM-PM / window
+    // just no longer competing for space with Daily Summary / Auto / window
     // controls up top.
     private var statusRow: some View {
         HStack(spacing: 6) {

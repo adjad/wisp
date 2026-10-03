@@ -283,25 +283,38 @@ final class WispClient {
                                    unavailableLabels: unavailable, disabledLabels: disabled)
     }
 
-    // GET/POST /assistant/summary_schedule -> the 8am(AM) / 8pm(PM) digest time.
-    func summarySchedule() async -> String {
-        let url = Self.baseURL.appendingPathComponent("assistant/summary_schedule")
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return "AM" }
-        return obj["period"] as? String ?? "AM"
+    // GET/POST /assistant/summary_schedule -> whether the daily summary
+    // generates itself (8 AM and 8 PM) and when the next one is due. nil means
+    // the backend couldn't be reached, so callers keep what they were showing.
+    struct SummarySchedule { var enabled: Bool; var next: Date? }
+
+    private static func parseSummarySchedule(_ data: Data) -> SummarySchedule? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let enabled = obj["enabled"] as? Bool else { return nil }
+        let next = (obj["next"] as? String).flatMap { iso -> Date? in
+            // The backend sends a naive local timestamp, e.g. 2026-10-02T20:00:00.
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            return f.date(from: iso)
+        }
+        return SummarySchedule(enabled: enabled, next: next)
     }
 
-    @discardableResult
-    func setSummarySchedule(_ period: String) async -> String {
+    func summarySchedule() async -> SummarySchedule? {
+        let url = Self.baseURL.appendingPathComponent("assistant/summary_schedule")
+        guard let (data, _) = try? await URLSession.shared.data(from: url) else { return nil }
+        return Self.parseSummarySchedule(data)
+    }
+
+    func setSummaryAuto(_ enabled: Bool) async -> SummarySchedule? {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("assistant/summary_schedule"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["period": period])
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return period }
-        return obj["period"] as? String ?? period
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["enabled": enabled])
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+        return Self.parseSummarySchedule(data)
     }
 
     // GET /assistant/events (SSE) -> reminders + `changed` pings.

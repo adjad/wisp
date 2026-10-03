@@ -805,10 +805,14 @@ class AssistantStore:
                     self._db.executemany("INSERT OR IGNORE INTO notify_log VALUES (?,?,?)",
                                          [(cid, stage, now) for stage in target["stages"]])
             elif target.get("type") == "brief":
+                # One completion row per slot: the 8am and 8pm briefs finish
+                # independently. An event with no slot is a pre-slot brief and
+                # keeps writing the legacy "daily_brief" row.
+                key = "daily_brief:" + target["slot"] if target.get("slot") else "daily_brief"
                 self._db.execute(
-                    "INSERT INTO assistant_completion VALUES ('daily_brief',?,?) "
+                    "INSERT INTO assistant_completion VALUES (?,?,?) "
                     "ON CONFLICT(key) DO UPDATE SET value=MAX(value,excluded.value), "
-                    "completed_at=excluded.completed_at", (target["date"], now))
+                    "completed_at=excluded.completed_at", (key, target["date"], now))
             elif target.get("type") == "scheduled_unknown":
                 changed = self._db.execute(
                     "UPDATE scheduled_sends SET notified_at=COALESCE(notified_at,?) "

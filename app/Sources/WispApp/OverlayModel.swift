@@ -151,7 +151,7 @@ final class OverlayModel: ObservableObject {
     private var sourceSyncTask: Task<Void, Never>?
     private var sourceSyncID = UUID()
     private var trackedSyncSources: [String] = []
-    private var dailySummaryRunning = false
+    @Published private(set) var dailySummaryRunning = false
     private var dailySummaryID = UUID()
     private var submissionState = PromptSubmissionState()
     private var researchDispatchID: UInt64?
@@ -167,7 +167,10 @@ final class OverlayModel: ObservableObject {
     // Upcoming commitments themselves surface as system notifications (see
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
     // than a live in-panel list.
-    @Published var summaryPeriod = "AM"    // scheduled daily-brief time: AM(8am) / PM(8pm)
+    // Auto daily summaries (8 AM and 8 PM). On by default; the backend owns the
+    // setting, and these mirror it for the header button.
+    @Published var summaryAuto = true
+    @Published var summaryNext: Date?
     private var assistantTask: Task<Void, Never>?
     // The last scheduled brief this session notified about. The SSE stream is
     // re-subscribed after any drop, so the same brief can arrive twice.
@@ -839,7 +842,8 @@ final class OverlayModel: ObservableObject {
 
     func refreshAssistant() {
         Task { [weak self] in
-            self?.summaryPeriod = await self?.client.summarySchedule() ?? "AM"
+            guard let schedule = await self?.client.summarySchedule() else { return }
+            self?.applySummarySchedule(schedule)
         }
     }
 
@@ -938,9 +942,27 @@ final class OverlayModel: ObservableObject {
         }
     }
 
-    func setSummaryPeriod(_ period: String) {
-        summaryPeriod = period
-        Task { [weak self] in _ = await self?.client.setSummarySchedule(period) }
+    private func applySummarySchedule(_ schedule: WispClient.SummarySchedule) {
+        summaryAuto = schedule.enabled
+        summaryNext = schedule.next
+    }
+
+    /// Flip automatic daily summaries. The switch moves at once and snaps back
+    /// if the backend couldn't save the change, so it never shows a state that
+    /// isn't in effect.
+    func toggleSummaryAuto() {
+        let wanted = !summaryAuto
+        summaryAuto = wanted
+        if !wanted { summaryNext = nil }
+        Task { [weak self] in
+            guard let self else { return }
+            if let saved = await self.client.setSummaryAuto(wanted) {
+                self.applySummarySchedule(saved)
+            } else {
+                self.summaryAuto = !wanted
+                self.refreshAssistant()
+            }
+        }
     }
 
     // Set by the app delegate: create/remove real macOS Calendar events (the app
