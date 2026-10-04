@@ -33,8 +33,7 @@ enum BackendTrustChecks {
     static func decide(_ listeners: [L]?, _ identity: BackendTrust.IdentityResult,
                        receipt: BackendOwnership.ReceiptState = .present(launched),
                        facts: (Int32) -> BackendOwnership.ProcessFacts? = kernel) -> BackendTrust.Verdict {
-        BackendTrust.decide(listeners: listeners, ownedPrefixes: [bundle], identity: identity,
-                            receipt: receipt, facts: facts)
+        BackendTrust.decide(listeners: listeners, identity: identity, receipt: receipt, facts: facts)
     }
 
     static func main() async {
@@ -56,12 +55,18 @@ enum BackendTrustChecks {
         check(decide([ours], .failed) == .unreachable, "own listener that did not answer is not yet trusted")
         check(decide([ours], .missing) == .trusted(pids: [10]), "a 404 from the exact launched incarnation is trusted")
 
-        // A stranger is refused however convincingly it identifies itself.
-        check(decide([stranger], ident("wisp-backend", "production", 20)) == .refused(.foreignListener([stranger])),
+        // A stranger is refused however convincingly it identifies itself: only the process this
+        // app launched (the in-memory receipt) is ever trusted.
+        check(decide([stranger], ident("wisp-backend", "production", 20)) == .refused(.unproven([stranger])),
               "a stranger claiming to be Wisp must be refused")
-        check(decide([stranger], .missing) == .refused(.foreignListener([stranger])), "a stranger with no identity is refused")
-        check(decide([ours, stranger], ident()) == .refused(.foreignListener([stranger])),
+        check(decide([stranger], .missing) == .refused(.unproven([stranger])), "a stranger with no identity is refused")
+        check(decide([ours, stranger], ident()) == .refused(.unproven([stranger])),
               "a mixed set is refused and names only the stranger")
+        // Where a program runs from is no evidence either way: a bystander inside Wisp's own
+        // backend folder, echoing the launch nonce, is still not the launched process.
+        check(decide([L(pid: 11, path: bundle + "x")], ident("wisp-backend", "production", 11))
+              == .refused(.unproven([L(pid: 11, path: bundle + "x")])),
+              "a program in Wisp's folder with the right nonce is not the launched process")
 
         // Wisp's own code is still refused when it is not the real world.
         check(decide([ours], ident("wisp-backend", "sandbox")) == .refused(.wrongMode("sandbox")), "a sandbox backend is refused")
@@ -74,14 +79,13 @@ enum BackendTrustChecks {
         check(decide([ours, L(pid: 11, path: bundle + "x")], ident("wisp-backend", "production", 11))
               == .refused(.unproven([L(pid: 11, path: bundle + "x")])), "a second listener rides on the receipt")
 
-        // Look-alike paths are not ownership (same rules as PortGuard).
+        // A listing that disagrees with the kernel about the executable (a look-alike, a relative
+        // path, an empty one) is not the process the kernel describes: fail closed.
         for path in [bundle.replacingOccurrences(of: "backend/", with: "backend-evil/") + "python",
                      "Applications/Wisp.app/Contents/Resources/backend/python", ""] {
-            check(decide([L(pid: 10, path: path)], ident()) == .refused(.foreignListener([L(pid: 10, path: path)])),
-                  "look-alike path trusted: \(path)")
+            check(decide([L(pid: 10, path: path)], ident()) == .refused(.cannotInspect),
+                  "a listing that disagrees with the kernel was trusted: \(path)")
         }
-        check(BackendTrust.decide(listeners: [ours], ownedPrefixes: [], identity: ident(), receipt: .present(launched),
-                                  facts: kernel) == .refused(.foreignListener([ours])), "no owned prefixes must trust nothing")
 
         // (i) Another program on Wisp's own interpreter is refused, whatever it answers.
         for identity in [ident("wisp-backend", "production", 30), BackendTrust.IdentityResult.missing, .failed] {
@@ -102,8 +106,6 @@ enum BackendTrustChecks {
         // No receipt at all (a backend from a build that wrote none): fail closed.
         check(decide([ours], .missing, receipt: .none) == .refused(.unproven([ours])), "no receipt + 404 trusted")
         check(decide([ours], ident(), receipt: .none) == .refused(.unproven([ours])), "no receipt + identity trusted")
-        // (viii) An unusable receipt file: refused.
-        check(decide([ours], .missing, receipt: .unusable) == .refused(.unproven([ours])), "unusable receipt trusted")
         // (vi) The receipt's process must echo the receipt's nonce when it answers.
         check(decide([ours], ident(nonce: "nonce-2")) == .refused(.launchMismatch), "a different nonce trusted")
         check(decide([ours], ident(nonce: nil)) == .refused(.launchMismatch), "a missing nonce trusted")
@@ -135,10 +137,10 @@ enum BackendTrustChecks {
     }
 
     static func wordingChecks() {
-        let text = BackendTrust.describe(.refused(.foreignListener([L(pid: 4242, path: "/usr/local/bin/node")])))
+        let text = BackendTrust.describe(.refused(.unproven([L(pid: 4242, path: "/usr/local/bin/node")])))
         check(text.contains("node (pid 4242)") && text.contains("8765") && text.contains("Mail, Messages or Calendar"),
               "the refusal names the program, the port and what is protected")
-        check(!text.contains("foreignListener") && !text.contains("refused("), "no raw enum text in what the person reads")
+        check(!text.contains("unproven") && !text.contains("refused("), "no raw enum text in what the person reads")
         check(BackendTrust.describe(.refused(.wrongMode("sandbox"))).contains("sandbox copy of Wisp"), "sandbox wording")
         check(BackendTrust.describe(.refused(.cannotInspect)).contains("couldn't check"), "cannot-inspect wording")
         let unproven = BackendTrust.describe(.refused(.unproven([L(pid: 4343, path: bundle + ".venv/bin/python3.13")])))
@@ -201,8 +203,8 @@ enum BackendTrustChecks {
             changeDuringIdentity?()
             return answer
         }
-        func verify(_ port: Int, _ prefixes: [String]) async -> BackendTrust.Verdict {
-            await BackendTrustGate.verify(port: port, ownedPrefixes: prefixes,
+        func verify(_ port: Int) async -> BackendTrust.Verdict {
+            await BackendTrustGate.verify(port: port,
                                           inspect: inspect, facts: facts, receipt: currentReceipt,
                                           identity: { self.identity() })
         }
@@ -210,10 +212,10 @@ enum BackendTrustChecks {
 
     static func freshGateChecks() async {
         let previous = BackendTrustConfiguration.current
-        BackendTrustConfiguration.set(ownedPrefixes: [bundle])
-        defer { BackendTrustConfiguration.set(ownedPrefixes: previous.ownedPrefixes, port: previous.port) }
+        BackendTrustConfiguration.set()
+        defer { BackendTrustConfiguration.set(port: previous.port) }
         let host = Host()
-        let gate = BackendTrustGate(verification: { await host.verify($0, $1) })
+        let gate = BackendTrustGate(verification: { await host.verify($0) })
         check(await gate.verdict() == .trusted(pids: [10]), "healthy fresh gate")
         host.listeners = [stranger]
         check(!(await gate.verdict()).isTrusted, "a foreign replacement cannot reuse a timed verdict")
@@ -246,9 +248,6 @@ enum BackendTrustChecks {
         host.answer = ident()
         check(await gate.verdict() == .refused(.unproven([ours])), "no receipt: an answering listener is refused")
         check(host.identities == asked, "a receipt-less listener is never contacted")
-        host.receipt = .unusable
-        check(await gate.verdict() == .refused(.unproven([ours])) && host.identities == asked,
-              "an unusable receipt refuses without contact")
         host.receipt = .present(.init(pid: 10, start: .init(seconds: 1, microseconds: 0), executablePath: ours.path,
                                       backendRoot: "/r", nonce: "nonce-1"))
         host.listeners = [bystander]
@@ -266,16 +265,16 @@ enum BackendTrustChecks {
         host.receipt = swapped
         let before = host.identities
         let barrier = PairBarrier()
-        let concurrentGate = BackendTrustGate(verification: { port, prefixes in
+        let concurrentGate = BackendTrustGate(verification: { port in
             await barrier.arrive()
-            return await host.verify(port, prefixes)
+            return await host.verify(port)
         })
         async let first = concurrentGate.verdict()
         async let second = concurrentGate.verdict()
         let results = await [first, second]
         check(results.allSatisfy(\.isTrusted) && host.identities == before + 2,
               "concurrent requests each verify; no in-flight verdict reuse")
-        host.changeDuringIdentity = { BackendTrustConfiguration.set(ownedPrefixes: []) }
+        host.changeDuringIdentity = { BackendTrustConfiguration.set(port: previous.port + 1) }
         check(await gate.verdict() == .refused(.cannotInspect), "configuration changes during verification fail closed")
     }
 
@@ -388,7 +387,6 @@ enum BackendTrustChecks {
               let other = Server(mode: "production", identity: true) else { return }
         defer { sandboxed.stop(); legacy.stop(); other.stop() }
         let binary = PortGuard.executablePath(pid: good.pid) ?? ""
-        let owned = [((binary as NSString).deletingLastPathComponent) + "/"]
         check(binary.hasPrefix("/"), "could not read the test server's executable path")
         URLProtocol.registerClass(BackendTrustProtocol.self)
         var refusals: [String] = []
@@ -397,25 +395,30 @@ enum BackendTrustChecks {
         }
         defer { NotificationCenter.default.removeObserver(observer) }
 
-        func enforce(_ server: Server, owning prefixes: [String]) {
+        func enforce(_ server: Server) {
             BackendTrustProtocol.enforcedPort = server.port
-            BackendTrustConfiguration.set(ownedPrefixes: prefixes, port: server.port)
+            BackendTrustConfiguration.set(port: server.port)
         }
-        // The shared store, in a temporary directory: the gate's real default verification
-        // reads it, exactly as the app does after a launch.
-        let receipts = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("wisp-trust-receipt-\(UUID().uuidString)", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: receipts) }
-        BackendLaunchReceiptStore.shared.configure(directory: receipts)
+        // The shared store, in memory: the gate's real default verification reads it, exactly as
+        // the app does after it spawns a backend. It starts empty and has no file behind it.
         func launched(_ server: Server, nonce: String? = nil) {
             guard let receipt = server.receipt(nonce: nonce) else { check(false, "no receipt for a live server"); return }
-            try? BackendLaunchReceiptStore.shared.record(receipt)
+            BackendLaunchReceiptStore.shared.record(receipt)
             check(BackendLaunchReceiptStore.shared.current == .present(receipt), "receipt not recorded")
         }
 
+        // 0. This app has launched nothing yet: no receipt, so even a genuine-looking backend is
+        // someone else's. Fail closed, and nothing is sent, not even /identity.
+        check(BackendLaunchReceiptStore.shared.current == .none, "the store must start empty")
+        enforce(good)
+        let early = await get("http://127.0.0.1:\(good.port)/hello")
+        check(early.status == nil && early.error?.localizedDescription.contains("didn't start") == true,
+              "with no launch recorded the real server must be refused: \(early)")
+        usleep(300_000)
+        check(good.requests.isEmpty, "nothing may be sent before a launch is recorded: \(good.requests)")
+
         // 1. Trusted: the launched process, matching incarnation and nonce, passes unharmed.
         launched(good)
-        enforce(good, owning: owned)
         let hello = await get("http://127.0.0.1:\(good.port)/hello")
         check(hello.status == 200 && hello.body == "ok", "a trusted backend must work normally: \(String(describing: hello.error))")
         var post = URLRequest(url: URL(string: "http://127.0.0.1:\(good.port)/echo")!)
@@ -434,61 +437,54 @@ enum BackendTrustChecks {
         check(arrivals.count == 4, "all 4 SSE events must arrive: \(arrivals)")
         check(arrivals[0] < 0.9 && arrivals[3] - arrivals[0] > 0.9, "SSE must stream as it arrives, not buffer: \(arrivals)")
 
-        // 2. A stranger (path is outside the owned set) gets nothing at all, not even a question.
+        // 2. A stranger (the receipt names a different process) gets nothing at all, not even a question.
+        launched(legacy)
         let before = good.requests.count
-        enforce(good, owning: ["/nonexistent/"])
+        let announced = refusals.count
         let blocked = await get("http://127.0.0.1:\(good.port)/hello")
         check(blocked.status == nil && blocked.error != nil, "a stranger must be refused")
-        check(blocked.error?.localizedDescription.contains("isn't Wisp's own service") == true,
+        check(blocked.error?.localizedDescription.contains("didn't start") == true,
               "the failure explains itself: \(blocked.error?.localizedDescription ?? "")")
         usleep(300_000)
         check(good.requests.count == before, "NOTHING may be sent to a stranger, not even /identity: \(good.requests)")
-        check(refusals.count == 1 && refusals[0].contains("Quit it and reopen Wisp"), "the person is told, once: \(refusals)")
+        check(refusals.count == announced + 1 && refusals.last?.contains("Quit it and reopen Wisp") == true,
+              "the person is told, once: \(refusals)")
         _ = await get("http://127.0.0.1:\(good.port)/hello")
-        check(refusals.count == 1, "a repeated refusal must not nag")
+        check(refusals.count == announced + 1, "a repeated refusal must not nag")
 
         // 3. Wisp's own code in a sandbox world: asked who it is, refused, no request sent.
         launched(sandboxed)
-        enforce(sandboxed, owning: owned)
+        enforce(sandboxed)
         let sandbox = await get("http://127.0.0.1:\(sandboxed.port)/hello")
         check(sandbox.status == nil, "a sandbox backend must be refused")
         usleep(300_000)
         check(sandboxed.requests == ["REQ GET /identity"], "only the identity question is sent to it: \(sandboxed.requests)")
         check(refusals.last?.contains("sandbox copy of Wisp") == true, "sandbox wording shown")
 
-        // 4. A 404 listener on Wisp's own interpreter that is not the launched process
-        // (the receipt names another): refused, and NOTHING is sent, not even /identity.
-        enforce(legacy, owning: owned)
+        // 4. A 404 listener that is not the launched process (the receipt names another): refused,
+        // and NOTHING is sent, not even /identity.
+        enforce(legacy)
+        launched(good)
         let unproven = await get("http://127.0.0.1:\(legacy.port)/hello")
         check(unproven.status == nil && unproven.error?.localizedDescription.contains("didn't start") == true,
               "a 404 listener that is not the launched process must be refused: \(unproven)")
         usleep(300_000)
         check(legacy.requests.isEmpty, "nothing may be sent to an unproven listener: \(legacy.requests)")
-        // The same with no receipt at all (an older Wisp's backend): fail closed, nothing sent.
-        let empty = receipts.appendingPathComponent("none", isDirectory: true)
-        BackendLaunchReceiptStore.shared.configure(directory: empty)
-        check(BackendLaunchReceiptStore.shared.current == .none, "an empty directory must read as no receipt")
-        check(await get("http://127.0.0.1:\(legacy.port)/hello").status == nil && legacy.requests.isEmpty,
-              "a receipt-less 404 listener must be refused with nothing sent")
-        enforce(good, owning: owned)
-        check(await get("http://127.0.0.1:\(good.port)/hello").status == nil, "no receipt: even the real server is refused")
-        BackendLaunchReceiptStore.shared.configure(directory: receipts)
         // The 404 listener IS trusted when it is exactly the launched incarnation.
         launched(legacy)
-        enforce(legacy, owning: owned)
         let old = await get("http://127.0.0.1:\(legacy.port)/hello")
         check(old.status == 200 && old.body == "ok", "a 404 from the launched incarnation must keep working")
 
         // 4b. Another program on the same interpreter, answering as Wisp: refused unasked.
         let otherBefore = other.requests.count
-        enforce(other, owning: owned)
+        enforce(other)
         check(await get("http://127.0.0.1:\(other.port)/hello").status == nil, "a same-interpreter bystander was trusted")
         usleep(300_000)
         check(other.requests.count == otherBefore, "a same-interpreter bystander was contacted: \(other.requests)")
 
         // 4c. The launched process, but the receipt carries another nonce: only asked, then refused.
         launched(good, nonce: "not-this-launch")
-        enforce(good, owning: owned)
+        enforce(good)
         let goodBefore = good.requests.count
         let mismatch = await get("http://127.0.0.1:\(good.port)/hello")
         check(mismatch.status == nil && mismatch.error?.localizedDescription.contains("wasn't started by this copy") == true,
@@ -501,15 +497,15 @@ enum BackendTrustChecks {
         let dead = Server(mode: "production", identity: true)!
         let deadPort = dead.port
         dead.stop()
-        enforce(good, owning: owned)
         BackendTrustProtocol.enforcedPort = deadPort
-        BackendTrustConfiguration.set(ownedPrefixes: owned, port: deadPort)
+        BackendTrustConfiguration.set(port: deadPort)
         let t0 = Date()
         let none = await get("http://127.0.0.1:\(deadPort)/hello")
         check(none.status == nil && Date().timeIntervalSince(t0) < 6, "an absent backend fails promptly")
 
         // 6. Only the enforced port is gated: another local server passes, even while refusing a stranger.
-        enforce(good, owning: ["/nonexistent/"])
+        enforce(good)
+        BackendTrustProtocol.enforcedPort = deadPort
         let free = await get("http://127.0.0.1:\(other.port)/hello")
         check(free.status == 200, "a different port must be untouched by the gate")
     }

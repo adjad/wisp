@@ -69,19 +69,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // along with the odd stray server). oMLX's own peer attribution refuses an
         // engine it cannot verify, with a message that says so.
         //
-        // Port 8765 is Wisp's backend. Wisp never signals a program it does not own:
-        // a stranger there is reported, and only Wisp's OWN backend is reclaimed, and
-        // only when it has stopped answering. "Own" is BackendOwnership's policy: exactly
-        // the process incarnation the previous launch's receipt names. Without a matching
-        // receipt (including a backend left by an older Wisp) it is a conflict.
-        // Loaded only here, after the single-instance hand-over, so a yielding second
-        // launch touches nothing.
-        let launchReceipt = BackendLaunchReceiptStore.defaultDirectory()
-            .map { BackendLaunchReceiptStore.shared.configure(directory: $0) } ?? .unusable
-        let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
+        // Port 8765 is Wisp's backend. Whatever holds it at STARTUP is a conflict: this
+        // app instance has spawned nothing yet, and Wisp keeps no record of an earlier
+        // launch's backend (a file any same-user program could forge). So a holder is
+        // never adopted, reclaimed or signalled, including a backend an earlier Wisp left
+        // behind after a crash or upgrade; the person is told and can quit it. Judged only
+        // here, after the single-instance hand-over, so a yielding second launch touches nothing.
+        let folderHints = PortGuard.backendFolderHints(devRoot: backend.backendRootPath)
         // From here on, every request to the backend port goes out only while the
         // program there is proven to be Wisp's own backend (see BackendTrust).
-        BackendTrustConfiguration.set(ownedPrefixes: ownedPrefixes)
+        BackendTrustConfiguration.set()
         BackendTrustProtocol.enforcedPort = BackendTrust.productionPort
         URLProtocol.registerClass(BackendTrustProtocol.self)
         NotificationCenter.default.addObserver(
@@ -89,23 +86,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let message = note.userInfo?["message"] as? String ?? ""
             MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
         }
-        switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes, receipt: launchReceipt) {
-        case .conflict(let foreign):
-            backend.portConflict = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
-                                                                    ownedPrefixes: ownedPrefixes))
+        // Something the listing missed (or that arrived after it) answering on the port
+        // with no live child of ours: the manager stops and reports it here, once.
+        backend.onPortConflict = { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var holders: [PortGuard.Listener] = []
+                if case .conflict(let foreign) = PortGuard.check(port: 8765, receipt: .none) { holders = foreign }
+                let message = PortGuard.conflictMessage(port: 8765, listeners: holders, folderHints: folderHints)
+                DispatchQueue.main.async { self?.presentPortConflict(message) }
             }
-        case .owned(let own):
-            Task { [backend] in
-                if !(await backend.isResponsive()) {
-                    // Judged against the receipt `own` was classified with; terminateOwned
-                    // re-reads the kernel facts (and start time) right before signalling.
-                    PortGuard.terminateOwned(own, ownedPrefixes: ownedPrefixes, receipt: launchReceipt)
-                }
-            }
-        case .free, .unknown:
-            break
         }
         // A10 WP3: inert unless the user enabled a browser (default off).
         backend.extraEnvironment = {
@@ -114,7 +103,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
         Task { await BrowserBridgeActivation.shared.begin() }
-        Task { await backend.startIfNeeded() }
+        // The backend starts only after the port has been judged. The judgment is retried for
+        // a few seconds when a holder is there, because after a quick quit and relaunch the
+        // holder is usually the previous run's backend still shutting down; a holder that
+        // outlasts that window is a conflict, as before.
+        Task { [weak self] in
+            let verdict = await Task.detached(priority: .userInitiated) {
+                BackendManager.settledStartupVerdict(check: { PortGuard.check(port: 8765, receipt: .none) })
+            }.value
+            guard let self else { return }
+            if case .conflict(let foreign) = verdict {
+                self.backend.portConflict = true
+                self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
+                                                                   folderHints: folderHints))
+                return
+            }
+            // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
+            // listing missed is still caught by BackendManager before it launches anything.
+            await self.backend.startIfNeeded()
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -705,7 +712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await PendingConfigWrites.shared.waitUntilIdle()
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
-            backend.stop()
+            await backend.stopAndWait()
             await MainActor.run { NSApp.terminate(nil) }
         }
     }

@@ -10,18 +10,31 @@ import Darwin
 // act or could receive the data it syncs.
 //
 // This file decides whether the program on the port is Wisp's OWN backend. The proof
-// comes from the kernel and from Wisp's own launch record, not from the program's words:
-//   1. every process listening on the port must be running an executable inside Wisp's
-//      own backend directory (necessary, never sufficient: the backend runs on a generic
-//      Python interpreter other programs can run too); and
-//   2. it must be exactly the process incarnation Wisp's launch receipt names (pid and
-//      kernel start time), the same BackendOwnership policy PortGuard uses to decide what
-//      Wisp may ever signal. A listener that fails this is refused WITHOUT being asked
-//      anything; no receipt (a backend left by a build that wrote none) fails closed; and
-//   3. that backend must report mode "production" from /identity, which also refuses
+// comes from the kernel and from what THIS running app did, not from the program's words
+// and not from anything on disk (a same-user program can write any file Wisp can):
+//   1. it must be exactly the process this app instance spawned, recorded in memory by
+//      BackendManager (pid, kernel start time, executable path), the same BackendOwnership
+//      policy PortGuard and BackendManager use. A listener that fails this is refused
+//      WITHOUT being asked anything. With nothing recorded (the app has spawned nothing yet,
+//      or the backend is left over from an earlier launch or run by hand) it fails closed;
+//      where a program runs from is no evidence either way; and
+//   2. that backend must report mode "production" from /identity, which also refuses
 //      Wisp's own code running against a sandbox world, must be one of the listeners, and
-//      must echo the launch nonce the receipt recorded. A 404 is accepted only from the
-//      exact launched incarnation of (2).
+//      must echo the launch nonce this launch recorded. A 404 is accepted only from the
+//      exact launched incarnation of (1).
+//
+// WHAT THIS GUARANTEES: at the moment of each check, every listener on the port is the
+// process this app spawned, and a request is never SENT to anything else that was already
+// there (a squatter, a sandbox backend, a leftover). It is re-checked for every request.
+//
+// WHAT IT DOES NOT GUARANTEE (audit N7, accepted residual; NATIVE-A2 is NOT closed here):
+// the check inspects the listener, but the connection that then carries the request is a
+// separate one that is not itself authenticated. The listener is inspected again after the
+// identity answer, which narrows the window, but a same-user program that takes the port
+// after the final inspection and before the request connects is not detected, and a program
+// that already holds the port before this app's backend binds it is only noticed, never
+// evicted. Closing that needs an authenticated transport (a different channel or a verified
+// peer on the connection itself), which is a separate change.
 //
 // Pure policy here (testable without a network); BackendTrustGate and
 // BackendTrustProtocol below apply it to every request the app makes to that port.
@@ -47,12 +60,11 @@ enum BackendTrust {
 
     enum Refusal: Equatable {
         case cannotInspect
-        case foreignListener([PortGuard.Listener])
         case notWispBackend
         case wrongMode(String)
         case pidMismatch
-        /// Running from Wisp's folder, but not the process Wisp's launch receipt names
-        /// (or there is no usable receipt). Never contacted.
+        /// Not the process this app spawned (or this app has spawned nothing). Whatever it is,
+        /// a stranger, a leftover or a sandbox, it is never contacted.
         case unproven([PortGuard.Listener])
         /// The launched process answered without this launch's nonce.
         case launchMismatch
@@ -69,13 +81,11 @@ enum BackendTrust {
 
     /// Pure policy. Fails closed: anything not positively proven is not trusted.
     /// `identity` is `.failed` when nothing was (or could be) asked.
-    static func decide(listeners: [PortGuard.Listener]?, ownedPrefixes: [String],
+    static func decide(listeners: [PortGuard.Listener]?,
                        identity: IdentityResult, receipt: BackendOwnership.ReceiptState,
                        facts: (Int32) -> BackendOwnership.ProcessFacts?) -> Verdict {
         guard let listeners else { return .refused(.cannotInspect) }
         if listeners.isEmpty { return .unreachable }
-        let foreign = listeners.filter { !PortGuard.executableInOwnedDirectory($0, ownedPrefixes: ownedPrefixes) }
-        if !foreign.isEmpty { return .refused(.foreignListener(foreign)) }
         let evidence: BackendOwnership.Identity
         switch identity {
         case .failed: evidence = .notAsked
@@ -85,11 +95,10 @@ enum BackendTrust {
         var unproven: [PortGuard.Listener] = []
         for listener in listeners {
             switch BackendOwnership.verdict(listener: listener, receipt: receipt, facts: facts(listener.pid),
-                                            identity: evidence, ownedPrefixes: ownedPrefixes) {
+                                            identity: evidence) {
             case .wispBackend: continue
             case .notWisp(.processGone): return .refused(.cannotInspect)
             case .notWisp(.nonceMismatch): return .refused(.launchMismatch)
-            case .notWisp(.foreignExecutable): return .refused(.foreignListener([listener]))
             case .notWisp: unproven.append(listener)
             }
         }
@@ -130,8 +139,6 @@ enum BackendTrust {
             switch refusal {
             case .cannotInspect:
                 why = "Wisp couldn't check which program is using it."
-            case .foreignListener(let listeners):
-                why = "It is being used by \(PortGuard.describe(listeners)), which isn't Wisp's own service."
             case .notWispBackend:
                 why = "The program there doesn't identify itself as Wisp's service."
             case .wrongMode(let mode):
@@ -140,7 +147,7 @@ enum BackendTrust {
                 why = "The program that answered isn't the one listening on the port."
             case .unproven(let listeners):
                 why = "It is being used by \(PortGuard.describe(listeners)), which this Wisp didn't start, so Wisp "
-                    + "can't confirm it is its own service. It may be left over from an earlier copy of Wisp."
+                    + "can't confirm it is its own service. It may be another program, or left over from an earlier copy of Wisp."
             case .launchMismatch:
                 why = "The service there wasn't started by this copy of Wisp."
             }
@@ -156,17 +163,17 @@ extension Notification.Name {
     static let wispBackendRefused = Notification.Name("wisp.backendRefused")
 }
 
-/// Which executables count as Wisp's own backend, and which port is enforced. Set
-/// synchronously at launch (a lock, not an actor) so no request can be judged before it.
+/// Which port is enforced. Set synchronously at launch (a lock, not an actor) so no
+/// request can be judged before it. Who counts as Wisp's backend is not configured here:
+/// it is whatever BackendManager recorded in memory when it spawned one.
 enum BackendTrustConfiguration {
     struct Value: Equatable {
-        var ownedPrefixes: [String] = []
         var port = BackendTrust.productionPort
     }
     static let storage = OSAllocatedUnfairLock(initialState: Value())
 
-    static func set(ownedPrefixes: [String], port: Int = BackendTrust.productionPort) {
-        storage.withLock { $0 = Value(ownedPrefixes: ownedPrefixes, port: port) }
+    static func set(port: Int = BackendTrust.productionPort) {
+        storage.withLock { $0 = Value(port: port) }
     }
     static var current: Value { storage.withLock { $0 } }
 }
@@ -177,10 +184,10 @@ actor BackendTrustGate {
     static let shared = BackendTrustGate()
 
     private var lastAnnounced: BackendTrust.Verdict?
-    private let verification: @Sendable (Int, [String]) async -> BackendTrust.Verdict
+    private let verification: @Sendable (Int) async -> BackendTrust.Verdict
 
-    init(verification: @escaping @Sendable (Int, [String]) async -> BackendTrust.Verdict = {
-        await BackendTrustGate.verify(port: $0, ownedPrefixes: $1)
+    init(verification: @escaping @Sendable (Int) async -> BackendTrust.Verdict = {
+        await BackendTrustGate.verify(port: $0)
     }) {
         self.verification = verification
     }
@@ -190,7 +197,7 @@ actor BackendTrustGate {
         let verification = self.verification
         // Neither a timed verdict nor another request's in-flight check proves who
         // owns the port for this request. Only notification wording is deduplicated.
-        let task = Task.detached { await verification(configured.port, configured.ownedPrefixes) }
+        let task = Task.detached { await verification(configured.port) }
         let result = await task.value
         guard configured == BackendTrustConfiguration.current else { return .refused(.cannotInspect) }
         announce(result)
@@ -211,7 +218,7 @@ actor BackendTrustGate {
     static func incarnation(pid: Int32) -> Incarnation? { BackendOwnership.startTime(pid: pid) }
 
     /// One full check against the live system.
-    static func verify(port: Int, ownedPrefixes: [String],
+    static func verify(port: Int,
                        inspect: (() -> [PortGuard.Listener]?)? = nil,
                        facts: (Int32) -> BackendOwnership.ProcessFacts? = BackendOwnership.processFacts(pid:),
                        receipt: () -> BackendOwnership.ReceiptState = { BackendLaunchReceiptStore.shared.current },
@@ -221,8 +228,7 @@ actor BackendTrustGate {
         if listeners == nil { listeners = inspect() }   // one retry under load
         let launched = receipt()
         func decide(_ listeners: [PortGuard.Listener]?, _ answer: BackendTrust.IdentityResult) -> BackendTrust.Verdict {
-            BackendTrust.decide(listeners: listeners, ownedPrefixes: ownedPrefixes, identity: answer,
-                                receipt: launched, facts: facts)
+            BackendTrust.decide(listeners: listeners, identity: answer, receipt: launched, facts: facts)
         }
         guard let found = listeners, !found.isEmpty else { return decide(listeners, .failed) }
         // A stranger, or anything that is not exactly the launched process, is refused
