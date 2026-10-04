@@ -1512,6 +1512,55 @@ def test_entry_limit_in_one_flat_directory_matches_the_oracle(trees):
         os.unlink(files.pop())
 
 
+def test_defect_in_the_last_visited_directory_of_a_large_tree_is_refused(trees):
+    """The real runtime tree has ~47,000 entries: a defect in the directory the walker reaches
+    LAST in a tree that large must still be found by both walkers (guards against a per-walk
+    entry cap that stops qualifying late entries)."""
+    tree = trees()
+    for directory in range(30):                                      # 30 x 1,000 = 30,000 regular files
+        folder = tree.root / f'd{directory:02d}'
+        folder.mkdir()
+        for index in range(1000):
+            os.close(os.open(folder / f'f{index:04d}', os.O_CREAT | os.O_WRONLY, 0o644))
+    # Learn which directory production lists last on THIS filesystem (listing order is not
+    # something to assume), then plant the defect in it.
+    listed = []
+    original = os.scandir
+
+    def recording(path='.'):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path).startswith(str(tree.root)):
+            listed.append(os.fspath(path))
+        return original(path)
+    with mock.patch.object(os, 'scandir', recording):
+        assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == OK
+    last_dir = Path(listed[-1])
+    assert last_dir != tree.root, listed[-3:]
+    target = last_dir / 'late.py'
+    os.close(os.open(target, os.O_CREAT | os.O_WRONLY, 0o644))
+    os.chmod(target, 0o666)                                          # world-writable
+    for factory in (make_production, make_oracle):
+        assert verdict(lambda: factory(tree, TRUST_ALL)._qualified_tree(tree.root)) == REFUSED, factory.__name__
+    os.chmod(target, 0o644)
+    for factory in (make_production, make_oracle):
+        assert verdict(lambda: factory(tree, TRUST_ALL)._qualified_tree(tree.root)) == OK, factory.__name__
+
+
+def test_a_non_oserror_from_the_directory_listing_escapes_and_is_never_accepted(trees):
+    """Only OSError is treated as an unreadable directory; anything else must not be swallowed."""
+    tree = trees()
+    base_content(tree)
+    authority = make_production(tree, TRUST_ALL)
+    original = os.scandir
+
+    def broken(path='.'):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path).startswith(str(tree.root)):
+            raise ValueError('listing exploded')
+        return original(path)
+    with mock.patch.object(os, 'scandir', broken):
+        with pytest.raises(ValueError):
+            authority._qualified_tree(tree.root)
+
+
 # --------------------------------------------------------------------------
 # The tree changing while it is being walked (not only between the passes)
 # --------------------------------------------------------------------------
