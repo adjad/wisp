@@ -26,6 +26,22 @@ What is here
   not a test to relax.
 * A seam test for the instrumentation points the release benchmark relies on.
 
+T0-walk (the pull request that replaced ``rglob`` with an ``os.scandir`` walk)
+changed this file in exactly these ways, and in no other:
+
+* ``test_oracle_is_verbatim_copy_of_current_production_walker`` was retired, as
+  its own docstring prescribed.  From then on ``LegacyWalk`` is the only record
+  of the old behaviour and ``test_oracle_is_frozen`` keeps it immutable.
+* The tests that observed the walk by spying on ``Path.rglob`` for the PRODUCTION
+  code now spy on ``os.scandir`` (the oracle is still observed through
+  ``rglob``): ``after_first_pass``, the walk-count tests and the vanishing-entry
+  test.  Their assertions are unchanged in meaning (two passes, none on a cache
+  hit, a mutation placed between the passes, an entry that vanishes after it
+  was listed).
+* New: the T0-walk differential section at the end of the walker tests
+  (same-tree inventory equality, a second set of seeded random trees, extra
+  corpus classes, mutation during the first pass, scandir semantics).
+
 Everything runs on disposable temporary directories and in-process fakes.  It
 never touches /Applications, port 8000, the Keychain or any real process.
 """
@@ -198,15 +214,11 @@ def test_oracle_is_frozen():
     assert hashlib.sha256(text.encode()).hexdigest() == ORACLE_FROZEN_SHA256
 
 
-def test_oracle_is_verbatim_copy_of_current_production_walker():
-    """Proves the oracle really is today's code.
-
-    RETIRE (do not weaken) this one test in the pull request that replaces
-    ``DesktopOmlx._qualified_tree``: from then on the oracle is the only record
-    of the old behaviour and ``test_oracle_is_frozen`` keeps it immutable.
-    """
-    assert _method_text(LegacyWalk._qualified_tree) == _method_text(at.DesktopOmlx._qualified_tree)
-    assert _method_text(LegacyWalk._trusted_group) == _method_text(at.DesktopOmlx._trusted_group)
+# RETIRED in T0-walk: test_oracle_is_verbatim_copy_of_current_production_walker.
+# It compared the source text of ``DesktopOmlx._qualified_tree`` with the oracle
+# and could only hold while production still contained the old walker.  The
+# oracle is now immutable through ``test_oracle_is_frozen`` above, and every
+# behavioural claim is carried by the differential tests below.
 
 
 # --------------------------------------------------------------------------
@@ -304,37 +316,70 @@ def verdict(action):
     return OK
 
 
-@contextlib.contextmanager
-def after_first_pass(root, mutate):
-    """Run ``mutate`` after the first full walk of ``root``, before the second.
+def _is_root(path, root):
+    return isinstance(path, (str, os.PathLike)) and os.fspath(path) == str(root)
 
-    Both the production code and the oracle enumerate with ``root.rglob('*')``
-    once per pass, so the second call is the boundary between the two passes.
+
+@contextlib.contextmanager
+def observe_walk(kind, root, on_pass_start=None):
+    """Call ``on_pass_start(n)`` as the n-th pass over ``root`` (1-based) is about to begin.
+
+    The oracle starts a pass by calling ``Path.rglob`` on the root, before anything is
+    inspected.  The production walker starts one with ``os.lstat(root)`` called directly
+    from ``snapshot()`` (``Path.resolve`` of a symlink and the boundary check also lstat
+    the root, so the caller is checked).  Both hooks fire before any entry of that pass
+    has been inspected, including the root itself.
+    ``calls['listings']`` counts ``os.scandir`` calls on the root (production only).
     """
+    calls = {'n': 0, 'listings': 0}
+
+    def start():
+        calls['n'] += 1
+        if on_pass_start is not None:
+            on_pass_start(calls['n'])
+    if kind == 'oracle':
+        original = pathlib.Path.rglob
+
+        def rglob(self, *args, **kwargs):
+            if self == root:
+                start()
+            return original(self, *args, **kwargs)
+        with mock.patch.object(pathlib.Path, 'rglob', rglob):
+            yield calls
+    else:
+        original_lstat, original_scandir = os.lstat, os.scandir
+
+        def lstat(path, *args, **kwargs):
+            if _is_root(path, root) and sys._getframe(1).f_code.co_name == 'snapshot':
+                start()
+            return original_lstat(path, *args, **kwargs)
+
+        def scandir(path='.'):
+            if _is_root(path, root):
+                calls['listings'] += 1
+            return original_scandir(path)
+        with mock.patch.object(os, 'lstat', lstat), mock.patch.object(os, 'scandir', scandir):
+            yield calls
+
+
+@contextlib.contextmanager
+def after_first_pass(root, mutate, kind='oracle'):
+    """Run ``mutate`` after the first full walk of ``root``, before the second."""
     if mutate is None:
         yield
         return
-    original = pathlib.Path.rglob
-    calls = {'n': 0}
-
-    def rglob(self, *args, **kwargs):
-        if self == root:
-            calls['n'] += 1
-            if calls['n'] == 2:
-                mutate()
-        return original(self, *args, **kwargs)
-    with mock.patch.object(pathlib.Path, 'rglob', rglob):
+    with observe_walk(kind, root, lambda n: mutate() if n == 2 else None):
         yield
 
 
 def run_both(trees, build, *, trusted=TRUST_ALL, uid_shift=0):
     """Build the same tree twice; run production on one and the oracle on the other."""
     results = []
-    for factory in (make_production, make_oracle):
+    for kind, factory in (('production', make_production), ('oracle', make_oracle)):
         tree = trees()
         mutate = build(tree)
         authority = factory(tree, trusted, uid_shift)
-        with after_first_pass(tree.root, mutate):
+        with after_first_pass(tree.root, mutate, kind):
             results.append(verdict(lambda: authority._qualified_tree(tree.root)))
     return results[0], results[1]
 
@@ -722,38 +767,57 @@ def test_change_between_the_two_passes_is_pinned(trees, setup, mutation, expecte
 
 
 def test_every_change_class_is_seen_only_when_a_second_pass_runs(trees):
-    """The second pass is what produces 'changed': one extra rglob per tree."""
+    """The second pass is what produces 'changed': one more listing of the root per pass."""
     tree = trees()
     base_content(tree)
-    calls = []
-    original = pathlib.Path.rglob
-
-    def rglob(self, *args, **kwargs):
-        calls.append(self)
-        return original(self, *args, **kwargs)
     authority = make_production(tree, TRUST_ALL)
-    with mock.patch.object(pathlib.Path, 'rglob', rglob):
+    with observe_walk('production', tree.root) as calls:
         authority._qualified_tree(tree.root)
-    assert calls == [tree.root, tree.root]
+    assert calls['n'] == 2 and calls['listings'] == 2
 
 
 def test_entry_vanishing_between_listing_and_lstat_is_refused(trees):
-    def run(factory):
+    def run(kind):
         tree = trees()
         base_content(tree)
-        authority = factory(tree, TRUST_ALL)
+        authority = (make_production if kind == 'production' else make_oracle)(tree, TRUST_ALL)
         victim = tree.root / 'pkg/sub/data.txt'
-        original = pathlib.Path.lstat
         state = {'done': False}
+        if kind == 'oracle':
+            original = pathlib.Path.lstat
 
-        def lstat(self, *args, **kwargs):
-            if self == tree.root / 'bin/tool' and not state['done']:   # sorts before the victim
+            def lstat(self, *args, **kwargs):
+                if self == tree.root / 'bin/tool' and not state['done']:   # sorts before the victim
+                    state['done'] = True
+                    os.unlink(victim)
+                return original(self, *args, **kwargs)
+            with mock.patch.object(pathlib.Path, 'lstat', lstat):
+                return verdict(lambda: authority._qualified_tree(tree.root))
+        original = os.scandir
+
+        class Listed:
+            def __init__(self, entries):
+                self.entries = entries
+
+            def __enter__(self):
+                return iter(self.entries)
+
+            def __exit__(self, *exc):
+                return False
+
+        def scandir(path='.'):
+            if _is_root(path, victim.parent) and not state['done']:
+                with original(path) as listing:
+                    entries = list(listing)
                 state['done'] = True
-                os.unlink(victim)
-            return original(self, *args, **kwargs)
-        with mock.patch.object(pathlib.Path, 'lstat', lstat):
-            return verdict(lambda: authority._qualified_tree(tree.root))
-    assert run(make_production) == run(make_oracle) == REFUSED
+                os.unlink(victim)                         # listed, then gone before it is stat'ed
+                return Listed(entries)
+            return original(path)
+        with mock.patch.object(os, 'scandir', scandir):
+            outcome = verdict(lambda: authority._qualified_tree(tree.root))
+        assert state['done']
+        return outcome
+    assert run('production') == run('oracle') == REFUSED
 
 
 # --------------------------------------------------------------------------
@@ -995,6 +1059,714 @@ def test_randomized_corpus_is_deterministic_and_varied(tmp_path):
             tree.destroy()
     assert shape(1234) == shape(1234)
     assert len({shape(seed) for seed in range(1000, 1012)}) >= 8
+
+
+# --------------------------------------------------------------------------
+# T0-walk differential: the os.scandir walker against the frozen oracle
+#
+# What "same" means here.  Both walkers return a dict path -> 9-tuple and compare
+# the two passes with ``!=``.  A dict comparison does not depend on insertion
+# order, so the ``sorted()`` of the old walker was never part of the verdict.  The
+# tests below nevertheless compare the INVENTORIES themselves (every key and every
+# tuple), not just the verdicts, on one physical tree, so that equality of the
+# keys, of every tuple field and of the symlink targets is checked directly.
+# --------------------------------------------------------------------------
+def capture_inventories(action):
+    """Run ``action``; return (verdict, [every inventory ``snapshot()`` returned]).
+
+    Both the oracle and the production walker name their per-pass function
+    ``snapshot``; a profile hook reads its return value, so neither needs a seam.
+    """
+    captured = []
+
+    def profiler(frame, event, arg):
+        if event == 'return' and frame.f_code.co_name == 'snapshot' and isinstance(arg, dict):
+            captured.append({os.fspath(key): value for key, value in arg.items()})
+    sys.setprofile(profiler)
+    try:
+        outcome = verdict(action)
+    finally:
+        sys.setprofile(None)
+    return outcome, captured
+
+
+def on_same_tree(trees, build, *, trusted=TRUST_ALL, uid_shift=0):
+    """Build ONE tree; run production and then the oracle on it."""
+    tree = trees()
+    build(tree)
+    results = {}
+    for kind, factory in (('production', make_production), ('oracle', make_oracle)):
+        authority = factory(tree, trusted, uid_shift)
+        results[kind] = capture_inventories(lambda: authority._qualified_tree(tree.root))
+    return tree, results
+
+
+def assert_same_inventory(results):
+    production, oracle = results['production'], results['oracle']
+    assert production[0] == oracle[0], f'verdict: production {production[0]} != oracle {oracle[0]}'
+    assert len(production[1]) == len(oracle[1]), (len(production[1]), len(oracle[1]))
+    for index, (new, old) in enumerate(zip(production[1], oracle[1])):
+        assert new.keys() == old.keys(), (index, sorted(new.keys() ^ old.keys())[:5])
+        assert new == old, (index, [key for key in new if new[key] != old[key]][:5])
+
+
+@pytest.mark.parametrize('build,expected,options', CORPUS)
+def test_walker_inventory_equals_oracle_on_the_whole_corpus(trees, build, expected, options):
+    _tree, results = on_same_tree(trees, build, **options)
+    assert_same_inventory(results)
+    assert results['production'][0] == expected
+    if expected == OK:
+        assert len(results['production'][1]) == 2                  # two passes, equal
+        assert results['production'][1][0] == results['production'][1][1]
+
+
+def _symlink_to_parent_dir(tree):
+    base_content(tree)
+    os.symlink('..', tree.root / 'pkg/up')                         # resolves to the root itself
+
+
+def _symlink_to_root_parent(tree):
+    base_content(tree)
+    os.symlink('../..', tree.root / 'pkg/up')                      # one level above the root
+
+
+def _symlink_to_ancestor_of_root(tree):
+    base_content(tree)
+    os.symlink(tree.app_root, tree.root / 'pkg/up')
+
+
+def _mutual_symlink_dirs(tree):
+    base_content(tree)
+    os.symlink('b', tree.root / 'a')
+    os.symlink('a', tree.root / 'b')
+
+
+def _nested_symlinked_dirs(tree):
+    base_content(tree)
+    os.symlink(tree.root / 'pkg', tree.root / 'one')
+    os.symlink(tree.root / 'one', tree.root / 'two')               # a symlink to a symlinked directory
+
+
+def _symlink_trailing_slash(tree):
+    base_content(tree)
+    os.symlink('../module.py/', tree.root / 'pkg/slash')
+
+
+def _symlink_via_outside_and_back(tree):
+    base_content(tree)
+    tree.put(tree.outside / 'x.py')
+    os.symlink('../../../../../outside/../oMLX.app/Contents/Resources/Python/module.py', tree.root / 'pkg/bounce')
+
+
+def _symlink_through_symlinked_dir(tree):
+    base_content(tree)
+    os.symlink(tree.root / 'pkg', tree.root / 'pkg-link')
+    os.symlink(tree.root / 'pkg-link/sub/data.txt', tree.root / 'through-link')
+
+
+def _long_names(tree):
+    base_content(tree)
+    long = 'n' * 252
+    tree.put(f'{long}/{long}/{long}.py')
+    tree.put('ü' * 127)                                            # 254 bytes of UTF-8
+
+
+def _long_name_world_writable(tree):
+    base_content(tree)
+    tree.put(f'{"n" * 252}/{"m" * 252}.py', 0o666)
+
+
+def _beyond_path_max(tree):
+    """A directory chain whose full path exceeds PATH_MAX, built through dir_fd."""
+    base_content(tree)
+    fd = os.open(tree.root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        name = 'p' * 200
+        for _ in range(7):                                         # 7 * 201 > 1024 bytes
+            os.mkdir(name, 0o755, dir_fd=fd)
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = child
+    finally:
+        os.close(fd)
+
+
+def _non_utf8_name(tree):
+    base_content(tree)
+    try:
+        os.close(os.open(os.fsencode(tree.root) + b'/bad-\xff\xfe', os.O_CREAT | os.O_WRONLY, 0o644))
+    except OSError:
+        pytest.skip('this filesystem rejects non-UTF-8 names')
+
+
+def _many_siblings(tree):
+    base_content(tree)
+    for index in range(300):
+        tree.put(f'bulk/f{index:04d}.py')
+
+
+def _root_unreadable(tree):
+    base_content(tree)
+    tree.seal(tree.root, 0o000)
+
+
+def _dir_listable_but_not_searchable(tree):
+    base_content(tree)
+    tree.put('r/child.py')
+    tree.seal(tree.root / 'r', 0o400)                              # names can be read, nothing can be stat'ed
+
+
+def _dir_read_execute_only(tree):
+    base_content(tree)
+    tree.put('r/child.py')
+    tree.seal(tree.root / 'r', 0o500)
+
+
+def _dir_write_only(tree):
+    base_content(tree)
+    tree.put('r/child.py')
+    tree.seal(tree.root / 'r', 0o200)
+
+
+def _nested_sealed_dirs(tree):
+    base_content(tree)
+    tree.put('a/b/c/world-writable.py', 0o666)
+    tree.seal(tree.root / 'a/b', 0o000)
+
+
+def _empty_dirs_everywhere(tree):
+    base_content(tree)
+    for index in range(20):
+        tree.mkdir(f'empty{index}/inner/deeper')
+
+
+def _names_that_look_like_globs(tree):
+    base_content(tree)
+    tree.put('**')
+    tree.put('*')
+    tree.put('[a-z]/x')
+    tree.put('?')
+
+
+NOT_ROOT = pytest.mark.skipif(IS_ROOT, reason='root reads mode-000 directories')
+
+CORPUS_B = [
+    pytest.param(_symlink_to_parent_dir, OK, {}, id='symlink-to-parent-dir-not-descended'),
+    pytest.param(_symlink_to_root_parent, REFUSED, {}, id='symlink-to-the-roots-parent'),
+    pytest.param(_symlink_to_ancestor_of_root, REFUSED, {}, id='symlink-to-ancestor-of-root'),
+    pytest.param(_mutual_symlink_dirs, REFUSED, {}, id='mutual-symlink-loop'),
+    pytest.param(_nested_symlinked_dirs, OK, {}, id='symlink-to-symlinked-dir'),
+    pytest.param(_symlink_trailing_slash, REFUSED, {}, id='symlink-target-trailing-slash'),
+    pytest.param(_symlink_via_outside_and_back, OK, {}, id='symlink-leaves-and-returns'),
+    pytest.param(_symlink_through_symlinked_dir, OK, {}, id='symlink-through-symlinked-dir'),
+    pytest.param(_long_names, OK, {}, id='255-byte-names'),
+    pytest.param(_long_name_world_writable, REFUSED, {}, id='255-byte-name-world-writable'),
+    pytest.param(_beyond_path_max, REFUSED, {}, id='path-beyond-path-max'),
+    pytest.param(_non_utf8_name, OK, {}, id='non-utf8-name'),
+    pytest.param(_many_siblings, OK, {}, id='300-siblings'),
+    pytest.param(_empty_dirs_everywhere, OK, {}, id='empty-directories'),
+    pytest.param(_names_that_look_like_globs, OK, {}, id='names-that-look-like-globs'),
+    pytest.param(_root_unreadable, OK, {}, id='root-unreadable-blind-spot', marks=NOT_ROOT),
+    pytest.param(_dir_listable_but_not_searchable, REFUSED, {}, id='dir-0400-names-listed-but-not-stat-able',
+                 marks=NOT_ROOT),
+    pytest.param(_dir_read_execute_only, OK, {}, id='dir-0500'),
+    pytest.param(_dir_write_only, OK, {}, id='dir-0200-blind-spot', marks=NOT_ROOT),
+    pytest.param(_nested_sealed_dirs, OK, {}, id='nested-sealed-directory-blind-spot', marks=NOT_ROOT),
+]
+
+
+@pytest.mark.parametrize('build,expected,options', CORPUS_B)
+def test_extra_corpus_verdict_and_inventory_match_the_oracle(trees, build, expected, options):
+    check(trees, build, expected, **options)
+    _tree, results = on_same_tree(trees, build, **options)
+    assert_same_inventory(results)
+    assert results['production'][0] == expected
+
+
+def test_symlink_inventory_records_the_resolved_target(trees):
+    tree, results = on_same_tree(trees, _internal_symlink_relative)
+    assert_same_inventory(results)
+    first = results['production'][1][0]
+    link_key = str(tree.root / 'pkg/rel.py')
+    assert first[link_key][8] == str(tree.root / 'module.py')
+    assert all(entry[8] is None for key, entry in first.items() if key != link_key)
+    root_info = os.lstat(tree.root)
+    assert first[str(tree.root)][:2] == (root_info.st_dev, root_info.st_ino)
+
+
+def test_walker_never_lists_a_symlinked_directory_and_lists_every_real_one_once_per_pass(trees):
+    tree = trees()
+    base_content(tree)
+    os.symlink(tree.root / 'pkg', tree.root / 'pkg-link')
+    os.symlink('..', tree.root / 'pkg/up')
+    listed = []
+    original = os.scandir
+
+    def scandir(path='.'):
+        listed.append(os.fspath(path))
+        return original(path)
+    with mock.patch.object(os, 'scandir', scandir):
+        assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == OK
+    real = [str(tree.root), str(tree.root / 'pkg'), str(tree.root / 'pkg/sub'), str(tree.root / 'bin')]
+    assert sorted(listed) == sorted(real * 2)
+
+
+@NOT_ROOT
+def test_scandir_semantics_the_walker_depends_on(trees):
+    """The os.scandir facts that stand beside test_rglob_semantics_the_walker_depends_on."""
+    tree = trees()
+    base_content(tree)
+    tree.put('.dot')
+    tree.put('real/inner.py')
+    os.symlink(tree.root / 'real', tree.root / 'linkdir')
+    tree.put('sealed/child.py')
+    tree.seal(tree.root / 'sealed')
+    with os.scandir(tree.root) as listing:
+        entries = {entry.name: entry for entry in listing}
+    assert '.dot' in entries                                       # dotfiles are listed
+    assert entries['linkdir'].is_dir() and entries['linkdir'].is_symlink()
+    assert not entries['linkdir'].is_dir(follow_symlinks=False)    # a symlinked dir is not a directory entry
+    assert stat.S_ISLNK(entries['linkdir'].stat(follow_symlinks=False).st_mode)
+    assert entries['sealed'].is_dir(follow_symlinks=False)
+    with pytest.raises(PermissionError):
+        os.scandir(tree.root / 'sealed')                           # the walker must catch exactly this and skip
+    assert entries['.dot'].stat(follow_symlinks=False) == os.lstat(tree.root / '.dot')
+
+
+# Fresh seeds, disjoint from RANDOM_SEEDS (1000..2199), and a richer generator.
+RANDOM_SEEDS_B = range(70000, 72400)           # 2,400 fixed seeds; never derive from time
+NAME_POOL_B = NAME_POOL + ['x' * 200, 'ü' * 100, 'q' * 248, '.dots', '*', '[z]', 'tab\tname']
+
+
+def _op_seal_b(t, r, dirs, files):
+    victim = r.choice(dirs[1:]) if len(dirs) > 1 else t.mkdir(t.root / 'sealed-late')
+    if _under(victim, t.sealed):
+        return
+    if not any(victim.iterdir()):
+        t.put(victim / 'hidden.py', 0o666)
+    t.seal(victim, r.choice((0o000, 0o100, 0o200, 0o300, 0o400, 0o500)))
+
+
+def _op_symlink_to_parent(t, r, dirs, files):
+    os.symlink(r.choice(('..', '../..', '.', 'sub/..')), r.choice(dirs) / f'up-{_uid(r)}')
+
+
+def _op_symlink_chain(t, r, dirs, files):
+    where = r.choice(dirs)
+    uid = _uid(r)
+    os.symlink(r.choice(files), where / f'c1-{uid}')
+    os.symlink(where / f'c1-{uid}', where / f'c2-{uid}')
+
+
+def _op_symlink_dir_chain(t, r, dirs, files):
+    where = r.choice(dirs)
+    uid = _uid(r)
+    os.symlink(r.choice(dirs), where / f'd1-{uid}')
+    os.symlink(where / f'd1-{uid}', r.choice(dirs) / f'd2-{uid}')
+
+
+def _op_empty_tree_of_dirs(t, r, dirs, files):
+    t.mkdir(r.choice(dirs) / f'e{_uid(r)}/f/g')
+
+
+def _op_nonwritable_dir(t, r, dirs, files):
+    if len(dirs) > 1:                                              # never the root: later operations create in it
+        os.chmod(r.choice(dirs[1:]), r.choice((0o555, 0o755, 0o700, 0o750)))
+
+
+RANDOM_OPS_B = RANDOM_OPS + [(0, _op_symlink_to_parent), (0, _op_symlink_chain), (0, _op_symlink_dir_chain),
+                             (0, _op_empty_tree_of_dirs), (2, _op_nonwritable_dir), (3, _op_seal_b),
+                             (3, _op_seal_b)]
+
+
+def _hop_choices_b(t, r, target, dirs):
+    base = _hop_choices(t, r, target)
+    live_dirs = [d for d in dirs if not _under(d, t.sealed) and d.is_dir()]
+
+    def seal_dir():
+        victim = r.choice(live_dirs)
+        if victim != t.root and not _under(victim, t.sealed):
+            t.seal(victim, 0o000)
+
+    def unseal_dir():
+        for path in list(t.sealed):
+            if os.path.lexists(path):
+                os.chmod(path, 0o755)
+                if (path / 'hidden.py').exists():
+                    os.chmod(path / 'hidden.py', r.choice((0o644, 0o666)))
+                return
+
+    def add_in_dir():
+        t.put(r.choice(live_dirs) / f'late-in-dir{_uid(r)}.py', r.choice((0o644, 0o666)))
+
+    def dir_chmod():
+        os.chmod(r.choice(live_dirs), r.choice((0o755, 0o777, 0o700)))
+    return base + (seal_dir, unseal_dir, add_in_dir, dir_chmod)
+
+
+def build_random_b(seed):
+    def build(t):
+        r = random.Random(f'b-{seed}')
+        dirs = [t.root]
+        for index in range(r.randint(0, 12)):
+            parent = r.choice([d for d in dirs if len(os.fsencode(d)) < 560])
+            dirs.append(t.mkdir(parent / f'{r.choice(NAME_POOL_B)}.d{index}'))
+        files = []
+        for index in range(r.randint(1, 30)):
+            mode = r.choice((0o644, 0o644, 0o600, 0o755, 0o664))
+            files.append(t.put(r.choice(dirs) / f'{r.choice(NAME_POOL_B)}.{index}', mode))
+        chosen = [r.choice(RANDOM_OPS_B) for _ in range(r.choice((0, 0, 1, 1, 2, 3, 4, 6)))]
+        for _phase, op in sorted(chosen, key=lambda item: item[0]):
+            op(t, r, dirs, files)
+        if r.random() < 0.5:
+            live = [f for f in files if not _under(f, t.sealed) and f.exists()]
+            if live:
+                return r.choice(_hop_choices_b(t, r, r.choice(live), dirs))
+        return None
+    return build
+
+
+def build_options_b(seed):
+    r = random.Random(f'options-b-{seed}')
+    return {'trusted': r.choice((TRUST_ALL, TRUST_NONE, TRUST_PRIMARY)),
+            'uid_shift': 1 if (r.random() < 0.02 and not IS_ROOT) else 0}
+
+
+def test_walker_equals_oracle_on_fresh_random_trees_with_changes_between_passes(tmp_path):
+    assert not set(RANDOM_SEEDS_B) & set(RANDOM_SEEDS) and len(RANDOM_SEEDS_B) >= 2000
+    base = tmp_path.resolve()
+    outcomes = Counter()
+    mismatches = []
+    for seed in RANDOM_SEEDS_B:
+        made = []
+
+        def factory():
+            made.append(Tree(base / f'b{seed}-{len(made)}'))
+            return made[-1]
+        try:
+            production, oracle = run_both(factory, build_random_b(seed), **build_options_b(seed))
+        finally:
+            for tree in made:
+                tree.destroy()
+        outcomes[production] += 1
+        if production != oracle:
+            mismatches.append((seed, production, oracle))
+    assert not mismatches, mismatches[:10]
+    assert sum(outcomes.values()) == len(RANDOM_SEEDS_B)
+    assert outcomes[OK] >= 150 and outcomes[REFUSED] >= 300 and outcomes[CHANGED] >= 20, outcomes
+    assert set(outcomes) <= {OK, REFUSED, CHANGED}, outcomes
+
+
+def test_walker_inventory_equals_oracle_on_fresh_random_trees(tmp_path):
+    """Same physical tree for both walkers, so every tuple (ino, ctime, ...) is comparable."""
+    base = tmp_path.resolve()
+    outcomes = Counter()
+    entries = symlinks = 0
+    mismatches = []
+    for seed in RANDOM_SEEDS_B:
+        tree = Tree(base / f's{seed}')
+        try:
+            build_random_b(seed)(tree)                              # the 'between passes' hop is not run here
+            options = build_options_b(seed)
+            results = {}
+            for kind, factory in (('production', make_production), ('oracle', make_oracle)):
+                authority = factory(tree, options['trusted'], options['uid_shift'])
+                results[kind] = capture_inventories(lambda: authority._qualified_tree(tree.root))
+            try:
+                assert_same_inventory(results)
+            except AssertionError as exc:
+                mismatches.append((seed, str(exc)[:200]))
+            outcomes[results['production'][0]] += 1
+            for inventory in results['production'][1][:1]:
+                entries += len(inventory)
+                symlinks += sum(1 for value in inventory.values() if value[8] is not None)
+        finally:
+            tree.destroy()
+    assert not mismatches, mismatches[:10]
+    assert outcomes[OK] >= 150 and outcomes[REFUSED] >= 300, outcomes
+    assert entries > 3000 and symlinks >= 50, (entries, symlinks)   # the comparison is not vacuous
+
+
+def test_entry_limit_in_one_flat_directory_matches_the_oracle(trees):
+    """Shape differs from the 100-directory limit test: all 50,000 children in the root itself."""
+    tree = trees()
+    files = []
+    for index in range(50000):
+        path = tree.root / f'f{index:05d}'
+        os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o644))
+        files.append(path)
+    for expected in (REFUSED, OK, OK):                             # 50,001 / 50,000 / 49,999 entries with the root
+        for factory in (make_production, make_oracle):
+            assert verdict(lambda: factory(tree, TRUST_ALL)._qualified_tree(tree.root)) == expected, (
+                factory.__name__, len(files))
+        os.unlink(files.pop())
+
+
+# --------------------------------------------------------------------------
+# The tree changing while it is being walked (not only between the passes)
+# --------------------------------------------------------------------------
+def _mutating_during_a_walk(tree, mutation, trigger):
+    """Run production, calling ``mutation`` as the ``trigger``-th directory listing begins."""
+    authority = make_production(tree, TRUST_ALL)
+    original = os.scandir
+    seen = {'n': 0}
+
+    def scandir(path='.'):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path).startswith(str(tree.root)):
+            seen['n'] += 1
+            if seen['n'] == trigger:
+                mutation(tree)
+        return original(path)
+    with mock.patch.object(os, 'scandir', scandir):
+        return verdict(lambda: authority._qualified_tree(tree.root)), seen['n']
+
+
+HARMFUL_DURING_WALK = [
+    ('world-writable-file-added', lambda t: t.put('pkg/sub/bad.py', 0o666)),
+    ('world-writable-file-added-at-root', lambda t: t.put('bad.py', 0o666)),
+    ('existing-file-made-world-writable', lambda t: os.chmod(t.root / 'module.py', 0o666)),
+    ('hardlink-to-existing-file', lambda t: os.link(t.root / 'bin/tool', t.outside / 'alias')),
+    ('external-symlink-added', lambda t: os.symlink(t.put(t.outside / 'x.py'), t.root / 'pkg/ext')),
+    ('fifo-added', lambda t: os.mkfifo(t.root / 'pkg/sub/pipe')),
+    ('directory-made-world-writable', lambda t: os.chmod(t.root / 'pkg/sub', 0o777)),
+]
+BENIGN_DURING_WALK = [
+    ('file-added', lambda t: t.put('pkg/sub/new.py')),
+    ('file-removed', lambda t: os.unlink(t.root / 'pkg/sub/data.txt')),
+    ('directory-removed', lambda t: shutil.rmtree(t.root / 'pkg/sub')),
+    ('chmod-benign', lambda t: os.chmod(t.root / 'module.py', 0o600)),
+    ('rename', lambda t: os.rename(t.root / 'bin/tool', t.root / 'bin/tool2')),
+]
+DIRECTORIES_PER_PASS = 4        # base_content: root, pkg, pkg/sub, bin
+
+
+@pytest.mark.parametrize('trigger', range(1, DIRECTORIES_PER_PASS + 1))
+@pytest.mark.parametrize('name,mutation', HARMFUL_DURING_WALK, ids=[m[0] for m in HARMFUL_DURING_WALK])
+def test_a_harmful_change_made_during_the_first_pass_is_always_refused(trees, name, mutation, trigger):
+    """Wherever it lands in pass one, pass two qualifies it.  Never an accept."""
+    tree = trees()
+    base_content(tree)
+    outcome, listings = _mutating_during_a_walk(tree, mutation, trigger)
+    assert listings >= trigger
+    assert outcome == REFUSED, (name, trigger, outcome)
+
+
+@pytest.mark.parametrize('trigger', range(1, 2 * DIRECTORIES_PER_PASS + 1))
+@pytest.mark.parametrize('name,mutation', BENIGN_DURING_WALK, ids=[m[0] for m in BENIGN_DURING_WALK])
+def test_a_benign_change_made_during_a_walk_is_accepted_or_reported_changed(trees, name, mutation, trigger):
+    tree = trees()
+    base_content(tree)
+    outcome, _listings = _mutating_during_a_walk(tree, mutation, trigger)
+    if name in ('file-removed', 'directory-removed', 'rename'):
+        assert outcome in (OK, CHANGED, REFUSED), (name, trigger, outcome)   # an entry listed, then gone
+    else:
+        assert outcome in (OK, CHANGED), (name, trigger, outcome)
+
+
+@pytest.mark.parametrize('name,mutation', HARMFUL_DURING_WALK + BENIGN_DURING_WALK,
+                         ids=[m[0] for m in HARMFUL_DURING_WALK + BENIGN_DURING_WALK])
+def test_a_change_made_before_the_first_listing_gives_the_oracle_verdict(trees, name, mutation):
+    """When the change lands before either walker has listed anything, the verdicts are identical."""
+    verdicts = []
+    for kind, factory in (('production', make_production), ('oracle', make_oracle)):
+        tree = trees()
+        base_content(tree)
+        authority = factory(tree, TRUST_ALL)
+        with observe_walk(kind, tree.root, lambda n: mutation(tree) if n == 1 else None):
+            verdicts.append(verdict(lambda: authority._qualified_tree(tree.root)))
+    assert verdicts[0] == verdicts[1]
+
+
+@NOT_ROOT
+def test_a_permission_flip_between_the_passes_matches_the_oracle(trees):
+    """Invisible while sealed (pass one), visible once opened (pass two)."""
+    def opened(child_mode):
+        def build(tree):
+            base_content(tree)
+            tree.put('hole/child.py')
+            tree.seal(tree.root / 'hole')
+
+            def mutate():
+                os.chmod(tree.root / 'hole', 0o755)
+                os.chmod(tree.root / 'hole/child.py', child_mode)
+            return mutate
+        return build
+
+    def sealed_after_pass_one(tree):
+        base_content(tree)
+        tree.put('hole/child.py')
+        return lambda: tree.seal(tree.root / 'hole')
+    check(trees, opened(0o666), REFUSED)
+    check(trees, opened(0o644), CHANGED)
+    check(trees, sealed_after_pass_one, CHANGED)
+
+
+def test_threaded_churn_never_leaks_anything_but_a_refusal(trees):
+    """Real concurrent mutation: every outcome is a clean verdict, never a stray exception."""
+    import threading
+    tree = trees()
+    base_content(tree)
+    for index in range(150):
+        tree.put(f'bulk/f{index}.py')
+    stop = threading.Event()
+
+    def churn():
+        counter = 0
+        while not stop.is_set():
+            counter += 1
+            name = tree.root / f'bulk/churn{counter % 7}'
+            try:
+                name.write_bytes(b'x')
+                os.chmod(name, 0o644)
+                os.unlink(name)
+                os.chmod(tree.root / 'bulk/f1.py', 0o600 if counter % 2 else 0o644)
+            except OSError:
+                pass
+    worker = threading.Thread(target=churn)
+    worker.start()
+    try:
+        outcomes = Counter(verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root))
+                           for _ in range(25))
+    finally:
+        stop.set()
+        worker.join()
+    assert set(outcomes) <= {OK, CHANGED, REFUSED}, outcomes
+    os.chmod(tree.root / 'bulk/f1.py', 0o666)                      # what is left behind must be found
+    assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == REFUSED
+
+
+# --------------------------------------------------------------------------
+# Failure handling: exactly the oracle's exception types and reasons
+# --------------------------------------------------------------------------
+class _Listed:
+    """Stands in for the object os.scandir() returns, serving prepared entries."""
+
+    def __init__(self, entries):
+        self.entries = entries
+
+    def __enter__(self):
+        return iter(self.entries)
+
+    def __exit__(self, *exc):
+        return False
+
+    def __iter__(self):
+        return iter(self.entries)
+
+
+class _BrokenEntry:
+    def __init__(self, real, error):
+        self.real, self.error = real, error
+        self.name, self.path = real.name, real.path
+
+    def stat(self, *args, **kwargs):
+        raise self.error
+
+    def is_dir(self, *args, **kwargs):
+        return self.real.is_dir(*args, **kwargs)
+
+    def is_symlink(self):
+        return self.real.is_symlink()
+
+    def is_file(self, *args, **kwargs):
+        return self.real.is_file(*args, **kwargs)
+
+    def inode(self):
+        return self.real.inode()
+
+
+def _break_listing_of(tree, directory, error):
+    original = os.scandir
+
+    def scandir(path='.'):
+        if os.fspath(path) == str(directory):
+            with original(path) as listing:
+                return _Listed([_BrokenEntry(entry, error) for entry in listing])
+        return original(path)
+    return mock.patch.object(os, 'scandir', scandir)
+
+
+@pytest.mark.parametrize('error', [PermissionError(13, 'denied'), FileNotFoundError(2, 'gone'),
+                                   OSError(5, 'io'), RuntimeError('loop')])
+def test_a_failing_stat_is_refused_with_the_unqualified_reason(trees, error):
+    tree = trees()
+    base_content(tree)
+    with _break_listing_of(tree, tree.root / 'pkg', error):
+        assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == REFUSED
+
+
+def test_a_failing_listing_is_skipped_like_rglob_does(trees):
+    """F3: a directory whose listing raises OSError is skipped silently, as rglob does."""
+    tree = trees()
+    base_content(tree)
+    tree.put('pkg/sub/world-writable.py', 0o666)
+    original = os.scandir
+
+    def scandir(path='.'):
+        if os.fspath(path) == str(tree.root / 'pkg/sub'):
+            raise OSError(5, 'listing failed')
+        return original(path)
+    with mock.patch.object(os, 'scandir', scandir):
+        assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == OK
+
+
+def test_an_unexpected_exception_is_not_swallowed_and_is_not_an_accept(trees):
+    """Like the oracle, a non-OSError escapes unchanged (CheckedBackend turns it into refused())."""
+    tree = trees()
+    base_content(tree)
+    authority = make_production(tree, TRUST_ALL)
+    with _break_listing_of(tree, tree.root / 'pkg', ValueError('boom')):
+        with pytest.raises(ValueError):
+            authority._qualified_tree(tree.root)
+    assert authority._qualified_roots == set()
+
+
+def test_a_refused_walk_does_not_populate_the_tree_cache(trees):
+    tree = trees()
+    base_content(tree)
+    tree.put('pkg/bad.py', 0o666)
+    authority = make_production(tree, TRUST_ALL)
+    assert verdict(lambda: authority._qualified_tree(tree.root)) == REFUSED
+    assert authority._qualified_roots == set()
+    os.chmod(tree.root / 'pkg/bad.py', 0o644)
+    assert verdict(lambda: authority._qualified_tree(tree.root)) == OK
+    assert authority._qualified_roots == {tree.root}
+
+
+def test_the_walker_never_holds_more_than_one_directory_listing_open(trees):
+    """A deep tree must not exhaust file descriptors: a listing is closed before the next is opened."""
+    tree = trees()
+    base_content(tree)
+    path = tree.root
+    for index in range(120):
+        path = path / f'd{index}'
+        tree.mkdir(path)
+    open_now, peak = [0], [0]
+    original = os.scandir
+
+    class Counted:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def __enter__(self):
+            open_now[0] += 1
+            peak[0] = max(peak[0], open_now[0])
+            return self.inner.__enter__()
+
+        def __exit__(self, *exc):
+            open_now[0] -= 1
+            return self.inner.__exit__(*exc)
+
+        def __iter__(self):
+            return iter(self.inner)
+
+        def close(self):
+            open_now[0] -= 1
+            self.inner.close()
+
+    with mock.patch.object(os, 'scandir', lambda p='.': Counted(original(p))):
+        assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == OK
+    assert peak[0] == 1 and open_now[0] == 0
 
 
 # --------------------------------------------------------------------------
@@ -1313,13 +2085,13 @@ def test_listener_current_sequential_order_is_exactly_this(host):
 def test_binding_repeats_every_spawn_but_walks_no_tree_on_the_same_instance(host):
     authority = host.new()
     walks = []
-    original = pathlib.Path.rglob
+    original = os.scandir
 
-    def rglob(self, *args, **kwargs):
-        walks.append(self)
-        return original(self, *args, **kwargs)
+    def scandir(path='.'):
+        walks.append(path)
+        return original(path)
     host.events.clear()
-    with mock.patch.object(pathlib.Path, 'rglob', rglob):
+    with mock.patch.object(os, 'scandir', scandir):
         assert authority.binding() == SERVER_PID
     assert Counter(spawns(host)) == Counter(EXPECTED_ARGVS)
     assert walks == []                                            # tree cache hit on this instance
@@ -1328,12 +2100,14 @@ def test_binding_repeats_every_spawn_but_walks_no_tree_on_the_same_instance(host
 
 def test_every_new_authority_walks_each_tree_twice(host):
     walks = Counter()
-    original = pathlib.Path.rglob
+    original = os.scandir
+    roots = {str(host.python_root): host.python_root, str(host.server_entry.parent): host.server_entry.parent}
 
-    def rglob(self, *args, **kwargs):
-        walks[self] += 1
-        return original(self, *args, **kwargs)
-    with mock.patch.object(pathlib.Path, 'rglob', rglob):
+    def scandir(path='.'):
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) in roots:
+            walks[roots[os.fspath(path)]] += 1             # one listing of the root per pass
+        return original(path)
+    with mock.patch.object(os, 'scandir', scandir):
         host.new()
         host.new()
     assert walks == {host.python_root: 4, host.server_entry.parent: 4}
