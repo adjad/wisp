@@ -1,0 +1,84 @@
+[
+  {
+    "label": "2026-08-18_22-36-22",
+    "prompts": [
+      "can you send mom a message with the movements of my stocks today",
+      "send my dad a message with my calender for this week and next week",
+      "create a schedule for me for this next few weeks",
+      "can you check the weather for tommorow",
+      "in dublin ca",
+      "really?",
+      "who do i message the most",
+      "delete all of my old reminders",
+      "like my past due reminders",
+      "what tools are available to you",
+      "can you reorganize my downloads folder",
+      "create a folder and seperate my wisp debug logs by date",
+      "i think you missed some older ones"
+    ]
+  },
+  {
+    "label": "2026-08-19_01-59-56",
+    "prompts": [
+      "Daily summary",
+      "check the share price of my stocks over the last few weeks",
+      "can you check the weather for tommorow",
+      "dublin ca",
+      "can you check my email for purchases from playstation",
+      "which email are you looking",
+      "from how far back can you check emails",
+      "its adijain888@gmail.com btw",
+      "can you see emails from june?"
+    ]
+  },
+  {
+    "label": "2026-08-19_03-01-14",
+    "prompts": [
+      "send an email to archanachetan888@gmail.com with the weather forecast for this week as well as my share price movements over the week as well as my schedule for the week",
+      "this is my mom btw",
+      "no it is archanachetan888@gmail.com",
+      "yes",
+      "the first thing i asked",
+      "no i mean the first convo we had",
+      "what is the first message i sent you",
+      "send an email to archanachetan888@gmail.com with the weather forecast share price movements over the month and my schedule for the week"
+    ]
+  },
+  {
+    "label": "2026-08-23_01-29-26",
+    "prompts": [
+      "how does a llm work - go step by step and explain to it to someone who does not know a lot",
+      "Daily summary",
+      "can you send a message to mom with the share prices of google and micron and compare it to the price of these shares from exactly three weeks ago? Be descriptive"
+    ]
+  },
+  {
+    "label": "2026-08-23_01-57-28",
+    "prompts": [
+      "send a message to mom with the share price of nvidia and amd from today and from two weeks ago. Be descriptive",
+      "create a reminder for me to finish a canvas assignment by tonight and tell mom about it too",
+      "i mean as in tell mom about it",
+      "sure"
+    ]
+  },
+  {
+    "label": "2026-08-23_17-35-56",
+    "prompts": [
+      "write a message to my dad with my upcoming calender events for the next month"
+    ]
+  },
+  {
+    "label": "2026-08-23_20-46-36",
+    "prompts": [
+      "scedule send a message to mom at 9pm with my schedule for tmrow"
+    ]
+  },
+  {
+    "label": "2026-08-24_02-37-34",
+    "prompts": [
+      "I need you to send mom a message reminder her about my move in date",
+      "check my calender",
+      "check the calender for next month"
+    ]
+  }
+]
