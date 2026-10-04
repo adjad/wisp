@@ -245,11 +245,18 @@ class Tree:
         cwd = os.getcwd()
         os.chdir(path.parent)
         try:
-            listener = socket.socket(socket.AF_UNIX)
             try:
-                listener.bind(path.name)
-            finally:
-                listener.close()
+                listener = socket.socket(socket.AF_UNIX)
+                try:
+                    listener.bind(path.name)
+                finally:
+                    listener.close()
+            except PermissionError:
+                # The simulation-QA child runs under a sandbox that denies creating
+                # sockets. A FIFO is the same class of entry for the check under test
+                # (neither a regular file, a directory nor a symlink), so the verdict
+                # being pinned is unchanged.
+                os.mkfifo(path.name)
         finally:
             os.chdir(cwd)
 
@@ -1088,8 +1095,11 @@ def test_PINNED_BLIND_SPOT_extended_acls_are_not_inspected(trees):
     def build(tree):
         base_content(tree)
         target = tree.root / 'module.py'
-        result = subprocess.run(['/bin/chmod', '+a', 'everyone allow write', str(target)],
-                                capture_output=True)
+        try:
+            result = subprocess.run(['/bin/chmod', '+a', 'everyone allow write', str(target)],
+                                    capture_output=True)
+        except PermissionError:
+            pytest.skip('the sandbox does not allow running /bin/chmod here')
         if result.returncode:
             pytest.skip('cannot set an ACL here: ' + result.stderr.decode()[:80])
     check(trees, build, OK)
