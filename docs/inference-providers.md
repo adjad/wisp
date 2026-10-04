@@ -123,7 +123,9 @@ addresses, and tool results, meaning your calendar, mail, messages, notes and fi
 A loopback app without an API key is not identity-verified, so connect only one you trust.
 Skills stay on managed oMLX: a request that uses a skill, a follow-up to one, and a request
 to list your skills run on the managed model, and the external app is never sent the skill
-catalog, skill instructions, skill tools or their results. Reasoning-only connections are
+catalog, skill instructions, skill tools or their results. Replies you already received are
+part of the conversation, so wording from an earlier skill-assisted answer can travel with
+later requests; start a new chat to avoid that. Reasoning-only connections are
 sent only the current prompt, without stored conversation or memory.
 
 ## Local models and role behavior
