@@ -14,7 +14,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Refuse the real Wisp's ports BEFORE anything is created or started. A sandbox
-# backend on 8765 would be trusted by the real app; a sandbox server aimed at the real
+# backend on 8765 would be refused by the real app (it only trusts the process it spawned,
+# and the port would still be taken); a sandbox server aimed at the real
 # backend would act as a second app on its event stream. (Same rule as
 # sandbox/guard.py, repeated here so it holds even without a Python environment.)
 for _port in "${WISP_BACKEND_PORT:-8775}" "${SANDBOX_PORT:-8766}"; do

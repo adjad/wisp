@@ -703,3 +703,45 @@ def test_a_settlement_persistence_failure_does_not_mask_the_cancellation(isolate
         assert [role for role, _ in saved] == ["user", "assistant"], \
             "one failed write must not skip the rest of the best-effort settlement"
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["disconnect", "error"])
+def test_a_stop_inside_the_real_summary_never_unsettles_a_finished_turn(monkeypatch, isolated, failure):
+    """The Swift client stops reading at `done`, so the disconnect lands in the first real
+    suspension after it: the rolling summary, which runs AFTER the reply is stored. That turn
+    finished. It must not gain "could not be completed" after its real reply. The REAL
+    maybe_summarize runs here (a session already past its window, with a model call that
+    never returns), not a stand-in."""
+    from service.memory import context
+    monkeypatch.setattr(main, "maybe_summarize", context.maybe_summarize)
+    async def quick(client, model, messages, emit, approver, **kw):
+        await emit({"type": "text", "text": "all done"})
+        await emit({"type": "done"})
+        return "all done"
+    monkeypatch.setattr(main, "run_agent", quick, raising=False)
+
+    async def scenario():
+        entered = asyncio.Event()
+        async def summary_call(*args, **kwargs):
+            entered.set()
+            if failure == "error":
+                raise RuntimeError("summary model fell over")
+            await asyncio.sleep(30)
+        main.client.chat = summary_call
+        sid = main.store.create_session()
+        for index in range(context.KEEP_MESSAGES + context._FOLD_BATCH):
+            main.store.add_turn(sid, "user" if index % 2 == 0 else "assistant", f"earlier {index}")
+        before = len(turns(sid))
+        iterator = await start("tell me something", session_id=sid)
+        await read_until(iterator, "done")
+        await asyncio.wait_for(entered.wait(), 5)
+        if failure == "disconnect":
+            await iterator.aclose()
+        else:
+            async for _ in iterator:
+                pass
+        await asyncio.sleep(0.3)
+        added = turns(sid)[before:]
+        assert added == [("user", "tell me something"), ("assistant", "all done")], added
+        assert not any("could not be completed" in text for _, text in turns(sid))
+    asyncio.run(scenario())

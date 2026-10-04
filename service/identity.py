@@ -7,8 +7,9 @@ started on 8765 while the real app was open, or any other program that took the 
 could therefore make the real app act.
 
 Two things make that refusable. The app proves the LISTENER is its own backend from
-its launch receipt and the kernel's record of that process (pid and start time; that
-part does not trust this module, which only echoes the receipt's launch nonce), and it
+its launch receipt (held in the app's memory only, never on disk) and the kernel's record
+of that process (pid and start time; that part does not trust this module, which only
+echoes the receipt's launch nonce), and it
 asks this endpoint which MODE the backend is in, so a backend that is Wisp's
 code but running against a sandbox world is refused too. A sandbox backend also
 refuses to start on a production port, as defence in depth.

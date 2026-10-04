@@ -53,7 +53,8 @@ enum BackendTrustChecks {
         check(decide([], ident()) == .unreachable, "nothing listening is unreachable, not trusted")
         check(decide([ours], ident()) == .trusted(pids: [10]), "the real backend, production, matching pid")
         check(decide([ours], .failed) == .unreachable, "own listener that did not answer is not yet trusted")
-        check(decide([ours], .missing) == .trusted(pids: [10]), "a 404 from the exact launched incarnation is trusted")
+        // A backend this app spawned always serves /identity, so a 404 there is never evidence of anything.
+        check(decide([ours], .missing) == .refused(.notWispBackend), "a 404 /identity must not be trusted, even from the launched process")
 
         // A stranger is refused however convincingly it identifies itself: only the process this
         // app launched (the in-memory receipt) is ever trusted.
@@ -237,7 +238,7 @@ enum BackendTrustChecks {
         host.changeDuringIdentity = nil
         host.birth = .init(seconds: 1, microseconds: 0)
         host.answer = .missing
-        check((await gate.verdict()).isTrusted, "a 404 from the stable launched incarnation is trusted")
+        check(await gate.verdict() == .refused(.notWispBackend), "a 404 /identity from the launched incarnation is not trusted")
         host.birth = .init(seconds: 3, microseconds: 0)
         var asked = host.identities
         check(await gate.verdict() == .refused(.unproven([ours])), "a 404 from a reused pid is refused")
@@ -470,10 +471,14 @@ enum BackendTrustChecks {
               "a 404 listener that is not the launched process must be refused: \(unproven)")
         usleep(300_000)
         check(legacy.requests.isEmpty, "nothing may be sent to an unproven listener: \(legacy.requests)")
-        // The 404 listener IS trusted when it is exactly the launched incarnation.
+        // Even the launched process is refused when it has no /identity (a spawned backend always has one):
+        // it is asked once, and nothing else is sent.
         launched(legacy)
         let old = await get("http://127.0.0.1:\(legacy.port)/hello")
-        check(old.status == 200 && old.body == "ok", "a 404 from the launched incarnation must keep working")
+        check(old.status == nil && old.error?.localizedDescription.contains("doesn't identify itself") == true,
+              "a 404 /identity from the launched process must be refused: \(old)")
+        usleep(300_000)
+        check(legacy.requests == ["REQ GET /identity"], "only the identity question is sent: \(legacy.requests)")
 
         // 4b. Another program on the same interpreter, answering as Wisp: refused unasked.
         let otherBefore = other.requests.count

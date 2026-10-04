@@ -76,8 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // behind after a crash or upgrade; the person is told and can quit it. Judged only
         // here, after the single-instance hand-over, so a yielding second launch touches nothing.
         let folderHints = PortGuard.backendFolderHints(devRoot: backend.backendRootPath)
-        // From here on, every request to the backend port goes out only while the
-        // program there is proven to be Wisp's own backend (see BackendTrust).
+        // From here on, every request to the backend port is sent only after a fresh check that
+        // the program there is the process this app spawned (see BackendTrust). The check is
+        // not bound to the connection that carries the request (audit N7, accepted residual).
         BackendTrustConfiguration.set()
         BackendTrustProtocol.enforcedPort = BackendTrust.productionPort
         URLProtocol.registerClass(BackendTrustProtocol.self)

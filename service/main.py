@@ -1272,6 +1272,10 @@ async def agent(body: dict[str, Any]):
             finish_workflow(store, sid, entry["plan"], observed)
             entry["finished"] = True
 
+        # True once this request's assistant reply is stored: a stop after that point (the client
+        # closing at `done`, then the summary) finished a turn; it is not an unfinished one.
+        assistant_reply_stored = False
+
         def settle_unfinished(message: str) -> None:
             """Leave durable state honest when a turn stops without finishing.
 
@@ -1327,6 +1331,8 @@ async def agent(body: dict[str, Any]):
                 persist_user_turn()
             except Exception:  # noqa: BLE001
                 pass
+            if assistant_reply_stored:
+                return   # the real reply is already stored; never follow it with a failure note
             try:
                 store.add_turn(sid, "assistant",
                                f"(This request could not be completed — {message} "
@@ -1902,6 +1908,7 @@ async def agent(body: dict[str, Any]):
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
+                assistant_reply_stored = True
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.

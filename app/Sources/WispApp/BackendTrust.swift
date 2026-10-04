@@ -20,8 +20,8 @@ import Darwin
 //      where a program runs from is no evidence either way; and
 //   2. that backend must report mode "production" from /identity, which also refuses
 //      Wisp's own code running against a sandbox world, must be one of the listeners, and
-//      must echo the launch nonce this launch recorded. A 404 is accepted only from the
-//      exact launched incarnation of (1).
+//      must echo the launch nonce this launch recorded. A 404 from /identity is NOT
+//      accepted: a backend this app spawned always serves it.
 //
 // WHAT THIS GUARANTEES: at the moment of each check, every listener on the port is the
 // process this app spawned, and a request is never SENT to anything else that was already
@@ -108,8 +108,9 @@ enum BackendTrust {
         case .failed:
             return .unreachable
         case .missing:
-            // Only the exact launched incarnation reaches here (checked above).
-            return .trusted(pids: pids)
+            // A backend this app spawned always serves /identity; a 404 proves nothing, so it is
+            // not trusted even when the listener is the exact launched incarnation.
+            return .refused(.notWispBackend)
         case .answered(let answer):
             guard answer.service == "wisp-backend" else { return .refused(.notWispBackend) }
             guard answer.mode == "production" else { return .refused(.wrongMode(answer.mode)) }
@@ -269,9 +270,12 @@ actor BackendTrustGate {
     }
 }
 
-/// Sits in front of every request the app makes to its backend port. A request goes out
-/// only while the program on the port is proven to be Wisp's own backend; otherwise it
-/// fails here and nothing leaves the app.
+/// Sits in front of every request the app makes to its backend port. A request is sent
+/// only after the program on the port was checked, just before, to be the process this app
+/// spawned; otherwise it fails here and nothing leaves the app. The check is not bound to
+/// the connection that then carries the request, so the N7 race described at the top of
+/// this file remains: this narrows who can receive a request, it does not authenticate the
+/// connection.
 final class BackendTrustProtocol: URLProtocol, URLSessionDataDelegate {
     static let bypassKey = "wisp.backendtrust.bypass"
     /// The port that is enforced. Anything else (the Settings QA stub, other apps) is untouched.
