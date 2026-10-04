@@ -44,6 +44,21 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
         precondition(!RemindersWriter.eligibleForUndatedSync(
             calendarID: nil, reminderCalendarIDs: active,
             completed: false, hasDueDate: false))
+        // The undated payload carries at most the cap plus the TRUE eligible count.
+        func rows(_ n: Int) -> [[String: Any]] { (0..<n).map { ["source_id": "id\($0)", "title": "t\($0)"] } }
+        for (n, sent) in [(0, 0), (1, 1), (199, 199), (200, 200), (201, 200), (500, 200)] {
+            let p = RemindersWriter.undatedPayload(rows(n))
+            precondition(p.items.count == sent && p.total == n,
+                         "undated payload for \(n) eligible must send \(sent) and report \(n)")
+        }
+        precondition(RemindersWriter.undatedPayload(rows(500)).items.first?["source_id"] as? String == "id0",
+                     "the cut keeps the first entries in order")
+        let wire = try! JSONSerialization.data(withJSONObject: [
+            "undated": RemindersWriter.undatedPayload(rows(2)).items,
+            "undated_total": RemindersWriter.undatedPayload(rows(2)).total] as [String: Any])
+        let decoded = try! JSONSerialization.jsonObject(with: wire) as! [String: Any]
+        precondition((decoded["undated_total"] as? Int) == 2 && (decoded["undated"] as? [Any])?.count == 2,
+                     "the payload must survive JSON serialisation")
         // An empty list set after a snapshot with rows is not authoritative.
         precondition(RemindersWriter.reminderListsLookTransientlyMissing(
             calendarCount: 0, previousRowCount: 3))

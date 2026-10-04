@@ -141,6 +141,13 @@ final class RemindersWriter {
     /// Bound on how many undated titles one snapshot carries.
     static let maxUndatedReminders = 200
 
+    /// The undated list as it travels: at most `maxUndatedReminders` entries plus the TRUE
+    /// number of eligible reminders, so the backend can tell a complete list from one that
+    /// was cut at the cap instead of presenting a prefix as everything.
+    static func undatedPayload(_ eligible: [[String: Any]]) -> (items: [[String: Any]], total: Int) {
+        (Array(eligible.prefix(maxUndatedReminders)), eligible.count)
+    }
+
     /// No reminder lists at all, right after a snapshot that had rows, is more
     /// likely a transient EventKit read than every list being deleted. Report
     /// it as unavailable instead of an authoritative empty set, so missing data
@@ -468,17 +475,18 @@ final class RemindersWriter {
                     "context": calendar.title,
                 ]
             }
+            let undatedPayload = Self.undatedPayload(undated)
             self.post(reminders: payload,
                               diagnostics: ["authorized": true, "count": payload.count,
                                             "snapshot_started_at": snapshotStartedAt],
                               startedAt: snapshotStartedAt, authoritative: true,
-                              undated: Array(undated.prefix(Self.maxUndatedReminders)))
+                              undated: undatedPayload.items, undatedTotal: undatedPayload.total)
         }
     }
 
     private func post(reminders: [[String: Any]], diagnostics: [String: Any],
                               startedAt: TimeInterval, authoritative: Bool,
-                              undated: [[String: Any]]? = nil) {
+                              undated: [[String: Any]]? = nil, undatedTotal: Int? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self,
                   self.snapshotState.accept(
@@ -486,14 +494,15 @@ final class RemindersWriter {
                       authoritativeCount: authoritative ? reminders.count : nil
                   ) else { return }
             if authoritative { self.consecutiveTransientReports = 0 }
-            self.post(reminders: reminders, diagnostics: diagnostics, undated: undated)
+            self.post(reminders: reminders, diagnostics: diagnostics, undated: undated,
+                      undatedTotal: undatedTotal)
         }
     }
 
     // `undated` is sent only with an authoritative read; an unavailable or empty-by-error
     // post omits the key so the backend keeps the last good list.
     private func post(reminders: [[String: Any]], diagnostics: [String: Any],
-                      undated: [[String: Any]]? = nil) {
+                      undated: [[String: Any]]? = nil, undatedTotal: Int? = nil) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/calendar")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -501,7 +510,10 @@ final class RemindersWriter {
         var body: [String: Any] = [
             "source": "reminders", "events": reminders, "diagnostics": diagnostics,
         ]
-        if let undated { body["undated"] = undated }
+        if let undated, let undatedTotal {
+            body["undated"] = undated
+            body["undated_total"] = undatedTotal
+        }
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req).resume()
     }
