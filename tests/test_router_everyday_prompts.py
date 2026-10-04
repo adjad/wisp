@@ -407,3 +407,177 @@ def test_body_literals_in_named_companions_do_not_bypass_contact_proof(
         assert calls == [("lookup_contact", {"name": "Mom"})] and approvals == []
         assert assistant._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert events[-1]["type"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# PR #131 audit repairs (b53aadb): compose draft intent, original body text,
+# edit-reference scope, independent clauses, and phone-number imperatives.
+# Synthetic strings only; these tests never send, call out, or touch real data.
+# ---------------------------------------------------------------------------
+def _full_route(text, last_assistant=None, last_tools=None):
+    from tests.stub_embedder import install
+    install()
+    return asyncio.run(R.route(text, last_assistant=last_assistant, last_tools=last_tools))
+
+
+def _required(decision):
+    return {tool for group in decision.required_tool_groups for tool in group}
+
+
+DRAFT_INTENT_COMPOSES = [
+    ("email jane@x.com saying hi, just draft it", "draft_email", "send_email"),
+    ("email jane@x.com saying I'll be late, only draft it for now", "draft_email", "send_email"),
+    ("email jane@x.com saying I'll be late, save it as a draft", "draft_email", "send_email"),
+    ("email jane@x.com saying I'll be late, let me review it first", "draft_email", "send_email"),
+    ("email jane@x.com saying I'll be late, let me look at it first", "draft_email", "send_email"),
+    ("email jane@x.com saying hi, for review", "draft_email", "send_email"),
+    ("text 650-555-0134 saying I'm outside, draft only", "draft_message", "send_message"),
+    ("text 650-555-0134 that I'm outside, just draft it", "draft_message", "send_message"),
+    ("text 650-555-0134 saying I'm outside, save it as a draft", "draft_message", "send_message"),
+]
+
+
+@pytest.mark.parametrize("prompt,draft_tool,send_tool", DRAFT_INTENT_COMPOSES)
+def test_draft_intent_anywhere_in_a_compose_request_never_requires_a_send(prompt, draft_tool, send_tool):
+    decision = _full_route(prompt)
+    assert draft_tool in (decision.tool_subset or ()), decision
+    assert send_tool not in _required(decision), decision.required_tool_groups
+    assert "send_email" not in _required(decision) and "send_message" not in _required(decision)
+
+
+@pytest.mark.parametrize("prompt,draft_tool,send_tool", DRAFT_INTENT_COMPOSES)
+def test_draft_intent_compose_offers_draft_tools_only(prompt, draft_tool, send_tool):
+    decision = R.rule_route(prompt)
+    assert decision is not None and decision.tool_subset == [draft_tool], decision
+    assert send_tool in decision.forbidden_tools
+    assert not _required(decision) & {"send_email", "send_message"}
+
+
+@pytest.mark.parametrize("prompt,send_tool,required", [
+    ("email jane@x.com saying hi", "send_email", True),
+    ("email jane@x.com saying the draft is attached", "send_email", True),   # "draft" is body content
+    ("email jane@x.com saying hello \"just draft it\"", "send_email", True),  # quoted text is content
+    ("email jane@x.com saying hi, don't draft it, just send it", "send_email", True),
+    ("text 650-555-0134 that I'm outside, and don't draft it just send it", "send_message", False),
+    ("text 650-555-0134 saying hello \"draft only\"", "send_message", False),
+])
+def test_ordinary_compose_still_offers_and_requires_the_send(prompt, send_tool, required):
+    decision = _full_route(prompt)
+    assert send_tool in (decision.tool_subset or ()), (decision.reason, decision.tool_subset)
+    assert (send_tool in _required(decision)) is required, decision.required_tool_groups
+
+
+@pytest.mark.parametrize("prompt,fixed", [
+    ("email jane@x.com saying Calender Smith called", "calendar"),
+    ("email jane@x.com saying the remainder is due", "reminder"),
+    ("text 650-555-0134 saying the Messager crashed", "message"),
+])
+def test_resolved_request_keeps_the_users_own_body_text(prompt, fixed):
+    decision = R.rule_route(prompt)
+    assert decision is not None and decision.resolved_request
+    assert decision.resolved_request.startswith(prompt)
+    assert decision.resolved_request.split("\n\n(The recipient")[0] == prompt
+
+
+CAL_LIST = "Calendar events: 2; reminders: 0\n- 10am Standup\n- 2pm Review"
+
+
+@pytest.mark.parametrize("prompt", [
+    "delete this file", "delete the last email I got", "remove it from my notes",
+    "change that to dark mode", "update that document", "change it to Spanish",
+    "edit the first paragraph", "move it to the trash", "cancel my subscription",
+    "delete the first file", "remove that note", "change the second one to French",
+])
+def test_edit_reference_ignores_other_domains_after_a_calendar_read(prompt):
+    assert R._edit_reference_subset(prompt, CAL_LIST, "get_upcoming") is None, prompt
+    decision = _full_route(prompt, CAL_LIST, "get_upcoming")
+    assert "update_event" not in _required(decision) and decision.force_first_tool != "update_event"
+    assert not (decision.tool_subset and set(decision.tool_subset) <= {"get_upcoming", "update_event",
+                                                                      "cancel_event"}), decision.reason
+
+
+@pytest.mark.parametrize("prompt", [
+    "move the second one to 4pm and email the team", "cancel the first one and tell Bob",
+    "push that to 5pm, then text Sam that I'll be late",
+])
+def test_edit_reference_leaves_compound_requests_to_the_normal_route(prompt):
+    assert R._edit_reference_subset(prompt, CAL_LIST, "get_upcoming") is None
+    decision = _full_route(prompt, CAL_LIST, "get_upcoming")
+    assert decision.force_first_tool != "update_event"
+    assert not (decision.tool_subset and set(decision.tool_subset) <= {"get_upcoming", "update_event",
+                                                                      "cancel_event"}), decision.reason
+
+
+def test_edit_reference_forces_update_event_only_with_a_time_or_new_title():
+    timed = R._edit_reference_subset("move the first one to 4pm", CAL_LIST, "get_upcoming")
+    assert timed.force_first_tool == "update_event"
+    renamed = R._edit_reference_subset("rename the first one to Planning", CAL_LIST, "get_upcoming")
+    assert renamed is not None and renamed.force_first_tool == "update_event"
+    bare = R._edit_reference_subset("update the second one", CAL_LIST, "get_upcoming")
+    assert bare is None or bare.force_first_tool != "update_event"
+
+
+@pytest.mark.parametrize("prompt", [
+    "move the first one to 4pm", "push that back an hour", "cancel the second one", "delete those",
+    "remove that", "change it to 5pm", "make it 5pm", "actually 5pm", "cancel it please",
+])
+def test_edit_reference_still_serves_calendar_follow_ups(prompt):
+    assert R._edit_reference_subset(prompt, CAL_LIST, "get_upcoming") is not None, prompt
+
+
+@pytest.mark.parametrize("prompt,wanted", [
+    ("email jane@x.com confirming the meeting and add it to my calendar", "get_upcoming"),
+    ("email jane@x.com saying hi, then check my calendar and tell me what's next", "get_upcoming"),
+    ("email jane@x.com telling her what's on my calendar today", "get_upcoming"),
+    ("email jane@x.com about my calendar", "get_upcoming"),
+    ("text 650-555-0134 that I'm outside and also tell me what's on my calendar tomorrow", "get_upcoming"),
+])
+def test_compose_rule_steps_aside_for_calendar_clauses_and_source_data(prompt, wanted):
+    assert R._explicit_address_compose(R._normalize_typos(prompt)) is None, prompt
+    decision = _full_route(prompt)
+    assert wanted in (decision.tool_subset or ()), (decision.reason, decision.tool_subset)
+
+
+@pytest.mark.parametrize("prompt,wanted", [
+    ("send a text to 650-555-0134 asking whether the delivery arrived and also email dad@x.com saying hi",
+     {"send_email", "send_message"}),
+    ("email jane@x.com saying hello and then email bob@x.com saying bye", {"send_email"}),
+    ("email jane@x.com saying hi and then remind me to call her at 5pm", set()),
+])
+def test_compose_rule_steps_aside_for_a_second_clause(prompt, wanted):
+    assert R._explicit_address_compose(R._normalize_typos(prompt), prompt) is None, prompt
+    decision = _full_route(prompt)
+    assert wanted <= set(decision.tool_subset or ()), (decision.reason, decision.tool_subset)
+
+
+@pytest.mark.parametrize("prompt", [
+    "email jane@x.com saying hi, don't send it yet",
+    "email jane@x.com saying hi but do not send it",
+    "text 650-555-0134 that I'm outside, don't actually send it",
+])
+def test_no_send_phrases_keep_the_pre_compose_behaviour(prompt):
+    # Origin/main never required a send here (and the web-request layer cancels
+    # outbound delivery for it). The compose rule must not add one.
+    assert R._explicit_address_compose(R._normalize_typos(prompt), prompt) is None
+    decision = _full_route(prompt)
+    assert not _required(decision) & {"send_email", "send_message"}
+
+
+@pytest.mark.parametrize("prompt", [
+    "what is the phone number format in \"message 650 555 0134\"",
+    "did anyone message 6505550134 yesterday",
+    "Translate \"text 650-555-0134 that I am outside\" into French",
+    "who did I message 650-555-0134 about",
+])
+def test_phone_alternative_needs_an_imperative_lead(prompt):
+    assert not R.SEND_MESSAGE_RE.search(prompt), prompt
+    decision = _full_route(prompt)
+    assert "send_message" not in set(decision.tool_subset or ()), (decision.reason, decision.tool_subset)
+
+
+@pytest.mark.parametrize("prompt", [
+    "please text +1 650 555 0134 that I'm outside", "can you message (650) 555-0134 I'm here",
+    "ok, text 650-555-0134 thanks", "check my calendar and text 650-555-0134 that I'm late",
+])
+def test_phone_alternative_keeps_imperative_requests(prompt):
+    assert R.SEND_MESSAGE_RE.search(prompt), prompt

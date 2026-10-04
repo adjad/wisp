@@ -8,6 +8,10 @@ final class OverlayModel: ObservableObject {
         let id = UUID()
         let sessionId: String
         let actionId: String
+        // The /agent request that raised this card. Action ids are not unique across
+        // overlapping requests, so the answer names the request too and the backend
+        // routes it to exactly that one. Empty from a backend that predates this.
+        var requestId: String = ""
         let tool: String
         let reason: String
         // False for actions the backend refuses to ever pre-approve (sending
@@ -313,7 +317,8 @@ final class OverlayModel: ObservableObject {
         let image = submission.image
         let sid = sessionId   // continue the same conversation (empty -> server starts one)
         let wantsDebug = debugMode
-        Task { [weak self] in
+        streamTask?.cancel()
+        streamTask = Task { [weak self] in
             await self?.client.runAgent(prompt: prompt, image: image, sessionId: sid,
                                         debug: wantsDebug) { ev in
                 Task { @MainActor in self?.handle(ev, dispatchID: dispatch.id) }
@@ -321,8 +326,21 @@ final class OverlayModel: ObservableObject {
         }
     }
 
+    // The stream of the turn in flight, retained so New Chat can stop it instead of
+    // leaving a detached request running (and, if it is waiting on a confirmation
+    // card, waiting up to five minutes for an answer nobody can give any more).
+    private var streamTask: Task<Void, Never>?
+
     // Start a brand-new conversation: drop the session so the server opens a fresh one.
+    // A confirmation card that is still open belongs to the conversation being left:
+    // it is DENIED explicitly (never left to time out, never approved by omission).
     func newChat() {
+        if let abandoned = pending {
+            Task { [client] in
+                await client.approve(sessionId: abandoned.sessionId, actionId: abandoned.actionId,
+                                     approved: false, scope: "once", requestId: abandoned.requestId)
+            }
+        }
         sessionId = ""
         reset()
     }
@@ -357,7 +375,7 @@ final class OverlayModel: ObservableObject {
         phase = .working
         Task {
             await client.approve(sessionId: p.sessionId, actionId: p.actionId,
-                                 approved: approved, scope: scope)
+                                 approved: approved, scope: scope, requestId: p.requestId)
         }
     }
 
@@ -404,6 +422,9 @@ final class OverlayModel: ObservableObject {
     }
 
     func reset() {
+        streamTask?.cancel()
+        streamTask = nil
+        pending = nil
         dailySummaryID = UUID()
         dailySummaryRunning = false
         submissionState.reset()
@@ -616,6 +637,7 @@ final class OverlayModel: ObservableObject {
             turnFirstTokenAt = nil
         case "confirm":
             pending = Pending(sessionId: sessionId, actionId: ev.str("id"),
+                              requestId: ev.str("request_id"),
                               tool: ev.str("tool"), reason: ev.str("reason"),
                               // Older backends don't send `grantable`; default
                               // to hiding the button rather than showing one

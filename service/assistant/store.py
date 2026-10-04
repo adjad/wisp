@@ -24,6 +24,61 @@ from pathlib import Path
 from service.assistant.recovery import recovery_guidance
 from service.paths import MOE_DIR
 
+# Most undated reminders one native snapshot may carry. The app sends at most this many
+# plus the TRUE total, so the backend can tell a complete list from a truncated one.
+UNDATED_MAX = 200
+# Sanity bounds on what a native read may declare, so a malformed or hostile client cannot
+# crash the sync with an absurd number or fill the store with huge strings.
+UNDATED_TOTAL_MAX = 1_000_000
+UNDATED_ID_MAX = 200
+UNDATED_TITLE_MAX = 500
+UNDATED_CONTEXT_MAX = 200
+
+
+class UndatedSnapshot:
+    """One validated native read of the incomplete Apple reminders that have no due date."""
+
+    __slots__ = ("rows", "total", "truncated")
+
+    def __init__(self, rows: list[tuple[str, str, str | None]], total: int, truncated: bool):
+        self.rows = rows
+        self.total = total
+        self.truncated = truncated
+
+
+def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
+    """Validate the optional ``undated`` list and its ``undated_total`` from a sync post.
+
+    Returns None for anything not wholly valid: a missing or non-list payload, any entry
+    that is not an object with a non-blank string ``source_id``, a string ``title`` and a
+    string-or-null ``context``, or a total that is not an integer (booleans are not) at
+    least as large as the list. None means "leave the stored list alone": it must read as
+    stale afterwards, never as a fresh answer. A blank title is kept as "(untitled)".
+    More than UNDATED_MAX entries are cut to the first UNDATED_MAX and reported truncated.
+    """
+    if not isinstance(raw, list) or isinstance(total, bool) or not isinstance(total, int):
+        return None
+    if total < len(raw) or total > UNDATED_TOTAL_MAX:
+        return None
+    rows: dict[str, tuple[str, str, str | None]] = {}
+    for entry in raw:
+        if not isinstance(entry, dict):
+            return None
+        source_id, title, context = entry.get("source_id"), entry.get("title"), entry.get("context")
+        if (not isinstance(source_id, str) or not source_id.strip() or not isinstance(title, str)
+                or not (context is None or isinstance(context, str))):
+            return None
+        # Key on the stored (capped) id so two long ids sharing a prefix merge instead of
+        # colliding on the table's UNIQUE source_id.
+        sid = source_id.strip()[:UNDATED_ID_MAX]
+        rows[sid] = (sid, title.strip()[:UNDATED_TITLE_MAX] or "(untitled)",
+                     (context or None) and context[:UNDATED_CONTEXT_MAX])
+    kept = list(rows.values())[:UNDATED_MAX]
+    # Truncated means items were left out: the app declared more than it sent, or this side
+    # had to cut the list at the cap. Merging a duplicate id is not truncation.
+    return UndatedSnapshot(kept, max(total, len(rows)),
+                           total > len(raw) or len(rows) > UNDATED_MAX)
+
 DB_PATH = MOE_DIR / "assistant.db"
 
 # scripts/wisp_testdata.py seeds fake commitments ("Dentist Follow-up",
@@ -220,6 +275,21 @@ class AssistantStore:
                         "ON CONFLICT(source_id) DO UPDATE SET recorded_at=MAX("
                         "assistant_reminder_verified.recorded_at,excluded.recorded_at)")
                 self._migrate_reminder_verified_orders()
+                # Incomplete Apple reminders with NO due date. Not commitments: nothing is
+                # scheduled, so they live apart from `commitments` and no time-windowed
+                # query (notifications, overdue, schedules) can ever see them.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_undated_reminders (
+                    source_id TEXT PRIMARY KEY, title TEXT NOT NULL, context TEXT,
+                    synced_at REAL NOT NULL
+                )""")
+                # One row describing the undated list as a whole: which native snapshot it
+                # came from and whether it is complete. Written in the same transaction as
+                # the Reminders receipt, so a list is "current" only when both agree.
+                self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_undated_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1), snapshot_started_at REAL,
+                    status TEXT NOT NULL, total INTEGER NOT NULL, stored INTEGER NOT NULL,
+                    recorded_at REAL NOT NULL
+                )""")
                 self._db.execute("""CREATE TABLE IF NOT EXISTS assistant_completion (
                     key TEXT PRIMARY KEY, value TEXT NOT NULL, completed_at REAL NOT NULL
                 )""")
@@ -1124,7 +1194,8 @@ class AssistantStore:
                          (source_id,))
 
     # --- writes -----------------------------------------------------------
-    def sync_source(self, source: str, items: list[dict], *, diagnostics: dict | None = None) -> int:
+    def sync_source(self, source: str, items: list[dict], *, diagnostics: dict | None = None,
+                    undated: UndatedSnapshot | None = None) -> int:
         """Replace the active set for `source` with `items` (each a commitment
         dict with at least kind/title/when_ts and a stable source_id).
 
@@ -1159,6 +1230,10 @@ class AssistantStore:
         now = time.time()
         with self._write_transaction():
             self._today_sync_receipt(source, diagnostics or {}, now, available=True)
+            if source == "reminders" and undated is not None:
+                # Same unit as the dated rows and the receipt: a failure anywhere rolls all
+                # three back together, and the equal-timestamp retry is then valid again.
+                self._write_undated(undated, (diagnostics or {}).get("snapshot_started_at"), now)
             existing = self._db.execute(
                 "SELECT id, source_id, when_ts, status, updated_at FROM commitments WHERE source=?",
                 (source,)).fetchall()
@@ -1286,6 +1361,76 @@ class AssistantStore:
             self._db.execute("DELETE FROM calendar_event_ends WHERE NOT EXISTS "
                              "(SELECT 1 FROM commitments WHERE id=commitment_id)")
         return len(items)
+
+    def _write_undated(self, snapshot: UndatedSnapshot, snapshot_started_at, now: float) -> None:
+        """Replace the undated rows and their state. Call only inside a write transaction."""
+        from service.assistant.today import number
+        started = number(snapshot_started_at, "snapshot_started_at") if snapshot_started_at is not None else None
+        self._db.execute("DELETE FROM assistant_undated_reminders")
+        self._db.executemany(
+            "INSERT INTO assistant_undated_reminders(source_id,title,context,synced_at) VALUES (?,?,?,?)",
+            [row + (now,) for row in snapshot.rows])
+        self._db.execute(
+            "INSERT INTO assistant_undated_state(id,snapshot_started_at,status,total,stored,recorded_at) "
+            "VALUES (1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET snapshot_started_at=excluded.snapshot_started_at, "
+            "status=excluded.status, total=excluded.total, stored=excluded.stored, recorded_at=excluded.recorded_at",
+            (started, "truncated" if snapshot.truncated else "complete", snapshot.total,
+             len(snapshot.rows), now))
+
+    def replace_undated_reminders(self, items: list[dict], *, total: int | None = None,
+                                  snapshot_started_at: float | None = None) -> int:
+        """Replace the undated list on its own (tests and tools). The sync endpoint does not
+        use this: it passes the snapshot to ``sync_source`` so the list shares the dated
+        update's transaction. With no ``snapshot_started_at`` the list can never read as
+        current, which is the safe default."""
+        snapshot = parse_undated_snapshot(items, len(items) if total is None else total)
+        if snapshot is None:
+            raise ValueError("invalid undated reminder snapshot")
+        with self._write_transaction():
+            self._write_undated(snapshot, snapshot_started_at, time.time())
+        return len(snapshot.rows)
+
+    def undated_reminders(self, query: str = "") -> list[dict]:
+        """Incomplete Apple reminders with no due date, by title then id."""
+        rows = self._db.execute(
+            "SELECT source_id,title,context FROM assistant_undated_reminders "
+            "ORDER BY title COLLATE NOCASE, source_id").fetchall()
+        needle = (query or "").strip().lower()
+        return [dict(r) for r in rows if not needle or needle in r["title"].lower()]
+
+    def undated_listing(self, query: str = "") -> tuple[dict, list[dict]]:
+        """The view and the matching rows from ONE locked read, so they always describe the
+        same snapshot even if a sync lands between two separate calls."""
+        with self._lock:
+            return self.undated_view(), self.undated_reminders(query)
+
+    def undated_view(self) -> dict:
+        """How trustworthy the stored undated list is, read as one coherent unit.
+
+        ``freshness`` is "current" only when the list was written from the very native
+        snapshot that the Reminders source receipt records as the latest accepted one.
+        A later dated-only snapshot, an invalid or missing undated payload, or an
+        unavailable read all leave the receipt ahead of the list, so the list is "stale".
+        "never" means no list has ever been received. ``status`` is "complete" or
+        "truncated" (``total`` is the app's true count, ``stored`` how many it kept).
+        """
+        with self._lock:
+            state = self._db.execute(
+                "SELECT snapshot_started_at,status,total,stored FROM assistant_undated_state WHERE id=1"
+            ).fetchone()
+            receipt = self._db.execute(
+                "SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+        if state is None:
+            return {"freshness": "never", "status": "unknown", "total": 0, "stored": 0}
+        latest = None
+        if receipt is not None:
+            payload = json.loads(receipt["payload"])
+            if payload.get("available") is True:
+                latest = payload.get("snapshot_started_at")
+        current = (state["snapshot_started_at"] is not None and latest is not None
+                   and state["snapshot_started_at"] == latest)
+        return {"freshness": "current" if current else "stale", "status": state["status"],
+                "total": state["total"], "stored": state["stored"]}
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
                    context: str | None = None) -> dict:

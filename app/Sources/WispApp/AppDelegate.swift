@@ -50,16 +50,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static let autoCollapseDelay: TimeInterval = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // The app bundle launches a helper whose `ps comm` is exactly
-        // `omlx-server`; PortGuard inspects that value, not the parent bundle
-        // path. Without this exemption every Wisp launch terminated the real
-        // oMLX listener and left /health returning 500 until oMLX was reopened.
-        PortGuard.reserve(port: 8000, exemptExecutablePrefixes: [
-            "/Applications/oMLX.app",
-            "\(NSHomeDirectory())/Applications/oMLX.app",
-            "omlx-server",
-        ])
-        PortGuard.reserve(port: 8765, exemptExecutablePrefixes: [])
+        // One Wisp at a time. A second launch used to terminate the first one's
+        // backend and race it for the port; now it hands over to the running app.
+        let peers = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+            .map(\.processIdentifier)
+        let selfPID = ProcessInfo.processInfo.processIdentifier
+        if SingleInstance.shouldYield(bundleIdentifier: Bundle.main.bundleIdentifier,
+                                      selfPID: selfPID, peers: peers) {
+            NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
+                .first { $0.processIdentifier != selfPID }?
+                .activate(options: [])
+            NSApp.terminate(nil)
+            return
+        }
+        // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
+        // cleared by killing whatever listened (which took out MTPLX and Homebrew oMLX
+        // along with the odd stray server). oMLX's own peer attribution refuses an
+        // engine it cannot verify, with a message that says so.
+        //
+        // Port 8765 is Wisp's backend. Whatever holds it at STARTUP is a conflict: this
+        // app instance has spawned nothing yet, and Wisp keeps no record of an earlier
+        // launch's backend (a file any same-user program could forge). So a holder is
+        // never adopted, reclaimed or signalled, including a backend an earlier Wisp left
+        // behind after a crash or upgrade; the person is told and can quit it. Judged only
+        // here, after the single-instance hand-over, so a yielding second launch touches nothing.
+        let folderHints = PortGuard.backendFolderHints(devRoot: backend.backendRootPath)
+        // From here on, every request to the backend port is sent only after a fresh check that
+        // the program there is the process this app spawned (see BackendTrust). The check is
+        // not bound to the connection that carries the request (audit N7, accepted residual).
+        BackendTrustConfiguration.set()
+        BackendTrustProtocol.enforcedPort = BackendTrust.productionPort
+        URLProtocol.registerClass(BackendTrustProtocol.self)
+        NotificationCenter.default.addObserver(
+            forName: .wispBackendRefused, object: nil, queue: .main) { [weak self] note in
+            let message = note.userInfo?["message"] as? String ?? ""
+            MainActor.assumeIsolated { self?.presentBackendRefusal(message) }
+        }
+        // Something the listing missed (or that arrived after it) answering on the port
+        // with no live child of ours: the manager stops and reports it here, once.
+        backend.onPortConflict = { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var holders: [PortGuard.Listener] = []
+                if case .conflict(let foreign) = PortGuard.check(port: 8765, receipt: .none) { holders = foreign }
+                let message = PortGuard.conflictMessage(port: 8765, listeners: holders, folderHints: folderHints)
+                DispatchQueue.main.async { self?.presentPortConflict(message) }
+            }
+        }
         // A10 WP3: inert unless the user enabled a browser (default off).
         backend.extraEnvironment = {
             BrowserBridgeActivation.shared.controlPathForBackend()
@@ -67,7 +104,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
         Task { await BrowserBridgeActivation.shared.begin() }
-        Task { await backend.startIfNeeded() }
+        // The backend starts only after the port has been judged. The judgment is retried for
+        // a few seconds when a holder is there, because after a quick quit and relaunch the
+        // holder is usually the previous run's backend still shutting down; a holder that
+        // outlasts that window is a conflict, as before.
+        Task { [weak self] in
+            let verdict = await Task.detached(priority: .userInitiated) {
+                BackendManager.settledStartupVerdict(check: { PortGuard.check(port: 8765, receipt: .none) })
+            }.value
+            guard let self else { return }
+            if case .conflict(let foreign) = verdict {
+                self.backend.portConflict = true
+                self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
+                                                                   folderHints: folderHints))
+                return
+            }
+            // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
+            // listing missed is still caught by BackendManager before it launches anything.
+            await self.backend.startIfNeeded()
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -658,7 +713,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await PendingConfigWrites.shared.waitUntilIdle()
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
-            backend.stop()
+            await backend.stopAndWait()
             await MainActor.run { NSApp.terminate(nil) }
         }
     }
@@ -677,6 +732,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    private var lastRefusalShown = ""
+
+    /// The app has just refused to talk to the program on the backend port. Shown once
+    /// per distinct reason, never repeatedly while it stays refused.
+    private func presentBackendRefusal(_ message: String) {
+        guard !message.isEmpty, message != lastRefusalShown else { return }
+        lastRefusalShown = message
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Wisp isn't using its service"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Quit Wisp")
+        if alert.runModal() == .alertSecondButtonReturn { NSApp.terminate(nil) }
+    }
+
+    /// A program that is not Wisp's own holds the backend port. Wisp does not stop
+    /// it: the person decides.
+    private func presentPortConflict(_ message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Wisp can't start its service"
+        alert.informativeText = message
+        alert.addButton(withTitle: "Quit Wisp")
+        alert.addButton(withTitle: "Keep Wisp Open")
+        if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
     }
 
     @objc private func openSetupGuide() {

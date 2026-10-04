@@ -917,6 +917,51 @@ def _drop_stale_wisp_only(items: list[dict], now: float | None = None
     return kept, len(items) - len(kept)
 
 
+_UNDATED_NOT_INCLUDED = ("Reminders without a due date were not included in the latest read, "
+                         "so none are listed or verified.")
+
+
+def _undated_report(query: str, scope: str) -> tuple[str, str]:
+    """(section, caveat) for the incomplete Apple reminders that have no due date.
+
+    The stored list is only believed when it was written from the very native snapshot
+    the Reminders receipt records as the latest one. Otherwise (never received, or a
+    later read left it behind) nothing from it is listed and the caveat says so. A list
+    the app had to cut at its cap is reported as "k of N", never as exhaustive. They belong
+    to no time window, so only scope 'all' lists them; a narrower scope counts them.
+    """
+    view, rows = assistant_store.undated_listing(query)
+    if view["freshness"] != "current":
+        return "", _UNDATED_NOT_INCLUDED
+    truncated = view["status"] == "truncated"
+    stored, total = view["stored"], view["total"]
+    plural = lambda n: "s" if n != 1 else ""  # noqa: E731
+    if scope == "all":
+        if rows:
+            lines = [f"- {item['title']}" + (f" ({item['context']})" if item.get("context") else "")
+                     for item in rows]
+            header = ("Apple Reminders with no due date (incomplete)"
+                      + (f", showing {stored} of {total}; the rest were not synced:" if truncated else ":"))
+            return header + "\n" + "\n".join(lines), ""
+        if truncated:
+            return "", (f"No match among the {stored} of {total} reminders with no due date that "
+                        f"were synced; the other {total - stored} were not checked.")
+        return "", ""
+    if not truncated:
+        count = len(rows)
+        if not count:
+            return "", ""
+        return (f"{count} incomplete Apple reminder{plural(count)} with no due date "
+                f"{'are' if count != 1 else 'is'} not in this time window; ask for all reminders to see "
+                f"{'them' if count != 1 else 'it'}."), ""
+    if not (query or "").strip():
+        return (f"{total} incomplete Apple reminder{plural(total)} with no due date "
+                f"{'are' if total != 1 else 'is'} not in this time window; ask for all reminders to see "
+                f"{'them' if total != 1 else 'it'}."), ""
+    return (f"{len(rows)} of the {stored} synced reminders with no due date match (of {total} in all); "
+            "they are not in this time window; ask for all reminders to see them."), ""
+
+
 def _stale_note(hidden: int) -> str:
     if not hidden:
         return ""
@@ -975,10 +1020,12 @@ async def search_reminders(query: str, scope: str = "all") -> str:
         return (notice + "\nWisp-only records (Apple copy not confirmed because "
                 "Apple Reminders couldn't be checked; they may still be active):\n"
                 + "\n".join(wisp_lines) + stale_note)
-    if not items:
-        return (f"A current Reminders read found no active match for {query!r}. "
+    undated_section, undated_caveat = _undated_report(query, scope)
+    if not items and not undated_section:
+        return (f"A current Reminders read found no active match for {query!r}"
+                + (" among reminders with a due date" if undated_caveat else "") + ". "
                 "An older remembered item does not establish a current reminder."
-                + stale_note)
+                + (("\n" + undated_caveat) if undated_caveat else "") + stale_note)
     native_lines, wisp_lines = [], []
     for item in items:
         sources = {str(item.get("source") or "")}
@@ -990,13 +1037,18 @@ async def search_reminders(query: str, scope: str = "all") -> str:
                 "These lists describe storage, not who created an item. "
                 "Recently Deleted status is not independently verified."]
     sections.append("Apple Reminders incomplete-item matches:\n" +
-                    ("\n".join(native_lines) if native_lines else "None."))
+                    ("\n".join(native_lines) if native_lines else
+                     "None with a due date." if undated_section else "None."))
+    if undated_section:
+        sections.append(undated_section)
     if wisp_lines:
         sections.append("Wisp-only records, kept for review: these are not "
                         "verified active Apple Reminders items. Some may be older "
                         "Apple mirrors and others live Wisp reminders. Do not "
                         "delete them without exact user selection.\n"
                         + "\n".join(wisp_lines))
+    if undated_caveat:
+        sections.append(undated_caveat)
     return "\n".join(sections) + stale_note
 
 

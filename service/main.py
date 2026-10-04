@@ -19,11 +19,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
@@ -41,12 +44,16 @@ from service.config import (
     save_installed_models,
     set_cloud_provider,
     set_local_provider,
+    LOCAL_PROVIDER_ROLES,
+    LOCAL_PROVIDER_TOOL_ROLES,
+    PROVIDER_CONNECTION_ROLES,
     set_role,
     set_roles,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
+from service.inference import qualify as qualification
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -261,6 +268,8 @@ def _sync_keep_warm() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from service.identity import refuse_sandbox_on_production_port
+    refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
     global client
@@ -566,59 +575,204 @@ async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]
         await probe.aclose()
 
 
+# A passing or failing qualification is reused for a few minutes so "Test" then
+# "Connect" in Settings does not repeat a multi-second probe. Keyed by the exact
+# app, model and claimed window; never trusted across those.
+_QUALIFICATION_TTL_SECONDS = 600.0
+_qualification_cache: dict[tuple, tuple[float, qualification.Report, int]] = {}
+# Revocation and publication order. All three are guarded by
+# _local_provider_operation_lock, and that lock is only ever held for the short
+# synchronous sections below, never across an await.
+#   epoch      advanced by an explicit Disconnect; a result measured in an older
+#              epoch is never published, and the cache is emptied with the bump, so
+#              every cached entry belongs to the current epoch.
+#   ticket     handed out when a probe starts; of two probes for the same app only
+#              the newer ticket may leave reusable evidence, whatever order they
+#              finish in. A model-discovery failure takes part too: it is newer
+#              evidence that the app is unusable, so it retires the older entry and
+#              records its ticket, and an older in-flight success then loses.
+#   evidence   (key, epoch, ticket) travels with the report a Connect will save.
+#              The save re-checks it under the lock, so a report that a newer
+#              completed result has superseded can never authorise the save.
+_qualification_epoch = 0
+_qualification_ticket = 0
+_qualification_published: dict[tuple, int] = {}
+
+
+def _revoke_qualification_evidence_unlocked() -> None:
+    """Explicit Disconnect: nothing measured before now may be reused or published later."""
+    global _qualification_epoch
+    _qualification_epoch += 1
+    _qualification_cache.clear()
+    _qualification_published.clear()
+
+
+def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    if (not isinstance(model_id, str) or not model_id.strip()
+            or isinstance(context_window, bool) or not isinstance(context_window, int)
+            or not 512 <= context_window <= 262144):
+        raise HTTPException(status_code=400,
+                            detail="Choose an exact model ID and a context window.")
+    return model_id.strip(), context_window
+
+
+def _qualification_evidence_current_unlocked(evidence: tuple) -> bool:
+    """Whether a report is still the newest completed evidence for its app."""
+    key, epoch, ticket = evidence
+    return epoch == _qualification_epoch and _qualification_published.get(key, 0) <= ticket
+
+
+async def _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id: str, context_window: int,
+        *, fresh: bool) -> tuple[qualification.Report, tuple]:
+    """Qualify the app and return the report with the identity of its evidence."""
+    global _qualification_ticket
+    key = (provider_endpoint.base_url, provider_endpoint.api_prefix, model_id, context_window)
+    with _local_provider_operation_lock:
+        epoch = _qualification_epoch
+        cached = _qualification_cache.get(key)
+        if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
+            return cached[1], (key, epoch, cached[2])
+        _qualification_ticket += 1
+        ticket = _qualification_ticket
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
+    discovery_failure = ""
+    try:
+        try:
+            if model_id not in await probe.models():
+                discovery_failure = "The local app did not return that exact model ID."
+        except Exception:
+            discovery_failure = "The local inference app did not return a model list."
+        if discovery_failure:
+            with _local_provider_operation_lock:
+                # This attempt is now the newest word on the app and it says "unusable":
+                # retire any older success and record the ticket so an older in-flight
+                # probe cannot publish over it. Nothing is cached as a failure, so a
+                # transient discovery error cannot block Connect once the app recovers.
+                # Done HERE, before the awaited cleanup below, so a cleanup that raises
+                # or is cancelled cannot leave the older success reusable. A
+                # cancellation during discovery itself records nothing: it is not
+                # evidence about the app.
+                if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+                    _qualification_cache.pop(key, None)
+                    _qualification_published[key] = ticket
+    finally:
+        try:
+            await probe.aclose()
+        except Exception:
+            # A cleanup error must not replace a failure that is already known (and
+            # already recorded above); with no known failure it still propagates.
+            if not discovery_failure:
+                raise
+    if discovery_failure:
+        raise HTTPException(status_code=400, detail=discovery_failure)
+    report = await qualification.qualify(provider_endpoint, model_id, context_window)
+    with _local_provider_operation_lock:
+        # The caller always gets its own report. It becomes reusable evidence only if
+        # no Disconnect happened while it was measured and no newer probe of the same
+        # app has already published.
+        if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+            _qualification_cache[key] = (time.monotonic(), report, ticket)
+            _qualification_published[key] = ticket
+    return report, (key, epoch, ticket)
+
+
+async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
+                                  *, fresh: bool) -> qualification.Report:
+    report, _evidence = await _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id, context_window, fresh=fresh)
+    return report
+
+
+@app.post("/inference/local-provider/qualify")
+async def qualify_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    """Measure the app's real context window and exercise tool calling.
+
+    Read-only with respect to settings: nothing is saved here. Every prompt is
+    synthetic; no user data is read or sent.
+    """
+    _, provider_endpoint = _local_provider_endpoint(body)
+    model_id, context_window = _local_provider_probe_args(body)
+    report = await _qualify_local_provider(provider_endpoint, model_id, context_window, fresh=True)
+    return {**report.as_dict(), "minimum_context": qualification.MIN_TOOL_CONTEXT,
+            "recommended_context": qualification.RECOMMENDED_CONTEXT}
+
+
 @app.post("/inference/local-provider")
 async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
     endpoint_cfg, provider_endpoint = _local_provider_endpoint(body)
-    model_id = body.get("model_id")
-    context_window = body.get("context_window")
+    model_id, context_window = _local_provider_probe_args(body)
     roles = body.get("roles")
-    if (not isinstance(model_id, str) or not model_id.strip()
-            or isinstance(context_window, bool) or not isinstance(context_window, int)
-            or not 512 <= context_window <= 262144
-            or roles != ["reasoning"]):
+    if (not isinstance(roles, list) or not roles or len(set(roles)) != len(roles)
+            or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
         raise HTTPException(status_code=400,
-                            detail="Choose an exact model ID and the Reasoning workload.")
+                            detail="Choose Reasoning, Agent, or Coding for this app.")
     generation = _supersede_local_provider_probe()
-    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
-                                     context_window=context_window), timeout=30)
+    qualified_report: dict[str, Any] | None = None
+    evidence: tuple | None = None
     try:
-        async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
-            try:
-                available = await probe.models()
-                if model_id.strip() not in available:
-                    raise HTTPException(status_code=400,
-                                        detail="The local app did not return that exact model ID.")
-                completed = False
-                content_parts: list[str] = []
-                final_content = ""
-                async for event in probe.stream_events(
-                        model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
-                        max_tokens=min(64, context_window)):
-                    if event.get("kind") == "content" and isinstance(event.get("text"), str):
-                        content_parts.append(event["text"])
-                    elif event.get("kind") == "final":
-                        completed = True
-                        message = event.get("message")
-                        if isinstance(message, dict) and isinstance(message.get("content"), str):
-                            final_content = message["content"]
-            finally:
-                await probe.aclose()
-        if deadline.expired():
-            raise HTTPException(status_code=504,
-                                detail="The local inference app connection test timed out.")
-        if not completed or not ("".join(content_parts) + final_content).strip():
-            raise HTTPException(status_code=400,
-                                detail="The local app did not return a nonempty streaming reply.")
+        if LOCAL_PROVIDER_TOOL_ROLES & set(roles):
+            # The SERVER decides whether tool use is allowed, from its own probe.
+            report, evidence = await _qualify_local_provider_with_evidence(
+                provider_endpoint, model_id, context_window, fresh=False)
+            if not report.qualified:
+                failed = next((c for c in report.checks if c.required and not c.ok), None)
+                detail = " ".join(part for part in (
+                    failed.detail if failed else "", report.hint) if part)
+                raise HTTPException(status_code=400, detail=(
+                    "This app can't run Wisp's tools yet. " + detail).strip())
+            qualified_report = report.as_dict()
+        else:
+            probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id,
+                                             context_window=context_window), timeout=30)
+            async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
+                try:
+                    available = await probe.models()
+                    if model_id not in available:
+                        raise HTTPException(status_code=400,
+                                            detail="The local app did not return that exact model ID.")
+                    completed = False
+                    content_parts: list[str] = []
+                    final_content = ""
+                    async for event in probe.stream_events(
+                            model_id, [{"role": "user", "content": "Reply with OK."}],
+                            max_tokens=min(64, context_window)):
+                        if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                            content_parts.append(event["text"])
+                        elif event.get("kind") == "final":
+                            completed = True
+                            message = event.get("message")
+                            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                                final_content = message["content"]
+                finally:
+                    await probe.aclose()
+            if deadline.expired():
+                raise HTTPException(status_code=504,
+                                    detail="The local inference app connection test timed out.")
+            if not completed or not ("".join(content_parts) + final_content).strip():
+                raise HTTPException(status_code=400,
+                                    detail="The local app did not return a nonempty streaming reply.")
         with _local_provider_operation_lock:
             if generation != _local_provider_operation_generation:
                 raise HTTPException(status_code=409,
                                     detail="A newer inference setting replaced this connection test.")
-            set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+            if evidence is not None and not _qualification_evidence_current_unlocked(evidence):
+                # A newer completed test of this app (pass, fail or failed discovery)
+                # superseded the report this Connect measured; saving it would persist
+                # tool qualification the latest evidence no longer supports.
+                raise HTTPException(status_code=409,
+                                    detail="A newer connection test replaced this result.")
+            set_local_provider(endpoint_cfg, model_id, context_window, roles,
+                               qualification=qualified_report)
     except HTTPException:
         raise
     except TimeoutError:
         raise HTTPException(status_code=504,
                             detail="The local inference app connection test timed out.") from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
     except Exception:
         raise HTTPException(status_code=400,
                             detail="The local inference app could not be reached.") from None
@@ -629,6 +783,7 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
 async def disconnect_local_provider_inference() -> dict[str, Any]:
     with _local_provider_operation_lock:
         _supersede_local_provider_probe_unlocked()
+        _revoke_qualification_evidence_unlocked()
         disable_local_provider()
     return await get_local_provider_inference()
 
@@ -637,7 +792,10 @@ async def disconnect_local_provider_inference() -> dict[str, Any]:
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
     if role and model:
-        if role == "reasoning":
+        if role in PROVIDER_CONNECTION_ROLES:
+            # A pending provider connection will rewrite these bindings when it saves.
+            # Supersede it under the same lock as the new choice, so the older
+            # connection fails its generation check instead of undoing this one.
             with _local_provider_operation_lock:
                 _supersede_local_provider_probe_unlocked()
                 set_role(role, model)
@@ -746,6 +904,14 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
         set_roles({role: model for role in setup_guide.TEXT_ROLES})
     _sync_keep_warm()
     return await setup_status()
+
+
+@app.get("/identity")
+async def get_identity() -> dict[str, Any]:
+    """Which backend this is. The app refuses a listener that is not its own (proved
+    from the kernel, not from this answer) and any whose mode is not "production"."""
+    from service.identity import payload
+    return payload()
 
 
 @app.get("/mode")
@@ -1000,15 +1166,21 @@ async def agent(body: dict[str, Any]):
         sess = store.get_session(sid)
 
     queue: asyncio.Queue = asyncio.Queue()
+    req_id = uuid.uuid4().hex
     approver = InteractiveApprover(lambda ev: queue.put(ev))
+    # Set after construction (not as a constructor argument) so approver stand-ins
+    # that take only `emit` keep working. It rides on every confirm event.
+    approver.request_id = req_id
     # Key the in-flight registry by a unique REQUEST id, not the session id.
     # Two overlapping requests on the same session used to clobber each other:
     # the second overwrote SESSIONS[sid], then the first's `finally` popped it,
     # breaking the survivor's /agent/approve routing. Approvals now match on the
     # globally-unique action_id (see the approve endpoint), so the request key
     # only needs to be unique.
-    req_id = uuid.uuid4().hex
-    SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+    #
+    # The request is registered, and its runner started, when the response body is
+    # first consumed (see stream() below), not here: a client that never reads the
+    # body must not leave a registry entry and a running turn behind.
 
     # Collected for persistence after the turn finishes.
     captured: dict[str, Any] = {
@@ -1074,6 +1246,102 @@ async def agent(body: dict[str, Any]):
         idle.begin_foreground()
         workflow_turn = None
         task_turn = None
+        # Every workflow revision this request persisted as running and executes:
+        # the typed workflow_turn, a completed task's receipt notification and the
+        # stored-news branch. Each entry remembers the revision it owns and where
+        # its own tool events begin in `captured`, so settlement judges a plan only
+        # by what that plan observed, never by an earlier step's send.
+        owned_workflows: list[dict[str, Any]] = []
+
+        def own_workflow(plan) -> dict[str, Any]:
+            entry = {"plan": plan, "revision": plan.revision, "finished": False,
+                     "calls_from": len(captured["tool_calls"]),
+                     "results_from": len(captured["tool_results"])}
+            owned_workflows.append(entry)
+            return entry
+
+        def observed_by(entry: dict[str, Any]) -> dict[str, Any]:
+            results = captured["tool_results"][entry["results_from"]:]
+            return {"tool_calls": captured["tool_calls"][entry["calls_from"]:],
+                    "tool_results": results,
+                    "denied": any("denied" in str(item.get("result", "")).lower()
+                                  for item in results)}
+
+        def finish_owned(entry: dict[str, Any], observed: dict[str, Any]) -> None:
+            """The normal path's finish; a plan finished here is never settled again."""
+            finish_workflow(store, sid, entry["plan"], observed)
+            entry["finished"] = True
+
+        # True once this request's assistant reply is stored: a stop after that point (the client
+        # closing at `done`, then the summary) finished a turn; it is not an unfinished one.
+        assistant_reply_stored = False
+
+        def settle_unfinished(message: str) -> None:
+            """Leave durable state honest when a turn stops without finishing.
+
+            Shared by a failed turn and a cancelled one (the app disconnected). A
+            typed task still marked running and every owned workflow revision this
+            request left running are settled, the user's message is saved (it was
+            never saved before, leaving a hole in the history), and an honest
+            assistant note records that it did not finish. Each write is separately
+            best effort, so one failure cannot skip the rest, and none can raise.
+            Synchronous on purpose: nothing here can be interrupted a second time.
+
+            A workflow goes through the same finish_workflow the normal path uses,
+            fed only its own observed calls/results: an observed effect call without
+            a verified success settles as "delivery outcome uncertain". A durable
+            effect claim is never released and nothing is re-run here; the claim
+            keeps blocking any repeat of that delivery.
+            """
+            if test_mode:
+                return
+            uncertain_send = False
+            try:
+                if task_turn and task_turn.executable and task_turn.plan.status == "running":
+                    finish_task(store, sid, task_turn.plan, status="failed", result=message)
+            except Exception:  # noqa: BLE001 — persistence must not mask the real error
+                pass
+            try:
+                uncertain_send = bool(
+                    task_turn and task_turn.plan.status != "completed"
+                    and task_turn.plan.intent in {"email.reply", "email.send", "message.send"}
+                    and task_turn.plan.claimed_calls)
+            except Exception:  # noqa: BLE001
+                pass
+            for entry in owned_workflows:
+                plan = entry["plan"]
+                try:
+                    # Only a revision this request still owns: one finished normally,
+                    # or advanced by anyone else, is left exactly as it is.
+                    if (entry["finished"] or plan.status != "running"
+                            or plan.revision != entry["revision"]):
+                        continue
+                    finish_workflow(store, sid, plan, observed_by(entry))
+                    entry["finished"] = True
+                except Exception:  # noqa: BLE001
+                    pass
+                # Reached only for a plan this settlement handled (finished plans
+                # `continue` above and already reported their own outcome).
+                try:
+                    if store.workflow_effect_claimed(plan.id) and plan.status != "completed":
+                        uncertain_send = True
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                persist_user_turn()
+            except Exception:  # noqa: BLE001
+                pass
+            if assistant_reply_stored:
+                return   # the real reply is already stored; never follow it with a failure note
+            try:
+                store.add_turn(sid, "assistant",
+                               f"(This request could not be completed — {message} "
+                               + ("Sending was already attempted; its outcome is unknown. "
+                                  "Check before requesting another send.)" if uncertain_send else
+                                  "Check any actions already reported before retrying.)"))
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
@@ -1093,6 +1361,15 @@ async def agent(body: dict[str, Any]):
             )
             if sess and active_skill != str(sess.get("active_skill") or ""):
                 store.set_active_skill(sid, active_skill)
+            # Skills stay on the managed model. Beyond an active conversational
+            # workflow, that covers a turn that invokes ANY enabled skill (an
+            # explicit @name or a trigger phrase) and the follow-up to a turn that
+            # loaded a skill with use_skill or ran a skill-defined tool.
+            skill_turn = ""
+            if active_skill:
+                skill_turn = "active_skill_local"
+            elif skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools):
+                skill_turn = "skill_local"
 
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
@@ -1122,11 +1399,12 @@ async def agent(body: dict[str, Any]):
                     return
                 if news_turn.decision:
                     from service.workflows.executor import execute_workflow
+                    news_owned = own_workflow(news_turn.plan)
                     execution = await execute_workflow(
                         news_turn.plan, emit, approver, test_mode=test_mode, store=store,
                         session_id=sid)
                     if not test_mode:
-                        finish_workflow(store, sid, news_turn.plan, {
+                        finish_owned(news_owned, {
                             "tool_calls": execution.tool_calls,
                             "tool_results": execution.tool_results,
                             "denied": execution.status == "denied"})
@@ -1176,12 +1454,13 @@ async def agent(body: dict[str, Any]):
                     if notification_plan.status == "ready":
                         notification_plan.status = "running"
                     store.save_workflow(sid, notification_plan.to_dict())
+                    notification_owned = own_workflow(notification_plan)
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
                         delivered = await execute_workflow(
                             notification_plan, emit, approver, store=store,
                             session_id=sid)
-                        finish_workflow(store, sid, notification_plan, {
+                        finish_owned(notification_owned, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
                         execution.response += "\n\nNotification: " + delivered.response
@@ -1203,6 +1482,10 @@ async def agent(body: dict[str, Any]):
             # instead of being classified as a new isolated request.
             workflow_turn = prepare_turn(
                 store, sid, prompt, persist=not test_mode)
+            # Only a turn that starts execution owns its revision; a response-only
+            # turn (e.g. "already running") may describe another request's plan.
+            workflow_owned = (own_workflow(workflow_turn.plan)
+                              if workflow_turn and workflow_turn.decision else None)
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
@@ -1221,7 +1504,7 @@ async def agent(body: dict[str, Any]):
                     workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
                     session_id=sid)
                 if not test_mode:
-                    finish_workflow(store, sid, workflow_turn.plan, {
+                    finish_owned(workflow_owned, {
                         "tool_calls": execution.tool_calls,
                         "tool_results": execution.tool_results,
                         "denied": execution.status == "denied"})
@@ -1327,13 +1610,24 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
-            if active_skill and target.endpoint.name == "local_provider":
+            if not skill_turn:
+                # A route that forces a skill-content tool (for example "list my installed
+                # skills" forcing wisp_skills) is a skill turn too, even though the prompt
+                # triggers no skill: its answer is skill metadata. A broad default menu that
+                # merely CONTAINS use_skill is not.
+                _skill_tools = skills.skill_tool_names()
+                _subset = set(decision.tool_subset or ())
+                if (decision.force_first_tool in _skill_tools
+                        or (_subset and _subset <= _skill_tools)):
+                    skill_turn = "skill_local"
+            if skill_turn and target.endpoint.name == "local_provider":
                 # A skill may contain local file content or private workflow state.
                 # Keep its instructions and execution on the managed model.
                 target = local_role_target(decision.role)
                 decision.model = target.model
-                decision.route_source = "active_skill_local"
-                decision.reason = f"{decision.reason}; active skill stays on this Mac"
+                decision.route_source = skill_turn
+                decision.reason = (f"{decision.reason}; "
+                                   f"{'active skill' if active_skill else 'skill'} stays on this Mac")
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -1606,14 +1900,15 @@ async def agent(body: dict[str, Any]):
             # Skipped in test mode — a dry run must leave no trace (see the
             # endpoint docstring): nothing was actually asked or answered.
             if not test_mode:
-                if workflow_turn and workflow_turn.decision:
-                    finish_workflow(store, sid, workflow_turn.plan, captured)
+                if workflow_owned is not None:
+                    finish_owned(workflow_owned, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
                 from service.tools.registry import DisplayOnlyToolResult
                 persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
+                assistant_reply_stored = True
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
@@ -1656,37 +1951,48 @@ async def agent(body: dict[str, Any]):
             # answer, since there isn't one) so a later "did you send that"
             # gets "that attempt failed" rather than the model reasoning over a
             # dangling unanswered user message with no signal either way.
-            if not test_mode:
-                try:
-                    if task_turn and task_turn.executable and task_turn.plan.status == "running":
-                        finish_task(store, sid, task_turn.plan, status="failed",
-                                    result=message)
-                    if (workflow_turn and workflow_turn.decision
-                            and workflow_turn.plan.status == "running"):
-                        finish_workflow(store, sid, workflow_turn.plan, captured)
-                    persist_user_turn()
-                    uncertain_send = (task_turn and task_turn.plan.intent in {
-                        "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
-                    store.add_turn(sid, "assistant",
-                                   f"(This request could not be completed — {message} "
-                                   + ("Sending was already attempted; its outcome is unknown. "
-                                      "Check before requesting another send.)" if uncertain_send else
-                                      "Check any actions already reported before retrying.)"))
-                except Exception:  # noqa: BLE001 — persistence must not mask the real error
-                    pass
+            settle_unfinished(message)
+        except asyncio.CancelledError:
+            # The app disconnected (quit, New Chat, dropped connection). The stream
+            # cancels this task so no more model or tool work happens. Cancellation
+            # is a BaseException, so without this branch nothing below ran: a typed
+            # task or workflow stayed "running" forever and the user's message was
+            # never saved. Effects already started keep their receipt state and are
+            # never resubmitted here.
+            settle_unfinished("the app disconnected before it finished.")
+            raise
         finally:
+            async def close_client(close):
+                with anyio.move_on_after(1, shield=True) as cleanup_scope:
+                    try:
+                        await close()
+                    except Exception as error:  # cleanup must not replace the turn's failure
+                        asyncio.get_running_loop().call_exception_handler({
+                            "message": f"Agent inference client cleanup failed ({type(error).__name__})",
+                        })
+                if cleanup_scope.cancel_called:
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent inference client cleanup exceeded its deadline",
+                    })
             try:
-                if turn_client is not None:
-                    await turn_client.close_fallback()
-                if owned_inference_client is not None:
-                    await owned_inference_client.aclose()
+                # A disconnected response's AnyIO scope is already cancelled.
+                # Give cooperative client teardown a bounded chance to finish.
+                try:
+                    if turn_client is not None:
+                        await close_client(turn_client.close_fallback)
+                finally:
+                    if owned_inference_client is not None:
+                        await close_client(owned_inference_client.aclose)
             finally:
                 idle.end_foreground()
-                await queue.put(None)
-
-    runner_task = asyncio.create_task(runner())
+                queue.put_nowait(None)
 
     async def stream():
+        # Started here, on first consumption, so the turn's lifetime is exactly the
+        # stream's lifetime: whatever ends the stream (done, error, disconnect,
+        # cancellation) ends the turn and unregisters it in the finally below.
+        SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+        runner_task = asyncio.create_task(runner())
         try:
             yield _sse({"type": "session", "id": sid})
             while True:
@@ -1698,12 +2004,63 @@ async def agent(body: dict[str, Any]):
             # A disconnected UI cannot leave generation/approval work running.
             # Already-started effects retain their existing receipt state; they
             # are never resubmitted here.
-            if not runner_task.done():
-                runner_task.cancel()
-            await asyncio.gather(runner_task, return_exceptions=True)
-            SESSIONS.pop(req_id, None)
+            cancelled = False
+            original_error = sys.exception()
+            try:
+                if not runner_task.done():
+                    runner_task.cancel()
+                deadline = asyncio.get_running_loop().time() + 3
+                forced_cancel = False
+                with anyio.CancelScope(shield=True):
+                    while not runner_task.done():
+                        try:
+                            remaining = deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                if not forced_cancel:
+                                    runner_task.cancel()
+                                    forced_cancel = True
+                                grace = deadline + 0.1 - asyncio.get_running_loop().time()
+                                if grace > 0:
+                                    await asyncio.wait({runner_task}, timeout=grace)
+                                break
+                            # Unlike gather, cancelling this wait does not cancel
+                            # the runner again halfway through its durable cleanup.
+                            await asyncio.wait({runner_task}, timeout=remaining)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                if not runner_task.done():
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent runner suppressed cancellation past its shutdown deadline",
+                        "task": runner_task,
+                    })
+                    if cancelled or isinstance(original_error, asyncio.CancelledError):
+                        raise asyncio.CancelledError
+                    raise RuntimeError("Agent runner did not stop after cancellation")
+                if not runner_task.cancelled():
+                    runner_task.exception()  # retrieve any failure without replaying work
+            finally:
+                SESSIONS.pop(req_id, None)
+            if cancelled:
+                raise asyncio.CancelledError
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    class AgentStreamingResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # ASGI 2.4 send failures leave an iterator suspended at yield.
+                # Close explicitly while the response is still strongly held.
+                original_error = sys.exception()
+                try:
+                    with anyio.CancelScope(shield=True):
+                        await self.body_iterator.aclose()
+                except Exception:
+                    if original_error is None:
+                        raise
+                    # The stream already reports incomplete shutdown. Preserve
+                    # the actual transport error or cancellation at this boundary.
+
+    return AgentStreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.get("/sessions")
@@ -1812,8 +2169,16 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict
+    # Reminders only: incomplete reminders with no due date ride along as a separate list.
+    # A missing or invalid payload is None, which leaves the stored list untouched, so it
+    # reads as stale until a valid one arrives; the dated part is still accepted.
+    from service.assistant.store import parse_undated_snapshot
+    undated = (parse_undated_snapshot(body.get("undated"), body.get("undated_total"))
+               if source == "reminders" else None)
     try:
-        n = assistant_store.sync_source(source, items, diagnostics=diagnostics)
+        # One call, one transaction: the dated rows, the receipt and the undated list
+        # commit together or not at all.
+        n = assistant_store.sync_source(source, items, diagnostics=diagnostics, undated=undated)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
@@ -1981,7 +2346,8 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     from service.tools.notes_tools import cache_notes
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
-                reason=str(diag.get("reason") or ""))
+                reason=str(diag.get("reason") or ""),
+                snapshot_started_at=diag.get("snapshot_started_at"))
     return {"ok": True}
 
 
@@ -2198,25 +2564,42 @@ async def assistant_events() -> StreamingResponse:
 
 @app.post("/agent/approve")
 async def approve(body: dict[str, Any]) -> dict[str, Any]:
-    sid = body["session_id"]
-    action_id = body["action_id"]
-    approved = bool(body["approved"])
+    sid, action_id = body.get("session_id"), body.get("action_id")
+    approved, request_id = body.get("approved"), body.get("request_id")
+    # A decision authorizes or refuses a real action, so the body is validated
+    # strictly. `bool("false")` is True: a JSON string "false", or 1, or null used
+    # to be coerced into an approval, and a missing field was an unhandled 500.
+    if (not isinstance(sid, str) or not sid or not isinstance(action_id, str) or not action_id
+            or type(approved) is not bool
+            or (request_id is not None and (not isinstance(request_id, str) or not request_id))
+            or ("scope" in body and not isinstance(body["scope"], str))):
+        raise HTTPException(
+            status_code=422,
+            detail="session_id and action_id must be non-empty strings and approved must be true or false.")
     # "once" (default), "always", or "never" — see service/agent/approver.py.
     # Anything unrecognized falls back to "once", so an older client that
     # doesn't send the field keeps its existing ask-every-time behavior.
     scope = str(body.get("scope") or "once")
     if scope not in ("once", "always", "never"):
         scope = "once"
-    # Route the approval to whichever in-flight request holds this pending
-    # action_id (tool-call ids are globally unique). Filtering by session_id
-    # first keeps overlapping requests on different sessions isolated. This
-    # replaces the old SESSIONS[session_id] lookup that broke when two requests
-    # shared a session.
-    for entry in list(SESSIONS.values()):
-        if entry["sid"] != sid:
-            continue
-        if entry["approver"].resolve(action_id, approved, scope):
+    # Route to the exact request that raised the card. Action ids are not unique
+    # across overlapping requests, so the request id (carried on every confirm
+    # event) is authoritative. A client that predates it is honored only when
+    # exactly one in-flight request on this session holds that action id; with
+    # two, answering either could approve the other's action, so refuse instead.
+    if request_id is not None:
+        entry = SESSIONS.get(request_id)
+        if entry and entry["sid"] == sid and entry["approver"].resolve(action_id, approved, scope):
             return {"ok": True, "scope": scope}
+        return {"ok": False, "error": "no pending action for that id"}
+    holders = [entry for entry in list(SESSIONS.values())
+               if entry["sid"] == sid
+               and getattr(entry["approver"], "has_pending", lambda _id: False)(action_id)]
+    if len(holders) > 1:
+        return {"ok": False,
+                "error": "that action id is pending in more than one request; answer from the card itself"}
+    if holders and holders[0]["approver"].resolve(action_id, approved, scope):
+        return {"ok": True, "scope": scope}
     return {"ok": False, "error": "no pending action for that id"}
 
 

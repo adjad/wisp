@@ -1355,10 +1355,39 @@ async def run_agent(
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
 
+    # Skills stay on the managed model. When this run talks to an external local
+    # inference app (the unauthenticated loopback provider), none of their content
+    # may reach it: no catalog, no loaded bodies, no use_skill result and no
+    # skill-defined tool. main routes any turn that invokes a skill to the managed
+    # model; this keeps every other turn on that provider free of skill content too.
+    # Scoped to the local provider on purpose: cloud-bound runs are unchanged.
+    skills_external = (not getattr(client, "managed", True)
+                       and getattr(client, "endpoint_name", "") == "local_provider")
+
+    def _skill_boundary_names() -> frozenset[str]:
+        """Skill tools this run must not offer or run. Read from the registry NOW, never
+        from a snapshot taken at the start of the turn: create_tool reloads skills, so a
+        skill tool can be registered mid-turn and must be covered the moment it exists."""
+        if not skills_external:
+            return frozenset()
+        from service.skills import skill_tool_names
+        return skill_tool_names()
+
+    def _skill_boundary(tool_name: str) -> bool:
+        return tool_name in _skill_boundary_names()
+
+    def _admit(offered: list[dict]) -> list[dict]:
+        """Drop every schema the skill boundary protects. Used at every build and rebuild."""
+        blocked = _skill_boundary_names()
+        return [s for s in offered if s["function"]["name"] not in blocked]
+
+    if force_first_tool and _skill_boundary(force_first_tool):
+        force_first_tool = None
+
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
-    if not public_web_synthesis:
+    if not public_web_synthesis and not skills_external:
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)
@@ -1370,7 +1399,7 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    schemas = [s for s in tool_schemas(tools)
+    schemas = [s for s in _admit(tool_schemas(tools))
                if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
@@ -1405,7 +1434,7 @@ async def run_agent(
     system_prefix = [{"role": "system", "content": sys_content},
                      {"role": "system", "content": runtime_content}]
     msgs: list[dict] = system_prefix + messages
-    first_step_schemas = tool_schemas([force_first_tool]) if force_first_tool else schemas
+    first_step_schemas = _admit(tool_schemas([force_first_tool])) if force_first_tool else schemas
 
     # the agent model turns run exclusive (no the summarizer co-residency attempt — verified it
     # doesn't hold once the agent model is actively generating anyway, see
@@ -1658,6 +1687,9 @@ async def run_agent(
         await emit({"type": "text", "text": response})
         return response
     for _name, _args in (direct_calls or []):
+        if _skill_boundary(_name):
+            audit("reject_skill_boundary", tool=_name, args=_args)
+            continue
         _args = permitted_stock_args(_name, _args)
         if _name == "get_stock_price" and excluded_stocks and not _args.get("symbols"):
             audit("reject_excluded_stock", tool=_name, args=_args)
@@ -2281,7 +2313,7 @@ async def run_agent(
         if response := _unavailable_response(
                 name for tc in tool_calls
                 if (name := _clean_tool_name(tc["function"]["name"])) in allowed_names
-                and name not in forbidden_tools):
+                and name not in forbidden_tools and not _skill_boundary(name)):
             await emit({"type": "text", "text": response})
             return response
         batch_verdict: dict[str, bool] = {}
@@ -2373,6 +2405,18 @@ async def run_agent(
                     f"({name} already consumed its strict read budget for this request; "
                     "it was NOT run again. Narrate only the existing verified result.)")
                 audit("reject_strict_read_budget", tool=name, args=args)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
+            if _skill_boundary(name):
+                # A skill tool on the external local provider: not offered, so a call to
+                # it is refused whether the model named it from memory or it appeared
+                # in the registry mid-turn. The wording discloses nothing about skills.
+                result = (f"({name} is not available in this conversation. Do not call it "
+                          "and do not claim it ran.)")
+                audit("reject_skill_boundary", tool=name, args=args)
+                hard_failed.add(name)
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -2547,7 +2591,8 @@ async def run_agent(
                 # of.)
                 if name == "create_tool":
                     from service.tools.tool_authoring import prepare_draft
-                    draft_err = await prepare_draft(args)
+                    draft_err = await prepare_draft(
+                        args, managed_only=bool(getattr(client, "managed", True)))
                     if draft_err:
                         result = f"(couldn't create this tool: {draft_err})"
                         audit("draft_failed", tool=name, args=args, reason=draft_err)
@@ -2774,7 +2819,10 @@ async def run_agent(
                 new_name = str(args.get("name", "")).strip().lower()
                 if tools is not None and new_name not in tools:
                     tools = [*tools, new_name]
-                schemas = tool_schemas(tools)
+                # Rebuilt through the same boundary as the initial menu: on the external
+                # local provider a freshly registered skill tool (and any existing one)
+                # stays out of what is offered.
+                schemas = _admit(tool_schemas(tools))
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound

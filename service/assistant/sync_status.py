@@ -172,6 +172,64 @@ async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -
             "reminders_fresh": reminders_refreshed}
 
 
+# A real Notes read walks up to ~500 notes through AppleScript or the local
+# store; a lookup is worth waiting for that, but not indefinitely.
+NOTES_REFRESH_TIMEOUT_S = 8.0
+
+
+async def refresh_notes(timeout_seconds: float | None = None) -> dict:
+    """Ask the app for a NEW Notes read and report honestly what came back.
+
+    ``status`` is one of
+      ``fresh``        a read that STARTED after this request has been published;
+      ``stale``        no such read arrived in time; a snapshot of ``age_seconds``
+                       is the best we hold (``timed_out`` is True);
+      ``timeout``      no such read arrived in time and we hold no snapshot at all;
+      ``unavailable``  the app is not connected, or reported that Notes cannot be
+                       read (``reason`` says why; a held snapshot's age is still
+                       given in ``age_seconds``).
+
+    The read that was already in flight when this request arrived finishes with
+    an older view of Notes. Its publish carries an older ``snapshot_started_at``
+    and is therefore never accepted as fresh; neither is a publish that carries
+    no start stamp at all, since it cannot be told apart from that case.
+    """
+    from service.tools import notes_tools as notes
+    # Assumes the service and the Swift app share one host clock.
+    requested_at = time.time()
+
+    def result(status: str, reason: str = "") -> dict:
+        age = notes.snapshot_age_seconds()
+        return {"status": status, "requested_at": requested_at, "reason": reason,
+                "age_seconds": age, "timed_out": status in {"stale", "timeout"},
+                "fresh": status == "fresh"}
+
+    try:
+        from service.assistant.hub import hub
+        if not hub.has_subscribers:
+            return result("unavailable", "The Wisp app is not connected, so Notes could "
+                                         "not be re-read")
+        await hub.publish({"type": "sync_assistant_sources_now", "sources": ["notes"]},
+                          durable=False)
+    except Exception:  # noqa: BLE001 — report the truth instead of guessing
+        return result("unavailable", "Wisp could not ask the app to re-read Notes")
+    if timeout_seconds is None:
+        timeout_seconds = NOTES_REFRESH_TIMEOUT_S
+    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    while True:
+        receipt = notes.notes_receipt()
+        if receipt["started_at"] and receipt["started_at"] >= requested_at:
+            if receipt["available"]:
+                return result("fresh")
+            return result("unavailable", receipt["reason"] or "Notes could not be read")
+        if time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(0.05)
+    if notes.snapshot_age_seconds() is None:
+        return result("timeout", "Notes did not answer in time")
+    return result("stale", "Notes did not answer in time")
+
+
 async def ensure_daily_sources(timeout_seconds: float = 8.0) -> dict:
     readiness = await ensure_sources(DAILY_SOURCE_IDS, timeout_seconds=timeout_seconds)
     snapshot = summary_snapshot()

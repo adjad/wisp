@@ -350,7 +350,13 @@ SEND_MESSAGE_RE = re.compile(
     # phone number in the shapes people actually type is a complete target. With
     # no branch for it the request routed as a messages LOOKUP, so send_message
     # was never offered for the most explicit recipient there is.
-    r"\b(?i:text|imessage|message|dm)\s+(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?\d{4}(?!\d)")
+    # Imperative lead only (start of the request or of a clause). Without one,
+    # questions ABOUT messages ("did anyone message 6505550134 yesterday", a
+    # quoted '"message 650 555 0134"') offered a send tool on a read request. A
+    # quote character is never a lead, so quoted text cannot qualify either.
+    r"(?:^|[.;!?,:]\s+|\b(?:and|then|also)\s+)\s*(?:(?:please|just|ok|okay|can\s+you|could\s+you|"
+    r"go\s+ahead\s+and)\s+)*(?i:text|imessage|message|dm)\s+(?:\+?1[ .-]?)?\(?\d{3}\)?[ .-]?\d{3}[ .-]?"
+    r"\d{4}(?!\d)(?!\s+(?:shows?|showed|keeps?|is|was|came|comes|has|had|looks?|seems?|belongs?)\b)")
 
 # ---------------------------------------------------------------------------
 # Light read-only "just look and tell me" intents that run on the always-warm
@@ -2706,11 +2712,50 @@ _CALENDAR_ITEM_TOOLS = ("get_upcoming", "get_past_events", "find_free_time", "ad
 _CANCEL_VERB_RE = re.compile(r"\b(?:cancel|delete|remove|drop)\b", re.I)
 
 
+# The edit rule borrows the previous turn's list, so the CURRENT words must still
+# point at a calendar item. "delete this file", "remove it from my notes",
+# "change that to dark mode", "update that document" and "change it to Spanish"
+# are about something else and must not be scoped to calendar tools (or forced to
+# update_event, which the loop answers with a refusal).
+_EDIT_OTHER_DOMAIN_RE = re.compile(
+    r"\b(?:files?|folders?|directory|documents?|docs?|e-?mails?|inbox|notes?|messages?|"
+    r"paragraphs?|sentences?|lines?|words?|pages?|tabs?|windows?|apps?|settings?|modes?|themes?|"
+    r"languages?|subscriptions?|photos?|pictures?|images?|contacts?|passwords?|accounts?|"
+    r"trash|bin|desktop|downloads?|volume|brightness|wallpaper|fonts?|spanish|french|german|"
+    r"the\s+texts?|that\s+text|this\s+text|my\s+texts?)\b", re.I)
+_EDIT_CALENDAR_NOUN_RE = re.compile(
+    r"\b(?:events?|meetings?|appointments?|reminders?|calendar|invites?|calls?|schedule|"
+    r"stand-?ups?|1:1s?|one-on-ones?|interviews?|lunch|dinner|class)\b", re.I)
+_EDIT_TIME_RE = re.compile(
+    r"\b(?:\d{1,2}(?::\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.)|noon|midnight|tonight|tomorrow|today|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|next\s+(?:week|month)|"
+    r"(?:an?|\d+)\s+(?:minutes?|mins?|hours?|days?|weeks?)|later|earlier|"
+    r"(?:in\s+the\s+)?(?:morning|afternoon|evening)|at\s+\d)\b", re.I)
+_EDIT_RENAME_RE = re.compile(r"\b(?:rename|retitle|call\s+it)\b", re.I)
+# Another action clause ("... and email the team") belongs to the compound route.
+_EDIT_OTHER_ACTION_RE = re.compile(
+    r"(?:\b(?:and|then|also)\b|[,;])\s+(?:(?:then|also|please)\s+)*"
+    r"(?:e-?mail|text|message|tell|notify|send|remind|add|create|schedule|call|forward|dm|let|ask|"
+    r"open|search|look|check|find|show)\b", re.I)
+_EDIT_BARE_CANCEL_RE = re.compile(
+    rf"\b{_EDIT_VERB}\s+{_EDIT_NTH}\s*(?:please|for\s+me|now|thanks)?\s*[.!?]*\s*$", re.I)
+
+
 def _edit_reference_subset(text: str, last_assistant: str | None,
                            last_tools: str | None,
                            last_user: str | None = None) -> RouteDecision | None:
     if (not last_tools or not _EDIT_REFERENCE_RE.search(text)
             or not any(tool in last_tools for tool in _CALENDAR_ITEM_TOOLS)):
+        return None
+    plain = mask_quoted(text)
+    if _EDIT_OTHER_DOMAIN_RE.search(plain) or _EDIT_OTHER_ACTION_RE.search(plain):
+        return None
+    timed = bool(_EDIT_TIME_RE.search(plain))
+    renamed = bool(_EDIT_RENAME_RE.search(plain))
+    # Evidence in the user's own words: a calendar noun, a time/new title, or a
+    # bare "cancel/delete the second one" whose only content is the reference.
+    if not (_EDIT_CALENDAR_NOUN_RE.search(plain) or timed or renamed
+            or (_CANCEL_VERB_RE.search(plain) and _EDIT_BARE_CANCEL_RE.search(plain.strip()))):
         return None
     events = reminders = None
     counts = re.search(r"Calendar events?:\s*(\d+);\s*(?:Wisp/Apple\s+)?reminders?:\s*(\d+)",
@@ -2744,7 +2789,7 @@ def _edit_reference_subset(text: str, last_assistant: str | None,
     # ambiguous, and the model may ask. The fix is offering the RIGHT tools.
     decision = _mk_scoped(subset, f"{kind} of an item from the previous list -> scoped tools ({len(subset)})",
                           expect=False, light=False, multi=True)
-    if kind == "calendar event edit":
+    if kind == "calendar event edit" and (timed or renamed):
         # Wisp deliberately cannot edit a calendar event (update_event is
         # registered as unavailable: it would lose duration, calendar and
         # attendees). Require it so the loop answers with that registered,
@@ -4398,12 +4443,48 @@ _SEND_LATER_CUE_RE = re.compile(
     r"\b(?:tomorrow|tonight)\s+(?:morning|afternoon|evening|night)\b", re.I)
 
 
-def _explicit_address_compose(t: str) -> RouteDecision | None:
+# Draft/review intent anywhere in the request (outside quoted text): the user
+# does not want the message SENT. The compose rule's header-only check missed
+# "..., just draft it", "...save it as a draft", "...let me review it first".
+_DRAFT_INTENT_RE = re.compile(
+    r"(?<!not\s)(?<!n't\s)(?<!no\s)(?<!never\s)"
+    r"\b(?:(?:just|only)\s+(?:a\s+)?draft\b|draft\s+(?:it|this|that)\b(?!\s+(?:and|then)\s+send)|"
+    r"draft[- ]only\b|draft\s+(?:first|for\s+now)\b)|"
+    r"\b(?:as|into|in)\s+(?:a\s+|my\s+)?drafts?\b|"
+    r"\b(?:do\s+not|don'?t|never)\s+(?:actually\s+)?send\b|\bwithout\s+sending\b|"
+    r"\bfor\s+(?:my\s+)?review\b|"
+    r"\blet\s+me\s+(?:review|proofread|approve)\b|"
+    r"\blet\s+me\s+(?:read|check|see|look\s+(?:at|over))\s+(?:it|this|that|the\s+(?:draft|message|e-?mail|text))\b|"
+    r"\b(?:before\s+(?:it\s+(?:goes|is\s+sent)|sending|you\s+send)|"
+    r"wait\s+for\s+my\s+(?:ok|okay|approval|go[- ]ahead|confirmation))\b|"
+    r"\bshow\s+me\s+(?:the\s+)?(?:draft|it|that)\s+first\b", re.I)
+_NO_SEND_RE = re.compile(r"\b(?:(?:do\s+not|don'?t|never)\s+(?:actually\s+)?send|without\s+sending)\b", re.I)
+# Another action/domain clause after the body cue, or a request to deliver the
+# user's own data, means this is not a plain authored message: leave it to the
+# normal route, which claims every clause.
+_COMPOSE_OTHER_CLAUSE_RE = re.compile(
+    r"(?:\b(?:and|then|also)|,|;)\s+(?:(?:then|also|please|just)\s+)*(?:\w+(?:'\w+)?\s+){0,5}?"
+    r"(?:calendar|reminders?|e-?mails?|texts?|messages?|notes?|schedule|agenda)\b", re.I)
+_COMPOSE_SOURCE_DATA_RE = re.compile(
+    r"\bwhat(?:['’]s|\s+is|\s+are)\s+(?:on|in|next|coming|happening)\b|\bwhat\s+i(?:['’]ve|\s+have)\b|"
+    r"\bmy\s+(?:calendar|schedule|agenda|reminders?|unread|inbox|to-?dos?|notes?)\b", re.I)
+
+
+def _explicit_address_compose(t: str, original: str | None = None) -> RouteDecision | None:
     if (not _COMPOSE_LEAD_RE.match(t) or _SEND_LATER_CUE_RE.search(t)
             or _SCHEDULE_ACTION_RE.search(t) or _REMINDER_CREATE_RE.search(t)):
         return None
     cue = _COMPOSE_BODY_CUE.search(t)
     if not cue or len(re.findall(r"\w+", t[cue.end():])) < 2:
+        return None
+    # "don't send it" is a cancelled delivery, which the web-request layer owns
+    # (it removes every outbound tool). Origin/main never required a send for it
+    # and this rule must not add one.
+    if _NO_SEND_RE.search(mask_quoted(t)):
+        return None
+    # Independent clauses and source-data cues in the tail are not this rule's.
+    tail = mask_quoted(t[cue.end():])
+    if _COMPOSE_OTHER_CLAUSE_RE.search(tail) or _COMPOSE_SOURCE_DATA_RE.search(tail):
         return None
     # Only an operative header can bind a literal recipient. An address in
     # authored prose is never destination/channel evidence or contact proof.
@@ -4424,7 +4505,7 @@ def _explicit_address_compose(t: str) -> RouteDecision | None:
     if channel != ("email" if kind == "email" else "messages"):
         return None
     target = match.group().lower() if channel == "email" else match.group().strip()
-    draft_only = bool(_DRAFT_ONLY_RE.search(header))
+    draft_only = bool(_DRAFT_ONLY_RE.search(header) or _DRAFT_INTENT_RE.search(mask_quoted(t)))
     if channel == "email":
         tools = ["draft_email"] if draft_only else ["send_email", "draft_email"]
     else:
@@ -4433,11 +4514,17 @@ def _explicit_address_compose(t: str) -> RouteDecision | None:
                                  f"-> {tools[0]} (recipient bound)", expect=True, light=False)
     decision.tool_argument_bindings = {name: {"to": target} for name in tools}
     decision.forbidden_tools = frozenset({"lookup_contact"})
+    if draft_only:
+        # Review intent: never offer, require, or leave room for the send.
+        decision.forbidden_tools |= {"send_email", "send_message", "schedule_send"}
     # Withholding lookup_contact is not enough: the model's habit is to "look up
     # the contact first", and with no such tool it stalled three times and gave
-    # up without calling anything. Tell it the recipient is settled.
+    # up without calling anything. Tell it the recipient is settled. The user's
+    # ORIGINAL words are kept: the typo-normalised text is for matching only and
+    # would rewrite the message body ("Calender" -> "calendar").
+    request = original if original is not None else t
     decision.resolved_request = (
-        f"{t}\n\n(The recipient is already resolved: {target}. Do not look anyone up "
+        f"{request}\n\n(The recipient is already resolved: {target}. Do not look anyone up "
         f"and do not ask for an address. Write the {'subject and ' if channel == 'email' else ''}"
         f"body from the request, then call {tools[0]}; its recipient is fixed.)")
     return decision
@@ -4447,7 +4534,7 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     t = _normalize_typos(text.strip())
     if (checklist := _checklist_route(t)) is not None:
         return checklist
-    if (addressed := _explicit_address_compose(t)) is not None:
+    if (addressed := _explicit_address_compose(t, text.strip())) is not None:
         return addressed
     if _reminder_is_excluded(t) and _positive_calendar_write_clause(t):
         remainder = _positive_clause_remainder(t)
@@ -5825,6 +5912,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     literal_request = mask_quoted(literal_request)
     if (SEND_EMAIL_RE.search(literal_request) and _outbound_channel(literal_request) == "email"
             and not re.search(r"\b(?:draft|compose|schedule)\b", literal_request, re.I)
+            and not _DRAFT_INTENT_RE.search(mask_quoted(t))
             and (address := _EMAIL_ADDRESS_RE.search(literal_request))):
         require("send_email")
         decision.tool_argument_bindings.setdefault("send_email", {})[
