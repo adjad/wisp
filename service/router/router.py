@@ -819,10 +819,19 @@ _WEEKLY_PERSONAL_TOPIC_RES = (
         r"(?:that\s+)?i\s+should\s+know\s+about\s+(?P<topic>[^?;]{1,80}?)[\s.!?]*$",
         re.I),
 )
+_TOMORROW_WORD = r"(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)"
 _TOMORROW_AGENDA_RE = re.compile(
     r"^" + _PRIVATE_QUERY_PREFIX
-    + r"(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have)\s+"
-    r"(?:for\s+)?(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)[\s.!?]*$",
+    + r"(?:what(?:'s|\s+is)\s+(?:up|on)|what\s+do\s+i\s+have|"
+    r"what\s+am\s+i\s+doing|what\s+are\s+my\s+plans|any\s+plans)\s+"
+    r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
+    re.I,
+)
+_TOMORROW_TODO_RE = re.compile(
+    r"^" + _PRIVATE_QUERY_PREFIX
+    + r"(?:what\s+do\s+i\s+(?:have|need)\s+to\s+do|"
+    r"what(?:'s|\s+is)\s+on\s+(?:my\s+)?(?:to[-\s]?do|do)\s+list)\s+"
+    r"(?:for\s+)?" + _TOMORROW_WORD + r"[\s.!?]*$",
     re.I,
 )
 _NO_WEB_POLICY_TEXT = (
@@ -926,6 +935,16 @@ def _tomorrow_agenda_args(text: str) -> dict | None:
     if not _TOMORROW_AGENDA_RE.fullmatch(text.strip()):
         return None
     return {"period": "tomorrow", "calendar_only": True}
+
+
+def _tomorrow_target_day() -> str:
+    """Supply the local target date so narration need not reason about 'today'."""
+    from datetime import datetime
+    from service.tools.timeranges import resolve_span
+
+    start, _, _ = resolve_span("tomorrow")
+    return datetime.fromtimestamp(start).strftime("%A, %Y-%m-%d")
+
 
 # "How far back can you check my email" — a question about WISP'S OWN REACH,
 # not the user's data. Direct-dispatched to search_coverage.py (see its
@@ -2231,6 +2250,30 @@ def _strict_private_read_decision(text: str) -> RouteDecision | None:
             f"Check email and Calendar for {topic!r} during {period}.",
             extra_forbidden=policy_forbidden,
         )
+    if _TOMORROW_TODO_RE.fullmatch(source.strip()):
+        calls = [("get_upcoming", {"period": "tomorrow"}),
+                 ("summarize_messages", {}), ("summarize_emails", {}),
+                 ("search_notes", {})]
+        calls = [(name, args) for name, args in calls if name not in policy_forbidden]
+        if not calls:
+            decision = _mk("fast", reason="all tomorrow task sources explicitly denied")
+            decision.tool_subset = []
+            decision.forbidden_tools = _UNRELATED_PRIVATE_READ_TOOLS | policy_forbidden
+            decision.verified_results_only = True
+            decision.resolved_request = "All requested sources were excluded, so no private source was searched."
+            return decision
+        return _verified_private_read(
+            calls,
+            "tomorrow tasks -> exact day plus current commitment sources",
+            f"Tomorrow is {_tomorrow_target_day()}. List only tasks or commitments "
+            "explicitly due on that target day. Calendar and Reminders use tomorrow's "
+            "exact window; recent Messages, email and Notes may contain obligations "
+            "received or written earlier. Their receipt dates are not due dates. "
+            "Do not turn unrelated or undated records into tomorrow's plans. "
+            "Name any unavailable or excluded source and explain limited coverage; "
+            "an empty Calendar does not mean all sources have no tasks.",
+            extra_forbidden=policy_forbidden,
+        )
     if calendar_args := _tomorrow_agenda_args(source):
         if "get_upcoming" in policy_forbidden:
             decision = _mk("fast", reason="strict calendar source explicitly denied")
@@ -2242,7 +2285,7 @@ def _strict_private_read_decision(text: str) -> RouteDecision | None:
         return _verified_private_read(
             [("get_upcoming", calendar_args)],
             "tomorrow agenda spelling variant -> exact calendar day",
-            "Read the Calendar for tomorrow only.",
+            f"Read the Calendar for tomorrow only. Target day: {_tomorrow_target_day()}.",
             extra_forbidden=policy_forbidden,
         )
     return None
