@@ -113,6 +113,7 @@ class WebRequest:
     standalone_offer: bool = False
     study_reminder_clock: str | None = None
     study_reminder_date: str | None = None
+    study_reminder_rejected: bool = False
 
     @property
     def private(self) -> bool:
@@ -833,6 +834,9 @@ def tomorrow_study_request(text: str | None) -> tuple[int | None, str] | None:
     return None
 
 
+_STUDY_REMINDER_INVITATION = r"(?:would you like me to|do you want me to|want me to|shall i|should i|may i|can i)"
+
+
 def _study_reminder_clock(text: str | None, source: str | None) -> str | None:
     """Consume one complete invitation; partial generic offers cannot grant writes."""
     if not text or not tomorrow_study_request(source):
@@ -848,7 +852,7 @@ def _study_reminder_clock(text: str | None, source: str | None) -> str | None:
                  r"(?:(?:is|was|has been)\s+)?(?:already\s+)?(?:set|created|added|scheduled)\b"
                  r"|(?:^|[.!?]\s+)(?:added|created|scheduled)\s+(?:a\s+|the\s+)?reminder\b", status, re.I):
         return None
-    invitation = r"(?:would you like me to|do you want me to|want me to|shall i|should i|may i|can i)"
+    invitation = _STUDY_REMINDER_INVITATION
     offers = list(re.finditer(r"\b" + invitation + r"\b", masked, re.I))
     if len(offers) != 1:
         return None
@@ -1026,20 +1030,25 @@ def _parse_request(text: str, last_user: str | None = None, *,
         clarification = "Please clarify the separate action to perform after the public lookup."
     write_intent = delivery is not None or bool(continuations)
     rejected_study_offer = bool(
-        dated_assent and tomorrow_study_request(current_user) and last_assistant
-        and re.search(r"\b(?:set|add|create)\s+(?:a\s+)?reminder\s+at\b", last_assistant, re.I)
-        and re.search(r"\bstudy session\b", last_assistant, re.I))
+        not study_clock and (acknowledgement or dated_assent)
+        and tomorrow_study_request(current_user) and last_assistant
+        and re.search(r"\b" + _STUDY_REMINDER_INVITATION
+            + r"\s+(?:set|add|create)\s+(?:a\s+)?reminder\s+at\b", last_assistant, re.I)
+        and re.search(r"\bstudy\s+session\b", last_assistant, re.I))
     if study_clock or rejected_study_offer:
         # A date alone, including after a study read without this invitation,
         # retains generic routing. Reject only a recognisable study invitation
         # that failed the full positive/unique/unquoted proposition checks.
-        acknowledgement_without_offer = not bool(study_clock)
+        # The rejected invitation has its own no-write receipt guard. Keep the
+        # agent path active so an unverified model claim cannot stream or render.
+        acknowledgement_without_offer = False
         provenance, query, clarification = Provenance.PRIVATE, None, None
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,
                       independent, inherited, scopes, delivery, query, continuations, write_intent, clarification,
                       acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,
                       confirmed_local_request, standalone_offer, study_clock,
-                      dated_assent.group(1) if dated_assent and study_clock else None)
+                      dated_assent.group(1) if dated_assent and study_clock else None,
+                      rejected_study_offer)
 
 
 def classify(text: str, last_user: str | None = None, *,

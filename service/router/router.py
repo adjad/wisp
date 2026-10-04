@@ -6958,6 +6958,21 @@ async def route(text: str, *,
     return decision
 
 
+def _study_reminder_no_creation(reason: str) -> RouteDecision:
+    """Use the existing buffered receipt guard without enabling any action."""
+    from service.tools.registry import REGISTRY
+    decision = _mk("agent", reason=reason)
+    decision.needs_tools = True
+    decision.reminder_action = "create"
+    decision.tool_subset = []
+    decision.forbidden_tools = frozenset(REGISTRY)
+    decision.resolved_request = (
+        "No reminder has been created. This study invitation cannot authorize a write. "
+        "A new complete reminder command with the user's date and time is needed. "
+        "Do not call tools or claim that a reminder or study event was created.")
+    return decision
+
+
 def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> RouteDecision:
     """Bind a single current proposition; contradictory/stale dates cannot authorize a write."""
     from datetime import datetime
@@ -6983,11 +6998,7 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
         # this turn in the existing buffered receipt guard with zero capabilities.
         # It returns a truthful no-creation receipt even if the model invents
         # success or attempts the forbidden write. A new dated command is needed.
-        decision = _mk("agent", reason="study reminder date needs explicit confirmation")
-        decision.needs_tools = True
-        decision.reminder_action = "create"
-        decision.tool_subset = []
-        decision.forbidden_tools = frozenset(REGISTRY)
+        decision = _study_reminder_no_creation("study reminder date needs explicit confirmation")
         decision.resolved_request = (
             "No reminder has been created. The original study date cannot be verified from this history. "
             "Ask the user to state the date explicitly in a complete reminder command, for example: "
@@ -7018,6 +7029,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
 
     if web_request.study_reminder_clock:
         return _study_reminder_confirmation(web_request.study_reminder_clock, web_request.study_reminder_date)
+    if web_request.study_reminder_rejected:
+        return _study_reminder_no_creation("study reminder invitation rejected; no replay")
 
     # A denial/correction is part of the unfinished list request, not a fresh
     # calendar lookup. Preserve that intent even when the current fragment only
