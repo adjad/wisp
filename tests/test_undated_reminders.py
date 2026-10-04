@@ -427,3 +427,14 @@ def test_the_listing_is_one_coherent_read_of_view_and_rows(store):
     view, rows = store.undated_listing("")
     assert view["freshness"] == "stale"
 
+
+def test_long_ids_sharing_a_prefix_merge_instead_of_colliding(store):
+    from service.assistant.store import UNDATED_ID_MAX
+    prefix = "x" * UNDATED_ID_MAX
+    snap = parse_undated_snapshot([{"source_id": prefix + "1", "title": "A"},
+                                   {"source_id": prefix + "2", "title": "B"}], 2)
+    assert [r[0] for r in snap.rows] == [prefix] and snap.rows[0][1] == "B"
+    response = _post(_body([_item(prefix + "1", "A"), _item(prefix + "2", "B")], total=2),
+                     raise_server_exceptions=False)
+    assert response.status_code == 200 and _titles(store) == ["B"]
+

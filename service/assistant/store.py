@@ -30,6 +30,7 @@ UNDATED_MAX = 200
 # Sanity bounds on what a native read may declare, so a malformed or hostile client cannot
 # crash the sync with an absurd number or fill the store with huge strings.
 UNDATED_TOTAL_MAX = 1_000_000
+UNDATED_ID_MAX = 200
 UNDATED_TITLE_MAX = 500
 UNDATED_CONTEXT_MAX = 200
 
@@ -67,9 +68,11 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
         if (not isinstance(source_id, str) or not source_id.strip() or not isinstance(title, str)
                 or not (context is None or isinstance(context, str))):
             return None
-        rows[source_id.strip()] = (source_id.strip()[:200],
-                                   title.strip()[:UNDATED_TITLE_MAX] or "(untitled)",
-                                   (context or None) and context[:UNDATED_CONTEXT_MAX])
+        # Key on the stored (capped) id so two long ids sharing a prefix merge instead of
+        # colliding on the table's UNIQUE source_id.
+        sid = source_id.strip()[:UNDATED_ID_MAX]
+        rows[sid] = (sid, title.strip()[:UNDATED_TITLE_MAX] or "(untitled)",
+                     (context or None) and context[:UNDATED_CONTEXT_MAX])
     kept = list(rows.values())[:UNDATED_MAX]
     # Truncated means items were left out: the app declared more than it sent, or this side
     # had to cut the list at the cap. Merging a duplicate id is not truncation.
