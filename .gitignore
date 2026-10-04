@@ -38,3 +38,6 @@ tmp/
 # tracked sources, these are regenerable output.
 docs/routing_stress/PROMPTS_ONLY.txt
 docs/routing_stress/results/
+
+# Per-user Claude Code settings, never shared
+.claude/settings.local.json
