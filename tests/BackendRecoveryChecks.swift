@@ -280,5 +280,101 @@ enum BackendRecoveryChecks {
         let gone = Process()
         expect(await BackendManager.terminateAndWait(gone, timeout: 1), "a Process that never ran is not signalled")
         print("BackendRecovery: \(checks) quit/relaunch checks passed")
+        try await reExecReceiptChecks()
+    }
+
+    // MARK: - A re-executing interpreter keeps its receipt valid (gate x refresh)
+
+    private static func reExecReceiptChecks() async throws {
+        var checks = 0
+        func expect(_ condition: Bool, _ message: String) {
+            precondition(condition, message)
+            checks += 1
+        }
+        let begun = BackendOwnership.StartTime(seconds: 500, microseconds: 3)
+        let spawnedPath = "/usr/bin/python3"
+        let reExecPath = "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Python.app/Contents/MacOS/Python"
+        func recorded(_ store: BackendLaunchReceiptStore) -> BackendOwnership.Receipt? {
+            if case .present(let receipt) = store.current { return receipt }
+            return nil
+        }
+        func listener(_ pid: Int32, _ path: String) -> PortGuard.Listener { .init(pid: pid, path: path, start: begun) }
+        func facts(_ pid: Int32, _ path: String, _ start: BackendOwnership.StartTime) -> BackendOwnership.ProcessFacts {
+            .init(pid: pid, start: start, executablePath: path)
+        }
+        func fresh() -> BackendLaunchReceiptStore {
+            let store = BackendLaunchReceiptStore()
+            store.record(.init(pid: 321, start: begun, executablePath: spawnedPath, backendRoot: "/r", nonce: "n"))
+            return store
+        }
+
+        // The child re-executed: the kernel now reports another path for the same pid and start time.
+        // Without a refresh the gate's ownership verdict refuses it forever (receiptMismatch)...
+        let stale = fresh()
+        expect(BackendOwnership.verdict(listener: listener(321, reExecPath), receipt: stale.current,
+                                        facts: facts(321, reExecPath, begun)) == .notWisp(.receiptMismatch),
+               "a re-executed child is not recognised before the receipt is refreshed")
+        // ...so the refresh runs before the readiness probe, for the same incarnation only.
+        let store = fresh()
+        let changed = BackendManager.refreshReceipt(store, pid: 321, start: { _ in begun }, path: { _ in reExecPath })
+        expect(changed && recorded(store)?.executablePath == reExecPath && recorded(store)?.nonce == "n",
+               "the refresh re-records the path for the same pid and start time and keeps the nonce")
+        expect(BackendOwnership.verdict(listener: listener(321, reExecPath), receipt: store.current,
+                                        facts: facts(321, reExecPath, begun), identity: .answered(nonce: "n")) == .wispBackend,
+               "after the refresh the re-executed child is its own backend again")
+
+        // Fail closed: nothing else is ever adopted by a refresh.
+        let otherStart = fresh()
+        expect(!BackendManager.refreshReceipt(otherStart, pid: 321, start: { _ in .init(seconds: 501, microseconds: 3) },
+                                               path: { _ in reExecPath })
+               && recorded(otherStart)?.executablePath == spawnedPath, "a different start time (a reused pid) is never adopted")
+        let otherPid = fresh()
+        expect(!BackendManager.refreshReceipt(otherPid, pid: 999, start: { _ in begun }, path: { _ in reExecPath })
+               && recorded(otherPid)?.pid == 321 && recorded(otherPid)?.executablePath == spawnedPath,
+               "a different pid is never adopted")
+        let unreadable = fresh()
+        expect(!BackendManager.refreshReceipt(unreadable, pid: 321, start: { _ in nil }, path: { _ in reExecPath })
+               && !BackendManager.refreshReceipt(unreadable, pid: 321, start: { _ in begun }, path: { _ in nil })
+               && !BackendManager.refreshReceipt(unreadable, pid: 321, start: { _ in begun }, path: { _ in "relative/python" })
+               && recorded(unreadable)?.executablePath == spawnedPath, "unreadable facts or a relative path change nothing")
+        let empty = BackendLaunchReceiptStore()
+        expect(!BackendManager.refreshReceipt(empty, pid: 321, start: { _ in begun }, path: { _ in reExecPath })
+               && empty.current == .none, "with no launch recorded there is nothing to refresh, and nothing is invented")
+        expect(!BackendManager.refreshReceipt(store, pid: 321, start: { _ in begun }, path: { _ in reExecPath }),
+               "an unchanged path reports no change")
+
+        // A real re-exec: /bin/sh replaced by /bin/bash in the same process. Only asserted where the
+        // kernel really reports the path change (it is not guaranteed to for every interpreter).
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "read -t 1 x; exec /bin/bash -c 'read -t 3 x'"]
+        let quiet = Pipe()
+        child.standardInput = quiet
+        child.standardOutput = FileHandle.nullDevice
+        child.standardError = FileHandle.nullDevice
+        if (try? child.run()) != nil {
+            defer { child.terminate(); child.waitUntilExit(); withExtendedLifetime(quiet) {} }
+            let pid = child.processIdentifier
+            if let start = BackendOwnership.startTime(pid: pid), let first = PortGuard.executablePath(pid: pid) {
+                let real = BackendLaunchReceiptStore()
+                real.record(.init(pid: pid, start: start, executablePath: first, backendRoot: "/r", nonce: "n"))
+                var moved = false
+                for _ in 0..<40 {
+                    try await Task.sleep(nanoseconds: 100_000_000)
+                    if let now = PortGuard.executablePath(pid: pid), now != first { moved = true; break }
+                }
+                if moved {
+                    expect(BackendManager.refreshReceipt(real, pid: pid), "the refresh sees a real re-exec as a change")
+                    expect(recorded(real)?.executablePath == PortGuard.executablePath(pid: pid),
+                           "a real re-executed child's receipt follows its kernel path")
+                    expect(recorded(real)?.pid == pid && recorded(real)?.start == start, "same incarnation")
+                } else {
+                    print("BackendRecovery: skipped the real re-exec child (the kernel kept the same path)")
+                }
+            }
+        } else {
+            print("BackendRecovery: skipped the real re-exec child (cannot spawn in this sandbox)")
+        }
+        print("BackendRecovery: \(checks) re-exec receipt checks passed")
     }
 }

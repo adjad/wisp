@@ -120,3 +120,53 @@ def test_startup_conflict_is_retried_only_with_no_receipt_and_never_acted_on():
     assert re.search(r"settledStartupVerdict\(\s*check:\s*\{\s*PortGuard\.check\(\s*port:\s*8765\s*,\s*receipt:\s*\.none\s*\)", app)
     # Quit waits for the child it spawned before the app terminates.
     assert re.search(r"await backend\.stopAndWait\(\)\s*await MainActor\.run \{ NSApp\.terminate", app)
+
+
+def test_backend_trust_uses_only_the_in_memory_ownership_policy():
+    """H-16's per-request check must not reintroduce a disk receipt, a folder-based trust signal,
+    or an unstated claim: it judges only the process this app spawned and records its limits."""
+    trust = _read("BackendTrust.swift")
+    code = _code(trust)
+    # (It parses the /identity JSON the backend sends over the network, hence JSONSerialization.)
+    file_io = [pattern for pattern in FILE_IO if "JSONSerialization" not in pattern]
+    assert [pattern for pattern in file_io if re.search(pattern, code)] == []
+    for removed in ("ownedPrefixes", "executableInOwnedDirectory", "foreignExecutable", "foreignListener",
+                    ".unusable", "configure(directory", "defaultDirectory"):
+        assert removed not in code, removed
+    app_text = _read("AppDelegate.swift")
+    assert "BackendTrustConfiguration.set()" in _code(app_text)
+    assert "ownedBackendPrefixes" not in _code(app_text)
+
+
+def _comment_block(text: str, ending_at: str) -> str:
+    head = text[:text.index(ending_at)]
+    return " ".join(line.removeprefix("//").strip() for line in head.splitlines() if line.startswith("//"))
+
+
+def test_the_n7_residual_is_stated_where_the_trust_claim_is_made():
+    """The guarantee is honest only if the limits sit next to it: the header says what is and is not
+    guaranteed and why (a separate, unauthenticated connection after the final inspection), and
+    every other place that describes the gate repeats the caveat instead of saying 'proven'."""
+    header = _comment_block(_read("BackendTrust.swift"), "enum BackendTrust {")
+    for needed in ("WHAT THIS GUARANTEES", "DOES NOT GUARANTEE", "N7", "NATIVE-A2 is NOT closed",
+                   "not itself authenticated", "after the final inspection",
+                   "never evicted", "authenticated transport"):
+        assert needed in header, needed
+    protocol_doc = _read("BackendTrust.swift")
+    protocol_doc = protocol_doc[:protocol_doc.index("final class BackendTrustProtocol")].rsplit("\n\n", 1)[-1]
+    protocol_doc = " ".join(line.removeprefix("///").strip() for line in protocol_doc.splitlines())
+    assert "N7" in protocol_doc and "does not authenticate the connection" in protocol_doc
+    app = _read("AppDelegate.swift")
+    start = app.index("BackendTrustConfiguration.set()")
+    assert "N7" in app[max(0, start - 500):start]
+    assert "proven to be Wisp's own backend" not in app and "proven to be Wisp's own backend" not in protocol_doc
+    # A 404 from /identity is no evidence for a backend this app spawned.
+    trust = _code(_read("BackendTrust.swift"))
+    missing = re.search(r"case \.missing:\s*return (?P<what>[^\n]+)", trust)
+    assert missing and ".refused" in missing.group("what") and ".trusted" not in missing.group("what")
+
+
+def test_other_descriptions_match_the_memory_only_receipt():
+    assert "would be trusted by the real app" not in (ROOT / "sandbox" / "run.sh").read_text(encoding="utf-8")
+    identity = (ROOT / "service" / "identity.py").read_text(encoding="utf-8")
+    assert "memory only" in " ".join(identity.split()) or "in the app's memory only" in " ".join(identity.split())

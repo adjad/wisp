@@ -19,12 +19,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 
@@ -266,6 +268,8 @@ def _sync_keep_warm() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from service.identity import refuse_sandbox_on_production_port
+    refuse_sandbox_on_production_port()
     from service.config import quarantine
     quarantine.check()
     global client
@@ -902,6 +906,14 @@ async def setup_apply(body: dict[str, Any]) -> dict[str, Any]:
     return await setup_status()
 
 
+@app.get("/identity")
+async def get_identity() -> dict[str, Any]:
+    """Which backend this is. The app refuses a listener that is not its own (proved
+    from the kernel, not from this answer) and any whose mode is not "production"."""
+    from service.identity import payload
+    return payload()
+
+
 @app.get("/mode")
 async def get_mode() -> dict[str, Any]:
     from service.safety import read_only, full_access
@@ -1165,7 +1177,10 @@ async def agent(body: dict[str, Any]):
     # breaking the survivor's /agent/approve routing. Approvals now match on the
     # globally-unique action_id (see the approve endpoint), so the request key
     # only needs to be unique.
-    SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+    #
+    # The request is registered, and its runner started, when the response body is
+    # first consumed (see stream() below), not here: a client that never reads the
+    # body must not leave a registry entry and a running turn behind.
 
     # Collected for persistence after the turn finishes.
     captured: dict[str, Any] = {
@@ -1231,6 +1246,102 @@ async def agent(body: dict[str, Any]):
         idle.begin_foreground()
         workflow_turn = None
         task_turn = None
+        # Every workflow revision this request persisted as running and executes:
+        # the typed workflow_turn, a completed task's receipt notification and the
+        # stored-news branch. Each entry remembers the revision it owns and where
+        # its own tool events begin in `captured`, so settlement judges a plan only
+        # by what that plan observed, never by an earlier step's send.
+        owned_workflows: list[dict[str, Any]] = []
+
+        def own_workflow(plan) -> dict[str, Any]:
+            entry = {"plan": plan, "revision": plan.revision, "finished": False,
+                     "calls_from": len(captured["tool_calls"]),
+                     "results_from": len(captured["tool_results"])}
+            owned_workflows.append(entry)
+            return entry
+
+        def observed_by(entry: dict[str, Any]) -> dict[str, Any]:
+            results = captured["tool_results"][entry["results_from"]:]
+            return {"tool_calls": captured["tool_calls"][entry["calls_from"]:],
+                    "tool_results": results,
+                    "denied": any("denied" in str(item.get("result", "")).lower()
+                                  for item in results)}
+
+        def finish_owned(entry: dict[str, Any], observed: dict[str, Any]) -> None:
+            """The normal path's finish; a plan finished here is never settled again."""
+            finish_workflow(store, sid, entry["plan"], observed)
+            entry["finished"] = True
+
+        # True once this request's assistant reply is stored: a stop after that point (the client
+        # closing at `done`, then the summary) finished a turn; it is not an unfinished one.
+        assistant_reply_stored = False
+
+        def settle_unfinished(message: str) -> None:
+            """Leave durable state honest when a turn stops without finishing.
+
+            Shared by a failed turn and a cancelled one (the app disconnected). A
+            typed task still marked running and every owned workflow revision this
+            request left running are settled, the user's message is saved (it was
+            never saved before, leaving a hole in the history), and an honest
+            assistant note records that it did not finish. Each write is separately
+            best effort, so one failure cannot skip the rest, and none can raise.
+            Synchronous on purpose: nothing here can be interrupted a second time.
+
+            A workflow goes through the same finish_workflow the normal path uses,
+            fed only its own observed calls/results: an observed effect call without
+            a verified success settles as "delivery outcome uncertain". A durable
+            effect claim is never released and nothing is re-run here; the claim
+            keeps blocking any repeat of that delivery.
+            """
+            if test_mode:
+                return
+            uncertain_send = False
+            try:
+                if task_turn and task_turn.executable and task_turn.plan.status == "running":
+                    finish_task(store, sid, task_turn.plan, status="failed", result=message)
+            except Exception:  # noqa: BLE001 — persistence must not mask the real error
+                pass
+            try:
+                uncertain_send = bool(
+                    task_turn and task_turn.plan.status != "completed"
+                    and task_turn.plan.intent in {"email.reply", "email.send", "message.send"}
+                    and task_turn.plan.claimed_calls)
+            except Exception:  # noqa: BLE001
+                pass
+            for entry in owned_workflows:
+                plan = entry["plan"]
+                try:
+                    # Only a revision this request still owns: one finished normally,
+                    # or advanced by anyone else, is left exactly as it is.
+                    if (entry["finished"] or plan.status != "running"
+                            or plan.revision != entry["revision"]):
+                        continue
+                    finish_workflow(store, sid, plan, observed_by(entry))
+                    entry["finished"] = True
+                except Exception:  # noqa: BLE001
+                    pass
+                # Reached only for a plan this settlement handled (finished plans
+                # `continue` above and already reported their own outcome).
+                try:
+                    if store.workflow_effect_claimed(plan.id) and plan.status != "completed":
+                        uncertain_send = True
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                persist_user_turn()
+            except Exception:  # noqa: BLE001
+                pass
+            if assistant_reply_stored:
+                return   # the real reply is already stored; never follow it with a failure note
+            try:
+                store.add_turn(sid, "assistant",
+                               f"(This request could not be completed — {message} "
+                               + ("Sending was already attempted; its outcome is unknown. "
+                                  "Check before requesting another send.)" if uncertain_send else
+                                  "Check any actions already reported before retrying.)"))
+            except Exception:  # noqa: BLE001
+                pass
+
         try:
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
@@ -1288,11 +1399,12 @@ async def agent(body: dict[str, Any]):
                     return
                 if news_turn.decision:
                     from service.workflows.executor import execute_workflow
+                    news_owned = own_workflow(news_turn.plan)
                     execution = await execute_workflow(
                         news_turn.plan, emit, approver, test_mode=test_mode, store=store,
                         session_id=sid)
                     if not test_mode:
-                        finish_workflow(store, sid, news_turn.plan, {
+                        finish_owned(news_owned, {
                             "tool_calls": execution.tool_calls,
                             "tool_results": execution.tool_results,
                             "denied": execution.status == "denied"})
@@ -1342,12 +1454,13 @@ async def agent(body: dict[str, Any]):
                     if notification_plan.status == "ready":
                         notification_plan.status = "running"
                     store.save_workflow(sid, notification_plan.to_dict())
+                    notification_owned = own_workflow(notification_plan)
                     store.add_workflow_event(notification_plan.id, "receipt_notification_created", {})
                     if notification_plan.status == "running":
                         delivered = await execute_workflow(
                             notification_plan, emit, approver, store=store,
                             session_id=sid)
-                        finish_workflow(store, sid, notification_plan, {
+                        finish_owned(notification_owned, {
                             "tool_calls": delivered.tool_calls, "tool_results": delivered.tool_results,
                             "denied": delivered.status == "denied"})
                         execution.response += "\n\nNotification: " + delivered.response
@@ -1369,6 +1482,10 @@ async def agent(body: dict[str, Any]):
             # instead of being classified as a new isolated request.
             workflow_turn = prepare_turn(
                 store, sid, prompt, persist=not test_mode)
+            # Only a turn that starts execution owns its revision; a response-only
+            # turn (e.g. "already running") may describe another request's plan.
+            workflow_owned = (own_workflow(workflow_turn.plan)
+                              if workflow_turn and workflow_turn.decision else None)
             if workflow_turn and workflow_turn.response:
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
@@ -1387,7 +1504,7 @@ async def agent(body: dict[str, Any]):
                     workflow_turn.plan, emit, approver, test_mode=test_mode, store=store,
                     session_id=sid)
                 if not test_mode:
-                    finish_workflow(store, sid, workflow_turn.plan, {
+                    finish_owned(workflow_owned, {
                         "tool_calls": execution.tool_calls,
                         "tool_results": execution.tool_results,
                         "denied": execution.status == "denied"})
@@ -1783,14 +1900,15 @@ async def agent(body: dict[str, Any]):
             # Skipped in test mode — a dry run must leave no trace (see the
             # endpoint docstring): nothing was actually asked or answered.
             if not test_mode:
-                if workflow_turn and workflow_turn.decision:
-                    finish_workflow(store, sid, workflow_turn.plan, captured)
+                if workflow_owned is not None:
+                    finish_owned(workflow_owned, captured)
                 reply = captured["text"] or "".join(captured["deltas"])
                 from service.tools.registry import DisplayOnlyToolResult
                 persisted_reply = reply if isinstance(reply, DisplayOnlyToolResult) else reply.strip()
                 digest = ", ".join(dict.fromkeys(captured["tools"])) or None
                 persist_user_turn()
                 store.add_turn(sid, "assistant", persisted_reply, tool_digest=digest)
+                assistant_reply_stored = True
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
@@ -1833,37 +1951,48 @@ async def agent(body: dict[str, Any]):
             # answer, since there isn't one) so a later "did you send that"
             # gets "that attempt failed" rather than the model reasoning over a
             # dangling unanswered user message with no signal either way.
-            if not test_mode:
-                try:
-                    if task_turn and task_turn.executable and task_turn.plan.status == "running":
-                        finish_task(store, sid, task_turn.plan, status="failed",
-                                    result=message)
-                    if (workflow_turn and workflow_turn.decision
-                            and workflow_turn.plan.status == "running"):
-                        finish_workflow(store, sid, workflow_turn.plan, captured)
-                    persist_user_turn()
-                    uncertain_send = (task_turn and task_turn.plan.intent in {
-                        "email.reply", "email.send", "message.send"} and task_turn.plan.claimed_calls)
-                    store.add_turn(sid, "assistant",
-                                   f"(This request could not be completed — {message} "
-                                   + ("Sending was already attempted; its outcome is unknown. "
-                                      "Check before requesting another send.)" if uncertain_send else
-                                      "Check any actions already reported before retrying.)"))
-                except Exception:  # noqa: BLE001 — persistence must not mask the real error
-                    pass
+            settle_unfinished(message)
+        except asyncio.CancelledError:
+            # The app disconnected (quit, New Chat, dropped connection). The stream
+            # cancels this task so no more model or tool work happens. Cancellation
+            # is a BaseException, so without this branch nothing below ran: a typed
+            # task or workflow stayed "running" forever and the user's message was
+            # never saved. Effects already started keep their receipt state and are
+            # never resubmitted here.
+            settle_unfinished("the app disconnected before it finished.")
+            raise
         finally:
+            async def close_client(close):
+                with anyio.move_on_after(1, shield=True) as cleanup_scope:
+                    try:
+                        await close()
+                    except Exception as error:  # cleanup must not replace the turn's failure
+                        asyncio.get_running_loop().call_exception_handler({
+                            "message": f"Agent inference client cleanup failed ({type(error).__name__})",
+                        })
+                if cleanup_scope.cancel_called:
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent inference client cleanup exceeded its deadline",
+                    })
             try:
-                if turn_client is not None:
-                    await turn_client.close_fallback()
-                if owned_inference_client is not None:
-                    await owned_inference_client.aclose()
+                # A disconnected response's AnyIO scope is already cancelled.
+                # Give cooperative client teardown a bounded chance to finish.
+                try:
+                    if turn_client is not None:
+                        await close_client(turn_client.close_fallback)
+                finally:
+                    if owned_inference_client is not None:
+                        await close_client(owned_inference_client.aclose)
             finally:
                 idle.end_foreground()
-                await queue.put(None)
-
-    runner_task = asyncio.create_task(runner())
+                queue.put_nowait(None)
 
     async def stream():
+        # Started here, on first consumption, so the turn's lifetime is exactly the
+        # stream's lifetime: whatever ends the stream (done, error, disconnect,
+        # cancellation) ends the turn and unregisters it in the finally below.
+        SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+        runner_task = asyncio.create_task(runner())
         try:
             yield _sse({"type": "session", "id": sid})
             while True:
@@ -1875,12 +2004,63 @@ async def agent(body: dict[str, Any]):
             # A disconnected UI cannot leave generation/approval work running.
             # Already-started effects retain their existing receipt state; they
             # are never resubmitted here.
-            if not runner_task.done():
-                runner_task.cancel()
-            await asyncio.gather(runner_task, return_exceptions=True)
-            SESSIONS.pop(req_id, None)
+            cancelled = False
+            original_error = sys.exception()
+            try:
+                if not runner_task.done():
+                    runner_task.cancel()
+                deadline = asyncio.get_running_loop().time() + 3
+                forced_cancel = False
+                with anyio.CancelScope(shield=True):
+                    while not runner_task.done():
+                        try:
+                            remaining = deadline - asyncio.get_running_loop().time()
+                            if remaining <= 0:
+                                if not forced_cancel:
+                                    runner_task.cancel()
+                                    forced_cancel = True
+                                grace = deadline + 0.1 - asyncio.get_running_loop().time()
+                                if grace > 0:
+                                    await asyncio.wait({runner_task}, timeout=grace)
+                                break
+                            # Unlike gather, cancelling this wait does not cancel
+                            # the runner again halfway through its durable cleanup.
+                            await asyncio.wait({runner_task}, timeout=remaining)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                if not runner_task.done():
+                    asyncio.get_running_loop().call_exception_handler({
+                        "message": "Agent runner suppressed cancellation past its shutdown deadline",
+                        "task": runner_task,
+                    })
+                    if cancelled or isinstance(original_error, asyncio.CancelledError):
+                        raise asyncio.CancelledError
+                    raise RuntimeError("Agent runner did not stop after cancellation")
+                if not runner_task.cancelled():
+                    runner_task.exception()  # retrieve any failure without replaying work
+            finally:
+                SESSIONS.pop(req_id, None)
+            if cancelled:
+                raise asyncio.CancelledError
 
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    class AgentStreamingResponse(StreamingResponse):
+        async def __call__(self, scope, receive, send):
+            try:
+                await super().__call__(scope, receive, send)
+            finally:
+                # ASGI 2.4 send failures leave an iterator suspended at yield.
+                # Close explicitly while the response is still strongly held.
+                original_error = sys.exception()
+                try:
+                    with anyio.CancelScope(shield=True):
+                        await self.body_iterator.aclose()
+                except Exception:
+                    if original_error is None:
+                        raise
+                    # The stream already reports incomplete shutdown. Preserve
+                    # the actual transport error or cancellation at this boundary.
+
+    return AgentStreamingResponse(stream(), media_type="text/event-stream")
 
 
 @app.get("/sessions")
