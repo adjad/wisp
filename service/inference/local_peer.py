@@ -371,8 +371,17 @@ class ManagedOmlx:
                     or len(clients) != 1 or clients[0][:3] != (os.getpid(), os.getuid(), client_fd)):
                 raise AuthRefused('connected_peer_unqualified')
             # A second complete kernel-backed lsof snapshot must preserve both
-            # endpoint owners before request bytes are released.
-            if sorted(connection_owners(self.prep.run(command))) != sorted(owners):
+            # endpoint owners before request bytes are released. Only THIS
+            # connection's two records are compared: the inventory covers every
+            # established connection on the port, so comparing the whole of it
+            # made any unrelated client opening or closing a connection between
+            # the two snapshots (background capture, a second turn, another
+            # Wisp backend) refuse a perfectly good peer. The second snapshot is
+            # still parsed strictly and must re-derive exactly one server and
+            # one client record identical to the first.
+            second = connection_owners(self.prep.run(command))
+            if ([row for row in second if row[3:] == (remote, local)] != servers
+                    or [row for row in second if row[3:] == (local, remote)] != clients):
                 raise AuthRefused('connection_kernel_unqualified')
         except (OSError, UnicodeError):
             raise AuthRefused('connection_inspection_unavailable') from None

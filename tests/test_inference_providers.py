@@ -365,7 +365,7 @@ def test_keychain_transport_attribution_and_redaction(configured, monkeypatch, s
             assert "authorization" not in error.value.request.headers
             assert "private error" not in str(error.value)
             assert "private-data" not in str(error.value)
-            with pytest.raises(Exception, match="attribution unavailable"):
+            with pytest.raises(Exception, match="verify the local AI engine"):
                 await c._client.get("https://other.test/models")
             assert len(captured) == 1
         finally:

@@ -172,6 +172,8 @@ PROFILE_TESTS = {
         "tests/test_router_execution_contract.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
+        "tests/test_fast_path_intent.py",
+        "tests/test_reminder_compound_allowance.py",
         "tests/test_routing_contract_regressions.py",
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
@@ -219,6 +221,15 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
+    # Pure string redaction plus temporary stores; no real keys, Keychain or model.
+    "tests/test_credential_redaction.py",
+    # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
+    "tests/test_policy_floor_and_mcp_trust.py",
+    # Pure header classification and string layout; no mail, model or network.
+    "tests/test_email_digest_sections.py",
+    "tests/test_email_digest_review_regressions.py",
+    # Pure compiler classification; no model, sources or effects.
+    "tests/test_workflow_authored_message.py",
     "tests/test_helper_provenance.py",
     "tests/test_node_prep.py",
     "tests/test_primary_credentials.py",
@@ -567,6 +578,10 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         (
             "native/research-library-contract",
             [TRUSTED_BASH, "scripts/test_research_library_contract.sh"],
+        ),
+        (
+            "native/display-geometry-contract",
+            [TRUSTED_BASH, "scripts/test_display_geometry.sh"],
         ),
         (
             "native/mail-db-compile",

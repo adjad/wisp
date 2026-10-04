@@ -1040,6 +1040,43 @@ _SOURCE_LABELS = {
 }
 
 
+def _contact_receipt_destination(binding: dict, receipt: str) -> str:
+    """Resolve only a whole, single-contact result from this turn's lookup.
+
+    Neither the model's address nor merely having called lookup_contact is
+    identity evidence. Reuse the typed engine's name/channel rules, and fail
+    closed on ambiguous, truncated, unrelated or unrecognized result formats.
+    """
+    from service.tasks.engine import _match_tier, _LITERAL_EMAIL, _LITERAL_PHONE
+    match = re.fullmatch(r"([^:\n]+):[ \t]*([^\n]+?)(?: \(also on ([^\n]+)\))?",
+                         receipt.strip())
+    if match:
+        label, preferred, others = match.groups()
+        handles = [preferred.strip(), *(part.strip() for part in (others or "").split(",") if part.strip())]
+    else:
+        match = re.fullmatch(r"([^:\n]+)\n(?:phone|email):[ \t]*([^\n]+)", receipt.strip(), re.I)
+        if not match:
+            return ""
+        label, preferred = match.groups()
+        handles = [preferred.strip()]
+    if _match_tier(str(binding.get("name") or ""), label.strip()) == "substring":
+        return ""
+    for handle in handles:
+        if _LITERAL_EMAIL.fullmatch(handle):
+            continue
+        # Receipt proof must be whole, not a truncated Contacts handle. The
+        # shared literal grammar permits parentheses as characters; here require
+        # nonempty, nonnested numeric groups before any companion is released.
+        # Validate only: preserve the authoritative raw handle/country code.
+        without_groups = re.sub(r"\([ \t]*\d[\d \t.-]*\)", "", handle)
+        if not _LITERAL_PHONE.fullmatch(handle) or re.search(r"[()]", without_groups):
+            return ""
+    if binding.get("channel") == "email":
+        emails = list(dict.fromkeys(h for h in handles if _LITERAL_EMAIL.fullmatch(h)))
+        return emails[0] if len(emails) == 1 else ""
+    return handles[0]
+
+
 def _merge_results(results: list[tuple[str, str]]) -> str:
     """Present several tool results as ONE labelled answer.
 
@@ -1442,6 +1479,11 @@ async def run_agent(
     tool_outcomes: list[tuple[str, object]] = []
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
+    contact_receipts: dict[str, str] = {}
+    recipient_requirements = {
+        name: fixed["_recipient_lookup"] for name, fixed in (tool_argument_bindings or {}).items()
+        if name in {"send_message", "send_email", "schedule_send"}
+        and isinstance(fixed.get("_recipient_lookup"), dict)}
     contract_force_tool: str | None = None
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
@@ -1449,6 +1491,11 @@ async def run_agent(
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
+        if name == "lookup_contact" and args is not None:
+            key = str(args.get("name") or "").strip().casefold()
+            contact_receipts.pop(key, None)
+            if outcome.status == "succeeded" and not planned:
+                contact_receipts[key] = result
         if outcome.status == "succeeded":
             if outcome.effect != "read" and args is not None:
                 completed_effects[_action_fingerprint(name, args)] = result
@@ -2290,7 +2337,8 @@ async def run_agent(
             # fixed values before grounding, confirmation previews and tool
             # execution so a locally generated call cannot redirect an action.
             if fixed := (tool_argument_bindings or {}).get(name):
-                args = {**args, **fixed}
+                args = {**args, **{key: value for key, value in fixed.items()
+                                  if key != "_recipient_lookup"}}
             if name == "add_calendar_event" and cid in batch_calendar_args:
                 args = batch_calendar_args[cid]
             if name == "add_calendar_event" and (
@@ -2437,6 +2485,26 @@ async def run_agent(
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
                 continue
+
+            if recipient_requirements and name != "lookup_contact":
+                # A valid request may still have unresolved contact identity.
+                # Establish it before any granted companion (including device
+                # writes absent from the outbound receipt list), then bind the
+                # send to that exact proven address before confirmation. The
+                # model cannot substitute a different destination in any step.
+                resolved_contacts = {}
+                for effect, binding in recipient_requirements.items():
+                    requested = str(binding.get("name") or "")
+                    receipt = contact_receipts.get(requested.strip().casefold(), "")
+                    destination = _contact_receipt_destination(binding, receipt)
+                    if not destination:
+                        response = f"I couldn't verify a unique destination for {requested}. Please confirm the contact or address."
+                        await emit({"type": "text", "text": response})
+                        await emit({"type": "done"})
+                        return response
+                    resolved_contacts[effect] = destination
+                if binding := recipient_requirements.get(name):
+                    args["to"] = resolved_contacts[name]
 
             fingerprint = _action_fingerprint(name, args)
             from service.tools.registry import _validate_args

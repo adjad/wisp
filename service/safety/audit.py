@@ -15,7 +15,8 @@ def audit(event: str, **fields) -> None:
     """Append one JSON line to the audit log. Never raises."""
     try:
         AUDIT_DIR.mkdir(parents=True, exist_ok=True)
-        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **fields}
+        from service.safety.redaction import scrub_obj
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "event": event, **scrub_obj(fields)}
         with AUDIT_LOG.open("a") as f:
             f.write(json.dumps(rec, default=str) + "\n")
     except Exception:
