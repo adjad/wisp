@@ -636,21 +636,33 @@ async def _qualify_local_provider_with_evidence(
     probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
     discovery_failure = ""
     try:
-        if model_id not in await probe.models():
-            discovery_failure = "The local app did not return that exact model ID."
-    except Exception:
-        discovery_failure = "The local inference app did not return a model list."
+        try:
+            if model_id not in await probe.models():
+                discovery_failure = "The local app did not return that exact model ID."
+        except Exception:
+            discovery_failure = "The local inference app did not return a model list."
+        if discovery_failure:
+            with _local_provider_operation_lock:
+                # This attempt is now the newest word on the app and it says "unusable":
+                # retire any older success and record the ticket so an older in-flight
+                # probe cannot publish over it. Nothing is cached as a failure, so a
+                # transient discovery error cannot block Connect once the app recovers.
+                # Done HERE, before the awaited cleanup below, so a cleanup that raises
+                # or is cancelled cannot leave the older success reusable. A
+                # cancellation during discovery itself records nothing: it is not
+                # evidence about the app.
+                if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+                    _qualification_cache.pop(key, None)
+                    _qualification_published[key] = ticket
     finally:
-        await probe.aclose()
+        try:
+            await probe.aclose()
+        except Exception:
+            # A cleanup error must not replace a failure that is already known (and
+            # already recorded above); with no known failure it still propagates.
+            if not discovery_failure:
+                raise
     if discovery_failure:
-        with _local_provider_operation_lock:
-            # This attempt is now the newest word on the app and it says "unusable":
-            # retire any older success and record the ticket so an older in-flight
-            # probe cannot publish over it. Nothing is cached as a failure, so a
-            # transient discovery error cannot block Connect once the app recovers.
-            if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
-                _qualification_cache.pop(key, None)
-                _qualification_published[key] = ticket
         raise HTTPException(status_code=400, detail=discovery_failure)
     report = await qualification.qualify(provider_endpoint, model_id, context_window)
     with _local_provider_operation_lock:

@@ -660,8 +660,50 @@ def _call(name, args=None, call_id="call-1"):
         "function": {"name": name, "arguments": json.dumps(args or {})}}]}
 
 
+_LATE_TOOL_RESULT = "LATE-TOOL-RESULT-SENTINEL"
+
+
+def _install_authoring_stub(registry, monkeypatch):
+    """Replace create_tool with a stub that registers a fresh skill-defined tool, the way
+    the real one does after writing SKILL.md and reloading skills. Returns a restorer.
+    The loop drafts the code with a model before running the tool, so that seam is faked
+    too: no model is called."""
+    # Import the real module first: it registers the real create_tool when first imported,
+    # which would otherwise overwrite this stub later and run a model-backed authoring call.
+    from service.tools import tool_authoring
+
+    async def no_draft_error(args):
+        return ""
+
+    monkeypatch.setattr(tool_authoring, "prepare_draft", no_draft_error)
+    original = registry.REGISTRY.get("create_tool")
+
+    async def late_tool(**kwargs):
+        return _LATE_TOOL_RESULT
+
+    async def create_tool(name: str = "", **kwargs):
+        registry.register(name, "A synthetic tool a skill created in the middle of this turn.",
+                          {"type": "object", "properties": {}, "required": []},
+                          category="skill_tool")(late_tool)
+        return f"created {name}"
+
+    registry.register("create_tool", "Create a reusable tool (synthetic stand-in).",
+                      {"type": "object", "properties": {"name": {"type": "string"}},
+                       "required": ["name"]},
+                      category="assistant_read")(create_tool)
+
+    def restore():
+        if original is not None:
+            registry.REGISTRY["create_tool"] = original
+        else:
+            registry.REGISTRY.pop("create_tool", None)
+        registry.REGISTRY.pop("late_skill_tool", None)
+    return restore
+
+
 def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="all",
-                    external_script=None, prior_tool_digest=None,
+                    external_script=None, managed_script=None, prior_tool_digest=None,
+                    authoring_stub=False,
                     tools=("probe_noop", "use_skill", "probe_skill_tool")):
     """Drive the real /agent endpoint for a tool route bound to an external provider."""
     import service.main as main
@@ -678,7 +720,7 @@ def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="
     managed_target = Target(role, Endpoint("local", "http://127.0.0.1:8000", "local_omlx",
                             managed=True), "managed-model", context_window=8192)
     external = _ScriptedClient(managed=False, script=external_script, target=external_target)
-    managed = _ScriptedClient(managed=True, target=managed_target)
+    managed = _ScriptedClient(managed=True, script=managed_script, target=managed_target)
     saved = SessionStore(tmp_path / "sessions.db")
     sid = saved.create_session()
     if prior_tool_digest:
@@ -695,6 +737,7 @@ def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="
     async def noop(**kwargs):
         return "NOOP-RESULT"
 
+    restore_authoring = _install_authoring_stub(registry, monkeypatch) if authoring_stub else (lambda: None)
     assert "use_skill" in registry.REGISTRY, "the real use_skill tool must be registered"
     registry.register("probe_noop", "A harmless synthetic read-only probe.",
                       {"type": "object", "properties": {}, "required": []},
@@ -732,6 +775,7 @@ def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="
     finally:
         registry.REGISTRY.pop("probe_noop", None)
         registry.REGISTRY.pop("probe_skill_tool", None)
+        restore_authoring()
     routed_event = next((e for e in events if e["type"] == "routed"), None)
     assert not [e for e in events if e["type"] == "error"], events
     return events, routed_event, external, managed
@@ -878,4 +922,174 @@ def test_the_loop_boundary_is_scoped_to_the_local_provider_only(monkeypatch) -> 
     assert _CATALOG_QUIET in sent_to(True, "local"), "a managed run keeps the skill catalog"
     assert _CATALOG_QUIET in sent_to(False, "cloud"), "a cloud-bound run is unchanged by this repair"
     assert _CATALOG_QUIET not in sent_to(False, "local_provider")
+
+
+# ---------------- PR130 E1: the skill boundary must survive a mid-turn tool registration
+#
+# create_tool writes a skill and reloads the registry, and the loop then rebuilds its
+# schemas so the new tool is usable in the same turn. On the external local provider that
+# rebuild must not admit a skill-defined tool, and neither the rebuilt menu nor dispatch
+# may let one through: the protection is evaluated when a tool is offered or called, not
+# from a snapshot taken at the start of the turn.
+
+_AUTHORING_TOOLS = ("create_tool", "probe_noop", "probe_skill_tool")
+_AUTHORING_PROMPT = "make me a reusable tool called late_skill_tool"
+
+
+def test_a_tool_registered_mid_turn_is_never_offered_or_run_on_the_external_app(
+        monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, _AUTHORING_PROMPT, authoring_stub=True, tools=_AUTHORING_TOOLS,
+        external_script=[_call("create_tool", {"name": "late_skill_tool"}),
+                         _call("late_skill_tool", call_id="call-2"),
+                         {"role": "assistant", "content": "All done."}])
+    assert routed_event["model"] == "ext-model" and managed.requests == []
+    assert len(external.requests) >= 2, "the authoring turn must still run on the external app"
+    assert "create_tool" in external.requests[0]["tools"], "ordinary authoring stays available"
+    for request in external.requests:
+        assert "late_skill_tool" not in request["tools"], "a skill tool registered mid-turn was offered"
+        assert "probe_skill_tool" not in request["tools"], "an existing skill tool came back in the rebuild"
+        assert "use_skill" not in request["tools"]
+    assert _LATE_TOOL_RESULT not in _everything_sent(external), "a mid-turn skill tool ran for the external app"
+    assert not [e for e in events if e.get("type") == "tool_call" and e.get("name") == "late_skill_tool"
+                and e.get("decision") == "allow"], events
+
+
+def test_managed_authoring_still_offers_and_runs_the_fresh_tool(monkeypatch, tmp_path) -> None:
+    # The same authoring turn on the managed model keeps working: the fresh tool is usable
+    # in the same turn. The prompt triggers the ordinary expense skill so the turn is managed.
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "build me a reusable tool for my expense report called late_skill_tool",
+        authoring_stub=True, tools=_AUTHORING_TOOLS,
+        managed_script=[_call("create_tool", {"name": "late_skill_tool"}),
+                        _call("late_skill_tool", call_id="call-2"),
+                        {"role": "assistant", "content": "All done."}])
+    assert routed_event["model"] == "managed-model" and external.requests == []
+    assert "late_skill_tool" in managed.requests[1]["tools"], "managed authoring lost the same-turn tool"
+    assert _LATE_TOOL_RESULT in _everything_sent(managed)
+
+
+def test_authoring_on_the_external_app_works_for_ordinary_tools_after_the_rebuild(
+        monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, _AUTHORING_PROMPT, authoring_stub=True, tools=_AUTHORING_TOOLS,
+        external_script=[_call("create_tool", {"name": "late_skill_tool"}),
+                         _call("probe_noop", call_id="call-2"),
+                         {"role": "assistant", "content": "All done."}])
+    assert routed_event["model"] == "ext-model"
+    after_rebuild = external.requests[1]["tools"]
+    assert "probe_noop" in after_rebuild and "create_tool" in after_rebuild
+    assert "NOOP-RESULT" in _everything_sent(external), "an ordinary tool must still run after the rebuild"
+
+
+def test_router_direct_skill_tool_call_is_not_run_for_the_external_app(monkeypatch) -> None:
+    """Defensive: no currently reachable route emits one, but the predicate covers the path."""
+    from service import skills as skills_module
+    from service.agent import loop
+    from service.memory import identity
+    from service.tools import registry
+
+    ran = []
+
+    async def skill_tool(**kwargs):
+        ran.append("skill")
+        return "DIRECT-SKILL-RESULT"
+
+    async def ordinary(**kwargs):
+        ran.append("ordinary")
+        return "DIRECT-ORDINARY-RESULT"
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    registry.register("probe_direct_skill", "synthetic skill tool", schema,
+                      category="skill_tool")(skill_tool)
+    registry.register("probe_direct_ordinary", "synthetic ordinary tool", schema,
+                      category="assistant_read")(ordinary)
+    monkeypatch.setattr(skills_module, "_skills", {})
+    monkeypatch.setattr(identity, "identity_prompt_block", lambda **kwargs: "")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kwargs: "")
+
+    class Approver:
+        async def confirm(self, action):
+            return True
+
+    def run_on(managed: bool) -> list:
+        client = _ScriptedClient(managed=managed)
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        asyncio.run(loop.run_agent(
+            client, "model", [{"role": "user", "content": "go"}], emit, Approver(), debug=False,
+            max_steps=2, tools=["probe_direct_skill", "probe_direct_ordinary"],
+            direct_calls=[("probe_direct_skill", {}), ("probe_direct_ordinary", {})]))
+        return events
+
+    try:
+        ran.clear()
+        run_on(False)
+        assert ran == ["ordinary"], "the external run must skip the skill tool and keep the ordinary one"
+        ran.clear()
+        run_on(True)
+        assert sorted(ran) == ["ordinary", "skill"], "a managed run is unchanged"
+    finally:
+        registry.REGISTRY.pop("probe_direct_skill", None)
+        registry.REGISTRY.pop("probe_direct_ordinary", None)
+
+
+def test_a_tool_reclassified_as_a_skill_tool_within_a_step_is_refused_at_dispatch(
+        monkeypatch) -> None:
+    """The menu for a step is fixed before its calls run. If an earlier call in the same
+    step re-registers an OFFERED ordinary tool as a skill tool, the later call to it must
+    be refused at dispatch on the external app, even though it is still in that step's
+    offered names."""
+    from service import skills as skills_module
+    from service.agent import loop
+    from service.memory import identity
+    from service.tools import registry
+
+    async def ordinary(**kwargs):
+        return "ORDINARY-RESULT-SENTINEL"
+
+    schema = {"type": "object", "properties": {}, "required": []}
+    registry.register("reclass_tool", "synthetic ordinary tool", schema,
+                      category="assistant_read")(ordinary)
+    restore_authoring = _install_authoring_stub(registry, monkeypatch)
+    monkeypatch.setattr(skills_module, "_skills", {})
+    monkeypatch.setattr(identity, "identity_prompt_block", lambda **kwargs: "")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kwargs: "")
+
+    class Approver:
+        async def confirm(self, action):
+            return True
+
+    two_calls = {"role": "assistant", "content": "", "tool_calls": [
+        {"id": "call-1", "type": "function",
+         "function": {"name": "create_tool", "arguments": json.dumps({"name": "reclass_tool"})}},
+        {"id": "call-2", "type": "function",
+         "function": {"name": "reclass_tool", "arguments": "{}"}}]}
+
+    def run_on(managed: bool):
+        client = _ScriptedClient(managed=managed, script=[_copy.deepcopy(two_calls),
+                                                          {"role": "assistant", "content": "Done."}])
+        events = []
+
+        async def emit(event):
+            events.append(event)
+
+        asyncio.run(loop.run_agent(
+            client, "model", [{"role": "user", "content": "go"}], emit, Approver(), debug=False,
+            max_steps=3, tools=["create_tool", "reclass_tool"]))
+        return client, events
+
+    try:
+        external, events = run_on(False)
+        sent = _everything_sent(external)
+        assert "ORDINARY-RESULT-SENTINEL" not in sent and _LATE_TOOL_RESULT not in sent, \
+            "a tool reclassified as a skill tool mid-step ran for the external app"
+        refused = [e for e in events if e.get("type") == "tool_result" and e.get("id") == "call-2"]
+        assert refused and "is not available in this conversation" in refused[0]["result"]
+    finally:
+        restore_authoring()
+        registry.REGISTRY.pop("reclass_tool", None)
 

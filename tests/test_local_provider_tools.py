@@ -1746,7 +1746,7 @@ def test_disconnect_and_cloud_disconnect_still_supersede_a_pending_connect(concu
 class DiscoveryEngine(FakeEngine):
     """A fake engine whose model list can fail the ways a real app's can."""
 
-    models_mode = "ok"   # ok | missing | http_error | connect_error | timeout
+    models_mode = "ok"   # ok | missing | http_error | connect_error | timeout | cancelled
 
     def respond(self, request):
         if (request.method == "GET" and request.url.path == self.api_prefix + "/models"
@@ -1760,6 +1760,8 @@ class DiscoveryEngine(FakeEngine):
                 raise httpx.ConnectError("connection refused", request=request)
             if self.models_mode == "timeout":
                 raise httpx.ReadTimeout("model list timed out", request=request)
+            if self.models_mode == "cancelled":
+                raise asyncio.CancelledError()
         return super().respond(request)
 
 
@@ -1895,3 +1897,123 @@ def test_reasoning_only_connect_is_not_affected_by_evidence_ordering(concurrency
     response, settings = run_bounded(scenario())
     assert response.status_code == 200 and settings.json()["roles"] == ["reasoning"]
     assert len(concurrency.gate.calls) == 0, "a Reasoning-only connect carries no qualification"
+
+
+# ------------- PR130 E2: a known discovery failure must be retired before any cleanup await
+#
+# The failure is already known when the discovery probe is closed. If closing it raises
+# or is cancelled, the older success must still have been retired and the ticket
+# recorded; otherwise a later Connect reuses the older success, or an older in-flight
+# pass republishes. A cancellation DURING discovery is a different thing: it is not
+# negative evidence about the app and must not be invented as one.
+
+class _CloseSwitch:
+    """Make closing the discovery probe fail on demand, after really closing it."""
+
+    def __init__(self, monkeypatch):
+        from service.inference.omlx_client import OMLXClient
+        self.fail_with = None
+        self.calls = 0
+        original = OMLXClient.aclose
+
+        async def aclose(client):
+            self.calls += 1
+            await original(client)
+            if self.fail_with is not None:
+                raise self.fail_with
+        monkeypatch.setattr(OMLXClient, "aclose", aclose)
+
+
+CLOSE_FAILURES = [
+    pytest.param(lambda: RuntimeError("close failed"), id="close-raises-runtime-error"),
+    pytest.param(lambda: OSError("connection pool already closed"), id="close-raises-os-error"),
+    pytest.param(lambda: asyncio.CancelledError(), id="close-is-cancelled"),
+]
+
+
+async def _awaited(coro):
+    """Return a result or the exception (including a cancellation) it ended with."""
+    try:
+        return await coro
+    except BaseException as exc:  # noqa: BLE001
+        return exc
+
+
+@pytest.mark.parametrize("make_failure", CLOSE_FAILURES)
+@pytest.mark.parametrize("mode", ["missing", "http_error", "timeout"])
+def test_known_discovery_failure_retires_evidence_even_when_closing_the_probe_fails(
+        concurrency, monkeypatch, mode, make_failure):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+    close = _CloseSwitch(monkeypatch)
+    failure = make_failure()
+
+    async def scenario():
+        assert (await concurrency.test_probe(engine)).json()["qualified"] is True
+        engine.models_mode = mode
+        close.fail_with = failure
+        closed_before = close.calls
+        failed = await _awaited(concurrency.test_probe(engine))
+        cleanup_attempted = close.calls > closed_before
+        close.fail_with = None
+        saved_before = _saved_yaml()
+        still_failing = await concurrency.connect(engine, ["agent"])
+        unchanged = _saved_yaml() == saved_before
+        engine.models_mode = "ok"
+        recovered = await concurrency.connect(engine, ["agent"])
+        return failed, cleanup_attempted, still_failing, unchanged, recovered
+
+    failed, cleanup_attempted, still_failing, unchanged, recovered = run_bounded(scenario())
+    assert cleanup_attempted, "the probe cleanup must still be attempted"
+    if isinstance(failure, asyncio.CancelledError):
+        assert isinstance(failed, asyncio.CancelledError), "a cancellation must still propagate"
+    else:
+        assert getattr(failed, "status_code", None) == 400, \
+            "a known discovery failure keeps its sanitized 400 even if cleanup also fails"
+    assert still_failing.status_code == 400, "the older success must not authorise a Connect"
+    assert unchanged, "no tool binding may be saved from retired evidence"
+    assert len(concurrency.gate.calls) == 2, "recovery must qualify afresh, not reuse the retired success"
+    assert recovered.status_code == 200
+
+
+@pytest.mark.parametrize("make_failure", [CLOSE_FAILURES[0], CLOSE_FAILURES[2]])
+def test_an_older_success_cannot_republish_after_a_failed_discovery_with_a_failing_close(
+        concurrency, monkeypatch, make_failure):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+    close = _CloseSwitch(monkeypatch)
+
+    async def scenario():
+        concurrency.gate.hold = {0}
+        older = asyncio.create_task(concurrency.test_probe(engine))
+        await concurrency.gate.started(0)
+        engine.models_mode = "missing"
+        close.fail_with = make_failure()
+        newer = await _awaited(concurrency.test_probe(engine))
+        close.fail_with = None
+        concurrency.gate.release(0)
+        older_response = await older
+        engine.models_mode = "ok"
+        return newer, older_response, await concurrency.connect(engine, ["agent"])
+
+    newer, older, connect = run_bounded(scenario())
+    assert isinstance(newer, BaseException) or newer.status_code == 400
+    assert older.status_code == 200 and older.json()["qualified"] is True
+    assert len(concurrency.gate.calls) == 2, "the older pass must not have republished"
+    assert connect.status_code == 200
+
+
+def test_a_cancelled_discovery_does_not_invent_negative_evidence(concurrency):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+
+    async def scenario():
+        assert (await concurrency.test_probe(engine)).json()["qualified"] is True
+        engine.models_mode = "cancelled"
+        interrupted = await _awaited(concurrency.test_probe(engine))
+        engine.models_mode = "ok"
+        return interrupted, await concurrency.connect(engine, ["agent"])
+
+    interrupted, connect = run_bounded(scenario())
+    assert isinstance(interrupted, asyncio.CancelledError)
+    assert connect.status_code == 200
+    assert len(concurrency.gate.calls) == 1, \
+        "a cancellation says nothing about the app; the earlier success is still the latest evidence"
+
