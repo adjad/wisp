@@ -16,15 +16,28 @@ on every connection.
     python scripts/bench_transport_overhead.py --runs 11
     python scripts/bench_transport_overhead.py --runs 11 --load --json out.json
     python scripts/bench_transport_overhead.py --verify        # inventories identical?
+
+``--spawn`` times the spawn scheduling of ``DesktopOmlx._listener`` (T0-spawn) against the
+serial baseline named by ``--baseline-ref`` (use the commit before T0-spawn) on the live
+oMLX: ``binding()``, ``connected_peer()``, ``RuntimeAuthority().load()`` and the
+request-shaped total (load, binding, process_identity, three peer checks).  It reads the
+same things Wisp reads on every connection (lsof, ps, csops, lstat) and holds two idle
+TCP connections to 127.0.0.1:8000 that never send a byte.  It starts no model, signals no
+process, and ends by shutting the private pool down and checking that no thread or child
+process of its own is left.
+
+    python scripts/bench_transport_overhead.py --spawn --baseline-ref <sha> --runs 11 --json out.json
 """
 import argparse
 import importlib
 import json
 import math
 import os
+import socket
 import statistics
 import subprocess
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -105,12 +118,78 @@ def capture(module, root):
     return captured
 
 
+def own_children():
+    """Child processes of this process other than the ``ps`` that lists them."""
+    probe = subprocess.Popen(['/bin/ps', '-axo', 'pid=,ppid='], stdout=subprocess.PIPE, text=True)
+    out = probe.communicate()[0]
+    pairs = [line.split() for line in out.splitlines() if len(line.split()) == 2]
+    return sorted(int(pid) for pid, ppid in pairs if int(ppid) == os.getpid() and int(pid) != probe.pid)
+
+
+def spawn_benchmark(old, new, runs, process_identity):
+    """Old (serial) against new (scheduled) _listener on the live desktop oMLX, alternating."""
+    sockets = []
+    try:
+        def connect():
+            sock = socket.create_connection(('127.0.0.1', 8000), timeout=10)   # idle: never sends a byte
+            sockets.append(sock)
+            return sock
+
+        warm = {}
+        for label, module in (('old', old), ('new', new)):
+            authority = module.RuntimeAuthority().load()
+            pid = authority.binding()
+            warm[label] = (module, authority, pid, process_identity(pid, authority.uid), connect())
+
+        def binding(label):
+            return lambda: warm[label][1].binding()
+
+        def peer(label):
+            module, authority, pid, identity, sock = warm[label]
+            return lambda: authority.connected_peer(sock, pid, identity)
+
+        def load(label):
+            return lambda: warm[label][0].RuntimeAuthority().load()
+
+        def request(label):
+            module = warm[label][0]
+
+            def call():
+                sock = connect()
+                authority = module.RuntimeAuthority().load()
+                pid = authority.binding()
+                identity = process_identity(pid, authority.uid)
+                for _ in range(3):
+                    module.connected_peer_with_retry(authority, sock, pid, identity)
+                sock.close()
+            return call
+
+        rows = {}
+        for name, make in (('binding', binding), ('connected_peer', peer), ('load', load), ('request_shaped_total', request)):
+            samples = alternate(runs, make('old'), make('new'))
+            row = {'old': summarize(samples[0]), 'new': summarize(samples[1])}
+            row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 2)
+            row['speedup_p95'] = round(row['old']['p95'] / row['new']['p95'], 2)
+            rows[name] = row
+            print(f"{name}: old p50 {row['old']['p50']} p95 {row['old']['p95']} min {row['old']['min']} max {row['old']['max']}"
+                  f" | new p50 {row['new']['p50']} p95 {row['new']['p95']} min {row['new']['min']} max {row['new']['max']}"
+                  f" | p50 x{row['speedup_p50']} p95 x{row['speedup_p95']}", flush=True)
+        return rows
+    finally:
+        for sock in sockets:
+            sock.close()
+        if hasattr(new, '_POOL'):
+            new._POOL.shutdown()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--runs', type=int, default=11)
     parser.add_argument('--baseline-ref', default=DEFAULT_BASELINE)
     parser.add_argument('--load', action='store_true', help='also time RuntimeAuthority().load() (live, read-only)')
     parser.add_argument('--verify', action='store_true', help='compare old and new inventories on the real trees')
+    parser.add_argument('--spawn', action='store_true',
+                        help='time binding/connected_peer/load/request total, serial baseline vs scheduled (live, read-only)')
     parser.add_argument('--json', help='write the results here')
     args = parser.parse_args()
 
@@ -128,6 +207,18 @@ def main():
                               'identical': before == after and len(after) == 2}
         result['verify'] = verdicts
         print(json.dumps(verdicts, indent=1))
+
+    if args.spawn:
+        from service.inference.local_peer import process_identity
+        result['spawn'] = spawn_benchmark(old, new, args.runs, process_identity)
+        result['load_after'], result['swap_after'] = load_average(), swap_usage()
+        result['leftover_threads'] = sorted(t.name for t in threading.enumerate() if t.name.startswith('wisp-inspect'))
+        result['leftover_children'] = own_children()
+        print('leftover wisp-inspect threads', result['leftover_threads'], '| leftover child processes', result['leftover_children'])
+        print('loadavg', result['load_before'], '->', result['load_after'], '| swap', result['swap_after'])
+        if args.json:
+            Path(args.json).write_text(json.dumps(result, indent=1))
+        return
 
     for name, root in trees.items():
         old_samples, new_samples = alternate(args.runs, lambda: fresh(old)._qualified_tree(root),
