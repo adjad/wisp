@@ -223,6 +223,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_quarantine.py",
     # Pure string redaction plus temporary stores; no real keys, Keychain or model.
     "tests/test_credential_redaction.py",
+    # In-process approvers and endpoint calls only; no sockets or real actions.
+    "tests/test_approval_routing.py",
+    "tests/test_backend_ownership_no_disk_receipt.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
@@ -298,6 +301,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/privacy-sync-contract": "native/privacy-sync-compile",
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
+    "native/port-guard-contract": "native/port-guard-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
 }
 
@@ -564,6 +568,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     prompt_queue = str(build_dir / "prompt-queue")
     reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
+    port_guard = str(build_dir / "port-guard")
     return [
         (
             "native/mail-reply-contract",
@@ -633,6 +638,17 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/port-guard-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PortGuard.swift",
+                "app/Sources/WispApp/BackendOwnership.swift",
+                "tests/PortGuardChecks.swift", "-o", port_guard,
+            ],
+        ),
+        ("native/port-guard-contract", [port_guard]),
         (
             "native/reminders-policy-compile",
             [

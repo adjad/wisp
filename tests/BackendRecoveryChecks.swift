@@ -1,9 +1,9 @@
-// Compile with BackendManager.swift and BackendCredentials.swift. No process, network, UI, or clipboard action occurs.
+// Compile with BackendManager.swift, BackendCredentials.swift, PortGuard.swift and BackendOwnership.swift. The quit/relaunch checks spawn only short-lived /bin/sh children of their own; no network, UI, or clipboard action occurs.
 import Foundation
 
 @main
 enum BackendRecoveryChecks {
-    static func main() throws {
+    static func main() async throws {
         let epoch = String(repeating: "a", count: 64)
         let recoveredEpoch = String(repeating: "b", count: 64)
         precondition(BackendManager.acceptableRuntimeGeneration("absent"))
@@ -163,5 +163,122 @@ enum BackendRecoveryChecks {
             "an old recovery marker must not leak into an unrelated current failure"
         )
         print("BackendRecovery: 14 regression checks passed")
+        try await quitRelaunchChecks()
+    }
+
+    // MARK: - P2-1: quit, then a fast relaunch, must not latch a false port conflict
+
+    private static func conflict(_ pid: Int32 = 4242) -> PortGuard.Verdict {
+        .conflict([PortGuard.Listener(pid: pid, path: "/usr/bin/other")])
+    }
+
+    private static func quitRelaunchChecks() async throws {
+        var checks = 0
+        func expect(_ condition: Bool, _ message: String) {
+            precondition(condition, message)
+            checks += 1
+        }
+
+        // Startup: a holder that is the previous run's backend still shutting down goes away
+        // within the window, so no conflict is latched.
+        var calls = 0
+        var slept: [TimeInterval] = []
+        let leaving = BackendManager.settledStartupVerdict(retries: 12, interval: 0.25, check: {
+            calls += 1
+            return calls <= 3 ? conflict() : .free
+        }, sleep: { slept.append($0) })
+        expect(leaving == .free, "a holder that exits inside the window must not end as a conflict")
+        expect(calls == 4 && slept == [0.25, 0.25, 0.25], "the check retries once per interval until the holder is gone")
+
+        // A foreign holder that never exits is still a conflict once the window is spent, and the
+        // window is bounded (about 3 seconds at the defaults), never an endless wait.
+        calls = 0
+        slept = []
+        let stuck = BackendManager.settledStartupVerdict(retries: 12, interval: 0.25, check: {
+            calls += 1
+            return conflict()
+        }, sleep: { slept.append($0) })
+        expect(stuck == conflict(), "a holder that never exits must still be reported as a conflict")
+        expect(calls == 13 && slept.count == 12 && slept.reduce(0, +) == 3.0, "the retry window is bounded at 3 seconds")
+
+        // Nothing waits when the port is already settled, or when the listing cannot be read.
+        for settled in [PortGuard.Verdict.free, .unknown] {
+            calls = 0
+            slept = []
+            let verdict = BackendManager.settledStartupVerdict(check: { calls += 1; return settled },
+                                                               sleep: { slept.append($0) })
+            expect(verdict == settled && calls == 1 && slept.isEmpty, "a settled port is judged once, without waiting")
+        }
+        // The retry never changes who is blamed: the holder reported last is what the person sees.
+        calls = 0
+        let swapped = BackendManager.settledStartupVerdict(retries: 2, interval: 0.1, check: {
+            calls += 1
+            return conflict(Int32(100 + calls))
+        }, sleep: { _ in })
+        expect(swapped == conflict(103), "the conflict reported is the holder seen on the last look")
+
+        // Quit: waiting for the child to exit is bounded, and says whether it did.
+        var polls = 0
+        let exited = await BackendManager.waitForExit(timeout: 5, interval: 0.05, isRunning: {
+            polls += 1
+            return polls <= 4
+        }, sleep: { _ in })
+        expect(exited && polls == 5, "the wait ends as soon as the child has exited")
+        polls = 0
+        let never = await BackendManager.waitForExit(timeout: 5, interval: 0.05, isRunning: {
+            polls += 1
+            return true
+        }, sleep: { _ in })
+        expect(!never && polls == 101, "the wait gives up after the timeout")
+        let alreadyGone = await BackendManager.waitForExit(timeout: 5, interval: 0.05, isRunning: { false }, sleep: { _ in
+            preconditionFailure("an exited child needs no wait")
+        })
+        expect(alreadyGone, "an exited child is not waited for")
+
+        // Real children, spawned by this check (never anything else): a child that needs a moment to
+        // shut down is waited for rather than abandoned, and one that ignores SIGTERM is escalated
+        // to, on that Process only.
+        // Shell builtins only (`read -t` waits on a pipe nobody writes to): Simulation QA's sandbox
+        // allows /bin/sh but not /bin/sleep.
+        var quietPipes: [Pipe] = []
+        func spawn(_ script: String) -> Process? {
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: "/bin/sh")
+            child.arguments = ["-c", script]
+            let quiet = Pipe()
+            quietPipes.append(quiet)
+            child.standardInput = quiet
+            child.standardOutput = FileHandle.nullDevice
+            child.standardError = FileHandle.nullDevice
+            do { try child.run() } catch { return nil }
+            return child
+        }
+        if let slow = spawn("trap 'read -t 1 x; exit 0' TERM; while :; do read -t 1 x; done") {
+            try await Task.sleep(nanoseconds: 300_000_000)
+            expect(slow.isRunning, "the delayed-exit child must still be running before quit")
+            let started = Date()
+            let clean = await BackendManager.terminateAndWait(slow, timeout: 5)
+            expect(clean && !slow.isRunning, "a child that exits after a delay is waited for until it is gone")
+            expect(Date().timeIntervalSince(started) >= 0.9, "quit really waited for the delayed exit")
+            expect(slow.terminationReason == .exit && slow.terminationStatus == 0, "it left on SIGTERM, not by force")
+        } else {
+            print("BackendRecovery: skipped the delayed-exit child (cannot spawn in this sandbox)")
+        }
+        if let stubborn = spawn("trap '' TERM; while :; do read -t 1 x; done") {
+            try await Task.sleep(nanoseconds: 300_000_000)
+            expect(stubborn.isRunning, "the stubborn child must still be running before quit")
+            let started = Date()
+            let clean = await BackendManager.terminateAndWait(stubborn, timeout: 0.6)
+            expect(!clean && !stubborn.isRunning, "a child that ignores SIGTERM is escalated to and gone before quit completes")
+            expect(Date().timeIntervalSince(started) < 4, "the escalation is bounded")
+            expect(stubborn.terminationReason == .uncaughtSignal && stubborn.terminationStatus == SIGKILL,
+                   "only the spawned Process was signalled, with SIGKILL")
+        } else {
+            print("BackendRecovery: skipped the stubborn child (cannot spawn in this sandbox)")
+        }
+        withExtendedLifetime(quietPipes) {}
+        let gone = Process()
+        expect(await BackendManager.terminateAndWait(gone, timeout: 1), "a Process that never ran is not signalled")
+        print("BackendRecovery: \(checks) quit/relaunch checks passed")
     }
 }

@@ -387,14 +387,17 @@ final class WispClient {
     // See service/safety/grants.py — some tools, notably sending mail and
     // messages, refuse a standing grant and always re-ask regardless.
     func approve(sessionId: String, actionId: String, approved: Bool,
-                 scope: String = "once") async {
+                 scope: String = "once", requestId: String = "") async {
         var req = URLRequest(url: Self.baseURL.appendingPathComponent("agent/approve"))
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "session_id": sessionId, "action_id": actionId,
             "approved": approved, "scope": scope,
-        ])
+        ]
+        // Routes the answer to the exact request that raised the card.
+        if !requestId.isEmpty { body["request_id"] = requestId }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         _ = try? await URLSession.shared.data(for: req)
     }
 
