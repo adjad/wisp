@@ -2,6 +2,16 @@
 
 All notable changes to Wisp are documented here.
 
+## [1.2.0] - Unreleased
+
+### Fixed
+
+- Tomorrow planning now recognizes common spellings and phrases such as “any plans for tommorow?” and “what is on my do list tmrow.” Agenda reads use the exact next day; to-do requests check Calendar, Reminders, recent Messages, email and Notes before answering. Answers receive an explicit target date and use current source results instead of stale conversation memories, while preserving source exclusions.
+
+### Added
+
+- Added a local Codex/Claude coworker mailbox with correlated agent replies, acknowledgments and duplicate-delivery protection. All Git Worktrees share it without a background service or model polling.
+
 ## [Unreleased]
 
 ### Added

@@ -90,6 +90,7 @@ PROFILE_TESTS = {
         "tests/test_reply_bridge_simulation.py",
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
+        "tests/test_tomorrow_planning.py",
         "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",
@@ -187,6 +188,7 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
     # D1 live-capture/private-filter/ModelView JS over a synthetic DOM on
