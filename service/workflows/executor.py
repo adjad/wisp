@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from datetime import datetime
 
+from service.user_text import user_facing_failure
 from service.safety.policy import Tier, decide
 from service.tasks.models import TaskExecution
 from service.tools.registry import (
@@ -176,7 +177,7 @@ async def execute_workflow(plan, emit, approver, *, test_mode=False, store=None,
 
     destination, problem = resolve_destination(plan.recipient, plan.channel)
     if problem:
-        return finish("failed", f"Nothing sent. {problem}")
+        return finish("failed", f"Nothing sent. {user_facing_failure(problem)}")
     await emit({"type": "workflow", "event": "recipient_resolved",
                 "workflow_id": plan.id, "requested_recipient": plan.recipient,
                 "resolved_recipient": destination, "channel": plan.channel})
