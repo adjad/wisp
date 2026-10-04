@@ -164,6 +164,19 @@ def role_target(role: str) -> Target:
     capabilities = binding.get("qualified_capabilities", [])
     if window < 512 or dims < 0 or not isinstance(capabilities, list) or not all(isinstance(c, str) for c in capabilities):
         raise EndpointConfigurationError(f"Invalid model metadata for {role}")
+    if ep.name == "local_provider":
+        # An unauthenticated loopback app earns tool use only from a recorded,
+        # server-run qualification that still describes THIS app and model. A
+        # changed model, URL or API prefix, or a hand-edited `tools`, loses it, and
+        # the window can never exceed what the app was measured to honor.
+        from service.config import local_provider_qualification
+        record = local_provider_qualification(
+            cfg.get("inference", {}).get("endpoints", {}).get("local_provider", {}),
+            model, ep.base_url, ep.api_prefix)
+        if record is None:
+            capabilities = [c for c in capabilities if c != "tools"]
+        else:
+            window = min(window, record["effective_context"])
     return Target(role, ep, model, str(binding.get("revision") or ""),
                   str(binding.get("profile") or ""), window, tuple(capabilities), dims)
 

@@ -125,6 +125,29 @@ final class RemindersWriter {
         return reminderCalendarIDs.contains(calendarID) && !completed && hasDueDate
     }
 
+    /// An incomplete reminder in a current list that has NO due date. These are not
+    /// commitments (nothing is scheduled), so they ride a separate list and never
+    /// enter the time-windowed store; they exist so "what is on my reminders" is
+    /// not blind to the reminders a person keeps without a date.
+    static func eligibleForUndatedSync(calendarID: String?,
+                                       reminderCalendarIDs: Set<String>,
+                                       completed: Bool, hasDueDate: Bool) -> Bool {
+        guard !hasDueDate else { return false }
+        return eligibleForIncompleteSync(calendarID: calendarID,
+                                         reminderCalendarIDs: reminderCalendarIDs,
+                                         completed: completed, hasDueDate: true)
+    }
+
+    /// Bound on how many undated titles one snapshot carries.
+    static let maxUndatedReminders = 200
+
+    /// The undated list as it travels: at most `maxUndatedReminders` entries plus the TRUE
+    /// number of eligible reminders, so the backend can tell a complete list from one that
+    /// was cut at the cap instead of presenting a prefix as everything.
+    static func undatedPayload(_ eligible: [[String: Any]]) -> (items: [[String: Any]], total: Int) {
+        (Array(eligible.prefix(maxUndatedReminders)), eligible.count)
+    }
+
     /// No reminder lists at all, right after a snapshot that had rows, is more
     /// likely a transient EventKit read than every list being deleted. Report
     /// it as unavailable instead of an authoritative empty set, so missing data
@@ -384,9 +407,9 @@ final class RemindersWriter {
                  startedAt: snapshotStartedAt, authoritative: false)
             return
         }
-        // Only incomplete reminders WITH a due date — one with no due date
-        // isn't a "commitment" with a time attached, and get_upcoming's whole
-        // model is time-windowed.
+        // Incomplete reminders WITH a due date become time-windowed commitments (get_upcoming's
+        // whole model is time-windowed). Incomplete reminders with NO due date are not
+        // commitments; they travel separately as the undated list (see undatedPayload).
         // Restrict the query to calendars EventKit currently reports for the
         // reminder entity, then check membership again after the async fetch.
         // This does not classify Recently Deleted rows that retain an original
@@ -438,15 +461,32 @@ final class RemindersWriter {
                     "location": "",
                 ]
             }
+            let undated: [[String: Any]] = reminders.compactMap { r in
+                guard let calendar = r.calendar,
+                      Self.eligibleForUndatedSync(
+                          calendarID: calendar.calendarIdentifier,
+                          reminderCalendarIDs: reminderCalendarIDs,
+                          completed: r.isCompleted,
+                          hasDueDate: r.dueDateComponents != nil)
+                else { return nil }
+                return [
+                    "source_id": r.calendarItemIdentifier,
+                    "title": r.title ?? "(untitled)",
+                    "context": calendar.title,
+                ]
+            }
+            let undatedPayload = Self.undatedPayload(undated)
             self.post(reminders: payload,
                               diagnostics: ["authorized": true, "count": payload.count,
                                             "snapshot_started_at": snapshotStartedAt],
-                              startedAt: snapshotStartedAt, authoritative: true)
+                              startedAt: snapshotStartedAt, authoritative: true,
+                              undated: undatedPayload.items, undatedTotal: undatedPayload.total)
         }
     }
 
     private func post(reminders: [[String: Any]], diagnostics: [String: Any],
-                              startedAt: TimeInterval, authoritative: Bool) {
+                              startedAt: TimeInterval, authoritative: Bool,
+                              undated: [[String: Any]]? = nil, undatedTotal: Int? = nil) {
         DispatchQueue.main.async { [weak self] in
             guard let self,
                   self.snapshotState.accept(
@@ -454,18 +494,27 @@ final class RemindersWriter {
                       authoritativeCount: authoritative ? reminders.count : nil
                   ) else { return }
             if authoritative { self.consecutiveTransientReports = 0 }
-            self.post(reminders: reminders, diagnostics: diagnostics)
+            self.post(reminders: reminders, diagnostics: diagnostics, undated: undated,
+                      undatedTotal: undatedTotal)
         }
     }
 
-    private func post(reminders: [[String: Any]], diagnostics: [String: Any]) {
+    // `undated` is sent only with an authoritative read; an unavailable or empty-by-error
+    // post omits the key so the backend keeps the last good list.
+    private func post(reminders: [[String: Any]], diagnostics: [String: Any],
+                      undated: [[String: Any]]? = nil, undatedTotal: Int? = nil) {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/calendar")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "source": "reminders", "events": reminders, "diagnostics": diagnostics,
-        ])
+        ]
+        if let undated, let undatedTotal {
+            body["undated"] = undated
+            body["undated_total"] = undatedTotal
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
         URLSession.shared.dataTask(with: req).resume()
     }
 }
