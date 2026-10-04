@@ -68,8 +68,55 @@ def test_startup_never_adopts_or_signals_a_port_holder():
     assert re.search(r"PortGuard\.check\(\s*port:\s*8765\s*,\s*receipt:\s*\.none\s*\)", app)
 
 
+def test_port_guard_has_no_file_access():
+    # FileHandle.nullDevice only discards lsof's stderr; it opens nothing.
+    code = _code(_read("PortGuard.swift")).replace("FileHandle.nullDevice", "")
+    hits = [pattern for pattern in FILE_IO if re.search(pattern, code)]
+    assert hits == []
+
+
+def test_backend_manager_never_persists_the_receipt():
+    """BackendManager legitimately reads logs and credential state, so it is judged line by line:
+    nothing that touches the launch receipt may also touch a file."""
+    code = _code(_read("BackendManager.swift"))
+    # (The unrelated credentials "receipt" in this file is a different, existing mechanism.)
+    launch_receipt = r"receiptStore|LaunchReceipt|BackendOwnership\.Receipt|launchReceipt"
+    touching_receipt = [line for line in code.splitlines() if re.search(launch_receipt, line)]
+    assert touching_receipt, "expected BackendManager to record a launch receipt in memory"
+    hits = [(pattern, line.strip()) for line in touching_receipt for pattern in FILE_IO if re.search(pattern, line)]
+    assert hits == []
+    assert not re.search(r"launch-receipt|receipt\.json|receiptURL|receiptPath", code)
+
+
 def test_a_healthy_responder_is_not_assumed_to_be_wisp():
     manager = _code(_read("BackendManager.swift"))
     # The old early return treated ANY responder on the port as Wisp's backend.
     assert not re.search(r"if\s+healthy\s*&&\s*!freshRecovery\s*\{\s*return\s*\}", manager)
-    assert "BackendOwnership.portDecision(" in manager
+    # The decision is acted on exactly as BackendOwnership.portDecision gives it (its truth table is
+    # checked behaviourally by PortGuardChecks): a stranger is reported and nothing is launched,
+    # only our own live child is accepted as already running, and launching happens only on `.proceed`.
+    switch = re.search(
+        r"switch\s+BackendOwnership\.portDecision\((?P<args>.*?)\)\s*\{(?P<body>.*?)\n        \}\n",
+        manager, re.DOTALL)
+    assert switch, "startIfNeeded must switch over BackendOwnership.portDecision"
+    cases = dict(re.findall(r"case\s+\.(\w+):\s*(.*?)(?=\n\s*case\s+\.|\Z)", switch.group("body"), re.DOTALL))
+    assert set(cases) == {"ownBackendRunning", "stranger", "proceed"}
+    assert re.fullmatch(r"return", cases["ownBackendRunning"].strip())
+    assert re.fullmatch(r"reportPortConflict\(\)\s*return", " ".join(cases["stranger"].split()))
+    assert cases["proceed"].strip() == "break"
+    assert "liveChildPID: child" in switch.group("args")
+    assert "receipt: receiptStore.current" in switch.group("args")
+
+
+def test_startup_conflict_is_retried_only_with_no_receipt_and_never_acted_on():
+    manager = _code(_read("BackendManager.swift"))
+    helper = re.search(r"static func settledStartupVerdict\(.*?\n    \}\n", manager, re.DOTALL)
+    assert helper, "settledStartupVerdict is missing"
+    body = helper.group(0)
+    # It only looks again; it never adopts, reclaims or signals the holder.
+    for forbidden in ("terminate", "kill(", "terminateOwned", "record(", "receiptStore"):
+        assert forbidden not in body, forbidden
+    app = _code(_read("AppDelegate.swift"))
+    assert re.search(r"settledStartupVerdict\(\s*check:\s*\{\s*PortGuard\.check\(\s*port:\s*8765\s*,\s*receipt:\s*\.none\s*\)", app)
+    # Quit waits for the child it spawned before the app terminates.
+    assert re.search(r"await backend\.stopAndWait\(\)\s*await MainActor\.run \{ NSApp\.terminate", app)

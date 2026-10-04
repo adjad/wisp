@@ -259,15 +259,79 @@ final class BackendManager {
     }
 
     func stop() {
+        guard let process = detachForStop() else { return }
+        if process.isRunning {
+            process.terminate()
+        }
+    }
+
+    /// Quit path: stops the monitor, signals the child this manager spawned, and returns only
+    /// once that child has exited (bounded; see `terminateAndWait`). A relaunch right after
+    /// quit therefore finds the port free instead of a backend still shutting down, which
+    /// would otherwise read as a foreign holder.
+    func stopAndWait(timeout: TimeInterval = 5) async {
+        guard let process = detachForStop() else { return }
+        _ = await Self.terminateAndWait(process, timeout: timeout)
+    }
+
+    private func detachForStop() -> Process? {
         lifecycle = UUID()
         monitor?.cancel()
         monitor = nil
         credentialState = BackendRecoveryState()
-        guard let process else { return }
-        if process.isRunning {
-            process.terminate()
+        let current = process
+        process = nil
+        return current
+    }
+
+    /// SIGTERM, then wait for exit; if the child outlives `timeout`, SIGKILL it and wait
+    /// briefly again. Only ever signals the `Process` object this app spawned (its pid is
+    /// not reused while the object still reports running), never a pid looked up by port.
+    /// Returns true when it left on SIGTERM alone.
+    nonisolated static func terminateAndWait(_ process: Process, timeout: TimeInterval = 5,
+                                             interval: TimeInterval = 0.05) async -> Bool {
+        guard process.isRunning else { return true }
+        process.terminate()
+        let sleep: (TimeInterval) async -> Void = { try? await Task.sleep(nanoseconds: UInt64($0 * 1_000_000_000)) }
+        if await waitForExit(timeout: timeout, interval: interval, isRunning: { process.isRunning }, sleep: sleep) {
+            return true
         }
-        self.process = nil
+        if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        _ = await waitForExit(timeout: 1, interval: interval, isRunning: { process.isRunning }, sleep: sleep)
+        return false
+    }
+
+    /// Polls `isRunning` every `interval` for at most `timeout`; true once it reports false.
+    nonisolated static func waitForExit(timeout: TimeInterval, interval: TimeInterval,
+                                        isRunning: () -> Bool,
+                                        sleep: (TimeInterval) async -> Void) async -> Bool {
+        let polls = max(0, Int((timeout / interval).rounded(.up)))
+        for attempt in 0...polls {
+            if !isRunning() { return true }
+            if attempt < polls { await sleep(interval) }
+        }
+        return false
+    }
+
+    /// Startup judgment of who holds the backend port, tolerant of a previous run's backend
+    /// that is still shutting down. At startup nothing in this process's memory vouches for
+    /// any holder (no child spawned, no receipt), so a conflict is retried for a bounded
+    /// window (`retries` x `interval`, 3 s by default) and is reported only if some holder is
+    /// still there at the end. The holder is never adopted, reclaimed or signalled either way.
+    /// Blocking: run it off the main thread.
+    nonisolated static func settledStartupVerdict(
+        retries: Int = 12, interval: TimeInterval = 0.25,
+        check: () -> PortGuard.Verdict,
+        sleep: (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) }
+    ) -> PortGuard.Verdict {
+        var verdict = check()
+        var remaining = retries
+        while case .conflict = verdict, remaining > 0 {
+            sleep(interval)
+            remaining -= 1
+            verdict = check()
+        }
+        return verdict
     }
 
     private func waitUntilHealthy(timeout: TimeInterval, process: Process) async -> Bool {

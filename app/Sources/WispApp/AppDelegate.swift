@@ -76,18 +76,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // behind after a crash or upgrade; the person is told and can quit it. Judged only
         // here, after the single-instance hand-over, so a yielding second launch touches nothing.
         let folderHints = PortGuard.backendFolderHints(devRoot: backend.backendRootPath)
-        switch PortGuard.check(port: 8765, receipt: .none) {
-        case .conflict(let foreign):
-            backend.portConflict = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
-                                                                    folderHints: folderHints))
-            }
-        case .owned, .free, .unknown:
-            // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
-            // listing missed is still caught by BackendManager before it launches anything.
-            break
-        }
         // Something the listing missed (or that arrived after it) answering on the port
         // with no live child of ours: the manager stops and reports it here, once.
         backend.onPortConflict = { [weak self] in
@@ -105,7 +93,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         backend.didLaunchBackend = { BrowserBridgeActivation.shared.backendLaunched(pid: $0) }
         Task { await BrowserBridgeActivation.shared.begin() }
-        Task { await backend.startIfNeeded() }
+        // The backend starts only after the port has been judged. The judgment is retried for
+        // a few seconds when a holder is there, because after a quick quit and relaunch the
+        // holder is usually the previous run's backend still shutting down; a holder that
+        // outlasts that window is a conflict, as before.
+        Task { [weak self] in
+            let verdict = await Task.detached(priority: .userInitiated) {
+                BackendManager.settledStartupVerdict(check: { PortGuard.check(port: 8765, receipt: .none) })
+            }.value
+            guard let self else { return }
+            if case .conflict(let foreign) = verdict {
+                self.backend.portConflict = true
+                self.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
+                                                                   folderHints: folderHints))
+                return
+            }
+            // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
+            // listing missed is still caught by BackendManager before it launches anything.
+            await self.backend.startIfNeeded()
+        }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
             button.image = Self.menubarOrb()
@@ -696,7 +702,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await PendingConfigWrites.shared.waitUntilIdle()
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
-            backend.stop()
+            await backend.stopAndWait()
             await MainActor.run { NSApp.terminate(nil) }
         }
     }
