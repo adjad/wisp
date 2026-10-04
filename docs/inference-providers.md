@@ -122,8 +122,10 @@ request: the conversation so far, facts you asked Wisp to remember, your name an
 addresses, and tool results, meaning your calendar, mail, messages, notes and file contents.
 A loopback app without an API key is not identity-verified, so connect only one you trust.
 Skills stay on managed oMLX: a request that uses a skill, a follow-up to one, and a request
-to list your skills run on the managed model, and the external app is never sent the skill
-catalog, skill instructions, skill tools or their results. Replies you already received are
+to list your skills run on the managed model, and Wisp never adds the skill catalog, skill
+instructions, skill tools or their results to what the app receives. Files are different: a
+file the app reads with a file tool, including one in your skills folder, is a tool result like
+any other file. Replies you already received are
 part of the conversation, so wording from an earlier skill-assisted answer can travel with
 later requests; start a new chat to avoid that. Reasoning-only connections are
 sent only the current prompt, without stored conversation or memory.

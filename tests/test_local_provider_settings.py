@@ -1194,3 +1194,53 @@ def test_tool_drafting_never_opens_the_external_app_for_a_managed_turn(monkeypat
     assert len(reached) == 1 and reached[0].startswith("external:ext-model:"), \
         "without managed_only the drafting keeps its existing target"
 
+
+def test_managed_only_drafting_keeps_a_cloud_or_remote_agent_binding(monkeypatch) -> None:
+    """The managed-only diversion applies to the unauthenticated local provider only; an
+    Agent bound to anything else keeps drafting where it always did."""
+    from service.config.endpoints import Endpoint
+    from service.tools import tool_authoring
+
+    cloud_target = Target("agent", Endpoint("cloud", "https://example.com", "keychain:Wisp", managed=False),
+                          "cloud-model", context_window=8192)
+    managed_target = Target("agent", Endpoint("local", "http://127.0.0.1:8000", "local_omlx",
+                            managed=True), "managed-model", context_window=8192)
+    reached: list[str] = []
+
+    class Fake:
+        def __init__(self, label):
+            self.label = label
+
+        async def ensure_only(self, *args, **kwargs):
+            pass
+
+        async def chat(self, model, messages, **kwargs):
+            reached.append(f"{self.label}:{model}")
+            return {"choices": [{"message": {"content": "import sys\nprint(sys.argv)\n"}}]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(tool_authoring, "role_target", lambda role: cloud_target)
+    monkeypatch.setattr(tool_authoring, "local_role_target", lambda role: managed_target)
+    monkeypatch.setattr(tool_authoring, "_c", lambda: Fake("managed"))
+    monkeypatch.setattr(tool_authoring, "OMLXClient", lambda **kwargs: Fake("cloud"))
+    asyncio.run(tool_authoring._generate("x_tool", "TASK", [], None, None, managed_only=True))
+    assert reached == ["cloud:cloud-model"], "a cloud-bound Agent keeps its existing drafting target"
+
+
+def test_create_tool_without_a_cached_draft_drafts_on_the_managed_model(monkeypatch) -> None:
+    """The fallback inside create_tool runs outside the loop, so it must not guess external."""
+    from service.tools import tool_authoring
+
+    seen: list[dict] = []
+
+    async def spy(args, **kwargs):
+        seen.append(kwargs)
+        return "stop here"        # a failure message ends the call before anything is installed
+
+    monkeypatch.setattr(tool_authoring, "prepare_draft", spy)
+    tool_authoring._pending.pop("fallback_tool", None)
+    result = asyncio.run(tool_authoring.create_tool("fallback_tool", "d", "t", []))
+    assert "stop here" in result and seen == [{"managed_only": True}]
+

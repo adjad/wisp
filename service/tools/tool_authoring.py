@@ -233,9 +233,10 @@ async def _generate(name: str, task: str, params: list[dict],
                     *, managed_only: bool = False) -> tuple[str, str]:
     """(code, error). Runs the on-device model; never raises.
 
-    ``managed_only`` is set when the turn runs on the managed model: the task text then
-    stays on it even if the Agent role is bound to an external app, because a turn that
-    stays managed can only be a skill turn and its wording may come from a skill."""
+    ``managed_only`` is set when the turn runs on the managed model. If the Agent role is
+    bound to the unauthenticated local provider, the task text then stays on the managed
+    model instead: a managed turn on that setup may be a skill turn, and its wording may
+    come from a skill. Any other binding (cloud, remote oMLX) keeps the target it always had."""
     prompt = (f"Write a script named for the tool '{name}'.\n"
               f"What it does: {task}\n\n"
               f"Command-line flags it must accept:\n{_param_flags(params)}\n")
@@ -254,7 +255,9 @@ async def _generate(name: str, task: str, params: list[dict],
     # Pinned to the agent model rather than the `coding` role: it's the model
     # that will CALL the resulting tool, so it should shape the argument list,
     # and it's already resident mid-turn so this costs no model swap.
-    target = local_role_target("agent") if managed_only else role_target("agent")
+    target = role_target("agent")
+    if managed_only and target.endpoint.name == "local_provider":
+        target = local_role_target("agent")
     coder = target.model
     c = _c() if target.endpoint.managed else OMLXClient(target=target)
     messages = [{"role": "system", "content": _CODER_SYS},
@@ -438,10 +441,13 @@ async def create_tool(name: str, description: str = "", task: str = "",
         # No cached draft — the loop normally fills this via prepare_draft, so
         # this path only runs if that was skipped. Generate now rather than
         # fail; the cost is that the confirmation card had no code to show.
+        # This path runs outside the loop, which cannot say whether the turn was a skill
+        # turn, so draft on the managed model whenever the Agent is the local provider.
         err = await prepare_draft({"name": name, "description": description,
                                    "task": task, "parameters": parameters or [],
                                    "read_scopes": read_scopes or [],
-                                   "write_scopes": write_scopes or []})
+                                   "write_scopes": write_scopes or []},
+                                  managed_only=True)
         if err:
             return f"(couldn't create this tool: {err})"
         draft = _pending[name]
