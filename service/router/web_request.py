@@ -1025,9 +1025,14 @@ def _parse_request(text: str, last_user: str | None = None, *,
     if query and any(not clause.negated and clause.action is None for clause in continuations):
         clarification = "Please clarify the separate action to perform after the public lookup."
     write_intent = delivery is not None or bool(continuations)
-    if study_clock or dated_assent:
-        # A qualified assent cannot fall back to generic "sure" retrieval if
-        # its single study proposition was rejected or no context matched.
+    rejected_study_offer = bool(
+        dated_assent and tomorrow_study_request(current_user) and last_assistant
+        and re.search(r"\b(?:set|add|create)\s+(?:a\s+)?reminder\s+at\b", last_assistant, re.I)
+        and re.search(r"\bstudy session\b", last_assistant, re.I))
+    if study_clock or rejected_study_offer:
+        # A date alone, including after a study read without this invitation,
+        # retains generic routing. Reject only a recognisable study invitation
+        # that failed the full positive/unique/unquoted proposition checks.
         acknowledgement_without_offer = not bool(study_clock)
         provenance, query, clarification = Provenance.PRIVATE, None, None
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,

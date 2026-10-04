@@ -6977,8 +6977,15 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
     plan = (compile_reminder_create(
                 f"remind me on {chosen:%Y-%m-%d} at {clock} to prepare for the study session")
             if chosen else None)
-    if plan is None or plan.status != "ready":
-        decision = _mk("fast", reason="study reminder date needs explicit confirmation")
+    if (plan is None or plan.status != "ready"
+            or datetime.fromisoformat(plan.temporal.absolute_iso).date() != chosen.date()):
+        # main's direct-prose path cannot verify a model's write claims. Keep
+        # this turn in the existing buffered receipt guard with zero capabilities.
+        # It returns a truthful no-creation receipt even if the model invents
+        # success or attempts the forbidden write. A new dated command is needed.
+        decision = _mk("agent", reason="study reminder date needs explicit confirmation")
+        decision.needs_tools = True
+        decision.reminder_action = "create"
         decision.tool_subset = []
         decision.forbidden_tools = frozenset(REGISTRY)
         decision.resolved_request = (
@@ -6996,7 +7003,7 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
         "title": plan.subject.value, "when_iso": plan.temporal.absolute_iso, "kind": "reminder"}}
     decision.resolved_request = (
         f"Set only the confirmed preparation reminder for {chosen:%A, %Y-%m-%d} at {clock}. "
-        "Call add_reminder through the normal permission and audit path. "
+        "Call add_reminder through the existing access-mode policy and audit path. "
         "Only its successful receipt establishes creation; no study Calendar event was requested.")
     return decision
 

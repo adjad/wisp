@@ -394,3 +394,159 @@ async def test_no_availability_is_terminal_before_narration(receipt, clock):
             include_memory_context=False, max_steps=3)
     assert client.messages == []
     assert "I created" not in output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous,offer", [(None, None),
+    ("Choose a date", "Which date do you want?"), ("Show my email", GOOD_OFFER),
+    ("find time to study tomorrow", None),
+    ("find time to study tomorrow", "Which date do you want?"),
+    ("find time to study tomorrow", "Would you like me to explain the study session?")])
+async def test_unrelated_dated_reply_preserves_normal_route(previous, offer, clock):
+    from service.router.web_request import classify
+    request = classify("okay, 2026-10-12", last_user=previous, last_assistant=offer)
+    assert not request.acknowledgement_without_offer
+    assert request.study_reminder_clock is None
+    with patch.object(R, "_semantic_core", new=AsyncMock(return_value=["calculate"])):
+        d = await R.route("okay, 2026-10-12", last_user=previous, last_assistant=offer)
+    assert d.needs_tools
+    assert "calculate" not in d.forbidden_tools
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("call_forbidden", [False, True])
+async def test_bare_assent_cannot_display_unreceipted_write_claim(call_forbidden, clock):
+    from service.agent import loop
+    d = await R.route("sure", last_user="find time for me to study tmrow", last_assistant=GOOD_OFFER)
+    client = StudyClient(write=call_forbidden)
+    if not call_forbidden:
+        async def stream(*args, **kwargs):
+            yield {"kind": "final", "message": {"role": "assistant", "content":
+                "Done! I set the reminder for 8:30 AM tomorrow."}}
+        client.stream_events = stream
+    execute = AsyncMock()
+    emit = AsyncMock()
+    with patch.object(loop, "run_tool", execute), patch.object(loop, "audit"):
+        output = await loop.run_agent(client, "fixture-model", [{"role": "user", "content":d.resolved_request}],
+            emit, SimpleNamespace(confirm=AsyncMock()), tools=d.tool_subset, direct_calls=d.direct_calls,
+            forbidden_tools=d.forbidden_tools, reminder_action=d.reminder_action,
+            include_memory_context=False, max_steps=3)
+    assert d.needs_tools  # main must use the guarded loop, not unguarded fast prose.
+    assert output == "I couldn't create the reminder. No reminder was added."
+    execute.assert_not_awaited()
+    visible = [c.args[0].get("text", "") for c in emit.call_args_list if c.args]
+    assert all("I set the reminder" not in text and "I created it" not in text for text in visible)
+
+
+@pytest.mark.parametrize("minutes", [0, -5, 30])
+def test_legacy_availability_keeps_sync_api_clamping_and_start_only_semantics(minutes, clock):
+    rows = [{"when_ts": stamp(4, 9), "end_ts": stamp(4, 12), "source": "calendar"}]
+    store = SimpleNamespace(upcoming=lambda **kwargs: rows)
+    with patch.object(S, "_store", store), patch("service.assistant.sync_status.ensure_sources", new=AsyncMock()) as ensure:
+        result = S.find_free_time(days=2, minutes=minutes)
+    assert isinstance(result, str)
+    assert "tomorrow: 10:00 AM–6:00 PM" in result
+    assert f"Free for {minutes}+ minutes" in result
+    assert "Timed items are assumed to run an hour" in result
+    assert "candidate" not in result
+    ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_availability_registered_execution_does_not_wait_for_sources(clock):
+    from service.tools.registry import run_tool, REGISTRY
+    with patch.object(S, "_store", SimpleNamespace(upcoming=lambda **kwargs: [])), \
+         patch("service.assistant.sync_status.ensure_sources", new=AsyncMock()) as ensure:
+        result = await run_tool(REGISTRY["find_free_time"], {"days": 1})
+    assert result == "No gaps of 30+ minutes in the next 1 day(s) between 9:00 and 18:00."
+    ensure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gap_minutes,qualifies", [(89, False), (90, True)])
+async def test_mid_gap_duration_boundary(clock, gap_minutes, qualifies):
+    rows = [{"when_ts": stamp(4, 9), "end_ts": stamp(4, 10), "source": "calendar"},
+            {"when_ts": stamp(4, 10) + gap_minutes * 60, "end_ts": stamp(4, 18), "source": "calendar"}]
+    result = await availability(rows)
+    assert ("10:00 AM–11:30 AM" in result) is qualifies
+    assert ("No matches:" in result) is not qualifies
+
+
+@pytest.mark.asyncio
+async def test_exact_day_rejects_zero_minutes_and_stale_reminders(clock):
+    assert "minutes must be" in await S.find_free_time(period="tomorrow", minutes=0)
+    with patch("service.assistant.sync_status.ensure_sources", new=AsyncMock(return_value={
+            "sources": [{"id": "calendar", "state": "ready"}], "reminders_fresh": False})):
+        result = await S.find_free_time(period="tomorrow")
+    assert "could not check" in result
+
+
+@pytest.mark.asyncio
+async def test_inactive_pinned_task_does_not_block(clock):
+    result = await availability([], tasks=[{"pinned_start": stamp(4, 9), "duration_minutes": 540, "status": "done"}])
+    assert "9:00 AM–10:30 AM" in result
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_window_is_rejected(clock):
+    with patch("service.tasks.temporal.unambiguous_local_time", return_value=False):
+        result = await availability([])
+    assert "ambiguous or nonexistent" in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous,current", [("Show my email", "sure, on 2026-10-04"),
+    ("find time to study tomorrow", "sure, on 2026-10-04 and text Mom")])
+async def test_date_cannot_promote_unqualified_study_offer(previous, current, clock):
+    from service.router.web_request import classify
+    request = classify(current, last_user=previous, last_assistant=GOOD_OFFER)
+    assert request.study_reminder_clock is None
+
+
+@pytest.mark.asyncio
+async def test_midnight_clock_cannot_shift_explicit_human_date(clock):
+    d = await R.route("sure, on 2026-10-06", last_user="find time to study tomorrow",
+                      last_assistant=GOOD_OFFER.replace("8:30 AM", "12 AM"))
+    assert "add_reminder" not in (d.tool_subset or [])
+    assert d.tool_argument_bindings == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["default", "full", "view-only"])
+async def test_confirmed_reminder_real_access_mode_policy(mode, clock):
+    from service.agent import loop
+    from service.safety import policy
+    d = await R.route("sure, on 2026-10-04", last_user="find time to study tomorrow", last_assistant=GOOD_OFFER)
+    receipt = "Reminder set: Prepare for the study session, Sunday 2026-10-04 08:30."
+    execute = AsyncMock(return_value=receipt)
+    approver = SimpleNamespace(confirm=AsyncMock())
+    with patch.object(policy, "_FULL_ACCESS", mode == "full"), \
+         patch.object(policy, "read_only", return_value=mode == "view-only"), \
+         patch("service.safety.grants.check", return_value=None), \
+         patch.object(loop, "run_tool", execute), patch.object(loop, "audit") as audit:
+        output = await loop.run_agent(StudyClient(write=True), "fixture-model",
+            [{"role":"user", "content":d.resolved_request}], AsyncMock(), approver,
+            tools=d.tool_subset, direct_calls=d.direct_calls, force_first_tool=d.force_first_tool,
+            forbidden_tools=d.forbidden_tools, required_tool_groups=d.required_tool_groups,
+            tool_argument_bindings=d.tool_argument_bindings, reminder_action=d.reminder_action,
+            include_memory_context=False, max_steps=3)
+    approver.confirm.assert_not_awaited()
+    assert audit.called
+    if mode == "view-only":
+        execute.assert_not_awaited()
+        assert output != receipt and "I created it" not in output
+    else:
+        execute.assert_awaited_once()
+        assert execute.await_args.args[1] == d.tool_argument_bindings["add_reminder"]
+        assert output == receipt
+
+
+@pytest.mark.asyncio
+async def test_exact_day_registered_execution_awaits_period_dispatch(clock):
+    from service.tools.registry import run_tool, REGISTRY
+    store = SimpleNamespace(today_snapshot=lambda day, timezone: {"commitments": []})
+    ready = {"sources": [{"id": "calendar", "state": "ready"}], "reminders_fresh": True}
+    with patch.object(S, "_store", store), patch("service.assistant.sync_status.ensure_sources",
+            new=AsyncMock(return_value=ready)):
+        result = await run_tool(REGISTRY["find_free_time"], {"period": "tomorrow", "minutes": 90})
+    assert "Sunday, 2026-10-04: 9:00 AM–10:30 AM" in result
