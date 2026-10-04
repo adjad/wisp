@@ -194,8 +194,9 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
     flexible = sorted((t for t in active if t.get("pinned_start") is None),
                       key=lambda t: (t["priority"], t.get("due_ts") or float("inf"), t["id"]))
     for t in flexible:
-        reason, cursor = None, earliest
+        reason, code, largest_gap, cursor = None, None, None, earliest
         if not sources["calendar"]["ready"] or unknown_duration or all_day_constraint:
+            code = "all_day" if all_day_constraint else "source_incomplete"
             reason = ("All-day event needs an explicit time choice" if all_day_constraint else
                       "Waiting for a current calendar with complete event times")
         else:
@@ -208,9 +209,19 @@ def build_plan(day, timezone, tasks, commitments, preferences, status, *, now):
                     break
                 cursor = max(cursor, b["end"])
             if cursor + duration > limit:
-                reason = "No uninterrupted time before the deadline or end of working hours"
+                code = "no_contiguous_gap"
+                gap_cursor, largest_gap = earliest, 0
+                for occupied in sorted(blocks, key=lambda b: (b["start"], b["id"])):
+                    if occupied["end"] is None or occupied["end"] <= occupied["start"]:
+                        continue
+                    largest_gap = max(largest_gap, max(0, min(limit, occupied["start"]) - gap_cursor))
+                    gap_cursor = max(gap_cursor, occupied["end"])
+                largest_gap = int(max(largest_gap, max(0, limit - gap_cursor)) // 60)
+                reason = (f"Needs {t['duration_minutes']} uninterrupted minutes; largest available gap "
+                          f"before the deadline or end of working hours is {largest_gap} minutes")
         if reason:
-            unscheduled.append(dict(task_id=t["id"], title=t["title"], reason=reason))
+            unscheduled.append(dict(task_id=t["id"], title=t["title"], reason=reason, reason_code=code,
+                                    required_minutes=t["duration_minutes"], largest_gap_minutes=largest_gap))
         else:
             blocks.append(dict(id="task:" + t["id"], task_id=t["id"], title=t["title"], kind=t["kind"],
                                start=cursor, end=cursor + t["duration_minutes"] * 60, warnings=[]))

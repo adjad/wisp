@@ -327,6 +327,8 @@ struct OverlayView: View {
                 } else {
                     MarkdownView(text: turn.text)
                 }
+                Button("Report a problem") { model.reportProblem(for: turn) }
+                    .buttonStyle(.plain).font(.caption).foregroundStyle(Theme.textMuted)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

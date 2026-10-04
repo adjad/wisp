@@ -192,6 +192,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Synthetic content-free journal, bounded offline planner replay; no external effects.
+    "tests/test_diagnostics.py",
     "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
@@ -598,6 +600,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/search-contract",
             [TRUSTED_BASH, "scripts/test_search_contract.sh"],
         ),
+        ("native/diagnostic-report-contract", [TRUSTED_BASH, "scripts/test_diagnostic_report.sh"]),
         (
             "native/today-contract",
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],

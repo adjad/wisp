@@ -89,6 +89,7 @@ final class OverlayModel: ObservableObject {
         // Raw exception text behind an error turn (see service/errors.py) —
         // never shown as the headline, only folded into the debug export so
         // a real diagnosis doesn't require reproducing the failure.
+        var traceID: String? = nil
         var errorDetail: String? = nil
         var nodeResultID: String? = nil
         var isDailySummary: Bool = false   // see runDailySummary/"daily_brief": replaced, never stacked
@@ -221,6 +222,8 @@ final class OverlayModel: ObservableObject {
 
     // Debug metadata for the turn currently in flight — folded into a Turn
     // record on "done"/"error" (see handle()). Reset in submit().
+    private var lastDroppedReport: [String: Any]?
+    private var turnTraceID: String?
     private var turnStartedAt: Date?
     private var turnFirstTokenAt: Date?
     private var turnModel: String?
@@ -309,6 +312,8 @@ final class OverlayModel: ObservableObject {
         tokPerSec = 0; pending = nil; messageDraft = nil
         streamStart = nil; streamChars = 0; heartbeats = 0
         pendingDelta = ""; flushScheduled = false
+        lastDroppedReport = nil
+        turnTraceID = nil
         turnStartedAt = Date(); turnFirstTokenAt = nil
         turnModel = nil; turnRouteRole = nil; turnRouteReason = nil; turnNeededTools = nil
         turnToolCalls = []
@@ -457,6 +462,44 @@ final class OverlayModel: ObservableObject {
     // Debug Mode was only switched on partway through. Returns the JSON file's
     // URL (nil if there's nothing to export yet) so the caller can reveal it
     // in Finder.
+    func reportCurrentProblem() {
+        if var metadata = lastDroppedReport {
+            if let traceID = metadata["trace_id"] as? String, let journal = DiagnosticReport.journal(traceID: traceID) {
+                metadata["trace"] = journal
+                metadata["journal_available"] = true
+            }
+            DiagnosticReport.present(metadata: metadata)
+        } else if let turn = turns.last(where: { $0.role == "assistant" }) {
+            reportProblem(for: turn)
+        } else {
+            DiagnosticReport.present(metadata: ["surface": "chat", "client_outcome": "no_completed_reply", "journal_available": false])
+        }
+    }
+
+    func reportProblem(for turn: Turn) {
+        var metadata: [String: Any] = ["surface": "chat", "client_outcome": turn.isError ? "error" : "completed",
+                                      "journal_available": false]
+        if let traceID = turn.traceID {
+            metadata["trace_id"] = traceID
+            if let journal = DiagnosticReport.journal(traceID: traceID) {
+                metadata["trace"] = journal
+                metadata["journal_available"] = true
+            }
+        }
+        if let duration = turn.durationSec { metadata["client_duration_seconds"] = duration }
+        if let first = turn.timeToFirstTokenSec { metadata["client_first_token_seconds"] = first }
+        var details: [String: Any] = ["answer": turn.text, "activity": turn.activity,
+                                      "reasoning": turn.reasoningText,
+                                      "tool_calls": turn.toolCalls.map { ["name": $0.name, "args": Self.parsedJSON($0.argsJSON), "result": $0.result, "decision": $0.decision,
+                                                                          "debug": $0.debugRecords.map { Self.parsedJSON($0.json) }] },
+                                      "model_io": turn.rawIO.map { ["model": $0.model, "request": Self.parsedJSON($0.requestJSON), "response": Self.parsedJSON($0.responseJSON)] }]
+        if let index = turns.firstIndex(where: { $0.id == turn.id }), index > 0, turns[index - 1].role == "user" {
+            details["prompt"] = turns[index - 1].text
+        }
+        if let error = turn.errorDetail { details["error_detail"] = error }
+        DiagnosticReport.present(metadata: metadata, details: details)
+    }
+
     func exportDebugLog() -> URL? {
         guard !turns.isEmpty else { return nil }
         let iso = ISO8601DateFormatter()
@@ -465,6 +508,7 @@ final class OverlayModel: ObservableObject {
 
         func turnJSON(_ t: Turn) -> [String: Any] {
             var d: [String: Any] = ["role": t.role, "text": t.text]
+            if let traceID = t.traceID { d["trace_id"] = traceID }
             if t.isError { d["is_error"] = true }
             if let detail = t.errorDetail { d["error_detail"] = detail }
             if !t.activity.isEmpty { d["activity_log"] = t.activity }
@@ -579,6 +623,7 @@ final class OverlayModel: ObservableObject {
 
     private func handle(_ ev: WispClient.Event, dispatchID: UInt64) {
         guard submissionState.isCurrent(dispatchID) else { return }
+        if let traceID = ev.payload["trace_id"] as? String { turnTraceID = traceID }
         // Any event other than another `status` means whatever it was
         // narrating (a model load/swap — see ensure_only) is over or was
         // superseded by real progress; clear it so processingLabel falls
@@ -714,6 +759,8 @@ final class OverlayModel: ObservableObject {
             flushPendingDelta()
             let gotNothing = answer.isEmpty && activity.isEmpty && role.isEmpty
             if ev.bool("dropped") && gotNothing {
+                lastDroppedReport = ["surface": "chat", "client_outcome": "connection_dropped", "journal_available": false]
+                if let id = turnTraceID { lastDroppedReport?["trace_id"] = id }
                 if let retry = submissionState.dropForRetry(dispatchID) {
                     input = retry.text
                     attachedImage = retry.image
@@ -773,6 +820,7 @@ final class OverlayModel: ObservableObject {
 
     // Folds this turn's tracked debug metadata into the Turn being finalized.
     private func applyDebugFields(to turn: inout Turn) {
+        turn.traceID = turnTraceID
         turn.model = turnModel
         turn.routeRole = turnRouteRole
         turn.routeReason = turnRouteReason
@@ -1198,7 +1246,7 @@ final class OverlayModel: ObservableObject {
             // transcript across a sleep/wake or an unattended day and read as
             // "today's" summary when it's actually from the prior firing.
             turns.removeAll { $0.isDailySummary }
-            turns.append(Turn(role: "assistant", text: briefText, isDailySummary: true))
+            turns.append(Turn(role: "assistant", text: briefText, traceID: ev.payload["trace_id"] as? String, isDailySummary: true))
         default:
             return false
         }
