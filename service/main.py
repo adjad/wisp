@@ -1986,8 +1986,16 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict
+    # Reminders only: incomplete reminders with no due date ride along as a separate list.
+    # A missing or invalid payload is None, which leaves the stored list untouched, so it
+    # reads as stale until a valid one arrives; the dated part is still accepted.
+    from service.assistant.store import parse_undated_snapshot
+    undated = (parse_undated_snapshot(body.get("undated"), body.get("undated_total"))
+               if source == "reminders" else None)
     try:
-        n = assistant_store.sync_source(source, items, diagnostics=diagnostics)
+        # One call, one transaction: the dated rows, the receipt and the undated list
+        # commit together or not at all.
+        n = assistant_store.sync_source(source, items, diagnostics=diagnostics, undated=undated)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
