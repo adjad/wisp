@@ -147,15 +147,18 @@ final class SetupGuideModel: ObservableObject {
         } catch { fail(error) }
     }
 
-    func connectExternal(port: Int, model: String) async {
-        busy = "Testing the connection…"
+    func connectExternal(port: Int, model: String, withTools: Bool = false) async {
+        busy = withTools ? "Testing tool calling… this can take up to a minute." : "Testing the connection…"
         defer { busy = nil }
         do {
             _ = try await call("POST", "inference/local-provider", body: [
                 "base_url": "http://127.0.0.1:\(port)", "api_prefix": "/v1",
-                "model_id": model, "context_window": 8192, "roles": ["reasoning"],
-            ], timeout: 60)
-            message = "Connected \(model) for Reasoning. Tools and everything else stay on oMLX."
+                "model_id": model, "context_window": withTools ? 16384 : 8192,
+                "roles": withTools ? ["reasoning", "agent"] : ["reasoning"],
+            ], timeout: withTools ? 420 : 60)
+            message = withTools
+                ? "Connected \(model) for Reasoning and Agent. Wisp tested tool calling and saved the context window the app really uses."
+                : "Connected \(model) for Reasoning. Tools and everything else stay on oMLX."
             messageIsError = false
             await refresh(quiet: true)
         } catch { fail(error) }
@@ -493,7 +496,8 @@ struct SetupGuideView: View {
     private func otherEnginesSection(_ s: SetupStatus) -> some View {
         card(step: "4", title: "Other local apps (optional)", state: "info") {
             Text("Ollama, LM Studio, llama.cpp, MTPLX and similar apps on this Mac can answer chat and reasoning. "
-                 + "Wisp keeps tool use on oMLX until another engine is proven to call tools reliably.")
+                 + "Choose “Connect with tools” and Wisp tests whether the app can run its tools reliably, "
+                 + "including the context window it really uses, before turning tool use on.")
                 .font(.callout).foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(s.disclosure).font(.caption).foregroundStyle(Color.orange)
@@ -548,6 +552,10 @@ struct SetupGuideView: View {
             .labelsHidden().frame(maxWidth: 260)
             action("Connect for Reasoning") { Task { await model.connectExternal(port: port, model: binding.wrappedValue) } }
                 .disabled(model.busy != nil)
+            action("Connect with tools") {
+                Task { await model.connectExternal(port: port, model: binding.wrappedValue, withTools: true) }
+            }
+            .disabled(model.busy != nil)
             Spacer()
         }
     }

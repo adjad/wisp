@@ -20,10 +20,11 @@ OMLX_MIN_MACOS = 15
 # Same wording as Settings' local-provider panel. Loopback proves the app is on this
 # Mac, not that it keeps prompts there, so this must never claim more than that.
 EXTERNAL_ENGINE_DISCLOSURE = (
-    "Reasoning prompts are sent to the app you connect. Wisp does not automatically send "
-    "earlier conversation summaries or remembered facts. Routing, summary generation, and "
-    "tool use stay with managed models. A loopback app without an API key is not "
-    "identity-verified; connect only one you trust.")
+    "Reasoning prompts are sent to the app you connect. If you also let it run tools, the "
+    "results of those tools — your calendar, mail, messages, notes and files — are sent to it "
+    "too. Wisp does not automatically send earlier conversation summaries or remembered facts. "
+    "Routing, summary generation, search and memory stay with managed models. A loopback app "
+    "without an API key is not identity-verified; connect only one you trust.")
 
 
 @dataclass(frozen=True)
