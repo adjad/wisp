@@ -2589,7 +2589,8 @@ async def run_agent(
                 # of.)
                 if name == "create_tool":
                     from service.tools.tool_authoring import prepare_draft
-                    draft_err = await prepare_draft(args)
+                    draft_err = await prepare_draft(
+                        args, managed_only=bool(getattr(client, "managed", True)))
                     if draft_err:
                         result = f"(couldn't create this tool: {draft_err})"
                         audit("draft_failed", tool=name, args=args, reason=draft_err)

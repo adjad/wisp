@@ -49,7 +49,7 @@ import yaml
 
 from service.config import role_to_model
 from service.inference.omlx_client import OMLXClient
-from service.config.endpoints import role_target
+from service.config.endpoints import local_role_target, role_target
 from service.skills import SKILLS_DIR, load as reload_skills
 from service.skills.sandbox import available as sandbox_available
 from service.skills.scopes import describe as describe_scopes, parse_scopes
@@ -229,8 +229,13 @@ def _param_flags(parameters: list[dict]) -> str:
 
 async def _generate(name: str, task: str, params: list[dict],
                     read_scopes: list | None = None,
-                    write_scopes: list | None = None) -> tuple[str, str]:
-    """(code, error). Runs the on-device model; never raises."""
+                    write_scopes: list | None = None,
+                    *, managed_only: bool = False) -> tuple[str, str]:
+    """(code, error). Runs the on-device model; never raises.
+
+    ``managed_only`` is set when the turn runs on the managed model: the task text then
+    stays on it even if the Agent role is bound to an external app, because a turn that
+    stays managed can only be a skill turn and its wording may come from a skill."""
     prompt = (f"Write a script named for the tool '{name}'.\n"
               f"What it does: {task}\n\n"
               f"Command-line flags it must accept:\n{_param_flags(params)}\n")
@@ -249,7 +254,7 @@ async def _generate(name: str, task: str, params: list[dict],
     # Pinned to the agent model rather than the `coding` role: it's the model
     # that will CALL the resulting tool, so it should shape the argument list,
     # and it's already resident mid-turn so this costs no model swap.
-    target = role_target("agent")
+    target = local_role_target("agent") if managed_only else role_target("agent")
     coder = target.model
     c = _c() if target.endpoint.managed else OMLXClient(target=target)
     messages = [{"role": "system", "content": _CODER_SYS},
@@ -294,7 +299,7 @@ async def _generate(name: str, task: str, params: list[dict],
     return code, ""
 
 
-async def prepare_draft(args: dict) -> str:
+async def prepare_draft(args: dict, *, managed_only: bool = False) -> str:
     """Generate and cache the code for a proposed tool, WITHOUT installing it.
 
     Run by the agent loop immediately before create_tool's confirmation card,
@@ -328,7 +333,7 @@ async def prepare_draft(args: dict) -> str:
         return f"write_scopes: {scope_err}"
 
     code, gen_err = await _generate(name, task, clean_params,
-                                    read_scopes, write_scopes)
+                                    read_scopes, write_scopes, managed_only=managed_only)
     if gen_err:
         return gen_err
 

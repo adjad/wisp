@@ -661,6 +661,7 @@ def _call(name, args=None, call_id="call-1"):
 
 
 _LATE_TOOL_RESULT = "LATE-TOOL-RESULT-SENTINEL"
+_DRAFT_CALLS: list[dict] = []   # keyword arguments the loop passed to prepare_draft
 
 
 def _install_authoring_stub(registry, monkeypatch):
@@ -672,7 +673,8 @@ def _install_authoring_stub(registry, monkeypatch):
     # which would otherwise overwrite this stub later and run a model-backed authoring call.
     from service.tools import tool_authoring
 
-    async def no_draft_error(args):
+    async def no_draft_error(args, **kwargs):
+        _DRAFT_CALLS.append(kwargs)
         return ""
 
     monkeypatch.setattr(tool_authoring, "prepare_draft", no_draft_error)
@@ -703,7 +705,7 @@ def _install_authoring_stub(registry, monkeypatch):
 
 def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="all",
                     external_script=None, managed_script=None, prior_tool_digest=None,
-                    authoring_stub=False,
+                    authoring_stub=False, force_first_tool=None,
                     tools=("probe_noop", "use_skill", "probe_skill_tool")):
     """Drive the real /agent endpoint for a tool route bound to an external provider."""
     import service.main as main
@@ -729,7 +731,7 @@ def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="
 
     async def routed(*args, **kwargs):
         return RouteDecision(role, "ext-model", True, "rules", "fixture",
-                             tool_subset=list(tools))
+                             tool_subset=list(tools), force_first_tool=force_first_tool)
 
     async def ready():
         pass
@@ -1092,4 +1094,103 @@ def test_a_tool_reclassified_as_a_skill_tool_within_a_step_is_refused_at_dispatc
     finally:
         restore_authoring()
         registry.REGISTRY.pop("reclass_tool", None)
+
+
+# ------- review findings on the skill boundary: skill metadata tools and tool drafting
+
+def test_listing_installed_skills_runs_on_the_managed_model(monkeypatch, tmp_path) -> None:
+    """'List my installed skills' forces wisp_skills. Its answer is skill metadata, so the
+    turn stays managed even though the prompt triggers no skill."""
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "list my installed skills", tools=("wisp_skills",),
+        force_first_tool="wisp_skills",
+        managed_script=[_call("wisp_skills"), {"role": "assistant", "content": "Here they are."}])
+    assert routed_event["model"] == "managed-model"
+    assert routed_event["route_source"] == "skill_local"
+    assert external.requests == [], "the external app received a skill-listing turn"
+    assert "expense-helper" in _everything_sent(managed), "the managed model still gets the listing"
+
+
+def test_the_skill_listing_tool_is_never_offered_or_run_for_the_external_app(
+        monkeypatch, tmp_path) -> None:
+    """Even from a broad menu on a turn that stays external, wisp_skills is not offered, and
+    a call to it from memory is refused with nothing about skills in the reply."""
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "run the noop probe", tools=("probe_noop", "wisp_skills"),
+        external_script=[_call("wisp_skills"), {"role": "assistant", "content": "Done."}])
+    assert routed_event["model"] == "ext-model" and managed.requests == []
+    for request in external.requests:
+        assert "wisp_skills" not in request["tools"] and "probe_noop" in request["tools"]
+    sent = _everything_sent(external)
+    for name in ("expense-helper", "quiet-helper", "idea-refine"):
+        assert name not in sent, f"{name} reached the external app through the skill listing"
+
+
+def test_skill_boundary_names_cover_the_listing_tool(monkeypatch) -> None:
+    from service import skills as skills_module
+    from service.tools import registry
+    from service.tools import misc_t1  # noqa: F401  (registers wisp_skills)
+    assert "wisp_skills" in registry.REGISTRY
+    assert {"use_skill", "wisp_skills"} <= skills_module.skill_tool_names()
+    assert skills_module.digest_used_skill("get_weather, wisp_skills")
+
+
+def test_the_loop_drafts_on_the_managed_model_only_for_a_managed_turn(monkeypatch, tmp_path) -> None:
+    _DRAFT_CALLS.clear()
+    _run_skill_turn(
+        monkeypatch, tmp_path,
+        "build me a reusable tool for my expense report called late_skill_tool",
+        authoring_stub=True, tools=_AUTHORING_TOOLS,
+        managed_script=[_call("create_tool", {"name": "late_skill_tool"}),
+                        {"role": "assistant", "content": "Done."}])
+    assert _DRAFT_CALLS and all(call.get("managed_only") is True for call in _DRAFT_CALLS), \
+        "a managed (skill) turn must draft tool code on the managed model"
+    _DRAFT_CALLS.clear()
+    _run_skill_turn(
+        monkeypatch, tmp_path, _AUTHORING_PROMPT, authoring_stub=True, tools=_AUTHORING_TOOLS,
+        external_script=[_call("create_tool", {"name": "late_skill_tool"}),
+                         {"role": "assistant", "content": "Done."}])
+    assert _DRAFT_CALLS and all(call.get("managed_only") is False for call in _DRAFT_CALLS), \
+        "an ordinary external turn keeps drafting where it always did"
+
+
+def test_tool_drafting_never_opens_the_external_app_for_a_managed_turn(monkeypatch) -> None:
+    """The real drafting code, not a stub: with managed_only the task text goes to the
+    managed model even though the Agent role is bound to the external app."""
+    from service.config.endpoints import Endpoint
+    from service.tools import tool_authoring
+
+    external_target = Target("agent", endpoint_from_config("local_provider", _endpoint_cfg()),
+                             "ext-model", context_window=8192)
+    managed_target = Target("agent", Endpoint("local", "http://127.0.0.1:8000", "local_omlx",
+                            managed=True), "managed-model", context_window=8192)
+    reached: list[str] = []
+
+    class Fake:
+        def __init__(self, label):
+            self.label = label
+
+        async def ensure_only(self, *args, **kwargs):
+            pass
+
+        async def chat(self, model, messages, **kwargs):
+            reached.append(f"{self.label}:{model}:{json.dumps(messages)}")
+            return {"choices": [{"message": {"content": "import sys\nprint(sys.argv)\n"}}]}
+
+        async def aclose(self):
+            pass
+
+    monkeypatch.setattr(tool_authoring, "role_target", lambda role: external_target)
+    monkeypatch.setattr(tool_authoring, "local_role_target", lambda role: managed_target)
+    monkeypatch.setattr(tool_authoring, "_c", lambda: Fake("managed"))
+    monkeypatch.setattr(tool_authoring, "OMLXClient", lambda **kwargs: Fake("external"))
+
+    asyncio.run(tool_authoring._generate("x_tool", "TASK-SENTINEL-FROM-A-SKILL", [], None, None,
+                                         managed_only=True))
+    assert len(reached) == 1 and reached[0].startswith("managed:managed-model:")
+    assert "TASK-SENTINEL-FROM-A-SKILL" in reached[0]
+    reached.clear()
+    asyncio.run(tool_authoring._generate("x_tool", "TASK-SENTINEL-ORDINARY", [], None, None))
+    assert len(reached) == 1 and reached[0].startswith("external:ext-model:"), \
+        "without managed_only the drafting keeps its existing target"
 

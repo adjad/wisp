@@ -365,12 +365,17 @@ def turn_skill_names(user_text: str) -> list[str]:
             if s.enabled and not s.error and s.matches(user_text)]
 
 
+# Tools that return skill content or metadata although they are not skill-defined tools.
+# wisp_skills lists every installed skill with its enabled state and any load error.
+_SKILL_CONTENT_TOOLS = frozenset({"use_skill", "wisp_skills"})
+
+
 def skill_tool_names() -> frozenset[str]:
-    """Tools whose results or schemas carry skill content: ``use_skill`` and every
-    tool an installed skill defines."""
+    """Tools whose results or schemas carry skill content: ``use_skill``, the skill-listing
+    ``wisp_skills`` and every tool an installed skill defines."""
     from service.tools.registry import REGISTRY
-    return frozenset({"use_skill"} | {name for name, tool in REGISTRY.items()
-                                      if tool.category == "skill_tool"})
+    return frozenset(_SKILL_CONTENT_TOOLS | {name for name, tool in REGISTRY.items()
+                                             if tool.category == "skill_tool"})
 
 
 def digest_used_skill(tool_digest: str | None) -> bool:

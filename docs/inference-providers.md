@@ -117,10 +117,14 @@ role to no-tools until it is tested again. Older qualification records that did 
 record the tested API prefix require a fresh test; Wisp does not assume `/v1` for
 missing evidence. Disconnecting clears the saved record.
 
-**What is sent.** With Agent or Coding selected, tool results, meaning your calendar, mail,
-messages, notes and file contents, are sent to the app to answer you. A loopback app without
-an API key is not identity-verified, so connect only one you trust. Skills and active
-workflows stay on managed oMLX.
+**What is sent.** With Agent or Coding selected, the app receives what it needs to run your
+request: the conversation so far, facts you asked Wisp to remember, your name and email
+addresses, and tool results, meaning your calendar, mail, messages, notes and file contents.
+A loopback app without an API key is not identity-verified, so connect only one you trust.
+Skills stay on managed oMLX: a request that uses a skill, a follow-up to one, and a request
+to list your skills run on the managed model, and the external app is never sent the skill
+catalog, skill instructions, skill tools or their results. Reasoning-only connections are
+sent only the current prompt, without stored conversation or memory.
 
 ## Local models and role behavior
 

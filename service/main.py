@@ -1490,6 +1490,16 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
+            if not skill_turn:
+                # A route that forces a skill-content tool (for example "list my installed
+                # skills" forcing wisp_skills) is a skill turn too, even though the prompt
+                # triggers no skill: its answer is skill metadata. A broad default menu that
+                # merely CONTAINS use_skill is not.
+                _skill_tools = skills.skill_tool_names()
+                _subset = set(decision.tool_subset or ())
+                if (decision.force_first_tool in _skill_tools
+                        or (_subset and _subset <= _skill_tools)):
+                    skill_turn = "skill_local"
             if skill_turn and target.endpoint.name == "local_provider":
                 # A skill may contain local file content or private workflow state.
                 # Keep its instructions and execution on the managed model.
