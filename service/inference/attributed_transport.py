@@ -261,15 +261,22 @@ class DesktopOmlx:
                 boundary = boundary.parent
 
             def snapshot():
+                # One os.scandir pass.  The rules are those of the former
+                # `[root, *sorted(root.rglob('*'))]` loop: every entry (dotfiles too)
+                # is lstat'ed, qualified and recorded; a symlinked directory is an
+                # entry but is never descended; the 50,000 limit is checked before each
+                # entry with the root counted; a directory that cannot be listed is
+                # skipped, as rglob skipped it.  The inventory is compared as a dict,
+                # so enumeration order cannot change the verdict.
                 found = {}
-                for path in [root, *sorted(root.rglob('*'))]:
+
+                def record(path, info):
                     if len(found) >= 50000:
                         raise AuthRefused('desktop_runtime_unqualified')
-                    info = path.lstat()
                     target = None
                     if stat.S_ISLNK(info.st_mode):
                         qualify(info, allow_link=True)
-                        target_path = path.resolve(strict=True)
+                        target_path = Path(path).resolve(strict=True)
                         if target_path != root and root not in target_path.parents:
                             raise AuthRefused('desktop_runtime_unqualified')
                         target = str(target_path)
@@ -278,6 +285,21 @@ class DesktopOmlx:
                     found[path] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid,
                                    info.st_gid, info.st_size, info.st_mtime_ns,
                                    info.st_ctime_ns, target)
+
+                root_text = str(root)
+                record(root_text, os.lstat(root_text))
+                pending = [root_text]
+                while pending:
+                    try:
+                        with os.scandir(pending.pop()) as listing:
+                            entries = list(listing)
+                    except OSError:
+                        continue
+                    for entry in entries:
+                        info = entry.stat(follow_symlinks=False)
+                        record(entry.path, info)
+                        if stat.S_ISDIR(info.st_mode):
+                            pending.append(entry.path)
                 return found
 
             inventory = snapshot()
