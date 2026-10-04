@@ -581,3 +581,175 @@ def test_phone_alternative_needs_an_imperative_lead(prompt):
 ])
 def test_phone_alternative_keeps_imperative_requests(prompt):
     assert R.SEND_MESSAGE_RE.search(prompt), prompt
+
+
+# ---------------------------------------------------------------------------
+# Named-topic lookups ("what's the order for Amazon") were left to retrieval
+# and the model's pick, so `recall` ran and Apple Notes was never searched even
+# though the user had just written the answer down. A bounded named-topic
+# question now forces `search_notes` first and keeps `recall` behind it.
+# Synthetic strings only; no model, engine, Notes, Mail or network is touched.
+# ---------------------------------------------------------------------------
+NAMED_TOPIC_LOOKUPS = [
+    "what's the order for Amazon",
+    "whats the amazon order",
+    "WHAT'S MY AMAZON ORDER",
+    "what is my Amazon order number",
+    "waht's my amazon order",
+    "where's my Amazon order",
+    "my Amazon order",
+    "my amazon order?",
+    "tell me the order from Amazon",
+    "find my Home Depot order",
+    "what's my latest Etsy order",
+    "ok what was the Target order status",
+    "what's the confirmation number for my Marriott booking",
+    "show me my Costco receipt",
+    "what did I just write down about the Amazon order",
+]
+
+
+def _named_topic_decision(prompt):
+    decision = R.rule_route(prompt)
+    assert decision is not None, prompt
+    return decision
+
+
+@pytest.mark.parametrize("prompt", NAMED_TOPIC_LOOKUPS)
+def test_named_topic_lookup_searches_notes_before_recall(prompt):
+    decision = _named_topic_decision(prompt)
+    subset = list(decision.tool_subset or ())
+    assert "search_notes" in subset and "recall" in subset, (decision.reason, subset)
+    assert subset.index("search_notes") < subset.index("recall"), subset
+    assert decision.force_first_tool == "search_notes", decision.force_first_tool
+    # Read-only: nothing on this route may write.
+    assert not set(subset) & {"remember", "forget", "create_note", "append_note",
+                              "send_message", "send_email"}, subset
+
+
+@pytest.mark.parametrize("prompt", NAMED_TOPIC_LOOKUPS[:6])
+def test_named_topic_lookup_survives_the_full_async_route(prompt):
+    decision = _full_route(prompt)
+    subset = list(decision.tool_subset or ())
+    assert subset[:2] == ["search_notes", "recall"], (decision.reason, subset)
+    assert decision.force_first_tool == "search_notes"
+
+
+NOT_NAMED_TOPIC_LOOKUPS = [
+    # Public / general knowledge questions about the word "order".
+    "what's the order of the planets",
+    "order of operations",
+    "what's the order of operations in math",
+    "what's the best order to watch Star Wars",
+    "what's the alphabetical order of the months",
+    "what is the right order for the steps",
+    "what's the order for the exam",
+    "what's the order of succession",
+    "what's the difference between an order and a request",
+    "what's the pecking order",
+    "what is the batting order for the Yankees",
+    "what's the Amazon order policy",
+    # The user named another source themselves: that route keeps its scope.
+    "what's the order for Amazon in my emails",
+    "what's my Amazon order from my email",
+    "cancel my Amazon order",
+    # Bare possessive with no named topic.
+    "what's my order",
+    "where's my last order",
+    # Quoted text.
+    "what does the phrase \"my Amazon order\" mean",
+    "explain the word 'Amazon order' to me",
+    # Third party / send / draft / write intents.
+    "email Dan my Amazon order",
+    "text mom the Amazon order number",
+    "draft a message to Sam about my Amazon order",
+    "remember that my Amazon order is 1234",
+    "add my Amazon order to my notes",
+    "save a note: Amazon order arrives Friday",
+]
+
+
+@pytest.mark.parametrize("prompt", NOT_NAMED_TOPIC_LOOKUPS)
+def test_non_lookups_do_not_pick_up_the_named_topic_rule(prompt):
+    decision = R.rule_route(prompt)
+    if decision is None:
+        return
+    reason = decision.reason or ""
+    assert "named-topic" not in reason, (prompt, reason)
+    if not R._NOTES_INTENT_RE.search(prompt):
+        assert decision.force_first_tool != "search_notes" or "unresolved topic" in reason, (
+            prompt, reason, decision.tool_subset)
+
+
+@pytest.mark.parametrize("prompt", [
+    "what's the order of the planets",
+    "order of operations",
+    "what's the best order to watch Star Wars",
+    "what does the phrase \"my Amazon order\" mean",
+    "what's my order",
+])
+def test_public_and_unnamed_questions_never_reach_notes(prompt):
+    decision = _full_route(prompt)
+    assert decision.force_first_tool != "search_notes", (decision.reason, decision.tool_subset)
+    assert "named-topic" not in decision.reason
+
+
+@pytest.mark.parametrize("prompt", [
+    "what did I tell you about my Amazon order",
+    "what did I tell you about the car",
+    "what have I told you about the Amazon order",
+    "did I ever tell you about my Amazon order",
+])
+def test_conversation_only_phrasing_stays_recall_only(prompt):
+    decision = _named_topic_decision(prompt)
+    assert decision.force_first_tool == "recall", decision.reason
+    assert "search_notes" not in (decision.tool_subset or ()), decision.tool_subset
+    assert list(decision.tool_subset) == ["remember", "recall", "forget"]
+
+
+def test_third_party_conversation_question_is_not_a_named_topic_lookup():
+    # Pre-existing compose handling (unchanged by this rule): the named-topic
+    # rule must contribute nothing here.
+    decision = _named_topic_decision("what did I tell Dan about the car")
+    assert "named-topic" not in decision.reason
+
+
+@pytest.mark.parametrize("prompt", [
+    "what's my Amazon order in my notes",
+    "search my notes for the Amazon order",
+    "find the note about my Amazon order",
+])
+def test_explicit_notes_requests_stay_notes_only(prompt):
+    decision = _named_topic_decision(prompt)
+    assert "recall" not in (decision.tool_subset or ()), (decision.reason, decision.tool_subset)
+    assert "named-topic" not in decision.reason
+    assert "search_notes" in (decision.tool_subset or ())
+
+
+@pytest.mark.parametrize("prompt", [
+    "remember that my Amazon order is 1234",
+    "from now on my Amazon order goes to the office",
+    "forget about my Amazon order",
+])
+def test_memory_save_and_forget_routes_are_unchanged(prompt):
+    decision = _named_topic_decision(prompt)
+    assert decision.force_first_tool in {"remember", "forget"}, decision.reason
+    assert "search_notes" not in (decision.tool_subset or ())
+
+
+def test_compound_named_topic_and_calendar_read_keeps_both_sources():
+    decision = _full_route("what's my Amazon order and what's on my calendar tomorrow")
+    subset = set(decision.tool_subset or ())
+    assert {"search_notes", "recall", "get_upcoming"} <= subset, (decision.reason, subset)
+
+
+def test_compound_named_topic_and_message_write_keeps_both_halves():
+    decision = _full_route("what's my Amazon order and text mom I'll be late")
+    subset = set(decision.tool_subset or ())
+    assert {"search_notes", "recall", "send_message"} <= subset, (decision.reason, subset)
+
+
+def test_compound_named_topic_and_memory_question_keeps_both_halves():
+    decision = _full_route("what's my Amazon order and what did I tell you about the car")
+    subset = set(decision.tool_subset or ())
+    assert {"search_notes", "recall"} <= subset, (decision.reason, subset)

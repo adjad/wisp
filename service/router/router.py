@@ -241,6 +241,86 @@ _PEOPLE_QUERY_RE = re.compile(
     r"\bpeople\s+(?:close\s+to|important\s+to)\s+me\b|"
     r"\bwho\s+(?:do\s+i\s+know|are\s+my\s+(?:friends|contacts))\b", re.I)
 
+# A question about a NAMED, user-specific item — "what's the order for Amazon",
+# "whats my amazon order", "my Costco receipt" — is a lookup in what the user
+# has written down or told Wisp, not a request for public knowledge. Left to
+# retrieval it reached the model with `recall` and no instruction to search
+# Apple Notes first, so only `recall` ran and a note the user had just written
+# was never opened (and `recall`, being conversation history, could only match
+# the generic word "order"). The rule below forces `search_notes` first and
+# keeps `recall` behind it.
+#
+# Deliberately narrow, because the word "order" is also public vocabulary
+# ("what's the order of the planets", "order of operations"). Three anchors
+# must ALL hold within a single clause:
+#   1. a lookup frame at the start of the clause (what/where/which/show/find/
+#      check/get/tell me/…) or the clause being nothing but the noun phrase;
+#   2. a tracked-item noun (order, receipt, booking, …) that is NAMED — by a
+#      possessive + topic word ("my Amazon order"), by "the <topic> order", or
+#      by "the order for|from|at|with <topic>" — never by "of", and never by a
+#      determiner/time word ("the order for the exam", "order for tomorrow");
+#   3. none of the neighbouring contracts claims it: not a conversation-memory
+#      question (MEMORY_QUERY_RE is anchored to YOU as listener and keeps
+#      winning), not a save/forget, not an explicit Notes mention (that route
+#      is already notes-only) or other source (email, calendar, messages — the
+#      user chose where to look), no write/compose/send intent, no quoted text.
+_NT_ITEM = (r"orders?(?:\s+(?:number|no\.?|status|id|details|info|confirmation))?|"
+            r"tracking\s+(?:number|code|id|info)|confirmation\s+(?:number|code)|"
+            r"reservation|booking|receipt|invoice|shipment|package|delivery")
+_NT_ORDER_ONLY = r"orders?(?:\s+(?:number|no\.?|status|id|details|info|confirmation))?"
+# Words that are not a topic: determiners, pronouns, time words, and adjectives
+# that make "the X order" a general (public) idea of ordering.
+_NT_NOT_TOPIC = (
+    r"(?!(?:the|a|an|my|our|your|his|her|their|this|that|these|those|its|"
+    r"today|tonight|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|"
+    r"saturday|sunday|next|last|every|each|all|any|some|me|us|you|him|them|it|"
+    r"of|to|in|by|and|or|is|was|are|right|wrong|correct|proper|best|worst|"
+    r"better|good|bad|ideal|optimal|natural|logical|alphabetical|chronological|"
+    r"numerical|reverse|same|usual|regular|general|whole|entire|original|"
+    r"default|final|first|second|third|new|old|current|previous|latest|recent|"
+    r"online|big|small|full|exact|specific|particular|official|standard|"
+    r"pecking|batting|birth|court)\b)")
+_NT_TOPIC = _NT_NOT_TOPIC + r"[\w&'’.\-]+"
+_NT_POSSESSIVE = (r"\b(?:my|our)\s+(?:(?:latest|last|recent|current|new|usual|"
+                  r"previous|most\s+recent)\s+)?" + _NT_TOPIC +
+                  r"(?:\s+" + _NT_TOPIC + r")?\s+(?:" + _NT_ITEM + r")\b")
+_NT_DEFINITE = r"\bthe\s+" + _NT_TOPIC + r"\s+(?:" + _NT_ORDER_ONLY + r")\b(?!\s+(?:of|to|in|by|policy|process|system|form|page)\b)"
+_NT_PREPOSITION = (r"\b(?:the|my|our)\s+(?:" + _NT_ITEM + r")\s+(?:for|from|at|with)\s+" +
+                   _NT_TOPIC)
+_NAMED_TOPIC_RE = re.compile(
+    "(?:" + "|".join((_NT_POSSESSIVE, _NT_DEFINITE, _NT_PREPOSITION)) + ")", re.I)
+_NT_FRAME_RE = re.compile(
+    r"^\W*(?:(?:hey|hi|ok|okay|so|wisp|please|pls|can\s+you|could\s+you|would\s+you)\W+)*"
+    r"(?:(?:wh?at|waht|whta|wht)(?:['’]?s)?|where(?:['’]?s)?|which|show|find|look\s?up|"
+    r"check|get|pull\s+up|tell\s+me|remind\s+me\s+what|do\s+i\s+have|"
+    r"did\s+i\s+(?:write|note|jot|save|put))\b", re.I)
+_NT_CLAUSE_SPLIT_RE = re.compile(r"[;,]|\b(?:and|then|also|plus)\b", re.I)
+
+
+def _named_topic_lookup(text: str) -> bool:
+    """Whether some clause of `text` is a bounded named-topic lookup (see the
+    block comment above). Pure string matching; no I/O."""
+    masked = mask_quoted(text or "")
+    if '"…"' in masked or is_mention(text) or is_prohibition(text):
+        return False
+    for clause in _NT_CLAUSE_SPLIT_RE.split(masked):
+        clause = clause.strip()
+        if not clause:
+            continue
+        match = _NAMED_TOPIC_RE.search(clause)
+        if not match:
+            continue
+        bare = re.sub(r"^\W+|\W+$", "", clause) == match.group(0)
+        if not (bare or _NT_FRAME_RE.search(clause)):
+            continue
+        if (MEMORY_SAVE_RE.search(clause) or MEMORY_FORGET_RE.search(clause)
+                or MEMORY_QUERY_RE.search(clause) or SELF_QUERY_RE.search(clause)
+                or _DATA_NOUN_RE.search(clause) or has_write_intent(clause)):
+            continue
+        return True
+    return False
+
+
 # Requests with ONE exact, checkable answer that the model must not produce
 # from its head. The system prompt already forbids this at length; that turned
 # out not to be enough. Verified live: asked for the ISO week number of
@@ -4933,6 +5013,12 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         _pre.append(_Claim("people_query", ["recall", *_CONTACT_TOOLS],
                            "people-in-my-life query -> read-only contacts",
                            light=False))
+    # Independent of the chain above on purpose: it judges each clause itself,
+    # so a conversation-memory clause beside a named-topic clause keeps both.
+    if _named_topic_lookup(t):
+        _pre.append(_Claim("named_topic", ["search_notes", "recall"],
+                           "named-topic lookup -> search_notes then recall",
+                           force="search_notes"))
     if _RECENT_RE.search(t) and not _TODO_RE.search(t) and not _PLANNING_RE.search(t):
         _pre.append(_Claim("recency", ["get_recent_activity", *_ALL_SOURCES],
                            "recency sweep -> get_recent_activity",
