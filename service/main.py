@@ -2346,7 +2346,8 @@ async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     from service.tools.notes_tools import cache_notes
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
-                reason=str(diag.get("reason") or ""))
+                reason=str(diag.get("reason") or ""),
+                snapshot_started_at=diag.get("snapshot_started_at"))
     return {"ok": True}
 
 
