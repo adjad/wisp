@@ -3,8 +3,9 @@
 A privacy-first AI assistant with local and explicitly configured remote inference.
 A Swift menu-bar app talks to a bundled Python (FastAPI) agent service. The default
 path uses **oMLX** on the same Mac; optional OpenAI-compatible providers can handle
-selected generation roles without taking over Wisp's native tools, private stores,
-embeddings, or reranking.
+selected generation roles. Other local apps (Ollama, LM Studio, llama.cpp, MTPLX) can also
+run the tool loop once they pass Wisp's tool-calling test; Wisp's native tools, private
+stores, embeddings, and reranking stay on Wisp's own managed components.
 
 Primary target: Apple silicon running macOS 14 or newer (the default inference engine,
 oMLX, needs macOS 15 or newer). A separate Mac mini runtime
