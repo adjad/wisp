@@ -397,3 +397,33 @@ def test_an_unavailable_read_never_touches_the_list(store, diagnostics):
     _post({"source": "reminders", "diagnostics": diagnostics, "events": [],
            "undated": [_item("x", "Must be ignored")], "undated_total": 1})
     assert _titles(store) == ["Keep me"]
+
+
+# --- review findings: bounds and one coherent read ---------------------------------
+
+@pytest.mark.parametrize("total", [10**30, 2**63, 1_000_001])
+def test_an_absurd_total_is_ignored_and_never_crashes_the_sync(store, total):
+    _post(_body([_item("a", "Previous")]))
+    body = _body([_item("b", "New")], total=total)
+    body["events"] = [_dated("d", "Dated survives")]
+    response = _post(body, raise_server_exceptions=False)
+    assert response.status_code == 200, "an invalid undated payload must not fail the dated sync"
+    assert [c["title"] for c in store.upcoming(time.time(), days=2)] == ["Dated survives"]
+    assert _titles(store) == ["Previous"] and store.undated_view()["freshness"] == "stale"
+
+
+def test_field_lengths_are_capped_not_rejected():
+    from service.assistant.store import UNDATED_CONTEXT_MAX, UNDATED_TITLE_MAX
+    snap = parse_undated_snapshot([{"source_id": "a", "title": "t" * 5000, "context": "c" * 5000}], 1)
+    assert len(snap.rows[0][1]) == UNDATED_TITLE_MAX and len(snap.rows[0][2]) == UNDATED_CONTEXT_MAX
+
+
+def test_the_listing_is_one_coherent_read_of_view_and_rows(store):
+    _post(_body([_item("a", "One"), _item("b", "Two")]))
+    view, rows = store.undated_listing("")
+    assert view["freshness"] == "current" and sorted(r["title"] for r in rows) == ["One", "Two"]
+    assert [r["title"] for r in store.undated_listing("tw")[1]] == ["Two"]
+    _post(_body())          # a later dated-only read leaves the list behind the receipt
+    view, rows = store.undated_listing("")
+    assert view["freshness"] == "stale"
+

@@ -925,10 +925,9 @@ def _undated_report(query: str, scope: str) -> tuple[str, str]:
     the app had to cut at its cap is reported as "k of N", never as exhaustive. They belong
     to no time window, so only scope 'all' lists them; a narrower scope counts them.
     """
-    view = assistant_store.undated_view()
+    view, rows = assistant_store.undated_listing(query)
     if view["freshness"] != "current":
         return "", _UNDATED_NOT_INCLUDED
-    rows = assistant_store.undated_reminders(query)
     truncated = view["status"] == "truncated"
     stored, total = view["stored"], view["total"]
     plural = lambda n: "s" if n != 1 else ""  # noqa: E731

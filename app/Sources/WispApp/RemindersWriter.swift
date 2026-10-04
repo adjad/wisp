@@ -407,9 +407,9 @@ final class RemindersWriter {
                  startedAt: snapshotStartedAt, authoritative: false)
             return
         }
-        // Only incomplete reminders WITH a due date — one with no due date
-        // isn't a "commitment" with a time attached, and get_upcoming's whole
-        // model is time-windowed.
+        // Incomplete reminders WITH a due date become time-windowed commitments (get_upcoming's
+        // whole model is time-windowed). Incomplete reminders with NO due date are not
+        // commitments; they travel separately as the undated list (see undatedPayload).
         // Restrict the query to calendars EventKit currently reports for the
         // reminder entity, then check membership again after the async fetch.
         // This does not classify Recently Deleted rows that retain an original

@@ -27,6 +27,11 @@ from service.paths import MOE_DIR
 # Most undated reminders one native snapshot may carry. The app sends at most this many
 # plus the TRUE total, so the backend can tell a complete list from a truncated one.
 UNDATED_MAX = 200
+# Sanity bounds on what a native read may declare, so a malformed or hostile client cannot
+# crash the sync with an absurd number or fill the store with huge strings.
+UNDATED_TOTAL_MAX = 1_000_000
+UNDATED_TITLE_MAX = 500
+UNDATED_CONTEXT_MAX = 200
 
 
 class UndatedSnapshot:
@@ -52,7 +57,7 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
     """
     if not isinstance(raw, list) or isinstance(total, bool) or not isinstance(total, int):
         return None
-    if total < len(raw):
+    if total < len(raw) or total > UNDATED_TOTAL_MAX:
         return None
     rows: dict[str, tuple[str, str, str | None]] = {}
     for entry in raw:
@@ -62,8 +67,9 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
         if (not isinstance(source_id, str) or not source_id.strip() or not isinstance(title, str)
                 or not (context is None or isinstance(context, str))):
             return None
-        rows[source_id.strip()] = (source_id.strip(), title.strip() or "(untitled)",
-                                   context or None)
+        rows[source_id.strip()] = (source_id.strip()[:200],
+                                   title.strip()[:UNDATED_TITLE_MAX] or "(untitled)",
+                                   (context or None) and context[:UNDATED_CONTEXT_MAX])
     kept = list(rows.values())[:UNDATED_MAX]
     # Truncated means items were left out: the app declared more than it sent, or this side
     # had to cut the list at the cap. Merging a duplicate id is not truncation.
@@ -1388,6 +1394,12 @@ class AssistantStore:
             "ORDER BY title COLLATE NOCASE, source_id").fetchall()
         needle = (query or "").strip().lower()
         return [dict(r) for r in rows if not needle or needle in r["title"].lower()]
+
+    def undated_listing(self, query: str = "") -> tuple[dict, list[dict]]:
+        """The view and the matching rows from ONE locked read, so they always describe the
+        same snapshot even if a sync lands between two separate calls."""
+        with self._lock:
+            return self.undated_view(), self.undated_reminders(query)
 
     def undated_view(self) -> dict:
         """How trustworthy the stored undated list is, read as one coherent unit.
