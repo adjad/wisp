@@ -35,6 +35,11 @@ REMOTE_OUTPUT_MIN_BYTES = 64 * 1024
 REMOTE_OUTPUT_HARD_BYTES = 8 * 1024 * 1024
 REMOTE_WIRE_HARD_BYTES = 16 * 1024 * 1024
 REMOTE_BYTES_PER_TOKEN = 16
+# A streamed token travels in its own SSE event. Measured on a real engine: ~240
+# bytes of JSON envelope per token (687 events for ~3,000 characters of text).
+# The wire budget must scale with max_tokens at that cost or any answer beyond
+# ~1,100 tokens is refused as "larger than Wisp can safely hold".
+REMOTE_WIRE_BYTES_PER_TOKEN = 512
 
 
 def _demote_unclosed_think(message: dict[str, Any], finish_reason: str | None) -> None:
@@ -201,7 +206,8 @@ class OMLXClient:
         output = min(REMOTE_OUTPUT_HARD_BYTES,
                      max(REMOTE_OUTPUT_MIN_BYTES, max_tokens * REMOTE_BYTES_PER_TOKEN))
         wire = min(REMOTE_WIRE_HARD_BYTES,
-                   max(REMOTE_OUTPUT_MIN_BYTES, output * 2 + REMOTE_OUTPUT_MIN_BYTES))
+                   max(REMOTE_OUTPUT_MIN_BYTES, output * 2 + REMOTE_OUTPUT_MIN_BYTES,
+                       max_tokens * REMOTE_WIRE_BYTES_PER_TOKEN + REMOTE_OUTPUT_MIN_BYTES))
         return output, wire
 
     @staticmethod
