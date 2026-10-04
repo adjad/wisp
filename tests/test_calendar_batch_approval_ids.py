@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
+from datetime import datetime
 import json
 import re
 import socket
@@ -25,6 +26,12 @@ from service.tools import action_tools, assistant_tools  # register before fakes
 from service.tools.registry import REGISTRY
 
 
+# A calendar start is bound to the machine's own zone, so the fixture time carries THIS
+# machine's offset for that date. A hard-coded Pacific offset passed only on a Pacific
+# machine and failed every case on a UTC runner.
+WHEN_ISO = datetime(2036, 9, 28, 18, 0).astimezone().isoformat(timespec="seconds")
+
+
 class BatchClient:
     """One actual model-step batch followed by a final synthetic response."""
 
@@ -35,7 +42,7 @@ class BatchClient:
             {"id": "cancel", "function": {"name": "cancel_event", "arguments":
                 json.dumps({"title": f"{label} old"})}},
             {"id": "create", "function": {"name": "add_calendar_event", "arguments":
-                json.dumps({"title": f"{label} new", "when_iso": "2036-09-28T18:00:00-07:00",
+                json.dumps({"title": f"{label} new", "when_iso": WHEN_ISO,
                             "duration_min": 60, "location": "fixture room"})}},
         ]
 
@@ -101,7 +108,7 @@ def _assert_card(card, label, approver):
     assert card["reason"] == "changes your calendar in 2 ways — always confirmed"
     assert card["preview"].splitlines()[0] == f"Cancel: {label} old"
     assert f"{label} new" in card["preview"]
-    assert assistant_tools.calendar_interval_label("2036-09-28T18:00:00-07:00", 60) in card["preview"]
+    assert assistant_tools.calendar_interval_label(WHEN_ISO, 60) in card["preview"]
     assert card["id"] in approver._pending and card["id"] in approver._actions
 
 
@@ -110,7 +117,7 @@ def _assert_settled(calls, label, approved, events, client, text):
     if approved:
         assert [name for name, args in selected] == ["cancel_event", "add_calendar_event"]
         assert selected[0][1] == {"title": f"{label} old"}
-        assert selected[1][1] == {"title": f"{label} new", "when_iso": "2036-09-28T18:00:00-07:00",
+        assert selected[1][1] == {"title": f"{label} new", "when_iso": WHEN_ISO,
                                    "duration_min": 60, "location": "fixture room"}
         assert client.steps == 2
         assert "denied" not in text.lower()
