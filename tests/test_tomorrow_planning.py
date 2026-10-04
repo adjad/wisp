@@ -1,5 +1,6 @@
 """Synthetic regressions for colloquial tomorrow planning, without live sources."""
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -101,6 +102,10 @@ class RecordingNarrator:
     def __init__(self, attempt_recall=False):
         self.messages = []
         self.attempt_recall = attempt_recall
+        # An explicit window: without it the default 8000-token window is almost full, so
+        # loading the skills catalog elsewhere in the same process evicts the oldest
+        # message (the Calendar receipt) and this test starts to depend on collection order.
+        self.target = SimpleNamespace(context_window=64000)
 
     async def ensure_only(self, *args, **kwargs):
         pass
