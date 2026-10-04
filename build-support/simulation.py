@@ -72,7 +72,7 @@ def main():
             ("assistant-delivery", ["WispClient.swift", "AssistantDelivery.swift"], "AssistantDeliveryChecks.swift"),
             ("node-presentation", ["NodePresentation.swift"], "NodePresentationChecks.swift"),
             ("backend-credentials", ["BackendCredentials.swift"], "BackendCredentialChecks.swift"),
-            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift"], "BackendRecoveryChecks.swift"),
+            ("backend-recovery", ["BackendCredentials.swift", "BackendManager.swift", "PortGuard.swift", "BackendOwnership.swift"], "BackendRecoveryChecks.swift"),
             ("prompt-queue", ["PromptQueue.swift"], "PromptQueueChecks.swift"),
         ):
             binary = str(build / (os.environ["WISP_BUILD_FIXTURE_PREFIX"] + "-" + name))

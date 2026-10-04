@@ -58,9 +58,16 @@ class InteractiveApprover:
     """
 
     def __init__(self, emit: Callable[[dict], Awaitable[None]],
-                 *, timeout: float = _CONFIRM_TIMEOUT_SECONDS) -> None:
+                 *, timeout: float = _CONFIRM_TIMEOUT_SECONDS,
+                 request_id: str | None = None) -> None:
         self._emit = emit
         self._timeout = timeout
+        # The id of the /agent request this approver belongs to. It rides on every
+        # card so the answer can be routed to exactly this request: action ids are
+        # NOT unique across overlapping requests (a local model may emit "call_0"
+        # for each), and a constant id such as the calendar batch's let an answer
+        # for one request approve another's pending action.
+        self.request_id = request_id
         self._pending: dict[str, asyncio.Future] = {}
         self._actions: dict[str, dict] = {}
 
@@ -80,6 +87,7 @@ class InteractiveApprover:
             "grantable": grants.is_grantable(action.get("tool", ""),
                                              action.get("args") or {}),
             "scope_hint": grants.scope_for(action.get("tool", ""), action.get("args") or {}),
+            **({"request_id": self.request_id} if self.request_id else {}),
             **action,
         })
         try:
@@ -89,11 +97,16 @@ class InteractiveApprover:
             # the client separately from a real "user denied" so a still-open
             # card can be cleared instead of sitting there answering into the
             # void.
-            await self._emit({"type": "confirm_timeout", "id": action["id"]})
+            await self._emit({"type": "confirm_timeout", "id": action["id"],
+                              **({"request_id": self.request_id} if self.request_id else {})})
             return False
         finally:
             self._pending.pop(action["id"], None)
             self._actions.pop(action["id"], None)
+
+    def has_pending(self, action_id: str) -> bool:
+        fut = self._pending.get(action_id)
+        return bool(fut and not fut.done())
 
     def resolve(self, action_id: str, approved: bool, scope: str = "once") -> bool:
         fut = self._pending.get(action_id)
