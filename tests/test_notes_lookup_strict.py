@@ -390,3 +390,37 @@ def test_native_notes_reader_stamps_each_read_and_queues_a_request_behind_one_in
     # a request during a running read is queued, not dropped, so a post that
     # started after it exists to be accepted; warm-up/daily reads stay coalesced
     assert "rerunRequested = true" in src and "func syncIfIdle()" in src
+
+
+# --------------------------------------------------- the HTTP endpoint carries the stamp
+def _post_notes(body):
+    from fastapi.testclient import TestClient
+    import service.main as main
+    return TestClient(main.app).post("/assistant/sync/notes", json=body)
+
+
+def test_endpoint_passes_the_read_start_stamp_to_the_cache():
+    response = _post_notes({"raw": raw(OLD_ORDER),
+                            "diagnostics": {"available": True, "snapshot_started_at": NOW - 5}})
+    assert response.status_code == 200
+    assert notes_tools._receipt_started == pytest.approx(NOW - 5)
+
+
+def test_endpoint_without_a_stamp_is_still_accepted_but_never_fresh(app):
+    async def behaviour(a):
+        await asyncio.to_thread(_post_notes, {"raw": raw(OLD_ORDER),
+                                              "diagnostics": {"available": True}})
+
+    app(behaviour)
+    assert asyncio.run(sync_status.refresh_notes(timeout_seconds=0.3))["status"] != "fresh"
+
+
+def test_freshness_works_end_to_end_through_the_endpoint(app):
+    async def behaviour(a):
+        await asyncio.to_thread(
+            _post_notes, {"raw": raw(OLD_ORDER, NEW_AMAZON),
+                          "diagnostics": {"available": True,
+                                          "snapshot_started_at": time.time()}})
+
+    app(behaviour)
+    assert asyncio.run(sync_status.refresh_notes(timeout_seconds=3.0))["status"] == "fresh"
