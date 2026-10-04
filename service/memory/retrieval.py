@@ -30,25 +30,42 @@ def all_terms_match(query, text):
 
 
 def _and_query(query):
-    """FTS MATCH requiring every significant term. Terms are bare \\w+ tokens and
-    each is quoted, exactly as the OR form does, so no operator can be injected."""
+    """FTS MATCH requiring every significant term, or '' when there are none.
+    Terms are bare \\w+ tokens and each is quoted, exactly as the OR form does, so
+    no operator can be injected. Callers must not run an empty MATCH."""
     return ' AND '.join('"' + t + '"' for t in terms(query))
+
+
+def _like_prefix(term):
+    """A substring every inflection of `term` contains, for the no-index prefilter."""
+    from service.tools.notes_tools import stem_keys
+    keys = [term, *stem_keys(term)]
+    prefix = keys[0]
+    for key in keys[1:]:
+        while not key.startswith(prefix):
+            prefix = prefix[:-1]
+    return prefix if len(prefix) >= 3 else term
 
 
 def _strict_facts(facts, query, limit):
     """Active facts containing EVERY term, ranked like facts.search."""
+    match = _and_query(query)
+    if not match:
+        return []
     limit = max(1, min(1000, limit))
     with facts._lock:
         if facts._fts:
-            return [dict(r) for r in facts._db.execute(
+            rows = [dict(r) for r in facts._db.execute(
                 '''SELECT f.* FROM memory_fact_fts
                 JOIN facts f ON f.id=memory_fact_fts.rowid WHERE memory_fact_fts MATCH ? AND f.status=?
-                ORDER BY bm25(memory_fact_fts),f.pinned DESC,f.observed_at DESC,f.id DESC LIMIT ?''',
-                (_and_query(query), 'active', limit))]
-        rows = [dict(r) for r in facts._db.execute('SELECT * FROM facts WHERE status=?', ('active',))]
-    rows = [r for r in rows if all_terms_match(query, r['text'])]
-    rows.sort(key=lambda r: (r['pinned'], r['observed_at']), reverse=True)
-    return rows[:limit]
+                ORDER BY bm25(memory_fact_fts),f.pinned DESC,f.observed_at DESC,f.id DESC LIMIT 1000''',
+                (match, 'active'))]
+        else:
+            rows = [dict(r) for r in facts._db.execute('SELECT * FROM facts WHERE status=?', ('active',))]
+            rows.sort(key=lambda r: (r['pinned'], r['observed_at']), reverse=True)
+    # The index stems aggressively (generate ~ general, university ~ universe);
+    # the same stem rule used for Notes confirms each term is really there.
+    return [r for r in rows if all_terms_match(query, r['text'])][:limit]
 
 
 def _strict_passages(sessions, facts, query, limit, exclude_session):
@@ -56,6 +73,9 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
     itself, so a rare second term is not lost behind a crowd of common-word hits)."""
     import sqlite3
     from service.memory.queue import MemoryQueue
+    match = _and_query(query)
+    if not match:
+        return []
     queue = MemoryQueue(sessions)
     limit = max(1, min(50, limit))
     result, offset = [], 0
@@ -66,8 +86,7 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
                     '''SELECT text,session_id,turn_idx,created_at,role FROM memory_turn_fts
                     WHERE memory_turn_fts MATCH ? AND session_id!=? AND role='user'
                     ORDER BY bm25(memory_turn_fts),created_at DESC LIMIT 100 OFFSET ?''',
-                    (_and_query(query), exclude_session, offset)).fetchall()
-                indexed = True
+                    (match, exclude_session, offset)).fetchall()
             except sqlite3.OperationalError as exc:
                 if 'no such table' not in str(exc) and 'no such module' not in str(exc):
                     raise
@@ -76,15 +95,13 @@ def _strict_passages(sessions, facts, query, limit, exclude_session):
                     f'''SELECT content text,session_id,idx turn_idx,created_at,role
                     FROM turns WHERE session_id!=? AND role='user' AND ({predicates})
                     ORDER BY created_at DESC LIMIT 100 OFFSET ?''',
-                    (exclude_session, *('%' + t + '%' for t in terms(query)), offset)).fetchall()
-                indexed = False
+                    (exclude_session, *('%' + _like_prefix(t) + '%' for t in terms(query)),
+                     offset)).fetchall()
         if not rows:
             break
         for row in rows:
             item = dict(row)
-            if not indexed and not all_terms_match(query, item['text']):
-                continue
-            if queue.visible(item, facts):
+            if all_terms_match(query, item['text']) and queue.visible(item, facts):
                 result.append(item)
                 if len(result) == limit:
                     break

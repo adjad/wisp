@@ -557,3 +557,128 @@ def test_cjk_terms_keep_substring_matching():
     load((NOW, "订单", "", "我的订单号 12345"), RECENT_GROCERY)
     assert "我的订单号" in search(query="订单", strict=True)
     assert "我的订单号" in search(query="订单号", strict=True)
+
+
+# ============================================================ audit round 3
+@pytest.mark.parametrize("q", ["what is", "???", "the", "what do i", "  ?  "])
+def test_term_less_strict_queries_never_raise(q, world, monkeypatch):
+    from service.memory.retrieval import retrieve
+    from service.tools import memory_tools
+    facts, sessions = world
+    monkeypatch.setattr(memory_tools, "store", facts)
+    _say(sessions, "Something the user said once.")
+    got = retrieve(q, facts=facts, sessions=sessions, strict=True)
+    assert got["facts"] == [] and got["passages"] == []
+    for out in (asyncio.run(memory_tools.recall(q)),
+                asyncio.run(memory_tools.search_conversations(q))):
+        assert "significant search terms" in out.lower()
+
+
+def test_term_less_strict_query_survives_the_no_fts_fallback(world):
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    _say(sessions, "Something the user said once.")
+    sessions._db.execute("DROP TRIGGER IF EXISTS memory_turn_insert")
+    sessions._db.execute("DROP TABLE memory_turn_fts")
+    assert retrieve("what is", facts=facts, sessions=sessions, strict=True)["passages"] == []
+
+
+@pytest.mark.parametrize("q", ["what's in my notes?", "whats in my notes", "show recent notes",
+                               "my notes?", "what's in my notes", "recent notes"])
+def test_vague_browse_phrasings_are_still_browses(q):
+    assert notes_tools.is_browse_query(q)
+    load(OLD_ORDER, RECENT_GROCERY, RECENT_TRIP)
+    out = search(query=q, strict=True)
+    assert "Groceries" in out and "Trip ideas" in out and "found nothing" not in out
+
+
+@pytest.mark.parametrize("q", ["to do list", "find my list", "show list", "amazon order"])
+def test_topic_phrasings_are_not_browses(q):
+    assert not notes_tools.is_browse_query(q)
+
+
+def test_memory_strict_rejects_a_porter_stem_collision(world):
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    _say(sessions, "general election results were announced")
+    assert retrieve("generate election", facts=facts, sessions=sessions, strict=True)["passages"] == []
+    assert retrieve("general election", facts=facts, sessions=sessions, strict=True)["passages"]
+    facts.add("The university opens in May.", "fact")
+    assert retrieve("universe", facts=facts, sessions=sessions, strict=True,
+                    include_passages=False)["facts"] == []
+    _say(sessions, "the latest new thing")
+    assert retrieve("news", facts=facts, sessions=sessions, strict=True)["passages"] == []
+
+
+SAME = [("use", "used"), ("use", "using"), ("used", "using"), ("study", "studied"),
+        ("copy", "copied"), ("reply", "replied"), ("try", "tried"), ("tie", "tied"),
+        ("tie", "tying"), ("travel", "travelling"), ("travel", "traveled"),
+        ("movie", "movies"), ("cookie", "cookies"), ("agree", "agreed"),
+        ("deliver", "delivery"), ("pay", "paid"), ("child", "children"), ("wife", "wives"),
+        ("families", "family"), ("ordering", "ordered"), ("boxes", "box"),
+        ("running", "run"), ("story", "stories"), ("house", "houses"), ("make", "making"),
+        ("stop", "stopped"), ("potato", "potatoes"), ("class", "classes"), ("bus", "buses"),
+        ("toy", "toys"), ("stay", "stayed"), ("plan", "planning")]
+DIFFERENT = [("order", "border"), ("order", "ordinary"), ("order", "orderly"), ("ord", "order"),
+             ("amaz", "amazon"), ("cat", "category"), ("car", "care"), ("plan", "plane"),
+             ("tim", "time"), ("can", "cane"), ("hat", "hate"), ("win", "wine"),
+             ("wedding", "wed"), ("evening", "even"), ("news", "new"), ("bed", "red"),
+             ("red", "shed"), ("king", "ring"), ("thing", "string"), ("is", "as"),
+             ("glass", "class"), ("car", "cares"), ("fee", "feed"), ("ne", "need")]
+
+
+@pytest.mark.parametrize("a,b", SAME)
+def test_regular_inflections_meet(a, b):
+    assert notes_tools.all_terms_match([a], b) and notes_tools.all_terms_match([b], a)
+
+
+@pytest.mark.parametrize("a,b", DIFFERENT)
+def test_look_alike_words_do_not_meet(a, b):
+    assert not notes_tools.all_terms_match([a], b) and not notes_tools.all_terms_match([b], a)
+
+
+def test_no_fts_fallback_prefilter_keeps_inflections(world):
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    _say(sessions, "my families and the way they are ordering stories")
+    sessions._db.execute("DROP TRIGGER IF EXISTS memory_turn_insert")
+    sessions._db.execute("DROP TABLE memory_turn_fts")
+    got = retrieve("family order story", facts=facts, sessions=sessions, strict=True)
+    assert len(got["passages"]) == 1
+    assert retrieve("family border", facts=facts, sessions=sessions, strict=True)["passages"] == []
+
+
+@pytest.mark.parametrize("offset", [30, 59])
+def test_stamp_beyond_a_few_seconds_ahead_is_unstamped(offset):
+    notes_tools.cache_notes(raw(OLD_ORDER), snapshot_started_at=time.time() + offset)
+    assert notes_tools.notes_receipt()["started_at"] == 0.0
+    notes_tools.cache_notes(raw(NEW_AMAZON), snapshot_started_at=time.time())
+    assert "Title: Amazon" in search(query="amazon", strict=True)
+
+
+@pytest.mark.parametrize("old", [1.0, 100.0, 1e-300, time.time() - 3 * 86400])
+def test_ancient_stamp_is_unstamped(old):
+    notes_tools.cache_notes(raw(OLD_ORDER), snapshot_started_at=old)
+    assert notes_tools.notes_receipt()["started_at"] == 0.0
+    assert (notes_tools.snapshot_age_seconds() or 0) < 100
+
+
+def test_a_slightly_future_stamp_from_clock_skew_is_accepted():
+    notes_tools.cache_notes(raw(OLD_ORDER), snapshot_started_at=time.time() + 2)
+    assert notes_tools.notes_receipt()["started_at"] > 0
+
+
+def test_tool_description_states_the_500_note_cap():
+    from service.tools.registry import get_tool
+    text = get_tool("search_notes").description
+    assert "100 most recent" not in text and "500" in text
+
+
+def test_scoped_miss_reports_filtered_and_total_counts(app):
+    async def behaviour(a):
+        notes_tools.cache_notes(raw((NOW - 60, "Today note", "", "hello"), OLD_ORDER, RECENT_TRIP),
+                                snapshot_started_at=time.time())
+
+    app(behaviour)
+    out = search(query="amazon order", strict=True, refresh=True, day="today")
+    assert "of 3" in out and "today" in out.lower()

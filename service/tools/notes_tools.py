@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 import time
+from functools import lru_cache
 
 from service.tools import cache_store
 from service.tools.registry import register
@@ -49,8 +50,10 @@ _receipt_available: bool | None = None
 _receipt_reason = ""
 
 
-# A start stamp may be at most this far ahead of our clock (host clock skew).
-_STAMP_SLACK_S = 60.0
+# A start stamp may be at most this far ahead of our clock (host clock skew)...
+_STAMP_SLACK_S = 5.0
+# ...and at most this far behind it: an older stamp is not a read of "now".
+_STAMP_MAX_AGE_S = 86400.0
 
 
 def _clean_stamp(value, now: float) -> float:
@@ -68,7 +71,8 @@ def _clean_stamp(value, now: float) -> float:
         stamp = float(value)
     except (OverflowError, ValueError):
         return 0.0
-    if not math.isfinite(stamp) or stamp <= 0 or stamp > now + _STAMP_SLACK_S:
+    if (not math.isfinite(stamp) or stamp > now + _STAMP_SLACK_S
+            or stamp < now - _STAMP_MAX_AGE_S):
         return 0.0
     return stamp
 
@@ -198,7 +202,8 @@ def is_browse_query(query: str | None) -> bool:
     """'recent notes' / 'my notes' name no topic: an explicitly vague browse."""
     if not query or not query.strip():
         return True
-    content = [w for w in _words(query) if w not in _STOP]
+    # one-character tokens are fragments ("what's" -> "what", "s"), not words
+    content = [w for w in _words(query) if w not in _STOP and (len(w) > 1 or w.isdigit())]
     return (not significant_terms(query) and any(w in _BROWSE_HINTS for w in content)
             and all(w in _META for w in content))
 
@@ -208,51 +213,89 @@ def _has_cjk(term: str) -> bool:
 
 
 _VOWELS = "aeiouy"
+# Words the suffix rules would mangle into something that collides with a
+# different word (wedding/wed, evening/even, news/new, feed/fee, ...).
+_KEEP = frozenset(
+    "news wedding weddings evening evenings morning mornings bed red shed king ring thing "
+    "string bring spring sing wing sting this his gas bus yes lens series species feed need "
+    "seed speed weed bleed breed heed deed".split())
+_IRREGULAR = {"children": "child", "wives": "wife", "paid": "pay", "men": "man",
+              "women": "woman", "feet": "foot", "teeth": "tooth", "mice": "mouse", "ran": "run"}
 
 
-def stem(word: str) -> str:
-    """A light, conservative English stem so inflections meet in the middle.
+def _end(key: str) -> str:
+    """Make y / ie / i endings meet: family, families, tried, try, movie, movies."""
+    if key.endswith("ie") and len(key) > 2:
+        return key[:-2] + "i"
+    if key.endswith("y") and len(key) > 2:
+        return key[:-1] + "i"
+    return key
 
-    families/family, ordering/ordered/orders/order, boxes/box, running/run,
-    stories/story. Equality of stems is required; there is deliberately NO
-    prefix matching, so 'order' does not match 'border' and 'ord' does not
-    match 'order'.
+
+@lru_cache(maxsize=65536)
+def stem_keys(word: str) -> frozenset[str]:
+    """Candidate stems for `word`; two words are 'the same' when their sets meet.
+
+    A set rather than one stem because English spelling is ambiguous in both
+    directions: 'used' is use+d but 'ordered' is order+ed; 'running' drops a
+    doubled letter but 'calling' does not. Both readings are offered.
+    families/family, ordering/ordered/orders, boxes/box, running/run, stories/
+    story, studied/study, used/using/use, travelling/travel, movies/movie,
+    paid/pay, children/child, deliver/delivery.
+    There is deliberately NO prefix matching and no blind 'e' dropping, so
+    'order' does not match 'border', 'car' does not match 'care', 'plan' does not
+    match 'plane' and 'ord' does not match 'order'.
     """
-    w = word
-    if len(w) <= 3 or not w.isalpha():
-        return w
-    if w.endswith("ies") and len(w) > 4:
-        w = w[:-3] + "y"
-    elif w.endswith("sses"):
-        w = w[:-2]
-    elif w.endswith("es") and w[:-2].endswith(("x", "z", "ch", "sh", "s")) and len(w) > 4:
-        w = w[:-2]
-    elif w.endswith("s") and not w.endswith(("ss", "us", "is")):
-        w = w[:-1]
-    for suffix in ("ing", "ed"):
-        if w.endswith(suffix) and len(w) - len(suffix) >= 3 and any(
-                c in _VOWELS for c in w[:-len(suffix)]):
-            w = w[:-len(suffix)]
-            if len(w) > 3 and w[-1] == w[-2] and w[-1] not in "lsz":
-                w = w[:-1]
+    if len(word) <= 2 or not word.isalpha():
+        return frozenset({word})
+    w = _IRREGULAR.get(word, word)
+    if w in _KEEP:
+        return frozenset({w})
+    bases = {w}
+    if len(w) > 3:
+        if w.endswith("es") and len(w) > 4 and w[:-2].endswith(("x", "z", "s", "ch", "sh", "o")):
+            bases = {w[:-1], w[:-2]}
+        elif w.endswith("s") and not w.endswith(("ss", "us", "is")):
+            bases = {w[:-1]}
+    out: set[str] = set()
+    for base in bases:
+        if base in _KEEP:
+            out.add(base)
+            continue
+        out.add(base)
+        if len(base) == 5 and base.endswith("ying"):      # tying, lying, dying
+            out.add(base[:-4] + "ie")
+        for suffix in ("ing", "ed"):
+            if not base.endswith(suffix) or len(base) <= len(suffix) + 1:
+                continue
+            core = base[:-len(suffix)]
+            if not any(c in _VOWELS for c in core):         # thing, string, shed
+                continue
+            out.discard(base)
+            out.add(core)
+            out.add(core + "e")                              # used/use, making/make
+            if len(core) >= 3 and core[-1] == core[-2] and core[-1] not in _VOWELS:
+                out.add(core[:-1])                           # running/run, travelling/travel
             break
-    if w.endswith("e") and len(w) > 3:
-        w = w[:-1]
-    return w
+        if base.endswith("ery") and len(base) >= 8:          # delivery/deliver
+            out.add(base[:-1])
+    return frozenset(_end(k) for k in out)
 
 
 def all_terms_match(terms: list[str], *texts: str) -> bool:
     hay = " ".join(texts).casefold()
-    stems: set[str] | None = None
+    keys: set[str] | None = None
     for term in terms:
         if _has_cjk(term):
             # No word boundaries in CJK: the old substring behaviour is the right one.
             if term not in hay:
                 return False
             continue
-        if stems is None:
-            stems = {stem(w) for w in re.findall(r"\w+", hay)}
-        if stem(term) not in stems:
+        if keys is None:
+            keys = set()
+            for w in re.findall(r"\w+", hay):
+                keys |= stem_keys(w)
+        if not (stem_keys(term) & keys):
             return False
     return True
 
@@ -305,15 +348,21 @@ def _freshness_prefix(receipt: dict | None) -> str:
             "so a note created or edited since may be missing.)\n\n")
 
 
-def _strict_miss(shown: str, receipt: dict | None, total: int, scope: str = "") -> str:
+def _strict_miss(shown: str, receipt: dict | None, total: int, scope: str = "",
+                 checked: int | None = None) -> str:
     """A truthful miss. Never claims absence the data cannot support."""
     age = snapshot_age_seconds()
     if receipt is not None and receipt["status"] == "fresh":
         if total == 0:
             return (f"Notes was re-read just now (current) and returned no notes at all, so there "
                     f"is nothing to match {shown}{scope}." + _SCOPE)
+        if checked is not None and checked != total:
+            covered = (f"{checked} of {total} notes were checked (only those{scope}; the "
+                       "app reads at most 500)")
+        else:
+            covered = f"{total} notes were checked (the app reads at most 500)"
         return (f"No note matches {shown}{scope} — Notes was re-read just now (current) and "
-                f"{total} notes were checked (the app reads at most 500)." + _SCOPE)
+                f"{covered}." + _SCOPE)
     if receipt is None:
         when = f"about {_human_age(age)} ago" if age is not None else "at an unknown time"
         return (f"I found nothing matching {shown}{scope} in the last Notes snapshot (taken "
@@ -401,7 +450,7 @@ async def search_notes_impl(query: str | None = None, count: int | None = None,
             matched = [r for r in rows if _matches(query, r["title"], r["folder"], r["body"])]
             shown = repr(query.strip())
         if not matched:
-            return _strict_miss(shown, receipt, total, f" in {label}" if label else "")
+            return _strict_miss(shown, receipt, total, f" in {label}" if label else "", len(rows))
         rows = matched
     elif topic:
         matched = [r for r in rows if _matches(query, r["title"], r["folder"], r["body"])]
@@ -436,7 +485,7 @@ async def search_notes_impl(query: str | None = None, count: int | None = None,
     "note (any order); a miss means no matching note — the result says whether "
     "Notes was re-read just now or only a snapshot of known age was searched, "
     "so report it truthfully and never swap in unrelated notes. Covers roughly "
-    "the 100 most recent notes.",
+    "the 500 most recent notes.",
     {"type": "object",
      "properties": {
          "query": {"type": "string", "description": "keyword to search for in title, folder, or body"},
