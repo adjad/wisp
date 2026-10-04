@@ -241,84 +241,107 @@ _PEOPLE_QUERY_RE = re.compile(
     r"\bpeople\s+(?:close\s+to|important\s+to)\s+me\b|"
     r"\bwho\s+(?:do\s+i\s+know|are\s+my\s+(?:friends|contacts))\b", re.I)
 
-# A question about a NAMED, user-specific item — "what's the order for Amazon",
-# "whats my amazon order", "my Costco receipt" — is a lookup in what the user
-# has written down or told Wisp, not a request for public knowledge. Left to
-# retrieval it reached the model with `recall` and no instruction to search
+# A question about the user's OWN named item — "what's my Amazon order", "my
+# Costco receipt", "did I write down my Best Buy order" — is a lookup in what
+# the user has written down or told Wisp. Left to the generic retrieval
+# fallback it reached the model with `recall` and no instruction to search
 # Apple Notes first, so only `recall` ran and a note the user had just written
-# was never opened (and `recall`, being conversation history, could only match
-# the generic word "order"). The rule below forces `search_notes` first and
-# keeps `recall` behind it.
+# was never opened. The rule below forces `search_notes` first, `recall` behind.
 #
-# Deliberately narrow, because the word "order" is also public vocabulary
-# ("what's the order of the planets", "order of operations"). Three anchors
-# must ALL hold within a single clause:
-#   1. a lookup frame at the start of the clause (what/where/which/show/find/
-#      check/get/tell me/…) or the clause being nothing but the noun phrase;
-#   2. a tracked-item noun (order, receipt, booking, …) that is NAMED — by a
-#      possessive + topic word ("my Amazon order"), by "the <topic> order", or
-#      by "the order for|from|at|with <topic>" — never by "of", and never by a
-#      determiner/time word ("the order for the exam", "order for tomorrow");
-#   3. none of the neighbouring contracts claims it: not a conversation-memory
-#      question (MEMORY_QUERY_RE is anchored to YOU as listener and keeps
-#      winning), not a save/forget, not an explicit Notes mention (that route
-#      is already notes-only) or other source (email, calendar, messages — the
-#      user chose where to look), no write/compose/send intent, no quoted text.
+# FALL-THROUGH ONLY. It is consulted from _route_request exactly where no rule
+# produced a route and the request would otherwise reach the generic fallback
+# — never as a claim, never merged into a compound, never ahead of the device,
+# code, document, web or domain routes. A request any rule recognises therefore
+# routes exactly as it did before, and so does any message with a second clause.
+#
+# POSSESSIVE ONLY. The user's own item is anchored by "my"/"our", which is what
+# keeps public vocabulary out ("the executive order on AI", "boot order",
+# "the Amazon order API", "the package from npm"). Two shapes, both inside ONE
+# clause that opens with a lookup frame (what/where/which/show/find/check/get/
+# tell me/did I write…) or is nothing but the noun phrase:
+#   * "my <topic, 1-4 tokens> <item>"      — "my Best Buy order"
+#   * "my <item> (from|at|for|with|on) <topic>" — "my order number at Best Buy"
+# Single-token topics that are really adjectives ("my last order", "my usual
+# order") and determiner/time topics ("my order for tomorrow", "...for the
+# exam") do not match. Attribute words (limit, fee, API, docs, policy, page…)
+# mean the user is asking ABOUT the thing, not for their record; a third-party
+# speaker ("what did Dan say…", "Dan's…") or any say/tell/ask verb is excluded.
+# The existing contracts also win: memory query/save/forget, self-query, an
+# explicit other source (notes, email, calendar, messages…), write/compose/send
+# intent, quoted text, mentions and prohibitions.
 _NT_ITEM = (r"orders?(?:\s+(?:number|no\.?|status|id|details|info|confirmation))?|"
-            r"tracking\s+(?:number|code|id|info)|confirmation\s+(?:number|code)|"
-            r"reservation|booking|receipt|invoice|shipment|package|delivery")
-_NT_ORDER_ONLY = r"orders?(?:\s+(?:number|no\.?|status|id|details|info|confirmation))?"
-# Words that are not a topic: determiners, pronouns, time words, and adjectives
-# that make "the X order" a general (public) idea of ordering.
-_NT_NOT_TOPIC = (
-    r"(?!(?:the|a|an|my|our|your|his|her|their|this|that|these|those|its|"
-    r"today|tonight|tomorrow|yesterday|monday|tuesday|wednesday|thursday|friday|"
-    r"saturday|sunday|next|last|every|each|all|any|some|me|us|you|him|them|it|"
-    r"of|to|in|by|and|or|is|was|are|right|wrong|correct|proper|best|worst|"
-    r"better|good|bad|ideal|optimal|natural|logical|alphabetical|chronological|"
-    r"numerical|reverse|same|usual|regular|general|whole|entire|original|"
-    r"default|final|first|second|third|new|old|current|previous|latest|recent|"
-    r"online|big|small|full|exact|specific|particular|official|standard|"
-    r"pecking|batting|birth|court)\b)")
-_NT_TOPIC = _NT_NOT_TOPIC + r"[\w&'’.\-]+"
-_NT_POSSESSIVE = (r"\b(?:my|our)\s+(?:(?:latest|last|recent|current|new|usual|"
-                  r"previous|most\s+recent)\s+)?" + _NT_TOPIC +
-                  r"(?:\s+" + _NT_TOPIC + r")?\s+(?:" + _NT_ITEM + r")\b")
-_NT_DEFINITE = r"\bthe\s+" + _NT_TOPIC + r"\s+(?:" + _NT_ORDER_ONLY + r")\b(?!\s+(?:of|to|in|by|policy|process|system|form|page)\b)"
-_NT_PREPOSITION = (r"\b(?:the|my|our)\s+(?:" + _NT_ITEM + r")\s+(?:for|from|at|with)\s+" +
-                   _NT_TOPIC)
-_NAMED_TOPIC_RE = re.compile(
-    "(?:" + "|".join((_NT_POSSESSIVE, _NT_DEFINITE, _NT_PREPOSITION)) + ")", re.I)
+            r"receipt|booking|reservation|invoice|package|delivery|shipment")
+_NT_DETERMINER = (
+    r"the|a|an|my|our|your|his|her|their|this|that|these|those|its|me|us|you|him|"
+    r"them|it|of|to|in|by|and|or|is|was|are|today|tonight|tomorrow|yesterday|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday|next|every|each|"
+    r"all|any|some")
+_NT_ADJECTIVE = (
+    r"last|latest|recent|current|new|usual|previous|first|regular|normal|old|"
+    r"big|small|full|whole|entire|same|other|only|online|official|standard")
+_NT_TOK = r"[\w&'’.\-]+"
+_NT_POSSESSIVE = (
+    r"\b(?:my|our)\s+(?:"
+    # 2-4 token topics: the first token may be any non-determiner word, so
+    # "Best Buy", "Old Navy", "Whole Foods", "Bed Bath & Beyond" all match.
+    r"(?!(?:" + _NT_DETERMINER + r")\b)" + _NT_TOK + r"(?:\s+" + _NT_TOK + r"){1,3}"
+    # 1-token topic: not an adjective ("my last order").
+    r"|(?!(?:" + _NT_DETERMINER + r"|" + _NT_ADJECTIVE + r")\b)" + _NT_TOK +
+    r")\s+(?:" + _NT_ITEM + r")\b")
+_NT_PREPOSITION = (
+    r"\b(?:my|our)\s+(?:" + _NT_ITEM + r")\s+(?:for|from|at|with|on)\s+"
+    r"(?!(?:" + _NT_DETERMINER + r")\b)" + _NT_TOK)
+_NAMED_TOPIC_RE = re.compile("(?:" + _NT_POSSESSIVE + "|" + _NT_PREPOSITION + ")", re.I)
 _NT_FRAME_RE = re.compile(
-    r"^\W*(?:(?:hey|hi|ok|okay|so|wisp|please|pls|can\s+you|could\s+you|would\s+you)\W+)*"
+    r"^\W{0,8}(?:(?:hey|hi|ok|okay|so|wisp|please|pls|can\s+you|could\s+you|would\s+you)\W{1,8}){0,3}"
     r"(?:(?:wh?at|waht|whta|wht)(?:['’]?s)?|where(?:['’]?s)?|which|show|find|look\s?up|"
-    r"check|get|pull\s+up|tell\s+me|remind\s+me\s+what|do\s+i\s+have|"
+    r"check|get|pull\s+up|tell\s+me|do\s+i\s+have|"
     r"did\s+i\s+(?:write|note|jot|save|put))\b", re.I)
+_NT_ATTRIBUTE_RE = re.compile(
+    r"\b(?:limits?|minimums?|maximums?|fees?|cut-?offs?|apis?|flow|processing|times?|"
+    r"policy|policies|templates?|formats?|process|system|forms?|pages?|websites?|"
+    r"sites?|docs?|documentation|rules?|guidelines?|requirements?|how\s+to|works?|"
+    # A web/URL cue means the user is pointing at the public site, not a note.
+    r"web|internet|online|www|https?)\b|\.(?:com|org|net|io|co)\b", re.I)
+_NT_THIRD_PARTY_RE = re.compile(
+    r"\b(?:say|says|said|tell|tells|told|ask|asks|asked|mention|mentions|mentioned)\b|"
+    r"\b\w+['’]s\s+(?!(?:my|our)\b)\w+\s+(?:" + _NT_ITEM + r")\b", re.I)
 _NT_CLAUSE_SPLIT_RE = re.compile(r"[;,]|\b(?:and|then|also|plus)\b", re.I)
+_NT_MAX_CHARS = 300
+
+
+def _strip_non_word(text: str) -> str:
+    """Strip leading and trailing non-word characters in linear time (the obvious
+    anchored-alternation regex backtracks quadratically on a long punctuation run)."""
+    start, end = 0, len(text)
+    while start < end and not (text[start].isalnum() or text[start] == "_"):
+        start += 1
+    while end > start and not (text[end - 1].isalnum() or text[end - 1] == "_"):
+        end -= 1
+    return text[start:end]
 
 
 def _named_topic_lookup(text: str) -> bool:
-    """Whether some clause of `text` is a bounded named-topic lookup (see the
-    block comment above). Pure string matching; no I/O."""
-    masked = mask_quoted(text or "")
+    """Whether `text` is exactly one bounded lookup of the user's own named item
+    (see the block comment above). Pure, bounded string matching; no I/O."""
+    if not text or len(text) > _NT_MAX_CHARS:
+        return False
+    masked = mask_quoted(text)
     if '"…"' in masked or is_mention(text) or is_prohibition(text):
         return False
-    for clause in _NT_CLAUSE_SPLIT_RE.split(masked):
-        clause = clause.strip()
-        if not clause:
-            continue
-        match = _NAMED_TOPIC_RE.search(clause)
-        if not match:
-            continue
-        bare = re.sub(r"^\W+|\W+$", "", clause) == match.group(0)
-        if not (bare or _NT_FRAME_RE.search(clause)):
-            continue
-        if (MEMORY_SAVE_RE.search(clause) or MEMORY_FORGET_RE.search(clause)
+    clauses = [c.strip() for c in _NT_CLAUSE_SPLIT_RE.split(masked) if c.strip()]
+    if len(clauses) != 1:
+        return False
+    clause = clauses[0]
+    match = _NAMED_TOPIC_RE.search(clause)
+    if not match:
+        return False
+    if not (_strip_non_word(clause) == match.group(0) or _NT_FRAME_RE.search(clause)):
+        return False
+    return not (MEMORY_SAVE_RE.search(clause) or MEMORY_FORGET_RE.search(clause)
                 or MEMORY_QUERY_RE.search(clause) or SELF_QUERY_RE.search(clause)
-                or _DATA_NOUN_RE.search(clause) or has_write_intent(clause)):
-            continue
-        return True
-    return False
+                or _DATA_NOUN_RE.search(clause) or has_write_intent(clause)
+                or _NT_ATTRIBUTE_RE.search(clause) or _NT_THIRD_PARTY_RE.search(clause))
 
 
 # Requests with ONE exact, checkable answer that the model must not produce
@@ -5013,12 +5036,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         _pre.append(_Claim("people_query", ["recall", *_CONTACT_TOOLS],
                            "people-in-my-life query -> read-only contacts",
                            light=False))
-    # Independent of the chain above on purpose: it judges each clause itself,
-    # so a conversation-memory clause beside a named-topic clause keeps both.
-    if _named_topic_lookup(t):
-        _pre.append(_Claim("named_topic", ["search_notes", "recall"],
-                           "named-topic lookup -> search_notes then recall",
-                           force="search_notes"))
     if _RECENT_RE.search(t) and not _TODO_RE.search(t) and not _PLANNING_RE.search(t):
         _pre.append(_Claim("recency", ["get_recent_activity", *_ALL_SOURCES],
                            "recency sweep -> get_recent_activity",
@@ -7181,6 +7198,16 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # a bare "yes". See _WRITE_CONTINUATION_RE.
         if (wcont := _write_continuation_subset(text, last_tools)) is not None:
             return finalize(wcont, text)
+        # The user's own named item ("what's my Amazon order"): nothing above
+        # recognised the request, so before it reaches the generic fallback
+        # (which left Notes to the model's pick) search Notes first and
+        # conversation history second. Fall-through only — see
+        # _named_topic_lookup.
+        if _named_topic_lookup(text):
+            return finalize(_mk_scoped(
+                ["search_notes", "recall"],
+                "named-topic lookup -> search_notes then recall (fall-through)",
+                force="search_notes"), text)
         # No separate LLM-classify step for local requests anymore (previously
         # the summarizer, or the agent model itself when resident, or the Air). It was a real,
         # measured reliability problem: a live 20-prompt test found ~15% of

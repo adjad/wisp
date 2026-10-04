@@ -584,172 +584,169 @@ def test_phone_alternative_keeps_imperative_requests(prompt):
 
 
 # ---------------------------------------------------------------------------
-# Named-topic lookups ("what's the order for Amazon") were left to retrieval
-# and the model's pick, so `recall` ran and Apple Notes was never searched even
-# though the user had just written the answer down. A bounded named-topic
-# question now forces `search_notes` first and keeps `recall` behind it.
+# Named-topic lookups about the user's OWN item ("what's my Amazon order") used
+# to reach the model with `recall` and no instruction to search Apple Notes, so
+# only conversation history was searched. The router now forces `search_notes`
+# first (recall behind it) -- but ONLY as a fall-through: when every other rule
+# found no route and the request would reach the generic retrieval fallback.
+# Anything else (public questions, third-party frames, compounds, other
+# domains) must be EXACTLY what the router produced without the rule.
 # Synthetic strings only; no model, engine, Notes, Mail or network is touched.
 # ---------------------------------------------------------------------------
-NAMED_TOPIC_LOOKUPS = [
-    "what's the order for Amazon",
-    "whats the amazon order",
-    "WHAT'S MY AMAZON ORDER",
-    "what is my Amazon order number",
-    "waht's my amazon order",
+import dataclasses  # noqa: E402
+import time  # noqa: E402
+
+NAMED_TOPIC_POSITIVES = [
+    "what's my Amazon order",
     "where's my Amazon order",
-    "my Amazon order",
     "my amazon order?",
-    "tell me the order from Amazon",
+    "my Amazon order",
+    "WHAT'S MY AMAZON ORDER",
+    "waht's my amazon order",
+    "whats my amazon order",
+    "what is my Amazon order number",
+    "did I write down my Costco order",
+    "what was my order number at Best Buy",
     "find my Home Depot order",
     "what's my latest Etsy order",
-    "ok what was the Target order status",
     "what's the confirmation number for my Marriott booking",
-    "show me my Costco receipt",
-    "what did I just write down about the Amazon order",
+    "what's my order from Amazon",
+    "what's my reservation at Nobu",
+    "my Best Buy order",
+    "my Old Navy order",
+    "my Big Lots order",
+    "my Whole Foods order",
+    "my Barnes & Noble order",
+    "my Bed Bath & Beyond order",
 ]
 
 
-def _named_topic_decision(prompt):
-    decision = R.rule_route(prompt)
-    assert decision is not None, prompt
-    return decision
+def _decision_fields(decision):
+    data = dataclasses.asdict(decision)
+    return {key: data[key] for key in sorted(data)}
 
 
-@pytest.mark.parametrize("prompt", NAMED_TOPIC_LOOKUPS)
-def test_named_topic_lookup_searches_notes_before_recall(prompt):
-    decision = _named_topic_decision(prompt)
-    subset = list(decision.tool_subset or ())
-    assert "search_notes" in subset and "recall" in subset, (decision.reason, subset)
-    assert subset.index("search_notes") < subset.index("recall"), subset
-    assert decision.force_first_tool == "search_notes", decision.force_first_tool
-    # Read-only: nothing on this route may write.
-    assert not set(subset) & {"remember", "forget", "create_note", "append_note",
-                              "send_message", "send_email"}, subset
+def _route_without_rule(prompt, monkeypatch):
+    """What the router produces with the named-topic rule switched off, i.e.
+    the behaviour of main."""
+    with monkeypatch.context() as patch:
+        patch.setattr(R, "_named_topic_lookup", lambda _text: False)
+        return _full_route(prompt)
 
 
-@pytest.mark.parametrize("prompt", NAMED_TOPIC_LOOKUPS[:6])
-def test_named_topic_lookup_survives_the_full_async_route(prompt):
+@pytest.mark.parametrize("prompt", NAMED_TOPIC_POSITIVES)
+def test_own_item_lookup_searches_notes_before_recall(prompt):
+    assert R._named_topic_lookup(prompt), prompt
     decision = _full_route(prompt)
-    subset = list(decision.tool_subset or ())
-    assert subset[:2] == ["search_notes", "recall"], (decision.reason, subset)
+    assert list(decision.tool_subset or ()) == ["search_notes", "recall"], (
+        decision.reason, decision.tool_subset)
     assert decision.force_first_tool == "search_notes"
+    assert "named-topic" in decision.reason
+    assert decision.needs_tools
 
 
-NOT_NAMED_TOPIC_LOOKUPS = [
-    # Public / general knowledge questions about the word "order".
-    "what's the order of the planets",
-    "order of operations",
-    "what's the order of operations in math",
-    "what's the best order to watch Star Wars",
-    "what's the alphabetical order of the months",
-    "what is the right order for the steps",
-    "what's the order for the exam",
-    "what's the order of succession",
-    "what's the difference between an order and a request",
-    "what's the pecking order",
-    "what is the batting order for the Yankees",
-    "what's the Amazon order policy",
-    # The user named another source themselves: that route keeps its scope.
-    "what's the order for Amazon in my emails",
-    "what's my Amazon order from my email",
-    "cancel my Amazon order",
-    # Bare possessive with no named topic.
-    "what's my order",
-    "where's my last order",
-    # Quoted text.
-    "what does the phrase \"my Amazon order\" mean",
-    "explain the word 'Amazon order' to me",
-    # Third party / send / draft / write intents.
-    "email Dan my Amazon order",
-    "text mom the Amazon order number",
-    "draft a message to Sam about my Amazon order",
-    "remember that my Amazon order is 1234",
-    "add my Amazon order to my notes",
-    "save a note: Amazon order arrives Friday",
+@pytest.mark.parametrize("prompt", NAMED_TOPIC_POSITIVES[:6])
+def test_own_item_lookup_is_not_claimed_by_any_earlier_rule(prompt):
+    # Fall-through only: every other rule found nothing.
+    assert R.rule_route(prompt) is None, prompt
+
+
+PUBLIC_AND_THIRD_PARTY = [
+    # Public / general knowledge.
+    "what's the order of the planets", "order of operations",
+    "what's the order of operations in math", "what's the best order to watch Star Wars",
+    "what's the alphabetical order of the months", "what is the right order for the steps",
+    "what's the order for the exam", "what's the order of succession",
+    "what's the executive order on AI", "what's the executive order from Trump",
+    "what's the order for Congress", "what's the restraining order",
+    "what's the boot order", "what's the sort order", "what's the byte order",
+    "what's the CSS order", "what's the SQL order", "what's the PEMDAS order",
+    "what's the watching order for Star Wars", "what's the reading order for Harry Potter",
+    "what's the pecking order", "what is the batting order for the Yankees",
+    # Questions ABOUT a service, not the user's own record.
+    "what's the Amazon order limit", "what's the Amazon order minimum",
+    "what's the Amazon order fee", "what's the Amazon order cutoff",
+    "what's the Amazon order API", "what's the Amazon order flow",
+    "what's the Amazon order processing time", "what's the Amazon order policy",
+    "where's the Amazon order tracking page", "check the Amazon order status page",
+    "get the Amazon order API docs", "what's my Amazon order limit",
+    "what's my Amazon order processing time",
+    "show my Amazon order on the web", "what's my Amazon order on amazon.com",
+    "find the package for numpy", "get the package from PyPI", "show me the package from npm",
+    "what's the receipt for lunch",
+    # Receipts/invoices are the file/document route's nouns: fall-through only
+    # means that route keeps them, exactly as on main.
+    "show me my Apple invoice", "show me my Costco receipt",
+    # The non-possessive shapes are intentionally not handled.
+    "what's the order for Amazon", "whats the amazon order", "tell me the order from Amazon",
+    # Third parties.
+    "what did Dan say about my Amazon order", "what did Dan say about the order for Amazon",
+    "what did Dan tell me about my Amazon order", "what's Dan's Amazon order",
+    "what does Sam send for my Amazon order", "email Dan my Amazon order",
+    "text mom the Amazon order number", "draft a message to Sam about my Amazon order",
+    # No named topic / time words / determiners.
+    "what's my order", "where's my last order", "what's my order for tomorrow",
+    "what's my order for the exam", "what's my usual order",
+    # Quoted text and mentions.
+    "what does the phrase \"my Amazon order\" mean", "explain the word 'my Amazon order' to me",
+    # Write intents and other sources.
+    "remember that my Amazon order is 1234", "add my Amazon order to my notes",
+    "save a note: my Amazon order arrives Friday", "cancel my Amazon order",
+    "what's my Amazon order in my notes", "search my notes for my Amazon order",
+    "what's my Amazon order from my email", "did I get an email about my Amazon order",
+    "what did I tell you about my Amazon order", "what did I tell you about the car",
+    "what did I tell Dan about the car",
+    # Compounds and other domains: untouched.
+    "what's my Amazon order and set a timer for 5 minutes",
+    "what's my Amazon order and open Safari",
+    "what's my Amazon order and what's the weather",
+    "what's my Amazon order and cancel it",
+    "what's my Amazon order and email Dan",
+    "what's my Amazon order and what's on my calendar tomorrow",
+    "what's my Amazon order and text mom I'll be late",
+    "what's my Amazon order and what did I tell you about the car",
+    "what's my Amazon order, then open Safari", "what's my Amazon order; what's the weather",
+    "show my Amazon order in Safari", "what's my Amazon order also set a timer",
 ]
 
 
-@pytest.mark.parametrize("prompt", NOT_NAMED_TOPIC_LOOKUPS)
-def test_non_lookups_do_not_pick_up_the_named_topic_rule(prompt):
-    decision = R.rule_route(prompt)
-    if decision is None:
-        return
-    reason = decision.reason or ""
-    assert "named-topic" not in reason, (prompt, reason)
-    if not R._NOTES_INTENT_RE.search(prompt):
-        assert decision.force_first_tool != "search_notes" or "unresolved topic" in reason, (
-            prompt, reason, decision.tool_subset)
+@pytest.mark.parametrize("prompt", PUBLIC_AND_THIRD_PARTY)
+def test_everything_else_routes_exactly_as_main(prompt, monkeypatch):
+    with_rule = _full_route(prompt)
+    without_rule = _route_without_rule(prompt, monkeypatch)
+    assert _decision_fields(with_rule) == _decision_fields(without_rule), prompt
+    assert "named-topic" not in with_rule.reason
 
 
 @pytest.mark.parametrize("prompt", [
-    "what's the order of the planets",
-    "order of operations",
-    "what's the best order to watch Star Wars",
-    "what does the phrase \"my Amazon order\" mean",
-    "what's my order",
-])
-def test_public_and_unnamed_questions_never_reach_notes(prompt):
-    decision = _full_route(prompt)
-    assert decision.force_first_tool != "search_notes", (decision.reason, decision.tool_subset)
-    assert "named-topic" not in decision.reason
-
-
-@pytest.mark.parametrize("prompt", [
-    "what did I tell you about my Amazon order",
-    "what did I tell you about the car",
-    "what have I told you about the Amazon order",
-    "did I ever tell you about my Amazon order",
+    "what did I tell you about my Amazon order", "what did I tell you about the car",
+    "have I ever told you about my Amazon order", "did I ever tell you about my Amazon order",
 ])
 def test_conversation_only_phrasing_stays_recall_only(prompt):
-    decision = _named_topic_decision(prompt)
+    decision = _full_route(prompt)
     assert decision.force_first_tool == "recall", decision.reason
-    assert "search_notes" not in (decision.tool_subset or ()), decision.tool_subset
     assert list(decision.tool_subset) == ["remember", "recall", "forget"]
 
 
-def test_third_party_conversation_question_is_not_a_named_topic_lookup():
-    # Pre-existing compose handling (unchanged by this rule): the named-topic
-    # rule must contribute nothing here.
-    decision = _named_topic_decision("what did I tell Dan about the car")
-    assert "named-topic" not in decision.reason
+def test_explicit_notes_requests_stay_notes_only():
+    for prompt in ("what's my Amazon order in my notes", "find the note about my Amazon order"):
+        decision = _full_route(prompt)
+        assert "recall" not in (decision.tool_subset or ()), (prompt, decision.tool_subset)
+        assert "search_notes" in (decision.tool_subset or ())
 
 
-@pytest.mark.parametrize("prompt", [
-    "what's my Amazon order in my notes",
-    "search my notes for the Amazon order",
-    "find the note about my Amazon order",
-])
-def test_explicit_notes_requests_stay_notes_only(prompt):
-    decision = _named_topic_decision(prompt)
-    assert "recall" not in (decision.tool_subset or ()), (decision.reason, decision.tool_subset)
-    assert "named-topic" not in decision.reason
-    assert "search_notes" in (decision.tool_subset or ())
+def test_the_rule_is_not_a_pre_claim_and_never_preempts_a_route():
+    # Fall-through only: the rule lives behind rule_route, so a request any rule
+    # recognises never reaches it.
+    for prompt in ("what's my Amazon order and set a timer for 5 minutes",
+                   "show my Amazon order in Safari", "remember that my Amazon order is 1234"):
+        assert R.rule_route(prompt) is None or "named-topic" not in R.rule_route(prompt).reason
 
 
-@pytest.mark.parametrize("prompt", [
-    "remember that my Amazon order is 1234",
-    "from now on my Amazon order goes to the office",
-    "forget about my Amazon order",
-])
-def test_memory_save_and_forget_routes_are_unchanged(prompt):
-    decision = _named_topic_decision(prompt)
-    assert decision.force_first_tool in {"remember", "forget"}, decision.reason
-    assert "search_notes" not in (decision.tool_subset or ())
-
-
-def test_compound_named_topic_and_calendar_read_keeps_both_sources():
-    decision = _full_route("what's my Amazon order and what's on my calendar tomorrow")
-    subset = set(decision.tool_subset or ())
-    assert {"search_notes", "recall", "get_upcoming"} <= subset, (decision.reason, subset)
-
-
-def test_compound_named_topic_and_message_write_keeps_both_halves():
-    decision = _full_route("what's my Amazon order and text mom I'll be late")
-    subset = set(decision.tool_subset or ())
-    assert {"search_notes", "recall", "send_message"} <= subset, (decision.reason, subset)
-
-
-def test_compound_named_topic_and_memory_question_keeps_both_halves():
-    decision = _full_route("what's my Amazon order and what did I tell you about the car")
-    subset = set(decision.tool_subset or ())
-    assert {"search_notes", "recall"} <= subset, (decision.reason, subset)
+def test_lookup_is_linear_on_long_punctuation_runs():
+    for text in ("what's my " + "-" * 50_000 + " order", "." * 50_000,
+                 "what's my " + "&'" * 25_000 + " order", "," * 50_000 + "my amazon order",
+                 "my " + "x " * 25_000 + "order"):
+        start = time.perf_counter()
+        R._named_topic_lookup(text)
+        assert time.perf_counter() - start < 0.5, text[:20]
