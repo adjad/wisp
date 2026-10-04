@@ -1154,14 +1154,17 @@ async def agent(body: dict[str, Any]):
         sess = store.get_session(sid)
 
     queue: asyncio.Queue = asyncio.Queue()
+    req_id = uuid.uuid4().hex
     approver = InteractiveApprover(lambda ev: queue.put(ev))
+    # Set after construction (not as a constructor argument) so approver stand-ins
+    # that take only `emit` keep working. It rides on every confirm event.
+    approver.request_id = req_id
     # Key the in-flight registry by a unique REQUEST id, not the session id.
     # Two overlapping requests on the same session used to clobber each other:
     # the second overwrote SESSIONS[sid], then the first's `finally` popped it,
     # breaking the survivor's /agent/approve routing. Approvals now match on the
     # globally-unique action_id (see the approve endpoint), so the request key
     # only needs to be unique.
-    req_id = uuid.uuid4().hex
     SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
 
     # Collected for persistence after the turn finishes.
@@ -2380,25 +2383,42 @@ async def assistant_events() -> StreamingResponse:
 
 @app.post("/agent/approve")
 async def approve(body: dict[str, Any]) -> dict[str, Any]:
-    sid = body["session_id"]
-    action_id = body["action_id"]
-    approved = bool(body["approved"])
+    sid, action_id = body.get("session_id"), body.get("action_id")
+    approved, request_id = body.get("approved"), body.get("request_id")
+    # A decision authorizes or refuses a real action, so the body is validated
+    # strictly. `bool("false")` is True: a JSON string "false", or 1, or null used
+    # to be coerced into an approval, and a missing field was an unhandled 500.
+    if (not isinstance(sid, str) or not sid or not isinstance(action_id, str) or not action_id
+            or type(approved) is not bool
+            or (request_id is not None and (not isinstance(request_id, str) or not request_id))
+            or ("scope" in body and not isinstance(body["scope"], str))):
+        raise HTTPException(
+            status_code=422,
+            detail="session_id and action_id must be non-empty strings and approved must be true or false.")
     # "once" (default), "always", or "never" — see service/agent/approver.py.
     # Anything unrecognized falls back to "once", so an older client that
     # doesn't send the field keeps its existing ask-every-time behavior.
     scope = str(body.get("scope") or "once")
     if scope not in ("once", "always", "never"):
         scope = "once"
-    # Route the approval to whichever in-flight request holds this pending
-    # action_id (tool-call ids are globally unique). Filtering by session_id
-    # first keeps overlapping requests on different sessions isolated. This
-    # replaces the old SESSIONS[session_id] lookup that broke when two requests
-    # shared a session.
-    for entry in list(SESSIONS.values()):
-        if entry["sid"] != sid:
-            continue
-        if entry["approver"].resolve(action_id, approved, scope):
+    # Route to the exact request that raised the card. Action ids are not unique
+    # across overlapping requests, so the request id (carried on every confirm
+    # event) is authoritative. A client that predates it is honored only when
+    # exactly one in-flight request on this session holds that action id; with
+    # two, answering either could approve the other's action, so refuse instead.
+    if request_id is not None:
+        entry = SESSIONS.get(request_id)
+        if entry and entry["sid"] == sid and entry["approver"].resolve(action_id, approved, scope):
             return {"ok": True, "scope": scope}
+        return {"ok": False, "error": "no pending action for that id"}
+    holders = [entry for entry in list(SESSIONS.values())
+               if entry["sid"] == sid
+               and getattr(entry["approver"], "has_pending", lambda _id: False)(action_id)]
+    if len(holders) > 1:
+        return {"ok": False,
+                "error": "that action id is pending in more than one request; answer from the card itself"}
+    if holders and holders[0]["approver"].resolve(action_id, approved, scope):
+        return {"ok": True, "scope": scope}
     return {"ok": False, "error": "no pending action for that id"}
 
 
