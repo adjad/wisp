@@ -224,6 +224,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_redaction.py",
     # In-process approvers and endpoint calls only; no sockets or real actions.
     "tests/test_approval_routing.py",
+    "tests/test_backend_ownership_no_disk_receipt.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.

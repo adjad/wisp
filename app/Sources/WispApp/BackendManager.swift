@@ -52,8 +52,11 @@ final class BackendManager {
     /// browser is enabled. The variable carries only a socket path, never a secret.
     var extraEnvironment: () -> [String: String] = { [:] }
     var didLaunchBackend: (pid_t) -> Void = { _ in }
-    /// Where this manager records which process it launched (see BackendOwnership).
+    /// Where this manager records, in memory only, which process it launched (see BackendOwnership).
     var receiptStore = BackendLaunchReceiptStore.shared
+    /// Called once, on the main actor, when something that is not this manager's own
+    /// backend answers on the backend port. AppDelegate shows the conflict alert.
+    var onPortConflict: () -> Void = {}
 
     private func enforceCredentialState() -> Bool {
         let allowed = credentialState.observe(try? BackendCredentials.generation())
@@ -80,9 +83,10 @@ final class BackendManager {
     }
     private var process: Process?
     private var recoveryAlertShown = false
-    /// Set at launch when a program that is not Wisp's own backend holds the
-    /// backend port. The manager then neither starts a second backend (which would
-    /// only fail to bind) nor treats the stranger's /mode reply as a healthy Wisp.
+    /// Set when a program that is not this manager's own backend holds the backend
+    /// port (seen at app startup, or answering /mode with no live child of ours). The
+    /// manager then neither starts a second backend (which would only fail to bind)
+    /// nor treats the stranger's /mode reply as a healthy Wisp.
     var portConflict = false
     private let readyURL = URL(string: "http://127.0.0.1:8765/mode")!
 
@@ -97,9 +101,6 @@ final class BackendManager {
     /// fallback in `backendRoot()`).
     var backendRootPath: String? { backendRoot()?.resolvingSymlinksInPath().path }
 
-    /// Whether something answers on the backend port right now.
-    func isResponsive() async -> Bool { await isHealthy() }
-
     private func startIfNeeded(freshRecovery: Bool) async {
         guard !portConflict else { return }
         startMonitor()
@@ -109,7 +110,19 @@ final class BackendManager {
         let lifecycle = self.lifecycle
         let healthy = await isHealthy()
         guard lifecycle == self.lifecycle, enforceCredentialState() else { return }
-        if healthy && !freshRecovery { return }
+        // A reply on the port is ours only from our live child, exactly as recorded.
+        let child = process?.isRunning == true ? process?.processIdentifier : nil
+        switch BackendOwnership.portDecision(healthy: healthy, freshRecovery: freshRecovery, liveChildPID: child,
+                                             receipt: receiptStore.current,
+                                             childFacts: child.flatMap(BackendOwnership.processFacts(pid:))) {
+        case .ownBackendRunning:
+            return
+        case .stranger:
+            reportPortConflict()
+            return
+        case .proceed:
+            break
+        }
         guard process == nil, let root = backendRoot(), let python = pythonPath(in: root) else {
             return
         }
@@ -174,7 +187,7 @@ final class BackendManager {
             }
             try proc.run()
             // Record exactly which process this is before anything can judge the port.
-            // Without that record Wisp could neither reclaim nor trust it, so it stops.
+            // Without that record Wisp could never recognise its own child, so it stops.
             guard recordLaunchReceipt(pid: proc.processIdentifier, root: root, nonce: launchNonce) else {
                 if proc.isRunning { proc.terminate() }
                 return
@@ -219,12 +232,12 @@ final class BackendManager {
     }
 
     /// The receipt names the child by pid, kernel start time and executable path, plus
-    /// the nonce it was given. Kept in memory even if persisting it fails.
+    /// the nonce it was given. Held in memory only.
     private func recordLaunchReceipt(pid: Int32, root: URL, nonce: String) -> Bool {
         guard let start = BackendOwnership.startTime(pid: pid),
               let path = PortGuard.executablePath(pid: pid) else { return false }
-        try? receiptStore.record(.init(pid: pid, start: start, executablePath: path,
-                                       backendRoot: root.resolvingSymlinksInPath().path, nonce: nonce))
+        receiptStore.record(.init(pid: pid, start: start, executablePath: path,
+                                  backendRoot: root.resolvingSymlinksInPath().path, nonce: nonce))
         return true
     }
 
@@ -232,11 +245,17 @@ final class BackendManager {
     /// path the kernel reports but not the pid or start time. Once the backend answers,
     /// re-record that path for the SAME incarnation (never for a different process).
     private func refreshLaunchReceipt(pid: Int32) {
-        guard case .present(let launched) = receiptStore.current, launched.pid == pid,
-              BackendOwnership.startTime(pid: pid) == launched.start,
-              let path = PortGuard.executablePath(pid: pid), path != launched.executablePath else { return }
-        try? receiptStore.record(.init(pid: pid, start: launched.start, executablePath: path,
-                                       backendRoot: launched.backendRoot, nonce: launched.nonce))
+        guard let start = BackendOwnership.startTime(pid: pid),
+              let path = PortGuard.executablePath(pid: pid) else { return }
+        receiptStore.refreshExecutablePath(pid: pid, start: start, executablePath: path)
+    }
+
+    /// Something that is not our backend answers on the port: start nothing, signal
+    /// nothing, and report it once. Main-actor isolated, so the flag needs no lock.
+    private func reportPortConflict() {
+        guard !portConflict else { return }
+        portConflict = true
+        onPortConflict()
     }
 
     func stop() {

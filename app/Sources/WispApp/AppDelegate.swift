@@ -69,33 +69,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // along with the odd stray server). oMLX's own peer attribution refuses an
         // engine it cannot verify, with a message that says so.
         //
-        // Port 8765 is Wisp's backend. Wisp never signals a program it does not own:
-        // a stranger there is reported, and only Wisp's OWN backend is reclaimed, and
-        // only when it has stopped answering. "Own" is BackendOwnership's policy: exactly
-        // the process incarnation the previous launch's receipt names. Without a matching
-        // receipt (including a backend left by an older Wisp) it is a conflict.
-        // Loaded only here, after the single-instance hand-over, so a yielding second
-        // launch touches nothing.
-        let launchReceipt = BackendLaunchReceiptStore.defaultDirectory()
-            .map { BackendLaunchReceiptStore.shared.configure(directory: $0) } ?? .unusable
-        let ownedPrefixes = PortGuard.ownedBackendPrefixes(devRoot: backend.backendRootPath)
-        switch PortGuard.check(port: 8765, ownedPrefixes: ownedPrefixes, receipt: launchReceipt) {
+        // Port 8765 is Wisp's backend. Whatever holds it at STARTUP is a conflict: this
+        // app instance has spawned nothing yet, and Wisp keeps no record of an earlier
+        // launch's backend (a file any same-user program could forge). So a holder is
+        // never adopted, reclaimed or signalled, including a backend an earlier Wisp left
+        // behind after a crash or upgrade; the person is told and can quit it. Judged only
+        // here, after the single-instance hand-over, so a yielding second launch touches nothing.
+        let folderHints = PortGuard.backendFolderHints(devRoot: backend.backendRootPath)
+        switch PortGuard.check(port: 8765, receipt: .none) {
         case .conflict(let foreign):
             backend.portConflict = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.presentPortConflict(PortGuard.conflictMessage(port: 8765, listeners: foreign,
-                                                                    ownedPrefixes: ownedPrefixes))
+                                                                    folderHints: folderHints))
             }
-        case .owned(let own):
-            Task { [backend] in
-                if !(await backend.isResponsive()) {
-                    // Judged against the receipt `own` was classified with; terminateOwned
-                    // re-reads the kernel facts (and start time) right before signalling.
-                    PortGuard.terminateOwned(own, ownedPrefixes: ownedPrefixes, receipt: launchReceipt)
-                }
-            }
-        case .free, .unknown:
+        case .owned, .free, .unknown:
+            // `.owned` cannot occur without a receipt. On `.free`/`.unknown` a responder the
+            // listing missed is still caught by BackendManager before it launches anything.
             break
+        }
+        // Something the listing missed (or that arrived after it) answering on the port
+        // with no live child of ours: the manager stops and reports it here, once.
+        backend.onPortConflict = { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async {
+                var holders: [PortGuard.Listener] = []
+                if case .conflict(let foreign) = PortGuard.check(port: 8765, receipt: .none) { holders = foreign }
+                let message = PortGuard.conflictMessage(port: 8765, listeners: holders, folderHints: folderHints)
+                DispatchQueue.main.async { self?.presentPortConflict(message) }
+            }
         }
         // A10 WP3: inert unless the user enabled a browser (default off).
         backend.extraEnvironment = {

@@ -3,6 +3,8 @@ import Foundation
 
 // H-6: Wisp must never signal a process it does not own. `@main` like the other
 // native checks; compiled together with PortGuard.swift and BackendOwnership.swift.
+// Fixture files live only under FileManager.default.temporaryDirectory (the release
+// pipeline links FixtureTemporaryDirectory.swift, which points it at the gate's TMPDIR).
 @main
 enum PortGuardChecks {
     static var checks = 0
@@ -14,8 +16,8 @@ enum PortGuardChecks {
     typealias Facts = BackendOwnership.ProcessFacts
     typealias Start = BackendOwnership.StartTime
     static let bundle = "/Applications/Wisp.app/Contents/Resources/backend/"
-    static let devRoot = "/Users/dev/wisp/"
-    static let owned = [bundle, devRoot]
+    static let devRoot = "/opt/dev/wisp/"
+    static let hints = [bundle, devRoot]
     static let python = bundle + ".venv/bin/python3.13"
     static let backendCwd = String(bundle.dropLast())
     static let birth = Start(seconds: 100, microseconds: 7)
@@ -31,11 +33,16 @@ enum PortGuardChecks {
     }
 
     static func main() {
+        // Before anything in this process records a launch: the shared store is empty,
+        // exactly as it is when the app starts.
+        check(BackendLaunchReceiptStore.shared.current == .none, "the shared receipt store must start empty")
         policyChecks()
         verdictChecks()
         terminationChecks()
         wordingChecks()
-        receiptStoreChecks()
+        forgedReceiptChecks()
+        inMemoryReceiptChecks()
+        portDecisionChecks()
         kernelReaderChecks()
         singleInstanceChecks()
         realProcessChecks()
@@ -47,31 +54,38 @@ enum PortGuardChecks {
     static func policyChecks() {
         func verdict(_ l: PortGuard.Listener, _ r: BackendOwnership.ReceiptState, _ f: Facts?,
                      _ identity: BackendOwnership.Identity = .notAsked) -> BackendOwnership.Verdict {
-            BackendOwnership.verdict(listener: l, receipt: r, facts: f, identity: identity, ownedPrefixes: owned)
+            BackendOwnership.verdict(listener: l, receipt: r, facts: f, identity: identity)
         }
         let ours = listener(10)
 
-        // (ii) The real backend with a matching receipt IS Wisp.
+        // The backend this app spawned, named by its in-memory receipt, IS Wisp.
         check(verdict(ours, receipt(10), facts(10)) == .wispBackend, "matching receipt rejected")
         check(verdict(listener(11, devRoot + ".venv/bin/python3"), receipt(11, path: devRoot + ".venv/bin/python3"),
                       facts(11, path: devRoot + ".venv/bin/python3")) == .wispBackend, "matching dev receipt rejected")
 
-        // No receipt at all: NOTHING is proven Wisp's, however exactly it resembles the
-        // backend (the upgrade case with an older, receipt-less backend fails closed).
-        check(verdict(ours, .none, facts(10)) == .notWisp(.noReceipt), "no receipt must never prove ownership")
+        // (iv) Dev build: the interpreter resolves OUTSIDE every Wisp folder (a framework or
+        // Homebrew Python). The receipt incarnation is the proof; the folder is not a signal.
+        let framework = "/Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python"
+        check(verdict(listener(13, framework), receipt(13, path: framework), facts(13, path: framework)) == .wispBackend,
+              "a receipt-matching backend outside Wisp's folders was rejected")
+        // ...while a bystander on that same interpreter, without the receipt, is not.
+        check(verdict(listener(14, framework), .none, facts(14, path: framework)) == .notWisp(.noReceipt),
+              "a same-interpreter bystander without a receipt was trusted")
+        check(verdict(listener(14, framework), receipt(13, path: framework), facts(14, path: framework))
+              == .notWisp(.receiptMismatch), "a same-interpreter bystander was trusted on another process's receipt")
+        // Living inside Wisp's own folder proves nothing either.
+        check(verdict(ours, .none, facts(10)) == .notWisp(.noReceipt), "a process in Wisp's folder was trusted unrecorded")
+
+        // No receipt at all: NOTHING is proven Wisp's, however exactly it resembles the backend.
         check(verdict(ours, .none, facts(10), .missing) == .notWisp(.noReceipt), "no receipt + 404 must not prove ownership")
         check(verdict(ours, .none, facts(10), .answered(nonce: "nonce-1")) == .notWisp(.noReceipt),
               "no receipt + any nonce must not prove ownership")
 
-        // (i) Another program on Wisp's own interpreter (same executable path) is NOT Wisp.
+        // Another program on Wisp's own interpreter (same executable path) is NOT Wisp.
         check(verdict(listener(20), receipt(10), facts(20)) == .notWisp(.receiptMismatch),
               "another process on the owned interpreter accepted")
         check(verdict(listener(20), receipt(10), facts(20), .answered(nonce: "nonce-1")) == .notWisp(.receiptMismatch),
               "another process echoing the right nonce accepted")
-        // The executable must still be Wisp's own, whatever the receipt says.
-        let node = listener(12, "/usr/local/bin/node")
-        check(verdict(node, receipt(12, path: node.path), facts(12, path: node.path)) == .notWisp(.foreignExecutable),
-              "a receipt never makes an outside executable Wisp's")
 
         // (iii) Same pid, different kernel start time: a reused pid is not the launched process.
         check(verdict(ours, receipt(10, start: Start(seconds: 100, microseconds: 8)), facts(10))
@@ -82,12 +96,10 @@ enum PortGuardChecks {
         check(verdict(ours, receipt(10, path: bundle + ".venv/bin/python3.12"), facts(10)) == .notWisp(.receiptMismatch),
               "a different executable with the receipt's pid accepted")
 
-        // (iv) A stale receipt (its process is gone) + a bystander on the port: NOT Wisp.
+        // A stale receipt (its process is gone) + a bystander on the port: NOT Wisp.
         check(verdict(ours, receipt(777), facts(10)) == .notWisp(.receiptMismatch), "stale receipt accepted a bystander")
-        // (viii) A receipt that exists but cannot be used: NOT Wisp.
-        check(verdict(ours, .unusable, facts(10)) == .notWisp(.receiptUnusable), "unusable receipt accepted")
 
-        // (vi) Identity: when the backend answered, it must carry the receipt's launch nonce.
+        // Identity: when the backend answered, it must carry the receipt's launch nonce.
         check(verdict(ours, receipt(10), facts(10), .answered(nonce: "nonce-1")) == .wispBackend, "matching nonce rejected")
         check(verdict(ours, receipt(10), facts(10), .answered(nonce: "nonce-2")) == .notWisp(.nonceMismatch), "wrong nonce accepted")
         check(verdict(ours, receipt(10), facts(10), .answered(nonce: nil)) == .notWisp(.nonceMismatch), "missing nonce accepted")
@@ -99,18 +111,15 @@ enum PortGuardChecks {
         check(verdict(ours, receipt(10, start: Start(seconds: 1, microseconds: 0)), facts(10), .missing)
               == .notWisp(.receiptMismatch), "404 from a reused pid accepted")
 
-        // Facts must describe the listed process; anything else is not inspectable.
+        // (iii) Facts must describe the listed process; missing facts mean the process is gone.
         check(verdict(ours, receipt(10), nil) == .notWisp(.processGone), "a vanished process accepted")
         check(verdict(ours, receipt(10), facts(99)) == .notWisp(.processGone), "facts for another pid accepted")
         check(verdict(ours, receipt(10), facts(10, path: bundle + "other")) == .notWisp(.processGone),
               "facts whose executable differs from the listing accepted")
+        check(verdict(ours, receipt(10), Facts(pid: 10, start: birth, executablePath: nil)) == .notWisp(.processGone),
+              "facts without an executable accepted")
         for pid: Int32 in [0, 1, -1] {
             check(verdict(listener(pid), receipt(pid), facts(pid)) == .notWisp(.protectedProcess), "pid \(pid) accepted")
-        }
-        for prefixes in [[""], ["/"], ["relative/"], []] {
-            check(BackendOwnership.verdict(listener: ours, receipt: receipt(10), facts: facts(10),
-                                           identity: .notAsked, ownedPrefixes: prefixes) == .notWisp(.foreignExecutable),
-                  "degenerate prefixes \(prefixes) matched")
         }
     }
 
@@ -122,7 +131,7 @@ enum PortGuardChecks {
         let stranger = listener(30, "/usr/local/bin/node")
         let table: [Int32: Facts] = [10: facts(10), 20: facts(20), 30: facts(30, path: stranger.path)]
         func verdict(_ ls: [PortGuard.Listener]?, _ r: BackendOwnership.ReceiptState = receipt(10)) -> PortGuard.Verdict {
-            PortGuard.verdict(listeners: ls, ownedPrefixes: owned, receipt: r, facts: { table[$0] })
+            PortGuard.verdict(listeners: ls, receipt: r, facts: { table[$0] })
         }
         check(verdict([]) == .free, "empty should be free")
         check(verdict(nil) == .unknown, "failed inspection must be unknown")
@@ -133,12 +142,14 @@ enum PortGuardChecks {
         check(verdict([stranger]) == .conflict([stranger]), "stranger not a conflict")
         check(verdict([ours, stranger]) == .conflict([stranger]), "mixed set must report only the stranger")
         check(verdict([ours], receipt(777)) == .conflict([ours]), "stale receipt must make the listener a conflict")
-        check(verdict([ours], .unusable) == .conflict([ours]), "unusable receipt must make the listener a conflict")
-        check(PortGuard.verdict(listeners: [ours], ownedPrefixes: owned, receipt: receipt(10), facts: { _ in nil })
+        check(PortGuard.verdict(listeners: [ours], receipt: receipt(10), facts: { _ in nil })
               == .conflict([ours]), "an uninspectable listener must be a conflict")
+        // At startup the app judges the port with NO receipt: every holder is a conflict.
+        check(verdict([ours, bystander, stranger], .none) == .conflict([ours, bystander, stranger]),
+              "a startup listing with no receipt must make every holder a conflict")
 
-        // Paths that merely resemble ownership prove nothing (the executable directory is
-        // still necessary, just never sufficient).
+        // The folder hint used for wording only: look-alikes never match it, and a
+        // look-alike without a receipt is a conflict like anything else.
         for lookalike in [
             "/Applications/Wisp.app/Contents/Resources/backend-evil/python",
             "/Applications/Wisp.app/Contents/Resources/backendx",
@@ -147,15 +158,15 @@ enum PortGuardChecks {
             "/Applications/Wisp.app/Contents/Resources/backend/../../../../tmp/evil",
             "",
         ] {
-            check(!PortGuard.executableInOwnedDirectory(listener(31, lookalike), ownedPrefixes: owned),
+            check(!PortGuard.runsFromWispFolder(listener(31, lookalike), folders: hints),
                   "look-alike accepted: \(lookalike)")
             let l = listener(31, lookalike)
-            check(PortGuard.verdict(listeners: [l], ownedPrefixes: owned, receipt: receipt(31, path: lookalike),
-                                    facts: { _ in facts(31, path: lookalike) }) == .conflict([l]),
-                  "look-alike owned: \(lookalike)")
+            check(PortGuard.verdict(listeners: [l], receipt: .none, facts: { _ in facts(31, path: lookalike) })
+                  == .conflict([l]), "look-alike owned: \(lookalike)")
         }
-        for prefixes in [[""], ["/"], ["relative/"], []] {
-            check(!PortGuard.executableInOwnedDirectory(stranger, ownedPrefixes: prefixes), "degenerate prefixes \(prefixes) matched")
+        check(PortGuard.runsFromWispFolder(ours, folders: hints), "the bundled interpreter not recognised for wording")
+        for folders in [[""], ["/"], ["relative/"], []] {
+            check(!PortGuard.runsFromWispFolder(stranger, folders: folders), "degenerate folders \(folders) matched")
         }
     }
 
@@ -170,28 +181,26 @@ enum PortGuardChecks {
         let table: [Int32: Facts] = [10: facts(10), 20: facts(20), 30: facts(30, path: stranger.path)]
         func terminate(_ ls: [PortGuard.Listener], _ r: BackendOwnership.ReceiptState,
                        _ f: @escaping (Int32) -> Facts? = { table[$0] }) -> [Int32] {
-            PortGuard.terminateOwned(ls, ownedPrefixes: owned, receipt: r, facts: f, signal: recorder)
+            PortGuard.terminateOwned(ls, receipt: r, facts: f, signal: recorder)
         }
 
-        // (ii) The receipt-proven backend is signalled; nobody else is.
+        // The receipt-proven backend is signalled; nobody else is.
         check(terminate([ours, bystander, stranger], receipt(10)) == [10] && signalled.count == 1
               && signalled[0] == (10, SIGTERM), "only the receipt-proven backend gets SIGTERM")
 
-        // (i) another process on the owned interpreter is never signalled, whatever the receipt.
+        // Another process on the owned interpreter is never signalled, whatever the receipt.
         signalled = []
-        for state in [BackendOwnership.ReceiptState.none, receipt(10), receipt(777), .unusable] {
+        for state in [BackendOwnership.ReceiptState.none, receipt(10), receipt(777)] {
             _ = terminate([bystander], state)
         }
         check(signalled.isEmpty, "a bystander on the owned interpreter was signalled")
-        // No receipt (e.g. an older Wisp's backend): never signalled.
-        _ = terminate([ours], .none)
+        // No receipt (nothing spawned by this app): never signalled.
+        _ = terminate([ours, bystander, stranger], .none)
         check(signalled.isEmpty, "a receipt-less listener was signalled")
-        // (iv) stale receipt.
+        // Stale receipt.
         _ = terminate([ours], receipt(777))
         check(signalled.isEmpty, "stale receipt: a listener was signalled")
-        _ = terminate([ours], .unusable)
-        check(signalled.isEmpty, "unusable receipt: a listener was signalled")
-        // (iii) receipt pid matches but the kernel start time differs.
+        // Receipt pid matches but the kernel start time differs.
         _ = terminate([ours], receipt(10, start: Start(seconds: 1, microseconds: 0)))
         check(signalled.isEmpty, "a reused pid (receipt start time) was signalled")
 
@@ -212,90 +221,174 @@ enum PortGuardChecks {
             _ = terminate([listener(pid)], receipt(pid)) { facts($0) }
         }
         check(signalled.isEmpty, "pid 0/1/negative was signalled")
-        _ = PortGuard.terminateOwned([ours], ownedPrefixes: [], receipt: receipt(10), facts: { table[$0] }, signal: recorder)
-        check(signalled.isEmpty, "signalled with no owned prefixes")
     }
 
     static func wordingChecks() {
-        let older = PortGuard.conflictMessage(port: 8765, listeners: [listener(4242)], ownedPrefixes: owned)
+        // Diagnostic only: a holder running from Wisp's folder may be an earlier Wisp's leftover.
+        let older = PortGuard.conflictMessage(port: 8765, listeners: [listener(4242)], folderHints: hints)
         check(older.contains("python3.13 (pid 4242)") && older.contains("8765") && older.contains("earlier copy of Wisp")
-              && older.contains("did not stop it"), "receipt-less backend wording: \(older)")
+              && older.contains("did not stop it") && older.contains("Activity Monitor"), "leftover backend wording: \(older)")
         let stranger = PortGuard.conflictMessage(port: 8765, listeners: [listener(7, "/usr/local/bin/node")],
-                                                 ownedPrefixes: owned)
-        check(stranger.contains("node (pid 7)") && stranger.contains("isn't Wisp's") && !stranger.contains("earlier copy"),
+                                                 folderHints: hints)
+        check(stranger.contains("node (pid 7)") && stranger.contains("didn't start it") && !stranger.contains("earlier copy"),
               "stranger wording: \(stranger)")
+        // A responder the listing could not name still gets an actionable message.
+        let unnamed = PortGuard.conflictMessage(port: 8765, listeners: [], folderHints: hints)
+        check(unnamed.contains("port 8765") && unnamed.contains("did not stop it") && !unnamed.contains("()")
+              && !unnamed.contains(": ."), "unnamed responder wording: \(unnamed)")
     }
 
-    // MARK: the launch receipt on disk
+    // MARK: (i) NATIVE-A1: a forged receipt file proves nothing
 
-    static func receiptStoreChecks() {
+    /// A same-user program writes a syntactically valid 0600 receipt (the exact format the
+    /// earlier persisted store accepted) naming a live process it controls. To make the
+    /// forgery as believable as possible it names THIS test process's real pid, kernel
+    /// start time and executable. A restarted Wisp must not trust it or signal anything.
+    static func forgedReceiptChecks() {
         let fm = FileManager.default
-        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("wisp-receipt-\(UUID().uuidString)", isDirectory: true)
+        let me = getpid()
+        guard let real = BackendOwnership.processFacts(pid: me), let start = real.start,
+              let path = real.executablePath else { return check(false, "no kernel facts for the test process") }
+        let dir = fm.temporaryDirectory.appendingPathComponent("wisp-forgery-\(UUID().uuidString)", isDirectory: true)
         defer { try? fm.removeItem(at: dir) }
-        let file = dir.appendingPathComponent(BackendLaunchReceiptStore.fileName)
-        let sample = BackendOwnership.Receipt(pid: 4242, start: Start(seconds: 1_790_000_000, microseconds: 123_456),
-                                              executablePath: python, backendRoot: backendCwd, nonce: UUID().uuidString)
-
-        // Missing directory or file: no receipt (the upgrade case), not "unusable".
-        check(BackendLaunchReceiptStore.read(directory: dir) == .none, "missing receipt must read as none")
-
-        // Atomic write, 0600, no temporary left behind, round-trips exactly.
-        do { try BackendLaunchReceiptStore.write(sample, directory: dir) } catch { check(false, "write failed: \(error)") }
+        do {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        } catch { return check(false, "cannot create the forgery directory: \(error)") }
+        let forged = try? JSONSerialization.data(withJSONObject: [
+            "schema_version": 1, "pid": Int(me), "start_seconds": start.seconds,
+            "start_microseconds": start.microseconds, "executable_path": path,
+            "backend_root": (path as NSString).deletingLastPathComponent, "nonce": "forged-nonce",
+        ], options: [.sortedKeys])
+        check(forged != nil, "forged receipt not encodable")
+        let file = dir.appendingPathComponent("backend-launch-receipt.json").path
+        let fd = open(file, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
+        check(fd >= 0, "cannot plant the forged receipt (errno \(errno))")
+        let data = forged ?? Data()
+        let written = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+        close(fd)
         var info = stat()
-        check(lstat(file.path, &info) == 0 && info.st_mode & S_IFMT == S_IFREG, "receipt not a regular file")
-        check(info.st_mode & 0o7777 == 0o600, "receipt mode is \(String(info.st_mode & 0o7777, radix: 8)), not 600")
-        check(BackendLaunchReceiptStore.read(directory: dir) == .present(sample), "receipt did not round-trip")
-        let leftovers = ((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []).filter { $0 != BackendLaunchReceiptStore.fileName }
-        check(leftovers.isEmpty, "temporary files left behind: \(leftovers)")
-        // Replacing keeps exactly one file and the new content.
-        let second = BackendOwnership.Receipt(pid: 4343, start: Start(seconds: 1, microseconds: 2), executablePath: python,
-                                              backendRoot: backendCwd, nonce: "n2")
-        do { try BackendLaunchReceiptStore.write(second, directory: dir) } catch { check(false, "rewrite failed: \(error)") }
-        check(BackendLaunchReceiptStore.read(directory: dir) == .present(second), "receipt not replaced")
-        check(((try? fm.contentsOfDirectory(atPath: dir.path)) ?? []) == [BackendLaunchReceiptStore.fileName],
-              "rewrite left extra files")
+        check(written == data.count && lstat(file, &info) == 0 && info.st_mode & S_IFMT == S_IFREG
+              && info.st_mode & 0o7777 == 0o600 && info.st_uid == getuid(), "the forged receipt is not a valid 0600 file")
 
-        // A receipt that exists but cannot be trusted is UNUSABLE, never "none": that would
-        // silently re-enable the weaker legacy proof.
-        let good = (try? Data(contentsOf: file)) ?? Data()
-        func plant(_ data: Data, mode: mode_t = 0o600) {
-            unlink(file.path)
-            let fd = open(file.path, O_WRONLY | O_CREAT | O_EXCL, mode)
-            _ = data.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
-            fchmod(fd, mode)
-            close(fd)
-        }
-        for corrupt in [Data(), Data("{".utf8), good.prefix(good.count / 2), Data("null".utf8), Data("[]".utf8),
-                        Data(#"{"schema_version":1}"#.utf8), Data("garbage \u{0}".utf8),
-                        Data(String(decoding: good, as: UTF8.self).replacingOccurrences(of: "\"schema_version\":1",
-                                                                                         with: "\"schema_version\":2").utf8),
-                        Data(String(decoding: good, as: UTF8.self).replacingOccurrences(of: "4343", with: "0").utf8)] {
-            plant(corrupt)
-            check(BackendLaunchReceiptStore.read(directory: dir) == .unusable,
-                  "corrupt receipt not unusable: \(String(decoding: corrupt, as: UTF8.self))")
-        }
-        plant(good, mode: 0o644)
-        check(BackendLaunchReceiptStore.read(directory: dir) == .unusable, "a group/world-readable receipt was used")
-        plant(good)
-        check(BackendLaunchReceiptStore.read(directory: dir) == .present(second), "re-planted good receipt not read")
-        unlink(file.path)
-        let elsewhere = dir.appendingPathComponent("target.json")
-        fm.createFile(atPath: elsewhere.path, contents: good, attributes: [.posixPermissions: 0o600])
-        symlink(elsewhere.path, file.path)
-        check(BackendLaunchReceiptStore.read(directory: dir) == .unusable, "a symlinked receipt was followed")
-        unlink(file.path)
-        unlink(elsewhere.path)
+        // A freshly created registry (what a restarted app has) is EMPTY: nothing reads disk.
+        let restarted = BackendLaunchReceiptStore()
+        check(restarted.current == .none, "a new receipt store is not empty")
+        check(BackendLaunchReceiptStore.shared.current == .none, "the shared store picked up a receipt")
 
-        // The store: fail closed until configured, then memory follows disk and launches.
+        let squatter = PortGuard.Listener(pid: me, path: path, start: start)
+        check(BackendOwnership.verdict(listener: squatter, receipt: restarted.current, facts: real)
+              == .notWisp(.noReceipt), "a forged receipt made its process Wisp's")
+        check(BackendOwnership.verdict(listener: squatter, receipt: restarted.current, facts: real,
+                                       identity: .answered(nonce: "forged-nonce")) == .notWisp(.noReceipt),
+              "a forged receipt plus its own nonce made its process Wisp's")
+        // PortGuard.check at startup (no receipt) reports a conflict, never owned. The
+        // listing is injected: no real port is touched.
+        check(PortGuard.check(port: 1, receipt: restarted.current, listeners: { _ in [squatter] })
+              == .conflict([squatter]), "the forged receipt's process was not a conflict")
+        check(PortGuard.check(port: 1, receipt: .none, listeners: { _ in [squatter] })
+              == .conflict([squatter]), "a startup check was not a conflict")
+        var signals = 0
+        let signalled = PortGuard.terminateOwned([squatter], receipt: restarted.current,
+                                                 signal: { _, _ in signals += 1; return 0 })
+        check(signalled.isEmpty && signals == 0, "the forged receipt's process was signalled")
+        // The startup decision treats its healthy reply as a stranger.
+        check(BackendOwnership.portDecision(healthy: true, freshRecovery: false, liveChildPID: nil,
+                                            receipt: restarted.current, childFacts: nil) == .stranger,
+              "a healthy squatter was taken for Wisp's backend")
+        check(fm.fileExists(atPath: file), "the forged file vanished (the check above proved nothing)")
+    }
+
+    // MARK: (ii) the backend this app spawned, recorded in memory
+
+    static func inMemoryReceiptChecks() {
+        let me = getpid()
+        guard let real = BackendOwnership.processFacts(pid: me), let start = real.start,
+              let path = real.executablePath else { return check(false, "no kernel facts for the test process") }
         let store = BackendLaunchReceiptStore()
-        check(store.current == .unusable, "an unconfigured store must not report 'no receipt'")
-        check(store.configure(directory: dir) == .none && store.current == .none, "configure must load the disk state")
-        do { try store.record(sample) } catch { check(false, "record failed: \(error)") }
-        check(store.current == .present(sample) && BackendLaunchReceiptStore.read(directory: dir) == .present(sample),
-              "record must update memory and disk")
-        let reopened = BackendLaunchReceiptStore()
-        check(reopened.configure(directory: dir) == .present(sample), "a new store must load the persisted receipt")
+        let spawned = BackendOwnership.Receipt(pid: me, start: start, executablePath: path,
+                                               backendRoot: (path as NSString).deletingLastPathComponent, nonce: "n")
+        store.record(spawned)
+        check(store.current == .present(spawned), "record did not keep the receipt in memory")
+        check(BackendLaunchReceiptStore.shared.current == .none, "recording in one store leaked into the shared one")
+        let mine = PortGuard.Listener(pid: me, path: path, start: start)
+        check(BackendOwnership.verdict(listener: mine, receipt: store.current, facts: real) == .wispBackend,
+              "the recorded incarnation was not Wisp's")
+        check(PortGuard.check(port: 1, receipt: store.current, listeners: { _ in [mine] }) == .owned([mine]),
+              "the recorded incarnation was not owned")
+        var signals: [(Int32, Int32)] = []
+        check(PortGuard.terminateOwned([mine], receipt: store.current,
+                                       signal: { signals.append(($0, $1)); return 0 }) == [me]
+              && signals.count == 1 && signals[0] == (me, SIGTERM), "the recorded incarnation was not the one signalled")
+        // A different start time (an earlier incarnation of this pid) is not it.
+        let earlier = Start(seconds: start.seconds, microseconds: (start.microseconds + 1) % 1_000_000)
+        signals = []
+        check(PortGuard.terminateOwned([PortGuard.Listener(pid: me, path: path, start: earlier)], receipt: store.current,
+                                       signal: { signals.append(($0, $1)); return 0 }).isEmpty && signals.isEmpty,
+              "a listing from an earlier incarnation was signalled")
+
+        // Framework Python re-exec: same pid and start time, new executable path. Only the
+        // SAME incarnation may have its path refreshed.
+        let reexec = BackendLaunchReceiptStore()
+        let launched = BackendOwnership.Receipt(pid: me, start: start, executablePath: "/opt/python/bin/python3",
+                                                backendRoot: "/opt/wisp", nonce: "n2")
+        reexec.record(launched)
+        check(BackendOwnership.verdict(listener: mine, receipt: reexec.current, facts: real) == .notWisp(.receiptMismatch),
+              "the pre-re-exec path matched the post-re-exec process")
+        check(!reexec.refreshExecutablePath(pid: me, start: earlier, executablePath: path)
+              && reexec.current == .present(launched), "a different incarnation refreshed the receipt")
+        check(!reexec.refreshExecutablePath(pid: me + 1, start: start, executablePath: path)
+              && reexec.current == .present(launched), "a different pid refreshed the receipt")
+        check(!reexec.refreshExecutablePath(pid: me, start: start, executablePath: "relative/python")
+              && reexec.current == .present(launched), "a relative path refreshed the receipt")
+        check(!BackendLaunchReceiptStore().refreshExecutablePath(pid: me, start: start, executablePath: path),
+              "an empty store invented a receipt on refresh")
+        check(reexec.refreshExecutablePath(pid: me, start: start, executablePath: path), "same-incarnation refresh refused")
+        check(reexec.current == .present(.init(pid: me, start: start, executablePath: path, backendRoot: "/opt/wisp",
+                                               nonce: "n2")), "refresh changed more than the executable path")
+        check(BackendOwnership.verdict(listener: mine, receipt: reexec.current, facts: real) == .wispBackend,
+              "the refreshed receipt does not match the re-executed process")
+        check(!reexec.refreshExecutablePath(pid: me, start: start, executablePath: path), "a no-op refresh reported a change")
+    }
+
+    // MARK: (v) startIfNeeded: a healthy reply is ours only from our live, recorded child
+
+    static func portDecisionChecks() {
+        let me = getpid()
+        guard let real = BackendOwnership.processFacts(pid: me), let start = real.start,
+              let path = real.executablePath else { return check(false, "no kernel facts for the test process") }
+        let ours = BackendOwnership.ReceiptState.present(.init(pid: me, start: start, executablePath: path,
+                                                                backendRoot: "/opt/wisp", nonce: "n"))
+        func decide(healthy: Bool, fresh: Bool = false, child: Int32?, _ r: BackendOwnership.ReceiptState = ours,
+                    _ f: Facts? = real) -> BackendOwnership.PortDecision {
+            BackendOwnership.portDecision(healthy: healthy, freshRecovery: fresh, liveChildPID: child, receipt: r, childFacts: f)
+        }
+        // Nothing answers: go on to launch.
+        check(decide(healthy: false, child: nil, .none, nil) == .proceed, "a silent port did not proceed to launch")
+        check(decide(healthy: false, fresh: true, child: nil, .none, nil) == .proceed, "a silent port did not proceed (recovery)")
+        // Something answers and this manager has no live child: a stranger, never "already running".
+        check(decide(healthy: true, child: nil, .none, nil) == .stranger, "a healthy stranger was taken for Wisp's backend")
+        check(decide(healthy: true, fresh: true, child: nil, .none, nil) == .stranger, "a healthy stranger during recovery")
+        check(decide(healthy: true, child: nil) == .stranger, "a receipt with no live child made a responder Wisp's")
+        // Our live child, exactly the recorded incarnation: it is our backend.
+        check(decide(healthy: true, child: me) == .ownBackendRunning, "our own healthy child was not recognised")
+        // A fresh recovery keeps its old behaviour for our own child (go on; the launch path
+        // itself refuses while a child exists).
+        check(decide(healthy: true, fresh: true, child: me) == .proceed, "fresh recovery of our own child changed")
+        // A live child that is not the recorded incarnation, or cannot be inspected: stranger.
+        check(decide(healthy: true, child: me, .none) == .stranger, "a live child with no receipt was trusted")
+        check(decide(healthy: true, child: me, ours, nil) == .stranger, "a child without facts was trusted")
+        check(decide(healthy: true, child: me, ours, Facts(pid: me, start: Start(seconds: start.seconds + 1,
+                     microseconds: start.microseconds), executablePath: path)) == .stranger,
+              "a child with another start time was trusted")
+        check(decide(healthy: true, child: me, ours, Facts(pid: me, start: start, executablePath: "/usr/bin/nc"))
+              == .stranger, "a child running another executable was trusted")
+        check(decide(healthy: true, child: me, ours, Facts(pid: me + 1, start: start, executablePath: path)) == .stranger,
+              "facts for another pid were trusted")
+        check(decide(healthy: true, child: me + 1, ours, Facts(pid: me + 1, start: start, executablePath: path))
+              == .stranger, "a child other than the recorded pid was trusted")
+        check(decide(healthy: true, child: 1, .present(.init(pid: 1, start: start, executablePath: path,
+                     backendRoot: "/", nonce: "n")), Facts(pid: 1, start: start, executablePath: path)) == .stranger,
+              "pid 1 was trusted")
     }
 
     // MARK: the kernel readers, on this very process (no spawning)
@@ -323,21 +416,20 @@ enum PortGuardChecks {
         check(BackendOwnership.processFacts(pid: 0x7fff_fff0) == nil && BackendOwnership.startTime(pid: 0x7fff_fff0) == nil,
               "readers invented data for a nonexistent pid")
 
-        // This process, with its own executable directory owned: not Wisp's without a
-        // receipt; Wisp's with a receipt naming its exact incarnation; not with a receipt
-        // carrying a different start time.
+        // This process: not Wisp's without a receipt; Wisp's with a receipt naming its exact
+        // incarnation; not with a receipt carrying a different start time.
         let mine = PortGuard.Listener(pid: me, path: facts.executablePath ?? "", start: facts.start)
         let selfDir = ((facts.executablePath ?? "") as NSString).deletingLastPathComponent + "/"
-        check(BackendOwnership.verdict(listener: mine, receipt: .none, facts: facts, ownedPrefixes: [selfDir])
+        check(BackendOwnership.verdict(listener: mine, receipt: .none, facts: facts)
               == .notWisp(.noReceipt), "the test process was proven Wisp's without a receipt")
         let selfReceipt = BackendOwnership.Receipt(pid: me, start: facts.start!, executablePath: facts.executablePath!,
                                                    backendRoot: selfDir, nonce: "self")
-        check(BackendOwnership.verdict(listener: mine, receipt: .present(selfReceipt), facts: facts, ownedPrefixes: [selfDir])
+        check(BackendOwnership.verdict(listener: mine, receipt: .present(selfReceipt), facts: facts)
               == .wispBackend, "a receipt naming this process exactly was rejected")
         let reused = BackendOwnership.Receipt(pid: me, start: Start(seconds: facts.start!.seconds, microseconds:
                                                 (facts.start!.microseconds + 1) % 1_000_000),
                                               executablePath: facts.executablePath!, backendRoot: selfDir, nonce: "self")
-        check(BackendOwnership.verdict(listener: mine, receipt: .present(reused), facts: facts, ownedPrefixes: [selfDir])
+        check(BackendOwnership.verdict(listener: mine, receipt: .present(reused), facts: facts)
               == .notWisp(.receiptMismatch), "a receipt for an earlier incarnation of this pid was accepted")
     }
 
@@ -361,24 +453,22 @@ enum PortGuardChecks {
             defer { kill(mine, SIGKILL); kill(theirs, SIGKILL) }
             let sleeperPath = PortGuard.executablePath(pid: mine) ?? ""
             check(sleeperPath.hasPrefix("/"), "proc_pidpath returned no path for a real child")
-            let sleeperDir = (sleeperPath as NSString).deletingLastPathComponent + "/"
             let start = BackendOwnership.startTime(pid: mine)
             let real = [PortGuard.Listener(pid: mine, path: sleeperPath, start: start)]
-            // Same executable directory, no receipt: never signalled.
-            check(PortGuard.terminateOwned(real, ownedPrefixes: [sleeperDir], receipt: .none).isEmpty && isAlive(mine),
-                  "a real receipt-less child on an owned executable was signalled")
+            // No receipt: never signalled.
+            check(PortGuard.terminateOwned(real, receipt: .none).isEmpty && isAlive(mine),
+                  "a real receipt-less child was signalled")
             // A receipt naming this exact child: it is signalled.
             let receipt = BackendOwnership.ReceiptState.present(.init(pid: mine, start: start!, executablePath: sleeperPath,
-                                                                     backendRoot: sleeperDir, nonce: "n"))
-            check(PortGuard.terminateOwned(real, ownedPrefixes: [sleeperDir], receipt: receipt) == [mine],
-                  "real receipt-proven child was not signalled")
+                                                                     backendRoot: "/", nonce: "n"))
+            check(PortGuard.terminateOwned(real, receipt: receipt) == [mine], "real receipt-proven child was not signalled")
             usleep(300_000)
             check(!isAlive(mine), "real owned child survived SIGTERM")
             check(isAlive(theirs), "an unlisted process died")
-            // The other child, same executable, same receipt store: never signalled.
+            // The other child, same executable: never signalled.
             let other = [PortGuard.Listener(pid: theirs, path: PortGuard.executablePath(pid: theirs) ?? "",
                                             start: BackendOwnership.startTime(pid: theirs))]
-            check(PortGuard.terminateOwned(other, ownedPrefixes: [sleeperDir], receipt: receipt).isEmpty && isAlive(theirs),
+            check(PortGuard.terminateOwned(other, receipt: receipt).isEmpty && isAlive(theirs),
                   "a stale receipt let a bystander be signalled")
         } else {
             print("note: spawning is unavailable in this sandbox; real-process checks skipped")
@@ -387,21 +477,23 @@ enum PortGuardChecks {
         if let (fd, port) = openListener() {
             defer { close(fd) }
             let found = PortGuard.listeners(port: port)
-            check(found?.contains { $0.pid == getpid() && $0.start != nil } == true,
-                  "real listener (with start time) not found on port \(port)")
-            let selfPath = PortGuard.executablePath(pid: getpid()) ?? ""
-            let selfDir = (selfPath as NSString).deletingLastPathComponent + "/"
-            if case .conflict(let foreign) = PortGuard.check(port: port, ownedPrefixes: [selfDir], receipt: .none) {
-                check(foreign.contains { $0.pid == getpid() }, "wrong conflict")
-            } else { check(false, "a listener on an owned executable without a receipt was not a conflict") }
-            let me = BackendOwnership.Receipt(pid: getpid(), start: BackendOwnership.startTime(pid: getpid())!,
-                                              executablePath: selfPath, backendRoot: selfDir, nonce: "n")
-            if case .owned = PortGuard.check(port: port, ownedPrefixes: [selfDir], receipt: .present(me)) { checks += 1 }
-            else { check(false, "own receipt-proven listener not recognised as owned") }
+            if let found {
+                check(found.contains { $0.pid == getpid() && $0.start != nil },
+                      "real listener (with start time) not found on port \(port)")
+                let selfPath = PortGuard.executablePath(pid: getpid()) ?? ""
+                if case .conflict(let foreign) = PortGuard.check(port: port, receipt: .none) {
+                    check(foreign.contains { $0.pid == getpid() }, "wrong conflict")
+                } else { check(false, "a real listener without a receipt was not a conflict") }
+                let me = BackendOwnership.Receipt(pid: getpid(), start: BackendOwnership.startTime(pid: getpid())!,
+                                                  executablePath: selfPath, backendRoot: "/", nonce: "n")
+                if case .owned = PortGuard.check(port: port, receipt: .present(me)) { checks += 1 }
+                else { check(false, "own receipt-proven listener not recognised as owned") }
+            } else {
+                print("note: listing listeners is unavailable in this sandbox; real-listener check skipped")
+            }
         } else {
             print("note: loopback bind unavailable in this sandbox; real-listener check skipped")
         }
-        check(PortGuard.check(port: 1, ownedPrefixes: owned, receipt: .none) != .owned([]), "port 1 sanity")
     }
 
     static func spawnSleeper() -> Int32? {
