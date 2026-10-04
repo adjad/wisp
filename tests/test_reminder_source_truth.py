@@ -315,6 +315,35 @@ def test_pending_reminders_read_does_not_hide_current_calendar() -> None:
     assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified]" in answer
 
 
+def test_pending_reminders_note_trails_a_calendar_answer_instead_of_leading_it() -> None:
+    """A calendar question should open with the calendar, not a sync caveat."""
+    pending = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
+                           {"id": "reminders", "label": "Reminders", "state": "ready"}],
+               "reminders_fresh": False}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value=pending), \
+         patch.object(assistant_tools.assistant_store, "upcoming",
+                      return_value=_schedule_rows()):
+        answer = asyncio.run(assistant_tools.get_upcoming())
+    note = answer.index("has not received a current Reminders read")
+    assert answer.index("Synthetic calendar event") < note
+    assert not answer.lstrip().startswith("Wisp has not received")
+    assert answer.rstrip().endswith("Try again in a moment.")
+
+
+def test_a_source_that_could_not_be_checked_still_leads() -> None:
+    """Access problems can make the whole schedule incomplete, so they stay first."""
+    pending = {"sources": [{"id": "calendar", "label": "Calendar", "state": "unavailable"},
+                           {"id": "reminders", "label": "Reminders", "state": "ready"}],
+               "reminders_fresh": False}
+    with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
+                      return_value=pending), \
+         patch.object(assistant_tools.assistant_store, "upcoming",
+                      return_value=_schedule_rows()):
+        answer = asyncio.run(assistant_tools.get_upcoming())
+    assert answer.startswith("Wisp could not check Calendar")
+
+
 def test_wisp_only_classification_matches_line_tags() -> None:
     now = time.time()
     merged = {"id": "m", "source": "manual", "duplicate_sources": ["calendar"],

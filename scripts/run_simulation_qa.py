@@ -109,6 +109,7 @@ PROFILE_TESTS = {
         "tests/test_typed_task_engine.py",
     },
     "safety": {
+        "tests/test_always_confirm_grants.py",
         "tests/test_approver_timeout.py",
         "tests/test_destructive_shell.py",
         "tests/test_execution_contract_loop.py",
@@ -239,6 +240,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_email_digest_review_regressions.py",
     # Pure compiler classification; no model, sources or effects.
     "tests/test_workflow_authored_message.py",
+    "tests/test_workflow_inline_delivery.py",
+    "tests/test_router_everyday_prompts.py",
+    "tests/test_user_facing_failure_text.py",
+    "tests/test_calendar_batch_approval_ids.py",
     # In-process fake engines bound to 127.0.0.1; no real app, Keychain or user data.
     "tests/test_local_provider_tools.py",
     "tests/test_helper_provenance.py",
