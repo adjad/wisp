@@ -288,7 +288,9 @@ def test_fresh_miss_is_a_complete_answer_that_forbids_fallthrough(app):
     app(behaviour)
     out = search(query="amazon order", strict=True, refresh=True)
     assert "just now" in out.lower() or "current" in out.lower()
-    assert "other" in out.lower() and "private" in out.lower()
+    # scope the claim to what was searched; never order the model off other sources
+    assert "do not search" not in out.lower() and "unless the user asks" not in out.lower()
+    assert "only" in out.lower() and "notes" in out.lower()
 
 
 def test_default_search_does_not_request_a_refresh(monkeypatch):
@@ -368,7 +370,8 @@ def test_recall_tool_is_strict_and_states_the_miss_is_complete(world, monkeypatc
     out = asyncio.run(memory_tools.recall("amazon order"))
     assert "Presentation order" not in out
     assert out.startswith("No matching memory")
-    assert "other" in out.lower() and "private" in out.lower()
+    assert "do not search" not in out.lower() and "unless the user asks" not in out.lower()
+    assert "Notes and Mail were not searched" in out
 
 
 def test_search_conversations_tool_is_strict(world, monkeypatch):
@@ -424,3 +427,133 @@ def test_freshness_works_end_to_end_through_the_endpoint(app):
 
     app(behaviour)
     assert asyncio.run(sync_status.refresh_notes(timeout_seconds=3.0))["status"] == "fresh"
+
+
+# ============================================================ audit round 2
+import math  # noqa: E402
+
+
+@pytest.mark.parametrize("bogus", [1e308, float("inf"), float("nan"), -5.0,
+                                   time.time() + 1e9, 10 ** 400, "later", True])
+def test_bogus_start_stamp_cannot_freeze_the_cache(bogus):
+    load(OLD_ORDER, started=NOW - 100)
+    notes_tools.cache_notes(raw(RECENT_GROCERY), snapshot_started_at=bogus)  # must not raise
+    before = notes_tools.notes_receipt()["started_at"]
+    assert math.isfinite(before) and before <= time.time() + 61
+    notes_tools.cache_notes(raw(NEW_AMAZON), snapshot_started_at=time.time())
+    assert "Title: Amazon" in search(query="amazon", strict=True), "later real publish was dropped"
+
+
+def test_bogus_stamp_is_data_but_never_proof_of_freshness(app):
+    async def behaviour(a):
+        notes_tools.cache_notes(raw(NEW_AMAZON), snapshot_started_at=1e308)
+
+    app(behaviour)
+    assert asyncio.run(sync_status.refresh_notes(timeout_seconds=0.3))["status"] != "fresh"
+    assert "Title: Amazon" in search(query="amazon", strict=True)
+
+
+def test_endpoint_survives_bogus_stamps():
+    from fastapi.testclient import TestClient
+    from service.main import app as fastapi_app
+    client = TestClient(fastapi_app)
+    for bogus in (1e308, 10 ** 400, "x", None):
+        r = client.post("/assistant/sync/notes",
+                        json={"raw": raw(NEW_AMAZON),
+                              "diagnostics": {"available": True, "snapshot_started_at": bogus}})
+        assert r.status_code == 200
+
+
+def _crowd(sessions, n_order, n_amazon):
+    for i in range(n_order):
+        _say(sessions, f"the order of things {i} and another order list order")
+    for i in range(n_amazon):
+        _say(sessions, f"amazon amazon amazon parcel {i}")
+
+
+def test_memory_strict_finds_match_hidden_behind_a_large_or_pool(world):
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    _crowd(sessions, 300, 80)
+    _say(sessions, " ".join(f"filler{j}" for j in range(200)) + " my amazon order is a desk lamp")
+    got = retrieve("amazon order", facts=facts, sessions=sessions, strict=True)
+    assert any("desk lamp" in p["text"] for p in got["passages"])
+
+
+def test_memory_strict_facts_not_hidden_behind_a_large_or_pool(world):
+    from service.memory.retrieval import retrieve
+    facts, sessions = world
+    for i in range(120):
+        facts.add(f"The order of presentation number {i} is fixed.", "fact")
+        facts.add(f"Amazon amazon parcel number {i} arrived.", "fact")
+    facts.add("My Amazon order is a desk lamp.", "fact")
+    got = retrieve("amazon order", facts=facts, sessions=sessions, strict=True,
+                   include_passages=False)
+    assert [f["text"] for f in got["facts"]] == ["My Amazon order is a desk lamp."]
+
+
+INFLECTIONS = [("families", "family"), ("family", "families"), ("ordering", "ordered"),
+               ("ordered", "ordering"), ("boxes", "box"), ("box", "boxes"),
+               ("running", "run"), ("run", "running"), ("story", "stories"),
+               ("stories", "story"), ("orders", "order"), ("order", "orders")]
+NEGATIVES = [("order", "border"), ("ord", "order"), ("order", "ordinary"),
+             ("amaz", "amazon"), ("cat", "category")]
+
+
+@pytest.mark.parametrize("term,word", INFLECTIONS)
+def test_inflections_match_in_notes(term, word):
+    load((NOW, "T", "F", f"something about {word} today"))
+    assert "Title: T" in search(query=term, strict=True)
+
+
+@pytest.mark.parametrize("term,word", NEGATIVES)
+def test_short_prefix_and_substring_overmatch_is_rejected_in_notes(term, word):
+    load((NOW, "T", "F", f"something about {word} today"))
+    assert "Title: T" not in search(query=term, strict=True)
+
+
+@pytest.mark.parametrize("term,word", INFLECTIONS)
+def test_inflections_match_in_memory(term, word, world):
+    from service.memory.retrieval import retrieve, all_terms_match
+    assert all_terms_match(term, f"something about {word} today")
+    facts, sessions = world
+    _say(sessions, f"remember my thing about {word} today")
+    got = retrieve(f"{term} thing", facts=facts, sessions=sessions, strict=True)
+    assert len(got["passages"]) == 1
+
+
+@pytest.mark.parametrize("term,word", NEGATIVES)
+def test_overmatch_is_rejected_in_memory(term, word):
+    from service.memory.retrieval import all_terms_match
+    assert not all_terms_match(term, f"something about {word} today")
+
+
+def test_complete_answer_mentions_the_500_note_read_cap(app):
+    async def behaviour(a):
+        notes_tools.cache_notes(raw(OLD_ORDER, RECENT_GROCERY), snapshot_started_at=time.time())
+
+    app(behaviour)
+    assert "at most 500" in search(query="amazon order", strict=True, refresh=True)
+
+
+def test_zero_notes_read_does_not_claim_no_note_matches(app):
+    async def behaviour(a):
+        notes_tools.cache_notes("", snapshot_started_at=time.time())
+
+    app(behaviour)
+    out = search(query="amazon order", strict=True, refresh=True)
+    assert "No note matches" not in out and "0 notes" not in out
+    assert "no notes" in out.lower()
+
+
+@pytest.mark.parametrize("q", ["to do list", "find my list", "show list"])
+def test_list_words_are_a_lookup_not_an_unfiltered_browse(q):
+    load((NOW, "Groceries", "Home", "milk"), (NOW - 5, "To do list", "Home", "call dentist"))
+    out = search(query=q, strict=True)
+    assert "Groceries" not in out and "call dentist" in out
+
+
+def test_cjk_terms_keep_substring_matching():
+    load((NOW, "订单", "", "我的订单号 12345"), RECENT_GROCERY)
+    assert "我的订单号" in search(query="订单", strict=True)
+    assert "我的订单号" in search(query="订单号", strict=True)

@@ -14,29 +14,82 @@ def _in_scope(text, query):
     return not scope or scope[1].casefold() in {t.casefold() for t in terms(query)}
 
 
-def _stem(term):
-    return term[:-1] if len(term) > 3 and term.endswith('s') else term
-
-
 def all_terms_match(query, text):
     """True when EVERY significant term of `query` appears in `text`.
 
     Terms are the same significant words the OR search uses (stopwords such as
     'for', 'the' and 'what' are dropped), matched in any order and not
-    necessarily adjacent, as whole-word prefixes so 'order' finds 'orders' but
-    not 'border'.
+    necessarily adjacent, on a light stem so inflections meet (family/families,
+    ordered/ordering) while 'order' still does not match 'border'.
     """
     wanted = terms(query)
     if not wanted:
         return False
-    words = re.findall(r'\w+', text.casefold())
-    return all(any(w.startswith(_stem(t)) for w in words) for t in wanted)
+    from service.tools.notes_tools import all_terms_match as stems_match
+    return stems_match(wanted, text)
 
 
-# Strict mode asks the OR index for a wider candidate pool, then keeps only the
-# rows containing every term. bm25 ranks a passage holding all the terms above
-# one holding a single common word, so the pool does not need to be unbounded.
-_STRICT_POOL = 50
+def _and_query(query):
+    """FTS MATCH requiring every significant term. Terms are bare \\w+ tokens and
+    each is quoted, exactly as the OR form does, so no operator can be injected."""
+    return ' AND '.join('"' + t + '"' for t in terms(query))
+
+
+def _strict_facts(facts, query, limit):
+    """Active facts containing EVERY term, ranked like facts.search."""
+    limit = max(1, min(1000, limit))
+    with facts._lock:
+        if facts._fts:
+            return [dict(r) for r in facts._db.execute(
+                '''SELECT f.* FROM memory_fact_fts
+                JOIN facts f ON f.id=memory_fact_fts.rowid WHERE memory_fact_fts MATCH ? AND f.status=?
+                ORDER BY bm25(memory_fact_fts),f.pinned DESC,f.observed_at DESC,f.id DESC LIMIT ?''',
+                (_and_query(query), 'active', limit))]
+        rows = [dict(r) for r in facts._db.execute('SELECT * FROM facts WHERE status=?', ('active',))]
+    rows = [r for r in rows if all_terms_match(query, r['text'])]
+    rows.sort(key=lambda r: (r['pinned'], r['observed_at']), reverse=True)
+    return rows[:limit]
+
+
+def _strict_passages(sessions, facts, query, limit, exclude_session):
+    """Visible user passages containing EVERY term (an AND match in the index
+    itself, so a rare second term is not lost behind a crowd of common-word hits)."""
+    import sqlite3
+    from service.memory.queue import MemoryQueue
+    queue = MemoryQueue(sessions)
+    limit = max(1, min(50, limit))
+    result, offset = [], 0
+    while len(result) < limit:
+        with sessions._lock:
+            try:
+                rows = sessions._db.execute(
+                    '''SELECT text,session_id,turn_idx,created_at,role FROM memory_turn_fts
+                    WHERE memory_turn_fts MATCH ? AND session_id!=? AND role='user'
+                    ORDER BY bm25(memory_turn_fts),created_at DESC LIMIT 100 OFFSET ?''',
+                    (_and_query(query), exclude_session, offset)).fetchall()
+                indexed = True
+            except sqlite3.OperationalError as exc:
+                if 'no such table' not in str(exc) and 'no such module' not in str(exc):
+                    raise
+                predicates = ' AND '.join('LOWER(content) LIKE ?' for _ in terms(query))
+                rows = sessions._db.execute(
+                    f'''SELECT content text,session_id,idx turn_idx,created_at,role
+                    FROM turns WHERE session_id!=? AND role='user' AND ({predicates})
+                    ORDER BY created_at DESC LIMIT 100 OFFSET ?''',
+                    (exclude_session, *('%' + t + '%' for t in terms(query)), offset)).fetchall()
+                indexed = False
+        if not rows:
+            break
+        for row in rows:
+            item = dict(row)
+            if not indexed and not all_terms_match(query, item['text']):
+                continue
+            if queue.visible(item, facts):
+                result.append(item)
+                if len(result) == limit:
+                    break
+        offset += len(rows)
+    return result
 
 
 def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False):
@@ -48,13 +101,14 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     from service.memory.queue import MemoryQueue
     from service.memory.capture import current_source
     source = current_source.get() or {}
-    pool = max(limit, _STRICT_POOL) if strict and query.strip() else limit
-    rows = facts.search(query, pool) if query.strip() else facts.all(limit)
-    passages = MemoryQueue(sessions).search(query, facts, pool, user_only=True,
-        exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
     if strict and query.strip():
-        rows = [r for r in rows if all_terms_match(query, r['text'])][:limit]
-        passages = [r for r in passages if all_terms_match(query, r['text'])][:limit]
+        rows = _strict_facts(facts, query, limit)
+        passages = _strict_passages(sessions, facts, query, limit, source.get('session_id', '')) \
+            if include_passages and terms(query) else []
+    else:
+        rows = facts.search(query, limit) if query.strip() else facts.all(limit)
+        passages = MemoryQueue(sessions).search(query, facts, limit, user_only=True,
+            exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
     passages = [r for r in passages if 'prefer' not in r['text'].casefold() or _in_scope(r['text'], query)]
     # A changed/deleted source is not valid evidence even if its old FTS text
     # was previously extracted. Explicit/reviewed saves survive source removal.
