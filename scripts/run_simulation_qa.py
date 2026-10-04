@@ -223,6 +223,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_pipe.py",
     "tests/test_remote_recovery.py",
     "tests/test_runtime_peer.py",
+    # Characterization of the desktop oMLX attestation walker and _listener call shape
+    # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
+    "tests/test_runtime_attestation_t0.py",
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
