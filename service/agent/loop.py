@@ -1353,10 +1353,24 @@ async def run_agent(
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
 
+    # Skills stay on the managed model. When this run talks to an external local
+    # inference app (the unauthenticated loopback provider), none of their content
+    # may reach it: no catalog, no loaded bodies, no use_skill result and no
+    # skill-defined tool. main routes any turn that invokes a skill to the managed
+    # model; this keeps every other turn on that provider free of skill content too.
+    # Scoped to the local provider on purpose: cloud-bound runs are unchanged.
+    skills_external = (not getattr(client, "managed", True)
+                       and getattr(client, "endpoint_name", "") == "local_provider")
+    if skills_external:
+        from service.skills import skill_tool_names
+        forbidden_tools = frozenset(forbidden_tools) | skill_tool_names()
+        if force_first_tool in forbidden_tools:
+            force_first_tool = None
+
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
-    if not public_web_synthesis:
+    if not public_web_synthesis and not skills_external:
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)

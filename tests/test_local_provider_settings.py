@@ -584,3 +584,298 @@ def test_probe_http_payload_keeps_explicit_64_token_budget(context_window: int) 
         assert payload["stream"] is True
     finally:
         asyncio.run(client.aclose())
+
+
+# ------------------------------ PR130 D3: skills stay on the managed model (agent path)
+#
+# An external Agent/Coding binding gets Wisp's tool loop. Skill content must never
+# travel to that unauthenticated loopback app: not a matched ordinary skill's body,
+# not the installed-skill catalog, not a use_skill result, and not a skill-defined
+# tool. A turn that invokes a skill stays on the managed target; every other turn
+# keeps working on the external one, with no skill content in what it receives.
+# Everything is synthetic and offline: scripted in-process clients, a temporary
+# session store, and the real skill selection and context helpers.
+
+import copy as _copy
+from pathlib import Path as _Path
+
+_BODY_ORDINARY = "BODY-SENTINEL-ORDINARY file the expense report in four steps"
+_BODY_WORKFLOW = "BODY-SENTINEL-WORKFLOW ask one question at a time"
+_BODY_QUIET = "BODY-SENTINEL-QUIET never triggered"
+_CATALOG_ORDINARY = "CATALOG-SENTINEL-ORDINARY"
+_CATALOG_QUIET = "CATALOG-SENTINEL-QUIET"
+_SKILL_SENTINELS = (_BODY_ORDINARY, _BODY_WORKFLOW, _BODY_QUIET, _CATALOG_ORDINARY,
+                    _CATALOG_QUIET, "Installed skills", "use_skill", "expense-helper",
+                    "quiet-helper")
+
+
+def _synthetic_skills():
+    from service.skills import Skill
+    return {
+        "expense-helper": Skill("expense-helper", _CATALOG_ORDINARY, _BODY_ORDINARY,
+                                _Path("/nonexistent/expense-helper"),
+                                triggers=["expense report"], conversation_workflow=False),
+        "idea-refine": Skill("idea-refine", "workflow", _BODY_WORKFLOW,
+                             _Path("/nonexistent/idea-refine"),
+                             triggers=["explore this idea"], conversation_workflow=True),
+        "quiet-helper": Skill("quiet-helper", _CATALOG_QUIET, _BODY_QUIET,
+                              _Path("/nonexistent/quiet-helper"),
+                              triggers=["zzz-never-typed"], conversation_workflow=False),
+    }
+
+
+class _ScriptedClient:
+    """A synthetic inference client that records exactly what it is sent."""
+
+    def __init__(self, *, managed: bool, script=None, target=None):
+        self.managed = managed
+        self.target = target
+        self.endpoint_name = "local" if managed else "local_provider"
+        self.script = list(script or [])
+        self.requests: list[dict] = []
+
+    async def health(self):
+        return True
+
+    async def ensure_only(self, *args, **kwargs):
+        pass
+
+    def set_keep_warm(self, *args, **kwargs):
+        pass
+
+    async def stream_events(self, model, messages, **kwargs):
+        self.requests.append({
+            "model": model, "messages": _copy.deepcopy(messages),
+            "tools": [t["function"]["name"] for t in (kwargs.get("tools") or [])]})
+        response = self.script.pop(0) if self.script else {"role": "assistant", "content": "Done."}
+        yield {"kind": "final", "message": response}
+
+    async def aclose(self):
+        pass
+
+
+def _call(name, args=None, call_id="call-1"):
+    return {"role": "assistant", "content": "", "tool_calls": [{
+        "id": call_id, "type": "function",
+        "function": {"name": name, "arguments": json.dumps(args or {})}}]}
+
+
+def _run_skill_turn(monkeypatch, tmp_path, prompt, *, role="agent", skills_map="all",
+                    external_script=None, prior_tool_digest=None,
+                    tools=("probe_noop", "use_skill", "probe_skill_tool")):
+    """Drive the real /agent endpoint for a tool route bound to an external provider."""
+    import service.main as main
+    from service import skills as skills_module
+    from service.config.endpoints import Endpoint
+    from service.memory import context
+    from service.memory.store import SessionStore
+    from service.router.router import RouteDecision
+    from service.skills import tools as _skill_tools  # noqa: F401  (registers use_skill)
+    from service.tools import registry
+
+    external_target = Target(role, endpoint_from_config("local_provider", _endpoint_cfg()),
+                             "ext-model", context_window=8192)
+    managed_target = Target(role, Endpoint("local", "http://127.0.0.1:8000", "local_omlx",
+                            managed=True), "managed-model", context_window=8192)
+    external = _ScriptedClient(managed=False, script=external_script, target=external_target)
+    managed = _ScriptedClient(managed=True, target=managed_target)
+    saved = SessionStore(tmp_path / "sessions.db")
+    sid = saved.create_session()
+    if prior_tool_digest:
+        saved.add_turn(sid, "user", "load that skill for me")
+        saved.add_turn(sid, "assistant", "Loaded.", tool_digest=prior_tool_digest)
+
+    async def routed(*args, **kwargs):
+        return RouteDecision(role, "ext-model", True, "rules", "fixture",
+                             tool_subset=list(tools))
+
+    async def ready():
+        pass
+
+    async def noop(**kwargs):
+        return "NOOP-RESULT"
+
+    assert "use_skill" in registry.REGISTRY, "the real use_skill tool must be registered"
+    registry.register("probe_noop", "A harmless synthetic read-only probe.",
+                      {"type": "object", "properties": {}, "required": []},
+                      category="assistant_read")(noop)
+    registry.register("probe_skill_tool", "A synthetic tool defined by an installed skill.",
+                      {"type": "object", "properties": {}, "required": []},
+                      category="skill_tool")(noop)
+    monkeypatch.setattr(skills_module, "_skills",
+                        _synthetic_skills() if skills_map == "all" else dict(skills_map or {}))
+    monkeypatch.setattr(main, "client", managed, raising=False)
+    monkeypatch.setattr(main, "store", saved)
+    monkeypatch.setattr(context, "store", saved)
+    monkeypatch.setattr(main, "models_config", lambda: {
+        "tool_retrieval": {"provider": "lexical"},
+        "inference": {"bindings": {role: {"endpoint": "local_provider"}}}})
+    monkeypatch.setattr(main, "route", routed)
+    monkeypatch.setattr(main, "role_target", lambda r: external_target)
+    monkeypatch.setattr(main, "local_role_target", lambda r: managed_target)
+    monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: False)
+    monkeypatch.setattr(main, "ensure_omlx", ready)
+    monkeypatch.setattr(main, "memory_block", lambda **kwargs: "")
+    monkeypatch.setattr(main, "OMLXClient", lambda **kwargs: external)
+
+    async def exercise():
+        response = await main.agent({"prompt": prompt, "session_id": sid, "debug": False})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes):
+                item = item.decode()
+            events.append(json.loads(item.removeprefix("data: ").strip()))
+        return events
+
+    try:
+        events = asyncio.run(asyncio.wait_for(exercise(), 30))
+    finally:
+        registry.REGISTRY.pop("probe_noop", None)
+        registry.REGISTRY.pop("probe_skill_tool", None)
+    routed_event = next((e for e in events if e["type"] == "routed"), None)
+    assert not [e for e in events if e["type"] == "error"], events
+    return events, routed_event, external, managed
+
+
+def _everything_sent(client) -> str:
+    return json.dumps(client.requests)
+
+
+@pytest.mark.parametrize("role", ["agent", "coding"])
+def test_ordinary_triggered_skill_stays_on_the_managed_model(monkeypatch, tmp_path, role) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "please file my expense report", role=role)
+    assert routed_event["model"] == "managed-model"
+    assert routed_event["route_source"] == "skill_local"
+    assert external.requests == [], "the external app received a skill-bearing turn"
+    sent = _everything_sent(managed)
+    assert _BODY_ORDINARY in sent, "the managed model must still receive the skill it was asked for"
+
+
+def test_active_conversational_workflow_still_stays_on_the_managed_model(
+        monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "let us explore this idea")
+    assert routed_event["model"] == "managed-model"
+    assert routed_event["route_source"] == "active_skill_local"
+    assert external.requests == []
+    assert _BODY_WORKFLOW in _everything_sent(managed)
+
+
+@pytest.mark.parametrize("role", ["agent", "coding"])
+def test_untriggered_turn_reaches_the_external_app_with_no_skill_content(
+        monkeypatch, tmp_path, role) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "run the noop probe", role=role,
+        external_script=[_call("probe_noop"),
+                         {"role": "assistant", "content": "The probe finished."}])
+    assert routed_event["model"] == "ext-model"
+    assert routed_event["route_source"] != "skill_local"
+    assert managed.requests == []
+    assert len(external.requests) >= 2, "the healthy external tool turn must still run its tool"
+    sent = _everything_sent(external)
+    for sentinel in _SKILL_SENTINELS:
+        assert sentinel not in sent, f"{sentinel!r} reached the external transport"
+    for request in external.requests:
+        assert "probe_noop" in request["tools"]
+        assert "use_skill" not in request["tools"], "use_skill was offered to the external app"
+        assert "probe_skill_tool" not in request["tools"], "a skill-defined tool was offered"
+    assert "NOOP-RESULT" in sent, "the external model received its ordinary tool result"
+
+
+def test_external_model_cannot_load_a_skill_by_calling_use_skill(monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "run the noop probe",
+        external_script=[_call("use_skill", {"name": "quiet-helper"}),
+                         {"role": "assistant", "content": "Done."}])
+    assert routed_event["model"] == "ext-model"
+    sent = _everything_sent(external)
+    assert _BODY_QUIET not in sent and _BODY_ORDINARY not in sent
+    assert not [e for e in events if e["type"] == "tool_result"
+                and "BODY-SENTINEL" in json.dumps(e)]
+
+
+def test_external_model_cannot_run_a_skill_defined_tool(monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "run the noop probe",
+        external_script=[_call("probe_skill_tool"),
+                         {"role": "assistant", "content": "Done."}])
+    assert routed_event["model"] == "ext-model"
+    assert "NOOP-RESULT" not in _everything_sent(external), "a skill-defined tool ran for the external app"
+
+
+@pytest.mark.parametrize("digest", ["use_skill", "get_weather, use_skill"])
+def test_follow_up_after_use_skill_stays_on_the_managed_model(
+        monkeypatch, tmp_path, digest) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "ok, continue", prior_tool_digest=digest)
+    assert routed_event["model"] == "managed-model"
+    assert routed_event["route_source"] == "skill_local"
+    assert external.requests == []
+
+
+def test_follow_up_after_an_unrelated_tool_is_not_treated_as_a_skill_turn(
+        monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "ok, continue", prior_tool_digest="get_weather",
+        external_script=[{"role": "assistant", "content": "Continuing."}])
+    assert routed_event["model"] == "ext-model" and managed.requests == []
+    assert external.requests
+
+
+def test_external_tools_work_normally_when_no_skills_are_installed(monkeypatch, tmp_path) -> None:
+    events, routed_event, external, managed = _run_skill_turn(
+        monkeypatch, tmp_path, "run the noop probe", skills_map={},
+        external_script=[_call("probe_noop"),
+                         {"role": "assistant", "content": "The probe finished."}])
+    assert routed_event["model"] == "ext-model" and managed.requests == []
+    assert "NOOP-RESULT" in _everything_sent(external)
+
+
+def test_skill_helpers_recognise_only_enabled_matching_skills_and_skill_digests(monkeypatch) -> None:
+    from service import skills as skills_module
+    pool = _synthetic_skills()
+    pool["disabled-helper"] = skills_module.Skill(
+        "disabled-helper", "d", "b", _Path("/nonexistent/d"), triggers=["disabled phrase"], enabled=False)
+    pool["broken-helper"] = skills_module.Skill(
+        "broken-helper", "d", "b", _Path("/nonexistent/b"), triggers=["broken phrase"], error="bad")
+    monkeypatch.setattr(skills_module, "_skills", pool)
+    assert skills_module.turn_skill_names("file my Expense Report") == ["expense-helper"]
+    assert skills_module.turn_skill_names("use @quiet-helper now") == ["quiet-helper"]
+    assert skills_module.turn_skill_names("disabled phrase and broken phrase") == []
+    assert skills_module.turn_skill_names("nothing relevant") == []
+    assert skills_module.digest_used_skill("use_skill")
+    assert skills_module.digest_used_skill("get_weather, use_skill")
+    assert not skills_module.digest_used_skill("get_weather, get_upcoming")
+    assert not skills_module.digest_used_skill("") and not skills_module.digest_used_skill(None)
+
+
+def test_the_loop_boundary_is_scoped_to_the_local_provider_only(monkeypatch) -> None:
+    """Cloud-bound and managed runs keep their existing skills behaviour."""
+    from service import skills as skills_module
+    from service.agent import loop
+    from service.memory import identity
+
+    monkeypatch.setattr(skills_module, "_skills", _synthetic_skills())
+    monkeypatch.setattr(identity, "identity_prompt_block", lambda **kwargs: "")
+    monkeypatch.setattr(loop.prompt_blocks, "memory_block", lambda **kwargs: "")
+
+    class Approver:
+        async def confirm(self, action):
+            return True
+
+    def sent_to(managed: bool, endpoint_name: str) -> str:
+        client = _ScriptedClient(managed=managed)
+        client.endpoint_name = endpoint_name
+
+        async def emit(event):
+            pass
+
+        asyncio.run(loop.run_agent(client, "model", [{"role": "user", "content": "hello there"}],
+                                   emit, Approver(), debug=False, max_steps=1))
+        return json.dumps(client.requests)
+
+    assert _CATALOG_QUIET in sent_to(True, "local"), "a managed run keeps the skill catalog"
+    assert _CATALOG_QUIET in sent_to(False, "cloud"), "a cloud-bound run is unchanged by this repair"
+    assert _CATALOG_QUIET not in sent_to(False, "local_provider")
+

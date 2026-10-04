@@ -354,6 +354,34 @@ def select_for_turn(user_text: str, active_name: str = "",
     return ""
 
 
+def turn_skill_names(user_text: str) -> list[str]:
+    """Enabled, error-free skills this user turn invokes: an explicit @name or $name,
+    or a trigger phrase. Ordinary and conversational skills alike.
+
+    ``select_for_turn`` only ever returns conversational workflows, so it cannot tell
+    the router that an ORDINARY skill is about to be loaded. This can.
+    """
+    return [s.name for s in _skills.values()
+            if s.enabled and not s.error and s.matches(user_text)]
+
+
+def skill_tool_names() -> frozenset[str]:
+    """Tools whose results or schemas carry skill content: ``use_skill`` and every
+    tool an installed skill defines."""
+    from service.tools.registry import REGISTRY
+    return frozenset({"use_skill"} | {name for name, tool in REGISTRY.items()
+                                      if tool.category == "skill_tool"})
+
+
+def digest_used_skill(tool_digest: str | None) -> bool:
+    """Whether a stored assistant tool digest records a skill being loaded or run,
+    so the follow-up to that turn is itself a skill turn."""
+    if not tool_digest:
+        return False
+    used = {part.strip() for part in str(tool_digest).split(",") if part.strip()}
+    return bool(used & skill_tool_names())
+
+
 def selected_skill_block(user_text: str = "", active_name: str = "") -> str:
     """Prompt block for tool-free chat paths.
 

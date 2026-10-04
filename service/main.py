@@ -575,7 +575,7 @@ async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]
 # "Connect" in Settings does not repeat a multi-second probe. Keyed by the exact
 # app, model and claimed window; never trusted across those.
 _QUALIFICATION_TTL_SECONDS = 600.0
-_qualification_cache: dict[tuple, tuple[float, qualification.Report]] = {}
+_qualification_cache: dict[tuple, tuple[float, qualification.Report, int]] = {}
 # Revocation and publication order. All three are guarded by
 # _local_provider_operation_lock, and that lock is only ever held for the short
 # synchronous sections below, never across an await.
@@ -584,7 +584,12 @@ _qualification_cache: dict[tuple, tuple[float, qualification.Report]] = {}
 #              every cached entry belongs to the current epoch.
 #   ticket     handed out when a probe starts; of two probes for the same app only
 #              the newer ticket may leave reusable evidence, whatever order they
-#              finish in.
+#              finish in. A model-discovery failure takes part too: it is newer
+#              evidence that the app is unusable, so it retires the older entry and
+#              records its ticket, and an older in-flight success then loses.
+#   evidence   (key, epoch, ticket) travels with the report a Connect will save.
+#              The save re-checks it under the lock, so a report that a newer
+#              completed result has superseded can never authorise the save.
 _qualification_epoch = 0
 _qualification_ticket = 0
 _qualification_published: dict[tuple, int] = {}
@@ -609,37 +614,59 @@ def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
     return model_id.strip(), context_window
 
 
-async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
-                                  *, fresh: bool) -> qualification.Report:
+def _qualification_evidence_current_unlocked(evidence: tuple) -> bool:
+    """Whether a report is still the newest completed evidence for its app."""
+    key, epoch, ticket = evidence
+    return epoch == _qualification_epoch and _qualification_published.get(key, 0) <= ticket
+
+
+async def _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id: str, context_window: int,
+        *, fresh: bool) -> tuple[qualification.Report, tuple]:
+    """Qualify the app and return the report with the identity of its evidence."""
     global _qualification_ticket
     key = (provider_endpoint.base_url, provider_endpoint.api_prefix, model_id, context_window)
     with _local_provider_operation_lock:
         epoch = _qualification_epoch
         cached = _qualification_cache.get(key)
         if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
-            return cached[1]
+            return cached[1], (key, epoch, cached[2])
         _qualification_ticket += 1
         ticket = _qualification_ticket
     probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
+    discovery_failure = ""
     try:
         if model_id not in await probe.models():
-            raise HTTPException(status_code=400,
-                                detail="The local app did not return that exact model ID.")
-    except HTTPException:
-        raise
+            discovery_failure = "The local app did not return that exact model ID."
     except Exception:
-        raise HTTPException(status_code=400,
-                            detail="The local inference app did not return a model list.") from None
+        discovery_failure = "The local inference app did not return a model list."
     finally:
         await probe.aclose()
+    if discovery_failure:
+        with _local_provider_operation_lock:
+            # This attempt is now the newest word on the app and it says "unusable":
+            # retire any older success and record the ticket so an older in-flight
+            # probe cannot publish over it. Nothing is cached as a failure, so a
+            # transient discovery error cannot block Connect once the app recovers.
+            if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+                _qualification_cache.pop(key, None)
+                _qualification_published[key] = ticket
+        raise HTTPException(status_code=400, detail=discovery_failure)
     report = await qualification.qualify(provider_endpoint, model_id, context_window)
     with _local_provider_operation_lock:
         # The caller always gets its own report. It becomes reusable evidence only if
         # no Disconnect happened while it was measured and no newer probe of the same
         # app has already published.
         if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
-            _qualification_cache[key] = (time.monotonic(), report)
+            _qualification_cache[key] = (time.monotonic(), report, ticket)
             _qualification_published[key] = ticket
+    return report, (key, epoch, ticket)
+
+
+async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
+                                  *, fresh: bool) -> qualification.Report:
+    report, _evidence = await _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id, context_window, fresh=fresh)
     return report
 
 
@@ -668,11 +695,12 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
                             detail="Choose Reasoning, Agent, or Coding for this app.")
     generation = _supersede_local_provider_probe()
     qualified_report: dict[str, Any] | None = None
+    evidence: tuple | None = None
     try:
         if LOCAL_PROVIDER_TOOL_ROLES & set(roles):
             # The SERVER decides whether tool use is allowed, from its own probe.
-            report = await _qualify_local_provider(provider_endpoint, model_id,
-                                                   context_window, fresh=False)
+            report, evidence = await _qualify_local_provider_with_evidence(
+                provider_endpoint, model_id, context_window, fresh=False)
             if not report.qualified:
                 failed = next((c for c in report.checks if c.required and not c.ok), None)
                 detail = " ".join(part for part in (
@@ -714,6 +742,12 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
             if generation != _local_provider_operation_generation:
                 raise HTTPException(status_code=409,
                                     detail="A newer inference setting replaced this connection test.")
+            if evidence is not None and not _qualification_evidence_current_unlocked(evidence):
+                # A newer completed test of this app (pass, fail or failed discovery)
+                # superseded the report this Connect measured; saving it would persist
+                # tool qualification the latest evidence no longer supports.
+                raise HTTPException(status_code=409,
+                                    detail="A newer connection test replaced this result.")
             set_local_provider(endpoint_cfg, model_id, context_window, roles,
                                qualification=qualified_report)
     except HTTPException:
@@ -1201,6 +1235,15 @@ async def agent(body: dict[str, Any]):
             )
             if sess and active_skill != str(sess.get("active_skill") or ""):
                 store.set_active_skill(sid, active_skill)
+            # Skills stay on the managed model. Beyond an active conversational
+            # workflow, that covers a turn that invokes ANY enabled skill (an
+            # explicit @name or a trigger phrase) and the follow-up to a turn that
+            # loaded a skill with use_skill or ran a skill-defined tool.
+            skill_turn = ""
+            if active_skill:
+                skill_turn = "active_skill_local"
+            elif skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools):
+                skill_turn = "skill_local"
 
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
@@ -1435,13 +1478,14 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
-            if active_skill and target.endpoint.name == "local_provider":
+            if skill_turn and target.endpoint.name == "local_provider":
                 # A skill may contain local file content or private workflow state.
                 # Keep its instructions and execution on the managed model.
                 target = local_role_target(decision.role)
                 decision.model = target.model
-                decision.route_source = "active_skill_local"
-                decision.reason = f"{decision.reason}; active skill stays on this Mac"
+                decision.route_source = skill_turn
+                decision.reason = (f"{decision.reason}; "
+                                   f"{'active skill' if active_skill else 'skill'} stays on this Mac")
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.

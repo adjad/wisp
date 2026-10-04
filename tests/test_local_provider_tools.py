@@ -1732,3 +1732,166 @@ def test_disconnect_and_cloud_disconnect_still_supersede_a_pending_connect(concu
         return await pending
 
     assert run_bounded(scenario()).status_code == 409
+
+
+# ------------------------------- PR130 D1/D2: discovery failures and superseded saves
+#
+# D1  A fresh qualification that fails MODEL DISCOVERY (the model list errors, times
+#     out, or lacks the selected model) is newer evidence that the app is not
+#     usable. It must retire an older success, and an older in-flight success must
+#     not be able to resurrect itself afterwards.
+# D2  A Connect that is awaiting its own passing report must not be saved once a
+#     newer completed result for the same app has superseded that report.
+
+class DiscoveryEngine(FakeEngine):
+    """A fake engine whose model list can fail the ways a real app's can."""
+
+    models_mode = "ok"   # ok | missing | http_error | connect_error | timeout
+
+    def respond(self, request):
+        if (request.method == "GET" and request.url.path == self.api_prefix + "/models"
+                and not self.closed):
+            if self.models_mode == "missing":
+                return httpx.Response(200, json={"object": "list", "data": [
+                    {"id": "some-other-model", "object": "model"}]})
+            if self.models_mode == "http_error":
+                return httpx.Response(503, json={"error": "unavailable"})
+            if self.models_mode == "connect_error":
+                raise httpx.ConnectError("connection refused", request=request)
+            if self.models_mode == "timeout":
+                raise httpx.ReadTimeout("model list timed out", request=request)
+        return super().respond(request)
+
+
+DISCOVERY_FAILURES = ["missing", "http_error", "connect_error", "timeout"]
+
+
+@pytest.mark.parametrize("mode", DISCOVERY_FAILURES)
+def test_a_failed_fresh_discovery_retires_an_older_success(concurrency, mode):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+
+    async def scenario():
+        assert (await concurrency.test_probe(engine)).json()["qualified"] is True
+        engine.models_mode = mode
+        failed = await concurrency.test_probe(engine)
+        saved_before = _saved_yaml()
+        still_failing = await concurrency.connect(engine, ["agent"])
+        after_failed_connect = _saved_yaml()
+        engine.models_mode = "ok"
+        recovered = await concurrency.connect(engine, ["agent"])
+        return failed, saved_before, still_failing, after_failed_connect, recovered, \
+            await concurrency.settings()
+
+    failed, saved_before, still_failing, after_failed, recovered, settings = run_bounded(scenario())
+    assert failed.status_code == 400
+    assert still_failing.status_code == 400, "the older success must not authorise a Connect"
+    assert after_failed == saved_before, "no tool binding may be saved from retired evidence"
+    assert len(concurrency.gate.calls) == 2, \
+        "once the app recovers Connect must probe afresh, neither reusing the old success nor " \
+        "being blocked for the TTL by a transient discovery failure"
+    assert recovered.status_code == 200 and settings.json()["tools_qualified"] is True
+
+
+@pytest.mark.parametrize("mode", ["missing", "http_error", "timeout"])
+def test_an_older_success_cannot_resurrect_after_a_newer_discovery_failure(concurrency, mode):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+
+    async def scenario():
+        concurrency.gate.hold = {0}
+        older = asyncio.create_task(concurrency.test_probe(engine))
+        await concurrency.gate.started(0)          # the older probe has measured a pass
+        engine.models_mode = mode
+        newer = await concurrency.test_probe(engine)   # fails in discovery, newer ticket
+        concurrency.gate.release(0)
+        older_response = await older
+        engine.models_mode = "ok"
+        return newer, older_response, await concurrency.connect(engine, ["agent"])
+
+    newer, older, connect = run_bounded(scenario())
+    assert newer.status_code == 400
+    assert older.status_code == 200 and older.json()["qualified"] is True, \
+        "the older caller still receives its own historical report"
+    assert len(concurrency.gate.calls) == 2, \
+        "the older pass must not have become reusable after the newer failure"
+    assert connect.status_code == 200
+
+
+def test_an_older_connect_pass_cannot_be_saved_after_a_newer_failed_dry_run(concurrency):
+    engine = concurrency.engine()
+
+    async def scenario():
+        before = _saved_yaml()
+        concurrency.gate.hold = {0}
+        older = asyncio.create_task(concurrency.connect(engine, ["agent"]))
+        await concurrency.gate.started(0)
+        engine.tools = "none"
+        newer = await concurrency.test_probe(engine)
+        concurrency.gate.release(0)
+        return before, newer, await older, await concurrency.settings()
+
+    before, newer, older, settings = run_bounded(scenario())
+    assert newer.json()["qualified"] is False
+    assert older.status_code == 409, "a superseded report must not authorise the save"
+    assert _saved_yaml() == before
+    assert settings.json()["enabled"] is False and settings.json()["tools_qualified"] is False
+    assert role_target("agent").model == "managed-agent"
+    assert role_target("agent").endpoint.name == "local"
+
+
+@pytest.mark.parametrize("mode", ["missing", "http_error", "timeout"])
+def test_an_older_connect_pass_cannot_be_saved_after_a_newer_discovery_failure(concurrency, mode):
+    engine = concurrency.engine(engine_type=DiscoveryEngine)
+
+    async def scenario():
+        before = _saved_yaml()
+        concurrency.gate.hold = {0}
+        older = asyncio.create_task(concurrency.connect(engine, ["agent"]))
+        await concurrency.gate.started(0)
+        engine.models_mode = mode
+        newer = await concurrency.test_probe(engine)
+        concurrency.gate.release(0)
+        older_response = await older
+        engine.models_mode = "ok"
+        retry = await concurrency.connect(engine, ["agent"])
+        return before, newer, older_response, retry, await concurrency.settings()
+
+    before, newer, older, retry, settings = run_bounded(scenario())
+    assert newer.status_code == 400
+    assert older.status_code == 409
+    assert len(concurrency.gate.calls) == 2, "the retry probes afresh; the cache agrees with the failure"
+    assert retry.status_code == 200 and settings.json()["tools_qualified"] is True
+
+
+def test_a_newer_success_also_supersedes_an_older_connect_and_the_retry_reuses_it(concurrency):
+    # Deliberately conservative: only the newest completed evidence may authorise a save.
+    engine = concurrency.engine()
+
+    async def scenario():
+        before = _saved_yaml()
+        concurrency.gate.hold = {0}
+        older = asyncio.create_task(concurrency.connect(engine, ["agent"]))
+        await concurrency.gate.started(0)
+        newer = await concurrency.test_probe(engine)
+        concurrency.gate.release(0)
+        older_response = await older
+        after_stale = _saved_yaml()
+        retry = await concurrency.connect(engine, ["agent"])
+        return before, newer, older_response, after_stale, retry
+
+    before, newer, older, after_stale, retry = run_bounded(scenario())
+    assert newer.json()["qualified"] is True
+    assert older.status_code == 409 and after_stale == before
+    assert retry.status_code == 200
+    assert len(concurrency.gate.calls) == 2, "the retry reuses the newest evidence without another probe"
+
+
+def test_reasoning_only_connect_is_not_affected_by_evidence_ordering(concurrency):
+    engine = concurrency.engine()
+
+    async def scenario():
+        engine_response = await concurrency.connect(engine, ["reasoning"])
+        return engine_response, await concurrency.settings()
+
+    response, settings = run_bounded(scenario())
+    assert response.status_code == 200 and settings.json()["roles"] == ["reasoning"]
+    assert len(concurrency.gate.calls) == 0, "a Reasoning-only connect carries no qualification"
