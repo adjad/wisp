@@ -91,6 +91,7 @@ PROFILE_TESTS = {
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
         "tests/test_tomorrow_planning.py",
+        "tests/test_tomorrow_study_slot.py",
         "tests/test_reminder_source_truth.py",
         "tests/test_source_sync_contract.py",
         "tests/test_sync_readiness.py",

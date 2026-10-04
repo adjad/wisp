@@ -2315,8 +2315,40 @@ def _verified_private_read(calls: list[tuple[str, dict]], reason: str,
     return decision
 
 
-def _strict_private_read_decision(text: str) -> RouteDecision | None:
+def _strict_private_read_decision(text: str, *, last_user: str | None = None,
+                                  recent_users: list[str] | None = None) -> RouteDecision | None:
     source, policy_forbidden = _private_read_policy(text)
+    from service.router.web_request import tomorrow_study_request
+    if study := tomorrow_study_request(source):
+        from service.tools.registry import REGISTRY
+        forbidden = frozenset(REGISTRY) - {"find_free_time"}
+        if "get_upcoming" in policy_forbidden:
+            decision = _mk("fast", reason="study availability source explicitly denied")
+            decision.tool_subset = []
+            decision.forbidden_tools = frozenset(REGISTRY)
+            decision.verified_results_only = True
+            decision.resolved_request = "Calendar was excluded, so no study availability was checked."
+            return decision
+        minutes, topic = study
+        previous = tomorrow_study_request(last_user or (recent_users[-1] if recent_users else None))
+        if minutes is None and previous:
+            minutes = previous[0]
+        minutes = minutes or 30
+        from datetime import datetime
+        from service.tools.timeranges import resolve_span
+        start, _, _ = resolve_span("tomorrow")
+        target = datetime.fromtimestamp(start)
+        return _verified_private_read(
+            [("find_free_time", {"period": target.strftime("%Y-%m-%d"), "minutes": minutes})],
+            "tomorrow study -> exact local day and duration-specific candidates",
+            f"Tomorrow is {target:%A, %Y-%m-%d}. Suggest a {minutes}-minute candidate "
+            f"for {topic!r} only from the verified availability on that date. "
+            "This is a lookup: no Calendar event or reminder has been created. "
+            "Preserve the tool's absolute weekday/date and exact candidate endpoints. "
+            "Explain any missing-source or assumed-duration limitation. If offering "
+            "a preparation reminder, include the candidate's absolute date; never claim creation.",
+            extra_forbidden=forbidden | policy_forbidden,
+        )
     if email_args := _topical_email_args(source):
         if "view_emails" in policy_forbidden:
             decision = _mk("fast", reason="strict email source explicitly denied")
@@ -6835,7 +6867,8 @@ async def route(text: str, *,
             return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
-    if (private_read := _strict_private_read_decision(text)) is not None:
+    if (private_read := _strict_private_read_decision(
+            text, last_user=last_user, recent_users=recent_users)) is not None:
         private_request = replace(
             request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
             public_reference=False, inherited=False, clarification=None,
@@ -6925,6 +6958,49 @@ async def route(text: str, *,
     return decision
 
 
+def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> RouteDecision:
+    """Bind a single current proposition; contradictory/stale dates cannot authorize a write."""
+    from datetime import datetime
+    from service.tools.timeranges import resolve_span
+    from service.tools.registry import REGISTRY
+    from service.tasks.compiler import compile_reminder_create
+
+    begin, _, _ = resolve_span("tomorrow")
+    target = datetime.fromtimestamp(begin)
+    # Text-only history has no trusted source-turn timestamp. Assistant prose
+    # cannot establish it: the reported wrong Monday becomes the *current*
+    # tomorrow after midnight. Require an absolute date from this human turn.
+    try:
+        chosen = datetime.fromisoformat(confirmed_date) if confirmed_date else None
+    except ValueError:
+        chosen = None
+    plan = (compile_reminder_create(
+                f"remind me on {chosen:%Y-%m-%d} at {clock} to prepare for the study session")
+            if chosen else None)
+    if plan is None or plan.status != "ready":
+        decision = _mk("fast", reason="study reminder date needs explicit confirmation")
+        decision.tool_subset = []
+        decision.forbidden_tools = frozenset(REGISTRY)
+        decision.resolved_request = (
+            "No reminder has been created. The original study date cannot be verified from this history. "
+            "Ask the user to state the date explicitly in a complete reminder command, for example: "
+            f"'Remind me on {target:%Y-%m-%d} at {clock} to prepare for the study session.' "
+            "Do not claim the reminder or study event was created.")
+        return decision
+    decision = _mk_scoped(["add_reminder"], "confirms one grounded study preparation reminder",
+                          force="add_reminder", light=False)
+    decision.reminder_action = "create"
+    decision.required_tool_groups = (frozenset({"add_reminder"}),)
+    decision.forbidden_tools = frozenset(REGISTRY) - {"add_reminder"}
+    decision.tool_argument_bindings = {"add_reminder": {
+        "title": plan.subject.value, "when_iso": plan.temporal.absolute_iso, "kind": "reminder"}}
+    decision.resolved_request = (
+        f"Set only the confirmed preparation reminder for {chosen:%A, %Y-%m-%d} at {clock}. "
+        "Call add_reminder through the normal permission and audit path. "
+        "Only its successful receipt establishes creation; no study Calendar event was requested.")
+    return decision
+
+
 async def _route_request(text: str, *, web_request: _WebRequest,
                          last_user: str | None = None,
                          recent_users: list[str] | None = None,
@@ -6932,6 +7008,9 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                          last_tools: str | None = None) -> RouteDecision:
     def finalize(decision: RouteDecision, body: str) -> RouteDecision:
         return _finalize(decision, body, web_request=web_request)
+
+    if web_request.study_reminder_clock:
+        return _study_reminder_confirmation(web_request.study_reminder_clock, web_request.study_reminder_date)
 
     # A denial/correction is part of the unfinished list request, not a fresh
     # calendar lookup. Preserve that intent even when the current fragment only

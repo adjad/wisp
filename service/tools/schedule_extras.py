@@ -17,11 +17,30 @@ same question, and the two would drift the moment a sync lagged.
 from __future__ import annotations
 
 import datetime as dt
+import os
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from service.assistant.store import AssistantStore
 from service.tools.registry import register
 
 _store = AssistantStore()
+
+
+def _availability_timezone() -> str | None:
+    """Use the process/system IANA zone, never a PDT/+14 abbreviation."""
+    zone = os.environ.get("TZ", "").lstrip(":")
+    if not zone:
+        parts = Path("/etc/localtime").resolve().parts
+        for index, part in enumerate(parts):
+            if part.startswith("zoneinfo"):
+                zone = "/".join(parts[index + 1:])
+                break
+    try:
+        ZoneInfo(zone)
+    except (ValueError, ZoneInfoNotFoundError):
+        return None
+    return zone
 
 
 def _fmt_time(ts: float) -> str:
@@ -123,12 +142,15 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
     "find_free_time",
     "Find open gaps in the user's schedule — for 'when am I free', 'do I have "
     "time for a call', or picking a slot for something. Looks at the same "
-    "commitments get_upcoming reports.",
+    "commitments get_upcoming reports, plus pinned Wisp Today tasks.",
     {
         "type": "object",
         "properties": {
             "days": {"type": "integer",
                      "description": "How many days ahead to consider. Default 3."},
+            "period": {"type": "string", "description":
+                       "One exact local day: today, tomorrow, or YYYY-MM-DD. "
+                       "Overrides days; returns duration-specific candidate slots."},
             "minutes": {"type": "integer",
                         "description": "Minimum length of gap to report, in minutes. Default 30."},
             "day_start": {"type": "integer",
@@ -142,11 +164,15 @@ async def complete_reminder(title: str, expected_id: str = "") -> str:
              "find me an hour for the gym", "when could I fit in a call",
              "what does my afternoon look like", "am I free at 3"],
 )
-def find_free_time(days: int = 3, minutes: int = 30,
-                   day_start: int = 9, day_end: int = 18) -> str:
+async def find_free_time(days: int = 3, minutes: int = 30,
+                         day_start: int = 9, day_end: int = 18,
+                         period: str = "") -> str:
     try:
         days = max(1, min(14, int(days)))
-        need = max(5, int(minutes)) * 60
+        minutes = int(minutes)
+        if not 1 <= minutes <= 1440:
+            return "(error: minutes must be between 1 and 1440.)"
+        need = minutes * 60
         start_h = max(0, min(23, int(day_start)))
         end_h = max(start_h + 1, min(24, int(day_end)))
     except (TypeError, ValueError):
@@ -154,40 +180,67 @@ def find_free_time(days: int = 3, minutes: int = 30,
 
     now = dt.datetime.now()
     today = now.date()
-    rows = _store.upcoming(days=days)
+    if period:
+        import re
+        from service.tools.timeranges import resolve_span, BadPeriod
+        if not re.fullmatch(r"today|tomorrow|\d{4}-\d{2}-\d{2}", period.strip(), re.I):
+            return "(error: period must be today, tomorrow, or YYYY-MM-DD.)"
+        try:
+            begin, _, _ = resolve_span(period, now=now)
+        except BadPeriod as exc:
+            return f"(error: {exc})"
+        target_days = [dt.datetime.fromtimestamp(begin).date()]
+    else:
+        target_days = [today + dt.timedelta(days=offset) for offset in range(days)]
 
-    # Busy blocks, keyed by day. All-day items block the whole window — treating
-    # them as zero-length would advertise a free afternoon on a day the user has
-    # marked entirely spoken for.
-    busy: dict[dt.date, list[tuple[float, float]]] = {}
-    for r in rows:
-        if r.get("status") not in (None, "active"):
-            continue
-        ts = r.get("when_ts")
-        if not ts:
-            continue
-        begin = dt.datetime.fromtimestamp(ts)
-        day = begin.date()
-        if r.get("all_day"):
-            lo = dt.datetime.combine(day, dt.time(start_h))
-            hi = dt.datetime.combine(day, dt.time(0)) + dt.timedelta(hours=end_h)
-            busy.setdefault(day, []).append((lo.timestamp(), hi.timestamp()))
-            continue
-        # The store keeps a start time and no duration, so assume an hour. Said
-        # out loud in the output rather than silently — a 15-minute reminder
-        # will look like it blocks more than it does.
-        busy.setdefault(day, []).append((ts, ts + 3600))
+    from service.assistant.sync_status import ensure_sources
+    from service.tasks.temporal import unambiguous_local_time
+    readiness = await ensure_sources(("calendar", "reminders"))
+    if (any(s["state"] != "ready" for s in readiness["sources"])
+            or not readiness.get("reminders_fresh", True)):
+        return ("(error: Wisp could not check current Calendar and Reminders availability. "
+                "No study slot has been verified; try again after the sources finish syncing.)")
+    timezone = _availability_timezone()
+    if timezone is None:
+        return "(error: the local timezone could not be resolved; no availability was verified.)"
 
     out: list[str] = []
-    for offset in range(days):
-        day = today + dt.timedelta(days=offset)
+    assumed_duration = False
+    for day in target_days:
         window_lo = dt.datetime.combine(day, dt.time(start_h))
         window_hi = dt.datetime.combine(day, dt.time(0)) + dt.timedelta(hours=end_h)
+        if not (unambiguous_local_time(window_lo) and unambiguous_local_time(window_hi)):
+            return "(error: the working window includes an ambiguous or nonexistent local time.)"
         lo = max(window_lo, now) if day == today else window_lo
         if lo >= window_hi:
             continue
 
-        blocks = sorted(busy.get(day, []))
+        # The snapshot's overlap-aware read includes overnight Calendar events
+        # and their stored end times. Clip every block to this local day/window.
+        snapshot = _store.today_snapshot(day.isoformat(), timezone)
+        rows = list(snapshot["commitments"])
+        for task in snapshot.get("tasks", []):
+            if task.get("status") not in (None, "active") or task.get("pinned_start") is None:
+                continue
+            rows.append({"when_ts": task["pinned_start"], "end_ts":
+                task["pinned_start"] + task["duration_minutes"] * 60, "source": "today"})
+        blocks = []
+        for row in rows:
+            if row.get("status") not in (None, "active") or row.get("when_ts") is None:
+                continue
+            begin = float(row["when_ts"])
+            finish = row.get("end_ts")
+            if row.get("all_day") and finish is None:
+                event_day = dt.datetime.fromtimestamp(begin).date()
+                finish = dt.datetime.combine(event_day + dt.timedelta(days=1), dt.time()).timestamp()
+            elif finish is None:
+                finish = begin + 3600
+                if begin < window_hi.timestamp() and finish > lo.timestamp():
+                    assumed_duration = True
+            a, b = max(begin, lo.timestamp()), min(float(finish), window_hi.timestamp())
+            if a < b:
+                blocks.append((a, b))
+        blocks.sort()
         gaps: list[tuple[float, float]] = []
         cursor = lo.timestamp()
         for b_start, b_end in blocks:
@@ -198,13 +251,17 @@ def find_free_time(days: int = 3, minutes: int = 30,
             gaps.append((cursor, window_hi.timestamp()))
 
         if gaps:
-            spans = ", ".join(f"{_fmt_time(a)}–{_fmt_time(b)}" for a, b in gaps)
-            out.append(f"  {_fmt_day(day, today)}: {spans}")
+            spans = ", ".join(f"{_fmt_time(a)}–{_fmt_time(a + need if period else b)}" for a, b in gaps)
+            label = day.strftime("%A, %Y-%m-%d") if period else _fmt_day(day, today)
+            out.append(f"  {label}: {spans}")
 
     if not out:
-        return (f"No gaps of {minutes}+ minutes in the next {days} day(s) "
+        scope = target_days[0].strftime("%A, %Y-%m-%d") if period else f"the next {days} day(s)"
+        return (f"No matches: No gaps of {minutes}+ minutes in {scope} "
                 f"between {start_h}:00 and {end_h}:00.")
-    note = ("\n(Timed items are assumed to run an hour — the calendar store "
-            "keeps start times, not lengths.)")
-    return (f"Free for {minutes}+ minutes, {start_h}:00–{end_h}:00:\n"
+    note = ("\n(Items without a stored end time are assumed to run an hour.)"
+            if assumed_duration else "")
+    note += "\nThese are candidate times; a Calendar event or reminder has not been created."
+    heading = f"{minutes}-minute candidate slots" if period else f"Free for {minutes}+ minutes"
+    return (f"{heading}, {start_h}:00–{end_h}:00:\n"
             + "\n".join(out) + note)

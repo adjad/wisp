@@ -111,6 +111,8 @@ class WebRequest:
     pending_offer: PendingOffer | None = None
     confirmed_local_request: str | None = None
     standalone_offer: bool = False
+    study_reminder_clock: str | None = None
+    study_reminder_date: str | None = None
 
     @property
     def private(self) -> bool:
@@ -788,6 +790,75 @@ def _acknowledgement(text: str) -> bool:
     return bool(re.fullmatch(r"(?:(?:yes|yeah|yep|sure|ok|okay)(?: please)?(?: (?:go ahead|please do|do it))?|please do|go ahead|do it)", words, re.I))
 
 
+_STUDY_TOMORROW = r"(?:tomorrow|tommorow|tommorrow|tomorow|tmrw|tmrow)"
+_STUDY_DURATION = r"(?:\d{1,4}[ -]minutes?|(?:an?|one|two|three)\s+hours?)"
+_STUDY_PATTERNS = tuple(re.compile(r"^(?:please\s+)?" + root + r"[.!?\s]*$", re.I) for root in (
+    r"plan\s+(?:a\s+)?(?P<duration>" + _STUDY_DURATION + r")\s+homework\s+task\s+(?:for\s+me\s+)?" + _STUDY_TOMORROW,
+    r"find\s+(?:me\s+)?(?:a\s+)?(?P<duration>" + _STUDY_DURATION + r")\s+study\s+(?:slot|timeslot)\s+(?:for\s+me\s+)?" + _STUDY_TOMORROW,
+    r"find\s+(?P<duration>" + _STUDY_DURATION + r")\s+to\s+study\s+" + _STUDY_TOMORROW,
+    r"when\s+can\s+i\s+study\s+for\s+(?P<duration>" + _STUDY_DURATION + r")\s+" + _STUDY_TOMORROW,
+    r"find\s+(?:me\s+)?time\s+(?:for\s+me\s+)?to\s+study\s+" + _STUDY_TOMORROW
+    + r"\s+for\s+(?P<duration>" + _STUDY_DURATION + r")",
+    r"find\s+(?:me\s+)?time\s+(?:for\s+me\s+)?to\s+study\s+" + _STUDY_TOMORROW
+    + r"(?:\s+for\s+(?P<topic>[a-z0-9][a-z0-9 -]{0,100}))?",
+))
+
+
+def tomorrow_study_request(text: str | None) -> tuple[int | None, str] | None:
+    """A complete personal availability request, never a write or quoted example."""
+    if not text:
+        return None
+    for pattern in _STUDY_PATTERNS:
+        match = pattern.fullmatch(text.strip())
+        if not match:
+            continue
+        topic = match.groupdict().get("topic") or "study session"
+        if re.search(r"\b(?:and|or|then|also|but|plus|except|followed|no|not|without|"
+                     r"email|text|send|public|web|remind|reminder|reminders|create|add|set|"
+                     r"before|after|at|on|until|minutes?|hours?|am|pm)\b", topic, re.I):
+            return None
+        if match.groupdict().get("topic") and not re.fullmatch(
+                r"(?:(?:a|my|the)\s+)?(?:[a-z0-9-]+\s+){0,3}"
+                r"(?:assignment|homework|exam|quiz|test|project|class|course|math|physics|chemistry|biology)", topic, re.I):
+            return None
+        duration = match.groupdict().get("duration")
+        minutes = None
+        if duration:
+            count = re.match(r"\d+", duration)
+            minutes = int(count.group()) if count else {"a": 60, "an": 60, "one": 60,
+                "two": 120, "three": 180}[duration.split()[0].lower()]
+            if not 1 <= minutes <= 540:
+                return None
+        return minutes, topic
+    return None
+
+
+def _study_reminder_clock(text: str | None, source: str | None) -> str | None:
+    """Consume one complete invitation; partial generic offers cannot grant writes."""
+    if not text or not tomorrow_study_request(source):
+        return None
+    masked = _unquoted(text)
+    if re.search(r"\b(?:don't|do not|never|cannot|can't)\b", masked, re.I):
+        return None
+    status = re.sub(r"\b(i|we)'ve\b", r"\1 have", masked, flags=re.I)
+    if re.search(r"\b(?:i|we)\s+(?:have\s+)?(?:already\s+|just\s+)?"
+                 r"(?:set(?:\s+up)?|created|added|scheduled)\s+(?:the\s+|a\s+|your\s+)?"
+                 r"(?:study\s+|preparation\s+)?reminder\b"
+                 r"|\b(?:your\s+|the\s+)?(?:study\s+)?reminder\s+"
+                 r"(?:(?:is|was|has been)\s+)?(?:already\s+)?(?:set|created|added|scheduled)\b"
+                 r"|(?:^|[.!?]\s+)(?:added|created|scheduled)\s+(?:a\s+|the\s+)?reminder\b", status, re.I):
+        return None
+    invitation = r"(?:would you like me to|do you want me to|want me to|shall i|should i|may i|can i)"
+    offers = list(re.finditer(r"\b" + invitation + r"\b", masked, re.I))
+    if len(offers) != 1:
+        return None
+    match = re.fullmatch(invitation + r"\s+(?:set|add|create)\s+(?:a\s+)?reminder\s+at\s+"
+        r"(?P<clock>\d{1,2}(?::\d{2})?\s*(?:AM|PM))\s+tomorrow\s+"
+        r"(?:so you have time to prep before the study session|to prepare for (?:the\s+)?study session)[.!?\s]*",
+        masked[offers[0].start():], re.I)
+    return match.group("clock") if match else None
+
+
 def _pending_offer(text: str | None) -> PendingOffer | None:
     if not text:
         return None
@@ -862,6 +933,9 @@ def _parse_request(text: str, last_user: str | None = None, *,
     # the caller supplies the preceding user turn. Match only that latest
     # positive note request; unrelated history and tool logs grant nothing.
     current_user = last_user or (recent_users[-1] if recent_users else None)
+    dated_assent = re.fullmatch(r"(?:yes|sure|okay)[,\s]+(?:on\s+)?(\d{4}-\d{2}-\d{2})[.!?\s]*", text.strip(), re.I)
+    study_clock = (_study_reminder_clock(last_assistant, current_user)
+                   if acknowledgement or dated_assent else None)
     matching_note_offer = bool(
         current_user and pending_offer and not pending_offer.delivery
         and _local_effect(current_user) == "create_note"
@@ -951,10 +1025,16 @@ def _parse_request(text: str, last_user: str | None = None, *,
     if query and any(not clause.negated and clause.action is None for clause in continuations):
         clarification = "Please clarify the separate action to perform after the public lookup."
     write_intent = delivery is not None or bool(continuations)
+    if study_clock or dated_assent:
+        # A qualified assent cannot fall back to generic "sure" retrieval if
+        # its single study proposition was rejected or no context matched.
+        acknowledgement_without_offer = not bool(study_clock)
+        provenance, query, clarification = Provenance.PRIVATE, None, None
     return WebRequest(source, clauses, explicit, current, opted_out, provenance, public,
                       independent, inherited, scopes, delivery, query, continuations, write_intent, clarification,
                       acknowledgement_without_offer, cancelled, composed.presentations, pending_offer,
-                      confirmed_local_request, standalone_offer)
+                      confirmed_local_request, standalone_offer, study_clock,
+                      dated_assent.group(1) if dated_assent and study_clock else None)
 
 
 def classify(text: str, last_user: str | None = None, *,
