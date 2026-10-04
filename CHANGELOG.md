@@ -2,20 +2,11 @@
 
 All notable changes to Wisp are documented here.
 
-## [1.2.0] - Unreleased
-
-### Fixed
-
-- Tomorrow planning now recognizes common spellings and phrases such as “any plans for tommorow?” and “what is on my do list tmrow.” Agenda reads use the exact next day; to-do requests check Calendar, Reminders, recent Messages, email and Notes before answering. Answers receive an explicit target date and use current source results instead of stale conversation memories, while preserving source exclusions.
-
-### Added
-
-- Added a local Codex/Claude coworker mailbox with correlated agent replies, acknowledgments and duplicate-delivery protection. All Git Worktrees share it without a background service or model polling.
-
 ## [Unreleased]
 
 ### Added
 
+- Added a local Codex/Claude coworker mailbox with correlated agent replies, acknowledgments and duplicate-delivery protection. All Git Worktrees share it without a background service or model polling.
 - Added a confirmation step for shell commands that delete irreversibly — recursive deletes, wildcard deletes, and their equivalents. These now always show the exact command for approval, in every access mode including full access, and cannot be pre-approved with "always allow". Deleting a single named file still runs without prompting.
 - Added a move action for files and folders, so reorganizing, sorting, and filing things away no longer depends on shell commands. It creates the destination folder as needed and refuses to overwrite anything that already exists.
 - Added router-direct dispatch: when a routing rule resolves a tool call in full — name and arguments both — Wisp now runs it before the first model call instead of spending a model step re-deriving it. Covers zero-argument device reads, calendar-only lookups with the window resolved in Python, and unqualified inbox or message summaries.
@@ -38,6 +29,7 @@ All notable changes to Wisp are documented here.
 
 ### Fixed
 
+- Tomorrow planning now recognizes common spellings and phrases such as “any plans for tommorow?” and “what is on my do list tmrow.” Agenda reads use the exact next day; to-do requests check Calendar, Reminders, recent Messages, email and Notes before answering. Answers receive an explicit target date and use current source results instead of stale conversation memories, while preserving source exclusions.
 - Fixed reorganizing files being able to delete them. Wisp had no way to move a file, so a request to tidy a folder fell back to raw shell and could remove the originals instead of relocating them. Moving is now a first-class action, and it cannot delete anything.
 - Fixed message summaries hiding entire conversations. The recent view took the newest messages across all chats at once, so a single busy group chat could fill the whole window and quieter threads never reached the summary. Recent messages are now sampled per conversation, and any conversation still left out is named rather than silently dropped.
 - Fixed inbox summaries implying they covered everything. A summary of the most recent mail now says how much of the inbox it actually looked at, and how to ask for more.
