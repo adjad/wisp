@@ -1702,6 +1702,48 @@ def test_a_failing_stat_is_refused_with_the_unqualified_reason(trees, error):
         assert verdict(lambda: make_production(tree, TRUST_ALL)._qualified_tree(tree.root)) == REFUSED
 
 
+def _as_foreign_owner(info):
+    values = list(info)
+    values[4] = info.st_uid + 1
+    return os.stat_result(values)
+
+
+class _ForeignOwnerEntry(_BrokenEntry):
+    """Reports the entry as owned by another account (chown needs root, so it is simulated)."""
+
+    def stat(self, *args, **kwargs):
+        return _as_foreign_owner(self.real.stat(*args, **kwargs))
+
+
+@pytest.mark.parametrize('kind', ['production', 'oracle'])
+@pytest.mark.parametrize('victim,expected', [('pkg/link.py', REFUSED), ('pkg/sub', REFUSED), ('module.py', REFUSED)])
+def test_an_entry_owned_by_another_account_is_refused_even_when_it_is_a_symlink(trees, kind, victim, expected):
+    """The uid test runs on symlinks too (the symlink branch of qualify), for both walkers."""
+    tree = trees()
+    base_content(tree)
+    os.symlink(tree.root / 'module.py', tree.root / 'pkg/link.py')
+    authority = (make_production if kind == 'production' else make_oracle)(tree, TRUST_ALL)
+    target = tree.root / victim
+    if kind == 'oracle':
+        original = pathlib.Path.lstat
+
+        def lstat(self, *args, **kwargs):
+            info = original(self, *args, **kwargs)
+            return _as_foreign_owner(info) if self == target else info
+        patch = mock.patch.object(pathlib.Path, 'lstat', lstat)
+    else:
+        original = os.scandir
+
+        def scandir(path='.'):
+            if os.fspath(path) == str(target.parent):
+                with original(path) as listing:
+                    return _Listed([_ForeignOwnerEntry(e, None) if e.path == str(target) else e for e in listing])
+            return original(path)
+        patch = mock.patch.object(os, 'scandir', scandir)
+    with patch:
+        assert verdict(lambda: authority._qualified_tree(tree.root)) == expected
+
+
 def test_a_failing_listing_is_skipped_like_rglob_does(trees):
     """F3: a directory whose listing raises OSError is skipped silently, as rglob does."""
     tree = trees()
