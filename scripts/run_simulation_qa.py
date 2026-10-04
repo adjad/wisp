@@ -227,6 +227,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_credential_redaction.py",
     # In-process approvers and endpoint calls only; no sockets or real actions.
     "tests/test_approval_routing.py",
+    # Stand-in model loop and executor; the real stream/runner cancellation wiring only.
+    "tests/test_agent_disconnect.py",
+    # Pure identity/port policy; the shell checks skip where spawning is forbidden.
+    "tests/test_backend_identity_and_sandbox_isolation.py",
+    # Environment-variable echo only; no server, socket or process.
+    "tests/test_identity_launch_nonce.py",
     "tests/test_backend_ownership_no_disk_receipt.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
@@ -308,6 +314,7 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/source-sync-label-contract": "native/source-sync-label-compile",
     "native/settings-response-contract": "native/settings-response-compile",
     "native/port-guard-contract": "native/port-guard-compile",
+    "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
 }
 
@@ -575,6 +582,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
+    backend_trust = str(build_dir / "backend-trust")
     return [
         (
             "native/mail-reply-contract",
@@ -655,6 +663,18 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/port-guard-contract", [port_guard]),
+        (
+            "native/backend-trust-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/PortGuard.swift",
+                "app/Sources/WispApp/BackendOwnership.swift",
+                "app/Sources/WispApp/BackendTrust.swift",
+                "tests/BackendTrustChecks.swift", "-o", backend_trust,
+            ],
+        ),
+        ("native/backend-trust-contract", [backend_trust]),
         (
             "native/reminders-policy-compile",
             [

@@ -242,12 +242,24 @@ final class BackendManager {
     }
 
     /// A framework Python re-executes itself at startup, which changes the executable
-    /// path the kernel reports but not the pid or start time. Once the backend answers,
-    /// re-record that path for the SAME incarnation (never for a different process).
+    /// path the kernel reports but not the pid or start time. The readiness probe is itself
+    /// gated on that path matching, so the path is re-recorded BEFORE every probe, not after
+    /// a healthy answer: for the SAME incarnation only, never for a different process.
     private func refreshLaunchReceipt(pid: Int32) {
-        guard let start = BackendOwnership.startTime(pid: pid),
-              let path = PortGuard.executablePath(pid: pid) else { return }
-        receiptStore.refreshExecutablePath(pid: pid, start: start, executablePath: path)
+        _ = Self.refreshReceipt(receiptStore, pid: pid)
+    }
+
+    /// Re-records the executable path for the receipt's own pid and kernel start time and
+    /// nothing else: a different pid, a different start time (a reused pid), unreadable
+    /// facts, a relative path, or no launch recorded all change nothing (fail closed).
+    @discardableResult
+    nonisolated static func refreshReceipt(
+        _ store: BackendLaunchReceiptStore, pid: Int32,
+        start: (Int32) -> BackendOwnership.StartTime? = BackendOwnership.startTime(pid:),
+        path: (Int32) -> String? = PortGuard.executablePath(pid:)
+    ) -> Bool {
+        guard let begun = start(pid), let current = path(pid) else { return false }
+        return store.refreshExecutablePath(pid: pid, start: begun, executablePath: current)
     }
 
     /// Something that is not our backend answers on the port: start nothing, signal
@@ -338,6 +350,7 @@ final class BackendManager {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             guard enforceCredentialState() else { return false }
+            refreshLaunchReceipt(pid: process.processIdentifier)
             let healthy = await isHealthy()
             guard enforceCredentialState() else { return false }
             if !process.isRunning { return false }
