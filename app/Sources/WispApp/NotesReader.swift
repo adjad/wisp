@@ -10,6 +10,11 @@ import Foundation
 final class NotesReader {
     private var timer: Timer?
     private var inFlight = false
+    // A request that arrives while a read is running cannot be satisfied by it:
+    // that read started before the request and holds an older view of Notes.
+    // Remember the request and run one more read when the current one ends.
+    private var rerunRequested = false
+    private let stateLock = NSLock()
     private let dbReader = NotesDBReader()
 
     // Same FS/RS control-character delimiters as MailReader's raw script — a
@@ -49,13 +54,13 @@ final class NotesReader {
     // part, and note bodies are personal content worth minimizing how long
     // they sit resident in the backend (see notes_tools.py's TTL purge).
     func start() {
-        sync()
+        syncIfIdle()
         for d in [3.0, 8.0, 15.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in self?.sync() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in self?.syncIfIdle() }
         }
         DispatchQueue.main.async { [weak self] in
             self?.timer = Timer.scheduledTimer(withTimeInterval: 86400, repeats: true) { _ in
-                self?.sync()
+                self?.syncIfIdle()
             }
         }
     }
@@ -68,46 +73,79 @@ final class NotesReader {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.Notes" }
     }
 
-    func sync() {
-        // Coalesce duplicate requests instead of running two AppleScript walks
-        // over Notes at once — same reasoning as MailReader.sync.
-        guard !inFlight else { return }
+    /// Warm-up and daily reads: duplicates are dropped while a read is running.
+    func syncIfIdle() {
+        stateLock.lock()
+        if inFlight { stateLock.unlock(); return }
         inFlight = true
+        stateLock.unlock()
+        run()
+    }
+
+    /// On-demand read for a lookup. If one is already running, a further read
+    /// is queued behind it so the backend can tell a post that started after
+    /// the request (fresh) from the in-flight one (older).
+    func sync() {
+        stateLock.lock()
+        if inFlight {
+            rerunRequested = true
+            stateLock.unlock()
+            return
+        }
+        inFlight = true
+        stateLock.unlock()
+        run()
+    }
+
+    private func run() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            defer { self?.inFlight = false }
             guard let self else { return }
-            guard self.isNotesRunning() else {
-                // Notes isn't open — read straight from its on-disk store
-                // instead of launching it. See NotesDBReader.
-                if let raw = self.dbReader.readNotes() {
-                    self.post(raw: raw)
-                } else {
-                    self.post(raw: "", available: false,
-                              reason: "Notes is closed and its local store is not readable. Open Notes or check Full Disk Access.")
-                }
-                return
-            }
-            guard let s = NSAppleScript(source: self.script) else {
-                self.post(raw: "", available: false, reason: "The Notes reader could not start.")
-                return
-            }
-            var err: NSDictionary?
-            let result = s.executeAndReturnError(&err)
-            if err != nil {
-                self.post(raw: "", available: false, reason: "Notes did not respond. Check Wisp’s Notes Automation access.")
-                return
-            }
-            self.post(raw: result.stringValue ?? "")
+            self.read(snapshotStartedAt: Date().timeIntervalSince1970)
+            self.stateLock.lock()
+            let again = self.rerunRequested
+            self.rerunRequested = false
+            if !again { self.inFlight = false }
+            self.stateLock.unlock()
+            if again { self.run() }
         }
     }
 
-    private func post(raw: String, available: Bool = true, reason: String = "") {
+    private func read(snapshotStartedAt: Double) {
+        guard self.isNotesRunning() else {
+            // Notes isn't open — read straight from its on-disk store
+            // instead of launching it. See NotesDBReader.
+            if let raw = self.dbReader.readNotes() {
+                self.post(snapshotStartedAt: snapshotStartedAt, raw: raw)
+            } else {
+                self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false,
+                          reason: "Notes is closed and its local store is not readable. Open Notes or check Full Disk Access.")
+            }
+            return
+        }
+        guard let s = NSAppleScript(source: self.script) else {
+            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "The Notes reader could not start.")
+            return
+        }
+        var err: NSDictionary?
+        let result = s.executeAndReturnError(&err)
+        if err != nil {
+            self.post(snapshotStartedAt: snapshotStartedAt, raw: "", available: false, reason: "Notes did not respond. Check Wisp’s Notes Automation access.")
+            return
+        }
+        self.post(snapshotStartedAt: snapshotStartedAt, raw: result.stringValue ?? "")
+    }
+
+    private func post(snapshotStartedAt: Double, raw: String, available: Bool = true, reason: String = "") {
         let url = WispClient.baseURL.appendingPathComponent("assistant/sync/notes")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try? JSONSerialization.data(withJSONObject: [
-            "raw": raw, "diagnostics": ["available": available, "reason": reason],
+            "raw": raw,
+            // When the native read began: the backend accepts a post as proof of
+            // freshness only if this is later than its refresh request.
+            "diagnostics": ["available": available, "reason": reason,
+                            "snapshot_started_at": snapshotStartedAt],
         ])
         URLSession.shared.dataTask(with: req).resume()
     }

@@ -40,6 +40,7 @@ All notable changes to Wisp are documented here.
 - Fixed realistic examples in summary prompts being copied as fabricated events or message details by replacing them with non-content placeholders.
 - Fixed unread bullets and message-routing markers leaking from prompt context into rendered summaries.
 - Fixed message-summary failures from preventing calendar and email sections from being generated.
+- Fixed a freshly created Note not being found while an unrelated old record surfaced. A lookup for a named topic now needs every significant word to match (in a Note or a remembered conversation) instead of any one, a miss reports that no matching Note exists rather than showing unrelated recent ones, and Wisp asks the app for a fresh Notes read before answering. The reply states whether Notes was just re-read, or only a snapshot of a stated age was searched, and never claims a Note is absent when that snapshot may be out of date.
 
 ### Validation
 

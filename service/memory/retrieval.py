@@ -14,7 +14,33 @@ def _in_scope(text, query):
     return not scope or scope[1].casefold() in {t.casefold() for t in terms(query)}
 
 
-def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15):
+def _stem(term):
+    return term[:-1] if len(term) > 3 and term.endswith('s') else term
+
+
+def all_terms_match(query, text):
+    """True when EVERY significant term of `query` appears in `text`.
+
+    Terms are the same significant words the OR search uses (stopwords such as
+    'for', 'the' and 'what' are dropped), matched in any order and not
+    necessarily adjacent, as whole-word prefixes so 'order' finds 'orders' but
+    not 'border'.
+    """
+    wanted = terms(query)
+    if not wanted:
+        return False
+    words = re.findall(r'\w+', text.casefold())
+    return all(any(w.startswith(_stem(t)) for w in words) for t in wanted)
+
+
+# Strict mode asks the OR index for a wider candidate pool, then keeps only the
+# rows containing every term. bm25 ranks a passage holding all the terms above
+# one holding a single common word, so the pool does not need to be unbounded.
+_STRICT_POOL = 50
+
+
+def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=15, strict=False):
+    """`strict=True` is opt-in: every significant term must match, not any one."""
     if facts is None:
         from service.memory.facts import store as facts
     if sessions is None:
@@ -22,9 +48,13 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     from service.memory.queue import MemoryQueue
     from service.memory.capture import current_source
     source = current_source.get() or {}
-    rows = facts.search(query, limit) if query.strip() else facts.all(limit)
-    passages = MemoryQueue(sessions).search(query, facts, limit, user_only=True,
+    pool = max(limit, _STRICT_POOL) if strict and query.strip() else limit
+    rows = facts.search(query, pool) if query.strip() else facts.all(limit)
+    passages = MemoryQueue(sessions).search(query, facts, pool, user_only=True,
         exclude_session=source.get('session_id', '')) if include_passages and terms(query) else []
+    if strict and query.strip():
+        rows = [r for r in rows if all_terms_match(query, r['text'])][:limit]
+        passages = [r for r in passages if all_terms_match(query, r['text'])][:limit]
     passages = [r for r in passages if 'prefer' not in r['text'].casefold() or _in_scope(r['text'], query)]
     # A changed/deleted source is not valid evidence even if its old FTS text
     # was previously extracted. Explicit/reviewed saves survive source removal.
@@ -49,7 +79,7 @@ def retrieve(query, *, facts=None, sessions=None, include_passages=True, limit=1
     return {'facts': valid, 'passages': passages, 'debug': {
         'provider': 'lexical', 'fact_ids': [r['id'] for r in valid],
         'passage_ids': [f"{r['session_id']}:{r['turn_idx']}" for r in passages],
-        'reason': 'query match' if terms(query) else 'explicit browse',
+        'reason': ('strict query match' if strict else 'query match') if terms(query) else 'explicit browse',
     }}
 
 
