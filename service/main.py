@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any
@@ -41,12 +42,16 @@ from service.config import (
     save_installed_models,
     set_cloud_provider,
     set_local_provider,
+    LOCAL_PROVIDER_ROLES,
+    LOCAL_PROVIDER_TOOL_ROLES,
+    PROVIDER_CONNECTION_ROLES,
     set_role,
     set_roles,
 )
 from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
+from service.inference import qualify as qualification
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -566,59 +571,204 @@ async def probe_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]
         await probe.aclose()
 
 
+# A passing or failing qualification is reused for a few minutes so "Test" then
+# "Connect" in Settings does not repeat a multi-second probe. Keyed by the exact
+# app, model and claimed window; never trusted across those.
+_QUALIFICATION_TTL_SECONDS = 600.0
+_qualification_cache: dict[tuple, tuple[float, qualification.Report, int]] = {}
+# Revocation and publication order. All three are guarded by
+# _local_provider_operation_lock, and that lock is only ever held for the short
+# synchronous sections below, never across an await.
+#   epoch      advanced by an explicit Disconnect; a result measured in an older
+#              epoch is never published, and the cache is emptied with the bump, so
+#              every cached entry belongs to the current epoch.
+#   ticket     handed out when a probe starts; of two probes for the same app only
+#              the newer ticket may leave reusable evidence, whatever order they
+#              finish in. A model-discovery failure takes part too: it is newer
+#              evidence that the app is unusable, so it retires the older entry and
+#              records its ticket, and an older in-flight success then loses.
+#   evidence   (key, epoch, ticket) travels with the report a Connect will save.
+#              The save re-checks it under the lock, so a report that a newer
+#              completed result has superseded can never authorise the save.
+_qualification_epoch = 0
+_qualification_ticket = 0
+_qualification_published: dict[tuple, int] = {}
+
+
+def _revoke_qualification_evidence_unlocked() -> None:
+    """Explicit Disconnect: nothing measured before now may be reused or published later."""
+    global _qualification_epoch
+    _qualification_epoch += 1
+    _qualification_cache.clear()
+    _qualification_published.clear()
+
+
+def _local_provider_probe_args(body: dict[str, Any]) -> tuple[str, int]:
+    model_id = body.get("model_id")
+    context_window = body.get("context_window")
+    if (not isinstance(model_id, str) or not model_id.strip()
+            or isinstance(context_window, bool) or not isinstance(context_window, int)
+            or not 512 <= context_window <= 262144):
+        raise HTTPException(status_code=400,
+                            detail="Choose an exact model ID and a context window.")
+    return model_id.strip(), context_window
+
+
+def _qualification_evidence_current_unlocked(evidence: tuple) -> bool:
+    """Whether a report is still the newest completed evidence for its app."""
+    key, epoch, ticket = evidence
+    return epoch == _qualification_epoch and _qualification_published.get(key, 0) <= ticket
+
+
+async def _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id: str, context_window: int,
+        *, fresh: bool) -> tuple[qualification.Report, tuple]:
+    """Qualify the app and return the report with the identity of its evidence."""
+    global _qualification_ticket
+    key = (provider_endpoint.base_url, provider_endpoint.api_prefix, model_id, context_window)
+    with _local_provider_operation_lock:
+        epoch = _qualification_epoch
+        cached = _qualification_cache.get(key)
+        if cached and not fresh and time.monotonic() - cached[0] < _QUALIFICATION_TTL_SECONDS:
+            return cached[1], (key, epoch, cached[2])
+        _qualification_ticket += 1
+        ticket = _qualification_ticket
+    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id), timeout=30)
+    discovery_failure = ""
+    try:
+        try:
+            if model_id not in await probe.models():
+                discovery_failure = "The local app did not return that exact model ID."
+        except Exception:
+            discovery_failure = "The local inference app did not return a model list."
+        if discovery_failure:
+            with _local_provider_operation_lock:
+                # This attempt is now the newest word on the app and it says "unusable":
+                # retire any older success and record the ticket so an older in-flight
+                # probe cannot publish over it. Nothing is cached as a failure, so a
+                # transient discovery error cannot block Connect once the app recovers.
+                # Done HERE, before the awaited cleanup below, so a cleanup that raises
+                # or is cancelled cannot leave the older success reusable. A
+                # cancellation during discovery itself records nothing: it is not
+                # evidence about the app.
+                if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+                    _qualification_cache.pop(key, None)
+                    _qualification_published[key] = ticket
+    finally:
+        try:
+            await probe.aclose()
+        except Exception:
+            # A cleanup error must not replace a failure that is already known (and
+            # already recorded above); with no known failure it still propagates.
+            if not discovery_failure:
+                raise
+    if discovery_failure:
+        raise HTTPException(status_code=400, detail=discovery_failure)
+    report = await qualification.qualify(provider_endpoint, model_id, context_window)
+    with _local_provider_operation_lock:
+        # The caller always gets its own report. It becomes reusable evidence only if
+        # no Disconnect happened while it was measured and no newer probe of the same
+        # app has already published.
+        if epoch == _qualification_epoch and ticket > _qualification_published.get(key, 0):
+            _qualification_cache[key] = (time.monotonic(), report, ticket)
+            _qualification_published[key] = ticket
+    return report, (key, epoch, ticket)
+
+
+async def _qualify_local_provider(provider_endpoint, model_id: str, context_window: int,
+                                  *, fresh: bool) -> qualification.Report:
+    report, _evidence = await _qualify_local_provider_with_evidence(
+        provider_endpoint, model_id, context_window, fresh=fresh)
+    return report
+
+
+@app.post("/inference/local-provider/qualify")
+async def qualify_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
+    """Measure the app's real context window and exercise tool calling.
+
+    Read-only with respect to settings: nothing is saved here. Every prompt is
+    synthetic; no user data is read or sent.
+    """
+    _, provider_endpoint = _local_provider_endpoint(body)
+    model_id, context_window = _local_provider_probe_args(body)
+    report = await _qualify_local_provider(provider_endpoint, model_id, context_window, fresh=True)
+    return {**report.as_dict(), "minimum_context": qualification.MIN_TOOL_CONTEXT,
+            "recommended_context": qualification.RECOMMENDED_CONTEXT}
+
+
 @app.post("/inference/local-provider")
 async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, Any]:
     endpoint_cfg, provider_endpoint = _local_provider_endpoint(body)
-    model_id = body.get("model_id")
-    context_window = body.get("context_window")
+    model_id, context_window = _local_provider_probe_args(body)
     roles = body.get("roles")
-    if (not isinstance(model_id, str) or not model_id.strip()
-            or isinstance(context_window, bool) or not isinstance(context_window, int)
-            or not 512 <= context_window <= 262144
-            or roles != ["reasoning"]):
+    if (not isinstance(roles, list) or not roles or len(set(roles)) != len(roles)
+            or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
         raise HTTPException(status_code=400,
-                            detail="Choose an exact model ID and the Reasoning workload.")
+                            detail="Choose Reasoning, Agent, or Coding for this app.")
     generation = _supersede_local_provider_probe()
-    probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id.strip(),
-                                     context_window=context_window), timeout=30)
+    qualified_report: dict[str, Any] | None = None
+    evidence: tuple | None = None
     try:
-        async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
-            try:
-                available = await probe.models()
-                if model_id.strip() not in available:
-                    raise HTTPException(status_code=400,
-                                        detail="The local app did not return that exact model ID.")
-                completed = False
-                content_parts: list[str] = []
-                final_content = ""
-                async for event in probe.stream_events(
-                        model_id.strip(), [{"role": "user", "content": "Reply with OK."}],
-                        max_tokens=min(64, context_window)):
-                    if event.get("kind") == "content" and isinstance(event.get("text"), str):
-                        content_parts.append(event["text"])
-                    elif event.get("kind") == "final":
-                        completed = True
-                        message = event.get("message")
-                        if isinstance(message, dict) and isinstance(message.get("content"), str):
-                            final_content = message["content"]
-            finally:
-                await probe.aclose()
-        if deadline.expired():
-            raise HTTPException(status_code=504,
-                                detail="The local inference app connection test timed out.")
-        if not completed or not ("".join(content_parts) + final_content).strip():
-            raise HTTPException(status_code=400,
-                                detail="The local app did not return a nonempty streaming reply.")
+        if LOCAL_PROVIDER_TOOL_ROLES & set(roles):
+            # The SERVER decides whether tool use is allowed, from its own probe.
+            report, evidence = await _qualify_local_provider_with_evidence(
+                provider_endpoint, model_id, context_window, fresh=False)
+            if not report.qualified:
+                failed = next((c for c in report.checks if c.required and not c.ok), None)
+                detail = " ".join(part for part in (
+                    failed.detail if failed else "", report.hint) if part)
+                raise HTTPException(status_code=400, detail=(
+                    "This app can't run Wisp's tools yet. " + detail).strip())
+            qualified_report = report.as_dict()
+        else:
+            probe = OMLXClient(target=Target("connection-test", provider_endpoint, model_id,
+                                             context_window=context_window), timeout=30)
+            async with asyncio.timeout(_LOCAL_PROVIDER_PROBE_TIMEOUT_SECONDS) as deadline:
+                try:
+                    available = await probe.models()
+                    if model_id not in available:
+                        raise HTTPException(status_code=400,
+                                            detail="The local app did not return that exact model ID.")
+                    completed = False
+                    content_parts: list[str] = []
+                    final_content = ""
+                    async for event in probe.stream_events(
+                            model_id, [{"role": "user", "content": "Reply with OK."}],
+                            max_tokens=min(64, context_window)):
+                        if event.get("kind") == "content" and isinstance(event.get("text"), str):
+                            content_parts.append(event["text"])
+                        elif event.get("kind") == "final":
+                            completed = True
+                            message = event.get("message")
+                            if isinstance(message, dict) and isinstance(message.get("content"), str):
+                                final_content = message["content"]
+                finally:
+                    await probe.aclose()
+            if deadline.expired():
+                raise HTTPException(status_code=504,
+                                    detail="The local inference app connection test timed out.")
+            if not completed or not ("".join(content_parts) + final_content).strip():
+                raise HTTPException(status_code=400,
+                                    detail="The local app did not return a nonempty streaming reply.")
         with _local_provider_operation_lock:
             if generation != _local_provider_operation_generation:
                 raise HTTPException(status_code=409,
                                     detail="A newer inference setting replaced this connection test.")
-            set_local_provider(endpoint_cfg, model_id.strip(), context_window, roles)
+            if evidence is not None and not _qualification_evidence_current_unlocked(evidence):
+                # A newer completed test of this app (pass, fail or failed discovery)
+                # superseded the report this Connect measured; saving it would persist
+                # tool qualification the latest evidence no longer supports.
+                raise HTTPException(status_code=409,
+                                    detail="A newer connection test replaced this result.")
+            set_local_provider(endpoint_cfg, model_id, context_window, roles,
+                               qualification=qualified_report)
     except HTTPException:
         raise
     except TimeoutError:
         raise HTTPException(status_code=504,
                             detail="The local inference app connection test timed out.") from None
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from None
     except Exception:
         raise HTTPException(status_code=400,
                             detail="The local inference app could not be reached.") from None
@@ -629,6 +779,7 @@ async def connect_local_provider_inference(body: dict[str, Any]) -> dict[str, An
 async def disconnect_local_provider_inference() -> dict[str, Any]:
     with _local_provider_operation_lock:
         _supersede_local_provider_probe_unlocked()
+        _revoke_qualification_evidence_unlocked()
         disable_local_provider()
     return await get_local_provider_inference()
 
@@ -637,7 +788,10 @@ async def disconnect_local_provider_inference() -> dict[str, Any]:
 async def config(body: dict[str, Any]) -> dict[str, Any]:
     role, model = body.get("role"), body.get("model")
     if role and model:
-        if role == "reasoning":
+        if role in PROVIDER_CONNECTION_ROLES:
+            # A pending provider connection will rewrite these bindings when it saves.
+            # Supersede it under the same lock as the new choice, so the older
+            # connection fails its generation check instead of undoing this one.
             with _local_provider_operation_lock:
                 _supersede_local_provider_probe_unlocked()
                 set_role(role, model)
@@ -1096,6 +1250,15 @@ async def agent(body: dict[str, Any]):
             )
             if sess and active_skill != str(sess.get("active_skill") or ""):
                 store.set_active_skill(sid, active_skill)
+            # Skills stay on the managed model. Beyond an active conversational
+            # workflow, that covers a turn that invokes ANY enabled skill (an
+            # explicit @name or a trigger phrase) and the follow-up to a turn that
+            # loaded a skill with use_skill or ran a skill-defined tool.
+            skill_turn = ""
+            if active_skill:
+                skill_turn = "active_skill_local"
+            elif skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools):
+                skill_turn = "skill_local"
 
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
@@ -1330,13 +1493,24 @@ async def agent(body: dict[str, Any]):
                 target = role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
-            if active_skill and target.endpoint.name == "local_provider":
+            if not skill_turn:
+                # A route that forces a skill-content tool (for example "list my installed
+                # skills" forcing wisp_skills) is a skill turn too, even though the prompt
+                # triggers no skill: its answer is skill metadata. A broad default menu that
+                # merely CONTAINS use_skill is not.
+                _skill_tools = skills.skill_tool_names()
+                _subset = set(decision.tool_subset or ())
+                if (decision.force_first_tool in _skill_tools
+                        or (_subset and _subset <= _skill_tools)):
+                    skill_turn = "skill_local"
+            if skill_turn and target.endpoint.name == "local_provider":
                 # A skill may contain local file content or private workflow state.
                 # Keep its instructions and execution on the managed model.
                 target = local_role_target(decision.role)
                 decision.model = target.model
-                decision.route_source = "active_skill_local"
-                decision.reason = f"{decision.reason}; active skill stays on this Mac"
+                decision.route_source = skill_turn
+                decision.reason = (f"{decision.reason}; "
+                                   f"{'active skill' if active_skill else 'skill'} stays on this Mac")
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -1815,8 +1989,16 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
             "confidence": 1.0,
         })
     from service.assistant.today import RevisionConflict
+    # Reminders only: incomplete reminders with no due date ride along as a separate list.
+    # A missing or invalid payload is None, which leaves the stored list untouched, so it
+    # reads as stale until a valid one arrives; the dated part is still accepted.
+    from service.assistant.store import parse_undated_snapshot
+    undated = (parse_undated_snapshot(body.get("undated"), body.get("undated_total"))
+               if source == "reminders" else None)
     try:
-        n = assistant_store.sync_source(source, items, diagnostics=diagnostics)
+        # One call, one transaction: the dated rows, the receipt and the undated list
+        # commit together or not at all.
+        n = assistant_store.sync_source(source, items, diagnostics=diagnostics, undated=undated)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})

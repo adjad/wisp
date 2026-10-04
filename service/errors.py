@@ -30,6 +30,8 @@ _RetryHook = Callable[[], Awaitable[None]] | None
 def translate(exc: Exception, *, retry_omlx: _RetryHook = None, endpoint_name: str = "local") -> tuple[str, str]:
     """Returns (message shown to the user, raw detail for the debug export)."""
     detail = f"{type(exc).__name__}: {exc}"
+    # Endpoint names are internal identifiers; the user sees what the app is.
+    endpoint_name = {"local_provider": "local app"}.get(endpoint_name, endpoint_name)
 
     if isinstance(exc, ModelLoadError):
         # Already a plain, specific message. A machine reason code (for example

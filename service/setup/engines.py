@@ -1,7 +1,8 @@
 """Inference apps Wisp knows how to talk to, and detection of the ones running.
 
-Only oMLX runs the whole assistant, including the tool loop. Other OpenAI-
-compatible apps on a loopback port can serve chat and reasoning; Wisp will not
+oMLX runs the whole assistant out of the box. Other OpenAI-compatible apps on a
+loopback port serve chat and reasoning, and can also run the tool loop once they
+pass Wisp's tool-calling test (see service/inference/qualify.py): Wisp will not
 route tool calls to a model it has not qualified. Detection is read-only: it
 asks a fixed set of 127.0.0.1 ports for their model list and nothing else.
 """
@@ -41,18 +42,18 @@ OMLX = EngineProfile(
 
 EXTERNAL_ENGINES = (
     EngineProfile("ollama", "Ollama", 11434, False,
-                  "Chat and reasoning. Tool use stays on oMLX.",
+                  "Chat and reasoning; tools too once it passes Wisp's test (needs a 16k+ context).",
                   "Start it with `ollama serve`, then pull a model.", "https://ollama.com"),
     EngineProfile("lmstudio", "LM Studio", 1234, False,
-                  "Chat and reasoning. Tool use stays on oMLX.",
+                  "Chat and reasoning; tools too once it passes Wisp's test (needs a 16k+ context).",
                   "Load a model, then start the local server from LM Studio's Developer tab.",
                   "https://lmstudio.ai"),
     EngineProfile("llamacpp", "llama.cpp", 8080, False,
-                  "Chat and reasoning. Tool use stays on oMLX.",
+                  "Chat and reasoning; tools too once it passes Wisp's test (needs a 16k+ context).",
                   "Run `llama-server -m model.gguf --port 8080`.",
                   "https://github.com/ggml-org/llama.cpp"),
     EngineProfile("mtplx", "MTPLX", None, False,
-                  "Chat and reasoning. MTPLX defaults to port 8000, which oMLX and Wisp use, "
+                  "Chat and reasoning; tools too once it passes Wisp's test. MTPLX defaults to port 8000, which oMLX and Wisp use, "
                   "so start it on a different port and connect it as an OpenAI-compatible app.",
                   "Start it on another port (see `mtplx start --help`), then connect it under “Other OpenAI-compatible app” below.",
                   "https://github.com/youssofal/MTPLX"),
