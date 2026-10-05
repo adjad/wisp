@@ -1,0 +1,96 @@
+{
+ "python": "3.14.3",
+ "client_local": [
+  "127.0.0.1",
+  57222
+ ],
+ "server_port": 57221,
+ "server_native": [
+  [
+   3,
+   {
+    "ret": 792,
+    "fi_status": 2,
+    "type": 1,
+    "proto": 6,
+    "family": 2,
+    "kind": 2,
+    "fport_raw": 0,
+    "lport_raw": 34271,
+    "fport": 0,
+    "lport": 57221,
+    "gencnt": 11404490,
+    "vflag": 1,
+    "faddr": "0.0.0.0",
+    "laddr": "127.0.0.1",
+    "state": 1
+   }
+  ],
+  [
+   4,
+   {
+    "ret": 792,
+    "fi_status": 2,
+    "type": 1,
+    "proto": 6,
+    "family": 2,
+    "kind": 2,
+    "fport_raw": 34527,
+    "lport_raw": 34271,
+    "fport": 57222,
+    "lport": 57221,
+    "gencnt": 11404494,
+    "vflag": 1,
+    "faddr": "127.0.0.1",
+    "laddr": "127.0.0.1",
+    "state": 4
+   }
+  ]
+ ],
+ "server_lsof": [
+  {
+   "fd": 3,
+   "n": "127.0.0.1:57221;",
+   "T": "ST=LISTEN;"
+  },
+  {
+   "fd": 4,
+   "n": "127.0.0.1:57221->127.0.0.1:57222;",
+   "T": "ST=ESTABLISHED;"
+  }
+ ],
+ "client_native": {
+  "ret": 792,
+  "fi_status": 2,
+  "so": 16528386910090809523,
+  "type": 1,
+  "proto": 6,
+  "family": 2,
+  "kind": 2,
+  "fport_raw": 34271,
+  "lport_raw": 34527,
+  "fport": 57221,
+  "lport": 57222,
+  "gencnt": 11404492,
+  "vflag": 1,
+  "faddr": "127.0.0.1",
+  "laddr": "127.0.0.1",
+  "state": 4
+ },
+ "shared_baseline": 2,
+ "shared_after_dup": 3,
+ "shared_after_undup": 2,
+ "shared_after_fork": 3,
+ "client_shared_after_dup": 3,
+ "client_shared_after_close": 2,
+ "native_check_ms_p50_p95_max": [
+  0.0272,
+  0.0356,
+  0.1948
+ ],
+ "lsof_p_ms_p50": 13.63,
+ "pid1_listfds": {
+  "ok": false,
+  "errno": 1
+ }
+}

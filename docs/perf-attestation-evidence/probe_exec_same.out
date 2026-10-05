@@ -1,0 +1,3 @@
+{"label": "bash -> exec /bin/bash (same binary, new argv)", "changed": [], "bsd_changed": []}
+{"bsd": {"flags": "0x1404010", "ppid": 78998, "uid": [501, 501, 501], "comm": "bash", "name": "bash", "start": [1791239846, 707316]}, "path": "/bin/bash", "cs_flags": "0x26010b01", "cdhash": "fb6115632b45a8492f329243df6ad31230917d74", "identity": "com.apple.bash"}
+{"bsd": {"flags": "0x1404010", "ppid": 78998, "uid": [501, 501, 501], "comm": "bash", "name": "bash", "start": [1791239846, 707316]}, "path": "/bin/bash", "cs_flags": "0x26010b01", "cdhash": "fb6115632b45a8492f329243df6ad31230917d74", "identity": "com.apple.bash"}

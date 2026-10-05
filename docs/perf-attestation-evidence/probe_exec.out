@@ -1,0 +1,131 @@
+{
+ "python": "3.14.3",
+ "exec_other_binary": {
+  "label": "sh -> exec /bin/sleep",
+  "before": {
+   "bsd": {
+    "flags": "0x1404010",
+    "ppid": 78790,
+    "uid": [
+     501,
+     501,
+     501
+    ],
+    "comm": "bash",
+    "name": "bash",
+    "start": [
+     1791239835,
+     632479
+    ]
+   },
+   "path": "/bin/bash",
+   "cs_flags": "0x26010b01",
+   "cdhash": "fb6115632b45a8492f329243df6ad31230917d74",
+   "identity": "com.apple.bash"
+  },
+  "after": {
+   "bsd": {
+    "flags": "0x21404010",
+    "ppid": 78790,
+    "uid": [
+     501,
+     501,
+     501
+    ],
+    "comm": "sleep",
+    "name": "sleep",
+    "start": [
+     1791239835,
+     632479
+    ]
+   },
+   "path": "/bin/sleep",
+   "cs_flags": "0x26011b11",
+   "cdhash": "759ea4cd3423620b47aebb0f0506260e57c734ff",
+   "identity": "com.apple.sleep"
+  },
+  "changed": [
+   "bsd",
+   "cdhash",
+   "cs_flags",
+   "identity",
+   "path"
+  ],
+  "bsd_changed": [
+   "comm",
+   "flags",
+   "name"
+  ]
+ },
+ "exec_same_binary": {
+  "label": "sh -> exec /bin/sh (same binary, new argv)",
+  "before": {
+   "bsd": {
+    "flags": "0x1404010",
+    "ppid": 78790,
+    "uid": [
+     501,
+     501,
+     501
+    ],
+    "comm": "bash",
+    "name": "bash",
+    "start": [
+     1791239836,
+     142141
+    ]
+   },
+   "path": "/bin/bash",
+   "cs_flags": "0x26010b01",
+   "cdhash": "fb6115632b45a8492f329243df6ad31230917d74",
+   "identity": "com.apple.bash"
+  },
+  "after": {
+   "bsd": {
+    "flags": "0x21404010",
+    "ppid": 78790,
+    "uid": [
+     501,
+     501,
+     501
+    ],
+    "comm": "sleep",
+    "name": "sleep",
+    "start": [
+     1791239836,
+     142141
+    ]
+   },
+   "path": "/bin/sleep",
+   "cs_flags": "0x26011b11",
+   "cdhash": "759ea4cd3423620b47aebb0f0506260e57c734ff",
+   "identity": "com.apple.sleep"
+  },
+  "changed": [
+   "bsd",
+   "cdhash",
+   "cs_flags",
+   "identity",
+   "path"
+  ],
+  "bsd_changed": [
+   "comm",
+   "flags",
+   "name"
+  ]
+ },
+ "revalidation_ms_p50_p95_max": [
+  0.063,
+  0.0792,
+  0.8117
+ ],
+ "dead_pid_bsd": null,
+ "codesign_cdhash_sleep": [
+  "CDHash=664dddfa6921b1cb65af604d8701d1906e3abe56"
+ ],
+ "clock": {
+  "monotonic_impl": "mach_absolute_time()",
+  "has_CLOCK_MONOTONIC": true,
+  "CLOCK_MONOTONIC_minus_monotonic_s": 336679.5
+ }
+}

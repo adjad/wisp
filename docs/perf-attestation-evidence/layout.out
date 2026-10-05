@@ -1,0 +1,27 @@
+sizeof(struct proc_fdinfo)=8
+sizeof(struct proc_fileinfo)=24
+sizeof(struct socket_info)=768
+sizeof(struct socket_fdinfo)=792
+sizeof(struct in_sockinfo)=80
+sizeof(struct tcp_sockinfo)=120
+sizeof(struct proc_bsdinfo)=136
+sizeof(struct vinfo_stat)=136
+offsetof(struct socket_fdinfo,pfi.fi_status)=4
+offsetof(struct socket_fdinfo,psi)=24
+offsetof(struct socket_fdinfo,psi.soi_so)=160
+offsetof(struct socket_fdinfo,psi.soi_pcb)=168
+offsetof(struct socket_fdinfo,psi.soi_type)=176
+offsetof(struct socket_fdinfo,psi.soi_protocol)=180
+offsetof(struct socket_fdinfo,psi.soi_family)=184
+offsetof(struct socket_fdinfo,psi.soi_state)=192
+offsetof(struct socket_fdinfo,psi.soi_kind)=256
+offsetof(struct socket_fdinfo,psi.soi_proto)=264
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport)=264
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport)=268
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_gencnt)=272
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_vflag)=288
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_faddr.ina_46.i46a_addr4)=308
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_46.i46a_addr4)=324
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_state)=344
+offsetof(struct socket_fdinfo,psi.soi_proto.pri_tcp.tcpsi_tp)=376
+PROC_PIDLISTFDS=1 PROC_PIDFDSOCKETINFO=3 PROX_FDTYPE_SOCKET=2
