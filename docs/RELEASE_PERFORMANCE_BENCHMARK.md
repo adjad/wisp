@@ -425,7 +425,7 @@ engine runner or automate that approval. The receipt's 24-hour freshness rule st
 job's rebuild. Release diagnostics retain the raw evidence; public downloads remain the app ZIP only.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
-pipeline runs its complete pinned set of 355 cases in a separate sandbox using one parent-held reserved
+pipeline runs its complete pinned set of 360 cases in a separate sandbox using one parent-held reserved
 loopback socket, then imports the exact-SHA report by digest. Its standalone profile permits only the
 canonical selected interpreter (including its exact framework launcher when necessary) and the literal Git
 shim and system-selected native Git executable, source/runtime reads and scratch writes. It grants no shell, compiler or executable directory
@@ -455,3 +455,9 @@ During the guard, `socket.sendfile`, `os.sendfile` and exposed `os.splice` are r
 before their underlying implementations run. Reviewed JSON inference and status requests have no
 file-transfer path, including inside their scoped HTTP capability. Refusals are recorded as blocked
 effects and make the candidate nonpassing; permitted reviewed HTTP requests remain available.
+
+Approval intake requires an externally supplied matching digest and a valid subject SHA/tree.
+Run and check share the binding to the selected verified baseline; the candidate cannot substitute
+for that baseline. An explicitly invalid/unapproved document is refused before measurement
+preflight, environment collection or backend startup. No approval supplied remains a qualification
+run and cannot pass.

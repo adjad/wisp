@@ -946,8 +946,8 @@ def test_approval_that_is_not_digest_bound_or_not_approved_does_not_count(good, 
     assert "approved_baseline_digest_mismatch" in refusal_codes(result)
     proposal = write_approval(tmp_path, good.receipt, status="proposed", approved_by=None)
     code, result = rp.check_receipt(check_opts(good, ctx, approval=proposal))
-    assert code == rp.EXIT_REFUSED and "receipt_verdict_mismatch" in refusal_codes(result)
-    wrong_subject = write_approval(tmp_path, good.receipt, subject={"sha": ctx.cand_sha, "tree": "x"})
+    assert code == rp.EXIT_REFUSED and "approved_baseline_not_approved" in refusal_codes(result)
+    wrong_subject = write_approval(tmp_path, good.receipt, subject={"sha": ctx.cand_sha, "tree": good.receipt["candidate"]["tree"]})
     code, result = rp.check_receipt(check_opts(good, ctx, approval=wrong_subject))
     assert {"baseline_subject_not_the_approved_one", "baseline_equals_candidate"} <= refusal_codes(result)
 
@@ -3887,3 +3887,41 @@ def test_file_transfer_refusal_cannot_be_hidden_by_clean_samples(tmp_path, ctx, 
     code, result = run_check(evd, ctx)
     assert code == rp.EXIT_BLOCK and result["authorizes_release"] is False
     assert evd.receipt["lifecycle"]["candidate"]["blocked_effects"] == 1
+
+
+@pytest.mark.parametrize("case,refusal", [
+    ("missing_digest", "approved_baseline_digest_not_bound"),
+    ("wrong_digest", "approved_baseline_digest_mismatch"),
+    ("wrong_sha", "baseline_subject_not_the_approved_one"),
+    ("wrong_tree", "baseline_tree_not_the_approved_one"),
+    ("wrong_schema", "approved_baseline_wrong_schema"),
+])
+def test_invalid_explicit_approval_refuses_run_before_measurement_and_check(case, refusal, good, ctx, tmp_path):
+    changes = {}
+    if case == "wrong_sha":
+        changes["subject"] = {"sha": ctx.cand_sha, "tree": good.receipt["candidate"]["tree"]}
+    elif case == "wrong_tree":
+        changes["subject"] = {"sha": ctx.base_sha, "tree": "f" * 40}
+    elif case == "wrong_schema":
+        changes["schema"] = "invalid"
+    path, digest = write_approval(tmp_path, good.receipt, **changes)
+    if case == "missing_digest":
+        digest = None
+    elif case == "wrong_digest":
+        digest = "f" * 64
+    state, problems = rp.load_baseline_approval(str(path), digest)
+    if case in ("missing_digest", "wrong_digest", "wrong_schema"):
+        assert state["approved"] is False and refusal in problems
+    deps = ConstructedEvidenceDeps(ctx)
+    def measurement_must_not_start(*a, **k):
+        pytest.fail("invalid approval reached measurement dependencies")
+    for name in ("preflight", "collect_environment", "spawn_backend", "residency", "make_driver", "push_leaves"):
+        setattr(deps, name, measurement_must_not_start)
+    out = tmp_path / "refused-run"
+    opts = {**good.opts, "output_dir": out, "approved_baseline_path": str(path), "approved_baseline_sha256": digest}
+    with pytest.raises(ValueError, match=refusal):
+        asyncio.run(rp.run_release(opts, deps, rp.load_bundle()))
+    assert not out.exists() and deps.spawned == [] and deps.total_calls == 0
+    code, result = rp.check_receipt(check_opts(good, ctx, approval=(path, digest)))
+    assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+    assert refusal in refusal_codes(result)

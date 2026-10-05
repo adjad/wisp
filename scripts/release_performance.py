@@ -2432,35 +2432,59 @@ def raw_manifest(raw_dir: Path) -> dict[str, str]:
 
 
 def load_baseline_approval(path: str | None, expected_sha256: str | None) -> tuple[dict, list[str]]:
-    """Returns (state, refusals). The harness never creates or upgrades an approval; it only reads one."""
-    refusals: list[str] = []
+    """Only a digest-bound, valid reviewed document can produce approved=True."""
+    def invalid(problem, code):
+        return {"approved": False, "problem": problem}, [code]
     if not path:
-        return {"approved": False, "problem": "no approved baseline was supplied"}, refusals
-    target = Path(path)
-    try:
-        raw = evidence_bytes(target, APPROVAL_MAX_BYTES)
-    except FileNotFoundError:
-        return {"approved": False, "problem": f"approved baseline file is missing: {path}"}, refusals
-    except (OSError, ValueError):
-        return {"approved": False, "problem": "unsafe or oversized approval"}, ["approved_baseline_unsafe"]
+        if expected_sha256:
+            return invalid("approval digest supplied without a file", "approved_baseline_missing")
+        return {"approved": False, "problem": "no approved baseline was supplied"}, []
     if not expected_sha256:
-        refusals.append("approved_baseline_digest_not_bound")
-    elif sha256_bytes(raw) != expected_sha256:
-        refusals.append("approved_baseline_digest_mismatch")
+        return invalid("approval digest was not independently supplied", "approved_baseline_digest_not_bound")
+    try:
+        raw = evidence_bytes(Path(path), APPROVAL_MAX_BYTES)
+    except FileNotFoundError:
+        return invalid("approved baseline file is missing", "approved_baseline_missing")
+    except (OSError, ValueError):
+        return invalid("unsafe or oversized approval", "approved_baseline_unsafe")
+    digest = sha256_bytes(raw)
+    if digest != expected_sha256:
+        return invalid("approval digest does not match retained bytes", "approved_baseline_digest_mismatch")
     try:
         doc = json.loads(raw)
     except ValueError:
-        refusals.append("approved_baseline_unreadable")
-        return {"approved": False, "problem": "unreadable"}, refusals
-    if doc.get("schema") != BASELINE_SCHEMA:
-        refusals.append("approved_baseline_wrong_schema")
-    status_ok = (doc.get("status") == "approved" and doc.get("approved_by") and doc.get("review_ref")
-                 and doc.get("approved_at") and FULL_SHA.fullmatch(str((doc.get("subject") or {}).get("sha", "")))
-                 and isinstance(doc.get("cohort_key"), dict))
+        return invalid("unreadable approval", "approved_baseline_unreadable")
+    if not isinstance(doc, dict) or doc.get("schema") != BASELINE_SCHEMA:
+        return invalid("wrong approval schema", "approved_baseline_wrong_schema")
+    subject = doc.get("subject")
+    if (not isinstance(subject, dict)
+            or any(not isinstance(subject.get(key), str) or not FULL_SHA.fullmatch(subject[key])
+                   for key in ("sha", "tree"))
+            or not isinstance(doc.get("cohort_key"), dict)):
+        return invalid("invalid approval subject or cohort", "approved_baseline_invalid_subject_or_cohort")
+    status_ok = (doc.get("status") == "approved"
+                 and all(isinstance(doc.get(key), str) and doc[key].strip()
+                         for key in ("approved_by", "review_ref", "approved_at")))
     if not status_ok:
         return {"approved": False, "problem": "baseline file is not an approved, reviewed baseline",
-                "doc": doc}, refusals
-    return {"approved": True, "problem": None, "doc": doc, "sha256": sha256_bytes(raw)}, refusals
+                "doc": doc}, []
+    return {"approved": True, "problem": None, "doc": doc, "sha256": digest}, []
+
+
+def baseline_subject_refusals(state: dict, *, baseline_sha: str, baseline_tree: str,
+                              candidate_sha: str, supplied: bool) -> list[str]:
+    """One run/check rule binds the approval to the selected verified baseline."""
+    if not state.get("approved"):
+        return ["approved_baseline_not_approved"] if supplied else []
+    subject = state["doc"]["subject"]
+    problems = []
+    if subject["sha"] != baseline_sha:
+        problems.append("baseline_subject_not_the_approved_one")
+    if subject["tree"] != baseline_tree:
+        problems.append("baseline_tree_not_the_approved_one")
+    if subject["sha"] == candidate_sha:
+        problems.append("baseline_equals_candidate")
+    return problems
 
 
 def effective_verdict(decision: dict, mode: str, fake_model: bool) -> dict:
@@ -2685,11 +2709,16 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
     if lane not in policy["lanes"]:
         raise ValueError(f"unknown lane {lane}")
 
+    baseline_state, baseline_refusals = load_baseline_approval(opts.get("approved_baseline_path"),
+                                                               opts.get("approved_baseline_sha256"))
+    if baseline_refusals or opts.get("approved_baseline_path") and not baseline_state.get("approved"):
+        raise ValueError("invalid baseline approval: " + ", ".join(
+            baseline_refusals or ["approved_baseline_not_approved"]))
+
     out = Path(opts["output_dir"])
     if out.exists() and any(out.iterdir()):
         raise FileExistsError(f"{out} already has content; evidence is never overwritten")
     raw_dir = out / "raw"
-    raw_dir.mkdir(parents=True, exist_ok=True)
 
     before = {side: deps.verify_subject(Path(opts[f"{side}_root"]), opts[f"{side}_sha"]) for side in SIDES}
     bad = {s: r["problems"] for s, r in before.items() if not subject_ok(r)}
@@ -2698,11 +2727,15 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
     if opts["candidate_sha"] == opts["baseline_sha"] or before["candidate"]["tree"] == before["baseline"]["tree"]:
         raise SubjectError("candidate and baseline must be different subjects")
 
+    baseline_refusals = baseline_subject_refusals(
+        baseline_state, baseline_sha=opts["baseline_sha"], baseline_tree=before["baseline"]["tree"],
+        candidate_sha=opts["candidate_sha"], supplied=bool(opts.get("approved_baseline_path")))
+    if baseline_refusals:
+        raise ValueError("invalid baseline approval: " + ", ".join(baseline_refusals))
+    raw_dir.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex
     mode = ACTUAL_MODE if getattr(deps, "is_real", False) else OFFLINE_MODE
     fake_model = not getattr(deps, "is_real", False)
-    baseline_state, baseline_refusals = load_baseline_approval(opts.get("approved_baseline_path"),
-                                                               opts.get("approved_baseline_sha256"))
     scenario_variants = {s: len(specs[s]["variants"]) for s in selected}
     schedule = build_schedule(selected, scenario_variants, policy["warmup_samples"], measured_n)
     protocol = {"warmups": policy["warmup_samples"], "measured": measured_n,
@@ -3264,12 +3297,12 @@ def _check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> t
                                                                opts.approved_baseline_sha256)
     for code in baseline_refusals:
         refuse(code)
-    if baseline_state.get("approved"):
-        approval = baseline_state["doc"]
-        if approval["subject"]["sha"] != subjects["baseline"].get("sha"):
-            refuse("baseline_subject_not_the_approved_one")
-        if approval["subject"]["sha"] == subjects["candidate"].get("sha"):
-            refuse("baseline_equals_candidate")
+    if not baseline_refusals:
+        for code in baseline_subject_refusals(
+                baseline_state, baseline_sha=subjects["baseline"].get("sha"),
+                baseline_tree=subjects["baseline"].get("tree"),
+                candidate_sha=subjects["candidate"].get("sha"), supplied=bool(opts.approved_baseline)):
+            refuse(code)
     if refusals:
         return finish()
     model_id = (receipt.get("environment") or {}).get("model", {}).get("id")
