@@ -897,3 +897,128 @@ def test_unbounded_repeated_lookup_does_not_become_an_unfiltered_read():
     bad = value(source("notes", "records"))
     with pytest.raises(InvalidIntent):
         validate_intent(bad, "Show my notes; find notes", now=NOW)
+
+
+@pytest.mark.parametrize("head", ["Recap", "Review", "Inspect", "Browse", "Scan", "Summarize"])
+@pytest.mark.parametrize("noun", ["email", "text", "message"])
+def test_read_governors_mask_only_their_source_noun(head, noun):
+    from service.workflows.compiler import outbound_verb, compile_new
+    prompt = f"{head} {noun}; find notes named harbor sketches"
+    assert not outbound_verb(prompt)
+    assert compile_new(prompt) is None
+    assert outbound_verb(prompt + "; email Mom the summary")
+    assert outbound_verb(prompt + "; text Mom saying hello")
+    assert outbound_verb(prompt + "; draft an email to Mom")
+
+
+LITERAL_SOURCE_CASES = [
+    ("Find notes about my calendar", "my calendar"),
+    ("Find notes about our messages", "our messages"),
+    ("Find notes named email reminders", "email reminders"),
+    ('Find notes about "my calendar"', "my calendar"),
+]
+
+
+@pytest.mark.parametrize("prompt,query", LITERAL_SOURCE_CASES)
+def test_complete_lookup_literal_does_not_request_its_named_sources(prompt, query):
+    data = value(source("notes", "records", query=query))
+    assert validate_intent(data, prompt, now=NOW)
+    assert run(prompt, FakeClient(data)).calls == (("search_notes", {"query": query}),)
+    for bad in [value(source("notes", "records")), value(source("notes", "records", query=query.split()[0])),
+                value(source("notes", "records", query=query), source("calendar"))]:
+        with pytest.raises(InvalidIntent):
+            validate_intent(bad, prompt, now=NOW)
+
+
+def test_literal_source_authority_and_exclusions_have_separate_bounds():
+    prompt = "Find notes about my calendar without email or messages"
+    data = value(source("notes", "records", query="my calendar"))
+    data["excluded_sources"] = ["email", "messages"]
+    assert validate_intent(data, prompt, now=NOW)
+    assert run(prompt, FakeClient(data)).calls == (("search_notes", {"query": "my calendar"}),)
+    bad = copy.deepcopy(data)
+    bad["excluded_sources"] = []
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+    quoted = value(source("notes", "records", query="my calendar without email"))
+    assert validate_intent(quoted, 'Find notes about "my calendar without email"', now=NOW)
+
+
+def test_prior_lookup_literal_cannot_grant_contextual_source_authority():
+    context = [{"role": "user", "content": "Find notes about my calendar"}]
+    data = value(source("notes", "records", query="my calendar", time={"named": "yesterday"}))
+    assert validate_intent(data, "Same for yesterday", context=context, prior_tools=["search_notes"], now=NOW)
+    bad = value(source("calendar", time={"named": "yesterday"}))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, "Same for yesterday", context=context, prior_tools=["search_notes"], now=NOW)
+
+
+PREPOSITION_READ_CASES = [
+    ("Read email from Lyra and email about road to recovery", "road to recovery"),
+    ("Review email from Lyra and email named guide to gardening", "guide to gardening"),
+    ("Read email from Lyra and email containing response to update", "response to update"),
+    ('Read email from Lyra and email about "road to recovery"', "road to recovery"),
+]
+
+
+@pytest.mark.parametrize("prompt,query", PREPOSITION_READ_CASES)
+def test_coordinated_preposition_within_query_is_not_a_recipient(prompt, query):
+    from service.router.web_request import classify
+    request = classify(prompt)
+    assert request.delivery is None and not request.authorized_effects and request.source == prompt
+    data = value(source("email", "records", query="Lyra"), source("email", "records", query=query))
+    assert validate_intent(data, prompt, now=NOW)
+    result = run(prompt, FakeClient(data))
+    assert result.calls == (("view_emails", {"query": "Lyra", "strict_match": True}),
+                            ("view_emails", {"query": query, "strict_match": True}))
+    bad = copy.deepcopy(data)
+    bad["sources"][1]["query"] = query.split()[0]
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+@pytest.mark.parametrize("tail", ["email from Lyra to Mom", "email about road to recovery to Mom",
+                                  "email about roadmap to me", "email about roadmap to person@example.com",
+                                  "email about roadmap to +15551234567", "email about Topic to Taylor",
+                                  "email about road to recovery and send it by email to Mom"])
+def test_query_attachment_fix_keeps_explicit_and_later_destinations(tail):
+    from service.router.web_request import classify
+    assert classify("Read email from Selene and " + tail).authorized_effects & {"send_email", "draft_email"}
+
+
+@pytest.mark.parametrize("prompt", ["Find notes about send email and send it to Mom",
+                                    'Find notes about "send email" and send it to Mom',
+                                    "Find notes about roadmap and forward it by email to Mom"])
+def test_complete_literal_mask_never_consumes_a_later_delivery_clause(prompt):
+    from service.workflows.compiler import outbound_verb
+    from service.router.web_request import classify
+    assert outbound_verb(prompt)
+    assert classify(prompt).delivery is not None
+
+
+def test_literal_source_word_does_not_hide_independently_requested_source():
+    prompt = "Find notes about my calendar and read email from Lyra"
+    good = value(source("notes", "records", query="my calendar"), source("email", "records", query="Lyra"))
+    assert validate_intent(good, prompt, now=NOW)
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("notes", "records", query="my calendar")), prompt, now=NOW)
+
+
+def test_unsupported_literal_time_bounds_do_not_crash_classification_or_hide_action():
+    from service.workflows.compiler import outbound_verb
+    from service.router.intent.validation import applicable_read
+    prompt = "Find notes about plans from last week to next week"
+    assert applicable_read(prompt)
+    assert run(prompt, FakeClient(value(source("notes", "records", query="plans")), value(source("notes", "records", query="plans")))).disposition == "clarify"
+    assert outbound_verb(prompt + " and send it to Mom")
+
+
+def test_domain_allowlist_uses_instruction_sources_not_complete_literal_words():
+    from service.router.intent.validation import source_requirements
+    prompt = "Find notes about my calendar without email"
+    assert source_requirements(prompt) == ({"notes"}, {"email"})
+    config = {**CONFIG, "domains": ["notes"]}
+    good = value(source("notes", "records", query="my calendar"))
+    good["excluded_sources"] = ["email"]
+    result = asyncio.run(plan_read(prompt, client=FakeClient(good), model=MODEL, config=config, now=NOW))
+    assert result.disposition == "compiled" and result.calls == (("search_notes", {"query": "my calendar"}),)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from service.utterance_shape import deliberate
 from service.authored_message import authored_message_intent
@@ -42,10 +43,10 @@ CONTENT_QUESTION = ("I couldn't tell exactly what to send. I can send a summary 
 # delivery. Verbs such as send/text/forward are unaffected.
 _EMAIL_NOUN_USE = re.compile(
     r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+e-?mails?\b|"
-    r"\b(?:on|in|of|from|about)\s+e-?mails?\b|"
-    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get|have|what|any)\s+"
+    r"\b(?:on|in|of|from|about|without|excluding|exclude|except|skip|no|not)\s+e-?mails?\b|"
+    r"\b(?:check|read|summari[sz]e|recap|review|inspect|browse|scan|show|list|open|refresh|get|have|what|any)\s+"
     r"(?:new\s+|unread\s+)?e-?mails?\b|"
-    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about)\b", re.I)
+    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about|with|containing|named|titled|called)\b", re.I)
 _LEADING_EMAIL_NOUN = re.compile(
     r"^\s*e-?mails?\s+(?:summary|summaries|digest|recap|inbox|updates?|count|status)\b", re.I)
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
@@ -56,8 +57,8 @@ _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 _MESSAGE_NOUN_USE = re.compile(
     r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+"
     r"(?:(?:new|unread|recent|latest|old)\s+)*(?:text(?:\s+messages?)?|message)\b|"
-    r"\b(?:on|in|of|from|about)\s+(?:text(?:\s+messages?)?|message)\b|"
-    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get)\s+"
+    r"\b(?:on|in|of|from|about|without|excluding|exclude|except|skip|no|not)\s+(?:text(?:\s+messages?)?|message)\b|"
+    r"\b(?:check|read|summari[sz]e|recap|review|inspect|browse|scan|show|list|open|refresh|get)\s+"
     r"(?:(?:my|the|your|our|any|all|new|unread|recent|latest|these|those|an?)\s+)*"
     r"(?:text(?:\s+messages?)?|message)\b", re.I)
 _LEADING_MESSAGE_NOUN = re.compile(
@@ -69,7 +70,14 @@ _HISTORICAL_MESSAGE_QUESTION = re.compile(
 
 def outbound_verb(text: str) -> bool:
     """True for delivery/compose verbs, excluding source nouns and past reads."""
-    masked = _EMAIL_NOUN_USE.sub(" ", text)
+    # Share complete lookup-literal bounds with intent authority. Literal
+    # source/action words do not create delivery intent; later clauses remain.
+    from service.router.intent.validation import InvalidIntent, _instruction_text
+    try:
+        masked = _instruction_text(text, now=datetime.now().astimezone())
+    except InvalidIntent:
+        masked = text  # Retain the original action guard for ambiguous bounds.
+    masked = _EMAIL_NOUN_USE.sub(" ", masked)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
     masked = _MESSAGE_NOUN_USE.sub(" ", masked)

@@ -29,6 +29,10 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     """
     from service.utterance_shape import mask_quoted
     text = mask_quoted(prompt)
+    try:
+        instruction = _instruction_text(prompt, now=datetime.now().astimezone())
+    except InvalidIntent:
+        instruction = text  # Ambiguous bounds retain conservative admission.
     excluded, required = set(), set()
     for domain, pattern in SOURCE_WORDS.items():
         matches = list(re.finditer(pattern, text, re.I))
@@ -36,7 +40,7 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
             prefix = text[max(0, match.start() - 65):match.start()]
             if re.search(_NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?$", prefix, re.I):
                 excluded.add(domain)
-            else:
+            elif instruction[match.start():match.end()].strip():
                 required.add(domain)
     # A trailing coordinated exclusion such as "without email or texts".
     for match in re.finditer(_NEGATIVE + r"\s+([^.;!?]+)", text, re.I):
@@ -54,7 +58,11 @@ def applicable_read(prompt: str, context=(), prior_tools=()) -> bool:
         return False
     # Action semantics stay with the durable workflows. A negative action clause
     # can be carried as read-only context, but never opens an action capability.
-    positive = re.sub(r"\b(?:don't|do not|never)\s+(?:send|email|text|save|reply|forward)[^.;!?]*", "", mask_quoted(prompt), flags=re.I)
+    try:
+        instruction = _instruction_text(prompt, now=datetime.now().astimezone())
+    except InvalidIntent:
+        instruction = mask_quoted(prompt)  # Strict validation will clarify bounds.
+    positive = re.sub(r"\b(?:don't|do not|never)\s+(?:send|email|text|save|reply|forward)[^.;!?]*", "", instruction, flags=re.I)
     if _ACTION.search(positive):
         return False
     required, excluded = source_requirements(prompt)
@@ -240,8 +248,13 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
                     stops.append(boundary.start())
             for boundary in re.finditer(r"\b(?:and|plus|then)\s+|\b(?:limit(?:\s+to)?|at most)\s+|\b(?:in|using|on)\s+(?:the\s+)?account\s+", candidate, re.I):
                 tail = candidate[boundary.end():]
-                if boundary.group().lower().startswith(("limit", "at most", "in", "using", "on")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()):
+                if boundary.group().lower().startswith(("limit", "at most", "in", "using", "on")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()) or re.match(r"(?:(?:do not|don't|never)\s+)?(?:send|forward|draft|compose|write|save|delete|create|add|set|remind|reply|call)\b", tail, re.I):
                     stops.append(boundary.start())
+            # An unquoted source exclusion is instruction syntax, not part of
+            # the lookup literal. Quoted occurrences remain literal data.
+            source_union = "(?:" + "|".join(SOURCE_WORDS.values()) + ")"
+            for boundary in re.finditer(r"\b" + _NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?" + source_union, _mask_literals(candidate), re.I):
+                stops.append(boundary.start())
             end = min(stops) if stops else len(candidate)
             literal = candidate[:end].strip().rstrip(".,")
             if literal:
@@ -407,19 +420,19 @@ def _occurrence_clauses(text: str, *, now: datetime) -> dict[str, list[str]]:
     shared_time = None
     if len(times) == 1 and not any(sep in {";", "\n", "then"} for sep in separators):
         start, end, _ = times[0]
-        later_operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", masked[anchors[0][1]:], re.I)
+        later_operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|review|inspect|browse|scan|check|open|refresh|get|show|list|find|search|lookup|locate)\b", masked[anchors[0][1]:], re.I)
         if end <= anchors[0][0] or start >= anchors[-1][1] and not later_operation:
             # A common list suffix is shared, but a new read verb introduces
             # an independently constrained read even when joined with "and".
             shared_time = text[start:end]
     leading = text[:anchors[0][0]]
-    operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", leading, re.I)
+    operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|review|inspect|browse|scan|check|open|refresh|get|show|list|find|search|lookup|locate)\b", leading, re.I)
     for (anchor, _, domain), start, end in zip(anchors, starts, ends):
         if domain not in clauses:
             continue
         clause = text[start:end].strip(" ;\n")
         prefix = text[start:anchor]
-        if operation and not re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", prefix, re.I):
+        if operation and not re.search(r"\b(?:recap|summarize|summary|overview|digest|read|review|inspect|browse|scan|check|open|refresh|get|show|list|find|search|lookup|locate)\b", prefix, re.I):
             clause = operation.group() + " " + clause
         if shared_time and not _requested_times(_instruction_text(clause, now=now), now=now):
             clause += " for " + shared_time
@@ -442,7 +455,7 @@ def _correct_occurrences(clauses, prompt: str, *, now: datetime):
         raise InvalidIntent("Name the date for each repeated read")
     if any(_requested_count(domain, instruction) is not None for domain in clauses) or (
             _requested_minutes(instruction) or _reminder_scopes(instruction, sole=True) or
-            re.search(r"\b(?:account|recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", instruction, re.I)):
+            re.search(r"\b(?:account|recap|summarize|summary|overview|digest|read|review|inspect|browse|scan|check|open|refresh|get|show|list|find|search|lookup|locate)\b", instruction, re.I)):
         raise InvalidIntent("Name the changed constraints for each repeated read")
     corrected = {}
     for domain, requests in clauses.items():
@@ -494,7 +507,7 @@ def _validate_occurrences(sources, clauses, *, now: datetime):
                             if (start, end) not in account_spans)
             if len(literals) > 1:
                 raise InvalidIntent("Ambiguous repeated-source literal association")
-            operation_match = re.search(r"\b(recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", instruction, re.I)
+            operation_match = re.search(r"\b(recap|summarize|summary|overview|digest|read|review|inspect|browse|scan|check|open|refresh|get|show|list|find|search|lookup|locate)\b", instruction, re.I)
             operation = None
             if domain == "calendar" and re.search(r"\b(?:free|available|availability)\b", instruction, re.I):
                 operation = "free_time"
@@ -590,14 +603,18 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
     unsupported = value["unsupported_constraints"]
     if type(unsupported) is not list or len(unsupported) > 8 or any(type(v) is not str or not 1 <= len(v) <= 200 for v in unsupported):
         raise InvalidIntent("Invalid unsupported constraints")
-    required, explicit_excluded = source_requirements(prompt)
+    # Positive authority and later source checks share the same literal bounds.
+    # Raw unquoted exclusions must remain instructions even inside a lookup.
+    _, explicit_excluded = source_requirements(prompt)
+    required, _ = source_requirements(_instruction_text(prompt, now=now))
+    required -= explicit_excluded
     if not explicit_excluded <= set(excluded):
         raise InvalidIntent("Missing explicit source exclusion")
     # Only the adjacent same-source correction may retain an old literal.
     # A new complete request or source change resets stale locations/filters.
     prior_users = [str(m.get("content", "")) for m in context if m.get("role") == "user"]
     prior_user = prior_users[-1] if prior_users else ""
-    prior_required, _ = source_requirements(prior_user)
+    prior_required, _ = source_requirements(_instruction_text(prior_user, now=now))
     correction = bool(re.match(r"^\s*(?:and|actually|now|instead|no[, ]|only|just|make that|same|those)\b", prompt, re.I))
     inherit = bool(prior_user and (not required or correction and required <= prior_required))
     evidence = prompt + "\n" + prior_user if inherit else prompt

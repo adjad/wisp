@@ -13,7 +13,7 @@ from service.memory.store import SessionStore
 from service.router import router
 from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES
 
 
 @pytest.fixture
@@ -444,3 +444,130 @@ def test_actor_lookup_filter_binds_to_one_repeated_source_occurrence(endpoint, m
     else:
         assert calls == [("search_notes", {"period": "tomorrow"}), ("search_notes", {"query": "amber notebooks", "period": "yesterday"})]
         assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("head", ["Recap", "Review", "Inspect", "Scan"])
+@pytest.mark.parametrize("mixed", [False, True])
+def test_actor_read_head_does_not_enter_delivery_workflow(endpoint, head, mixed):
+    request, client, calls, _, _ = endpoint
+    data = value(source("email"))
+    prompt = head + " email"
+    expected = [("summarize_emails", {})]
+    if mixed:
+        prompt += "; find notes named harbor sketches"
+        data["sources"].append(source("notes", "records", query="harbor sketches"))
+        expected.append(("search_notes", {"query": "harbor sketches"}))
+    client.outputs = [data]
+    events = asyncio.run(request(prompt))
+    assert calls == expected
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+    assert not [e for e in events if e.get("workflow_state") == "waiting_for_content"]
+
+
+@pytest.mark.parametrize("prompt,query", LITERAL_SOURCE_CASES)
+@pytest.mark.parametrize("bad", [False, True])
+def test_actor_literal_source_words_keep_exact_single_source_scope(endpoint, prompt, query, bad):
+    request, client, calls, _, _ = endpoint
+    data = value(source("notes", "records", query=query))
+    if bad:
+        data["sources"].append(source("calendar"))
+    client.outputs = [data, data]
+    events = asyncio.run(request(prompt))
+    assert calls == ([] if bad else [("search_notes", {"query": query})])
+    assert ("clarify" if bad else "compiled") in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("omit", [False, True])
+def test_actor_lookup_source_literal_keeps_trailing_exclusion(endpoint, omit):
+    request, client, calls, _, _ = endpoint
+    data = value(source("notes", "records", query="my calendar"))
+    data["excluded_sources"] = [] if omit else ["email"]
+    client.outputs = [data, data]
+    events = asyncio.run(request("Find notes about my calendar without email"))
+    assert calls == ([] if omit else [("search_notes", {"query": "my calendar"})])
+    assert ("clarify" if omit else "compiled") in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("prompt,query", PREPOSITION_READ_CASES)
+def test_actor_coordinated_query_preposition_executes_both_exact_reads(endpoint, prompt, query):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("email", "records", query="Lyra"), source("email", "records", query=query))]
+    events = asyncio.run(request(prompt))
+    assert calls == [("view_emails", {"query": "Lyra", "strict_match": True}),
+                     ("view_emails", {"query": query, "strict_match": True})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("prompt", ["Recap email and email Mom the summary",
+    "Review email and text Mom saying hello", "Recap email and draft an email to Mom",
+    "Read email from Lyra and email about road to recovery to Mom",
+    "Read email from Lyra and email about roadmap to person@example.com",
+    "Read email from Lyra and email about road to recovery and send it by email to Mom"])
+def test_actor_read_head_and_attachment_repairs_preserve_delivery_guard(endpoint, monkeypatch, prompt):
+    import service.router.intent as intent_api
+    request, client, calls, _, _ = endpoint
+    planner_spy = AsyncMock(side_effect=AssertionError("delivery cannot enter read planner"))
+    monkeypatch.setattr(intent_api, "plan_read", planner_spy)
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        await emit({"type": "text", "text": "Synthetic guarded action path."})
+        return "Synthetic guarded action path."
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    events = asyncio.run(request(prompt))
+    planner_spy.assert_not_awaited()
+    assert not client.calls and "compiled" not in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("wrong_source", [False, True])
+def test_actor_prior_literal_source_word_never_grants_contextual_authority(endpoint, wrong_source):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.add_turn(sid, "user", "Find notes about my calendar")
+    store.add_turn(sid, "assistant", "Synthetic notes", tool_digest="search_notes")
+    data = value(source("calendar", time={"named": "yesterday"})) if wrong_source else value(
+        source("notes", "records", query="my calendar", time={"named": "yesterday"}))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Same for yesterday", session_id=sid))
+    assert calls == ([] if wrong_source else [("search_notes", {"query": "my calendar", "period": "yesterday"})])
+    assert ("clarify" if wrong_source else "compiled") in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("bad_query", [None, "my"])
+def test_actor_literal_source_lookup_cannot_omit_or_truncate_query(endpoint, bad_query):
+    request, client, calls, _, _ = endpoint
+    data = value(source("notes", "records", **({"query": bad_query} if bad_query else {})))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Find notes about my calendar"))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("omit", [False, True])
+def test_actor_literal_source_word_preserves_independent_email_read(endpoint, omit):
+    request, client, calls, _, _ = endpoint
+    data = value(source("notes", "records", query="my calendar"))
+    if not omit:
+        data["sources"].append(source("email", "records", query="Lyra"))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Find notes about my calendar and read email from Lyra"))
+    assert calls == ([] if omit else [("search_notes", {"query": "my calendar"}),
+                                     ("view_emails", {"query": "Lyra", "strict_match": True})])
+    assert ("clarify" if omit else "compiled") in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("head", ["Recap", "Review"])
+def test_actor_message_read_heads_reach_read_execution(endpoint, head):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("messages"))]
+    events = asyncio.run(request(head + " text"))
+    assert calls == [("summarize_messages", {})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_single_domain_allowlist_keeps_query_literal_and_exclusion(endpoint):
+    request, client, calls, _, config = endpoint
+    config["intent_router"] = {**CONFIG, "domains": ["notes"]}
+    data = value(source("notes", "records", query="my calendar"))
+    data["excluded_sources"] = ["email"]
+    client.outputs = [data]
+    events = asyncio.run(request("Find notes about my calendar without email"))
+    assert calls == [("search_notes", {"query": "my calendar"})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
