@@ -47,8 +47,24 @@ Pure presentation helpers also need their owner’s focused fixture tests.
 ```
 
 The script creates temporary `WISP_HOME`, redirects `Path.home()` before service
-imports, and freezes the local clock with `America/Los_Angeles` zone rules. It
-imports lazy candidate clock modules before freezing their `datetime` references.
+imports, and freezes the local clock with `America/Los_Angeles` zone rules. This
+fixed evaluation zone applies on both UTC and Los Angeles hosts; it is not an
+inference about the caller's personal time zone. ISO clocks without an offset
+are interpreted as local time in this fixed evaluation zone. Direct argument normalization
+and calendar-window constraint helpers call the existing production resolver in
+a synchronous `evaluation_timezone()` context, temporarily setting process TZ
+and calling `time.tzset()`. This is necessary because the resolver builds naive
+local midnights even when given an aware clock. The context restores the prior
+TZ (including an absent value) and local-time rules on success or failure. Exact
+epoch boundaries remain authoritative: Los Angeles spring/fall DST days span
+23/25 hours. No production resolver or saved baseline result is changed.
+
+The harness and these helpers require `time.tzset()` and fail closed without it.
+Run them serially in a dedicated evaluation process, never concurrently with
+other local-time consumers. The production-path isolation guard pins the same
+zone for its process lifetime; standalone helpers restore their caller's zone.
+The harness imports lazy candidate clock modules before freezing their `datetime`
+references.
 Service state never uses real `~/.moe` or oMLX settings. The dedicated process
 blocks network, subprocess/exec/system calls, personal-home reads, and writes or
 SQLite connections outside temporary state and the explicit output directory.
