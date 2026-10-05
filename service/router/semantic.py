@@ -172,7 +172,8 @@ _NOT_A_VERB = (r"my|our|your|his|her|their|its|the|a|an|this|that|these|those|of
                r"and|or|but|in|into|onto|on|at|by|with|via|like|as|than|over|under|near|is|are|was|were|be|"
                r"what|when|where|who|how|whose|translate|translated|spell|say|speak|learn|visit|"
                r"visiting|fly|flying|drive|driving|travel|traveling|travelling|go|going|watch|play|"
-               r"listen|open|launch|quit|use|search|google|find|buy|order|eat|cook|read|in")
+               r"listen|open|launch|quit|use|search|google|find|buy|order|eat|cook|read|other|another|"
+               r"next|last|first|new|old|same|each|every|any|some|no|not|only|which|whose")
 _ADDRESSEE_RE = re.compile(
     # an address or phone number
     r"[\w.+-]+@[\w-]+\.[\w.]+|(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)|"

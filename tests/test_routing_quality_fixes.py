@@ -360,7 +360,7 @@ def test_delete_paraphrases_and_typos_open_the_bulk_delete_gate(prompt):
                                     "pencil in coffee with Jordan next wednesday at 9",
                                     "what's the group chat saying", "archive them",
                                     "write a toast for my sister's wedding", "what's mom's birthday dinner",
-                                    "give me a polite way to say no to a meeting"])
+                                    "give me a polite way to say no to a meeting", "no, the other dentist"])
 def test_mentions_of_people_that_address_nobody_stay_non_outbound(prompt):
     assert not semantic.outbound_intent(prompt)
 
