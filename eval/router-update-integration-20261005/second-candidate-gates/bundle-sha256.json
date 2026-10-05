@@ -77,5 +77,15 @@
   "wisp-router-update-40ee88a-artifact-ci-state.json": {
     "original_sha256": "02573d6a3249b3609c967872b4e361b887e1009a1bf3805d16ca0561f9302d9f",
     "stored_sha256": "02573d6a3249b3609c967872b4e361b887e1009a1bf3805d16ca0561f9302d9f"
+  },
+  "wisp-router-update-40ee88a-artifact-ci-final.json": {
+    "original_name": "wisp-router-update-40ee88a-artifact-ci-final.json",
+    "original_sha256": "ceab9917607f8abddae2e11f98386386ccf6eb12cef6cd40dfe3aecfa5d4970f",
+    "stored_sha256": "ceab9917607f8abddae2e11f98386386ccf6eb12cef6cd40dfe3aecfa5d4970f"
+  },
+  "wisp-router-update-40ee88a-artifact-ci.log.gz": {
+    "original_name": "wisp-router-update-40ee88a-artifact-ci.log",
+    "original_sha256": "30ec3f0d0e64c538ff1cf12cfb739c9815e0eaaa321aefc81976a13361106a81",
+    "stored_sha256": "a2675a0ab52368bd1e8772f989bd30d785fd24fb2440a61f192f64ec1cd00172"
   }
 }

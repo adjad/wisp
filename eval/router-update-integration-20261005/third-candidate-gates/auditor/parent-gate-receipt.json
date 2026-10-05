@@ -1,0 +1,21 @@
+{
+  "candidate_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "working_tree_clean": true,
+  "command": "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python scripts/test_replay_failure_fixes.py",
+  "outer_launch": "Approved compatible outer launch, unchanged restrictive inner native sandbox",
+  "exit_code": 1,
+  "status": "FAIL",
+  "passed_modules": 178,
+  "total_modules": 179,
+  "failed_modules": [
+    "tests/test_message_digest.py"
+  ],
+  "failure": "test_distinct_redacted_requests_keep_both_source_occurrences tests secret substrings against str(rows), which also includes time.time timestamps; diagnosis pending, failure preserved",
+  "log": "/private/tmp/wisp-router-update-27490ae-regression.log",
+  "log_sha256": "2d5448d21bdfd1d83f3d0dbd06bf0724a28bc3d53b900299607c7f59b324b39c",
+  "recorded_at_utc": "2026-10-05T21:10:36.836107+00:00",
+  "ci": "pending",
+  "audit": "New independent coverage findings reported; formal report pending"
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "exact_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "recorded_at_utc": "2026-10-05T21:17:15.869861+00:00",
+  "algorithm": "SHA256",
+  "files": {
+    "HANDOFF.json": "7092e19ec9d26383b40cb823c166f529d88a1138c69c5753389ab35745574b4f",
+    "REPORT.json": "f427b452cfd8274daee2a3b06461d55b50a68052e7aa7c0c8a90a73a8810f296",
+    "REPORT.md": "2888ff74c01cd8ef895561e06ae87f48db3e6a1ccca63701b5c4ba1cd11c6b42",
+    "boundary-command.log": "5a71fcbd1fb6f5b11ba4ace083fb2354725a10ea2f001381b07748a6751dae21",
+    "boundary-results.json": "6d09a90b171d450117e589c39b276f645829d28a1d2e785df11780d7e5a23b0b",
+    "boundary_controls.py": "e758c437b5e8ff21a4247d0775623c7106423c989eb7395537498202d01a3a73",
+    "finalize_report.py": "3799896934893ea294e178eb95a70a36d0b291c570982a488a012afb96830196",
+    "independent-command.log": "d622b9d9a2a3bf0c63bc843cbe2fa8a4b72ffc4c63f7e285745de8ee730fb20b",
+    "independent-results.json": "db32562ced2bf7e733b798b1c63a44ad3e7ac30d1456617454bf88e5a00e16e8",
+    "independent_cases.py": "5a850f09c882c49cf4ac1f44c61cb2ece5b45b5923200b4b3cd81df93ed940a2",
+    "parent-gate-receipt.json": "06b8365ca559c92a09bb4687f4d6f654b2bef95503aa4c0c82840b20d80a356d",
+    "provenance.json": "8675653ebad374b415365e92b472c8093aeaa65f8b1831d3092b8a06ea20c037",
+    "provenance_checks.py": "6958953316dbac047e6696733ffcfb6e808e4b2d2e2992f41cde07ecdde894db",
+    "supplemental-command.log": "7f6def732eae3c4d3660afb592cd2bab489da9357b8d48dabca1c505b09c2181",
+    "supplemental-results.json": "7f6def732eae3c4d3660afb592cd2bab489da9357b8d48dabca1c505b09c2181",
+    "supplemental_controls.py": "d63a2501c5c945866c62aea580d6886f76ff473fc8e36941ea28668c50b1f408"
+  },
+  "excludes_self": true,
+  "external_regression_log": {
+    "path": "/private/tmp/wisp-router-update-27490ae-regression.log",
+    "sha256": "2d5448d21bdfd1d83f3d0dbd06bf0724a28bc3d53b900299607c7f59b324b39c"
+  }
+}

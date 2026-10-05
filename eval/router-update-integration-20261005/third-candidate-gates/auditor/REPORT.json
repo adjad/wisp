@@ -1,0 +1,362 @@
+{
+  "schema_version": 1,
+  "role": "independent read-only Wisp Release Auditor",
+  "independent_of": [
+    "builder/integrator",
+    "source repair authors",
+    "Simulation QA actor"
+  ],
+  "verdict": "BLOCK",
+  "exact_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_audit_sha": "40ee88a409eaec943ae4474130bd87263ea794e1",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "checkout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "output_directory": "/private/tmp/wisp-router-27490ae-gates-20261005/auditor",
+  "recorded_at_utc": "2026-10-05T21:17:15.869861+00:00",
+  "scope": {
+    "complete_changed_files": 102,
+    "changed_since_previous_audit": 31,
+    "method": "Completed full base-to-head assessment by carrying forward completed prior source/context reviews for unchanged files and reading the entire current delta and relevant execution context. All current changed files hashed; production delta is validation.py. Corpus/author/raw archives are explicitly opaque exceptions, not unreviewed production code.",
+    "changed_files_manifest": "provenance.json",
+    "areas": [
+      "schema/compiler/planner",
+      "source/query/date/count/account tuple authority",
+      "corrections and source aliases",
+      "pre-I/O endpoint/client/role identity",
+      "read/outbound and quoted/negated boundaries",
+      "exclusions/privacy",
+      "actual ASGI/agent orchestration with fixtures",
+      "grounding/partial/error rendering",
+      "scorer/timezone/manifest safety",
+      "evidence provenance and activation limits"
+    ]
+  },
+  "findings": [
+    {
+      "id": "R3",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Bind required lookup filters to the source clause that requested them",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "start": 671,
+          "end": 677
+        }
+      ],
+      "request": "Show my calendar tomorrow; find notes about amber notebooks from yesterday",
+      "injected_intent_sources": [
+        {
+          "domain": "calendar",
+          "operation": "records",
+          "time": {
+            "named": "tomorrow"
+          }
+        },
+        {
+          "domain": "notes",
+          "operation": "records",
+          "query": "amber notebooks",
+          "time": {
+            "named": "yesterday"
+          }
+        }
+      ],
+      "expected_calls": [
+        [
+          "get_upcoming",
+          {
+            "period": "tomorrow",
+            "calendar_only": true
+          }
+        ],
+        [
+          "search_notes",
+          {
+            "query": "amber notebooks",
+            "period": "yesterday"
+          }
+        ]
+      ],
+      "observed_calls": [],
+      "local_validation": {
+        "accepted": false,
+        "diagnosis": "A requested lookup filter was dropped"
+      },
+      "planner_disposition": "clarify",
+      "description": "A find/about cue anywhere in the prompt makes the validator require a query or conversation on every non-free-time source. The correctly scoped calendar read has no requested query, so a valid calendar-plus-filtered-notes request is rejected after both bounded interpretation attempts. Actual main.agent clarifies and reads neither source. This is deterministic over-abstention for an unambiguous supported request, independent of model quality.",
+      "required_behavior": "Require and validate a lookup filter only on the source occurrence whose clause requests that filter. Preserve omission, invented-query and tuple-binding rejection; do not disable completeness validation globally.",
+      "controls": [
+        "mixed-source-no-filter-positive",
+        "full-tuples-positive",
+        "original-truncated-query-rejected",
+        "tuple-swap-query"
+      ],
+      "evidence": {
+        "file": "independent-results.json",
+        "case_id": "mixed-source-filter-positive"
+      }
+    },
+    {
+      "id": "R4",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Keep a coordinated email source noun from authorizing delivery and bypassing the read planner",
+      "locations": [
+        {
+          "file": "service/router/web_request.py",
+          "start": 455,
+          "end": 480
+        },
+        {
+          "file": "service/router/web_request.py",
+          "start": 581,
+          "end": 583
+        },
+        {
+          "file": "service/router/router.py",
+          "start": 6967,
+          "end": 6974
+        }
+      ],
+      "request": "Read email from Selene and email from Dorian for yesterday",
+      "injected_intent_sources": [
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "Selene",
+          "time": {
+            "named": "yesterday"
+          }
+        },
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "Dorian",
+          "time": {
+            "named": "yesterday"
+          }
+        }
+      ],
+      "expected_calls": [
+        [
+          "view_emails",
+          {
+            "query": "Selene",
+            "strict_match": true,
+            "period": "yesterday"
+          }
+        ],
+        [
+          "view_emails",
+          {
+            "query": "Dorian",
+            "strict_match": true,
+            "period": "yesterday"
+          }
+        ]
+      ],
+      "local_validation": {
+        "accepted": true
+      },
+      "standalone_planner_calls": [
+        [
+          "view_emails",
+          {
+            "query": "Selene",
+            "strict_match": true,
+            "period": "yesterday"
+          }
+        ],
+        [
+          "view_emails",
+          {
+            "query": "Dorian",
+            "strict_match": true,
+            "period": "yesterday"
+          }
+        ]
+      ],
+      "classification": {
+        "delivery": {
+          "text": "email from Dorian for yesterday",
+          "channel": "email",
+          "recipient": "from Dorian for yesterday",
+          "target_missing": false
+        },
+        "authorized_effects": [
+          "send_email"
+        ]
+      },
+      "actual_main_route": {
+        "type": "routed",
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email lookup -> scoped tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "verified_results_only": false,
+        "strict_read_limits": {},
+        "reminder_action": "",
+        "trace_id": "f2fdd06efd9444cda65c88b71e928fee"
+      },
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "observed_calls": [],
+      "description": "The second clause email from Dorian for yesterday is a source noun coordinated with Read email from Selene. _delivery treats it as the email verb and accepts from Dorian for yesterday as a recipient. The web request reports send_email authority, which suppresses plan_read. The standalone validator accepts the correct intent and the standalone planner compiles both strict sender/yesterday reads, but actual main.agent falls back to the rules email lookup route, with no scripted_intent generation and without verified-results-only or strict read limits.",
+      "impact_limits": "The executed fallback fixture exposed six legacy email tools and did not expose send_email. No real send, native call or expanded executable outbound capability was observed. The scripted fallback emitted a fixture answer with no calls; that does not establish that every actual fallback model would fail to read. The proven defect is incorrect action metadata and deterministic bypass of structured read validation.",
+      "required_behavior": "Recognize coordinated source-noun email from/about phrases as reads before delivery classification; retain genuine addressee delivery and quoted/negated boundaries. Ensure supported coordinated reads reach the structured compiler in actual main.agent.",
+      "controls": [
+        "new-verb-independent-date-positive",
+        "coordinated-source-noun",
+        "explicit-second-read",
+        "genuine-compound-delivery",
+        "genuine-standalone-delivery",
+        "negated-compound-delivery",
+        "quoted-delivery-description"
+      ],
+      "evidence": {
+        "file": "independent-results.json",
+        "case_id": "coordinated-shared-date-positive",
+        "supplement": "supplemental-results.json"
+      }
+    }
+  ],
+  "prior_finding_reassessment": [
+    {
+      "id": "R1",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Full repeated-source tuples and coverage are checked per occurrence. Correct and reversed tuples execute scoped reads; query/date/account/count/unread/operation swaps, missing occurrences and extra cross-products reject without reads. Identical duplicate requests dedupe correctly."
+    },
+    {
+      "id": "R2",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Source-free new-query corrections bind to uniquely established context and replace stale queries; other inherited account/count/unread/date filters remain intact. Conflicting multi-source or repeated-source context clarifies without calls."
+    },
+    {
+      "id": "F1",
+      "status": "ORIGINAL_REPRODUCERS_RESOLVED",
+      "details": "Original date/scope/duration omissions and unsupported daypart reject. R1 full-tuple repair independently closes the later association defect. R3 is a new completeness overrestriction."
+    },
+    {
+      "id": "F2",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Truncated unquoted query rejects; new and quoted correction queries execute, stale queries reject."
+    },
+    {
+      "id": "F3",
+      "status": "RESOLVED",
+      "details": "Tomorrow agenda shortcut emits get_upcoming(period=tomorrow, calendar_only=True)."
+    },
+    {
+      "id": "F4",
+      "status": "RESOLVED",
+      "details": "All six new test modules are explicitly admitted; unknown and missing manifest entries fail closed."
+    },
+    {
+      "id": "P3",
+      "status": "MITIGATED_WITH_LEGACY_LIMIT",
+      "details": "Original Python equality scores remain unchanged for bool/float versus int; typed supplemental request_argument and guarded_end_to_end reject both mismatches. Legacy exact_arguments alone is not typed fidelity."
+    },
+    {
+      "id": "UTC",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Fresh UTC and America/Los_Angeles controls match exact 23h/25h DST epochs, distinguish wrong days, restore TZ on exceptions/absence, and fail closed without tzset."
+    },
+    {
+      "id": "ALIASES",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Appointments that are on our calendar, emails in the inbox and texts in our messages work. Separately scoped repeated aliases preserve both reads; ambiguous scopes and dropped occurrences reject."
+    }
+  ],
+  "mechanical_failure": {
+    "id": "G1",
+    "status": "FAIL",
+    "blocking": true,
+    "source": "parent once-only full isolated regression",
+    "passed_modules": 178,
+    "total_modules": 179,
+    "failed_modules": [
+      "tests/test_message_digest.py"
+    ],
+    "failing_test": "test_distinct_redacted_requests_keep_both_source_occurrences",
+    "location": {
+      "file": "tests/test_message_digest.py",
+      "start": 2952,
+      "end": 2962
+    },
+    "diagnosis": "The privacy assertion searches str(rows), including retained source timestamps, for OTP substrings. At fixed epoch1791234560 both message bodies and contexts are secret-free, two distinct source occurrences remain and second-pass cardinality is two, but whole-row substring check fails because timestamps contain1234. The same body fixture at epoch1790000000 passes the whole-row check. This independently establishes the deterministic timestamp-collision mechanism; the parent traceback did not print rows, so the exact failed process timestamp is parent-reported rather than independently extracted.",
+    "required_behavior": "Repair the assertion to inspect sensitive text/diagnostic surfaces while testing timestamps separately; use deterministic clocks for the remaining time-sensitive checks. Preserve occurrence/cardinality/privacy coverage. A repair creates a new candidate and requires new exact-SHA gates.",
+    "receipt": "parent-gate-receipt.json",
+    "external_log": "/private/tmp/wisp-router-update-27490ae-regression.log",
+    "log_sha256": "2d5448d21bdfd1d83f3d0dbd06bf0724a28bc3d53b900299607c7f59b324b39c",
+    "independent_evidence": "supplemental-results.json",
+    "repair_owner": "Dedicated repair-owner reservation requested by parent; no approval inferred; auditor made no source changes."
+  },
+  "independent_execution": {
+    "cases": 44,
+    "expectations_met": 42,
+    "failed_supported_cases": [
+      "coordinated-shared-date-positive",
+      "mixed-source-filter-positive"
+    ],
+    "boundary_controls": 24,
+    "boundary_controls_passed": 24,
+    "supplemental_controls": "Six classification probes and two fixed-timestamp redaction probes; observations retained without recasting helper returns as application effects.",
+    "all_commands_exit_zero_after_auditor_fixture_repair": true,
+    "auditor_fixture_repair": "Initial provenance verifier failed with KeyError raw_sha256 because newest checksum manifest uses raw_jsonl_sha256/raw_jsonl_gzip_sha256. Only auditor-owned verifier was repaired to accept the declared schema; rerun verified hashes. No candidate/evidence payload was altered.",
+    "commands": [
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-27490ae-gates-20261005/auditor/independent_cases.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-27490ae-gates-20261005/auditor/boundary_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 /private/tmp/wisp-router-27490ae-gates-20261005/auditor/provenance_checks.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-27490ae-gates-20261005/auditor/supplemental_controls.py"
+    ],
+    "evidence": [
+      "independent-results.json",
+      "boundary-results.json",
+      "supplemental-results.json",
+      "provenance.json"
+    ]
+  },
+  "provenance_summary": {
+    "head_and_tree_verified_at_completion": true,
+    "replay_bundles_verified": 6,
+    "archive_entries_verified": 34,
+    "opaque_seals_and_corpus_bytes_unchanged": true,
+    "handoff_fingerprints_verified": true,
+    "exact_assignment_verified": true,
+    "candidate_source_edits": false
+  },
+  "failures_skips_limits": [
+    "No actual model inference, accuracy measurement, real endpoint/status probes, training, residency changes or activation. Scripted synthetic results do not establish a 95% model-validity target.",
+    "No native data-source/tool bodies, personal data/settings/credentials, real communications, network effects, install/relaunch, deployment or merge. Guard installed before all service imports; registered callables are fake fixtures.",
+    "Heldout test.jsonl, corpus authoring script, raw replay/archive payloads remained opaque. Only bytes/hashes and permitted manifest/seal metadata were inspected. No archived script executed.",
+    "No duplicate full regression was run. Parent once-only failure is preserved; no waiver, repaired source or replacement passing receipt exists in this audit.",
+    "Required CI recorded pending in the parent receipt at 2026-10-05T21:10:36.836107+00:00; no fresh independent CI pass receipt inspected. Earlier candidate CI/local success does not transfer.",
+    "Distinct Simulation QA remains held by this BLOCK. Protected integration, any required Live QA and release-performance gates remain separate.",
+    "Planner default-disabled/resource limitations persist. This audit does not approve activation, installed-app replacement or shipping.",
+    "Original scripted DEV80/80 exact/source and original/guarded E2E72/80, with eight annotation limitations, remain historical builder fixture evidence. Zero-applicable denominators are not a property pass.",
+    "The raw outbound_verb helper is lexical, not sole authorization. Supplemental negated compound produces a waiting_for_content workflow with a content error, while web classification grants no effects. No workflow execution or denial bypass is claimed from that helper return."
+  ],
+  "handoff": "Parent reads this report; no cross-chat response is required. Route R3/R4/G1 to Orchestrator for one recorded owner per finding before source edits. Require new freeze/ACK and independent re-review after repairs. No specialist QA release or merge approval from this BLOCK."
+}

@@ -1,0 +1,184 @@
+{
+  "exact_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "classification": [
+    {
+      "id": "coordinated-source-noun",
+      "prompt": "Read email from Selene and email from Dorian for yesterday",
+      "delivery": {
+        "text": "email from Dorian for yesterday",
+        "channel": "email",
+        "recipient": "from Dorian for yesterday",
+        "target_missing": false
+      },
+      "authorized_effects": [
+        "send_email"
+      ],
+      "outbound_verb": false,
+      "workflow_compiled": false,
+      "workflow": "None"
+    },
+    {
+      "id": "explicit-second-read",
+      "prompt": "Read email from Selene and read email from Dorian for yesterday",
+      "delivery": null,
+      "authorized_effects": [],
+      "outbound_verb": false,
+      "workflow_compiled": false,
+      "workflow": "None"
+    },
+    {
+      "id": "genuine-compound-delivery",
+      "prompt": "Read email from Selene and email Mom the summary",
+      "delivery": {
+        "text": "email Mom the summary",
+        "channel": "email",
+        "recipient": "Mom",
+        "target_missing": false
+      },
+      "authorized_effects": [
+        "send_email"
+      ],
+      "outbound_verb": true,
+      "workflow_compiled": true,
+      "workflow": {
+        "id": "755ff3b3eaa44746bd0342c80ff76af1",
+        "revision": 0,
+        "kind": "deliver_summary",
+        "sources": [
+          "email"
+        ],
+        "source_args": {
+          "email": null
+        },
+        "recipient": "Mom",
+        "channel": "email",
+        "delivery": "send",
+        "when": "",
+        "location": "",
+        "stock_symbols": [],
+        "date_range": "",
+        "original_request": "Read email from Selene and email Mom the summary",
+        "artifact_text": "",
+        "artifact_request": "",
+        "artifact_provenance": "",
+        "news_artifact_provenance": {},
+        "news_clarification_provenance": {},
+        "content_error": "I couldn't tell exactly what to send. I can send a summary of your unread emails, messages, calendar or daily brief \u2014 say which one and when, for example: \u201ctext Mom a summary of my unread emails from today\u201d. Or tell me what you want the message to say and I'll write it.",
+        "status": "waiting_for_content",
+        "last_error": "",
+        "created_at": 1791234897.36773,
+        "updated_at": 1791234897.367732
+      }
+    },
+    {
+      "id": "genuine-standalone-delivery",
+      "prompt": "Email Mom the summary",
+      "delivery": {
+        "text": "Email Mom",
+        "channel": "email",
+        "recipient": "Mom",
+        "target_missing": false
+      },
+      "authorized_effects": [
+        "send_email"
+      ],
+      "outbound_verb": true,
+      "workflow_compiled": false,
+      "workflow": "None"
+    },
+    {
+      "id": "negated-compound-delivery",
+      "prompt": "Read email from Selene and do not email Mom the summary",
+      "delivery": null,
+      "authorized_effects": [],
+      "outbound_verb": true,
+      "workflow_compiled": true,
+      "workflow": {
+        "id": "9c9b025395104875aaef72c1547dfc0b",
+        "revision": 0,
+        "kind": "deliver_summary",
+        "sources": [
+          "email"
+        ],
+        "source_args": {
+          "email": null
+        },
+        "recipient": "Mom",
+        "channel": "email",
+        "delivery": "send",
+        "when": "",
+        "location": "",
+        "stock_symbols": [],
+        "date_range": "",
+        "original_request": "Read email from Selene and do not email Mom the summary",
+        "artifact_text": "",
+        "artifact_request": "",
+        "artifact_provenance": "",
+        "news_artifact_provenance": {},
+        "news_clarification_provenance": {},
+        "content_error": "I couldn't tell exactly what to send. I can send a summary of your unread emails, messages, calendar or daily brief \u2014 say which one and when, for example: \u201ctext Mom a summary of my unread emails from today\u201d. Or tell me what you want the message to say and I'll write it.",
+        "status": "waiting_for_content",
+        "last_error": "",
+        "created_at": 1791234897.371596,
+        "updated_at": 1791234897.371597
+      }
+    },
+    {
+      "id": "quoted-delivery-description",
+      "prompt": "Explain the phrase \"email Mom the summary\"",
+      "delivery": null,
+      "authorized_effects": [],
+      "outbound_verb": true,
+      "workflow_compiled": false,
+      "workflow": "None"
+    }
+  ],
+  "redaction": [
+    {
+      "fixed_now": 1791234560.0,
+      "rows": [
+        [
+          1791234558.0,
+          "Alex",
+          "Alex: Please review the original request with a stated deadline (private details omitted)."
+        ],
+        [
+          1791234559.0,
+          "Alex",
+          "Alex: Please review the original request with a stated deadline (private details omitted)."
+        ]
+      ],
+      "two_source_occurrences": true,
+      "redacted_bodies_equal": true,
+      "source_timestamps_retained": true,
+      "bodies_and_context_secret_free": true,
+      "whole_rows_secret_free": false,
+      "second_pass_retains_two": true
+    },
+    {
+      "fixed_now": 1790000000.0,
+      "rows": [
+        [
+          1789999998.0,
+          "Alex",
+          "Alex: Please review the original request with a stated deadline (private details omitted)."
+        ],
+        [
+          1789999999.0,
+          "Alex",
+          "Alex: Please review the original request with a stated deadline (private details omitted)."
+        ]
+      ],
+      "two_source_occurrences": true,
+      "redacted_bodies_equal": true,
+      "source_timestamps_retained": true,
+      "bodies_and_context_secret_free": true,
+      "whole_rows_secret_free": true,
+      "second_pass_retains_two": true
+    }
+  ],
+  "mode": "pure helpers under installed fixture guard; fixed synthetic timestamps",
+  "heldout_payload_opened": false,
+  "actual_model_calls": false,
+  "native_or_outbound_execution": false
+}

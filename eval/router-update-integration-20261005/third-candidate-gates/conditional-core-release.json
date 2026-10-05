@@ -1,0 +1,15 @@
+{
+  "recorded_at_utc": "2026-10-05T21:18:22.680188+00:00",
+  "conditional_ack": "2026-10-05T21:14:43.662547+00:00",
+  "candidate_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "scope_owner": "/root/router_core",
+  "formal_audit": "BLOCK",
+  "mechanical_status": "FAIL178/179 exit1 preserved",
+  "verified_audit_entries": 16,
+  "verified_bundle_entries": 20,
+  "report_sha256": "2888ff74c01cd8ef895561e06ae87f48db3e6a1ccca63701b5c4ba1cd11c6b42",
+  "handoff_sha256": "7092e19ec9d26383b40cb823c166f529d88a1138c69c5753389ab35745574b4f",
+  "bundle_manifest_sha256": "a9f5155f9fdbd75f4391929314015487c6ac3dc27c4a137fb5da2bec41d8b336",
+  "source_parent_conditional_release": "R3/R4 four-file core scope only; no presentation edit permission",
+  "verification_note": "Initial verifier expected flat checksum map; adjusted only parent-owned verifier to declared files map, no evidence modified"
+}
