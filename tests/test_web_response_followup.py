@@ -792,16 +792,15 @@ def test_desktop_omlx_requires_qualified_server_and_parent(
                 return f"77 {os.getuid()} {child_command}\n".encode()
             if pid == "77":
                 return f"1 {os.getuid()} {parent_command}\n".encode()
-        if argv[0] == "/usr/sbin/lsof" and "-d" in argv:
-            pid = argv[4]
-            return ("p" + pid + "\nftxt\nn" + (child if pid == "321" else parent) + "\n").encode()
-        raise AssertionError(argv)
+        raise AssertionError(argv)      # the executable path is attributed_transport.process_path, never lsof -d txt
 
     class Info:
         st_mode = stat.S_IFREG | 0o755
         st_uid = os.getuid()
 
     monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport, "process_path",
+                        lambda pid: child if pid == 321 else parent)
     monkeypatch.setattr(attributed_transport, "tcp_listeners",
                         lambda: [("127.0.0.1", 8000)])
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
@@ -848,16 +847,15 @@ def test_desktop_omlx_rejects_unsafe_server_entry_and_extra_listener(monkeypatch
         if argv[0] == "/bin/ps":
             return (f"77 {os.getuid()} omlx-server\n" if argv[3] == "321"
                     else f"1 {os.getuid()} {parent}\n").encode()
-        if argv[0] == "/usr/sbin/lsof":
-            return ("p321\nftxt\nn" + child + "\n" if argv[4] == "321"
-                    else "p77\nftxt\nn" + parent + "\n").encode()
-        raise AssertionError(argv)
+        raise AssertionError(argv)      # the executable path is attributed_transport.process_path, never lsof -d txt
 
     class Info:
         st_uid = os.getuid()
         st_mode = stat.S_IFREG | 0o755
 
     monkeypatch.setattr(attributed_transport, "inspect_command", inspect)
+    monkeypatch.setattr(attributed_transport, "process_path",
+                        lambda pid: child if pid == 321 else parent)
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_manifest_absent", lambda self: None)
     monkeypatch.setattr(attributed_transport.DesktopOmlx, "_signed_process",
                         lambda self, pid, identity: None)

@@ -228,6 +228,10 @@ ADDITIONAL_FULL_TESTS = {
     # Characterization of the desktop oMLX attestation walker and _listener call shape
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
+    # Differential of the libproc executable-path lookup against the old lsof one, on disposable
+    # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
+    # port 8000, network or other process.
+    "tests/test_runtime_proc_path.py",
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",

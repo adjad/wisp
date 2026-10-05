@@ -24,7 +24,7 @@ import httpx
 import certifi
 from httpcore._backends.auto import AutoBackend
 
-from .local_peer import AuthRefused, ManagedOmlx, process_identity, read_private, tcp_listeners
+from .local_peer import AuthRefused, ManagedOmlx, process_identity, process_path, read_private, tcp_listeners
 
 
 # Plain-language headline for every attribution refusal. The precise reason
@@ -42,7 +42,7 @@ TRANSIENT_INSPECTION_REASONS = frozenset({
 
 
 # The independent inspections of one `DesktopOmlx._listener` run (two listener
-# lookups; then ps, lsof -d txt and the signature check for the server and for
+# lookups; then ps, the executable path and the signature check for the server and for
 # its parent) wait on child processes, so they are overlapped on a small private
 # pool.  This is scheduling only: every call still goes through the module-level
 # `inspect_command` / `tcp_listeners` (or the instance's own `_process`,
@@ -280,16 +280,10 @@ class DesktopOmlx:
             raise AuthRefused('desktop_process_unqualified') from None
 
     def _executable(self, pid):
-        raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid),
-                               '-d', 'txt', '-Fn'])
-        try:
-            rows = raw.decode('utf-8').splitlines()
-        except UnicodeError:
-            raise AuthRefused('desktop_executable_unqualified') from None
-        paths = [row[1:] for row in rows if row.startswith('n')]
-        if not paths:
-            raise AuthRefused('desktop_executable_unqualified')
-        return Path(paths[0])
+        # The kernel's answer (libproc proc_pidpath) replaces the `lsof -d txt` spawn.
+        # Same path for every real process, the same refusals, never more permissive than
+        # lsof (see local_peer.process_path); `_qualified_file` still decides on the Path.
+        return Path(process_path(pid))
 
     def _qualified_file(self, path, *, exact=None, parent=None, strict_permissions=False):
         try:
@@ -438,8 +432,8 @@ class DesktopOmlx:
                         != [('127.0.0.1', self.port)]):
                 raise AuthRefused('desktop_listener_unqualified')
             pid = int(rows[0][1:])
-            # Only a pid that passed both listener checks is inspected.  Its ps, lsof -d txt
-            # and signature check are independent of each other.
+            # Only a pid that passed both listener checks is inspected.  Its ps, executable
+            # path and signature check are independent of each other.
             server_process = inspections.run(self._process, pid)
             server_lookup = inspections.run(self._executable, pid)
             server_signature = inspections.run(self._signed_process, pid, 'python3')
