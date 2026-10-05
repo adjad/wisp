@@ -1,0 +1,1515 @@
+{
+ "version": 1,
+ "frozen": "2026-10-05",
+ "intents": {
+  "calendar_read": "Look at the user's own calendar or schedule",
+  "calendar_write": "Add, move or cancel an event on the user's calendar",
+  "reminder_create": "Create a reminder for the user",
+  "reminder_read": "List or check the user's existing reminders or to-dos",
+  "mail_read": "Read, search or summarize the user's email",
+  "mail_send": "Send or reply to an email now",
+  "mail_draft": "Prepare an email draft without sending it",
+  "messages_read": "Read or summarize the user's text messages",
+  "messages_send": "Send a text message now",
+  "messages_draft": "Prepare a text message without sending it",
+  "notes_read": "Find or read something in the user's notes",
+  "notes_write": "Create or add to a note",
+  "files": "Find, open or read a file on the computer",
+  "web_public": "Look up public information on the web (news, facts, prices, places)",
+  "weather": "Get the weather or forecast",
+  "device": "Control or inspect the Mac (volume, wifi, apps, battery, timers)",
+  "memory_recall": "Recall something the user told the assistant earlier",
+  "memory_save": "Remember a fact the user is telling the assistant",
+  "chat": "Just answer or write text; no tool or personal data needed",
+  "clarify": "Too ambiguous to act; ask the user what they mean"
+ },
+ "description": "Held-out routing-arm comparison set; frozen before any arm was run. first = acceptable first tools ([] = no tool should be called first).",
+ "cases": [
+  {
+   "id": "H001",
+   "category": "weekly",
+   "prompt": "what does my week look like",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H002",
+   "category": "weekly",
+   "prompt": "anything on the books for the rest of the week",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H003",
+   "category": "weekly",
+   "prompt": "how packed is next week",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H004",
+   "category": "weekly",
+   "prompt": "give me the rundown for this weekend",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H005",
+   "category": "weekly",
+   "prompt": "what's on monday through wednesday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H006",
+   "category": "weekly",
+   "prompt": "am I double booked anywhere this week",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H007",
+   "category": "weekly",
+   "prompt": "show my schedule for the next 3 days",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H008",
+   "category": "weekly",
+   "prompt": "what did my week look like last week",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H009",
+   "category": "weekly",
+   "prompt": "any meetings between now and friday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H010",
+   "category": "weekly",
+   "prompt": "what's on for the 1st through the 3rd",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H011",
+   "category": "weekly",
+   "prompt": "is my thursday afternoon open",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H012",
+   "category": "weekly",
+   "prompt": "what have i got after 5 today",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H013",
+   "category": "weekly",
+   "prompt": "block 9 to 11 next tuesday for deep work",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_write",
+   "first": [
+    "add_calendar_event",
+    "cancel_event",
+    "update_event",
+    "get_upcoming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H014",
+   "category": "weekly",
+   "prompt": "move my 3pm with Dana to 4",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_write",
+   "first": [
+    "add_calendar_event",
+    "cancel_event",
+    "update_event",
+    "get_upcoming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H015",
+   "category": "weekly",
+   "prompt": "cancel friday's standup",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_write",
+   "first": [
+    "add_calendar_event",
+    "cancel_event",
+    "update_event",
+    "get_upcoming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H016",
+   "category": "weekly",
+   "prompt": "put the school play on the calendar for the 18th at 6pm",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_write",
+   "first": [
+    "add_calendar_event",
+    "cancel_event",
+    "update_event",
+    "get_upcoming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H017",
+   "category": "followup",
+   "prompt": "and next week?",
+   "last_user": "what's on this week",
+   "last_assistant": "This week: Tue dentist, Thu standup.",
+   "last_tools": "get_upcoming",
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H018",
+   "category": "followup",
+   "prompt": "what about saturday",
+   "last_user": "anything on friday",
+   "last_assistant": "Friday is clear.",
+   "last_tools": "get_upcoming",
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H019",
+   "category": "followup",
+   "prompt": "only the ones from Sam",
+   "last_user": "show my unread email",
+   "last_assistant": "You have 6 unread emails.",
+   "last_tools": "view_emails",
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H020",
+   "category": "followup",
+   "prompt": "any from mom?",
+   "last_user": "any new texts",
+   "last_assistant": "3 new texts from Alex and Jordan.",
+   "last_tools": "summarize_messages",
+   "intent": "messages_read",
+   "first": [
+    "view_messages",
+    "summarize_messages"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H021",
+   "category": "followup",
+   "prompt": "make that 7 instead",
+   "last_user": "remind me at 6pm to call the bank",
+   "last_assistant": "Okay, I'll remind you at 6pm.",
+   "last_tools": "add_reminder",
+   "intent": "reminder_create",
+   "first": [
+    "update_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H022",
+   "category": "followup",
+   "prompt": "open the second one",
+   "last_user": "find my tax pdfs",
+   "last_assistant": "1. 2024_tax.pdf 2. 2025_tax.pdf",
+   "last_tools": "find_files",
+   "intent": "files",
+   "first": [
+    "open_app",
+    "read_file",
+    "reveal_in_finder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H023",
+   "category": "followup",
+   "prompt": "reply saying i'll be there",
+   "last_user": "any email from Priya",
+   "last_assistant": "Priya invited you to lunch Friday.",
+   "last_tools": "view_emails",
+   "intent": "mail_send",
+   "first": [
+    "reply_to_email",
+    "send_email",
+    "draft_email"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H024",
+   "category": "followup",
+   "prompt": "text her that",
+   "last_user": "what's the address of the cafe",
+   "last_assistant": "It's 12 Main St.",
+   "last_tools": "web_search",
+   "intent": "messages_send",
+   "first": [
+    "send_message",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H025",
+   "category": "followup",
+   "prompt": "save that to my notes",
+   "last_user": "what's the wifi at the cabin",
+   "last_assistant": "The cabin wifi is Pine42 (from your notes).",
+   "last_tools": "search_notes",
+   "intent": "notes_write",
+   "first": [
+    "create_note",
+    "append_note"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H026",
+   "category": "followup",
+   "prompt": "no, the other dentist",
+   "last_user": "when's my dentist appointment",
+   "last_assistant": "Dr. Lee on the 12th at 9am.",
+   "last_tools": "get_upcoming",
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H027",
+   "category": "followup",
+   "prompt": "tomorrow instead",
+   "last_user": "what's on today",
+   "last_assistant": "Today you have nothing scheduled.",
+   "last_tools": "get_upcoming",
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H028",
+   "category": "followup",
+   "prompt": "louder",
+   "last_user": "set the volume to 20",
+   "last_assistant": "Volume set to 20%.",
+   "last_tools": "set_volume",
+   "intent": "device",
+   "first": [
+    "set_volume"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H029",
+   "category": "personal_vs_public",
+   "prompt": "what's the news on the apple event",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H030",
+   "category": "personal_vs_public",
+   "prompt": "what's on my apple calendar",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H031",
+   "category": "personal_vs_public",
+   "prompt": "who won the game last night",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "get_sports_scores",
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H032",
+   "category": "personal_vs_public",
+   "prompt": "did i win the fantasy league email",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H033",
+   "category": "personal_vs_public",
+   "prompt": "what's tesla stock doing",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "get_stock_price",
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H034",
+   "category": "personal_vs_public",
+   "prompt": "what's my tesla service appointment",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief",
+    "search_notes",
+    "view_emails"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H035",
+   "category": "personal_vs_public",
+   "prompt": "latest messages from the white house",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H036",
+   "category": "personal_vs_public",
+   "prompt": "latest messages from my landlord",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_read",
+   "first": [
+    "view_messages",
+    "summarize_messages"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H037",
+   "category": "personal_vs_public",
+   "prompt": "what's the best pizza near me",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "find_place",
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H038",
+   "category": "personal_vs_public",
+   "prompt": "what pizza did i order last time",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread",
+    "search_notes"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H039",
+   "category": "personal_vs_public",
+   "prompt": "how's the traffic to work",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "travel_time",
+    "get_directions"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H040",
+   "category": "personal_vs_public",
+   "prompt": "what time does my flight leave",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief",
+    "view_emails",
+    "search_notes"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H041",
+   "category": "personal_vs_public",
+   "prompt": "what's the population of japan",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H042",
+   "category": "personal_vs_public",
+   "prompt": "what's the weather in tokyo this weekend",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "weather",
+   "first": [
+    "get_weather",
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H043",
+   "category": "personal_vs_public",
+   "prompt": "do i need an umbrella today",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "weather",
+   "first": [
+    "get_weather",
+    "rain_radar"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H044",
+   "category": "personal_vs_public",
+   "prompt": "what's in my clipboard",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "clipboard_read"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H045",
+   "category": "negation",
+   "prompt": "check my calendar but don't look at email",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H046",
+   "category": "negation",
+   "prompt": "summarize my inbox without replying to anything",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H047",
+   "category": "negation",
+   "prompt": "what's on today, skip the reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H048",
+   "category": "negation",
+   "prompt": "search my notes, not the web, for the lease terms",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "notes_read",
+   "first": [
+    "search_notes"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H049",
+   "category": "negation",
+   "prompt": "don't send it, just write a text to Sam saying I'm late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_draft",
+   "first": [
+    "draft_message",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H050",
+   "category": "negation",
+   "prompt": "draft an email to the landlord but do not send",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_draft",
+   "first": [
+    "draft_email",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H051",
+   "category": "negation",
+   "prompt": "tell me about rome without searching online",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H052",
+   "category": "negation",
+   "prompt": "never mind the reminder, what's the weather",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "weather",
+   "first": [
+    "get_weather",
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H053",
+   "category": "negation",
+   "prompt": "i don't need a reminder, just tell me when the meeting is",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H054",
+   "category": "negation",
+   "prompt": "don't turn off bluetooth, is it on?",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "list_bluetooth_devices",
+    "system_status",
+    "toggle_setting"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H055",
+   "category": "negation",
+   "prompt": "read my texts but don't mark anything read",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_read",
+   "first": [
+    "view_messages",
+    "summarize_messages"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H056",
+   "category": "negation",
+   "prompt": "what did i tell you about the gate code, don't check notes",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "memory_recall",
+   "first": [
+    "recall",
+    "search_conversations"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H057",
+   "category": "time",
+   "prompt": "remind me at 9:15pm tonight to lock the door",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_create",
+   "first": [
+    "add_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H058",
+   "category": "time",
+   "prompt": "remind me on october 20 at 8am to renew the parking permit",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_create",
+   "first": [
+    "add_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H059",
+   "category": "time",
+   "prompt": "set a reminder for 7:30 tomorrow morning to call the vet",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_create",
+   "first": [
+    "add_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H060",
+   "category": "time",
+   "prompt": "remind me in 45 minutes to take the laundry out",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_create",
+   "first": [
+    "add_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H061",
+   "category": "time",
+   "prompt": "what time is it in london",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "world_time"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H062",
+   "category": "time",
+   "prompt": "what's on my calendar at 3pm pacific tomorrow",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H063",
+   "category": "time",
+   "prompt": "schedule a call with Ben at 10am eastern on friday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_write",
+   "first": [
+    "add_calendar_event"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H064",
+   "category": "time",
+   "prompt": "remind me sunday at noon to water the plants",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_create",
+   "first": [
+    "add_reminder"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H065",
+   "category": "time",
+   "prompt": "what reminders do i have for tomorrow",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_read",
+   "first": [
+    "get_upcoming",
+    "search_reminders"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H066",
+   "category": "time",
+   "prompt": "set a timer for 12 minutes",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "set_timer",
+    "manage_timers"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H067",
+   "category": "time",
+   "prompt": "wake me up at 6:45",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "set_alarm"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H068",
+   "category": "time",
+   "prompt": "what was on my calendar on september 30",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "calendar_read",
+   "first": [
+    "get_past_events",
+    "get_upcoming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H069",
+   "category": "failure_recovery",
+   "prompt": "try again",
+   "last_user": "check my email",
+   "last_assistant": "I couldn't reach Mail just now.",
+   "last_tools": "view_emails",
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H070",
+   "category": "failure_recovery",
+   "prompt": "check notes instead",
+   "last_user": "where's the warranty for the fridge",
+   "last_assistant": "I didn't find it in your email.",
+   "last_tools": "view_emails",
+   "intent": "notes_read",
+   "first": [
+    "search_notes"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H071",
+   "category": "failure_recovery",
+   "prompt": "what about my texts",
+   "last_user": "did Sam confirm dinner",
+   "last_assistant": "Nothing from Sam in your email.",
+   "last_tools": "view_emails",
+   "intent": "messages_read",
+   "first": [
+    "view_messages",
+    "summarize_messages"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H072",
+   "category": "failure_recovery",
+   "prompt": "look it up online then",
+   "last_user": "what's the return policy for my order",
+   "last_assistant": "I couldn't find a return policy in your notes.",
+   "last_tools": "search_notes",
+   "intent": "web_public",
+   "first": [
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H073",
+   "category": "failure_recovery",
+   "prompt": "ok search the web",
+   "last_user": "when does the pool open",
+   "last_assistant": "Your calendar has nothing about the pool.",
+   "last_tools": "get_upcoming",
+   "intent": "web_public",
+   "first": [
+    "web_search"
+   ],
+   "source": "public"
+  },
+  {
+   "id": "H074",
+   "category": "failure_recovery",
+   "prompt": "can you retry the calendar",
+   "last_user": "what's on tomorrow",
+   "last_assistant": "Calendar access timed out.",
+   "last_tools": "get_upcoming",
+   "intent": "calendar_read",
+   "first": [
+    "get_upcoming",
+    "get_past_events",
+    "find_free_time",
+    "daily_brief"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H075",
+   "category": "everyday",
+   "prompt": "pull up the note about the camping trip",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "notes_read",
+   "first": [
+    "search_notes"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H076",
+   "category": "everyday",
+   "prompt": "add bread to my shopping note",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "notes_write",
+   "first": [
+    "append_note",
+    "create_note"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H077",
+   "category": "everyday",
+   "prompt": "jot this down: parking level 3 spot 41",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "notes_write",
+   "first": [
+    "create_note",
+    "append_note"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H078",
+   "category": "everyday",
+   "prompt": "email Ben the slides link https://example.com/deck",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_send",
+   "first": [
+    "send_email",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H079",
+   "category": "everyday",
+   "prompt": "text dad happy birthday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_send",
+   "first": [
+    "send_message",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H080",
+   "category": "everyday",
+   "prompt": "did the school email about picture day",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H081",
+   "category": "everyday",
+   "prompt": "what did jordan text me this morning",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_read",
+   "first": [
+    "view_messages",
+    "summarize_messages"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H082",
+   "category": "everyday",
+   "prompt": "find the pdf of my car insurance",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "files",
+   "first": [
+    "find_files"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H083",
+   "category": "everyday",
+   "prompt": "open the budget spreadsheet",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "files",
+   "first": [
+    "find_files",
+    "open_app"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H084",
+   "category": "everyday",
+   "prompt": "what's in my downloads",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "files",
+   "first": [
+    "list_dir",
+    "find_files"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H085",
+   "category": "everyday",
+   "prompt": "remember that my locker is 112",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "memory_save",
+   "first": [
+    "remember"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H086",
+   "category": "everyday",
+   "prompt": "what's my locker number again, i told you",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "memory_recall",
+   "first": [
+    "recall",
+    "search_conversations"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H087",
+   "category": "everyday",
+   "prompt": "turn on do not disturb",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "toggle_setting"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H088",
+   "category": "everyday",
+   "prompt": "quit zoom",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "quit_app",
+    "force_quit_app"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H089",
+   "category": "everyday",
+   "prompt": "how much battery is left",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "get_battery_status",
+    "system_status"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H090",
+   "category": "everyday",
+   "prompt": "play some rain sounds",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "device",
+   "first": [
+    "play_ambient",
+    "music",
+    "play_streaming"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H091",
+   "category": "everyday",
+   "prompt": "write a limerick about my cat",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H092",
+   "category": "everyday",
+   "prompt": "explain the difference between ira and 401k",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H093",
+   "category": "everyday",
+   "prompt": "thanks that's perfect",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H094",
+   "category": "everyday",
+   "prompt": "translate good morning to french",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H095",
+   "category": "everyday",
+   "prompt": "what's 18% tip on 64 dollars",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "chat",
+   "first": [
+    "calculate"
+   ],
+   "source": "none"
+  },
+  {
+   "id": "H096",
+   "category": "everyday",
+   "prompt": "do it",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "clarify",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H097",
+   "category": "everyday",
+   "prompt": "send that to him",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "clarify",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H098",
+   "category": "everyday",
+   "prompt": "change it",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "clarify",
+   "first": [],
+   "source": "none"
+  },
+  {
+   "id": "H099",
+   "category": "everyday",
+   "prompt": "what's my to do list",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_read",
+   "first": [
+    "get_upcoming",
+    "search_reminders"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H100",
+   "category": "everyday",
+   "prompt": "mark the milk reminder done",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "reminder_read",
+   "first": [
+    "complete_reminder",
+    "get_upcoming",
+    "search_reminders"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H101",
+   "category": "everyday",
+   "prompt": "summarize the email thread about the offsite",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_read",
+   "first": [
+    "view_emails",
+    "summarize_emails",
+    "triage_inbox",
+    "summarize_thread"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H102",
+   "category": "everyday",
+   "prompt": "draft a text to the plumber asking when he's coming",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "messages_draft",
+   "first": [
+    "draft_message",
+    "lookup_contact"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H103",
+   "category": "everyday",
+   "prompt": "write up an email to the team about the holiday hours, i'll review it first",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "mail_draft",
+   "first": [
+    "draft_email"
+   ],
+   "source": "personal"
+  },
+  {
+   "id": "H104",
+   "category": "everyday",
+   "prompt": "look up a recipe for chili",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "intent": "web_public",
+   "first": [
+    "recipe_lookup",
+    "web_search"
+   ],
+   "source": "public"
+  }
+ ]
+}
