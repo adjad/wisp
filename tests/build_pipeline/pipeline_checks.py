@@ -149,15 +149,25 @@ class PipelineTests(unittest.TestCase):
             cases=dict(collected=len(BROWSER_EXPECTED), exitstatus=0, rows=[
                 dict(nodeid=node, phase=phase, outcome='passed', xfail=False)
                 for node in sorted(BROWSER_EXPECTED) for phase in ('setup', 'call', 'teardown')]))
+        from release_performance_gate import MODULE as BENCHMARK_MODULE, EXPECTED as BENCHMARK_EXPECTED, PROBES as BENCHMARK_PROBES
+        benchmark = dict(schema_version=1, scope="offline-benchmark-reserved-loopback",
+            candidate_sha=self.meta["commit"], ending_sha=self.meta["commit"], clean_start=True,
+            clean_end=True, dirty_allowed=False, status="PASS", returncode=0, port=51010,
+            probes={name: True for name in BENCHMARK_PROBES},
+            cases=dict(collected=len(BENCHMARK_EXPECTED), exitstatus=0, rows=[
+                dict(nodeid=node, phase=phase, outcome="passed", xfail=False)
+                for node in sorted(BENCHMARK_EXPECTED) for phase in ("setup", "call", "teardown")]))
         return {"schema_version": 3, "status": "PASS", "candidate_sha": self.meta["commit"],
                 "ending_sha": self.meta["commit"], "sha_stable": True, "worktree_clean": True,
                 "dirty_allowed": False, "profiles": ["full"], "safety_mode": "offline",
-                "native_mode": "included", "totals": {"gates": 2, "passed_gates": 2,
+                "native_mode": "included", "totals": {"gates": 3, "passed_gates": 3,
                 "failed_gates": 0, "blocked_gates": 0},
                 'results':[{'name':MODULE,'status':'PASS','returncode':0,'passed':9,'failed':0,'skipped':0,
                             'stdout':json.dumps({'native_gate':native})},
                            {'name':BROWSER_MODULE,'status':'PASS','returncode':0,'passed':len(BROWSER_EXPECTED),'failed':0,'skipped':0,
-                            'stdout':json.dumps({'browser_bridge_gate':browser})}]}
+                            'stdout':json.dumps({'browser_bridge_gate':browser})},
+                           {"name":BENCHMARK_MODULE,"status":"PASS","returncode":0,"passed":len(BENCHMARK_EXPECTED),"failed":0,"skipped":0,
+                            "stdout":json.dumps({"benchmark_gate":benchmark})}]}
 
     def test_native_peer_evidence_is_mandatory_and_exact(self):
         from native_peer_gate import validate
@@ -200,7 +210,7 @@ class PipelineTests(unittest.TestCase):
         self.artifact()
         # Rehash the damaged combined report: the mandatory evidence validator
         # must reject it even when the outer artifact hashes are self-consistent.
-        report['results'].pop()
+        report['results'].pop(1)
         p.json_write(self.root / 'simulation-qa.json', report)
         provenance = json.loads((self.root / 'provenance.json').read_text())
         provenance['simulation_sha256'] = p.digest(self.root / 'simulation-qa.json')
@@ -212,6 +222,70 @@ class PipelineTests(unittest.TestCase):
         report['results'].append(report['results'][1])
         with self.assertRaises(p.BuildError):
             p.validate_simulation(report, self.meta['commit'])
+
+    def test_benchmark_fixture_evidence_is_mandatory_complete_and_sha_bound(self):
+        from release_performance_gate import validate, load_pinned
+        report = self.qa_report()
+        benchmark = json.loads(report["results"][2]["stdout"])["benchmark_gate"]
+        for mutation in ("missing", "duplicate", "skip", "xfail", "stale", "dirty", "probe", "port8000", "renamed"):
+            changed = json.loads(json.dumps(benchmark))
+            if mutation == "missing": changed["cases"]["rows"].pop()
+            if mutation == "duplicate": changed["cases"]["rows"].append(changed["cases"]["rows"][0])
+            if mutation == "skip": changed["cases"]["rows"][0]["outcome"] = "skipped"
+            if mutation == "xfail": changed["cases"]["rows"][0]["xfail"] = True
+            if mutation == "stale": changed["ending_sha"] = "b" * 40
+            if mutation == "dirty": changed["clean_end"] = False
+            if mutation == "probe": changed["probes"]["denied_loopback"] = False
+            if mutation == "port8000": changed["port"] = 8000
+            if mutation == "renamed": changed["cases"]["rows"][0]["nodeid"] = "different::case"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                validate(changed, self.meta["commit"])
+        evidence = self.root / "benchmark.json"
+        evidence.write_text(json.dumps(benchmark))
+        load_pinned(evidence, p.digest(evidence), self.meta["commit"])
+        with self.assertRaises(ValueError):
+            load_pinned(evidence, "0" * 64, self.meta["commit"])
+        report["results"].pop(2)
+        with self.assertRaisesRegex(p.BuildError, "benchmark"):
+            p.validate_simulation(report, self.meta["commit"])
+
+    def test_benchmark_fixture_profile_preserves_generic_network_and_home_denials(self):
+        import release_performance_gate as gate
+        native_git = self.root / "developer/usr/bin/git"
+        native_git.parent.mkdir(parents=True)
+        native_git.write_text("synthetic native git")
+        native_git.chmod(0o700)
+        native_git = native_git.resolve()
+        with patch.object(gate.subprocess, "run", return_value=Namespace(stdout=str(native_git))) as selection:
+            selected = gate.select_native_git()
+            with self.synthetic_profile_metadata():
+                policy = gate.profile(self.root, Path(sys.executable), 51010, self.root / "canary", selected)
+            with patch.object(sys, "path", [str(ROOT), *sys.path]):
+                env = gate.fixture_environment(self.root, selected)
+        selection.assert_called_once_with(["/usr/bin/xcrun", "--find", "git"], check=True,
+            env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10)
+        self.assertEqual(selected, native_git)
+        self.assertEqual(gate.shutil.which("git", path=env["PATH"]), str(selected))
+        self.assertTrue(env["PATH"].startswith(str(selected.parent) + os.pathsep))
+        self.assertNotIn("DEVELOPER_DIR", env)
+        self.assertIn("(deny network*)", policy)
+        self.assertIn('(allow network-outbound (remote ip "localhost:51010"))', policy)
+        self.assertIn('(allow network-bind network-inbound (local ip "localhost:51010"))', policy)
+        self.assertNotIn('localhost:8000', policy)
+        execution = next(line for line in policy.splitlines() if line.startswith("(allow process-exec "))
+        self.assertNotIn("subpath", execution)
+        for prohibited in ("/bin/sh", "/bin/bash", "/usr/bin/env", "/bin/rm", "/usr/bin/swiftc", str(self.root)):
+            self.assertNotIn('(literal ' + json.dumps(prohibited) + ')', execution)
+        self.assertNotIn('(literal "/usr/bin/git")', execution)
+        self.assertIn('(literal ' + json.dumps(str(selected)) + ')', execution)
+        self.assertNotIn("xcodebuild", execution)
+        self.assertIn('(literal ' + json.dumps(str(Path(sys.executable).resolve())) + ')', execution)
+        self.assertNotIn('(subpath ' + json.dumps(str(p.STATE.resolve())) + ')', policy)
+        for invalid in (8000, 0, "51010", True):
+            with self.assertRaises(ValueError): gate.profile(self.root, Path(sys.executable), invalid, self.root / "canary", selected)
+        with patch.object(gate.subprocess, "run", return_value=Namespace(stdout="/usr/bin/git")):
+            with self.assertRaisesRegex(ValueError, "benchmark_fixture_git_invalid"):
+                gate.select_native_git()
 
     def test_native_fixture_timeout_closes_descendant_descriptors(self):
         import select
@@ -331,6 +405,7 @@ class PipelineTests(unittest.TestCase):
     def test_native_only_simulation_does_not_require_or_authorize_node(self):
         import native_peer_gate
         import browser_bridge_gate
+        import release_performance_gate
         calls = []
         class FakeRunner:
             logs = self.root
@@ -341,7 +416,7 @@ class PipelineTests(unittest.TestCase):
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
         with self.synthetic_profile_metadata(), patch.object(p, "_qa_node_runtime", side_effect=p.BuildError("Node is required")) as resolver, \
-                patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(p, "validate_simulation"):
+                patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable), native_only=True)
         resolver.assert_not_called()
         self.assertNotIn("node-sandbox-contract", [label for label, _, _ in calls])
@@ -363,6 +438,7 @@ class PipelineTests(unittest.TestCase):
     def test_full_simulation_pins_runtime_and_requires_node_preflight(self):
         import native_peer_gate
         import browser_bridge_gate
+        import release_performance_gate
         calls = []
         selected = str(p._qa_node_runtime())
         class FakeRunner:
@@ -373,7 +449,7 @@ class PipelineTests(unittest.TestCase):
                 if "--report" in command:
                     Path(command[command.index("--report") + 1]).write_text("{}")
                 return 0, self.root / "unused.log"
-        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(p, "validate_simulation"):
+        with self.synthetic_profile_metadata(), patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation"):
             p.simulation_tests(FakeRunner(), Path(sys.executable))
         names = [label for label, _, _ in calls]
         self.assertLess(names.index("node-sandbox-contract"), names.index("simulation-qa"))
@@ -383,6 +459,8 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(kwargs["env"]["QA_NODE_RUNTIME"], selected)
                 self.assertEqual(kwargs["env"]["PATH"], "/usr/bin:/bin")
             if label == "simulation-qa":
+                self.assertIn("BENCHMARK_GATE_REPORT", kwargs["env"])
+                self.assertEqual(len(kwargs["env"]["BENCHMARK_GATE_SHA256"]), 64)
                 self.assertIn("BROWSER_BRIDGE_GATE_REPORT", kwargs["env"])
                 self.assertEqual(len(kwargs["env"]["BROWSER_BRIDGE_GATE_SHA256"]), 64)
                 self.assertNotIn("--only-native", command)
@@ -1547,6 +1625,85 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "preview"):
             release.preflight(args, env)
 
+    def performance_args(self):
+        return Namespace(performance_receipt=self.root / "receipt.json",
+                         performance_baseline=self.root / "approval.json",
+                         performance_receipt_sha256="a" * 64, performance_baseline_sha256="b" * 64)
+
+    def test_both_publishers_require_performance_before_any_publication_steps(self):
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
+        for publisher, preflight in ((release.release, "preflight"), (release.release_ad_hoc, "ad_hoc_preflight")):
+            with self.subTest(publisher=publisher.__name__), patch.object(release, preflight), \
+                    patch.object(release, "verify_artifacts") as artifacts, \
+                    patch.object(release, "secret_run") as secrets, \
+                    patch.object(release, "create_public_draft") as publish:
+                with self.assertRaisesRegex(p.BuildError, "performance receipt"):
+                    publisher(Namespace(logs=self.root), args)
+                artifacts.assert_not_called()
+                secrets.assert_not_called()
+                publish.assert_not_called()
+
+    def test_performance_gate_derives_source_bindings_and_never_accepts_fixture_authority(self):
+        args = self.performance_args()
+        cases = [(0, {"verdict": "PASS", "authorizes_release": True}),
+                 (0, {"verdict": "PASS", "authorizes_release": False}),
+                 (1, {"verdict": "BLOCK", "authorizes_release": False}),
+                 (2, {"verdict": "INCONCLUSIVE", "authorizes_release": False}),
+                 (3, {"verdict": "REFUSED", "authorizes_release": False}),
+                 (4, {"verdict": "PASS", "authorizes_release": True})]
+        observed = []
+        class Checker:
+            def exec_module(inner, module):
+                module.load_bundle = lambda path: {"corpus_sha256": "c" * 64, "policy_sha256": "d" * 64}
+                module.harness_sha256 = lambda: "e" * 64
+                def check(opts):
+                    observed.append(opts)
+                    return cases[index]
+                module.check_receipt = check
+        for index in range(len(cases)):
+            with self.subTest(index=index), patch.object(release, "git", return_value="f" * 40), \
+                    patch.object(importlib.util, "spec_from_file_location", return_value=Namespace(name="synthetic_checker", loader=Checker())), \
+                    patch.object(importlib.util, "module_from_spec", return_value=Namespace()):
+                if index == 0:
+                    release.require_release_performance(Namespace(logs=self.root), args)
+                else:
+                    with self.assertRaisesRegex(p.BuildError, "did not authorize"):
+                        release.require_release_performance(Namespace(logs=self.root), args)
+        opts = observed[0]
+        self.assertEqual(opts.expect_candidate_sha, "f" * 40)
+        self.assertEqual(opts.expect_corpus_sha256, "c" * 64)
+        self.assertEqual(opts.expect_policy_sha256, "d" * 64)
+        self.assertEqual(opts.expect_harness_sha256, "e" * 64)
+        self.assertEqual(opts.expect_receipt_sha256, "a" * 64)
+        self.assertEqual(opts.approved_baseline_sha256, "b" * 64)
+        self.assertEqual(opts.lane, "desktop")
+        self.assertFalse(hasattr(opts, "accept_fixture_source"))
+        self.assertEqual(opts.repo, ROOT)
+
+    def test_actual_performance_checker_refuses_missing_and_scalar_evidence(self):
+        args = self.performance_args()
+        for body in (None, "null", "[]", "7", "{}"):
+            if body is not None:
+                args.performance_receipt.write_text(body)
+                args.performance_receipt_sha256 = p.digest(args.performance_receipt)
+            with self.subTest(body=body), patch.object(release, "git", return_value="f" * 40):
+                with self.assertRaisesRegex(p.BuildError, "did not authorize"):
+                    release.require_release_performance(Namespace(logs=self.root), args)
+        evidence = json.loads((self.root / "release-performance-gate.json").read_text())
+        self.assertFalse(evidence["authorizes_release"])
+
+    def test_release_workflows_require_external_receipt_and_baseline_bindings(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        for name in ("performance_run_id", "performance_receipt_sha256", "performance_baseline_sha256"):
+            self.assertIn(name + ":", workflow)
+        self.assertEqual(workflow.count("name: wisp-release-performance-${{ github.sha }}"), 2)
+        self.assertEqual(workflow.count('d["status"] == "completed" and d["conclusion"] == "success"'), 2)
+        self.assertEqual(workflow.count('d["head_sha"] == os.environ["PERFORMANCE_CANDIDATE_SHA"]'), 2)
+        self.assertEqual(workflow.count('d["head_repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"]'), 2)
+        self.assertEqual(workflow.count("--performance-receipt .wisp-build/performance/receipt.json"), 2)
+        self.assertEqual(workflow.count('--performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"'), 2)
+        self.assertEqual(workflow.count('--performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"'), 2)
+
     def adhoc_fixture(self):
         checkout = self.root
         self.root = checkout / "dist/candidate"
@@ -1600,6 +1757,8 @@ print('external venv readable; private home and writes denied')
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, environment, clear=True))
             stack.enter_context(patch.object(release, "ROOT", checkout))
+            # This fixture exercises asset publication mechanics. Gate behavior is tested separately.
+            stack.enter_context(patch.object(release, "require_release_performance"))
             stack.enter_context(patch.object(release, "git", side_effect=git))
             stack.enter_context(patch.object(p, "verify_bundle_signature"))
             stack.enter_context(patch.object(release, "distribution_roundtrip"))

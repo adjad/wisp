@@ -48,8 +48,16 @@ def main():
         browser_report = browser_bridge_gate.load_pinned(os.environ['BROWSER_BRIDGE_GATE_REPORT'],
             os.environ['BROWSER_BRIDGE_GATE_SHA256'], qa._git('rev-parse', 'HEAD'),
             allow_dirty='--allow-dirty' in sys.argv)
+        import release_performance_gate
+        benchmark_report = release_performance_gate.load_pinned(os.environ["BENCHMARK_GATE_REPORT"],
+            os.environ["BENCHMARK_GATE_SHA256"], qa._git("rev-parse", "HEAD"), allow_dirty="--allow-dirty" in sys.argv)
         original_run=qa._run
         def run(name,command,*args,**kwargs):
+            if name == release_performance_gate.MODULE:
+                print("[PASS] " + name + " (" + str(release_performance_gate.EXPECTED_COUNT) + " separately sandboxed offline benchmark cases)", flush=True)
+                return qa.GateResult(name, [str(ROOT / "build-support/release_performance_gate.py")], 0,
+                    benchmark_report["duration_s"], release_performance_gate.EXPECTED_COUNT, 0, 0,
+                    json.dumps({"benchmark_gate": benchmark_report}, sort_keys=True), "")
             if name == browser_bridge_gate.MODULE:
                 print('[PASS] ' + name + ' (' + str(len(browser_bridge_gate.EXPECTED)) + ' separately sandboxed signed Unix cases)', flush=True)
                 return qa.GateResult(name, [str(ROOT / 'build-support/browser_bridge_gate.py')], 0,

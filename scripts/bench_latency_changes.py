@@ -309,7 +309,19 @@ if __name__ == "__main__":
     cmp.add_argument("--after", type=Path, required=True)
     cmp.add_argument("--output", type=Path, required=True)
     cmp.add_argument("--reps", type=int, default=3)
+    # The release benchmark is a separate, stricter mode. Its entry point lives
+    # here so there is one latency harness, but `capture` and `compare` above
+    # (fake model, saved synthetic requests) are NOT release evidence and the
+    # release checker refuses their output. Everything after `release` is
+    # handed to scripts/release_performance.py unchanged.
+    rel = subs.add_parser("release", add_help=False,
+                          help="release performance benchmark: run, check, info, propose-baseline")
+    rel.add_argument("release_args", nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.mode == "release":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import release_performance
+        sys.exit(release_performance.main(args.release_args))
     if args.mode == "capture":
         asyncio.run(capture(args.source_root.resolve(), args.output.resolve()))
     else:
