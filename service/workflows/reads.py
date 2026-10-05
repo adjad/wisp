@@ -294,7 +294,7 @@ def _sender_phrase(raw: str) -> str | None:
 
 
 def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
-                 last_stock_response: str = ""):
+                 last_stock_response: str = "", now: datetime | None = None):
     if deliberate(prompt) is not None:
         return None
     text = _normalize(prompt).strip(" *_.?!")
@@ -304,15 +304,14 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if re.search(r"\b(?:create|set|add|remove|delete|cancel|update|remind)\b", text, re.I):
         return None
     period = _date_range(text)
-    from service.router.intent.grammar import personal_agenda_period
-    if agenda_period := personal_agenda_period(text):
-        from service.router.intent.compiler import canonical_period, UnsupportedRead
-        from service.router.intent.schema import TimeScope
-        try:
-            resolved = canonical_period(TimeScope(named=agenda_period))
-        except UnsupportedRead as exc:
-            return [], str(exc)
-        return [("get_upcoming", {"period": resolved})], ""
+    from service.router.intent.grammar import personal_agenda_args
+    from service.router.intent.compiler import UnsupportedRead
+    try:
+        agenda_args = personal_agenda_args(text, now=now)
+    except UnsupportedRead as exc:
+        return [], str(exc)
+    if agenda_args is not None:
+        return [("get_upcoming", agenda_args)], ""
     if re.fullmatch(r"(?:my\s+)?daily\s+(?:summary|brief|digest)", text, re.I):
         return [("daily_brief", {})], ""
     if re.fullmatch(r"(?:show|put|keep)?\s*(?:it|this|that)?\s*(?:here\s+)?on\s+wisp", text, re.I):

@@ -6944,20 +6944,19 @@ async def route(text: str, *,
             return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
-    from service.router.intent.grammar import personal_agenda_period
-    if agenda_period := personal_agenda_period(text):
-        from service.router.intent.compiler import canonical_period, UnsupportedRead
-        from service.router.intent.schema import TimeScope
-        try:
-            resolved = canonical_period(TimeScope(named=agenda_period), now=intent_now)
-        except UnsupportedRead as exc:
-            decision = _mk_scoped([], "unsupported exact agenda time filter", expect=False)
-            decision.source = "intent"
-            decision.route_source = "intent_clarify"
-            decision.intent_response = str(exc)
-            return decision
+    from service.router.intent.grammar import personal_agenda_args
+    from service.router.intent.compiler import UnsupportedRead
+    try:
+        agenda_args = personal_agenda_args(text, now=intent_now)
+    except UnsupportedRead as exc:
+        decision = _mk_scoped([], "unsupported exact agenda time filter", expect=False)
+        decision.source = "intent"
+        decision.route_source = "intent_clarify"
+        decision.intent_response = str(exc)
+        return decision
+    if agenda_args is not None:
         return _verified_private_read(
-            [("get_upcoming", {"period": resolved})],
+            [("get_upcoming", agenda_args)],
             "complete personal agenda scope -> deterministic read", text)
     # The model interprets supported reads only. Safety/mention/device and
     # authored-action boundaries above remain authoritative. No model tool

@@ -484,3 +484,143 @@ def test_legacy_client_preserves_canonical_transport_and_no_secret_access():
     assert not asyncio.run(resident_eligible(client, replace(TARGET, revision="r1")))
     assert not asyncio.run(resident_eligible(client, replace(TARGET, endpoint=replace(TARGET.endpoint, credential_ref="env:OTHER"))))
     assert client.calls == ["status", "chat"]
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("what is up tomorrow?", {"period": "tomorrow", "calendar_only": True}),
+    ("what is up today?", {"period": "today", "calendar_only": True}),
+    ("Show my calendar this week", {"period": "this week", "calendar_only": True}),
+    ("Check my calendar tomorrow", {"period": "tomorrow", "calendar_only": True}),
+    ("List calendar next month", {"period": "next month", "calendar_only": True}),
+    ("Show my agenda tomorrow", {"period": "tomorrow"}),
+    ("Show my schedule this week", {"period": "this week"}),
+    ("What is up for this week", {"period": "this week"}),
+    ("Show my calendar this weekend", {"period": "2026-10-10 to 2026-10-11", "calendar_only": True}),
+])
+def test_shared_shortcut_preserves_source_scope_and_frozen_dates(prompt, expected):
+    from service.router.intent.grammar import personal_agenda_args
+    assert personal_agenda_args(prompt, now=NOW) == expected
+    assert compile_read(prompt, now=NOW) == ([("get_upcoming", expected)], "")
+    from service.router import router
+    decision = asyncio.run(router.route(prompt, intent_now=NOW))
+    assert decision.direct_calls == [("get_upcoming", expected)]
+    assert decision.verified_results_only
+
+
+@pytest.mark.parametrize("prompt", [
+    "Show my calendar this week and reminders", "What is up tomorrow in Berlin?",
+    "Show my calendar tomorrow and send it to Mom", "Show my calendar tomorrow without Work",
+])
+def test_shared_source_shortcut_does_not_drop_second_source_public_subject_action_or_filter(prompt):
+    from service.router.intent.grammar import personal_agenda_args
+    assert personal_agenda_args(prompt, now=NOW) is None
+    assert compile_read(prompt, now=NOW) is None
+
+
+@pytest.mark.parametrize("prompt,bad", [
+    ("Read email for 2026-10-01", source("email", "records")),
+    ("Read email for 2026-10-01", source("email", "records", time={"date": "2026-10-02"})),
+    ("Read email for October 2026", source("email", "records")),
+    ("Read email for October 2026", source("email", "records", time={"month": "2026-11"})),
+    ("Read email for October 12", source("email", "records")),
+    ("Read email on Tuesday", source("email", "records")),
+    ("Read overdue reminders", source("reminders")),
+    ("Read overdue reminders", source("reminders", scope="all")),
+    ("Read upcoming reminders", source("reminders", scope="all")),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"})),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=30)),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", time={"named": "tomorrow"}, query="free slot")),
+    ("Find notes about audit blueprints", source("notes", "records", query="audit")),
+    ("Read email from Acme research team", source("email", "records", query="Acme")),
+    ("Read email before 2026-10-01", source("email", "records", time={"date": "2026-10-01"})),
+    ("Read email tomorrow at 3pm", source("email", "records", time={"named": "tomorrow"})),
+])
+def test_requested_constraints_cannot_be_omitted_or_contradicted(prompt, bad):
+    result = run(prompt, FakeClient(value(bad), value(bad)))
+    assert result.disposition == "clarify" and not result.calls
+
+
+@pytest.mark.parametrize("prompt,good,expected", [
+    ("Read email for 2026-10-01", source("email", "records", time={"date": "2026-10-01"}), ("view_emails", {"period": "2026-10-01"})),
+    ("Read email for October 2026", source("email", "records", time={"month": "2026-10"}), ("view_emails", {"period": "2026-10"})),
+    ("Read email for October 12", source("email", "records", time={"date": "2026-10-12"}), ("view_emails", {"period": "2026-10-12"})),
+    ("Read email on Tuesday", source("email", "records", time={"date": "2026-10-06"}), ("view_emails", {"period": "2026-10-06"})),
+    ("Read overdue reminders", source("reminders", scope="overdue"), ("search_reminders", {"query": "", "scope": "past_due"})),
+    ("Read upcoming reminders", source("reminders", scope="upcoming"), ("search_reminders", {"query": "", "scope": "upcoming"})),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=90), ("find_free_time", {"period": "tomorrow", "minutes": 90})),
+    ("Find a 1.5 hour free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=90), ("find_free_time", {"period": "tomorrow", "minutes": 90})),
+    ("Find an hour and 30 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=90), ("find_free_time", {"period": "tomorrow", "minutes": 90})),
+    ("Find notes about audit blueprints", source("notes", "records", query="audit blueprints"), ("search_notes", {"query": "audit blueprints"})),
+    ("Find notes about audit blueprints from yesterday", source("notes", "records", query="audit blueprints", time={"named": "yesterday"}), ("search_notes", {"query": "audit blueprints", "period": "yesterday"})),
+    ("Find notes about 2026-10-01", source("notes", "records", query="2026-10-01"), ("search_notes", {"query": "2026-10-01"})),
+    ("Read email from Acme research team", source("email", "records", query="Acme research team"), ("view_emails", {"query": "Acme research team", "strict_match": True})),
+])
+def test_supported_requested_constraints_compile_without_default_substitution(prompt, good, expected):
+    result = run(prompt, FakeClient(value(good)))
+    assert result.disposition == "compiled" and result.calls == (expected,)
+
+
+def test_source_owned_dates_cannot_swap_or_disappear_and_shared_date_is_retained():
+    prompt = "Read email for 2026-10-01 and notes for 2026-10-02"
+    good = value(source("email", "records", time={"date": "2026-10-01"}), source("notes", "records", time={"date": "2026-10-02"}))
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    for bad in [value(source("email", "records", time={"date": "2026-10-02"}), source("notes", "records", time={"date": "2026-10-01"})),
+                value(source("email", "records", time={"date": "2026-10-01"}), source("notes", "records"))]:
+        result = run(prompt, FakeClient(bad, bad))
+        assert result.disposition == "clarify" and not result.calls
+    shared = value(source("email", "records", time={"date": "2026-10-01"}), source("notes", "records", time={"date": "2026-10-01"}))
+    assert run("Read email and notes for 2026-10-01", FakeClient(shared)).disposition == "compiled"
+
+
+def test_corrections_replace_current_date_scope_duration_and_unquoted_query():
+    result = run("Same for tomorrow", FakeClient(value(source("email", "records", time={"named": "tomorrow"}))),
+                 context=[{"role": "user", "content": "Read email for yesterday"}], prior_tools=["view_emails"])
+    assert result.disposition == "compiled"
+    result = run("Only overdue", FakeClient(value(source("reminders", scope="overdue"))),
+                 context=[{"role": "user", "content": "Read all reminders"}], prior_tools=["search_reminders"])
+    assert result.disposition == "compiled"
+    result = run("Now find notes about revised blueprints", FakeClient(value(source("notes", "records", query="revised blueprints"))),
+                 context=[{"role": "user", "content": "Find notes about audit blueprints"}], prior_tools=["search_notes"])
+    assert result.disposition == "compiled"
+
+
+def test_complete_query_does_not_authorize_extra_truncated_same_source_read():
+    bad = value(source("notes", "records", query="audit blueprints"), source("notes", "records", query="audit"))
+    result = run("Find notes about audit blueprints", FakeClient(bad, bad))
+    assert result.disposition == "clarify" and not result.calls
+
+
+@pytest.mark.parametrize("prompt,data,expected", [
+    ("Read email today plus messages yesterday", value(source("email", "records", time={"named": "today"}), source("messages", "records", time={"named": "yesterday"})),
+     (("view_emails", {"period": "today"}), ("view_messages", {"period": "yesterday"}))),
+    ("Find notes about audit blueprints from yesterday limit to five", value(source("notes", "records", query="audit blueprints", time={"named": "yesterday"}, count=5)),
+     (("search_notes", {"query": "audit blueprints", "count": 5, "period": "yesterday"}),)),
+    ("Find notes about audit blueprints at most five", value(source("notes", "records", query="audit blueprints", count=5)),
+     (("search_notes", {"query": "audit blueprints", "count": 5}),)),
+])
+def test_positive_independent_dates_and_complete_query_date_limit_suffixes(prompt, data, expected):
+    result = run(prompt, FakeClient(data))
+    assert result.disposition == "compiled" and result.calls == expected
+
+
+@pytest.mark.parametrize("prompt,data", [
+    ("Read email today plus messages yesterday", value(source("email", "records", time={"named": "yesterday"}), source("messages", "records", time={"named": "today"}))),
+    ("Find notes about audit blueprints from yesterday limit to five", value(source("notes", "records", query="audit", time={"named": "yesterday"}, count=5))),
+    ('Find notes named "audit blueprints"', value(source("notes", "records", query="audit blueprints"), source("notes", "records", query="audit"))),
+    ('Read email from "Acme"', value(source("email", "records", query="Acme"), source("email", "records"))),
+])
+def test_requested_source_filters_do_not_authorize_extra_or_changed_reads(prompt, data):
+    result = run(prompt, FakeClient(data, data))
+    assert result.disposition == "clarify" and not result.calls
+
+
+@pytest.mark.parametrize("word", ["overdue", "upcoming", "all"])
+def test_reminder_query_literal_is_not_a_scope_instruction(word):
+    result = run("Find reminders named " + word, FakeClient(value(source("reminders", "records", query=word))))
+    assert result.calls == (("search_reminders", {"query": word, "scope": "all"}),)
+
+
+def test_query_duration_literal_does_not_authorize_changed_calendar_operation():
+    bad = value(source("calendar", "free_time", minutes=90), source("notes", "records", query="90 minute appointments"))
+    result = run("Recap my calendar and find notes about 90 minute appointments", FakeClient(bad, bad))
+    assert result.disposition == "clarify" and not result.calls
