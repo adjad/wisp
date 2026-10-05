@@ -13024,6 +13024,2339 @@
     "mark_email_read",
     "unsubscribe"
    ]
+  },
+  {
+   "id": "outbound_paraphrase-001",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "ask Sam if he's free for dinner",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-002",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "ask mom when she lands",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-003",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "check with Sam whether dinner works",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-004",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "wish mom a happy birthday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-005",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "wish Dan good luck tomorrow",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-006",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "thank Dan for the gift",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-007",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "congratulate Priya on the promotion",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-008",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "invite Sam to dinner on saturday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-009",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "invite the team to the offsite",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-010",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "give mom a buzz",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-011",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "give dad a ring",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-012",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "hit up Sam about lunch",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-013",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "hit Sam up about the game",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-014",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "shoot Priya a note about friday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-015",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "shoot Priya a message about friday",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-016",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "message Sam that I'm late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-017",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "msg Sam I'm outside",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-018",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "let Sam know I'm outside",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-019",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "lemme tell Sam I'm late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-020",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "get in touch with the landlord",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-021",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "reach out to Jane about the invoice",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-022",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "follow up with Jane about the invoice",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-023",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "nudge Dan about the report",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-024",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "remind Sam about the meeting",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-025",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "update the team that standup moved",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-026",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "apologize to Dan for being late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-027",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "say hi to mom",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-028",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "say happy birthday to Priya",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-029",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "send mom a hello",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-030",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "text mom hi",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-031",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "whatsapp Sam I'm late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-032",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "slack Dan the file",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-033",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "write to Sam about dinner",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-034",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "write Sam a quick note",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-035",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "compose a message to Sam",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-036",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "send a note to Sam",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-037",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "get back to Jane",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-038",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "answer Jane's email",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-039",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "respond to Jane",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-040",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "reply to Jane",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-041",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "holler at Sam",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-042",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "yell at Sam that dinner is ready",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-043",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "tell Sam dinner is ready",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-044",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "tell my wife I'll be late",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-045",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "text my boss I'm sick",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-046",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "cc Dan on that",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-047",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "bcc my assistant",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-048",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "loop in Dan",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-049",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "share the doc with Dan",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-050",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "mail the form to HR",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-051",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "fax this to HR",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-052",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "dm Sam hi",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-053",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "ping Sam on slack",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-054",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "call Sam",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-055",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "phone the dentist",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-056",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "facetime mom",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-057",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "buzz the front desk",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-058",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "RSVP yes to Jane's party",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-059",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "accept Jane's invite",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-060",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "decline the meeting with Dan and tell him why",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-061",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "confirm with Dan for 3pm",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-062",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "cancel on Sam and let him know",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-063",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "tell him I said thanks",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-064",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "text her back",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-065",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "reply yes to that",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-066",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "reply with thanks",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-067",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review_r1"
+   ],
+   "prompt": "say yes",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-068",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review",
+    "context"
+   ],
+   "prompt": "try again",
+   "last_user": "text Sam I'm late",
+   "last_assistant": "I couldn't send that message.",
+   "last_tools": "send_message",
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "outbound_paraphrase-069",
+   "domain": "outbound_paraphrase",
+   "styles": [
+    "review",
+    "context"
+   ],
+   "prompt": "Bob as well",
+   "last_user": "email Sam the agenda",
+   "last_assistant": "Sent the agenda to Sam.",
+   "last_tools": "send_email",
+   "expect": "action",
+   "need": [
+    [
+     "send_message",
+     "send_email",
+     "reply_to_email",
+     "forward_email",
+     "place_call",
+     "draft_message",
+     "draft_email",
+     "schedule_send"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "delete_path",
+    "trash_file"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-001",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "destroy my old reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-002",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "ditch the past reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-003",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "dump all my old reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-004",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "blow away the old logs folder",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-005",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "nuke my reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-006",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "delet my old reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-007",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "clar all reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-008",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "forget everything you know about me",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
+  },
+  {
+   "id": "delete_paraphrase-009",
+   "domain": "delete_paraphrase",
+   "styles": [
+    "review"
+   ],
+   "prompt": "clear my old reminders",
+   "last_user": null,
+   "last_assistant": null,
+   "last_tools": null,
+   "expect": "action",
+   "need": [
+    [
+     "clear_reminders",
+     "clear_past_reminders",
+     "clear_memory",
+     "delete_path",
+     "trash_file",
+     "forget",
+     "complete_reminder"
+    ]
+   ],
+   "force": null,
+   "forbid": [
+    "send_email",
+    "send_message"
+   ],
+   "avoid": []
   }
  ]
 }

@@ -142,12 +142,14 @@ def lexical_shortlist(text: str, *, limit: int = DEFAULT_SHORTLIST) -> list[str]
     )[:limit]]
 
 
-def lexical_candidates(text: str, *, writing: bool, k: int = 20) -> list[str]:
+def lexical_candidates(text: str, *, writing: bool, k: int = 20,
+                       context_open: bool = False) -> list[str]:
     """Zero-model routing fallback, measured before the optional cross-encoder."""
     open_gate = _gate_open(text, writing=writing)
     picked = [name for name in lexical_shortlist(text, limit=k)
               if name in REGISTRY and name not in _PINNED
-              and _allowed(name, writing=open_gate) and gated_tool_allowed(name, text)]
+              and _allowed(name, writing=open_gate)
+              and gated_tool_allowed(name, text, context_open=context_open)]
     picked.extend(name for name in _PINNED if is_tool_routable(name))
     return sorted(set(picked))
 
@@ -207,13 +209,14 @@ async def _rank_one(client: httpx.AsyncClient, headers: dict[str, str], query: s
 
 async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
                      shortlist: int = DEFAULT_SHORTLIST,
-                     timeout: float = 30.0) -> list[str]:
+                     timeout: float = 30.0, context_open: bool = False) -> list[str]:
     """Return a compact tool menu without loading or calling an embedder."""
     clauses = _action_clauses(text)
     pool = lexical_shortlist(text, limit=shortlist)
     open_gate = _gate_open(text, writing=writing)
     pool = [n for n in pool if n in REGISTRY and n not in _PINNED
-            and _allowed(n, writing=open_gate) and gated_tool_allowed(n, text)]
+            and _allowed(n, writing=open_gate)
+            and gated_tool_allowed(n, text, context_open=context_open)]
     if not pool:
         raise RerankUnavailable("lexical shortlist is empty")
 

@@ -311,3 +311,51 @@ def test_fuzz_protected_tokens_survive_and_content_is_identical(verb, thing, mon
     text = f"{verb} {thing} tmrw pls"
     assert thing in normalize_typos(text)
     assert _content(_route(text)) == _content(_route_without_normalization(text, monkeypatch))
+
+
+# --- P2 repair: the retrieval gate fails toward availability -----------------
+
+OUTBOUND_REVIEW = [
+    # QA R1 (F01-F12, F25, F26) and the reviewer's list
+    "ask Sam if he's free for dinner", "wish mom a happy birthday", "thank Dan for the gift",
+    "invite Sam to dinner on saturday", "give mom a buzz", "get in touch with the landlord", "say hi to mom",
+    "write to Sam about dinner", "nudge Dan about the report", "confirm with Dan for 3pm",
+    "apologize to Dan for being late", "whatsapp Sam I'm late", "hit up Sam about lunch",
+    "ask mom when she lands", "contact the landlord", "answer Jane", "get back to Jane",
+    "holler at Sam", "reach out to Jane about the invoice", "pass this along to Dan",
+    "remind Sam that the meeting moved", "slack Dan the file", "tag Priya in it", "accept Jane's invite",
+    "give dad a ring", "drop Priya a line about friday", "let Sam know I'm outside",
+    "congratulate Priya on the promotion", "follow up with Jane about the invoice", "RSVP yes to Jane's party",
+]
+
+
+@pytest.mark.parametrize("prompt", OUTBOUND_REVIEW)
+def test_requests_addressed_to_someone_keep_a_send_or_call_tool(prompt):
+    reach = _reachable(_route(prompt))
+    assert reach & (SENDS | {"draft_message", "draft_email"}), prompt
+
+
+@pytest.mark.parametrize("prompt,ctx", [
+    ("try again", dict(last_user="text Sam I'm late", last_assistant="I couldn't send that message.",
+                       last_tools="send_message")),
+    ("Bob as well", dict(last_user="email Sam the agenda", last_assistant="Sent the agenda to Sam.",
+                         last_tools="send_email")),
+])
+def test_continuing_an_outbound_turn_keeps_the_send_tools(prompt, ctx):
+    assert _reachable(_route(prompt, **ctx)) & SENDS
+
+
+@pytest.mark.parametrize("prompt", ["destroy the old files", "ditch the past reminders", "dump all my memories",
+                                    "blow away the old logs folder", "nuke my reminders",
+                                    "delet my old reminders", "clar all reminders"])
+def test_delete_paraphrases_and_typos_open_the_bulk_delete_gate(prompt):
+    assert any(semantic.gated_tool_allowed(t, prompt) for t in BULK_DELETES)
+
+
+@pytest.mark.parametrize("prompt", ["did i have a meeting with Priya last week",
+                                    "pencil in coffee with Jordan next wednesday at 9",
+                                    "what's the group chat saying", "archive them",
+                                    "write a toast for my sister's wedding", "what's mom's birthday dinner",
+                                    "give me a polite way to say no to a meeting"])
+def test_mentions_of_people_that_address_nobody_stay_non_outbound(prompt):
+    assert not semantic.outbound_intent(prompt)

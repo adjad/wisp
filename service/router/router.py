@@ -1239,7 +1239,23 @@ def _positive_write_intent(text: str) -> bool:
     return has_write_intent(_NEGATED_WRITE_TAIL_RE.sub(" ", _positive_clause_remainder(text)))
 
 
-async def _semantic_core(text: str) -> list[str]:
+_OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_email"})
+_CONTINUED_EFFECT_TOOLS = frozenset({
+    "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send", "place_call",
+    "draft_email", "draft_message", "lookup_contact", "clear_reminders", "clear_past_reminders",
+    "clear_memory", "delete_path", "trash_file", "forget"})
+
+
+def _continues_effect_turn(last_user: str | None, last_tools: str | None) -> bool:
+    """Whether this turn may continue an outbound/delete turn ("try again",
+    "Bob as well") — retrieval then keeps those tools available."""
+    # The previous turn's TOOLS, not its words: "check my email" names a
+    # channel but continued nothing outbound.
+    names = {n for n in re.split(r"[\s,]+", last_tools or "") if n}
+    return bool(names & _CONTINUED_EFFECT_TOOLS)
+
+
+async def _semantic_core(text: str, *, context_open: bool = False) -> list[str]:
     """The tool subset for a request that matched no rule — retrieved from the
     whole registry by the configured lexical/embedding/reranker provider, with
     `_core_tools()` as the exception/empty-result safety net. The packaged
@@ -1259,13 +1275,13 @@ async def _semantic_core(text: str) -> list[str]:
             "provider", "embedding")).lower()
         if provider == "reranker":
             from service.router import reranker
-            names = await reranker.candidates(text, writing=writing)
+            names = await reranker.candidates(text, writing=writing, context_open=context_open)
         elif provider == "lexical":
             from service.router import reranker
-            names = reranker.lexical_candidates(text, writing=writing)
+            names = reranker.lexical_candidates(text, writing=writing, context_open=context_open)
         else:
             from service.router import semantic
-            names = await semantic.candidates(text, writing=writing)
+            names = await semantic.candidates(text, writing=writing, context_open=context_open)
     except Exception:  # noqa: BLE001 — retrieval must never break the turn
         names = []
     if not names:
@@ -1273,11 +1289,17 @@ async def _semantic_core(text: str) -> list[str]:
             return _core_tools()
         from service.router import reranker
         try:
-            names = reranker.lexical_candidates(text, writing=writing)
+            names = reranker.lexical_candidates(text, writing=writing, context_open=context_open)
         except Exception:
             return _core_tools()
         if not names:
             return _core_tools()
+    # Fail toward availability: a request that may be addressed to someone
+    # keeps the basic channel tools even when lexical ranking missed them
+    # ("congratulate Priya on the promotion", "get back to Jane").
+    from service.router.semantic import outbound_intent
+    if (context_open or outbound_intent(text)) and not set(names) & _OUTBOUND_CHANNEL_CORE:
+        names = sorted(set(names) | _OUTBOUND_CHANNEL_CORE)
     # Skill tools are NOT force-appended here, unlike in _core_tools().
     #
     # That append exists because a STATIC list structurally cannot reach a tool
@@ -7315,7 +7337,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # and called view_emails instead of archive_email, at the exact moment
         # the user had already said do it.
         d = _mk("agent", tools=True, reason="confirms an action the assistant just offered")
-        d.tool_subset = await _semantic_core(last_assistant or text)
+        d.tool_subset = await _semantic_core(
+            last_assistant or text, context_open=_continues_effect_turn(last_user, last_tools))
         d.multi_round = True
         return finalize(d, text)
     # A bare scope fragment ("from yesterday") continuing the previous
@@ -7352,7 +7375,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         return compound
     decision = rule_route(text, web_request=web_request)
     if decision is not None and decision.needs_tools and decision.tool_subset is None:
-        retrieved = await _semantic_core(text)
+        retrieved = await _semantic_core(
+            text, context_open=_continues_effect_turn(last_user, last_tools))
         decision.tool_subset = retrieved
         decision.reason += f" -> retrieved tools ({len(retrieved)})"
         # Default: heterogeneous by construction — the rule established that a
@@ -7443,7 +7467,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # is unreachable (oMLX down, model not installed, request timed out)
         # this route must still work. Offering the previous 14 tools is a
         # degraded fallback; offering nothing is a broken turn.
-        core = await _semantic_core(text)
+        core = await _semantic_core(
+            text, context_open=_continues_effect_turn(last_user, last_tools))
         decision = _mk("agent", tools=True, expect_tool_first=False, source="default",
                        reason=f"ambiguous -> retrieved tools ({len(core)}), model decides")
         decision.tool_subset = core
