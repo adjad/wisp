@@ -1239,7 +1239,41 @@ def _positive_write_intent(text: str) -> bool:
     return has_write_intent(_NEGATED_WRITE_TAIL_RE.sub(" ", _positive_clause_remainder(text)))
 
 
-async def _semantic_core(text: str) -> list[str]:
+_OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_email"})
+_CONTINUED_EFFECT_TOOLS = frozenset({
+    "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send", "place_call",
+    "draft_email", "draft_message", "lookup_contact", "clear_reminders", "clear_past_reminders",
+    "clear_memory", "delete_path", "trash_file", "forget"})
+
+
+_RETRY_RE = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|please|pls|just)\W+)*(?:try\s+(?:it\s+)?again|retry|re-?send(?:\s+it)?|"
+    r"send\s+it\s+again|do\s+it\s+again|again|one\s+more\s+time)\b", re.I)
+# An imperative outbound REQUEST ("email jane@x.com saying hi", "can you text
+# Sam"), not a channel noun ("check my email").
+_OUTBOUND_REQUEST_RE = re.compile(
+    r"^\W*(?:(?:please|pls|ok(?:ay)?|can\s+you|could\s+you|would\s+you)\W+)*"
+    r"(?:send|e-?mail|text|message|reply|respond|forward|call|tell|let\s+\S+\s+know)\b|"
+    r"\bsend\b", re.I)
+
+
+def _continues_effect_turn(last_user: str | None, last_tools: str | None,
+                           text: str = "") -> bool:
+    """Whether this turn may continue an outbound/delete turn ("try again",
+    "Bob as well") — retrieval then keeps those tools available."""
+    # The previous turn's TOOLS first: "check my email" names a channel but
+    # continued nothing outbound.
+    names = {n for n in re.split(r"[\s,]+", last_tools or "") if n}
+    if names & _CONTINUED_EFFECT_TOOLS:
+        return True
+    # A hard-failed or unknown-outcome send records no tool digest. A retry
+    # of a previous user turn that ASKED to send keeps the send tools
+    # (re-QA of PR #159, N13).
+    return bool(text and _RETRY_RE.search(text) and last_user
+                and _OUTBOUND_REQUEST_RE.search(mask_quoted(last_user)))
+
+
+async def _semantic_core(text: str, *, context_open: bool = False) -> list[str]:
     """The tool subset for a request that matched no rule — retrieved from the
     whole registry by the configured lexical/embedding/reranker provider, with
     `_core_tools()` as the exception/empty-result safety net. The packaged
@@ -1259,13 +1293,13 @@ async def _semantic_core(text: str) -> list[str]:
             "provider", "embedding")).lower()
         if provider == "reranker":
             from service.router import reranker
-            names = await reranker.candidates(text, writing=writing)
+            names = await reranker.candidates(text, writing=writing, context_open=context_open)
         elif provider == "lexical":
             from service.router import reranker
-            names = reranker.lexical_candidates(text, writing=writing)
+            names = reranker.lexical_candidates(text, writing=writing, context_open=context_open)
         else:
             from service.router import semantic
-            names = await semantic.candidates(text, writing=writing)
+            names = await semantic.candidates(text, writing=writing, context_open=context_open)
     except Exception:  # noqa: BLE001 — retrieval must never break the turn
         names = []
     if not names:
@@ -1273,11 +1307,17 @@ async def _semantic_core(text: str) -> list[str]:
             return _core_tools()
         from service.router import reranker
         try:
-            names = reranker.lexical_candidates(text, writing=writing)
+            names = reranker.lexical_candidates(text, writing=writing, context_open=context_open)
         except Exception:
             return _core_tools()
         if not names:
             return _core_tools()
+    # Fail toward availability: a request that may be addressed to someone
+    # keeps the basic channel tools even when lexical ranking missed them
+    # ("congratulate Priya on the promotion", "get back to Jane").
+    from service.router.semantic import outbound_intent
+    if (context_open or outbound_intent(text)) and not set(names) & _OUTBOUND_CHANNEL_CORE:
+        names = sorted(set(names) | _OUTBOUND_CHANNEL_CORE)
     # Skill tools are NOT force-appended here, unlike in _core_tools().
     #
     # That append exists because a STATIC list structurally cannot reach a tool
@@ -3181,7 +3221,7 @@ _DOMAIN_WRITE_TOOLS = {
     "messages": ["lookup_contact", "send_message", "draft_message"],
     "email": ["send_email", "reply_to_email", "draft_email",
               "mark_email_read", "archive_email", "flag_email",
-              "forward_email", "trash_file", "unsubscribe"],
+              "forward_email", "unsubscribe"],
     # clear_past_reminders belongs to the WRITE set, not the read one: it is
     # the only way to act on past-due items in bulk, and without it on the
     # calendar write route "delete all my old reminders" had nothing to call
@@ -3327,6 +3367,23 @@ _DRAFT_ONLY_RE = re.compile(
     r"\bunsent\s+(?:text|message|e-?mail|reply)\b|"
     r"\b(?:without\s+sending|leave\s+(?:it|this|the\s+message)\s+unsent|"
     r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b)", re.I)
+
+# "prepare an email to HR asking about PTO, I'll send it myself": the user
+# keeps the send — but only as its OWN instruction clause after a compose
+# request. Inside a message ("text Mom I will send it tonight", "email Dan:
+# I'll send it myself tomorrow", "tell Dan I'll send it over") the same words
+# are the message body and the send is wanted (review of PR #159).
+_SELF_SEND_CLAUSE_RE = re.compile(
+    r"^(?P<head>[^:;\"“”]*?)[,;.]\s*(?:and\s+|but\s+)?(?:i'?ll|i\s+will|let\s+me)\s+send\s+"
+    r"(?:it|this|that)\s+(?:myself|later|after\s+i\s+(?:review|read|check)\w*\s+it)?\s*[.!]?\s*$", re.I)
+_COMPOSE_HEAD_RE = re.compile(
+    r"^\s*(?:(?:please|can\s+you|could\s+you)\s+)?(?:prepare|write(?:\s+up)?|compose|draft|"
+    r"put\s+together|get)\b(?![^,;]*\b(?:saying|that\s+i|tell)\b)", re.I)
+
+
+def _self_send_instruction(text: str) -> bool:
+    match = _SELF_SEND_CLAUSE_RE.match(mask_quoted(text))
+    return bool(match and _COMPOSE_HEAD_RE.match(match.group("head")))
 
 # send_* removed when _DRAFT_ONLY_RE fires; the draft_* counterpart stays.
 _SEND_TOOLS = {"send_message", "send_email", "reply_to_email", "forward_email",
@@ -4411,7 +4468,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # _DRAFT_ONLY_RE for the turn where both were offered and the model sent.
     # Only meaningful when a draft_* counterpart survives, so a domain with no
     # draft tool (calendar) is untouched.
-    if ((_DRAFT_ONLY_RE.search(t) or _SELF_SEND_RE.search(t))
+    if ((_DRAFT_ONLY_RE.search(t) or _SELF_SEND_RE.search(t) or _self_send_instruction(t))
             and any(x.startswith("draft_") for x in subset)):
         subset = [x for x in subset if x not in _SEND_TOOLS]
     if _PLAIN_TEXT_FILE_RE.search(t):
@@ -6059,6 +6116,10 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         forbidden |= set(_INBOX_READ_TOOLS)
     if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
+    # "don't reply to Sam" forbids a REPLY, scoped to that clause — not the
+    # email or forward the rest of the sentence asks for (review of PR #159).
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:reply|respond|write\s+back)\b", t, re.I):
+        forbidden.add("reply_to_email")
     positive_remainder = _positive_clause_remainder(t)
     if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
             and not has_write_intent(positive_remainder)):
@@ -6176,6 +6237,11 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     if decision.tool_subset is not None:
         decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
     decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+    # A forced first tool the same contract forbids can never run; drop the
+    # force rather than leave the loop insisting on an unavailable call.
+    if decision.force_first_tool in forbidden:
+        decision.force_first_tool = None
+        decision.expect_tool_first = bool(decision.direct_calls or decision.required_tool_groups)
 
 
 def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | None = None) -> RouteDecision:
@@ -6920,7 +6986,14 @@ async def route(text: str, *,
             else:
                 forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email"})
         if request.delivery_cancelled:
-            forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"})
+            if _positive_draft_request(text):
+                # "draft a reply to Priya but don't send it": the cancelled
+                # delivery is the SEND, not the draft the user asked for.
+                # Keep the draft tools (which never send) and the contact
+                # lookup they need; every committing send stays forbidden.
+                forbidden.update(_SEND_TOOLS | {"forward_email", "place_call"})
+            else:
+                forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"})
         if request.private or request.opted_out:
             forbidden.update({"web_search", "web_fetch", "http_request"})
             if request.opted_out or request.inherited or request.explicit or request.current:
@@ -6956,6 +7029,20 @@ async def route(text: str, *,
                 for effect in request.authorized_effects & (_CHANNEL_OUTBOUND_TOOLS | {"schedule_send"}) & set(decision.tool_subset or ()):
                     decision.tool_argument_bindings[effect] = {"to": literal}
     return decision
+
+
+_POSITIVE_DRAFT_EXTRA_RE = re.compile(
+    r"(?<!not\s)(?<!n't\s)\b(?:prepare|word|write\s+up)\s+(?:\w+\s+){0,2}"
+    r"(?:e-?mail|text|message|reply|response)\b|"
+    r"\b(?:save|keep|leave)\s+(?:it\s+|this\s+|that\s+)?(?:as\s+)?a\s+draft\b|"
+    r"\b(?:just|only)\s+(?:a\s+)?draft\b", re.I)
+
+
+def _positive_draft_request(text: str) -> bool:
+    """The user asks for a DRAFT (as opposed to only forbidding a send)."""
+    masked = mask_quoted(text)
+    return bool(_DRAFT_ONLY_RE.search(masked) or _POSITIVE_DRAFT_EXTRA_RE.search(masked)
+                or _self_send_instruction(text))
 
 
 def _study_reminder_no_creation(reason: str) -> RouteDecision:
@@ -7019,6 +7106,103 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
     return decision
 
 
+_ASSENT_WORDS = frozenset(
+    "yes yeah yep yup ya yah sure ok okay k kk sounds good great perfect cool go for it ahead do "
+    "please pls thanks thank you thing alright all right fine that works absolutely definitely of "
+    "course lets let's sounds-good".split())
+
+
+def _assent_cannot_write_reminder(decision: RouteDecision, text: str,
+                                  last_assistant: str | None) -> RouteDecision:
+    """An assent that confirms an assistant's offer never writes a reminder.
+
+    "sounds good" / "yeah go for it" after "Want me to set a reminder an hour
+    before?" reached add_reminder through the previous turn's calendar tools
+    (QA Z01-Z04 on PR #159), and the model wrote a reminder at a time it
+    guessed. Only the user's own dated command may create one, so add_reminder
+    is withheld unless THIS message names a resolvable time ("yes, remind me
+    tomorrow at 9am"). A pure assent to a reminder offer becomes the
+    clarify-time route, whose receipt asks for the time instead of letting the
+    model claim success; "yes and also text mom" keeps its other tools.
+    """
+    reach = (set(decision.tool_subset or ()) | {n for n, _ in decision.direct_calls}
+             | {n for g in decision.required_tool_groups for n in g})
+    if "add_reminder" not in reach and not decision.reminder_action:
+        return decision
+    if has_alert_time(text) and resolve_alert_datetime(text) is not None:
+        return decision
+    words = re.findall(r"[a-z']+", text.lower())
+    pure = bool(words) and all(w in _ASSENT_WORDS for w in words)
+    reminder_offer = bool(last_assistant and re.search(r"\bremind", last_assistant, re.I))
+    blocked = {"add_reminder", "set_alarm"}
+    decision.forbidden_tools = frozenset(set(decision.forbidden_tools) | blocked)
+    decision.required_tool_groups = tuple(
+        g for g in decision.required_tool_groups if not g & blocked)
+    decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in blocked]
+    decision.tool_argument_bindings = {
+        n: a for n, a in decision.tool_argument_bindings.items() if n not in blocked}
+    if decision.tool_subset is not None:
+        decision.tool_subset = [n for n in decision.tool_subset if n not in blocked]
+    if decision.force_first_tool in blocked:
+        decision.force_first_tool = None
+    if reminder_offer:
+        # Pure or compound ("yes and also text mom"): the reminder half takes
+        # the guarded clarify-time path, whose buffered receipt replaces any
+        # model claim with "I haven't created a reminder yet…". Another
+        # requested action keeps its own tools and normal approval path.
+        decision.reminder_action = "clarify_time"
+        decision.tool_subset = list(dict.fromkeys(["get_upcoming", *(decision.tool_subset or ())]))
+        decision.needs_tools = True
+        if pure:
+            decision.force_first_tool = "get_upcoming"
+        else:
+            from service.router.semantic import outbound_intent
+            if outbound_intent(text):
+                decision.tool_subset = list(dict.fromkeys(
+                    [*decision.tool_subset, "lookup_contact", "send_message", "send_email"]))
+    elif decision.reminder_action == "create":
+        decision.reminder_action = ""
+    return decision
+
+
+def _typo_route_hint(text: str, last_tools: str | None,
+                     web_request: _WebRequest) -> RouteDecision | None:
+    """The route a conservatively normalized copy of `text` would take.
+
+    Only the ROUTE is borrowed: domain, tool menu and the forced tool's name.
+    Everything content-bearing that a rule derived from the normalized words —
+    direct calls with arguments, argument bindings, recipients, a resolved
+    request — is dropped, and the caller finalizes on the ORIGINAL text, so
+    the execution contract, recipients and message bodies are re-derived from
+    what the user actually typed (independent review of PR #159: a rewritten
+    copy once bound send_email to "appointment@clinic.org" for
+    "emial appt@clinic.org"). Returns None unless a rule produced a concrete
+    tool menu for the normalized copy.
+    """
+    from service.router.normalize import normalize_typos
+
+    normalized = normalize_typos(text)
+    if normalized == text:
+        return None
+    hint = _fragment_continuation(normalized, last_tools) or rule_route(
+        normalized, web_request=web_request)
+    if hint is None or not hint.needs_tools or not hint.tool_subset:
+        return None
+    # "ping me about the appt at 3" asks for an alert; a calendar-read hint
+    # would hide the reminder tool the retrieved menu still offers.
+    if (re.search(r"\b(?:ping|nudge|buzz|alert|remind)\s+me\b", text, re.I)
+            and "add_reminder" not in hint.tool_subset):
+        return None
+    hint.tool_subset = list(dict.fromkeys(
+        [*hint.tool_subset, *(name for name, _ in hint.direct_calls)]))
+    hint.direct_calls = []
+    hint.tool_argument_bindings = {}
+    hint.conditional_tools = ()
+    hint.resolved_request = ""
+    hint.reason += " (route detected on a typo-normalized copy; content from the original)"
+    return hint
+
+
 async def _route_request(text: str, *, web_request: _WebRequest,
                          last_user: str | None = None,
                          recent_users: list[str] | None = None,
@@ -7065,6 +7249,36 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 # acknowledgement must not reopen the entire registry.
                 decision = _mk_scoped(await _semantic_core(offer.action_text),
                                       "acknowledges the current standalone action offer", light=False)
+            # The offer's own words are the whole request, so they get the same
+            # execution contract as if the user had typed them: an offered
+            # reminder with no resolvable clock ("an hour before") stays on the
+            # clarify-time path and can never be written from a bare "sure".
+            _apply_execution_contract(decision, offer.action_text,
+                                      _classify_web_request(offer.action_text))
+            if decision.reminder_action or (
+                    "add_reminder" in (decision.tool_subset or ())
+                    and re.search(r"\bremind", last_assistant or offer.action_text, re.I)):
+                # A bare assent never writes a reminder from an offer, with or
+                # without history: the offer may be stale, unrelated, already
+                # declined (the study-slot contracts) or relative ("an hour
+                # before"), and its time is the assistant's words, not a dated
+                # command from the user. It may look the event up; the loop's
+                # clarify-time receipt then asks for the time instead of letting
+                # the model claim a reminder was set. A typed time answer
+                # continues through the existing alert-time path.
+                decision.reminder_action = "clarify_time"
+                decision.forbidden_tools |= {"add_reminder", "add_calendar_event", "set_alarm"}
+                decision.required_tool_groups = tuple(
+                    g for g in decision.required_tool_groups if "add_reminder" not in g)
+                decision.tool_argument_bindings.pop("add_reminder", None)
+                decision.tool_subset = ["get_upcoming"]
+                decision.force_first_tool = "get_upcoming"
+            else:
+                # Any other offer ("add that to your calendar") keeps its own
+                # tools, but an assent still cannot write a reminder.
+                decision.forbidden_tools |= {"add_reminder"}
+                if decision.tool_subset is not None:
+                    decision.tool_subset = [n for n in decision.tool_subset if n != "add_reminder"]
             decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
         decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
         if offer.source_request:
@@ -7221,7 +7435,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # read. Falls back to the full toolset when the previous turn used no
         # tools, which is the case this can't infer anything about.
         if (inherited := _confirmation_subset(last_tools)) is not None:
-            return finalize(inherited, text)
+            return _assent_cannot_write_reminder(finalize(inherited, text), text, last_assistant)
         # No inheritable domain (the previous turn used no tools). Retrieve on
         # the ASSISTANT's last message rather than on the user's "yes" — "yes"
         # carries no signal at all, while the offer being confirmed describes
@@ -7230,9 +7444,10 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # and called view_emails instead of archive_email, at the exact moment
         # the user had already said do it.
         d = _mk("agent", tools=True, reason="confirms an action the assistant just offered")
-        d.tool_subset = await _semantic_core(last_assistant or text)
+        d.tool_subset = await _semantic_core(
+            last_assistant or text, context_open=_continues_effect_turn(last_user, last_tools, text))
         d.multi_round = True
-        return finalize(d, text)
+        return _assent_cannot_write_reminder(finalize(d, text), text, last_assistant)
     # A bare scope fragment ("from yesterday") continuing the previous
     # light-read turn -> stay on that same the summarizer domain instead of falling to
     # the the agent model default. Checked before rule_route since the fragment names
@@ -7267,7 +7482,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         return compound
     decision = rule_route(text, web_request=web_request)
     if decision is not None and decision.needs_tools and decision.tool_subset is None:
-        retrieved = await _semantic_core(text)
+        retrieved = await _semantic_core(
+            text, context_open=_continues_effect_turn(last_user, last_tools, text))
         decision.tool_subset = retrieved
         decision.reason += f" -> retrieved tools ({len(retrieved)})"
         # Default: heterogeneous by construction — the rule established that a
@@ -7287,6 +7503,12 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                                 if decision.multi_round_on_retrieval is not None
                                 else True)
     if decision is None:
+        # Typos and chat shorthand ("whats on my calender tmrw", "txt alex
+        # ok") defeated every keyword rule above and fell to the generic
+        # retrieved menu. The same rules get one more look at a normalized
+        # copy — as a ROUTE-DETECTION hint only. See _typo_route_hint.
+        if (hint := _typo_route_hint(text, last_tools, web_request)) is not None:
+            return finalize(hint, text)
         # Before falling back to the generic core set: does this CONTINUE the
         # write the previous turn just made? "set some more the day before it"
         # names no domain and matches no rule, so it landed on the core tools —
@@ -7352,7 +7574,8 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # is unreachable (oMLX down, model not installed, request timed out)
         # this route must still work. Offering the previous 14 tools is a
         # degraded fallback; offering nothing is a broken turn.
-        core = await _semantic_core(text)
+        core = await _semantic_core(
+            text, context_open=_continues_effect_turn(last_user, last_tools, text))
         decision = _mk("agent", tools=True, expect_tool_first=False, source="default",
                        reason=f"ambiguous -> retrieved tools ({len(core)}), model decides")
         decision.tool_subset = core

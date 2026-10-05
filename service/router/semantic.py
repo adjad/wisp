@@ -139,6 +139,103 @@ _FILE_ACTION_RE = re.compile(
     r"\b(?:files?d?|put)\s+(?:\w+\s+){0,3}away\b", re.I)
 
 
+# Committing outbound tools and bulk/permanent deletes in RETRIEVED menus.
+#
+# Fail toward availability: they are withheld ONLY when the request is
+# positively non-outbound — no communication verb, nobody it is addressed to,
+# and no outbound turn being continued — and offered whenever in doubt.
+# Withholding is an accuracy measure for the small model, not a safety
+# boundary: approvals gate sends in most access modes, but NOT all of these
+# tools are confirm-gated in every mode (in full-access mode delete_path,
+# clear_memory and place_call run without a card), which is a reason to keep
+# them out of menus for requests that plainly never asked for them, and not a
+# reason to hide them from requests that might have.
+#
+# Measured on the routing-quality corpus (docs/ROUTING_DIAGNOSIS.md): send
+# tools sat in 52 of 125 retrieved menus for reads, chat, code and compose
+# prompts ("tell me a joke", "write a haiku"). The review of PR #159 showed a
+# verb list alone loses real requests ("ask Sam if…", "wish mom a happy
+# birthday", "give mom a buzz"), so a request ADDRESSED to someone opens the
+# gate whatever its verb.
+_OUTBOUND_TOOLS = frozenset({"send_email", "send_message", "reply_to_email", "forward_email",
+                             "schedule_send", "place_call", "unsubscribe"})
+_BULK_DELETE_TOOLS = frozenset({"clear_reminders", "clear_past_reminders", "clear_memory", "delete_path"})
+_RELATION = (
+    r"mom|mum|mommy|mother|dad|daddy|father|parents?|wife|husband|partner|spouse|fianc[ée]e?|"
+    r"boyfriend|girlfriend|bf|gf|sister|brother|sis|bro|siblings?|sons?|daughters?|kids?|"
+    r"children|grandma|grandpa|grandmother|grandfather|nana|aunt|uncle|cousin|nephew|niece|"
+    r"in-?laws?|boss|manager|team|coworkers?|co-workers?|colleagues?|landlord|landlady|tenants?|"
+    r"roommates?|friends?|buddy|neighbou?rs?|babysitter|nanny|sitter|doctor|dr|dentist|"
+    r"teacher|professor|tutor|coach|client|customers?|assistant|recruiter|hr|everyone|"
+    r"everybody|someone|somebody")
+_NOT_A_VERB = (r"my|our|your|his|her|their|its|the|a|an|this|that|these|those|of|for|about|from|"
+               r"and|or|but|in|into|onto|on|at|by|with|via|like|as|than|over|under|near|is|are|was|were|be|"
+               r"what|when|where|who|how|whose|translate|translated|spell|say|speak|learn|visit|"
+               r"visiting|fly|flying|drive|driving|travel|traveling|travelling|go|going|watch|play|"
+               r"listen|open|launch|quit|use|search|google|find|buy|order|eat|cook|read|other|another|"
+               r"next|last|first|new|old|same|each|every|any|some|no|not|only|which|whose")
+_ADDRESSEE_RE = re.compile(
+    # an address or phone number
+    r"[\w.+-]+@[\w-]+\.[\w.]+|(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)|"
+    # "to/with <person>", "<verb> <person>" — a relation word or pronoun, not a possessive
+    r"(?i:\b(?:to|at)\s+(?:(?:my\s+|our\s+|the\s+)?(?:" + _RELATION + r")|him|her|them)\b(?!['’]s))|"
+    r"(?i:(?<![\w'’])(?!(?:" + _NOT_A_VERB + r")\b)[a-z]+\s+(?:my\s+|our\s+)?(?:" + _RELATION + r")\b(?!['’]s))|"
+    # "<verb> Sam", "to Dan" — a capitalized name after a lowercase word
+    r"(?<![\w'’])(?!(?:" + _NOT_A_VERB + r")\b)[a-z]+\s+(?!(?:I|Monday|Tuesday|Wednesday|Thursday|Friday|"
+    r"Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|"
+    r"November|December|Mac|iPhone|Wisp|Notes|Mail|Messages|Calendar|Reminders|Safari|Chrome|"
+    r"Spotify|Finder|Google|Amazon|Apple|Netflix|Zoom|Slack|Excel|Word|PDF)\b)[A-Z][a-z]+\b(?!['’]s)")
+_OUTBOUND_INTENT_RE = re.compile(
+    r"\b(?:send|sent|sending|re-?send|text(?:ing|ed)?|txt|e-?mail\w*|emial|mail|reply|respond|"
+    r"answer|write\s+(?:back|to)|forward|fwd|i?message|msg|sms|dm|notify|inform|cc|bcc|"
+    r"loop\s+in|share|unsubscribe|call|ring|phone|dial|facetime|fax|whatsapp|slack|signal|"
+    r"contact|ask|invite|thank|wish|congratulat\w*|apologi[sz]e|accept|decline|"
+    r"get\s+back\s+to|get\s+in\s+touch|reach\s+out|hit\s+(?:\w+\s+)?up|holler|"
+    r"pass\s+(?:this|that|it)\s+along|follow\s+up|check\s+in\s+with|confirm\s+with|check\s+with|"
+    r"say\s+(?:hi|hello|hey|bye|goodbye|good\s*night|thanks|thank\s+you|sorry|happy|congrat\w*)|"
+    r"buzz|tag|yell|shout\s+out|rsvp|say\s+yes|"
+    r"(?:tell|ping|nudge|remind)\s+(?!me\b|us\b|you\b|myself\b)\w+|"
+    r"update\s+(?!my\b|the\s+app|wisp\b)\w+|let\s+(?!me\b)\S+(?:\s+\S+)?\s+know|"
+    r"drop\s+\S+\s+a\s+line|give\s+\S+\s+a\s+(?:call|ring|buzz|shout))\b", re.I)
+_DELETE_INTENT_RE = re.compile(
+    r"\b(?:delet\w*|clear\w*|clar|wipe|erase|remov\w*|purge|forget|reset|empty|trash|"
+    r"destroy|ditch|dump|nuke|scrap|toss|zap|blow\s+away|tidy\s+up|"
+    r"get\s+rid\s+of|clean\s*(?:up|out)|throw\s+(?:away|out))\b", re.I)
+
+
+# "report.txt" is a file, "2026-10-12" a date: neither is a texting verb or a
+# phone number.
+_FILENAME_OR_DATE_RE = re.compile(
+    r"(?<!\S)[^\s@]+\.[A-Za-z0-9]{1,5}(?=[\s,.;:!?]|$)|\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b")
+
+
+def outbound_intent(text: str) -> bool:
+    """Whether `text` might ask to communicate with someone (fails toward True).
+
+    Quoted text is content, not a request: 'Translate "text 650-555-0134 that
+    I am outside" into French' asks for no send."""
+    from service.utterance_shape import mask_quoted
+    text = _FILENAME_OR_DATE_RE.sub(" ", mask_quoted(text))
+    return bool(_OUTBOUND_INTENT_RE.search(text) or _ADDRESSEE_RE.search(text))
+
+
+def gated_tool_allowed(name: str, text: str, *, context_open: bool = False) -> bool:
+    """Whether retrieval may offer `name` for `text`.
+
+    `context_open` is set when the turn continues an outbound or delete turn
+    ("try again" after a failed send, "Bob as well" after one), which the
+    current words alone cannot show.
+    """
+    if context_open:
+        return True
+    if name in _OUTBOUND_TOOLS:
+        return outbound_intent(text)
+    if name in _BULK_DELETE_TOOLS:
+        from service.utterance_shape import mask_quoted
+        return bool(_DELETE_INTENT_RE.search(mask_quoted(text)))
+    return True
+
+
 def _docs(tool: Tool) -> list[str]:
     """The documents embedded for one tool — its definition, plus ONE PER ALIAS.
 
@@ -340,7 +437,7 @@ def _gate_open(text: str, *, writing: bool) -> bool:
 
 
 async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
-                     timeout: float = 10.0) -> list[str]:
+                     timeout: float = 10.0, context_open: bool = False) -> list[str]:
     """The tool names to offer for a request that matched no regex rule.
 
     Raises EmbedUnavailable if the embedder can't be reached — the caller must
@@ -355,7 +452,8 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
     scored = await _INDEX.rank(text, timeout=timeout)
     open_gate = _gate_open(text, writing=writing)
     eligible = [(n, s) for n, s in scored
-                if n not in _PINNED and _allowed(n, writing=open_gate)]
+                if n not in _PINNED and _allowed(n, writing=open_gate)
+                and gated_tool_allowed(n, text, context_open=context_open)]
     picked: list[str] = []
     if eligible:
         cutoff = eligible[0][1] * _REL_FLOOR

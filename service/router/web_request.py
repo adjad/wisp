@@ -648,6 +648,14 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
     return finish(source, delivery)
 
 
+_PERSONAL_INBOX_QUESTION = (
+    r"(?:(?:are\s+there|is\s+there|do\s+i\s+have|did\s+i\s+get|have\s+i\s+got|got)\s+)?"
+    r"any\s+(?:(?:new|unread|important|recent|urgent|more|other)\s+)*"
+    r"(?:e-?mails?|mail|texts?|messages?|imessages?|dms?)"
+    r"(?:\s+(?:today|yet|tonight|so\s+far|this\s+(?:morning|afternoon|evening|week)|"
+    r"for\s+me|since\s+(?:this\s+morning|yesterday|lunch)))?")
+
+
 def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, bool]:
     # Quotes mask commands for consent/effect parsing, not source ownership.
     # Searching a quoted private-source phrase still needs the privacy guard.
@@ -700,6 +708,11 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # user's calendar. Require the complete shape: an external event, service
     # or explicit web request must retain its public-source interpretation.
     if re.fullmatch(PERSONAL_CALENDAR_READ_PATTERN + r"[.!?]*", _root(t), re.I):
+        return Provenance.PRIVATE, False
+    # Likewise a bare "any new emails?" / "any important mail this morning" /
+    # "got any texts" is the user's own inbox, not current public information
+    # (it was a router-direct web search). The complete shape is required.
+    if re.fullmatch(_PERSONAL_INBOX_QUESTION + r"[.!?]*", _root(t), re.I):
         return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
     for position in re.finditer(r"\b", t):
@@ -899,6 +912,26 @@ def _pending_offer(text: str | None) -> PendingOffer | None:
     return replace(latest, still_pending=not completed) if latest else None
 
 
+_DECLINED_OR_META = re.compile(
+    r"\b(?:don'?t|do\s+not|never|not|no|stop|cancel|skip|without)\b|"
+    r"^\s*(?:explain|describe|how|why|what\s+(?:is|does|are)|tell\s+me\s+(?:how|about))\b", re.I)
+
+
+def _local_history(text: str) -> bool:
+    """Whether `text` is a plain local request an assistant offer may follow.
+
+    Not a public lookup, delivery or chained action, and neither a refusal
+    ("Don't create that note.") nor a question about how something works
+    ("Explain how to create a note.") — after those, an offer is not the
+    user's current proposition and an assent must not act on it.
+    """
+    if _DECLINED_OR_META.search(_unquoted(text)):
+        return False
+    parsed = _parse_request(text)
+    return not (parsed.allowed or parsed.explicit or parsed.current or parsed.delivery
+                or parsed.continuations or parsed.delivery_cancelled)
+
+
 def _parse_request(text: str, last_user: str | None = None, *,
                    recent_users: tuple[str, ...] = (), last_assistant: str | None = None) -> WebRequest:
     all_clauses = _clauses(text)
@@ -948,8 +981,22 @@ def _parse_request(text: str, last_user: str | None = None, *,
         # Keep the user's full source/content, including quoted negatives.
         # Action typing masks quotes and requires a positive imperative root.
         pending_offer = replace(pending_offer, source_request=current_user)
+    # A pending LOCAL, non-delivery offer ("Want me to set a reminder…?",
+    # "Want me to open it?") is the current proposition even when the session
+    # has earlier user turns — which every real session does. Without this a
+    # bare "sure" reached the model with zero tools and it could claim the
+    # action was done. It replays only the offer's own action text (see
+    # router._route_request's standalone path), never older history. A
+    # public-web or delivery history keeps the stricter rule above: an
+    # unrelated new offer must not re-authorize that older request.
+    local_offer_with_history = bool(
+        current_user and pending_offer and pending_offer.delivery is None
+        and not pending_offer.source_reference
+        and _local_history(current_user)
+        and _local_history(pending_offer.action_text))
     standalone_offer = bool(acknowledgement and pending_offer and pending_offer.still_pending
-                            and ((not last_user and not recent_users) or matching_note_offer))
+                            and ((not last_user and not recent_users) or matching_note_offer
+                                 or local_offer_with_history))
     if standalone_offer:
         acknowledgement_without_offer = False
         delivery = pending_offer.delivery

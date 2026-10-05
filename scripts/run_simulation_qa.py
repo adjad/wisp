@@ -179,6 +179,8 @@ PROFILE_TESTS = {
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
         "tests/test_routing_contract_regressions.py",
+        "tests/test_routing_quality_fixes.py",
+        "tests/test_routing_quality_corpus.py",
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
