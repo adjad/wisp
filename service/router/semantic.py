@@ -203,13 +203,19 @@ _DELETE_INTENT_RE = re.compile(
     r"get\s+rid\s+of|clean\s*(?:up|out)|throw\s+(?:away|out))\b", re.I)
 
 
+# "report.txt" is a file, "2026-10-12" a date: neither is a texting verb or a
+# phone number.
+_FILENAME_OR_DATE_RE = re.compile(
+    r"(?<!\S)[^\s@]+\.[A-Za-z0-9]{1,5}(?=[\s,.;:!?]|$)|\b\d{4}-\d{1,2}-\d{1,2}(?:[T ]\d{1,2}:\d{2}(?::\d{2})?)?\b")
+
+
 def outbound_intent(text: str) -> bool:
     """Whether `text` might ask to communicate with someone (fails toward True).
 
     Quoted text is content, not a request: 'Translate "text 650-555-0134 that
     I am outside" into French' asks for no send."""
     from service.utterance_shape import mask_quoted
-    text = mask_quoted(text)
+    text = _FILENAME_OR_DATE_RE.sub(" ", mask_quoted(text))
     return bool(_OUTBOUND_INTENT_RE.search(text) or _ADDRESSEE_RE.search(text))
 
 

@@ -1246,13 +1246,31 @@ _CONTINUED_EFFECT_TOOLS = frozenset({
     "clear_memory", "delete_path", "trash_file", "forget"})
 
 
-def _continues_effect_turn(last_user: str | None, last_tools: str | None) -> bool:
+_RETRY_RE = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|please|pls|just)\W+)*(?:try\s+(?:it\s+)?again|retry|re-?send(?:\s+it)?|"
+    r"send\s+it\s+again|do\s+it\s+again|again|one\s+more\s+time)\b", re.I)
+# An imperative outbound REQUEST ("email jane@x.com saying hi", "can you text
+# Sam"), not a channel noun ("check my email").
+_OUTBOUND_REQUEST_RE = re.compile(
+    r"^\W*(?:(?:please|pls|ok(?:ay)?|can\s+you|could\s+you|would\s+you)\W+)*"
+    r"(?:send|e-?mail|text|message|reply|respond|forward|call|tell|let\s+\S+\s+know)\b|"
+    r"\bsend\b", re.I)
+
+
+def _continues_effect_turn(last_user: str | None, last_tools: str | None,
+                           text: str = "") -> bool:
     """Whether this turn may continue an outbound/delete turn ("try again",
     "Bob as well") — retrieval then keeps those tools available."""
-    # The previous turn's TOOLS, not its words: "check my email" names a
-    # channel but continued nothing outbound.
+    # The previous turn's TOOLS first: "check my email" names a channel but
+    # continued nothing outbound.
     names = {n for n in re.split(r"[\s,]+", last_tools or "") if n}
-    return bool(names & _CONTINUED_EFFECT_TOOLS)
+    if names & _CONTINUED_EFFECT_TOOLS:
+        return True
+    # A hard-failed or unknown-outcome send records no tool digest. A retry
+    # of a previous user turn that ASKED to send keeps the send tools
+    # (re-QA of PR #159, N13).
+    return bool(text and _RETRY_RE.search(text) and last_user
+                and _OUTBOUND_REQUEST_RE.search(mask_quoted(last_user)))
 
 
 async def _semantic_core(text: str, *, context_open: bool = False) -> list[str]:
@@ -7127,11 +7145,21 @@ def _assent_cannot_write_reminder(decision: RouteDecision, text: str,
         decision.tool_subset = [n for n in decision.tool_subset if n not in blocked]
     if decision.force_first_tool in blocked:
         decision.force_first_tool = None
-    if pure and reminder_offer:
+    if reminder_offer:
+        # Pure or compound ("yes and also text mom"): the reminder half takes
+        # the guarded clarify-time path, whose buffered receipt replaces any
+        # model claim with "I haven't created a reminder yet…". Another
+        # requested action keeps its own tools and normal approval path.
         decision.reminder_action = "clarify_time"
         decision.tool_subset = list(dict.fromkeys(["get_upcoming", *(decision.tool_subset or ())]))
-        decision.force_first_tool = "get_upcoming"
         decision.needs_tools = True
+        if pure:
+            decision.force_first_tool = "get_upcoming"
+        else:
+            from service.router.semantic import outbound_intent
+            if outbound_intent(text):
+                decision.tool_subset = list(dict.fromkeys(
+                    [*decision.tool_subset, "lookup_contact", "send_message", "send_email"]))
     elif decision.reminder_action == "create":
         decision.reminder_action = ""
     return decision
@@ -7417,7 +7445,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # the user had already said do it.
         d = _mk("agent", tools=True, reason="confirms an action the assistant just offered")
         d.tool_subset = await _semantic_core(
-            last_assistant or text, context_open=_continues_effect_turn(last_user, last_tools))
+            last_assistant or text, context_open=_continues_effect_turn(last_user, last_tools, text))
         d.multi_round = True
         return _assent_cannot_write_reminder(finalize(d, text), text, last_assistant)
     # A bare scope fragment ("from yesterday") continuing the previous
@@ -7455,7 +7483,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
     decision = rule_route(text, web_request=web_request)
     if decision is not None and decision.needs_tools and decision.tool_subset is None:
         retrieved = await _semantic_core(
-            text, context_open=_continues_effect_turn(last_user, last_tools))
+            text, context_open=_continues_effect_turn(last_user, last_tools, text))
         decision.tool_subset = retrieved
         decision.reason += f" -> retrieved tools ({len(retrieved)})"
         # Default: heterogeneous by construction — the rule established that a
@@ -7547,7 +7575,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # this route must still work. Offering the previous 14 tools is a
         # degraded fallback; offering nothing is a broken turn.
         core = await _semantic_core(
-            text, context_open=_continues_effect_turn(last_user, last_tools))
+            text, context_open=_continues_effect_turn(last_user, last_tools, text))
         decision = _mk("agent", tools=True, expect_tool_first=False, source="default",
                        reason=f"ambiguous -> retrieved tools ({len(core)}), model decides")
         decision.tool_subset = core

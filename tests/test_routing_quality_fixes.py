@@ -435,3 +435,105 @@ def test_assent_to_a_calendar_offer_keeps_the_calendar_write_but_not_a_reminder(
     decision = _route("yes please", last_assistant="Should I add that to your calendar?", last_tools="get_upcoming")
     reach = _reachable(decision)
     assert "add_calendar_event" in reach and "add_reminder" not in reach
+
+
+# --- Re-QA P2s on f5b0c6a ------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+from unittest.mock import patch  # noqa: E402
+
+
+class _FakeModel:
+    """Scripted model: each step is a dict message (last one repeats)."""
+
+    def __init__(self, steps):
+        self.steps, self.n = steps, 0
+        self.target = SimpleNamespace(context_window=64000)
+
+    async def ensure_only(self, *a, **k):
+        pass
+
+    async def stream_events(self, model, messages, **kw):
+        step = self.steps[min(self.n, len(self.steps) - 1)]
+        self.n += 1
+        yield {"kind": "final", "message": {"role": "assistant", **step}}
+
+
+def _call(name, args=None):
+    return {"content": "", "tool_calls": [{"id": f"c{name}", "type": "function",
+                                           "function": {"name": name, "arguments": json.dumps(args or {})}}]}
+
+
+def _run_turn(decision, text, steps):
+    from service.agent import loop
+    executed = []
+
+    async def fake_run_tool(tool, args, **kw):
+        executed.append(tool.name)
+        return {"get_upcoming": "Tue Oct 6 3:00 PM Dentist (Calendar)",
+                "lookup_contact": "Mom <+1 555 0100>"}.get(tool.name, f"OK ({tool.name})")
+
+    class Approver:
+        async def confirm(self, action):
+            return True
+
+    async def emit(event):
+        pass
+
+    async def go():
+        with patch.object(loop, "run_tool", side_effect=fake_run_tool), \
+                patch.object(loop, "audit", lambda *a, **k: None):
+            return await loop.run_agent(
+                _FakeModel(steps), "m", [{"role": "user", "content": decision.resolved_request or text}],
+                emit, Approver(), tools=decision.tool_subset, force_first_tool=decision.force_first_tool,
+                expect_tool_first=decision.expect_tool_first, multi_round=decision.multi_round,
+                narration_after=decision.narration_after, direct_calls=decision.direct_calls,
+                required_tool_groups=decision.required_tool_groups, forbidden_tools=decision.forbidden_tools,
+                conditional_tools=decision.conditional_tools,
+                tool_argument_bindings=decision.tool_argument_bindings,
+                strict_read_limits=decision.strict_read_limits, reminder_action=decision.reminder_action,
+                include_memory_context=False, max_steps=6)
+    return asyncio.run(go()), executed
+
+
+_COMPOUND = dict(last_user="what's on tomorrow", last_assistant=RELATIVE_OFFER, last_tools="get_upcoming")
+
+
+def test_compound_assent_routes_through_the_guarded_clarify_time_path():
+    decision = _route("yes and also text mom", **_COMPOUND)
+    assert decision.reminder_action == "clarify_time"
+    assert {"add_reminder", "set_alarm"} <= set(decision.forbidden_tools)
+    assert "send_message" in _reachable(decision)  # the text-mom half keeps its own path
+
+
+@pytest.mark.parametrize("steps", [
+    [{"content": "Reminder set! I'll remind you an hour before."}],
+    [_call("add_reminder", {"title": "Dentist", "when_iso": "2026-10-06T14:00"}), {"content": "Done"}],
+])
+def test_compound_assent_cannot_end_in_an_unreceipted_reminder_claim(steps):
+    decision = _route("yes and also text mom", **_COMPOUND)
+    text, executed = _run_turn(decision, "yes and also text mom", steps)
+    assert "add_reminder" not in executed
+    assert "haven" in text and "reminder" in text.lower(), text
+
+
+_FAILED_SEND = dict(last_user="email jane@x.com saying hi",
+                    last_assistant=("The send outcome is unknown. Check before requesting another send."),
+                    last_tools=None)
+
+
+@pytest.mark.parametrize("retry", ["try again", "retry", "send it again"])
+def test_retry_after_a_failed_or_unknown_send_keeps_the_send_tools(retry):
+    assert _reachable(_route(retry, **_FAILED_SEND)) & SENDS
+
+
+def test_retry_after_a_read_does_not_open_the_send_gate():
+    decision = _route("try again", last_user="check my email",
+                      last_assistant="I couldn't reach Mail just now.", last_tools=None)
+    assert not (_reachable(decision) & SENDS)
+
+
+@pytest.mark.parametrize("text", ["print report.txt", "open notes.txt", "what's on 2026-10-12",
+                                  "move it to 2026-10-12", "summarize report.txt from 2026-10-12"])
+def test_file_names_and_iso_dates_do_not_open_the_outbound_gate(text):
+    assert not semantic.outbound_intent(text)
