@@ -3147,6 +3147,36 @@ def test_a_pool_that_cannot_schedule_falls_back_to_the_serial_code_with_the_same
         assert same_outcome(new, old) and new[1] == (fault[2],), fault[0]
 
 
+def test_a_queued_inspection_still_runs_when_the_pool_is_shut_down_meanwhile(host, monkeypatch):
+    """shutdown() finishes queued work (it does not cancel it), so a run in progress is never failed by a close."""
+    monkeypatch.setattr(at, '_INSPECTION_WORKERS', 1)
+    at._POOL.shutdown()
+    gate = threading.Event()
+    Probe(host, monkeypatch, hooks={'listen': lambda: gate.wait(10)})
+    result = []
+    runner = threading.Thread(target=lambda: result.append(outcome(lambda: current(bare()))))
+    runner.start()
+    time.sleep(0.2)                                  # tcp_listeners is queued behind the blocked lsof
+    closer = threading.Thread(target=at._POOL.shutdown)
+    closer.start()
+    time.sleep(0.2)
+    gate.set()
+    runner.join(15)
+    closer.join(15)
+    assert not runner.is_alive() and not closer.is_alive() and result[0][0] == 'ok', result
+
+
+def test_a_deferred_inspection_runs_its_call_once_however_often_it_is_asked(monkeypatch):
+    calls = []
+    deferred = at._Deferred(lambda value: calls.append(value) or value, (7,))
+    assert deferred.result() == 7 and deferred.result() == 7 and calls == [7]
+    failing = at._Deferred(lambda: calls.append('boom') or (_ for _ in ()).throw(StepError('x')), ())
+    for _ in range(2):
+        with pytest.raises(StepError):
+            failing.result()
+    assert calls == [7, 'boom']
+
+
 def test_listener_called_from_inside_a_pool_worker_runs_inline_and_cannot_deadlock(host, monkeypatch):
     monkeypatch.setattr(at, '_INSPECTION_WORKERS', 1)
     at._POOL.shutdown()
