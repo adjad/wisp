@@ -102,7 +102,7 @@ def test_assent_to_relative_reminder_offer_looks_up_but_never_writes(ack, histor
     assert not (reach & SENDS)
 
 
-def test_assent_to_a_dated_reminder_offer_with_history_still_never_writes():
+def test_assent_to_a_dated_reminder_offer_with_history_still_never_writes():  # noqa: D103
     decision = _route("sure", last_user="when is my dentist appointment",
                       last_assistant="It's Thursday at 3pm. Want me to set a reminder for 2pm tomorrow?",
                       last_tools="get_upcoming")
@@ -396,3 +396,25 @@ def test_a_standalone_self_send_clause_after_a_compose_request_is_draft_only():
     assert R._self_send_instruction("prepare an email to HR asking about PTO, I'll send it myself")
     assert R._self_send_instruction("write up a text to the plumber; I will send it later")
     assert not R._self_send_instruction("email Dan: I'll send it myself tomorrow")
+
+
+# --- P2 repair: no assent path writes a reminder (QA Z01-Z04, reviewer) -----
+
+@pytest.mark.parametrize("ack", ["sounds good", "ok sure thing", "yeah go for it", "yes and also text mom"])
+def test_assent_after_a_calendar_lookup_never_reaches_add_reminder(ack):
+    decision = _route(ack, last_user="what's on tomorrow", last_assistant=RELATIVE_OFFER, last_tools="get_upcoming")
+    assert "add_reminder" not in _reachable(decision)
+    assert decision.force_first_tool != "add_reminder"
+
+
+@pytest.mark.parametrize("ack", ["sounds good", "ok sure thing", "yeah go for it"])
+def test_pure_assent_to_a_reminder_offer_gets_the_honest_clarify_receipt(ack):
+    decision = _route(ack, last_user="what's on tomorrow", last_assistant=RELATIVE_OFFER, last_tools="get_upcoming")
+    assert decision.reminder_action == "clarify_time" and decision.force_first_tool == "get_upcoming"
+
+
+def test_assent_to_a_timed_offer_without_history_does_not_force_a_write():
+    decision = _route("yes", last_assistant="I can set a reminder for 5pm if you'd like.")
+    assert "add_reminder" not in _reachable(decision)
+    assert decision.force_first_tool != "add_reminder"
+    assert decision.reminder_action == "clarify_time"

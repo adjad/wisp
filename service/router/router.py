@@ -7088,6 +7088,55 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
     return decision
 
 
+_ASSENT_WORDS = frozenset(
+    "yes yeah yep yup ya yah sure ok okay k kk sounds good great perfect cool go for it ahead do "
+    "please pls thanks thank you thing alright all right fine that works absolutely definitely of "
+    "course lets let's sounds-good".split())
+
+
+def _assent_cannot_write_reminder(decision: RouteDecision, text: str,
+                                  last_assistant: str | None) -> RouteDecision:
+    """An assent that confirms an assistant's offer never writes a reminder.
+
+    "sounds good" / "yeah go for it" after "Want me to set a reminder an hour
+    before?" reached add_reminder through the previous turn's calendar tools
+    (QA Z01-Z04 on PR #159), and the model wrote a reminder at a time it
+    guessed. Only the user's own dated command may create one, so add_reminder
+    is withheld unless THIS message names a resolvable time ("yes, remind me
+    tomorrow at 9am"). A pure assent to a reminder offer becomes the
+    clarify-time route, whose receipt asks for the time instead of letting the
+    model claim success; "yes and also text mom" keeps its other tools.
+    """
+    reach = (set(decision.tool_subset or ()) | {n for n, _ in decision.direct_calls}
+             | {n for g in decision.required_tool_groups for n in g})
+    if "add_reminder" not in reach and not decision.reminder_action:
+        return decision
+    if has_alert_time(text) and resolve_alert_datetime(text) is not None:
+        return decision
+    words = re.findall(r"[a-z']+", text.lower())
+    pure = bool(words) and all(w in _ASSENT_WORDS for w in words)
+    reminder_offer = bool(last_assistant and re.search(r"\bremind", last_assistant, re.I))
+    blocked = {"add_reminder", "set_alarm"}
+    decision.forbidden_tools = frozenset(set(decision.forbidden_tools) | blocked)
+    decision.required_tool_groups = tuple(
+        g for g in decision.required_tool_groups if not g & blocked)
+    decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in blocked]
+    decision.tool_argument_bindings = {
+        n: a for n, a in decision.tool_argument_bindings.items() if n not in blocked}
+    if decision.tool_subset is not None:
+        decision.tool_subset = [n for n in decision.tool_subset if n not in blocked]
+    if decision.force_first_tool in blocked:
+        decision.force_first_tool = None
+    if pure and reminder_offer:
+        decision.reminder_action = "clarify_time"
+        decision.tool_subset = list(dict.fromkeys(["get_upcoming", *(decision.tool_subset or ())]))
+        decision.force_first_tool = "get_upcoming"
+        decision.needs_tools = True
+    elif decision.reminder_action == "create":
+        decision.reminder_action = ""
+    return decision
+
+
 def _typo_route_hint(text: str, last_tools: str | None,
                      web_request: _WebRequest) -> RouteDecision | None:
     """The route a conservatively normalized copy of `text` would take.
@@ -7178,14 +7227,12 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             # clarify-time path and can never be written from a bare "sure".
             _apply_execution_contract(decision, offer.action_text,
                                       _classify_web_request(offer.action_text))
-            if decision.reminder_action and (
-                    last_user or recent_users
-                    or resolve_alert_datetime(offer.action_text) is None):
-                # A bare assent never writes a reminder from an offer when the
-                # session has history (the offer may be stale or unrelated to
-                # it, and a prior turn may have declined it — the study-slot
-                # contracts), nor from a relative offer ("an hour before") that
-                # names no date or clock. It may look the event up; the loop's
+            if decision.reminder_action or "add_reminder" in (decision.tool_subset or ()):
+                # A bare assent never writes a reminder from an offer, with or
+                # without history: the offer may be stale, unrelated, already
+                # declined (the study-slot contracts) or relative ("an hour
+                # before"), and its time is the assistant's words, not a dated
+                # command from the user. It may look the event up; the loop's
                 # clarify-time receipt then asks for the time instead of letting
                 # the model claim a reminder was set. A typed time answer
                 # continues through the existing alert-time path.
@@ -7352,7 +7399,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # read. Falls back to the full toolset when the previous turn used no
         # tools, which is the case this can't infer anything about.
         if (inherited := _confirmation_subset(last_tools)) is not None:
-            return finalize(inherited, text)
+            return _assent_cannot_write_reminder(finalize(inherited, text), text, last_assistant)
         # No inheritable domain (the previous turn used no tools). Retrieve on
         # the ASSISTANT's last message rather than on the user's "yes" — "yes"
         # carries no signal at all, while the offer being confirmed describes
@@ -7364,7 +7411,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         d.tool_subset = await _semantic_core(
             last_assistant or text, context_open=_continues_effect_turn(last_user, last_tools))
         d.multi_round = True
-        return finalize(d, text)
+        return _assent_cannot_write_reminder(finalize(d, text), text, last_assistant)
     # A bare scope fragment ("from yesterday") continuing the previous
     # light-read turn -> stay on that same the summarizer domain instead of falling to
     # the the agent model default. Checked before rule_route since the fragment names
