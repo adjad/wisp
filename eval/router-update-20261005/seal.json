@@ -1,0 +1,73 @@
+{
+  "authorship": "independent original product taxonomy; no historical raw prompts imported",
+  "sealed_at": "2026-10-05",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "unit": "scenario",
+  "independence_unit": "family",
+  "splits": {
+    "dev": {
+      "count": 80,
+      "families": 10,
+      "categories": [
+        "calendar",
+        "draft_vs_send",
+        "effect",
+        "email",
+        "failure",
+        "messages",
+        "negation",
+        "no_tool",
+        "notes",
+        "quoted_text",
+        "recovery",
+        "reminders"
+      ],
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+    },
+    "test": {
+      "count": 320,
+      "families": 40,
+      "categories": [
+        "account_literal",
+        "ambiguity",
+        "calendar",
+        "context_followup",
+        "count",
+        "coverage",
+        "day",
+        "direction",
+        "draft_vs_send",
+        "dst",
+        "duration",
+        "effect",
+        "email",
+        "exact_date",
+        "excluded_source",
+        "free_time",
+        "groundtruth",
+        "identity_literal",
+        "messages",
+        "month",
+        "multi_source",
+        "negation",
+        "no_tool",
+        "notes",
+        "partial_failure",
+        "past",
+        "public_personal",
+        "query_literal",
+        "quoted_text",
+        "records",
+        "recovery",
+        "reminders",
+        "scope",
+        "typo",
+        "unavailable_tools",
+        "unread",
+        "week",
+        "year_transition"
+      ],
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+    }
+  }
+}
