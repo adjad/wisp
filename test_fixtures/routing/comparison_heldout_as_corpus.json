@@ -1,0 +1,3213 @@
+{
+ "cases": [
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H001",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what does my week look like",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H002",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "anything on the books for the rest of the week",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H003",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "how packed is next week",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H004",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "give me the rundown for this weekend",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H005",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what's on monday through wednesday",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H006",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "am I double booked anywhere this week",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H007",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "show my schedule for the next 3 days",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H008",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what did my week look like last week",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H009",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "any meetings between now and friday",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H010",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what's on for the 1st through the 3rd",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H011",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "is my thursday afternoon open",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H012",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what have i got after 5 today",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H013",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_calendar_event",
+     "cancel_event",
+     "get_upcoming",
+     "update_event"
+    ]
+   ],
+   "prompt": "block 9 to 11 next tuesday for deep work",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H014",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_calendar_event",
+     "cancel_event",
+     "get_upcoming",
+     "update_event"
+    ]
+   ],
+   "prompt": "move my 3pm with Dana to 4",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H015",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_calendar_event",
+     "cancel_event",
+     "get_upcoming",
+     "update_event"
+    ]
+   ],
+   "prompt": "cancel friday's standup",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "weekly",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H016",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_calendar_event",
+     "cancel_event",
+     "get_upcoming",
+     "update_event"
+    ]
+   ],
+   "prompt": "put the school play on the calendar for the 18th at 6pm",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H017",
+   "last_assistant": "This week: Tue dentist, Thu standup.",
+   "last_tools": "get_upcoming",
+   "last_user": "what's on this week",
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "and next week?",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H018",
+   "last_assistant": "Friday is clear.",
+   "last_tools": "get_upcoming",
+   "last_user": "anything on friday",
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what about saturday",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H019",
+   "last_assistant": "You have 6 unread emails.",
+   "last_tools": "view_emails",
+   "last_user": "show my unread email",
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "only the ones from Sam",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H020",
+   "last_assistant": "3 new texts from Alex and Jordan.",
+   "last_tools": "summarize_messages",
+   "last_user": "any new texts",
+   "need": [
+    [
+     "summarize_messages",
+     "view_messages"
+    ]
+   ],
+   "prompt": "any from mom?",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H021",
+   "last_assistant": "Okay, I'll remind you at 6pm.",
+   "last_tools": "add_reminder",
+   "last_user": "remind me at 6pm to call the bank",
+   "need": [
+    [
+     "update_reminder"
+    ]
+   ],
+   "prompt": "make that 7 instead",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H022",
+   "last_assistant": "1. 2024_tax.pdf 2. 2025_tax.pdf",
+   "last_tools": "find_files",
+   "last_user": "find my tax pdfs",
+   "need": [
+    [
+     "open_app",
+     "read_file",
+     "reveal_in_finder"
+    ]
+   ],
+   "prompt": "open the second one",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H023",
+   "last_assistant": "Priya invited you to lunch Friday.",
+   "last_tools": "view_emails",
+   "last_user": "any email from Priya",
+   "need": [
+    [
+     "draft_email",
+     "reply_to_email",
+     "send_email"
+    ]
+   ],
+   "prompt": "reply saying i'll be there",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H024",
+   "last_assistant": "It's 12 Main St.",
+   "last_tools": "web_search",
+   "last_user": "what's the address of the cafe",
+   "need": [
+    [
+     "lookup_contact",
+     "send_message"
+    ]
+   ],
+   "prompt": "text her that",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H025",
+   "last_assistant": "The cabin wifi is Pine42 (from your notes).",
+   "last_tools": "search_notes",
+   "last_user": "what's the wifi at the cabin",
+   "need": [
+    [
+     "append_note",
+     "create_note"
+    ]
+   ],
+   "prompt": "save that to my notes",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H026",
+   "last_assistant": "Dr. Lee on the 12th at 9am.",
+   "last_tools": "get_upcoming",
+   "last_user": "when's my dentist appointment",
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "no, the other dentist",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H027",
+   "last_assistant": "Today you have nothing scheduled.",
+   "last_tools": "get_upcoming",
+   "last_user": "what's on today",
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "tomorrow instead",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "followup",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H028",
+   "last_assistant": "Volume set to 20%.",
+   "last_tools": "set_volume",
+   "last_user": "set the volume to 20",
+   "need": [
+    [
+     "set_volume"
+    ]
+   ],
+   "prompt": "louder",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H029",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "web_search"
+    ]
+   ],
+   "prompt": "what's the news on the apple event",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H030",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what's on my apple calendar",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H031",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_sports_scores",
+     "web_search"
+    ]
+   ],
+   "prompt": "who won the game last night",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H032",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "did i win the fantasy league email",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H033",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_stock_price",
+     "web_search"
+    ]
+   ],
+   "prompt": "what's tesla stock doing",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H034",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming",
+     "search_notes",
+     "view_emails"
+    ]
+   ],
+   "prompt": "what's my tesla service appointment",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H035",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "web_search"
+    ]
+   ],
+   "prompt": "latest messages from the white house",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H036",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_messages",
+     "view_messages"
+    ]
+   ],
+   "prompt": "latest messages from my landlord",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H037",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "find_place",
+     "web_search"
+    ]
+   ],
+   "prompt": "what's the best pizza near me",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H038",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "search_notes",
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "what pizza did i order last time",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H039",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_directions",
+     "travel_time"
+    ]
+   ],
+   "prompt": "how's the traffic to work",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H040",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming",
+     "search_notes",
+     "view_emails"
+    ]
+   ],
+   "prompt": "what time does my flight leave",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H041",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "what's the population of japan",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H042",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_weather",
+     "web_search"
+    ]
+   ],
+   "prompt": "what's the weather in tokyo this weekend",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H043",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_weather",
+     "rain_radar"
+    ]
+   ],
+   "prompt": "do i need an umbrella today",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "personal_vs_public",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H044",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "clipboard_read"
+    ]
+   ],
+   "prompt": "what's in my clipboard",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H045",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "check my calendar but don't look at email",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H046",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "summarize my inbox without replying to anything",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H047",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what's on today, skip the reminders",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H048",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "search_notes"
+    ]
+   ],
+   "prompt": "search my notes, not the web, for the lease terms",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H049",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "draft_message",
+     "lookup_contact"
+    ]
+   ],
+   "prompt": "don't send it, just write a text to Sam saying I'm late",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H050",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "draft_email",
+     "lookup_contact"
+    ]
+   ],
+   "prompt": "draft an email to the landlord but do not send",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H051",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "tell me about rome without searching online",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H052",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_weather",
+     "web_search"
+    ]
+   ],
+   "prompt": "never mind the reminder, what's the weather",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H053",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "i don't need a reminder, just tell me when the meeting is",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H054",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "list_bluetooth_devices",
+     "system_status",
+     "toggle_setting"
+    ]
+   ],
+   "prompt": "don't turn off bluetooth, is it on?",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H055",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_messages",
+     "view_messages"
+    ]
+   ],
+   "prompt": "read my texts but don't mark anything read",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "negation",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H056",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "recall",
+     "search_conversations"
+    ]
+   ],
+   "prompt": "what did i tell you about the gate code, don't check notes",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H057",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_reminder"
+    ]
+   ],
+   "prompt": "remind me at 9:15pm tonight to lock the door",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H058",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_reminder"
+    ]
+   ],
+   "prompt": "remind me on october 20 at 8am to renew the parking permit",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H059",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_reminder"
+    ]
+   ],
+   "prompt": "set a reminder for 7:30 tomorrow morning to call the vet",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H060",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_reminder"
+    ]
+   ],
+   "prompt": "remind me in 45 minutes to take the laundry out",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H061",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "world_time"
+    ]
+   ],
+   "prompt": "what time is it in london",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H062",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what's on my calendar at 3pm pacific tomorrow",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H063",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_calendar_event"
+    ]
+   ],
+   "prompt": "schedule a call with Ben at 10am eastern on friday",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H064",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "add_reminder"
+    ]
+   ],
+   "prompt": "remind me sunday at noon to water the plants",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H065",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_upcoming",
+     "search_reminders"
+    ]
+   ],
+   "prompt": "what reminders do i have for tomorrow",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H066",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "manage_timers",
+     "set_timer"
+    ]
+   ],
+   "prompt": "set a timer for 12 minutes",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H067",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "set_alarm"
+    ]
+   ],
+   "prompt": "wake me up at 6:45",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "time",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H068",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "what was on my calendar on september 30",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H069",
+   "last_assistant": "I couldn't reach Mail just now.",
+   "last_tools": "view_emails",
+   "last_user": "check my email",
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "try again",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H070",
+   "last_assistant": "I didn't find it in your email.",
+   "last_tools": "view_emails",
+   "last_user": "where's the warranty for the fridge",
+   "need": [
+    [
+     "search_notes"
+    ]
+   ],
+   "prompt": "check notes instead",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H071",
+   "last_assistant": "Nothing from Sam in your email.",
+   "last_tools": "view_emails",
+   "last_user": "did Sam confirm dinner",
+   "need": [
+    [
+     "summarize_messages",
+     "view_messages"
+    ]
+   ],
+   "prompt": "what about my texts",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H072",
+   "last_assistant": "I couldn't find a return policy in your notes.",
+   "last_tools": "search_notes",
+   "last_user": "what's the return policy for my order",
+   "need": [
+    [
+     "web_search"
+    ]
+   ],
+   "prompt": "look it up online then",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H073",
+   "last_assistant": "Your calendar has nothing about the pool.",
+   "last_tools": "get_upcoming",
+   "last_user": "when does the pool open",
+   "need": [
+    [
+     "web_search"
+    ]
+   ],
+   "prompt": "ok search the web",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "failure_recovery",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H074",
+   "last_assistant": "Calendar access timed out.",
+   "last_tools": "get_upcoming",
+   "last_user": "what's on tomorrow",
+   "need": [
+    [
+     "daily_brief",
+     "find_free_time",
+     "get_past_events",
+     "get_upcoming"
+    ]
+   ],
+   "prompt": "can you retry the calendar",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H075",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "search_notes"
+    ]
+   ],
+   "prompt": "pull up the note about the camping trip",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H076",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "append_note",
+     "create_note"
+    ]
+   ],
+   "prompt": "add bread to my shopping note",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H077",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "append_note",
+     "create_note"
+    ]
+   ],
+   "prompt": "jot this down: parking level 3 spot 41",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H078",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "lookup_contact",
+     "send_email"
+    ]
+   ],
+   "prompt": "email Ben the slides link https://example.com/deck",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H079",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "lookup_contact",
+     "send_message"
+    ]
+   ],
+   "prompt": "text dad happy birthday",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H080",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "did the school email about picture day",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H081",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_messages",
+     "view_messages"
+    ]
+   ],
+   "prompt": "what did jordan text me this morning",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H082",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "find_files"
+    ]
+   ],
+   "prompt": "find the pdf of my car insurance",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H083",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "find_files",
+     "open_app"
+    ]
+   ],
+   "prompt": "open the budget spreadsheet",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H084",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "find_files",
+     "list_dir"
+    ]
+   ],
+   "prompt": "what's in my downloads",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H085",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "remember"
+    ]
+   ],
+   "prompt": "remember that my locker is 112",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H086",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "recall",
+     "search_conversations"
+    ]
+   ],
+   "prompt": "what's my locker number again, i told you",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H087",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "toggle_setting"
+    ]
+   ],
+   "prompt": "turn on do not disturb",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H088",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "force_quit_app",
+     "quit_app"
+    ]
+   ],
+   "prompt": "quit zoom",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H089",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_battery_status",
+     "system_status"
+    ]
+   ],
+   "prompt": "how much battery is left",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H090",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "music",
+     "play_ambient",
+     "play_streaming"
+    ]
+   ],
+   "prompt": "play some rain sounds",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H091",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "write a limerick about my cat",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H092",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "explain the difference between ira and 401k",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H093",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "thanks that's perfect",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H094",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "translate good morning to french",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "chat",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H095",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "what's 18% tip on 64 dollars",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "clarify",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H096",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "do it",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "clarify",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H097",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "send that to him",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "clarify",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": [],
+   "id": "H098",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [],
+   "prompt": "change it",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H099",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "get_upcoming",
+     "search_reminders"
+    ]
+   ],
+   "prompt": "what's my to do list",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H100",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "complete_reminder",
+     "get_upcoming",
+     "search_reminders"
+    ]
+   ],
+   "prompt": "mark the milk reminder done",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H101",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "summarize_emails",
+     "summarize_thread",
+     "triage_inbox",
+     "view_emails"
+    ]
+   ],
+   "prompt": "summarize the email thread about the offsite",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H102",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "draft_message",
+     "lookup_contact"
+    ]
+   ],
+   "prompt": "draft a text to the plumber asking when he's coming",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H103",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "draft_email"
+    ]
+   ],
+   "prompt": "write up an email to the team about the holiday hours, i'll review it first",
+   "styles": []
+  },
+  {
+   "avoid": [],
+   "domain": "everyday",
+   "expect": "action",
+   "forbid": [
+    "clear_memory",
+    "clear_past_reminders",
+    "clear_reminders",
+    "delete_path",
+    "forward_email",
+    "place_call",
+    "reply_to_email",
+    "schedule_send",
+    "send_email",
+    "send_message",
+    "trash_file"
+   ],
+   "force": null,
+   "id": "H104",
+   "last_assistant": null,
+   "last_tools": null,
+   "last_user": null,
+   "need": [
+    [
+     "recipe_lookup",
+     "web_search"
+    ]
+   ],
+   "prompt": "look up a recipe for chili",
+   "styles": []
+  }
+ ],
+ "source_sha256": "1ed98721e2f99c9f90e6f73860c9eb91eab65ce77e7c931bf935298489c3534b"
+}
