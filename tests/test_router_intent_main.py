@@ -365,3 +365,82 @@ def test_actor_unclear_repeated_source_boundaries_clarify_despite_complete_date_
     client.outputs = [bad, bad]
     events = asyncio.run(request("Read appointments tomorrow calendar next week"))
     assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+
+@pytest.mark.parametrize("case", ["mixed", "coordinated"])
+def test_actor_supported_mixed_lookup_and_coordinated_sender_reads(endpoint, case):
+    from tests.test_router_intent_core import MIXED_LOOKUP_PROMPT, MIXED_LOOKUP_GOOD, COORDINATED_EMAIL_PROMPT, COORDINATED_EMAIL_GOOD
+    request, client, calls, _, _ = endpoint
+    prompt, data = (MIXED_LOOKUP_PROMPT, MIXED_LOOKUP_GOOD) if case == "mixed" else (COORDINATED_EMAIL_PROMPT, COORDINATED_EMAIL_GOOD)
+    client.outputs = [data]
+    events = asyncio.run(request(prompt))
+    expected = [("get_upcoming", {"period": "tomorrow", "calendar_only": True}), ("search_notes", {"query": "amber notebooks", "period": "yesterday"})] if case == "mixed" else [
+        ("view_emails", {"query": "Selene", "strict_match": True, "period": "yesterday"}),
+        ("view_emails", {"query": "Dorian", "strict_match": True, "period": "yesterday"})]
+    assert calls == expected
+    assert client.calls == ["status", "chat"]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("bad_query", [None, "amber"])
+def test_actor_mixed_lookup_still_rejects_missing_or_truncated_filter(endpoint, bad_query):
+    from tests.test_router_intent_core import MIXED_LOOKUP_PROMPT
+    request, client, calls, _, _ = endpoint
+    query = {"query": bad_query} if bad_query else {}
+    bad = value(source("calendar", "records", time={"named": "tomorrow"}), source("notes", "records", time={"named": "yesterday"}, **query))
+    client.outputs = [bad, bad]
+    events = asyncio.run(request(MIXED_LOOKUP_PROMPT))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("tail", ["email Mom", "text Mom", "forward it by email to Mom"])
+def test_actor_true_delivery_keeps_read_planner_guard(endpoint, monkeypatch, tail):
+    import service.router.intent as intent_api
+    request, client, calls, _, _ = endpoint
+    planner_spy = AsyncMock(side_effect=AssertionError("delivery cannot enter read planner"))
+    monkeypatch.setattr(intent_api, "plan_read", planner_spy)
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        await emit({"type": "text", "text": "Synthetic guarded action path."})
+        return "Synthetic guarded action path."
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    events = asyncio.run(request("Read email from Selene and " + tail))
+    planner_spy.assert_not_awaited()
+    assert not client.calls
+    assert "compiled" not in [e.get("intent_disposition") for e in events]
+
+
+
+def test_actor_quoted_coordinated_senders_keep_exact_filters_and_shared_date(endpoint):
+    from tests.test_router_intent_core import COORDINATED_EMAIL_GOOD
+    request, client, calls, _, _ = endpoint
+    client.outputs = [COORDINATED_EMAIL_GOOD]
+    events = asyncio.run(request('Read email from "Selene" and email from "Dorian" for yesterday'))
+    assert calls == [("view_emails", {"query": "Selene", "strict_match": True, "period": "yesterday"}),
+                     ("view_emails", {"query": "Dorian", "strict_match": True, "period": "yesterday"})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_mixed_lookup_date_swap_cannot_execute(endpoint):
+    request, client, calls, _, _ = endpoint
+    bad = value(source("calendar", "records", time={"named": "yesterday"}), source("notes", "records", query="amber notebooks", time={"named": "tomorrow"}))
+    client.outputs = [bad, bad]
+    events = asyncio.run(request("Show my calendar tomorrow; find notes about amber notebooks from yesterday"))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+
+@pytest.mark.parametrize("misbound", [False, True])
+def test_actor_lookup_filter_binds_to_one_repeated_source_occurrence(endpoint, misbound):
+    request, client, calls, _, _ = endpoint
+    first_query = {"query": "amber notebooks"} if misbound else {}
+    second_query = {} if misbound else {"query": "amber notebooks"}
+    data = value(source("notes", "records", time={"named": "tomorrow"}, **first_query),
+                 source("notes", "records", time={"named": "yesterday"}, **second_query))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Show my notes tomorrow; find notes about amber notebooks from yesterday"))
+    if misbound:
+        assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+    else:
+        assert calls == [("search_notes", {"period": "tomorrow"}), ("search_notes", {"query": "amber notebooks", "period": "yesterday"})]
+        assert "compiled" in [e.get("intent_disposition") for e in events]

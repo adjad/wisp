@@ -256,6 +256,35 @@ def _instruction_text(text: str, *, now: datetime) -> str:
         masked = masked[:start] + " " * (end - start) + masked[end:]
     return masked
 
+def _lookup_domains(text: str, *, now: datetime) -> set[str]:
+    """Bind lookup cues to source nouns in their instruction clause.
+
+    Literal content cannot authorize another source or leak a lookup requirement
+    into an independent clause. Unbound lookup cues clarify conservatively.
+    """
+    masked = _instruction_text(text, now=now)
+    anchors = sorted((m.start(), m.end(), domain) for domain, word in SOURCE_WORDS.items()
+                     for m in re.finditer(word, masked, re.I))
+    domains = set()
+    cues = re.finditer(r"\b(?:find|search|look up|lookup|locate|named|titled|called|contains|containing|about|code|password|receipt|invoice)\b", masked, re.I)
+    minute_count = r"(?:\d+(?:\.\d+)?|" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r")"
+    boundary = (r"[;!?\n]|\.(?=\s|$)|\b(?:plus|then|but)\b|\band\b"
+                r"(?!\s+" + minute_count + r"\s+(?:minutes?|mins?)\b)")
+    for cue in cues:
+        before = [a for a in anchors if a[1] <= cue.start() and
+                  not re.search(boundary, masked[a[1]:cue.start()], re.I)]
+        after = [a for a in anchors if a[0] >= cue.end() and
+                 not re.search(boundary, masked[cue.end():a[0]], re.I)]
+        # A head lookup verb owns its following source; a post-nominal cue
+        # owns the preceding noun (notes about ..., email containing ...).
+        head = cue.group().lower() in {"find", "search", "look up", "lookup", "locate"}
+        owner = after[0][2] if after and (head or not before) else before[-1][2] if before else None
+        if owner is None:
+            raise InvalidIntent("Cannot bind lookup requirement to a source clause")
+        domains.add(owner)
+    return domains
+
+
 def _source_time_requirements(text: str, domains: set[str], *, now: datetime):
     # Dates inside a complete search literal are data, not a date constraint.
     masked = _instruction_text(text, now=now)
@@ -471,6 +500,8 @@ def _validate_occurrences(sources, clauses, *, now: datetime):
                 operation = "free_time"
             elif operation_match:
                 operation = "overview" if operation_match[1].lower() in {"recap", "summarize", "summary", "overview", "digest"} else "records"
+            if domain in _lookup_domains(clause, now=now) and operation != "free_time" and not literals:
+                raise InvalidIntent("A requested clause lookup filter was dropped")
             field = "conversation" if domain == "messages" and operation == "overview" else "query"
             scopes = _reminder_scopes(instruction, sole=True) if domain == "reminders" else set()
             minutes = _requested_minutes(instruction) if domain == "calendar" else set()
@@ -657,6 +688,9 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
             raise InvalidIntent("Unrequested or missing contextual source")
         if not authority and not (personal_agenda_period(prompt) or flexible_personal_agenda(prompt)):
             raise InvalidIntent("No explicit or contextual source authority")
+        instruction_sources, _ = source_requirements(_instruction_text(prompt, now=now))
+        if instruction_sources and represented - instruction_sources:
+            raise InvalidIntent("Literal content cannot authorize another source")
         unread_requested = bool(re.search(r"\bunread\b", evidence, re.I))
         if unread_requested:
             direct_domains = {domain for domain, pattern in SOURCE_WORDS.items()
@@ -671,8 +705,11 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         from service.utterance_shape import mask_quoted
         filter_requested = bool(re.search(
             r"\b(?:find|search|look up|lookup|locate|named|titled|called|contains|containing|about|code|password|receipt|invoice)\b", mask_quoted(prompt), re.I))
+        lookup_domains = _lookup_domains(filter_prompt, now=now) if filter_requested else set()
         if filter_requested and not unsupported and any(
-                source.operation != "free_time" and not (source.query or source.conversation)
+                source.domain in lookup_domains and source.domain not in occurrence_clauses
+                and source.operation != "free_time"
+                and not (source.query or source.conversation)
                 for source in sources):
             raise InvalidIntent("A requested lookup filter was dropped")
         # Exact quoted literals and explicit sender/conversation phrases must
@@ -703,7 +740,7 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         for source in sources:
             wanted = domain_filters[source.domain]
             fields = [field for field in (source.query, source.conversation, source.account) if field is not None]
-            if wanted and (not fields or any(field not in wanted for field in fields)) and not unsupported:
+            if source.domain not in occurrence_clauses and wanted and (not fields or any(field not in wanted for field in fields)) and not unsupported:
                 raise InvalidIntent("An additional read dropped or changed the requested filter")
         if filter_requested and not literal_filters and not requested_queries and not unsupported and any(
                 source.operation != "free_time" and source.query for source in sources):
