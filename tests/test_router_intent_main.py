@@ -1,0 +1,155 @@
+"""Actual main.agent orchestration with isolated sessions and synthetic tools."""
+from __future__ import annotations
+import asyncio
+import json
+import socket
+import subprocess
+from dataclasses import replace
+from unittest.mock import AsyncMock
+import pytest
+from service import main
+from service.memory import context
+from service.memory.store import SessionStore
+from service.router import router
+from service.tools.registry import REGISTRY
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, source, value
+
+
+@pytest.fixture
+def endpoint(monkeypatch, tmp_path):
+    store = SessionStore(tmp_path / "sessions.db")
+    client = FakeClient()
+    config = {"intent_router": CONFIG, "tool_retrieval": {"provider": "lexical"}}
+    calls = []
+    monkeypatch.setattr(main, "client", client, raising=False)
+    monkeypatch.setattr(main, "store", store)
+    monkeypatch.setattr(context, "store", store)
+    monkeypatch.setattr(main, "models_config", lambda: config)
+    monkeypatch.setattr(router, "role_to_model", lambda role: MODEL)
+    monkeypatch.setattr(main, "ensure_omlx", AsyncMock(side_effect=AssertionError("no startup")))
+    monkeypatch.setattr(main, "maybe_summarize", AsyncMock())
+    def forbidden(*a, **k):
+        raise AssertionError("Synthetic intent tests may not run sockets or native tools")
+    monkeypatch.setattr(socket.socket, "connect", forbidden)
+    monkeypatch.setattr(socket.socket, "connect_ex", forbidden)
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    for name, tool in list(REGISTRY.items()):
+        def fixture(*, _name=name, **args):
+            calls.append((_name, args))
+            if _name == "summarize_emails":
+                return "Inbox: synthetic Acme update."
+            if _name == "summarize_messages":
+                return "Texts: you replied to Imani. One conversation could not be checked."
+            if _name == "get_upcoming":
+                return "Monday: synthetic planning. Work calendar could not be checked."
+            if _name == "search_notes":
+                return "Synthetic note: " + str(args.get("query"))
+            return "(error: unexpected fixture tool)"
+        monkeypatch.setitem(REGISTRY, name, replace(tool, func=fixture))
+    async def request(prompt, **kw):
+        response = await main.agent({"prompt": prompt, "debug": False, **kw})
+        events = []
+        async for item in response.body_iterator:
+            if isinstance(item, bytes):
+                item = item.decode()
+            events.append(json.loads(item.removeprefix("data: ").strip()))
+        assert not [event for event in events if event["type"] == "error"], events
+        return events
+    return request, client, calls, store, config
+
+
+def text(events):
+    return "\n".join(event.get("text", "") for event in events if event["type"] == "text")
+
+
+def test_multisource_compilation_survives_pinned_coding_session(endpoint):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.set_pinned(sid, "coding", "wrong-pinned-model")
+    client.outputs = [value(source("email"), source("messages"))]
+    events = asyncio.run(request("Recap my email and texts", session_id=sid))
+    assert calls == [("summarize_emails", {}), ("summarize_messages", {})]
+    assert client.calls == ["status", "chat"]
+    assert text(events) == "**Email:**\nInbox: synthetic Acme update.\n\n**Messages:**\nTexts: you replied to Imani. One conversation could not be checked."
+    assert next(event for event in events if event["type"] == "routed")["intent_disposition"] == "compiled"
+
+
+def test_invalid_output_cannot_fan_out_or_read_excluded_sources(endpoint):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("notes")), value(source("notes"))]
+    events = asyncio.run(request("Recap my email without notes"))
+    assert not calls and client.calls == ["status", "chat", "status", "chat"]
+    assert "could not validate" in text(events)
+
+
+def test_unavailable_model_clarifies_without_engine_start_or_private_read(endpoint):
+    request, client, calls, _, _ = endpoint
+    client.loaded = False
+    events = asyncio.run(request("Recap my email and texts"))
+    assert not calls and client.calls == ["status"]
+    assert "unavailable" in text(events)
+
+
+def test_exact_weekly_fast_path_avoids_all_model_calls(endpoint):
+    request, client, calls, _, _ = endpoint
+    events = asyncio.run(request("What is up for this week"))
+    assert calls == [("get_upcoming", {"period": "this week"})]
+    assert not client.calls
+    assert "Work calendar could not be checked" in text(events)
+
+
+def test_filtered_overview_is_not_silently_downgraded_by_earlier_compile_read(endpoint):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("email", query="Acme"))]
+    events = asyncio.run(request("Show my email summary from Acme"))
+    assert not calls and client.calls == ["status", "chat"]
+    assert "query filter" in text(events)
+
+
+def test_distinct_note_scopes_keep_both_calls_and_outputs(endpoint):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("notes", "records", query="Alpha"), source("notes", "records", query="Beta"))]
+    events = asyncio.run(request('Find notes named "Alpha" and "Beta"'))
+    assert calls == [("search_notes", {"query": "Alpha"}), ("search_notes", {"query": "Beta"})]
+    assert "Synthetic note: Alpha" in text(events) and "Synthetic note: Beta" in text(events)
+    ids = [event["id"] for event in events if event["type"] == "tool_call"]
+    assert len(ids) == len(set(ids)) == 2
+
+
+def test_dry_run_never_issues_planner_generation(endpoint):
+    request, client, calls, _, _ = endpoint
+    # A complete deterministic fast path is enough to exercise dry-run contract.
+    events = asyncio.run(request("What is up for this week", test_mode=True))
+    assert not client.calls and not calls
+    assert "Dry run only" in text(events)
+
+
+@pytest.mark.parametrize("prompt,scope", [
+    ("whats up for the week", "this week"),
+    ("how's my week looking", "this week"),
+    ("anything coming up for me", None),
+    ("my calender this wk", "this week"),
+])
+def test_flexible_weekly_eligibility_runs_real_endpoint_with_bounded_fake_planner(endpoint, prompt, scope):
+    request, client, calls, _, _ = endpoint
+    time = {"time": {"named": scope}} if scope else {}
+    # Misspelled explicit calendar source is still one requested domain;
+    # implicit personal agenda may include both explicitly declared sources.
+    sources = [source("calendar", **time)]
+    if "calender" not in prompt:
+        sources.append(source("reminders", **time))
+    client.outputs = [value(*sources)]
+    events = asyncio.run(request(prompt))
+    assert client.calls == ["status", "chat"]
+    assert calls and calls[0][0] == "get_upcoming"
+    assert "compiled" in [event.get("intent_disposition") for event in events]
+
+
+def test_contextual_domain_cannot_be_replaced_by_model(endpoint):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.add_turn(sid, "user", "Recap my email")
+    store.add_turn(sid, "assistant", "Synthetic email digest", tool_digest="summarize_emails")
+    client.outputs = [value(source("calendar", time={"named": "tomorrow"})), value(source("calendar", time={"named": "tomorrow"}))]
+    events = asyncio.run(request("Same for tomorrow", session_id=sid))
+    assert not calls and "could not validate" in text(events)

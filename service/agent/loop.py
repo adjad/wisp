@@ -1079,7 +1079,7 @@ def _contact_receipt_destination(binding: dict, receipt: str) -> str:
     return handles[0]
 
 
-def _merge_results(results: list[tuple[str, str]]) -> str:
+def _merge_results(results: list[tuple[str, str] | tuple[str, str, dict]]) -> str:
     """Present several tool results as ONE labelled answer.
 
     Used only on the fallback paths — the model produced no answer of its own,
@@ -1091,15 +1091,24 @@ def _merge_results(results: list[tuple[str, str]]) -> str:
     """
     if len(results) == 1:
         return results[0][1]
-    seen: set[str] = set()
     blocks: list[str] = []
-    for name, result in results:
-        # One block per TOOL, not per call: a tool called twice (two search_notes
-        # queries) would otherwise get two identically-labelled sections.
-        if name in seen:
-            continue
-        seen.add(name)
-        label = _SOURCE_LABELS.get(name, name)
+    seen = set()
+    for entry in results:
+        name, result = entry[:2]
+        args = entry[2] if len(entry) > 2 else None
+        # Only successful reads with authoritative equal args AND result are
+        # demonstrably identical. Legacy pairs carry no scope identity.
+        if isinstance(args, dict):
+            outcome = classify_tool_outcome(name, result)
+            identity = (name, json.dumps(args, sort_keys=True), result)
+            if outcome.effect == "read" and outcome.status == "succeeded":
+                if identity in seen:
+                    continue
+                seen.add(identity)
+            from service.workflows.reads import read_result_label
+            label = read_result_label(name, args)
+        else:
+            label = _SOURCE_LABELS.get(name, name)
         blocks.append(f"**{label}:**\n{result.strip()}")
     return "\n\n".join(blocks)
 
@@ -1474,7 +1483,7 @@ async def run_agent(
     #
     # The data is already in hand either way; this only stops it being thrown
     # away. See _merge_results.
-    clean_results: list[tuple[str, str]] = []
+    clean_results: list[tuple[str, str, dict]] = []
     # Tools CALLED this turn that have already come back with a real result.
     # Once every tool the model has called is clean, the model likely has
     # nothing left to figure out and the next step is a pure narration step
@@ -1510,6 +1519,7 @@ async def run_agent(
     tool_outcomes: list[tuple[str, object]] = []
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
+    failed_read_receipts: list[tuple[str, str, dict]] = []
     contact_receipts: dict[str, str] = {}
     recipient_requirements = {
         name: fixed["_recipient_lookup"] for name, fixed in (tool_argument_bindings or {}).items()
@@ -1522,6 +1532,8 @@ async def run_agent(
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
+        if outcome.effect == "read" and outcome.status in {"failed", "denied", "unsupported", "needs_input"}:
+            failed_read_receipts.append((name, _user_facing_failure(result), dict(args or {})))
         if name == "lookup_contact" and args is not None:
             key = str(args.get("name") or "").strip().casefold()
             contact_receipts.pop(key, None)
@@ -1686,7 +1698,7 @@ async def run_agent(
     if response := _unavailable_response(name for name, _ in (direct_calls or [])):
         await emit({"type": "text", "text": response})
         return response
-    for _name, _args in (direct_calls or []):
+    for _direct_index, (_name, _args) in enumerate(direct_calls or []):
         if _skill_boundary(_name):
             audit("reject_skill_boundary", tool=_name, args=_args)
             continue
@@ -1698,7 +1710,7 @@ async def run_agent(
         _tool = get_tool(_name)
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
-        _cid = f"direct_{_name}"
+        _cid = f"direct_{_name}_{_direct_index}"
         _dec = decide(_tool.category, _args, tool=_name)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
@@ -1767,7 +1779,7 @@ async def run_agent(
             last_tool_result = _result
             last_tier = _dec.tier
             if _dec.tier is not Tier.DENY and not is_tool_error(_result):
-                clean_results.append((_name, _result))
+                clean_results.append((_name, _result, dict(_args)))
         # Feed the narration gate exactly as the model-driven path does. A DENY —
         # including a confirmation card the user dismissed or that timed out — is
         # a policy outcome that must keep thinking ON, so the next step never
@@ -1868,7 +1880,7 @@ async def run_agent(
         # only job here is prose over the sanitized evidence.  In particular,
         # do not forward the synthetic assistant/tool transcript built for the
         # local agent loop or any tool schema to the remote endpoint.
-        evidence = [(name, result) for name, result in clean_results
+        evidence = [(name, result) for name, result, _args in clean_results
                     if name in _CLOUD_PUBLIC_READ_TOOLS and result.strip()
                     and not result.lstrip().startswith("(")
                     and (name != "web_search" or _cloud_web_search_has_sources(result))]
@@ -2258,7 +2270,7 @@ async def run_agent(
             # its response. Fall through to the plain-text branch below instead.
             if not text.strip() and last_tool_result:
                 # Every clean source, not just the last one — see clean_results.
-                text = (_merge_results(clean_results) if clean_results
+                text = (_merge_results([*clean_results, *failed_read_receipts]) if clean_results
                         else _STUCK_MESSAGE)
             elif not text.strip() and msg.get("_think_leak"):
                 # Nothing streamed that's worth keeping and no tool ran, so
@@ -2772,7 +2784,7 @@ async def run_agent(
                 last_tool_result = result
                 last_tier = dec.tier
                 if dec.tier is not Tier.DENY and not is_tool_error(result):
-                    clean_results.append((name, result))
+                    clean_results.append((name, result, dict(args)))
             # Feed the narration gate (see `narrating` above). A tool counts as
             # ANSWERED only when it actually ran and returned something real.
             # A DENY is a policy outcome and never clears; an ERROR is a
@@ -2892,7 +2904,7 @@ async def run_agent(
         fallback = ("I couldn't complete every requested step. Still missing one of: "
                     + ", ".join(sorted(unmet)) + ".")
     elif clean_results:
-        fallback = _merge_results(clean_results)
+        fallback = _merge_results([*clean_results, *failed_read_receipts])
     elif is_tool_error(last_tool_result):
         fallback = _STUCK_MESSAGE
     else:
