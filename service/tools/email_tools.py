@@ -1220,10 +1220,22 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
             first_line: dict[int, dict] = {}
             lines_for: dict[int, int] = {}
             visible: list[dict] = []
+            repeated_subjects: dict[tuple, dict] = {}
             for item in items:
                 sender = item["sender"]
                 first = first_line.setdefault(sender, item)
+                row = item["row"]
+                # Fold only identical displayed headers within a proven sender
+                # and account. Keep their message multiplicity in the note and
+                # all unread/section counts; never infer identical mail bodies.
+                subject_key = (sender, row.get("account_id") or row.get("account"),
+                               row.get("subject"), row.get("unread"))
+                repeated = repeated_subjects.get(subject_key)
+                if repeated is not None:
+                    repeated["more"] += 1
+                    continue
                 if lines_for.get(sender, 0) < 3:
+                    repeated_subjects[subject_key] = item
                     lines_for[sender] = lines_for.get(sender, 0) + 1
                     visible.append(item)
                 else:
@@ -1273,6 +1285,46 @@ def _sectioned_lines(shown_groups: list[list[dict]], newest: float,
     return blocks, counts
 
 
+def _overview_coverage(*, scan_cap_accounts: list[str] | None = None, scan_skipped: int = 0,
+                       scan_incomplete_accounts: list[str] | None = None,
+                       history_cap_accounts: list[str] | None = None, history_skipped: int = 0,
+                       history_incomplete_accounts: list[str] | None = None) -> list[str]:
+    """Only limitations that change what the available headers can establish."""
+    notes = []
+    names = lambda values: ", ".join(_digest_text(name, fallback="Mail") for name in values)
+    if scan_cap_accounts:
+        notes.append(f"Recent scan capped at 200 headers per account for {names(scan_cap_accounts)}")
+    if scan_incomplete_accounts:
+        notes.append(f"Recent header scan did not complete for {names(scan_incomplete_accounts)}")
+    if scan_skipped:
+        notes.append(f"Recent scan skipped {scan_skipped} malformed header{'s' if scan_skipped != 1 else ''} with unknown dates")
+    if history_cap_accounts:
+        notes.append(f"History scan reached its limit for {names(history_cap_accounts)}")
+    if history_incomplete_accounts:
+        notes.append(f"History scan did not complete for {names(history_incomplete_accounts)}")
+    if history_skipped:
+        notes.append(f"History scan skipped {history_skipped} malformed header{'s' if history_skipped != 1 else ''} with unknown dates")
+    if notes:
+        notes.append("requested-period mail may be missing; total coverage is unknown")
+    return notes
+
+
+def _overview_dates(start: float, end: float, *, requested: bool = False) -> str:
+    first, last = datetime.fromtimestamp(start), datetime.fromtimestamp(end)
+    # Calendar-day scopes have an exclusive midnight end. Display their last
+    # included day, without shifting rolling or hour-based scopes.
+    if requested:
+        if first.time() == last.time() == datetime.min.time():
+            last = datetime.fromtimestamp(end - 1)
+        else:
+            return f"{first.strftime('%b %-d, %Y %-I:%M %p')} to {last.strftime('%b %-d, %Y %-I:%M %p')} (end exclusive)"
+    if first.date() == last.date():
+        return first.strftime("%b %-d, %Y")
+    if first.year == last.year:
+        return f"{first.strftime('%b %-d')}–{last.strftime('%b %-d, %Y')}"
+    return f"{first.strftime('%b %-d, %Y')}–{last.strftime('%b %-d, %Y')}"
+
+
 def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
                   truncated: int = 0, requested: tuple[float, float] | None = None,
                   max_senders: int = 12,
@@ -1291,6 +1343,14 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
     """
     rows = _unique_records(rows)
     if not rows:
+        limitations = _overview_coverage(
+            scan_cap_accounts=scan_cap_accounts, scan_skipped=scan_skipped,
+            scan_incomplete_accounts=scan_incomplete_accounts,
+            history_cap_accounts=history_cap_accounts, history_skipped=history_skipped,
+            history_incomplete_accounts=history_incomplete_accounts)
+        if limitations:
+            return (f"No matching headers in the available cache for {_digest_text(label, fallback='this period')}. "
+                    + "; ".join(limitations) + ".")
         return f"No emails found for {label}."
     newest = max(row["ts"] for row in rows)
     groups: dict[str, list[dict]] = {}
@@ -1368,15 +1428,29 @@ def sender_digest(rows: list[dict], label: str, *, scanned: int | None = None,
             facts.append(f"{unread} unread")
         if counts["attention"]:
             facts.append(f"{counts['attention']} need{'s' if counts['attention'] == 1 else ''} attention")
-        footer = ["**Coverage:** " + meta]
-        if len(ordered) > max_senders:
-            # The headline and sections count only represented mail; say so.
-            footer.append(f"{len(ordered) - max_senders} more sender addresses ({hidden} "
-                          f"message{'s' if hidden != 1 else ''}) are not in the sections or "
-                          "the counts at the top; Coverage counts them as truncated by "
-                          "the sender note limit.")
-        return (f"\U0001F4EC **Inbox digest \u2014 {label}**\n" + " \u00b7 ".join(facts)
-                + "\n\n" + "\n\n".join(blocks) + "\n\n" + "\n".join(footer))
+        facts.append(f"{len(shown_groups)} sender group{'s' if len(shown_groups) != 1 else ''}")
+        dates = ("Header dates unavailable." if any(row.get("_date_unknown") for row in rows)
+                 else "Header dates: " + _overview_dates(min(r['ts'] for r in rows), newest) + ".")
+        if requested:
+            dates += " Requested: " + _overview_dates(*requested, requested=True) + "."
+        limits = _overview_coverage(
+            scan_cap_accounts=scan_cap_accounts, scan_skipped=scan_skipped,
+            scan_incomplete_accounts=scan_incomplete_accounts,
+            history_cap_accounts=history_cap_accounts, history_skipped=history_skipped,
+            history_incomplete_accounts=history_incomplete_accounts)
+        if truncated:
+            limits.insert(0, f"{truncated} matching emails omitted from the overview")
+        if hidden:
+            limits.insert(0, f"{len(ordered) - len(shown_groups)} more sender addresses ({hidden} emails) omitted from the overview and headline counts")
+        if identity_limited:
+            limits.append(f"{identity_limited} headers lack stable message identity; indistinguishable messages may be undercounted")
+        if any(row.get("_cross_source_matched") for row in rows):
+            limits.append("Headers from different Mail readers were matched; indistinguishable messages without Message-ID may be undercounted")
+        if any(row.get("_cross_source_uncertain") for row in rows):
+            limits.append("Reader-switch account IDs differ; represented count may include duplicates")
+        coverage = "\n\n**Coverage:** " + "; ".join(limits) + "." if limits else ""
+        return (f"📬 **Inbox digest — {_digest_text(label, fallback='inbox')}**\n" + " · ".join(facts)
+                + "\n" + dates + "\n\n" + "\n\n".join(blocks) + coverage)
     bullets = []
     for group in shown_groups:
         best = sorted(group, key=lambda r: (-header_importance(r, newest_ts=newest), -r["ts"]))
@@ -1415,7 +1489,7 @@ async def _summarize(raw_lines: list[str] | list[dict], header_label: str) -> st
         entry = _digest_entry(line)
         if entry:
             sender_text = line.split("] ", 1)[1] if line.startswith("[") and "] " in line else line
-            rows.append({**entry, "ts": float(index), "account_id": "",
+            rows.append({**entry, "ts": float(index), "_date_unknown": True, "account_id": "",
                          "sender_address": _normalized_address(sender_text.partition(" | ")[0]),
                          "message_id": "", "unread": None})
     return sender_digest(rows, header_label)
@@ -1531,48 +1605,17 @@ def _empty_range_message(label: str, start: float, end: float,
     fmt = "%a %b %-d, %-I:%M %p"
     window = (f"{datetime.fromtimestamp(start).strftime(fmt)} to "
               f"{datetime.fromtimestamp(end).strftime(fmt)}")
-    if (cap_accounts or coverage["skipped"] or coverage["incomplete_accounts"] or
-            history_coverage["cap_accounts"] or history_coverage["skipped"] or
-            history_coverage["incomplete_accounts"]):
-        names = ", ".join(_digest_text(name, fallback="Mail") for name in cap_accounts)
-        cap_note = (f"The recent scan reached its 200-message-per-account cap for {names}; "
-                    "messages from the requested period may be outside the cache."
-                    if cap_accounts else "")
-        skipped_note = (f" Native scan attempted {coverage['attempted']} headers and "
-                        f"skipped {coverage['skipped']} malformed headers; requested mail "
-                        "may be among them." if coverage["skipped"] else "")
-        incomplete_names = ", ".join(_digest_text(name, fallback="Mail")
-                                     for name in coverage["incomplete_accounts"])
-        incomplete_note = (f" Recent header scan did not complete for {incomplete_names}; "
-                           "requested mail may be outside the cache."
-                           if coverage["incomplete_accounts"] else "")
-        history_names = ", ".join(_digest_text(name, fallback="Mail")
-                                  for name in history_coverage["cap_accounts"])
-        history_note = (f" History scan reached its limit for {history_names}; "
-                        "requested mail may be outside the cache."
-                        if history_coverage["cap_accounts"] else "")
-        history_skip_note = (f" History scan attempted {history_coverage['attempted']} "
-                             f"header{'s' if history_coverage['attempted'] != 1 else ''} "
-                             f"and skipped {history_coverage['skipped']} malformed "
-                             f"header{'s' if history_coverage['skipped'] != 1 else ''} "
-                             "with unknown dates; requested mail may be among them."
-                             if history_coverage["skipped"] else "")
-        history_incomplete_names = ", ".join(_digest_text(name, fallback="Mail")
-                                             for name in history_coverage["incomplete_accounts"])
-        history_incomplete_note = (f" History scan did not complete for {history_incomplete_names}; "
-                                   "requested mail may be outside the cache."
-                                   if history_coverage["incomplete_accounts"] else "")
-        total = ("total truncation is unknown" if (cap_accounts or coverage["incomplete_accounts"] or
-                                                    history_coverage["cap_accounts"] or
-                                                    history_coverage["incomplete_accounts"]) else
-                 "truncated 0 known matching messages; skipped headers have unknown dates")
+    limitations = _overview_coverage(
+        scan_cap_accounts=cap_accounts, scan_skipped=coverage["skipped"],
+        scan_incomplete_accounts=coverage["incomplete_accounts"],
+        history_cap_accounts=history_coverage["cap_accounts"],
+        history_skipped=history_coverage["skipped"],
+        history_incomplete_accounts=history_coverage["incomplete_accounts"])
+    if limitations:
         return (f"No matching headers in the available cache for {label} ({window}). "
-                "Scanned 0 matching cached headers; represented 0 messages; "
-                f"{total}. {cap_note}{skipped_note}{incomplete_note}"
-                f"{history_note}{history_skip_note}{history_incomplete_note}")
+                + "; ".join(limitations) + ".")
     if not rows:
-        return (f"No emails in {label} ({window}). Scanned 0 matching headers; "
-                "represented 0 messages; truncated 0 messages.")
+        return f"No emails in {label} ({window})."
     rows.sort(key=lambda r: r["ts"], reverse=True)
     newest = datetime.fromtimestamp(rows[0]["ts"]).strftime(fmt)
     # This string can be returned DIRECTLY to the user: summarize_emails is a
@@ -1583,8 +1626,7 @@ def _empty_range_message(label: str, start: float, end: float,
     # exactly as written in the 2026-08-28 debug export.
     return (f"I don’t see any emails in {label} ({window}). Your inbox itself "
             f"isn’t empty: Wisp has {len(rows)} recent emails cached, with the "
-            f"newest from {newest}. Scanned 0 matching headers; represented 0 "
-            f"messages; truncated 0 messages. If you want, ask for the recent inbox "
+            f"newest from {newest}. If you want, ask for the recent inbox "
             f"instead.")
 
 

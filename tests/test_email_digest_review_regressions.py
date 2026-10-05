@@ -18,6 +18,14 @@ NOW = time.time()
 ATTENTION = "🔴 Needs your attention"
 
 
+def _headline_counts(output):
+    """Represented messages and sender groups in the compact headline."""
+    import re
+    match = re.search(r"^(\d+) emails?[^\n]* · (\d+) sender groups?$", output, re.M)
+    assert match, output
+    return tuple(map(int, match.groups()))
+
+
 def row(name, address, subject, unread=False, account="Personal", age_h=1.0):
     return {"sender": name, "sender_address": address, "subject": subject, "unread": unread,
             "account": account, "account_id": account, "ts": NOW - age_h * 3600,
@@ -121,7 +129,7 @@ def test_a_linkedin_sign_in_alert_keeps_its_subject_in_the_attention_section():
     social_count, social_lines = found["💬 Social"]
     assert social_count == 2 and social_lines == ["LinkedIn, Instagram"]
     assert "You appeared in 9 searches" not in out and "started following" not in out
-    assert headline(out) == "3 emails · 3 unread · 1 needs attention"
+    assert headline(out) == "3 emails · 3 unread · 1 needs attention · 3 sender groups"
 
 
 def test_genuine_newsletters_with_urgent_words_are_still_newsletters():
@@ -142,7 +150,7 @@ def test_every_urgent_message_from_one_sender_is_counted(n):
     out = E.sender_digest(canvas(n), "x")
     noun = "email" if n == 1 else "emails"
     verb = "needs" if n == 1 else "need"
-    assert headline(out) == f"{n} {noun} · {n} unread · {n} {verb} attention"
+    assert headline(out) == f"{n} {noun} · {n} unread · {n} {verb} attention · 1 sender group"
     count, lines = sections(out)[ATTENTION]
     assert count == n
     # The display still clips one sender to three lines, honestly.
@@ -152,12 +160,12 @@ def test_every_urgent_message_from_one_sender_is_counted(n):
     else:
         assert "more from this sender" not in out
     assert messages_accounted_for(lines) == n
-    assert f"represented {n} message{'s' if n != 1 else ''} from 1 sender note;" in out
+    assert _headline_counts(out) == (n, 1)
 
 
 def test_four_urgent_canvas_messages_are_headlined_as_four():
     out = E.sender_digest(canvas(4), "x")
-    assert headline(out) == "4 emails · 4 unread · 4 need attention"
+    assert headline(out) == "4 emails · 4 unread · 4 need attention · 1 sender group"
     assert "**🔴 Needs your attention** (4)" in out
     assert "(+1 more from this sender)" in out
 
@@ -171,7 +179,7 @@ def test_one_sender_split_across_sections_is_counted_in_each():
     assert found[ATTENTION][0] == 4 and messages_accounted_for(found[ATTENTION][1]) == 4
     assert found["🎓 School & courses"][0] == 2
     assert messages_accounted_for(found["🎓 School & courses"][1]) == 2
-    assert headline(out) == "6 emails · 4 unread · 4 need attention"
+    assert headline(out) == "6 emails · 4 unread · 4 need attention · 1 sender group"
 
 
 def test_mixed_senders_counts_equal_the_sum_of_sections():
@@ -189,12 +197,12 @@ def test_mixed_senders_counts_equal_the_sum_of_sections():
     total = headline_total(out)
     assert total == len(rows) == sum(count for count, _ in found.values())
     assert found[ATTENTION][0] == 7          # 5 Canvas + Priya + the LinkedIn sign-in
-    assert headline(out) == f"{len(rows)} emails · 8 unread · 7 need attention"
+    assert headline(out) == f"{len(rows)} emails · 8 unread · 7 need attention · 7 sender groups"
     for title in (ATTENTION, "👤 From people", "🧾 Accounts & receipts"):
         assert messages_accounted_for(found[title][1]) == found[title][0], title
     assert found["💬 Social"] == (2, ["LinkedIn (2)"])
     assert found["📰 Newsletters & updates"] == (4, ["The New York Times (4)"])
-    assert f"represented {len(rows)} messages from 7 sender notes" in out
+    assert _headline_counts(out) == (len(rows), 7)
 
 
 def test_an_over_limit_attention_section_accounts_for_every_message():
@@ -203,7 +211,7 @@ def test_an_over_limit_attention_section_accounts_for_every_message():
         for i in range(10)]
     out = E.sender_digest(rows, "x", max_senders=12)
     count, lines = sections(out)[ATTENTION]
-    assert count == 15 and headline(out) == "15 emails · 15 unread · 15 need attention"
+    assert count == 15 and headline(out) == "15 emails · 15 unread · 15 need attention · 11 sender groups"
     assert len([l for l in lines if not l.startswith("- …")]) == 10
     assert messages_accounted_for(lines) == 15
     assert "- …and 3 more in this group" in lines
@@ -214,12 +222,12 @@ def test_hidden_senders_are_disclosed_honestly_beside_the_counts():
                         for i in range(13)]
     out = E.sender_digest(rows, "x", max_senders=12)
     found = sections(out)
-    # 12 sender notes: Canvas (4) + 11 general senders; 2 senders are hidden.
+    # 12 sender notes: Canvas (4) + 11 general senders; 2 sender groups are hidden.
     assert headline_total(out) == 15 == sum(count for count, _ in found.values())
-    assert "represented 15 messages from 12 sender notes" in out
-    assert "truncated 2 messages (0 by scan limit, 2 by sender note limit)" in out
+    assert _headline_counts(out) == (15, 12)
+    assert "2 more sender addresses (2 emails) omitted" in out
     footer = out.rstrip().splitlines()[-1]
-    assert footer.startswith("2 more sender addresses (2 messages)")
+    assert footer.startswith("**Coverage:** 2 more sender addresses (2 emails)")
     assert "included in the counts above" not in footer
 
 

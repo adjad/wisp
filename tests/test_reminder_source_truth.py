@@ -295,7 +295,7 @@ def test_calendar_failure_is_visible_while_reminders_refresh_is_pending() -> Non
     assert "Synthetic calendar event" not in answer
     assert "Synthetic stale native reminder" not in answer
     assert "Synthetic Wisp reminder [Wisp-only; Apple status unverified]" in answer
-    assert "they may still be active" in answer
+    assert "Wisp-only items may still be active" in answer
     assert "before deletion" not in answer
 
 
@@ -357,7 +357,7 @@ def test_wisp_only_classification_matches_line_tags() -> None:
     agenda = assistant_tools._format_forward_agenda([local], now=now,
                                                       window_label="next day")
     assert "Synthetic local [Wisp-only; Apple status unverified]" in agenda
-    assert "others live Wisp reminders" in agenda
+    assert "they may be live Wisp reminders or older Apple mirrors" in agenda
     assert "before deletion" not in agenda
 
 

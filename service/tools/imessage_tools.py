@@ -1879,7 +1879,8 @@ def _matches(query: str, context: str, text: str) -> bool:
 
 
 async def view_messages_impl(query: str | None = None, day: str | None = None,
-                             count: int = 20, period: str | None = None) -> str:
+                             count: int = 20, period: str | None = None,
+                             strict_match: bool = False) -> str:
     from service.assistant.sync_status import ensure_sources
     await ensure_sources(("messages",))
     if messages_sync_state() != "ready" or not _lines.strip():
@@ -1910,6 +1911,11 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
         if matched:
             rows = matched
         else:
+            if strict_match:
+                # A compiled read has an explicit source/query scope. A miss is
+                # evidence about available cached records, never permission to
+                # broaden that scope or assert complete source-wide absence.
+                return f"No messages matched {query!r} in the available cache for {label}."
             # No exact keyword hit — hand back the whole scoped set so the agent model
             # can read through it itself rather than dead-ending on a substring
             # miss (e.g. it searches "pickup" but the text says "grab it").
@@ -1957,12 +1963,15 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
                  "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that day"},
          "count": {"type": "integer",
                    "description": "max messages to return (default 20)"},
+         "strict_match": {"type": "boolean",
+                          "description": "Keep the query scope on a keyword miss; return no match instead of unrelated messages (default false)"},
      }},
     category="messages_read",
 )
 async def view_messages(query: str | None = None, day: str | None = None,
-                        count: int = 20, period: str | None = None) -> str:
-    return await view_messages_impl(query, day, count, period)
+                        count: int = 20, period: str | None = None,
+                        strict_match: bool = False) -> str:
+    return await view_messages_impl(query, day, count, period, strict_match=strict_match)
 
 
 @register(
