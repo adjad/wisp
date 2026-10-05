@@ -1,0 +1,882 @@
+{
+  "exact_sha": "40ee88a409eaec943ae4474130bd87263ea794e1",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_audit_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "checked_at_utc": "2026-10-05T20:37:24.549449+00:00",
+  "head_verified": true,
+  "tree_clean": true,
+  "complete_changed_files": [
+    "docs/ROUTING_IMPLEMENTATION_PLAN.md",
+    "eval/router-update-20261005/README.md",
+    "eval/router-update-20261005/author_corpus.py",
+    "eval/router-update-20261005/baseline-scripted/checksums.json",
+    "eval/router-update-20261005/baseline-scripted/manifest.json",
+    "eval/router-update-20261005/baseline-scripted/raw.jsonl.gz",
+    "eval/router-update-20261005/dev.jsonl",
+    "eval/router-update-20261005/seal.json",
+    "eval/router-update-20261005/test.jsonl",
+    "eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md",
+    "eval/router-update-integration-20261005/HANDOFF.md",
+    "eval/router-update-integration-20261005/OVERVIEW_BEFORE_AFTER.md",
+    "eval/router-update-integration-20261005/TRAINING_FEASIBILITY.md",
+    "eval/router-update-integration-20261005/acceptance.json",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/checksums.json",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/manifest.json",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/raw.jsonl.gz",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/checksums.json",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/manifest.json",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/raw.jsonl.gz",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/checksums.json",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/manifest.json",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/raw.jsonl.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/HANDOFF.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.md",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/checksums.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/finalize_report.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main-results.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main_checks.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/provenance.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted-results.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted_checks.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/verify_evidence.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/bundle-sha256.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-artifact-ci-failure.log.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-gate-receipt.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-diagnosis.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-python-ci-failure.log.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-regression.log.gz",
+    "eval/router-update-integration-20261005/progress.json",
+    "scripts/eval_router_update.py",
+    "scripts/run_simulation_qa.py",
+    "service/agent/loop.py",
+    "service/main.py",
+    "service/router/intent/README.md",
+    "service/router/intent/__init__.py",
+    "service/router/intent/compiler.py",
+    "service/router/intent/grammar.py",
+    "service/router/intent/intent.schema.v1.json",
+    "service/router/intent/planner.py",
+    "service/router/intent/schema.py",
+    "service/router/intent/validation.py",
+    "service/router/router.py",
+    "service/router/web_request.py",
+    "service/tools/assistant_tools.py",
+    "service/tools/email_tools.py",
+    "service/tools/imessage_tools.py",
+    "service/tools/message_digest.py",
+    "service/workflows/compiler.py",
+    "service/workflows/present.py",
+    "service/workflows/reads.py",
+    "tests/test_email_digest_presentation.py",
+    "tests/test_email_digest_review_regressions.py",
+    "tests/test_email_digest_sections.py",
+    "tests/test_message_digest.py",
+    "tests/test_multi_source_fallback.py",
+    "tests/test_reminder_creation.py",
+    "tests/test_reminder_source_truth.py",
+    "tests/test_replay_failure_fixes.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py",
+    "tests/test_router_intent_workflow.py",
+    "tests/test_router_overview_grounding.py",
+    "tests/test_router_overview_message_scope.py",
+    "tests/test_router_update_eval.py",
+    "tests/test_simulation_qa_runner.py"
+  ],
+  "changed_since_previous_audit": [
+    "docs/ROUTING_IMPLEMENTATION_PLAN.md",
+    "eval/router-update-20261005/README.md",
+    "eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md",
+    "eval/router-update-integration-20261005/HANDOFF.md",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/checksums.json",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/manifest.json",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/raw.jsonl.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/HANDOFF.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.md",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/checksums.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/finalize_report.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main-results.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main_checks.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/provenance.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted-results.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted_checks.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/verify_evidence.py",
+    "eval/router-update-integration-20261005/first-candidate-gates/bundle-sha256.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-artifact-ci-failure.log.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-gate-receipt.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-diagnosis.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-python-ci-failure.log.gz",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-regression.log.gz",
+    "eval/router-update-integration-20261005/progress.json",
+    "scripts/eval_router_update.py",
+    "scripts/run_simulation_qa.py",
+    "service/router/intent/grammar.py",
+    "service/router/intent/validation.py",
+    "service/router/router.py",
+    "service/workflows/reads.py",
+    "tests/test_multi_source_fallback.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py",
+    "tests/test_router_update_eval.py",
+    "tests/test_simulation_qa_runner.py"
+  ],
+  "changed_file_sha256": {
+    "docs/ROUTING_IMPLEMENTATION_PLAN.md": "f8db690690918e3368b40177cae7abd2be21d4fa35c58d698209e3c7d45610d6",
+    "eval/router-update-20261005/README.md": "f9d01e5714019373738976670c94a583b3fa82c16c191541b06bbd65e572d9ec",
+    "eval/router-update-20261005/author_corpus.py": "326abb87e31a0adaa7c85f5aed7172b1590a5cd1b8a66697cf9819de938f330a",
+    "eval/router-update-20261005/baseline-scripted/checksums.json": "fd0a8ac1b8d8015717768b1653a97c4fb6ddb3a54affd0d116fd363ed7a32ac0",
+    "eval/router-update-20261005/baseline-scripted/manifest.json": "453fa6826d99d620e6e9631fa5dbd4a9710afb188f50e2de4315da48a870409a",
+    "eval/router-update-20261005/baseline-scripted/raw.jsonl.gz": "58251b8dd65dc27a49cb21d67414a2261b65e4843d3bd743f92c1fae004813f9",
+    "eval/router-update-20261005/dev.jsonl": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49",
+    "eval/router-update-20261005/seal.json": "2c65ecba2aaedae1ec59313db594ef6fe742912bdf128567fe6b41c4e9a25f5c",
+    "eval/router-update-20261005/test.jsonl": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c",
+    "eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md": "359a9aa0f9da3247d1e50a945930163a99bb0287cf101ec3d8350b999f96092c",
+    "eval/router-update-integration-20261005/HANDOFF.md": "971e07f9f2dd7f7c21bf10ca7eb0a807588e023a02cbb5bfad1a086f96643746",
+    "eval/router-update-integration-20261005/OVERVIEW_BEFORE_AFTER.md": "f37f1465c64c2c56ced1a36b908e0156bd76e1a79e86027f63d8f9adc12ec536",
+    "eval/router-update-integration-20261005/TRAINING_FEASIBILITY.md": "e7e2ed271460b936e67846d71cba831ac14ffada6b9332baf18ac614c79606cf",
+    "eval/router-update-integration-20261005/acceptance.json": "0ce1c6136651d44376741263795c086a26f2622cdebf6d2168138e46875a3371",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/checksums.json": "cf86f5acf807c2f8f29239d0c5bbf8cf303fdfdcc774517b25fb772cd1dd4188",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/manifest.json": "bf5d05095bd0ac953243277e2895abb5440bfff810e8fe9dace28df1d824e225",
+    "eval/router-update-integration-20261005/development-after-audit-repairs/raw.jsonl.gz": "ef201edde939e90f062845ae426123b67d1988d91b37c638a99dd3f5ed97285b",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/checksums.json": "fb294aef854ec21b24507b24c7e8eaa0faf6546d61f7a409c820d7e920b6138a",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/manifest.json": "ef84df25795d836db9c4a7cc33a6e38d1778df0e153c1c55e8a5bc05cb39dd07",
+    "eval/router-update-integration-20261005/development-after-compiler-repair/raw.jsonl.gz": "9251b8cb0c5cb7a2c1f670dfea07405b4d00f4ef771a28e1a194ce2ea9d103af",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/checksums.json": "1879f627d3eed8a85cf3ab6cc802166a571aafd92d0df90c022ac99e3ce3ec0c",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/manifest.json": "baa9378c95f54d382799ee88c2a6d5ee01de241e5b1f03cd02d13a9a61f3296b",
+    "eval/router-update-integration-20261005/development-before-compiler-repair/raw.jsonl.gz": "369cdbab7c7ef153df9731ba1d540c7d66e788f964b854807202c83e0afca855",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/HANDOFF.json": "2696f3ac1de417c1c573e2821fa0b4fdc97ee7cd219c53d19c6b01317fd8bf49",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.json": "a67e372c751821e7b0e25475645c3ab365bdc74048e36d29530daac2f90e4ef5",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.md": "f6c5fc702a7c86f9dac04bc289b81a22653c80f832744aeb9ba88db2b2e6995c",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/checksums.json": "efca6c305cd475336af01e6e61ff515866d4bafc2ba1577699661f54ab4b0d9d",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/finalize_report.py": "f82c887a18ba8ef5ddab177dc1b16769199a724073bf83c08b2d886382b9c5c6",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main-results.json": "e8f633b0a46d63d0c5991bdcaf2aa1f067bab678a40f0b563284dcfb82e46eac",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/main_checks.py": "9f00d4902ba1bc44df4cb39cc46873f328f40c3c0cd400ae41db27ec84712edc",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/provenance.json": "4cb57791d2d213ce3a80f8175612a5550c18c78a2fd6c19b5c1f962e602748dc",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted-results.json": "4f8ebf9333123ba8aecb7ae0e9c9f689a9784245fd4c01845cdc0467874e76f4",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted_checks.py": "7a96b2773e5533af3d81281096cb4c6047c792968d656a54f951e533e6cecaf0",
+    "eval/router-update-integration-20261005/first-candidate-gates/auditor/verify_evidence.py": "0be413feb04f8c4873a619413211d47031f04326c63ae5e1a3e71cb52dfd65b4",
+    "eval/router-update-integration-20261005/first-candidate-gates/bundle-sha256.json": "b5dc88c3aaced2310ccbd33e97825c25e9268e1bb0e7a5ed5ae2d58d04726ad5",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-artifact-ci-failure.log.gz": "0f40ffa69d7b1e5a504ac91c02513ddfaf5fb5a10af945ac1e03c9d6aa3d8861",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-gate-receipt.json": "40618e0add2307c8ccb20149fa2f98333952353c61de6ea7bc808680c2c5ba6f",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-diagnosis.json": "c9bcbf1cea292a0d00ee62e11dd641f162edac3bbd38349ad97ceb5c943dafac",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json": "5dbf97e00aa0aacb127763230a1e8efcddcf03f18551b36717d464c531c1b9c8",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-python-ci-failure.log.gz": "2ef8f4c2f986c31feb71f3c40679c59d54e541aea34e6ae95ee4ea98902d47a0",
+    "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-regression.log.gz": "c66b75bb07f0ea07235c9ee7f40e27c37de2898a69762d6b5f6d292d17427da5",
+    "eval/router-update-integration-20261005/progress.json": "4f56d27a32723144a18d21b9706febfb9ee9ce9c91d2f082c3bb0b2617153395",
+    "scripts/eval_router_update.py": "21e155411e0517aa5922933e79fef21654f8674d24b72dbc4233cb4dfddc6234",
+    "scripts/run_simulation_qa.py": "165563767969e51c7840fbaccf3a32c4619d3396d2e331803e43dc0eb6783a63",
+    "service/agent/loop.py": "14b1ddc2ecea8e6c9ce4f20f99c1220d9627f41dd1b298af30e38c9bb5376923",
+    "service/main.py": "23181b3bd36c4758756d2e403017f4faa52e7a60ae3168032b20069a990f4cd5",
+    "service/router/intent/README.md": "7deb45acea50aa086753e1870b7cafb91d8b577904831d84e9454de833eef727",
+    "service/router/intent/__init__.py": "93e29fc61e59b989af34e41616d671fc34671a458811414d2802ee2cafc1f11c",
+    "service/router/intent/compiler.py": "ed75a609d481eebb2656efa07b3f48d1315e82d1d4e4a2092ccace79d49964c9",
+    "service/router/intent/grammar.py": "99159aaf44e25df361bece54c7af058d523287ffbcdee59c0cf4cb328d249600",
+    "service/router/intent/intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+    "service/router/intent/planner.py": "4780f3a37a2b43801c9a9a302375d69ba2c5d7be6cf5d524270a5fcdb4f3c45e",
+    "service/router/intent/schema.py": "db5fc1b10c81d02c3c8950329ae0bd900015978f418f0ce4b8724eb08eff68f2",
+    "service/router/intent/validation.py": "2ea342aeffe5b27910402f2a98979cf63af867fd00f9f5773300cd817565f68c",
+    "service/router/router.py": "d12fda05e2c876dee182faa9f1eec1a76080dcd71f9df8d590729386a1f0b83d",
+    "service/router/web_request.py": "ee5be7a5c7e9a154e3e2fc556abc47b6b2cc256b97ccf933219731eda2f266ac",
+    "service/tools/assistant_tools.py": "0cbef09c18bceaf86c609218faccc695c289f39dfa180184bf29dec3978f9446",
+    "service/tools/email_tools.py": "e4f3d64a2a2f4ab864bbcb035b6fad347e14d2f983b2268885fca6517d61af8f",
+    "service/tools/imessage_tools.py": "c5f3b061af030c6fad10e82fc91c7f9060c8a1be0c2da2ec5e77aa2e56351474",
+    "service/tools/message_digest.py": "84de666799d5f9a1a3c7105303d5ca25725ca673ef39478da7ed422e06472a5e",
+    "service/workflows/compiler.py": "258c76a0ee6cfa0be5cc3f4b8438a3e5c3fbdd33f6898633062d19cfaf0fba5f",
+    "service/workflows/present.py": "033a587dd295a189e18de38465960a5ed1bc20fb92b10b0bec32383238f19b52",
+    "service/workflows/reads.py": "d4be24a1b7b4cc7ba1109163126739c60d6eec50b5f111d32d7ae5a4c1af5245",
+    "tests/test_email_digest_presentation.py": "fcf52b03d29c9d41647c0543f15dc5cc933999fe2b12bc08e70c0361b210aa2b",
+    "tests/test_email_digest_review_regressions.py": "abb78aad377efb2677c740ce4451da2ed958cf0f9e113c93c4a5247a1dd50bd2",
+    "tests/test_email_digest_sections.py": "ad38e00802bd4b5939f3a3b5691c08f01fda4b9d6d1498784900a2ef662088e0",
+    "tests/test_message_digest.py": "769d6642f9dc4ccf581ed56e125393425fb9436cfa8f163cca733d3d391ccb66",
+    "tests/test_multi_source_fallback.py": "1e0a5684677046ad7e2c6aace0a82683876f811bd55b46dda9ea5607bae28b2f",
+    "tests/test_reminder_creation.py": "0fb2503036c8c686ea5eb0785f6d9439eb6454502191f714aaa2e6ceaefd31f7",
+    "tests/test_reminder_source_truth.py": "6e06abbd5a614841708e9b1355776d059e89cc40311d2ec0ecb40ba19d1973cb",
+    "tests/test_replay_failure_fixes.py": "04980d704c7764dbe2be11f2729687657489838e139a840d8e5f2fb55ad34f79",
+    "tests/test_router_intent_core.py": "758b906b24ec4332b0649d644329059a5736fc5f687cce0f27bbb77a47a87f46",
+    "tests/test_router_intent_main.py": "842894446cbf89dd0e3fcbd88ee5cc4ef82aa3060868fc510ca92806a40385a2",
+    "tests/test_router_intent_workflow.py": "7357863e9c465928b4c16d82eff61d8099e39c033c5462183b37b38ec3c1d32a",
+    "tests/test_router_overview_grounding.py": "3dec2f1ce0be027737b899472fa44eca36cb7cb6968a16462c9c6afda26acdda",
+    "tests/test_router_overview_message_scope.py": "8f2225e0883cd97a883c4b8c39e35b950630100193d31d7feab6de841ea2efab",
+    "tests/test_router_update_eval.py": "8384cf2f952f6d3511ae19909bce6000c5811511e93d6e365b9a55d79bb4186f",
+    "tests/test_simulation_qa_runner.py": "59a2d9c8b2c5241c76c2ebabca7a2f9bfdf4fc7a2aeaf1e1b9a92adc696a997b"
+  },
+  "opaque_corpus_checks": [
+    {
+      "file": "eval/router-update-20261005/test.jsonl",
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c",
+      "unchanged_since_prior": true,
+      "handling": "opaque byte comparison/hash; no payload parse"
+    },
+    {
+      "file": "eval/router-update-20261005/dev.jsonl",
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49",
+      "unchanged_since_prior": true,
+      "handling": "opaque byte comparison/hash; no payload parse"
+    },
+    {
+      "file": "eval/router-update-20261005/seal.json",
+      "sha256": "2c65ecba2aaedae1ec59313db594ef6fe742912bdf128567fe6b41c4e9a25f5c",
+      "unchanged_since_prior": true,
+      "handling": "opaque byte comparison/hash; no payload parse"
+    },
+    {
+      "file": "eval/router-update-20261005/author_corpus.py",
+      "sha256": "326abb87e31a0adaa7c85f5aed7172b1590a5cd1b8a66697cf9819de938f330a",
+      "unchanged_since_prior": true,
+      "handling": "opaque byte comparison/hash; no payload parse"
+    }
+  ],
+  "replays": [
+    {
+      "folder": "eval/router-update-20261005/baseline-scripted",
+      "computed": {
+        "raw_sha256": "2ee8c70ee05b4302a3c1e4d028a13b57be47e8350bdb88ebae384d281c4787e5",
+        "gzip_sha256": "58251b8dd65dc27a49cb21d67414a2261b65e4843d3bd743f92c1fae004813f9",
+        "manifest_sha256": "453fa6826d99d620e6e9631fa5dbd4a9710afb188f50e2de4315da48a870409a"
+      },
+      "declared_match": true,
+      "manifest_metadata": {
+        "mode": "scripted-production-path",
+        "not_model_measurement": true,
+        "split": "dev",
+        "cases": 80,
+        "head": null,
+        "metrics": {
+          "answer_facts": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "completed": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "duplicate": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "effects": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "end_to_end": {
+            "numerator": 67,
+            "denominator": 80
+          },
+          "exact_arguments": {
+            "numerator": 75,
+            "denominator": 80
+          },
+          "excluded_source": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "failure_honesty": {
+            "numerator": 8,
+            "denominator": 16
+          },
+          "first_call": {
+            "numerator": 43,
+            "denominator": 48
+          },
+          "literal_fidelity": {
+            "numerator": 45,
+            "denominator": 48
+          },
+          "menu": {
+            "numerator": 60,
+            "denominator": 62
+          },
+          "runtime_constraints": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "source": {
+            "numerator": 75,
+            "denominator": 80
+          }
+        }
+      },
+      "handling": "raw payload bytes hashed only; manifest metadata read"
+    },
+    {
+      "folder": "eval/router-update-integration-20261005/development-before-compiler-repair",
+      "computed": {
+        "raw_sha256": "364df68dcbd8cffcc58185ebb88cc2cbe3affd088997921ec9121ef1d35ace29",
+        "gzip_sha256": "369cdbab7c7ef153df9731ba1d540c7d66e788f964b854807202c83e0afca855",
+        "manifest_sha256": "baa9378c95f54d382799ee88c2a6d5ee01de241e5b1f03cd02d13a9a61f3296b"
+      },
+      "declared_match": true,
+      "manifest_metadata": {
+        "mode": "scripted-production-path",
+        "not_model_measurement": true,
+        "split": "dev",
+        "cases": 80,
+        "head": null,
+        "metrics": {
+          "answer_facts": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "completed": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "duplicate": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "effects": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "end_to_end": {
+            "numerator": 69,
+            "denominator": 80
+          },
+          "exact_arguments": {
+            "numerator": 77,
+            "denominator": 80
+          },
+          "excluded_source": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "failure_honesty": {
+            "numerator": 16,
+            "denominator": 16
+          },
+          "first_call": {
+            "numerator": 45,
+            "denominator": 48
+          },
+          "guarded_end_to_end": {
+            "numerator": 69,
+            "denominator": 80
+          },
+          "literal_fidelity": {
+            "numerator": 37,
+            "denominator": 48
+          },
+          "menu": {
+            "numerator": 18,
+            "denominator": 18
+          },
+          "query_scope_guard": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "request_argument": {
+            "numerator": 77,
+            "denominator": 80
+          },
+          "runtime_constraints": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "source": {
+            "numerator": 77,
+            "denominator": 80
+          }
+        }
+      },
+      "handling": "raw payload bytes hashed only; manifest metadata read"
+    },
+    {
+      "folder": "eval/router-update-integration-20261005/development-after-compiler-repair",
+      "computed": {
+        "raw_sha256": "0f65ecfd2fa5550c6d00e83eaf02fdb71de316760fbc75b86fd05bb65c2f041d",
+        "gzip_sha256": "9251b8cb0c5cb7a2c1f670dfea07405b4d00f4ef771a28e1a194ce2ea9d103af",
+        "manifest_sha256": "ef84df25795d836db9c4a7cc33a6e38d1778df0e153c1c55e8a5bc05cb39dd07"
+      },
+      "declared_match": true,
+      "manifest_metadata": {
+        "mode": "scripted-production-path",
+        "not_model_measurement": true,
+        "split": "dev",
+        "cases": 80,
+        "head": null,
+        "metrics": {
+          "answer_facts": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "completed": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "duplicate": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "effects": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "end_to_end": {
+            "numerator": 72,
+            "denominator": 80
+          },
+          "exact_arguments": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "excluded_source": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "failure_honesty": {
+            "numerator": 16,
+            "denominator": 16
+          },
+          "first_call": {
+            "numerator": 48,
+            "denominator": 48
+          },
+          "guarded_end_to_end": {
+            "numerator": 72,
+            "denominator": 80
+          },
+          "literal_fidelity": {
+            "numerator": 40,
+            "denominator": 48
+          },
+          "menu": {
+            "numerator": 18,
+            "denominator": 18
+          },
+          "query_scope_guard": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "request_argument": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "runtime_constraints": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "source": {
+            "numerator": 80,
+            "denominator": 80
+          }
+        }
+      },
+      "handling": "raw payload bytes hashed only; manifest metadata read"
+    },
+    {
+      "folder": "eval/router-update-integration-20261005/development-after-audit-repairs",
+      "computed": {
+        "raw_sha256": "25442eb1c68d24cd6c372c803d8bb107da1cee7098e6e5bb34ec82e563188035",
+        "gzip_sha256": "ef201edde939e90f062845ae426123b67d1988d91b37c638a99dd3f5ed97285b",
+        "manifest_sha256": "bf5d05095bd0ac953243277e2895abb5440bfff810e8fe9dace28df1d824e225"
+      },
+      "declared_match": true,
+      "manifest_metadata": {
+        "mode": "scripted-production-path",
+        "not_model_measurement": true,
+        "split": "dev",
+        "cases": 80,
+        "head": null,
+        "metrics": {
+          "answer_facts": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "completed": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "duplicate": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "effects": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "end_to_end": {
+            "numerator": 72,
+            "denominator": 80
+          },
+          "exact_arguments": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "excluded_source": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "failure_honesty": {
+            "numerator": 16,
+            "denominator": 16
+          },
+          "first_call": {
+            "numerator": 48,
+            "denominator": 48
+          },
+          "guarded_end_to_end": {
+            "numerator": 72,
+            "denominator": 80
+          },
+          "literal_fidelity": {
+            "numerator": 40,
+            "denominator": 48
+          },
+          "menu": {
+            "numerator": 18,
+            "denominator": 18
+          },
+          "query_scope_guard": {
+            "numerator": 0,
+            "denominator": 0
+          },
+          "request_argument": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "runtime_constraints": {
+            "numerator": 80,
+            "denominator": 80
+          },
+          "source": {
+            "numerator": 80,
+            "denominator": 80
+          }
+        }
+      },
+      "handling": "raw payload bytes hashed only; manifest metadata read"
+    }
+  ],
+  "archive_bundle_verified_files": 17,
+  "handoff_pins_verified": {
+    "HANDOFF.md": "971e07f9f2dd7f7c21bf10ca7eb0a807588e023a02cbb5bfad1a086f96643746",
+    "progress.json": "4f56d27a32723144a18d21b9706febfb9ee9ce9c91d2f082c3bb0b2617153395",
+    "DEVELOPMENT_RESULTS.md": "359a9aa0f9da3247d1e50a945930163a99bb0287cf101ec3d8350b999f96092c"
+  },
+  "registry_sha256": "fc9c2748b6b61c06e284f5a34da1ae2f08ba3b84b48b35bb2b26b472a632e379",
+  "registry_trailing_whitespace_only": true,
+  "exact_assignment": {
+    "recordedAtUTC": "2026-10-05T20:30:55.082093+00:00",
+    "status": "NEW_AUDIT_FINDINGS_REPAIR_RESERVED_ADMISSION_HELD",
+    "exactSHA": "40ee88a409eaec943ae4474130bd87263ea794e1",
+    "baseSHA": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "branch": "codex/router-update-1-3",
+    "prURL": "https://github.com/adjad/wisp/pull/160",
+    "verifiedCheckout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+    "candidateVerification": {
+      "clean": true,
+      "localHeadMatches": true,
+      "actualRemoteHeadMatches": true,
+      "prHeadMatches": true,
+      "remoteMainMatchesBase": true,
+      "baseAncestorVerified": true,
+      "nonemptyOwnedDiffVerified": true
+    },
+    "assignmentDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_40EE88A_GATE_ASSIGNMENTS_2026-10-05.md",
+    "assignmentDocumentSHA256": "a98fedeb7f762cfdc0130aa9faa2379e9e3f19bc4c8a731676487d9068e4dbdb",
+    "sourceParentDispatcher": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "requiredModel": "gpt-6.1-sol",
+    "requiredReasoningEffort": "high",
+    "roles": [
+      {
+        "title": "Wisp Release Auditor",
+        "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+        "hostId": "local",
+        "availabilityObserved": "active; fresh re-audit turn inProgress",
+        "status": "AUDIT_ACTIVE_NEW_FINDINGS_FORMAL_REPORT_PENDING",
+        "evidenceDirectory": "/private/tmp/wisp-router-40ee88a-gates-20261005/auditor/",
+        "verdicts": [
+          "PASS",
+          "PASS_WITH_NOTES",
+          "BLOCK"
+        ],
+        "waitCursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:40",
+        "acceptanceReceipt": {
+          "turnId": "01a10dc3-e28d-7b51-864e-fdc0429e18ca",
+          "messageId": "msg_025568a98ac5d255016ac40933054887d0bb4e68bc93fe54f4",
+          "phase": "commentary",
+          "text": "I accept the independent re-audit of PR #160 at `40ee88a`. I\u2019ll verify the repairs against the earlier findings, check successful constrained reads as well as rejected omissions, and review the new timezone and test-manifest changes. The candidate will remain read-only, with synthetic interfaces and no heldout payload access.",
+          "verification": "Observed directly in latest relevant read_thread turn; maps short SHA to exact candidate assignment."
+        },
+        "progressObserved": {
+          "messageId": "msg_025568a98ac5d255016ac4097873d087d0bac5467ccb4a9000",
+          "text": "Testing repeated same-source reads and corrections omitting the source name; no final verdict yet."
+        }
+      },
+      {
+        "title": "Wisp Simulation QA",
+        "threadId": "01a08531-b393-7690-a072-5776c3cbed4c",
+        "hostId": "local",
+        "availabilityObserved": "idle; fresh scope acknowledgment turn completed",
+        "status": "ACKNOWLEDGED_40EE88A_AVAILABLE_EXECUTION_HELD",
+        "evidenceDirectory": "/private/tmp/wisp-router-40ee88a-gates-20261005/simulation-qa/",
+        "verdicts": [
+          "SIM_PASS",
+          "NOTES",
+          "FAIL"
+        ],
+        "waitCursor": "27abf245-52c5-4234-a66f-42aeaedccba1:3",
+        "acceptanceReceipt": {
+          "turnId": "01a10dc3-ebc5-7850-af50-4da1f40fcddb",
+          "messageId": "msg_0f4ac374dfdf1a13016ac40935a1b087d0a2f76a5e3595e8a7",
+          "phase": "final_answer",
+          "text": "ACK\u2014available as the existing independent Simulation QA actor for candidate 40ee88a409eaec943ae4474130bd87263ea794e1, PR #160. Read-only scope confirmed. QA remains held pending the parent\u2019s nonblocking independent audit receipt for this unchanged SHA. No tests, edits, heldout access, or real model/native/user-data/outbound effects.",
+          "verification": "Observed directly in wait_threads snapshot."
+        }
+      }
+    ],
+    "changedFiles": [
+      "docs/ROUTING_IMPLEMENTATION_PLAN.md",
+      "eval/router-update-20261005/README.md",
+      "eval/router-update-20261005/author_corpus.py",
+      "eval/router-update-20261005/baseline-scripted/checksums.json",
+      "eval/router-update-20261005/baseline-scripted/manifest.json",
+      "eval/router-update-20261005/baseline-scripted/raw.jsonl.gz",
+      "eval/router-update-20261005/dev.jsonl",
+      "eval/router-update-20261005/seal.json",
+      "eval/router-update-20261005/test.jsonl",
+      "eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md",
+      "eval/router-update-integration-20261005/HANDOFF.md",
+      "eval/router-update-integration-20261005/OVERVIEW_BEFORE_AFTER.md",
+      "eval/router-update-integration-20261005/TRAINING_FEASIBILITY.md",
+      "eval/router-update-integration-20261005/acceptance.json",
+      "eval/router-update-integration-20261005/development-after-audit-repairs/checksums.json",
+      "eval/router-update-integration-20261005/development-after-audit-repairs/manifest.json",
+      "eval/router-update-integration-20261005/development-after-audit-repairs/raw.jsonl.gz",
+      "eval/router-update-integration-20261005/development-after-compiler-repair/checksums.json",
+      "eval/router-update-integration-20261005/development-after-compiler-repair/manifest.json",
+      "eval/router-update-integration-20261005/development-after-compiler-repair/raw.jsonl.gz",
+      "eval/router-update-integration-20261005/development-before-compiler-repair/checksums.json",
+      "eval/router-update-integration-20261005/development-before-compiler-repair/manifest.json",
+      "eval/router-update-integration-20261005/development-before-compiler-repair/raw.jsonl.gz",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/HANDOFF.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/REPORT.md",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/checksums.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/finalize_report.py",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/main-results.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/main_checks.py",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/provenance.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted-results.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/targeted_checks.py",
+      "eval/router-update-integration-20261005/first-candidate-gates/auditor/verify_evidence.py",
+      "eval/router-update-integration-20261005/first-candidate-gates/bundle-sha256.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-artifact-ci-failure.log.gz",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-gate-receipt.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-diagnosis.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-python-ci-failure.log.gz",
+      "eval/router-update-integration-20261005/first-candidate-gates/wisp-router-update-3f86187-regression.log.gz",
+      "eval/router-update-integration-20261005/progress.json",
+      "scripts/eval_router_update.py",
+      "scripts/run_simulation_qa.py",
+      "service/agent/loop.py",
+      "service/main.py",
+      "service/router/intent/README.md",
+      "service/router/intent/__init__.py",
+      "service/router/intent/compiler.py",
+      "service/router/intent/grammar.py",
+      "service/router/intent/intent.schema.v1.json",
+      "service/router/intent/planner.py",
+      "service/router/intent/schema.py",
+      "service/router/intent/validation.py",
+      "service/router/router.py",
+      "service/router/web_request.py",
+      "service/tools/assistant_tools.py",
+      "service/tools/email_tools.py",
+      "service/tools/imessage_tools.py",
+      "service/tools/message_digest.py",
+      "service/workflows/compiler.py",
+      "service/workflows/present.py",
+      "service/workflows/reads.py",
+      "tests/test_email_digest_presentation.py",
+      "tests/test_email_digest_review_regressions.py",
+      "tests/test_email_digest_sections.py",
+      "tests/test_message_digest.py",
+      "tests/test_multi_source_fallback.py",
+      "tests/test_reminder_creation.py",
+      "tests/test_reminder_source_truth.py",
+      "tests/test_replay_failure_fixes.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py",
+      "tests/test_router_intent_workflow.py",
+      "tests/test_router_overview_grounding.py",
+      "tests/test_router_overview_message_scope.py",
+      "tests/test_router_update_eval.py",
+      "tests/test_simulation_qa_runner.py"
+    ],
+    "handoffFingerprints": {
+      "HANDOFF.md": "971e07f9f2dd7f7c21bf10ca7eb0a807588e023a02cbb5bfad1a086f96643746",
+      "progress.json": "4f56d27a32723144a18d21b9706febfb9ee9ce9c91d2f082c3bb0b2617153395",
+      "DEVELOPMENT_RESULTS.md": "359a9aa0f9da3247d1e50a945930163a99bb0287cf101ec3d8350b999f96092c"
+    },
+    "coreCompletion": {
+      "recordedAtUTC": "2026-10-05T20:30:55.082093+00:00",
+      "owner": "/root/router_core",
+      "status": "FROZEN_CLEAN_PUSHED_REPAIRS_INTEGRATED",
+      "workerCommit": "b0ece93154aa17c2b299ca3ad3f6ed8a75b17385",
+      "actualRemoteHeadVerified": "b0ece93154aa17c2b299ca3ad3f6ed8a75b17385",
+      "cleanWorkerTreeVerified": true,
+      "parentCommit": "d02c03db8d4c5f5f3ae989be5bba2a3eb47f337d",
+      "changedRepairPathsVerified": [
+        "service/router/intent/grammar.py",
+        "service/router/intent/validation.py",
+        "service/router/router.py",
+        "service/workflows/reads.py",
+        "tests/test_multi_source_fallback.py",
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py"
+      ],
+      "allChangedPathsWithinACKVerified": true,
+      "parentChangedPathObjectMatchesVerified": true,
+      "validationReported": {
+        "passed": 783,
+        "subtestsPassed": 4640,
+        "scope": "11 suites; actor/intent/calendar-only/fallback/routing synthetic checks"
+      },
+      "rootVerification": "Read-only commit/path/status/remote and object identity checks; root did not audit implementation or execute tests."
+    },
+    "evalCompletionReference": "scopes./root/router_eval.timezoneRepairCompletion20261005",
+    "previousCandidate": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "priorReceiptsDisposition": "Old formal BLOCK and failures preserved in candidateGateHistory and committed first-candidate-gates; no old PASS transferred to new SHA.",
+    "auditVerdict": null,
+    "simulationQAVerdict": null,
+    "auditRequired": [
+      "Complete current diff/context and F1-F4/P3 repairs",
+      "Source-bound omission/query fidelity and positive controls",
+      "Timezone isolated UTC/LA DST contract",
+      "Harness/test admission safety",
+      "Privacy/exclusions/outbound/native and cross-component boundaries",
+      "Frozen provenance/default-disabled/resource/heldout separation"
+    ],
+    "ciObserved": {
+      "observedAtUTC": "2026-10-05T20:30:55.082093+00:00",
+      "headSHA": "40ee88a409eaec943ae4474130bd87263ea794e1",
+      "python-regressions": "QUEUED",
+      "Verified macOS artifact": "QUEUED"
+    },
+    "fullRegression": {
+      "status": "RUNNING_NO_FINAL_RECEIPT",
+      "log": "/private/tmp/wisp-router-update-40ee88a-regression.log",
+      "outerLaunchAuthority": "Approved compatible outer escalation reported by source parent; root did not execute or independently grant it.",
+      "latestParentReported": "Single complete run continues, beyond76 modules; no final verdict supplied.",
+      "lastObservedStatus": "Running; latest log reached tests/test_router_update_eval.py; no final receipt at observation."
+    },
+    "developmentReported": {
+      "combinedRevision": "d02c03db8d4c5f5f3ae989be5bba2a3eb47f337d",
+      "passed": 401,
+      "skipped": 1,
+      "skip": "Original-control-only absence check",
+      "scriptedCases": 80,
+      "exactCallsAndSources": "80/80",
+      "originalAndGuardedEndToEnd": "72/80",
+      "annotationLimitations": 8,
+      "modelAccuracyClaim": false,
+      "holdoutReadReported": false
+    },
+    "holdout": "Opaque metadata only for gate review; no payload opening, builder tuning or archived-payload execution.",
+    "resourceDependency": "router-1.3-resident-ling-window remains PENDING_EXTERNAL_ACK; no inference/training permission",
+    "admission": "Source parent may dispatch existing auditor for fresh ACK under existing verified human authority. Existing separate QA may acknowledge new scope now, but execution waits for completed nonblocking audit and parent gate release on unchanged SHA. No duplicate actors.",
+    "codeFreeze": "All core/eval source repairs frozen. No new source edits or candidate commits during gates without recorded repair owner/new-SHA renewal.",
+    "rootActions": "Read-only independent audit snapshot, formal-file existence, core head/clean-state and existing log tail. Recorded sole held repair reservation/mirrors. No source edits, tests, audit/QA/probes, messages, dispatch, merge/deploy or candidate changes.",
+    "updatedAtUTC": "2026-10-05T20:36:20.148923+00:00",
+    "dispatchReportedByParent": {
+      "recordedAtUTC": "2026-10-05T20:34:08.207472+00:00",
+      "sourceChat": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+      "receipt": "Parent verified registryACK20:30:55 and dispatched existing auditor; auditor accepted20:31:43, distinct QA acknowledged20:31:51. No duplicate actors/writers; frozen code unchanged.",
+      "rootVerification": "Direct relevant app snapshots confirm new turns and acknowledgments. No root dispatch or actor-setting changes."
+    },
+    "simulationQAHold": "Held; no nonblocking exact40ee88a audit. Existing actor remains distinct and acknowledged availability only.",
+    "pendingRepairReservation": {
+      "recordedAtUTC": "2026-10-05T20:35:52.659563+00:00",
+      "status": "ACK_SOLE_REPAIR_RESERVATION_EDIT_ADMISSION_HELD",
+      "owner": "/root/router_core",
+      "requesterChat": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+      "reservedWritePaths": [
+        "service/router/intent/validation.py",
+        "service/router/intent/grammar.py",
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py",
+        "tests/test_router_intent_workflow.py"
+      ],
+      "activeWritePaths": [
+        "service/router/intent/validation.py",
+        "service/router/intent/grammar.py",
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py",
+        "tests/test_router_intent_workflow.py"
+      ],
+      "editingAllowedNow": false,
+      "workerCheckout": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+      "workerBranch": "codex/router-intent-core",
+      "priorFrozenHead": "b0ece93154aa17c2b299ca3ad3f6ed8a75b17385",
+      "cleanTreeVerified": true,
+      "localRemoteTrackingHeadMatchVerified": true,
+      "candidateHeldFrozenSHA": "40ee88a409eaec943ae4474130bd87263ea794e1",
+      "findings": [
+        "Actual application synthetic execution accepted repeated email reads whose individually requested dates were swapped.",
+        "Current-turn correction Actually about birch diagrams can execute stale prior query cedar manuscripts."
+      ],
+      "findingReceipt": {
+        "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+        "turnId": "01a10dc3-e28d-7b51-864e-fdc0429e18ca",
+        "messageId": "msg_025568a98ac5d255016ac409b42eb487d09dd9b06dea9f6974",
+        "phase": "commentary",
+        "evidenceLevel": "Observed directly in independent auditor snapshot; formal report files absent at observation. Root did not reproduce findings."
+      },
+      "editAdmissionPrerequisites": [
+        "Formal exact40ee88a auditor report/verdict and synthetic evidence completed and preserved.",
+        "Current once-running full regression final exact-SHA receipt/log preserved; preserve available CI evidence and failures without overwriting prior candidate evidence.",
+        "Parent confirms preservation and supplies evidence before releasing existing worker to edit. Until then only read-only inspection/planning; no source edits and40ee88a remains frozen."
+      ],
+      "requiredBehavior": [
+        "Bind full date/query/operation/source constraints to each originating request occurrence/clause, not a global multiset of values. Same-source repeated reads must not accept swapped associations.",
+        "Current-turn corrections must replace stale previous constraints within correctly established source/operation context; no silent reuse of the old query when a new complete supported query was requested.",
+        "Require full query fidelity and supported date/source scope; if associations or correction context are ambiguous, clarify honestly with no broadened/stale source read.",
+        "Cover adversarial swaps/stale corrections and positive valid same-source repeated reads, distinct-source/date/query reads and supported followups through pure validation and actual application fake-interface synthetic controls.",
+        "Only the five existing exact files reserved; request any additional exact path before edits. Compiler/router/read workflow/tool/source files outside this scope remain frozen. No new test module or manifest drift.",
+        "No corpus/gold/metric/heldout/evidence edits, production/tool changes, real model/native/personal/outbound effects, settings, training or resource authority.",
+        "After admission, clean pushed bounded worker commit; parent integrates and freezes new SHA, renews all exact-head mechanical/CI/independent audit/separate QA gates. Preserve40ee88a findings and receipts.",
+        "Preserve valid shared date semantics and remaining inherited constraints while applying a correction; uniquely establish prior source/domain or clarify ambiguity instead of inventing a binding."
+      ],
+      "authority": "Reservation under verified human router implementation authority and explicit source-parent bounded request. Actor report is evidence, not new permission; edit dependency remains held.",
+      "conflictCheck": "Same existing sole core writer, no overlap with other recorded writers or new actors",
+      "scopeACKIsNotAuditPass": true,
+      "readOnlyPlanReported": {
+        "recordedAtUTC": "2026-10-05T20:36:20.148923+00:00",
+        "sourceParentReport": "Same existing core owner completed read-only root-cause analysis without edits. Independently pooled requirement/literal fields permit mismatched valid fields; source-less current correction leaves old query evidence.",
+        "minimalPlannedPaths": [
+          "service/router/intent/validation.py",
+          "tests/test_router_intent_core.py",
+          "tests/test_router_intent_main.py",
+          "tests/test_router_intent_workflow.py"
+        ],
+        "grammarDisposition": "Already reserved grammar.py may stay untouched; only use if required within exact reservation. No new file request.",
+        "plannedBehavior": "Whole per-occurrence source-clause tuple binding and coverage, not independent value multisets; source-less correction binds only to uniquely established prior domain. Preserve shared date semantics and other inherited constraints; clarify multi-domain ambiguity.",
+        "verificationLimit": "Worker analysis reported by parent; root did not independently diagnose implementation or execute checks.",
+        "admission": "Still frozen b0ece931 per parent; no editing until formal report and current full-gate receipt preservation. No resource/heldout/model authority."
+      }
+    },
+    "newAuditFindingsObserved": {
+      "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+      "turnId": "01a10dc3-e28d-7b51-864e-fdc0429e18ca",
+      "messageId": "msg_025568a98ac5d255016ac409b42eb487d09dd9b06dea9f6974",
+      "phase": "commentary",
+      "evidenceLevel": "Observed directly in independent auditor snapshot; formal report files absent at observation. Root did not reproduce findings."
+    },
+    "auditStatus": "No completed formal40ee88a verdict observed; new execution-reaching defects hold integration and synthetic QA. Do not transfer old3f86187 verdict or infer current pass."
+  },
+  "gate_scope_sha256": "a98fedeb7f762cfdc0130aa9faa2379e9e3f19bc4c8a731676487d9068e4dbdb",
+  "regression_snapshot": {
+    "sha256": "6de8250a955196992404217047c4ea0df50d946cba943483c81a919f607a3377",
+    "bytes": 144733,
+    "final_summary_present": false
+  },
+  "heldout_payload_opened_or_deserialized": false,
+  "old_archived_scripts_executed": false
+}

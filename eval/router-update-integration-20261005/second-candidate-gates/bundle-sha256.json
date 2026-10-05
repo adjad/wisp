@@ -1,0 +1,81 @@
+{
+  "auditor/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "d614af1b0298da5cfd9d20bc562af1109410c07816cc790aadf53b710d40b910",
+    "stored_sha256": "d614af1b0298da5cfd9d20bc562af1109410c07816cc790aadf53b710d40b910"
+  },
+  "auditor/REPORT.json": {
+    "original_name": "REPORT.json",
+    "original_sha256": "0eb2c3e4d9eeecdaa52179c32ecb6999cdb3e28b49ac532d20fefbf018fa1495",
+    "stored_sha256": "0eb2c3e4d9eeecdaa52179c32ecb6999cdb3e28b49ac532d20fefbf018fa1495"
+  },
+  "auditor/REPORT.md": {
+    "original_name": "REPORT.md",
+    "original_sha256": "3bdd7c99ba83342e5a4009eb8a4d9862d328108c7b37280605a1343767c523b1",
+    "stored_sha256": "3bdd7c99ba83342e5a4009eb8a4d9862d328108c7b37280605a1343767c523b1"
+  },
+  "auditor/finalize_report.py": {
+    "original_name": "finalize_report.py",
+    "original_sha256": "0a23a860bc3e30aae39a2f0b55440ba1036bed55126c8d83ce978aa10fd46f04",
+    "stored_sha256": "0a23a860bc3e30aae39a2f0b55440ba1036bed55126c8d83ce978aa10fd46f04"
+  },
+  "auditor/fresh-boundary-results.json.gz": {
+    "original_name": "fresh-boundary-results.json",
+    "original_sha256": "c6ab865d4f41bd3f2b87503bc1638cd9298efcf90019d7690a6592d20883bd0b",
+    "stored_sha256": "4320f3a7f59d8c4be3e22813ac0eb57c3d05b12de1aa239fa0bb3c9ab59a0529"
+  },
+  "auditor/fresh-scope-results-initial.json.gz": {
+    "original_name": "fresh-scope-results-initial.json",
+    "original_sha256": "57f9fbc860023fb4654c572c5a64cc42a89c7891b2ccfe0c19513e2c97926207",
+    "stored_sha256": "81a9d60538c0f27d641bef4e2d4814e80e8bc6cd077cdd015a5354a26abd3623"
+  },
+  "auditor/fresh-scope-results.json.gz": {
+    "original_name": "fresh-scope-results.json",
+    "original_sha256": "e18363c9112a7a7e0b7ea23c40afc1968ba6551cd1a0e75c7c5e10834560e13c",
+    "stored_sha256": "8dde84872fda8df2d0d057d4e698e3949615338bb6dfcfbfdd1683cfe327eb17"
+  },
+  "auditor/fresh_boundary_checks.py": {
+    "original_name": "fresh_boundary_checks.py",
+    "original_sha256": "28b0994f313d58c256dacabe91c5a456fe85ae7daae54eada9f312314a61ea95",
+    "stored_sha256": "28b0994f313d58c256dacabe91c5a456fe85ae7daae54eada9f312314a61ea95"
+  },
+  "auditor/fresh_scope_checks.py": {
+    "original_name": "fresh_scope_checks.py",
+    "original_sha256": "2a96d21f08447355cec4c628d56e6f6ec2e03d4a64f7179ffbf3fc5fcc3292c8",
+    "stored_sha256": "2a96d21f08447355cec4c628d56e6f6ec2e03d4a64f7179ffbf3fc5fcc3292c8"
+  },
+  "auditor/provenance.json": {
+    "original_name": "provenance.json",
+    "original_sha256": "8e6c634939f1f264269190ab9b9298f83262c3818bda9989bcdc9eecb884b65b",
+    "stored_sha256": "8e6c634939f1f264269190ab9b9298f83262c3818bda9989bcdc9eecb884b65b"
+  },
+  "auditor/verify_provenance.py": {
+    "original_name": "verify_provenance.py",
+    "original_sha256": "7c45ca8b464c728a6ce4635eee1212d5b6541d5cae661a1e3fe1f9fc86d36a13",
+    "stored_sha256": "7c45ca8b464c728a6ce4635eee1212d5b6541d5cae661a1e3fe1f9fc86d36a13"
+  },
+  "auditor/checksums.json": {
+    "original_sha256": "e0ff1a967964bc6cb3743b8b585409990a539198a91a083aa02b483adbe397fa",
+    "stored_sha256": "e0ff1a967964bc6cb3743b8b585409990a539198a91a083aa02b483adbe397fa"
+  },
+  "wisp-router-update-40ee88a-gate-receipt.json": {
+    "original_sha256": "5999c9afc7c46139b9eafe735c71bbdcd0a022ffe18b05a83c879d1fb97a48cd",
+    "stored_sha256": "5999c9afc7c46139b9eafe735c71bbdcd0a022ffe18b05a83c879d1fb97a48cd"
+  },
+  "wisp-router-update-40ee88a-regression.log.gz": {
+    "original_sha256": "b2a186f08eb8ef73d9a29d9a73e38acd76c52c874384f5b554015c86e2cbfad9",
+    "stored_sha256": "df25642c79326848679facab7c007684e7712fc5acea21b9260fe31b71ebeb66"
+  },
+  "wisp-router-update-40ee88a-python-ci.json": {
+    "original_sha256": "01711e5e0726bb19e3111bcaff42bf883fd4dd9632295b9989264d3ede9289a3",
+    "stored_sha256": "01711e5e0726bb19e3111bcaff42bf883fd4dd9632295b9989264d3ede9289a3"
+  },
+  "wisp-router-update-40ee88a-python-ci.log.gz": {
+    "original_sha256": "024073f0239e53046f177888f9963dd4b4f9408568a44e8e4a330b66e6bebf7d",
+    "stored_sha256": "efa88af8df0c8aa8ba88a414b03958f5030d0e4b1313fe1e01a6fa3569c4d70d"
+  },
+  "wisp-router-update-40ee88a-artifact-ci-state.json": {
+    "original_sha256": "02573d6a3249b3609c967872b4e361b887e1009a1bf3805d16ca0561f9302d9f",
+    "stored_sha256": "02573d6a3249b3609c967872b4e361b887e1009a1bf3805d16ca0561f9302d9f"
+  }
+}

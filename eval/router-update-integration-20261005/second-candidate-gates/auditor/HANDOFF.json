@@ -1,0 +1,104 @@
+{
+  "exact_sha": "40ee88a409eaec943ae4474130bd87263ea794e1",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "verdict": "BLOCK",
+  "candidate_changed": false,
+  "role": "independent read-only Wisp Release Auditor",
+  "findings": [
+    {
+      "id": "R1",
+      "priority": "P1",
+      "title": "Bind dates to each repeated source read, not an independent domain-wide set",
+      "blocking": true,
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "lines": [
+            265,
+            266,
+            268,
+            341,
+            342,
+            349,
+            353,
+            493,
+            505
+          ]
+        }
+      ],
+      "evidence": {
+        "file": "fresh-scope-results.json",
+        "negative_case": "repeated-domain-date-swapped",
+        "positive_case": "repeated-domain-positive",
+        "also_rejected_control": "independent-domains-date-swapped"
+      }
+    },
+    {
+      "id": "R2",
+      "priority": "P2",
+      "title": "Invalidate the previous search when a source-free correction supplies a new query",
+      "blocking": true,
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "lines": [
+            226,
+            400,
+            401,
+            409,
+            410,
+            488,
+            493,
+            508
+          ]
+        }
+      ],
+      "evidence": {
+        "file": "fresh-scope-results.json",
+        "negative_case": "fragment-query-stale",
+        "safe_fallback_case": "fragment-query-positive",
+        "positive_case": "source-named-query-correction"
+      }
+    }
+  ],
+  "prior_finding_reassessment": [
+    {
+      "id": "F1",
+      "status": "PARTIALLY_REPAIRED",
+      "details": "Original isolated date/month omission, reminder-scope omission/all contradiction, and free-slot operation/duration omission now clarify with zero tool calls. Valid constrained reads succeed. R1 remains a blocking source-entry binding defect."
+    },
+    {
+      "id": "F2",
+      "status": "PARTIALLY_REPAIRED",
+      "details": "Complete source-named unquoted queries and date/count suffixes now survive; substrings are rejected. R2 remains a blocking contextual replacement defect."
+    },
+    {
+      "id": "F3",
+      "status": "RESOLVED",
+      "details": "Both shared router and compile_read use personal_agenda_args. Actual-main controls preserve calendar_only=True for tomorrow planning and explicit calendar while keeping a combined agenda request combined."
+    },
+    {
+      "id": "F4",
+      "status": "RESOLVED",
+      "details": "Six modules are explicitly admitted and their fake interfaces/isolation safety reviewed; full manifest selection succeeds. Fresh unknown/missing manifest controls still fail closed."
+    },
+    {
+      "id": "P3",
+      "status": "RESOLVED_DOCUMENTATION",
+      "details": "README accurately describes legacy Python numeric equality and separately typed supplemental comparisons. Fresh bool/float-versus-int scorer cases retain original compatibility results and correctly fail typed supplemental metrics. Frozen originals were not rewritten."
+    },
+    {
+      "id": "UTC_CI",
+      "status": "RESOLVED_WITHIN_SYNTHETIC_SCOPE",
+      "details": "Reversible dedicated-process Pacific helper produces exact 23h/25h DST epochs in both UTC and LA process zones, preserves wrong-day inequality, restores prior/absent TZ after exceptions, and fails closed without tzset. Production timeranges source is unchanged."
+    }
+  ],
+  "report_md": "/private/tmp/wisp-router-40ee88a-gates-20261005/auditor/REPORT.md",
+  "report_json": "/private/tmp/wisp-router-40ee88a-gates-20261005/auditor/REPORT.json",
+  "required_next_action": "BLOCK at exact 40ee88a. Route R1/R2 through Orchestrator for recorded sole repair ownership; auditor makes no product edit or repair assignment. Obtain independent review and required gates on a newly frozen repaired SHA. Preserve the corpus and all original failed/pass-stage evidence.",
+  "simulation_qa_release": false,
+  "heldout_payload_opened": false,
+  "actual_model_calls": false,
+  "native_or_outbound_execution_by_auditor": false,
+  "full_gate_or_ci_pass_claimed": false
+}
