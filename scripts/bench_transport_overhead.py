@@ -27,6 +27,14 @@ process, and ends by shutting the private pool down and checking that no thread 
 process of its own is left.
 
     python scripts/bench_transport_overhead.py --spawn --baseline-ref <sha> --runs 11 --json out.json
+
+``--executable`` (T0-path) times the executable-path lookup alone, ``lsof -d txt`` (baseline) against
+``proc_pidpath`` (this tree), for the live server and its parent, and checks both return the same
+path.  Use ``--baseline-ref`` of the commit before T0-path; ``--spawn`` with that baseline also
+measures the whole effect on binding(), connected_peer() and the request-shaped total.  Both are
+read-only: ``lsof -p <pid> -d txt`` and ``proc_pidpath`` on the live processes, nothing else.
+
+    python scripts/bench_transport_overhead.py --executable --baseline-ref <sha> --runs 11 --json out.json
 """
 import argparse
 import importlib
@@ -182,6 +190,25 @@ def spawn_benchmark(old, new, runs, process_identity):
             new._POOL.shutdown()
 
 
+def executable_benchmark(old, new, runs):
+    """``_executable`` alone (old: lsof -d txt, new: proc_pidpath) for the live server and its parent."""
+    authority = new.RuntimeAuthority().load()
+    server, _executable, parent, _parent_executable = authority._identity
+    rows = {}
+    for label, pid in (('server', server), ('parent', parent)):
+        old_path = old.DesktopOmlx._executable(fresh(old), pid)
+        new_path = new.DesktopOmlx._executable(fresh(new), pid)
+        samples = alternate(runs, lambda pid=pid: old.DesktopOmlx._executable(fresh(old), pid),
+                            lambda pid=pid: new.DesktopOmlx._executable(fresh(new), pid))
+        row = {'old': summarize(samples[0]), 'new': summarize(samples[1]),
+               'same_path': old_path == new_path, 'path': os.fspath(new_path)}
+        row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 1)
+        rows[label] = row
+        print(f"_executable[{label}]: old p50 {row['old']['p50']} p95 {row['old']['p95']} | new p50 {row['new']['p50']} "
+              f"p95 {row['new']['p95']} | same path {row['same_path']} | p50 x{row['speedup_p50']}", flush=True)
+    return rows
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--runs', type=int, default=11)
@@ -190,6 +217,8 @@ def main():
     parser.add_argument('--verify', action='store_true', help='compare old and new inventories on the real trees')
     parser.add_argument('--spawn', action='store_true',
                         help='time binding/connected_peer/load/request total, serial baseline vs scheduled (live, read-only)')
+    parser.add_argument('--executable', action='store_true',
+                        help='time the executable-path lookup alone, lsof -d txt vs proc_pidpath (live, read-only)')
     parser.add_argument('--json', help='write the results here')
     args = parser.parse_args()
 
@@ -207,6 +236,16 @@ def main():
                               'identical': before == after and len(after) == 2}
         result['verify'] = verdicts
         print(json.dumps(verdicts, indent=1))
+
+    if args.executable:
+        result['executable'] = executable_benchmark(old, new, args.runs)
+        result['load_after'], result['swap_after'] = load_average(), swap_usage()
+        print('loadavg', result['load_before'], '->', result['load_after'], '| swap', result['swap_after'])
+        if args.json:
+            Path(args.json).write_text(json.dumps(result, indent=1))
+        if hasattr(new, '_POOL'):
+            new._POOL.shutdown()
+        return
 
     if args.spawn:
         from service.inference.local_peer import process_identity

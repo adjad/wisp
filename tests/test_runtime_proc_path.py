@@ -79,7 +79,6 @@ pytestmark = pytest.mark.skipif(sys.platform != 'darwin', reason='libproc proc_p
 UNQUALIFIED = 'desktop_executable_unqualified'
 TRANSIENT = 'native_inspection_unavailable'
 UID = os.getuid()
-REAL_PYTHON = os.path.realpath(sys.executable)
 
 
 # --------------------------------------------------------------------------
@@ -172,6 +171,13 @@ def lookup(executable, pid):
         return ('error', type(error).__name__)
 
 
+def interpreter_image():
+    """The file the kernel reports as the image of THIS process: sys.executable itself, or, for a
+    framework build whose bin/python is only a launcher, the Python.app binary it executes."""
+    image, _ = independent_probe(os.getpid())
+    return os.fsdecode(image) if image else os.path.realpath(sys.executable)
+
+
 def independent_probe(pid):
     """proc_pidpath by an independent route: (bytes or None, errno).  Never the code under test."""
     library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
@@ -205,7 +211,7 @@ class Children:
 
     def copy(self, directory, name='py'):
         target = directory / name
-        shutil.copy2(REAL_PYTHON, target)
+        shutil.copy2(interpreter_image(), target)
         return target
 
     def start(self, launch, image):
@@ -776,6 +782,20 @@ def test_a_relative_path_from_the_helper_is_still_refused_by_the_qualification(m
     monkeypatch.setattr(at, 'process_path', lambda pid: 'relative/py')
     with pytest.raises(AuthRefused) as caught:
         authority()._qualified_file(new_executable(5), exact=Path('/x'))
+    assert str(caught.value) == UNQUALIFIED
+
+
+def test_a_relative_path_that_exists_relative_to_the_cwd_is_not_resolved_into_an_acceptance(monkeypatch, tmp_path):
+    """`_executable` must not turn a relative result into an absolute one: Path.resolve() would make
+    `py` match the file under the cwd and so be accepted by the equality in `_qualified_file`."""
+    target = tmp_path.resolve() / 'py'
+    target.write_bytes(b'x')
+    os.chmod(target, 0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(at, 'process_path', lambda pid: 'py')
+    assert new_executable(5) == Path('py') and not new_executable(5).is_absolute()
+    with pytest.raises(AuthRefused) as caught:
+        authority()._qualified_file(new_executable(5), exact=target)
     assert str(caught.value) == UNQUALIFIED
 
 
