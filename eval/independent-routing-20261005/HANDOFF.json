@@ -1,0 +1,45 @@
+{
+  "owner_thread": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+  "report_due": "2026-10-05T09:00:00-07:00",
+  "measurement_deadline": "2026-10-05T08:30:00-07:00",
+  "base": "fa66cb3e3b0b0c207fe0dce7cc42de4c912f93b0",
+  "branch": "codex/independent-routing-eval-20261005",
+  "workspace": "/Users/adijain/.codex/worktrees/routing-eval-20261005/MOE_Project",
+  "owned_paths": [
+    "eval/independent-routing-20261005/**"
+  ],
+  "orchestrator_ack": "Recorded own separate evaluation scope and model measurement reservation through 08:30 Pacific; cross-session exclusivity is not guaranteed. Record ambient contention.",
+  "python": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+  "laya_python": "/private/tmp/wisp-routing-eval-laya-venv/bin/python",
+  "model": "Ling-3.0-tiny-oQ6e",
+  "laya_model": "aac6fef/laya-multilingual-coreml@8139e9089273319512c730218903784074133187",
+  "baseline_limit": "Frozen production rule and structured-read selection followed by controlled common Ling generation. Measures first proposed calls, not full production agent loop or native integration.",
+  "safety": "Never call actual registered tool functions, Wisp native endpoint 8765, real communications, or user-data reads. All model prompts synthetic. No model unload/load or production configuration edits. Resident model presence checked before every Ling call. Local Laya runs as isolated subprocess. API key consumed locally and never logged.",
+  "checkpoints": "progress.json, append-only JSONL, matching .manifest.json, .summary.json. /private/tmp/wisp-routing-eval.lock prevents simultaneous harnesses. Never resume under changed hashes; use new output filename. Inspect process before launching.",
+  "completed": [
+    "Independent corpus authored and reviewed against schemas/runtime before inference",
+    "165 initial cases revised to 168:18 dev,138 strict test,12 ambiguous/capability challenges",
+    "CoreML 0.2.0 installed isolated Python3.12; actual model load and predictions succeeded",
+    "Five meaningful grader/control-flow unit checks pass",
+    "Original development.jsonl preserved but superseded due baseline/scoring harness defects",
+    "Cache-control sensitivity calls recorded; not sufficient to diagnose server cache bug",
+    "Corrected development_v2 run:90 actual candidate cases complete with no transport errors",
+    "Six targeted harness checks pass after independent review repairs",
+    "Serialized overnight.py now runs 2070 held-out candidate trials,120 challenge trials,165 synthetic answer continuations,504 raw Laya option-order predictions"
+  ],
+  "pending": [
+    "Freeze harness/corpus and run held-out test for five arms with multiple repetitions",
+    "Run challenge cases separately",
+    "Measure cold-first-request vs cache-hit timing accurately; no cold model reload permitted",
+    "Audit sample outputs independently, compute per-family and paired metrics, uncertainty and limitations",
+    "Write full report and concise best-measured routing recommendation by9AM",
+    "Commit/push clean eval-only branch; retain large raw local artifacts and link",
+    "Pause both automations after9AM report"
+  ],
+  "jev": "Not measured; no JEV/TYPESAFE configured environment credential found. Hosted candidate may be documentation-only unless a pre-existing explicitly authorized configuration is discovered. Never upload private debug logs.",
+  "automations": [
+    "independent-wisp-routing-evaluation-overnight",
+    "report-optimal-wisp-routing-at-9-am"
+  ],
+  "launch_command": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python -u eval/independent-routing-20261005/overnight.py"
+}

@@ -1,0 +1,4112 @@
+[
+  {
+    "id": "dev_agenda-1",
+    "family": "dev_agenda",
+    "split": "dev",
+    "prompt": "Show my calendar today",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "today"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_agenda-2",
+    "family": "dev_agenda",
+    "split": "dev",
+    "prompt": "What meetings do I have today?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "today"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_agenda-3",
+    "family": "dev_agenda",
+    "split": "dev",
+    "prompt": "Check today's agenda",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "today"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_mail-1",
+    "family": "dev_mail",
+    "split": "dev",
+    "prompt": "Summarize my email",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_mail-2",
+    "family": "dev_mail",
+    "split": "dev",
+    "prompt": "Catch me up on my inbox",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_mail-3",
+    "family": "dev_mail",
+    "split": "dev",
+    "prompt": "Give me an email overview",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_text-1",
+    "family": "dev_text",
+    "split": "dev",
+    "prompt": "Summarize messages from yesterday",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_text-2",
+    "family": "dev_text",
+    "split": "dev",
+    "prompt": "Catch me up on yesterday's texts",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_text-3",
+    "family": "dev_text",
+    "split": "dev",
+    "prompt": "Give me a digest of yesterday's messages",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_weather-1",
+    "family": "dev_weather",
+    "split": "dev",
+    "prompt": "Weather in Seattle tomorrow?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Seattle"
+          },
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_weather-2",
+    "family": "dev_weather",
+    "split": "dev",
+    "prompt": "Check tomorrow's Seattle weather",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Seattle"
+          },
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_weather-3",
+    "family": "dev_weather",
+    "split": "dev",
+    "prompt": "What is the forecast for Seattle tomorrow?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Seattle"
+          },
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_none-1",
+    "family": "dev_none",
+    "split": "dev",
+    "prompt": "Thanks!",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_none-2",
+    "family": "dev_none",
+    "split": "dev",
+    "prompt": "Tell me a joke",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_none-3",
+    "family": "dev_none",
+    "split": "dev",
+    "prompt": "What does the word calendar mean?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_timer-1",
+    "family": "dev_timer",
+    "split": "dev",
+    "prompt": "Set a 12 minute timer",
+    "context": [],
+    "gold": {
+      "tools": [
+        "set_timer"
+      ],
+      "args": {
+        "set_timer": {
+          "duration": {
+            "duration_seconds": 720
+          }
+        }
+      },
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_timer-2",
+    "family": "dev_timer",
+    "split": "dev",
+    "prompt": "Start a timer for 12 minutes",
+    "context": [],
+    "gold": {
+      "tools": [
+        "set_timer"
+      ],
+      "args": {
+        "set_timer": {
+          "duration": {
+            "duration_seconds": 720
+          }
+        }
+      },
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dev_timer-3",
+    "family": "dev_timer",
+    "split": "dev",
+    "prompt": "Time twelve minutes for me",
+    "context": [],
+    "gold": {
+      "tools": [
+        "set_timer"
+      ],
+      "args": {
+        "set_timer": {
+          "duration": {
+            "duration_seconds": 720
+          }
+        }
+      },
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-1",
+    "family": "week_casual",
+    "split": "challenge",
+    "prompt": "what is up for this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Calendar is preferred product default; clarification is also reasonable without context."
+    }
+  },
+  {
+    "id": "week_casual-2",
+    "family": "week_casual",
+    "split": "challenge",
+    "prompt": "what's up this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Calendar is preferred product default; clarification is also reasonable without context."
+    }
+  },
+  {
+    "id": "week_casual-3",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "what have I got going on this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-4",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "what am I doing this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-5",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "what does my week look like",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-6",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "show me my week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-7",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "Anything on the agenda this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-8",
+    "family": "week_casual",
+    "split": "challenge",
+    "prompt": "Run through this week for me",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Calendar is preferred product default; clarification is also reasonable without context."
+    }
+  },
+  {
+    "id": "week_casual-9",
+    "family": "week_casual",
+    "split": "test",
+    "prompt": "What is coming up for me this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_casual-10",
+    "family": "week_casual",
+    "split": "challenge",
+    "prompt": "What's happening this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Calendar is preferred product default; clarification is also reasonable without context."
+    }
+  },
+  {
+    "id": "week_explicit-1",
+    "family": "week_explicit",
+    "split": "test",
+    "prompt": "Show my calendar for this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_explicit-2",
+    "family": "week_explicit",
+    "split": "test",
+    "prompt": "What's on my calender this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_explicit-3",
+    "family": "week_explicit",
+    "split": "test",
+    "prompt": "Can you give me this week's calendar overview?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_explicit-4",
+    "family": "week_explicit",
+    "split": "test",
+    "prompt": "List this week's meetings",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_explicit-5",
+    "family": "week_explicit",
+    "split": "test",
+    "prompt": "Look up my appointments for this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_context-1",
+    "family": "week_context",
+    "split": "test",
+    "prompt": "and this week?",
+    "context": [
+      {
+        "role": "user",
+        "content": "Show me my calendar this month"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_context-2",
+    "family": "week_context",
+    "split": "test",
+    "prompt": "Just this week please",
+    "context": [
+      {
+        "role": "user",
+        "content": "Show me my calendar this month"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_context-3",
+    "family": "week_context",
+    "split": "test",
+    "prompt": "What about the week instead?",
+    "context": [
+      {
+        "role": "user",
+        "content": "Show me my calendar this month"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "week_context-4",
+    "family": "week_context",
+    "split": "test",
+    "prompt": "Only show the current week",
+    "context": [
+      {
+        "role": "user",
+        "content": "Show me my calendar this month"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextweek_context-1",
+    "family": "nextweek_context",
+    "split": "test",
+    "prompt": "and next week?",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this week?"
+      },
+      {
+        "role": "assistant",
+        "content": "You have two meetings this week. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextweek_context-2",
+    "family": "nextweek_context",
+    "split": "test",
+    "prompt": "How about the following week?",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this week?"
+      },
+      {
+        "role": "assistant",
+        "content": "You have two meetings this week. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextweek_context-3",
+    "family": "nextweek_context",
+    "split": "test",
+    "prompt": "Next week instead, please",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this week?"
+      },
+      {
+        "role": "assistant",
+        "content": "You have two meetings this week. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "tomorrow-1",
+    "family": "tomorrow",
+    "split": "test",
+    "prompt": "What is up for tmrow?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "tomorrow-2",
+    "family": "tomorrow",
+    "split": "test",
+    "prompt": "What does tomorrow look like for me?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "tomorrow-3",
+    "family": "tomorrow",
+    "split": "test",
+    "prompt": "Do I have any meetings tomorrow?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "tomorrow-4",
+    "family": "tomorrow",
+    "split": "test",
+    "prompt": "Show tomorrow's calendar",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "tomorrow"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "month-1",
+    "family": "month",
+    "split": "test",
+    "prompt": "What is on my calender for this month?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "month-2",
+    "family": "month",
+    "split": "test",
+    "prompt": "Show me this month's agenda",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "month-3",
+    "family": "month",
+    "split": "test",
+    "prompt": "Calendar overview for October 2026",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "month-4",
+    "family": "month",
+    "split": "test",
+    "prompt": "What appointments do I have this month?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextmonth-1",
+    "family": "nextmonth",
+    "split": "test",
+    "prompt": "What's on my calendar next month?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextmonth-2",
+    "family": "nextmonth",
+    "split": "test",
+    "prompt": "What have I scheduled in November 2026?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "nextmonth-3",
+    "family": "nextmonth",
+    "split": "test",
+    "prompt": "Give me next month's calendar",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next month"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dated-1",
+    "family": "dated",
+    "split": "test",
+    "prompt": "What's on my calendar on October 9, 2026?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-09"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dated-2",
+    "family": "dated",
+    "split": "test",
+    "prompt": "Show my meetings for 2026-10-09",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-09"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dated-3",
+    "family": "dated",
+    "split": "test",
+    "prompt": "Check my calendar this Friday",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-09"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "weekend-1",
+    "family": "weekend",
+    "split": "test",
+    "prompt": "What's on my calendar this weekend?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-10 to 2026-10-11"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "weekend-2",
+    "family": "weekend",
+    "split": "test",
+    "prompt": "Show this weekend's appointments",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-10 to 2026-10-11"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "weekend-3",
+    "family": "weekend",
+    "split": "test",
+    "prompt": "Am I busy this weekend?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-10 to 2026-10-11"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "rolling_week-1",
+    "family": "rolling_week",
+    "split": "test",
+    "prompt": "Show my calendar for the next 7 days",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "$range": "next 7 days"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "rolling_week-2",
+    "family": "rolling_week",
+    "split": "test",
+    "prompt": "What is coming up over the next seven days?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "$range": "next 7 days"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "rolling_week-3",
+    "family": "rolling_week",
+    "split": "test",
+    "prompt": "My schedule over the next 7 days please",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "$range": "next 7 days"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_only-1",
+    "family": "calendar_only",
+    "split": "test",
+    "prompt": "Show this week's calendar, without reminders",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_only-2",
+    "family": "calendar_only",
+    "split": "test",
+    "prompt": "Just my appointments this week, no to-dos",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_only-3",
+    "family": "calendar_only",
+    "split": "test",
+    "prompt": "This week's calendar events only please",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_query-1",
+    "family": "calendar_query",
+    "split": "test",
+    "prompt": "Find dentist appointments in my calendar this month",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month",
+          "query": {
+            "contains": "dentist"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_query-2",
+    "family": "calendar_query",
+    "split": "test",
+    "prompt": "Any dentist visits on this month's calendar?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month",
+          "query": {
+            "contains": "dentist"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "calendar_query-3",
+    "family": "calendar_query",
+    "split": "test",
+    "prompt": "Show only my dentist events for October 2026",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this month",
+          "query": {
+            "contains": "dentist"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "availability-1",
+    "family": "availability",
+    "split": "test",
+    "prompt": "Find an hour free tomorrow",
+    "context": [],
+    "gold": {
+      "tools": [
+        "find_free_time"
+      ],
+      "args": {
+        "find_free_time": {
+          "period": "tomorrow",
+          "minutes": 60
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "availability-2",
+    "family": "availability",
+    "split": "test",
+    "prompt": "When can I fit a 60 minute meeting tomorrow?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "find_free_time"
+      ],
+      "args": {
+        "find_free_time": {
+          "period": "tomorrow",
+          "minutes": 60
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "availability-3",
+    "family": "availability",
+    "split": "test",
+    "prompt": "Show 1-hour openings on October 6, 2026",
+    "context": [],
+    "gold": {
+      "tools": [
+        "find_free_time"
+      ],
+      "args": {
+        "find_free_time": {
+          "period": "tomorrow",
+          "minutes": 60
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_records-1",
+    "family": "mail_records",
+    "split": "test",
+    "prompt": "Show the full text of my last 5 emails",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "count": 5
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_records-2",
+    "family": "mail_records",
+    "split": "test",
+    "prompt": "Read the five most recent emails",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "count": 5
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_records-3",
+    "family": "mail_records",
+    "split": "test",
+    "prompt": "List my latest five emails in full",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "count": 5
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_overview-1",
+    "family": "mail_overview",
+    "split": "test",
+    "prompt": "Give me an overview of email from last week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_overview-2",
+    "family": "mail_overview",
+    "split": "test",
+    "prompt": "Summarize last week's inbox",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_overview-3",
+    "family": "mail_overview",
+    "split": "test",
+    "prompt": "Catch me up on last week's emails",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_unread-1",
+    "family": "mail_unread",
+    "split": "test",
+    "prompt": "Summarize my unread email",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "unread": true
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_unread-2",
+    "family": "mail_unread",
+    "split": "test",
+    "prompt": "What haven't I read in my inbox?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "unread": true
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_unread-3",
+    "family": "mail_unread",
+    "split": "test",
+    "prompt": "Give me a digest of unread emails",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {
+        "summarize_emails": {
+          "unread": true
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_lookup-1",
+    "family": "mail_lookup",
+    "split": "test",
+    "prompt": "Find unread emails from Acme",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "Acme"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_lookup-2",
+    "family": "mail_lookup",
+    "split": "test",
+    "prompt": "Do I have any unread mail mentioning Acme?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "Acme"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_lookup-3",
+    "family": "mail_lookup",
+    "split": "test",
+    "prompt": "Show only unread Acme emails",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "Acme"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_specific-1",
+    "family": "mail_specific",
+    "split": "test",
+    "prompt": "Find emails about the kitchen remodel",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_specific-2",
+    "family": "mail_specific",
+    "split": "test",
+    "prompt": "Search my mail for the kitchen remodel",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_specific-3",
+    "family": "mail_specific",
+    "split": "test",
+    "prompt": "Show mail mentioning kitchen remodel",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_range-1",
+    "family": "mail_range",
+    "split": "test",
+    "prompt": "Show emails from the last 3 weeks in full",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "last 21 days"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_range-2",
+    "family": "mail_range",
+    "split": "test",
+    "prompt": "Read my emails over the last twenty-one days",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "last 21 days"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_range-3",
+    "family": "mail_range",
+    "split": "test",
+    "prompt": "Find mail from the last 21 days and show it in full",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "last 21 days"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_overview-1",
+    "family": "texts_overview",
+    "split": "test",
+    "prompt": "Summarize my messages",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_overview-2",
+    "family": "texts_overview",
+    "split": "test",
+    "prompt": "Catch me up on texts",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_overview-3",
+    "family": "texts_overview",
+    "split": "test",
+    "prompt": "Give me a message overview",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_overview-4",
+    "family": "texts_overview",
+    "split": "test",
+    "prompt": "What have I missed in my messages?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_context-1",
+    "family": "texts_context",
+    "split": "test",
+    "prompt": "and messages?",
+    "context": [
+      {
+        "role": "user",
+        "content": "Give me a quick email overview"
+      },
+      {
+        "role": "assistant",
+        "content": "Your inbox has two follow-ups. [Tools: summarize_emails]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_context-2",
+    "family": "texts_context",
+    "split": "test",
+    "prompt": "What about texts?",
+    "context": [
+      {
+        "role": "user",
+        "content": "Give me a quick email overview"
+      },
+      {
+        "role": "assistant",
+        "content": "Your inbox has two follow-ups. [Tools: summarize_emails]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_context-3",
+    "family": "texts_context",
+    "split": "test",
+    "prompt": "Same for my messages please",
+    "context": [
+      {
+        "role": "user",
+        "content": "Give me a quick email overview"
+      },
+      {
+        "role": "assistant",
+        "content": "Your inbox has two follow-ups. [Tools: summarize_emails]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_conversation-1",
+    "family": "texts_conversation",
+    "split": "test",
+    "prompt": "Summarize my chat with Morgan from last week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Morgan"
+          },
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_conversation-2",
+    "family": "texts_conversation",
+    "split": "test",
+    "prompt": "Catch me up on last week's messages with Morgan",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Morgan"
+          },
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_conversation-3",
+    "family": "texts_conversation",
+    "split": "test",
+    "prompt": "Give me a digest of the Morgan conversation for last week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Morgan"
+          },
+          "period": "last week"
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_records-1",
+    "family": "texts_records",
+    "split": "test",
+    "prompt": "Show my last 10 messages",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 10
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_records-2",
+    "family": "texts_records",
+    "split": "test",
+    "prompt": "List the ten most recent texts",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 10
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_records-3",
+    "family": "texts_records",
+    "split": "test",
+    "prompt": "Read my latest ten messages",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 10
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_lookup-1",
+    "family": "texts_lookup",
+    "split": "test",
+    "prompt": "Find messages about the flight booking",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "query": {
+            "contains": "flight booking"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_lookup-2",
+    "family": "texts_lookup",
+    "split": "test",
+    "prompt": "Search texts for flight booking",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "query": {
+            "contains": "flight booking"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "texts_lookup-3",
+    "family": "texts_lookup",
+    "split": "test",
+    "prompt": "Show texts mentioning flight booking",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "query": {
+            "contains": "flight booking"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dual_overview-1",
+    "family": "dual_overview",
+    "split": "test",
+    "prompt": "Summarize emails and messages from yesterday",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails",
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "yesterday"
+        },
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "email",
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dual_overview-2",
+    "family": "dual_overview",
+    "split": "test",
+    "prompt": "Catch me up on yesterday's mail and texts",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails",
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "yesterday"
+        },
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "email",
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "dual_overview-3",
+    "family": "dual_overview",
+    "split": "test",
+    "prompt": "Give a digest of both yesterday's email and iMessages",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails",
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "yesterday"
+        },
+        "summarize_messages": {
+          "period": "yesterday"
+        }
+      },
+      "domains": [
+        "email",
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_email-1",
+    "family": "exclude_email",
+    "split": "test",
+    "prompt": "Catch me up on messages only; don't check email",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [
+        "view_emails",
+        "summarize_emails"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_email-2",
+    "family": "exclude_email",
+    "split": "test",
+    "prompt": "Summarize texts, excluding my inbox",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [
+        "view_emails",
+        "summarize_emails"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_email-3",
+    "family": "exclude_email",
+    "split": "test",
+    "prompt": "Give me a messages overview without reading mail",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [
+        "view_emails",
+        "summarize_emails"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_messages-1",
+    "family": "exclude_messages",
+    "split": "test",
+    "prompt": "Summarize email only, leave my messages alone",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [
+        "view_messages",
+        "summarize_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_messages-2",
+    "family": "exclude_messages",
+    "split": "test",
+    "prompt": "Give me an inbox digest, not texts",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [
+        "view_messages",
+        "summarize_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "exclude_messages-3",
+    "family": "exclude_messages",
+    "split": "test",
+    "prompt": "Catch me up on email without reading iMessage",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [
+        "view_messages",
+        "summarize_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "notes_lookup-1",
+    "family": "notes_lookup",
+    "split": "test",
+    "prompt": "Find my note about the kitchen remodel",
+    "context": [],
+    "gold": {
+      "tools": [
+        "search_notes"
+      ],
+      "args": {
+        "search_notes": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "notes"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "notes_lookup-2",
+    "family": "notes_lookup",
+    "split": "test",
+    "prompt": "Search Notes for kitchen remodel",
+    "context": [],
+    "gold": {
+      "tools": [
+        "search_notes"
+      ],
+      "args": {
+        "search_notes": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "notes"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "notes_lookup-3",
+    "family": "notes_lookup",
+    "split": "test",
+    "prompt": "Look up the kitchen remodel note",
+    "context": [],
+    "gold": {
+      "tools": [
+        "search_notes"
+      ],
+      "args": {
+        "search_notes": {
+          "query": {
+            "contains": "kitchen remodel"
+          }
+        }
+      },
+      "domains": [
+        "notes"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_week-1",
+    "family": "public_week",
+    "split": "test",
+    "prompt": "What is happening in San Francisco this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "San Francisco"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_week-2",
+    "family": "public_week",
+    "split": "test",
+    "prompt": "Find public events in San Francisco this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "San Francisco"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_week-3",
+    "family": "public_week",
+    "split": "test",
+    "prompt": "What's going on in San Francisco this week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "San Francisco"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_week-4",
+    "family": "public_week",
+    "split": "test",
+    "prompt": "Look up this week's events in San Francisco",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "San Francisco"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_news-1",
+    "family": "public_news",
+    "split": "test",
+    "prompt": "Search the web for this week's AI news",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "AI"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_news-2",
+    "family": "public_news",
+    "split": "test",
+    "prompt": "Find current AI news for this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "AI"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "public_news-3",
+    "family": "public_news",
+    "split": "test",
+    "prompt": "Look up recent AI headlines",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "AI"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "local_no_web-1",
+    "family": "local_no_web",
+    "split": "test",
+    "prompt": "Show my calendar this week, don't search the web",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [
+        "web_search",
+        "web_fetch",
+        "http_request",
+        "run_shell"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "local_no_web-2",
+    "family": "local_no_web",
+    "split": "test",
+    "prompt": "What is up for this week? Only use my local calendar",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [
+        "web_search",
+        "web_fetch",
+        "http_request",
+        "run_shell"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "local_no_web-3",
+    "family": "local_no_web",
+    "split": "test",
+    "prompt": "Use my calendar only to tell me what's on this week",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week",
+          "calendar_only": true
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [
+        "web_search",
+        "web_fetch",
+        "http_request",
+        "run_shell"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "weather_range-1",
+    "family": "weather_range",
+    "split": "challenge",
+    "prompt": "Weather in Boston this weekend?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Boston"
+          },
+          "period": "this weekend"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Weekend is beyond three-day weather coverage; no strict routing success implies answerable forecast."
+    }
+  },
+  {
+    "id": "weather_range-2",
+    "family": "weather_range",
+    "split": "challenge",
+    "prompt": "Check the forecast for Boston this weekend",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Boston"
+          },
+          "period": "this weekend"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Weekend is beyond three-day weather coverage; no strict routing success implies answerable forecast."
+    }
+  },
+  {
+    "id": "weather_range-3",
+    "family": "weather_range",
+    "split": "challenge",
+    "prompt": "Will it rain in Boston this weekend?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_weather"
+      ],
+      "args": {
+        "get_weather": {
+          "location": {
+            "contains": "Boston"
+          },
+          "period": "this weekend"
+        }
+      },
+      "domains": [
+        "weather"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "Weekend is beyond three-day weather coverage; no strict routing success implies answerable forecast."
+    }
+  },
+  {
+    "id": "send_literal-1",
+    "family": "send_literal",
+    "split": "test",
+    "prompt": "Text +12025550123 that I will be 10 minutes late",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_message"
+      ],
+      "args": {
+        "send_message": {
+          "to": "+12025550123",
+          "text": {
+            "contains": "10 minutes late"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "send_literal-2",
+    "family": "send_literal",
+    "split": "test",
+    "prompt": "Send an iMessage to +12025550123 saying I will be 10 minutes late",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_message"
+      ],
+      "args": {
+        "send_message": {
+          "to": "+12025550123",
+          "text": {
+            "contains": "10 minutes late"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "send_literal-3",
+    "family": "send_literal",
+    "split": "test",
+    "prompt": "Message +12025550123: I will be 10 minutes late",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_message"
+      ],
+      "args": {
+        "send_message": {
+          "to": "+12025550123",
+          "text": {
+            "contains": "10 minutes late"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_literal-1",
+    "family": "mail_literal",
+    "split": "test",
+    "prompt": "Email pat@example.invalid with subject Lunch and body See you at noon",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_email"
+      ],
+      "args": {
+        "send_email": {
+          "to": "pat@example.invalid",
+          "subject": "Lunch",
+          "body": "See you at noon"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_literal-2",
+    "family": "mail_literal",
+    "split": "test",
+    "prompt": "Send pat@example.invalid an email titled Lunch saying See you at noon",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_email"
+      ],
+      "args": {
+        "send_email": {
+          "to": "pat@example.invalid",
+          "subject": "Lunch",
+          "body": "See you at noon"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "mail_literal-3",
+    "family": "mail_literal",
+    "split": "test",
+    "prompt": "Send an email to pat@example.invalid: subject Lunch; body See you at noon",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_email"
+      ],
+      "args": {
+        "send_email": {
+          "to": "pat@example.invalid",
+          "subject": "Lunch",
+          "body": "See you at noon"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "draft_only-1",
+    "family": "draft_only",
+    "split": "test",
+    "prompt": "Write a text saying I will be late; don't send it",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_email",
+        "draft_message",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline authored drafts need no tool or contact lookup."
+    }
+  },
+  {
+    "id": "draft_only-2",
+    "family": "draft_only",
+    "split": "test",
+    "prompt": "Help draft an email about rescheduling lunch; show it here only",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_email",
+        "draft_message",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline authored drafts need no tool or contact lookup."
+    }
+  },
+  {
+    "id": "draft_only-3",
+    "family": "draft_only",
+    "split": "test",
+    "prompt": "Suggest a reply saying thank you, but send nothing",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_email",
+        "draft_message",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline authored drafts need no tool or contact lookup."
+    }
+  },
+  {
+    "id": "quoted_instruction-1",
+    "family": "quoted_instruction",
+    "split": "test",
+    "prompt": "Explain the phrase \"send an email\"",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_email",
+        "send_message",
+        "cancel_event",
+        "delete_email",
+        "view_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "quoted_instruction-2",
+    "family": "quoted_instruction",
+    "split": "test",
+    "prompt": "What does \"cancel my calendar event\" mean?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_email",
+        "send_message",
+        "cancel_event",
+        "delete_email",
+        "view_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "quoted_instruction-3",
+    "family": "quoted_instruction",
+    "split": "test",
+    "prompt": "Translate \"delete all my messages\" into French",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_email",
+        "send_message",
+        "cancel_event",
+        "delete_email",
+        "view_messages"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "negated_effect-1",
+    "family": "negated_effect",
+    "split": "test",
+    "prompt": "Do not send any messages",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "cancel_event"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "negated_effect-2",
+    "family": "negated_effect",
+    "split": "test",
+    "prompt": "Don't cancel my meetings",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "cancel_event"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "negated_effect-3",
+    "family": "negated_effect",
+    "split": "test",
+    "prompt": "Never email anyone on my behalf",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "cancel_event"
+      ],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "create_event-1",
+    "family": "create_event",
+    "split": "test",
+    "prompt": "Schedule lunch on October 9, 2026 at noon for 30 minutes",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_calendar_event"
+      ],
+      "args": {
+        "add_calendar_event": {
+          "title": {
+            "contains": "lunch"
+          },
+          "when_iso": {
+            "iso": "2026-10-09T12:00"
+          },
+          "duration_min": 30
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "create_event-2",
+    "family": "create_event",
+    "split": "test",
+    "prompt": "Add a 30-minute Lunch event for this Friday at 12 PM",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_calendar_event"
+      ],
+      "args": {
+        "add_calendar_event": {
+          "title": {
+            "contains": "lunch"
+          },
+          "when_iso": {
+            "iso": "2026-10-09T12:00"
+          },
+          "duration_min": 30
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "create_event-3",
+    "family": "create_event",
+    "split": "test",
+    "prompt": "Put lunch on my calendar 2026-10-09 at 12:00 for half an hour",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_calendar_event"
+      ],
+      "args": {
+        "add_calendar_event": {
+          "title": {
+            "contains": "lunch"
+          },
+          "when_iso": {
+            "iso": "2026-10-09T12:00"
+          },
+          "duration_min": 30
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "reminder-1",
+    "family": "reminder",
+    "split": "test",
+    "prompt": "Remind me to call the dentist tomorrow at 4 PM",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_reminder"
+      ],
+      "args": {
+        "add_reminder": {
+          "title": {
+            "contains": "dentist"
+          },
+          "when_iso": {
+            "iso": "2026-10-06T16:00"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "reminder-2",
+    "family": "reminder",
+    "split": "test",
+    "prompt": "Set a reminder to call the dentist on October 6, 2026 at 16:00",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_reminder"
+      ],
+      "args": {
+        "add_reminder": {
+          "title": {
+            "contains": "dentist"
+          },
+          "when_iso": {
+            "iso": "2026-10-06T16:00"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "reminder-3",
+    "family": "reminder",
+    "split": "test",
+    "prompt": "Tomorrow at 4pm remind me to call the dentist",
+    "context": [],
+    "gold": {
+      "tools": [
+        "add_reminder"
+      ],
+      "args": {
+        "add_reminder": {
+          "title": {
+            "contains": "dentist"
+          },
+          "when_iso": {
+            "iso": "2026-10-06T16:00"
+          }
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "battery-1",
+    "family": "battery",
+    "split": "test",
+    "prompt": "How much battery is left?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_battery_status"
+      ],
+      "args": {},
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "battery-2",
+    "family": "battery",
+    "split": "test",
+    "prompt": "Check my Mac's battery level",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_battery_status"
+      ],
+      "args": {},
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "battery-3",
+    "family": "battery",
+    "split": "test",
+    "prompt": "What percentage is my battery at?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_battery_status"
+      ],
+      "args": {},
+      "domains": [
+        "device"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "files-1",
+    "family": "files",
+    "split": "test",
+    "prompt": "What's in my Downloads folder?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "list_dir"
+      ],
+      "args": {
+        "list_dir": {
+          "path": {
+            "endswith": "/Downloads"
+          }
+        }
+      },
+      "domains": [
+        "files"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "files-2",
+    "family": "files",
+    "split": "test",
+    "prompt": "List the files in ~/Downloads",
+    "context": [],
+    "gold": {
+      "tools": [
+        "list_dir"
+      ],
+      "args": {
+        "list_dir": {
+          "path": {
+            "endswith": "/Downloads"
+          }
+        }
+      },
+      "domains": [
+        "files"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "files-3",
+    "family": "files",
+    "split": "test",
+    "prompt": "Show the contents of Downloads",
+    "context": [],
+    "gold": {
+      "tools": [
+        "list_dir"
+      ],
+      "args": {
+        "list_dir": {
+          "path": {
+            "endswith": "/Downloads"
+          }
+        }
+      },
+      "domains": [
+        "files"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "smalltalk-1",
+    "family": "smalltalk",
+    "split": "test",
+    "prompt": "Good morning",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "smalltalk-2",
+    "family": "smalltalk",
+    "split": "test",
+    "prompt": "How are you doing?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "smalltalk-3",
+    "family": "smalltalk",
+    "split": "test",
+    "prompt": "Tell me a short joke",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "smalltalk-4",
+    "family": "smalltalk",
+    "split": "test",
+    "prompt": "Explain how calendars work",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "smalltalk-5",
+    "family": "smalltalk",
+    "split": "test",
+    "prompt": "What does unread mean?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "ambiguous-1",
+    "family": "ambiguous",
+    "split": "challenge",
+    "prompt": "What's new?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "unclear"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "get_recent_activity is a plausible supported route; this challenge is descriptive only."
+    }
+  },
+  {
+    "id": "ambiguous-2",
+    "family": "ambiguous",
+    "split": "challenge",
+    "prompt": "Any updates?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "unclear"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "No single strict gold; inspect clarification and unsafe guesses separately."
+    }
+  },
+  {
+    "id": "ambiguous-3",
+    "family": "ambiguous",
+    "split": "challenge",
+    "prompt": "Tell Alex about it",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "unclear"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "No single strict gold; inspect clarification and unsafe guesses separately."
+    }
+  },
+  {
+    "id": "ambiguous-4",
+    "family": "ambiguous",
+    "split": "challenge",
+    "prompt": "And next week?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "unclear"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "No single strict gold; inspect clarification and unsafe guesses separately."
+    }
+  },
+  {
+    "id": "ambiguous-5",
+    "family": "ambiguous",
+    "split": "challenge",
+    "prompt": "Anything important?",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "unclear"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": "No single strict gold; inspect clarification and unsafe guesses separately."
+    }
+  },
+  {
+    "id": "reported_week_context-1",
+    "family": "reported_week_context",
+    "split": "test",
+    "prompt": "what is up for this week",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this month?"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "reported_week_context-2",
+    "family": "reported_week_context",
+    "split": "test",
+    "prompt": "what's up this week",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this month?"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  },
+  {
+    "id": "reported_week_context-3",
+    "family": "reported_week_context",
+    "split": "test",
+    "prompt": "Run through this week for me",
+    "context": [
+      {
+        "role": "user",
+        "content": "What is on my calendar this month?"
+      },
+      {
+        "role": "assistant",
+        "content": "October has five appointments. [Tools: get_upcoming]"
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "this week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {},
+      "note": ""
+    }
+  }
+]
