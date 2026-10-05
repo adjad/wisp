@@ -10,6 +10,8 @@ class FakeClient:
  def status(self):return {'models':[{'id':intent_v2.MODEL,'loaded':True}]}
  def post(self,url,**kwargs):self.requests.append(kwargs['json']);return FakeResponse(next(self.values))
 class IntentV2Tests(unittest.TestCase):
+ def setUp(self):
+  guard=patch("intent_v2.deadline_check");guard.start();self.addCleanup(guard.stop)
  def test_rejects_array_unknown_fields_and_boolean_count(self):
   for x in [[],{'domain':'calendar','operation':'overview','send':True},{'domain':'calendar','operation':'overview','count':True}]:
    with self.assertRaises(ValueError):intent_v2.validate_value(x)

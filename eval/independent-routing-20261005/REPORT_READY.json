@@ -1,0 +1,40 @@
+{
+  "status": "ready_for_scheduled_delivery",
+  "report_delivered": false,
+  "due": "2026-10-05T09:00:00-07:00",
+  "report_path": "/Users/adijain/.codex/worktrees/routing-eval-20261005/MOE_Project/eval/independent-routing-20261005/REPORT.md",
+  "report_sha256": "a17d88f56ba352ddae813a5bfdc998e9d105a96d16533cf074d7d35e5ba75ad8",
+  "review_path": "/Users/adijain/.codex/worktrees/routing-eval-20261005/MOE_Project/eval/independent-routing-20261005/REPORT_REVIEW.json",
+  "primary_freeze": "94c3b362ba4b4d5f18469907397fc2f22027740d",
+  "followon_freeze": "3b44cfd207826b6744b392ad25ebb874767581a4",
+  "recommendation": "Small proven deterministic fast paths; Ling typed intent for flexible/contextual language; deterministic date/filter/authorization compilation; scoped tools; source-grounded grouped presentation. No blanket free-form Ling takeover; neither tested Laya checkpoint belongs in default routing yet. Jev unmeasured.",
+  "fresh_results": {
+    "cases": 36,
+    "current_rules_correct": 8,
+    "direct_ling_correct": 11,
+    "original_intent_correct": 19,
+    "revised_intent_correct": 28,
+    "revised_p50_seconds": 0.5343068749643862,
+    "revised_p95_seconds": 1.0073247079271823
+  },
+  "original_results": {
+    "cases": 138,
+    "rules_correct": 71,
+    "direct_ling_correct": 61,
+    "intent_correct": 89,
+    "coreml_laya_correct": 63,
+    "english_laya_correct": 56
+  },
+  "known_week_regression": "3/3 correct get_upcoming(period=this week) after freeze; synthetic context; not fresh test evidence",
+  "critical_remaining": "8/36 fresh failures:unread filters, entity/recipient fidelity, conversation operation, stale context filters, missing requested source. Not production-ready. Presentation requires separate deterministic template/merge work.",
+  "observations": {
+    "heldout_routing_trials": 2916,
+    "unique_heldout_prompts": 174,
+    "challenge_trials": 120,
+    "laya_source_order_checks": 1008,
+    "synthetic_answer_continuations": 165,
+    "known_example_regression_trials": 3
+  },
+  "delivery_instructions": "At9AM provide a self-contained concise result, not a progress promise. Link REPORT.md and optionally analysis artifacts. State actual local inference / synthetic tools, no native execution. Do not compare percentages across different corpora as if same set. Do not claim cold Ling latency or Jev performance. Then pause both automations and mark delivery. All measurements are done; no rerun needed.",
+  "created_at_unix": 1791193340.97025
+}

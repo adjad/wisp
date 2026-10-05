@@ -1,0 +1,2395 @@
+{
+  "all_stages_complete": true,
+  "scope": "Post-primary follow-on fresh corpus with pre-test candidate freeze, plus fixed English checkpoint replication on original corpus. Do not pool accuracy across different corpora or interpret sequential latency as randomized cross-checkpoint performance.",
+  "followon": {
+    "current_rules": {
+      "trials": 108,
+      "unique_cases": 36,
+      "strict_success": 24,
+      "strict_rate": 0.2222222222222222,
+      "cases_all_reps_pass": 8,
+      "cases_with_varying_success": 0,
+      "tool_exact": 60,
+      "source_exact": 84,
+      "forbidden_call_trials": 0,
+      "unrequested_effect_trials": 0,
+      "invalid_intent_trials": 0,
+      "repaired_trials": 0,
+      "errors": {},
+      "latency_seconds": {
+        "n": 108,
+        "p50": 0.44320870796218514,
+        "p95": 1.2853699999395758,
+        "min": 0.1670160419307649,
+        "max": 1.3347037909552455
+      },
+      "memory_free_percent": {
+        "n": 108,
+        "p50": 33,
+        "p95": 35,
+        "min": 23,
+        "max": 36
+      },
+      "family_accuracy": {
+        "followtest_context_correction": 0.6666666666666666,
+        "followtest_conversation_digest": 0,
+        "followtest_email_range_records": 0,
+        "followtest_exact_agenda_range": 0,
+        "followtest_explicit_send": 0.3333333333333333,
+        "followtest_message_digest": 0,
+        "followtest_personal_month": 0,
+        "followtest_personal_week": 0,
+        "followtest_public_personal": 0.3333333333333333,
+        "followtest_source_exclusion": 0.3333333333333333,
+        "followtest_tool_free": 0.6666666666666666,
+        "followtest_unread_sender_records": 0.3333333333333333
+      },
+      "strict_failure_cases": [
+        "followtest_personal_month-2",
+        "followtest_message_digest-1",
+        "followtest_email_range_records-3",
+        "followtest_conversation_digest-1",
+        "followtest_conversation_digest-3",
+        "followtest_message_digest-2",
+        "followtest_exact_agenda_range-1",
+        "followtest_source_exclusion-3",
+        "followtest_personal_month-3",
+        "followtest_public_personal-1",
+        "followtest_source_exclusion-1",
+        "followtest_unread_sender_records-2",
+        "followtest_explicit_send-1",
+        "followtest_personal_week-2",
+        "followtest_personal_week-1",
+        "followtest_email_range_records-1",
+        "followtest_conversation_digest-2",
+        "followtest_context_correction-3",
+        "followtest_personal_month-1",
+        "followtest_public_personal-3",
+        "followtest_personal_week-3",
+        "followtest_message_digest-3",
+        "followtest_unread_sender_records-3",
+        "followtest_exact_agenda_range-2",
+        "followtest_explicit_send-3",
+        "followtest_exact_agenda_range-3",
+        "followtest_email_range_records-2",
+        "followtest_tool_free-1"
+      ]
+    },
+    "ling_direct": {
+      "trials": 108,
+      "unique_cases": 36,
+      "strict_success": 33,
+      "strict_rate": 0.3055555555555556,
+      "cases_all_reps_pass": 11,
+      "cases_with_varying_success": 0,
+      "tool_exact": 90,
+      "source_exact": 102,
+      "forbidden_call_trials": 0,
+      "unrequested_effect_trials": 0,
+      "invalid_intent_trials": 0,
+      "repaired_trials": 0,
+      "errors": {},
+      "latency_seconds": {
+        "n": 108,
+        "p50": 0.37806616607122123,
+        "p95": 1.2046302920207381,
+        "min": 0.21228529186919332,
+        "max": 2.066525917034596
+      },
+      "memory_free_percent": {
+        "n": 108,
+        "p50": 33,
+        "p95": 35,
+        "min": 23,
+        "max": 35
+      },
+      "family_accuracy": {
+        "followtest_context_correction": 0.6666666666666666,
+        "followtest_conversation_digest": 0,
+        "followtest_email_range_records": 0,
+        "followtest_exact_agenda_range": 0,
+        "followtest_explicit_send": 0.6666666666666666,
+        "followtest_message_digest": 0,
+        "followtest_personal_month": 0,
+        "followtest_personal_week": 0,
+        "followtest_public_personal": 0.6666666666666666,
+        "followtest_source_exclusion": 0.3333333333333333,
+        "followtest_tool_free": 0.6666666666666666,
+        "followtest_unread_sender_records": 0.6666666666666666
+      },
+      "strict_failure_cases": [
+        "followtest_personal_month-1",
+        "followtest_message_digest-2",
+        "followtest_exact_agenda_range-3",
+        "followtest_personal_week-3",
+        "followtest_email_range_records-1",
+        "followtest_exact_agenda_range-1",
+        "followtest_source_exclusion-1",
+        "followtest_conversation_digest-1",
+        "followtest_personal_week-1",
+        "followtest_context_correction-1",
+        "followtest_tool_free-1",
+        "followtest_personal_month-2",
+        "followtest_unread_sender_records-2",
+        "followtest_personal_month-3",
+        "followtest_message_digest-3",
+        "followtest_public_personal-2",
+        "followtest_explicit_send-3",
+        "followtest_personal_week-2",
+        "followtest_message_digest-1",
+        "followtest_source_exclusion-3",
+        "followtest_exact_agenda_range-2",
+        "followtest_email_range_records-2",
+        "followtest_email_range_records-3",
+        "followtest_conversation_digest-2",
+        "followtest_conversation_digest-3"
+      ]
+    },
+    "ling_intent": {
+      "trials": 108,
+      "unique_cases": 36,
+      "strict_success": 57,
+      "strict_rate": 0.5277777777777778,
+      "cases_all_reps_pass": 19,
+      "cases_with_varying_success": 0,
+      "tool_exact": 81,
+      "source_exact": 93,
+      "forbidden_call_trials": 0,
+      "unrequested_effect_trials": 0,
+      "invalid_intent_trials": 0,
+      "repaired_trials": 0,
+      "errors": {},
+      "latency_seconds": {
+        "n": 108,
+        "p50": 0.6475865000393242,
+        "p95": 1.2602097091730684,
+        "min": 0.3104822081513703,
+        "max": 1.429893999826163
+      },
+      "memory_free_percent": {
+        "n": 108,
+        "p50": 33,
+        "p95": 35,
+        "min": 23,
+        "max": 37
+      },
+      "family_accuracy": {
+        "followtest_context_correction": 0.6666666666666666,
+        "followtest_conversation_digest": 0,
+        "followtest_email_range_records": 0,
+        "followtest_exact_agenda_range": 0.3333333333333333,
+        "followtest_explicit_send": 0.3333333333333333,
+        "followtest_message_digest": 0.3333333333333333,
+        "followtest_personal_month": 0.6666666666666666,
+        "followtest_personal_week": 1,
+        "followtest_public_personal": 1,
+        "followtest_source_exclusion": 0,
+        "followtest_tool_free": 1,
+        "followtest_unread_sender_records": 1
+      },
+      "strict_failure_cases": [
+        "followtest_explicit_send-3",
+        "followtest_email_range_records-2",
+        "followtest_email_range_records-3",
+        "followtest_personal_month-1",
+        "followtest_conversation_digest-2",
+        "followtest_context_correction-3",
+        "followtest_source_exclusion-1",
+        "followtest_exact_agenda_range-3",
+        "followtest_email_range_records-1",
+        "followtest_conversation_digest-3",
+        "followtest_message_digest-2",
+        "followtest_message_digest-1",
+        "followtest_exact_agenda_range-1",
+        "followtest_source_exclusion-2",
+        "followtest_source_exclusion-3",
+        "followtest_explicit_send-1",
+        "followtest_conversation_digest-1"
+      ]
+    },
+    "ling_intent_v2": {
+      "trials": 108,
+      "unique_cases": 36,
+      "strict_success": 84,
+      "strict_rate": 0.7777777777777778,
+      "cases_all_reps_pass": 28,
+      "cases_with_varying_success": 0,
+      "tool_exact": 102,
+      "source_exact": 105,
+      "forbidden_call_trials": 0,
+      "unrequested_effect_trials": 0,
+      "invalid_intent_trials": 0,
+      "repaired_trials": 3,
+      "errors": {},
+      "latency_seconds": {
+        "n": 108,
+        "p50": 0.5343068749643862,
+        "p95": 1.0073247079271823,
+        "min": 0.2250254589598626,
+        "max": 1.1420045827981085
+      },
+      "memory_free_percent": {
+        "n": 108,
+        "p50": 33,
+        "p95": 35,
+        "min": 24,
+        "max": 35
+      },
+      "family_accuracy": {
+        "followtest_context_correction": 1,
+        "followtest_conversation_digest": 0.3333333333333333,
+        "followtest_email_range_records": 1,
+        "followtest_exact_agenda_range": 1,
+        "followtest_explicit_send": 0.6666666666666666,
+        "followtest_message_digest": 1,
+        "followtest_personal_month": 1,
+        "followtest_personal_week": 1,
+        "followtest_public_personal": 0.6666666666666666,
+        "followtest_source_exclusion": 0.6666666666666666,
+        "followtest_tool_free": 1,
+        "followtest_unread_sender_records": 0
+      },
+      "strict_failure_cases": [
+        "followtest_unread_sender_records-2",
+        "followtest_unread_sender_records-1",
+        "followtest_source_exclusion-3",
+        "followtest_unread_sender_records-3",
+        "followtest_conversation_digest-1",
+        "followtest_explicit_send-3",
+        "followtest_conversation_digest-3",
+        "followtest_public_personal-2"
+      ]
+    }
+  },
+  "english_hybrid": {
+    "trials": 414,
+    "unique_cases": 138,
+    "strict_success": 168,
+    "strict_rate": 0.4057971014492754,
+    "cases_all_reps_pass": 56,
+    "cases_with_varying_success": 0,
+    "tool_exact": 309,
+    "source_exact": 318,
+    "forbidden_call_trials": 6,
+    "unrequested_effect_trials": 3,
+    "invalid_intent_trials": 0,
+    "repaired_trials": 0,
+    "errors": {},
+    "latency_seconds": {
+      "n": 414,
+      "p50": 0.4864058329258114,
+      "p95": 1.004082249943167,
+      "min": 0.12027483410201967,
+      "max": 3.92167937499471
+    },
+    "memory_free_percent": {
+      "n": 414,
+      "p50": 26,
+      "p95": 29,
+      "min": 22,
+      "max": 36
+    },
+    "family_accuracy": {
+      "availability": 0,
+      "battery": 1,
+      "calendar_only": 0,
+      "calendar_query": 0,
+      "create_event": 1,
+      "dated": 0,
+      "draft_only": 0.6666666666666666,
+      "dual_overview": 0.6666666666666666,
+      "exclude_email": 0.6666666666666666,
+      "exclude_messages": 0.6666666666666666,
+      "files": 1,
+      "local_no_web": 0,
+      "mail_literal": 1,
+      "mail_lookup": 0.6666666666666666,
+      "mail_overview": 0.6666666666666666,
+      "mail_range": 0,
+      "mail_records": 1,
+      "mail_specific": 0,
+      "mail_unread": 0,
+      "month": 0.5,
+      "negated_effect": 1,
+      "nextmonth": 0.3333333333333333,
+      "nextweek_context": 0.3333333333333333,
+      "notes_lookup": 1,
+      "public_news": 0,
+      "public_week": 0,
+      "quoted_instruction": 1,
+      "reminder": 0.3333333333333333,
+      "reported_week_context": 0,
+      "rolling_week": 1,
+      "send_literal": 0.6666666666666666,
+      "smalltalk": 1,
+      "texts_context": 0,
+      "texts_conversation": 0,
+      "texts_lookup": 0,
+      "texts_overview": 0,
+      "texts_records": 0.6666666666666666,
+      "tomorrow": 0,
+      "week_casual": 0,
+      "week_context": 0.5,
+      "week_explicit": 0.2,
+      "weekend": 0
+    },
+    "strict_failure_cases": [
+      "dated-2",
+      "texts_lookup-1",
+      "texts_overview-4",
+      "texts_conversation-3",
+      "mail_specific-3",
+      "texts_context-3",
+      "exclude_messages-2",
+      "public_news-3",
+      "local_no_web-1",
+      "texts_context-2",
+      "texts_records-2",
+      "week_explicit-5",
+      "week_casual-5",
+      "week_explicit-3",
+      "availability-3",
+      "nextweek_context-2",
+      "public_week-3",
+      "week_context-1",
+      "month-4",
+      "local_no_web-3",
+      "weekend-3",
+      "reported_week_context-1",
+      "week_context-2",
+      "month-2",
+      "send_literal-1",
+      "calendar_only-2",
+      "nextweek_context-1",
+      "texts_lookup-2",
+      "reminder-1",
+      "exclude_email-3",
+      "reminder-3",
+      "reported_week_context-3",
+      "texts_context-1",
+      "public_news-2",
+      "tomorrow-4",
+      "week_casual-7",
+      "week_explicit-2",
+      "tomorrow-2",
+      "mail_range-1",
+      "week_casual-4",
+      "mail_unread-1",
+      "dual_overview-2",
+      "local_no_web-2",
+      "calendar_only-3",
+      "mail_unread-2",
+      "public_week-1",
+      "texts_overview-1",
+      "calendar_query-3",
+      "week_casual-6",
+      "texts_lookup-3",
+      "tomorrow-1",
+      "weekend-2",
+      "week_casual-3",
+      "mail_overview-2",
+      "calendar_query-2",
+      "mail_specific-1",
+      "nextmonth-3",
+      "availability-1",
+      "public_week-2",
+      "draft_only-2",
+      "texts_overview-3",
+      "nextmonth-2",
+      "mail_range-2",
+      "mail_unread-3",
+      "calendar_only-1",
+      "public_news-1",
+      "week_explicit-1",
+      "dated-3",
+      "reported_week_context-2",
+      "calendar_query-1",
+      "mail_specific-2",
+      "availability-2",
+      "dated-1",
+      "mail_lookup-1",
+      "texts_conversation-2",
+      "texts_overview-2",
+      "week_casual-9",
+      "texts_conversation-1",
+      "tomorrow-3",
+      "weekend-1",
+      "mail_range-3",
+      "public_week-4"
+    ],
+    "fallback_trials": 153,
+    "worker_starts": [
+      {
+        "timestamp": 1791192238.9153779,
+        "ready": {
+          "ready": true,
+          "load_seconds": 0.10645445808768272,
+          "peak_rss_bytes": 965296128
+        }
+      }
+    ],
+    "checkpoint_files": {
+      "LICENSE": {
+        "bytes": 10173,
+        "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+      },
+      "NOTICE": {
+        "bytes": 698,
+        "sha256": "f23ae8ae701f5a43e186182e387aeef00b666daed18a946fc7c9ea827b00a8fa"
+      },
+      "README.md": {
+        "bytes": 3563,
+        "sha256": "d94a299fd5a40fd48a115030ebed0e96ffead905b4fca508d6f874b2763f97ec"
+      },
+      "encoder/config.json": {
+        "bytes": 2083,
+        "sha256": "bf3ab80598fdccf414855a2ce80f22859e4492d06ca8a62ddd1cfb63972f8979"
+      },
+      "mlx_config.json": {
+        "bytes": 290,
+        "sha256": "c022368f128dc9b7f6478a9163c96e0406f1da6a7c6bae660ea8515b016ed7ef"
+      },
+      "model.safetensors": {
+        "bytes": 842609225,
+        "sha256": "b9c07bf14be2fa5c78a9193a3e6d840ac80e89e62fc40f425834c3d8a6eaa3de"
+      },
+      "rl_agent_config.json": {
+        "bytes": 746,
+        "sha256": "d96dc2cb39d6375e030ff48c9957088f3c52668f45c30c56504f4e801ed3ee62"
+      },
+      "tokenizer/tokenizer.json": {
+        "bytes": 3583228,
+        "sha256": "6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30"
+      },
+      "tokenizer/tokenizer_config.json": {
+        "bytes": 308,
+        "sha256": "50044de60daaa73df97d262e15a40d4faf0160e7d742df64b377877a1320dd12"
+      },
+      "validation.json": {
+        "bytes": 18257,
+        "sha256": "adc9a4baac1430b58cd8fdaf7c7587b380d4a91834ba405bbdeeabd9d35b5771"
+      },
+      ".gitattributes": {
+        "bytes": 1519,
+        "sha256": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361"
+      },
+      "manifest.json": {
+        "bytes": 1746,
+        "sha256": "d8e254b51322fc0462a3cb384bde4d1b449baec9a716cbbc0d0aa99c0cb216b6"
+      }
+    },
+    "raw_laya_seconds": {
+      "n": 414,
+      "p50": 0.014261417090892792,
+      "p95": 0.048124416964128613,
+      "min": 0.01183362491428852,
+      "max": 0.6065317499451339
+    },
+    "worker_peak_rss_bytes_max": 975290368
+  },
+  "english_stability": {
+    "0": {
+      "n": 138,
+      "source_correct": 74,
+      "high_probability_cases": 88,
+      "high_probability_errors": 26,
+      "latency_seconds": {
+        "n": 138,
+        "p50": 0.012877082917839289,
+        "p95": 0.01604600017890334,
+        "min": 0.01150983409024775,
+        "max": 0.017187624936923385
+      },
+      "truncated_cases": 0,
+      "collapsed_option_cases": 0,
+      "worker_peak_rss_bytes_max": 976453632
+    },
+    "1": {
+      "n": 138,
+      "source_correct": 94,
+      "high_probability_cases": 103,
+      "high_probability_errors": 20,
+      "latency_seconds": {
+        "n": 138,
+        "p50": 0.012872791849076748,
+        "p95": 0.016297291964292526,
+        "min": 0.011301958002150059,
+        "max": 0.031957332976162434
+      },
+      "truncated_cases": 0,
+      "collapsed_option_cases": 0,
+      "worker_peak_rss_bytes_max": 976453632
+    },
+    "2": {
+      "n": 138,
+      "source_correct": 83,
+      "high_probability_cases": 95,
+      "high_probability_errors": 22,
+      "latency_seconds": {
+        "n": 138,
+        "p50": 0.012819499941542745,
+        "p95": 0.016130750067532063,
+        "min": 0.011221916880458593,
+        "max": 0.017227916978299618
+      },
+      "truncated_cases": 0,
+      "collapsed_option_cases": 0,
+      "worker_peak_rss_bytes_max": 976453632
+    },
+    "option_order_disagreements": 49,
+    "worker_starts": [
+      {
+        "timestamp": 1791192464.121972,
+        "ready": {
+          "ready": true,
+          "load_seconds": 0.06892137485556304,
+          "peak_rss_bytes": 964526080
+        }
+      }
+    ]
+  },
+  "challenges": {
+    "trials": 120,
+    "cases": 12,
+    "strict_aggregate_reported": false,
+    "first_rep_proposals": [
+      {
+        "id": "weather_range-3",
+        "arm": "ling_plan",
+        "prompt": "Will it rain in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-2",
+        "arm": "current_rules",
+        "prompt": "Check the forecast for Boston this weekend",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05 to 2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-1",
+        "arm": "ling_direct",
+        "prompt": "Weather in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "this weekend"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-10",
+        "arm": "ling_intent",
+        "prompt": "What's happening this week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "period": "this week",
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-2",
+        "arm": "ling_intent",
+        "prompt": "Any updates?",
+        "calls": [],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-1",
+        "arm": "laya_hybrid",
+        "prompt": "Weather in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-10",
+        "arm": "ling_direct",
+        "prompt": "What's happening this week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-3",
+        "arm": "current_rules",
+        "prompt": "Will it rain in Boston this weekend?",
+        "calls": [
+          {
+            "name": "web_search",
+            "arguments": {
+              "query": "Will it rain in Boston this weekend?"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-3",
+        "arm": "laya_hybrid",
+        "prompt": "Tell Alex about it",
+        "calls": [],
+        "error": null,
+        "answer_text": "I don't have any specific information to share with Alex yet. Could you tell me what \"it\" refers to? For example, is there a conversation, a news item, a plan, or something else you'd like me to tell Alex about?"
+      },
+      {
+        "id": "week_casual-10",
+        "arm": "current_rules",
+        "prompt": "What's happening this week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-8",
+        "arm": "ling_intent",
+        "prompt": "Run through this week for me",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "period": "this week",
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-5",
+        "arm": "laya_hybrid",
+        "prompt": "Anything important?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          },
+          {
+            "name": "search_reminders",
+            "arguments": {
+              "scope": "all",
+              "query": "important"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-1",
+        "arm": "ling_intent",
+        "prompt": "What's new?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          },
+          {
+            "name": "search_notes",
+            "arguments": {
+              "count": 10
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-2",
+        "arm": "laya_hybrid",
+        "prompt": "what's up this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-2",
+        "arm": "ling_intent",
+        "prompt": "Check the forecast for Boston this weekend",
+        "calls": [
+          {
+            "name": "web_search",
+            "arguments": {
+              "query": "Boston weather forecast weekend October 2026",
+              "limit": 5
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-2",
+        "arm": "ling_direct",
+        "prompt": "Check the forecast for Boston this weekend",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "this weekend"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-2",
+        "arm": "ling_plan",
+        "prompt": "what's up this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-3",
+        "arm": "current_rules",
+        "prompt": "Tell Alex about it",
+        "calls": [
+          {
+            "name": "view_messages",
+            "arguments": {
+              "query": "Alex"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-2",
+        "arm": "current_rules",
+        "prompt": "what's up this week",
+        "calls": [
+          {
+            "name": "web_search",
+            "arguments": {
+              "query": "what's up this week"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-1",
+        "arm": "ling_intent",
+        "prompt": "Weather in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-4",
+        "arm": "current_rules",
+        "prompt": "And next week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-8",
+        "arm": "current_rules",
+        "prompt": "Run through this week for me",
+        "calls": [
+          {
+            "name": "daily_brief",
+            "arguments": {
+              "days": 7,
+              "include_activity": true
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-2",
+        "arm": "laya_hybrid",
+        "prompt": "Any updates?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-1",
+        "arm": "current_rules",
+        "prompt": "what is up for this week",
+        "calls": [
+          {
+            "name": "web_search",
+            "arguments": {
+              "query": "what is up for this week"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-5",
+        "arm": "ling_intent",
+        "prompt": "Anything important?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-3",
+        "arm": "laya_hybrid",
+        "prompt": "Will it rain in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-4",
+        "arm": "ling_intent",
+        "prompt": "And next week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "period": "next week",
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-2",
+        "arm": "ling_plan",
+        "prompt": "Any updates?",
+        "calls": [],
+        "error": null,
+        "answer_text": "I don't have access to any specific updates or information about your situation. Could you clarify what kind of updates you're looking for? For example:\n\n- Are you asking about a specific event, appointment, or deadline?\n- Do you want updates on a project, task, or schedule?\n- Are you referring to news or information on a particular topic?\n\nLet me know what you need, and I'll do my best to help!"
+      },
+      {
+        "id": "ambiguous-5",
+        "arm": "ling_plan",
+        "prompt": "Anything important?",
+        "calls": [],
+        "error": null,
+        "answer_text": "I don't have any specific information to share right now. Is there something particular you'd like to know or discuss?"
+      },
+      {
+        "id": "week_casual-1",
+        "arm": "laya_hybrid",
+        "prompt": "what is up for this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-2",
+        "arm": "current_rules",
+        "prompt": "Any updates?",
+        "calls": [
+          {
+            "name": "get_recent_activity",
+            "arguments": {
+              "hours": 24,
+              "limit": 20
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-1",
+        "arm": "ling_intent",
+        "prompt": "what is up for this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "period": "this week",
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-5",
+        "arm": "current_rules",
+        "prompt": "Anything important?",
+        "calls": [
+          {
+            "name": "get_recent_activity",
+            "arguments": {
+              "limit": 20
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-2",
+        "arm": "ling_intent",
+        "prompt": "what's up this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "period": "this week",
+              "calendar_only": false
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-3",
+        "arm": "ling_direct",
+        "prompt": "Will it rain in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "this weekend"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-2",
+        "arm": "ling_direct",
+        "prompt": "Any updates?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-4",
+        "arm": "laya_hybrid",
+        "prompt": "And next week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-10",
+        "arm": "ling_plan",
+        "prompt": "What's happening this week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-1",
+        "arm": "ling_plan",
+        "prompt": "Weather in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-1",
+        "arm": "laya_hybrid",
+        "prompt": "What's new?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          },
+          {
+            "name": "search_notes",
+            "arguments": {
+              "count": 10
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-3",
+        "arm": "ling_intent",
+        "prompt": "Will it rain in Boston this weekend?",
+        "calls": [
+          {
+            "name": "web_search",
+            "arguments": {
+              "query": "Boston weather forecast weekend rain",
+              "limit": 5
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-1",
+        "arm": "current_rules",
+        "prompt": "Weather in Boston this weekend?",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-2",
+        "arm": "ling_plan",
+        "prompt": "Check the forecast for Boston this weekend",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-2",
+        "arm": "ling_direct",
+        "prompt": "what's up this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-3",
+        "arm": "ling_plan",
+        "prompt": "Tell Alex about it",
+        "calls": [],
+        "error": null,
+        "answer_text": "I don't have any specific information to share with Alex yet. Could you tell me what \"it\" refers to? For example, is there a conversation, a news item, a plan, or something else you'd like me to tell Alex about?"
+      },
+      {
+        "id": "ambiguous-3",
+        "arm": "ling_direct",
+        "prompt": "Tell Alex about it",
+        "calls": [],
+        "error": null,
+        "answer_text": "I'm not sure what \"it\" refers to \u2014 could you clarify what you'd like me to tell Alex about? For example, is there a specific event, reminder, email, or topic you'd like me to share?"
+      },
+      {
+        "id": "week_casual-1",
+        "arm": "ling_direct",
+        "prompt": "what is up for this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "weather_range-2",
+        "arm": "laya_hybrid",
+        "prompt": "Check the forecast for Boston this weekend",
+        "calls": [
+          {
+            "name": "get_weather",
+            "arguments": {
+              "location": "Boston,MA",
+              "period": "2026-10-05/2026-10-07"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-3",
+        "arm": "ling_intent",
+        "prompt": "Tell Alex about it",
+        "calls": [],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-4",
+        "arm": "ling_plan",
+        "prompt": "And next week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-5",
+        "arm": "ling_direct",
+        "prompt": "Anything important?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          },
+          {
+            "name": "search_reminders",
+            "arguments": {
+              "scope": "all",
+              "query": "important"
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-1",
+        "arm": "ling_direct",
+        "prompt": "What's new?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          },
+          {
+            "name": "search_notes",
+            "arguments": {
+              "count": 10
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-8",
+        "arm": "laya_hybrid",
+        "prompt": "Run through this week for me",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-8",
+        "arm": "ling_direct",
+        "prompt": "Run through this week for me",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-1",
+        "arm": "ling_plan",
+        "prompt": "what is up for this week",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-8",
+        "arm": "ling_plan",
+        "prompt": "Run through this week for me",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "week_casual-10",
+        "arm": "laya_hybrid",
+        "prompt": "What's happening this week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-4",
+        "arm": "ling_direct",
+        "prompt": "And next week?",
+        "calls": [
+          {
+            "name": "get_upcoming",
+            "arguments": {
+              "days": 7
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      },
+      {
+        "id": "ambiguous-1",
+        "arm": "ling_plan",
+        "prompt": "What's new?",
+        "calls": [],
+        "error": null,
+        "answer_text": "I don't have access to real-time information or the latest news, so I can't tell you what's new right now. If you have a specific topic in mind\u2014like a particular event, product, or piece of news\u2014I can try to help you find information about it. What would you like to know?"
+      },
+      {
+        "id": "ambiguous-1",
+        "arm": "current_rules",
+        "prompt": "What's new?",
+        "calls": [
+          {
+            "name": "get_recent_activity",
+            "arguments": {
+              "hours": 24,
+              "limit": 20
+            }
+          }
+        ],
+        "error": null,
+        "answer_text": null
+      }
+    ]
+  },
+  "input_sha256": {
+    "followon_test.jsonl": "5eb4eb5113edf21f7481be9f469fed37a1ac1adc57faf994361da54cea2c627c",
+    "followon_test.jsonl.manifest.json": "166ef3e8ad57b0a40e6856e0f06caebc2efba498507acd267f954587a10d825c",
+    "english_heldout.jsonl": "1f85f2cca3c89142587977625da13177db3fd9a0043943d575c3e6a9b1c42fce",
+    "english_heldout.jsonl.manifest.json": "e1df6f31b4faf32594cb70978334cc29e708896e1452de0328012f2e3e5af413",
+    "english_stability.jsonl": "4e2dc6f5cdae4ee55daf84d54328afb1c9ed52a99f0daf8262a9216de2b9d50b",
+    "english_stability.jsonl.manifest.json": "460d57013522342c040c4ef4faae1429d88974db808366dfffd956fe6aa9aabd",
+    "challenges.jsonl": "3cf799afd55af0865bd8b7c34ab8002ea068e018751c3ff0bbc997c83c51adda"
+  },
+  "followon_family_differences": {
+    "ling_direct": {
+      "family_balanced_mean_vs_rules": 0.08333333333333333,
+      "descriptive_bootstrap_95": [
+        0.0,
+        0.16666666666666666
+      ],
+      "families": 12
+    },
+    "ling_intent": {
+      "family_balanced_mean_vs_rules": 0.3055555555555556,
+      "descriptive_bootstrap_95": [
+        0.08333333333333334,
+        0.5277777777777778
+      ],
+      "families": 12
+    },
+    "ling_intent_v2": {
+      "family_balanced_mean_vs_rules": 0.5555555555555556,
+      "descriptive_bootstrap_95": [
+        0.3333333333333333,
+        0.7777777777777778
+      ],
+      "families": 12
+    }
+  },
+  "original_context_strata": {
+    "False": {
+      "current_rules": {
+        "trials": 375,
+        "unique_cases": 125,
+        "strict_success": 207,
+        "strict_rate": 0.552,
+        "cases_all_reps_pass": 69,
+        "cases_with_varying_success": 0,
+        "tool_exact": 270,
+        "source_exact": 291,
+        "forbidden_call_trials": 3,
+        "unrequested_effect_trials": 3,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 375,
+          "p50": 0.36867366707883775,
+          "p95": 1.2058785420376807,
+          "min": 0.0006034579128026962,
+          "max": 4.186269750120118
+        },
+        "memory_free_percent": {
+          "n": 375,
+          "p50": 31,
+          "p95": 34,
+          "min": 23,
+          "max": 36
+        },
+        "family_accuracy": {
+          "availability": 0,
+          "battery": 1,
+          "calendar_only": 0,
+          "calendar_query": 0,
+          "create_event": 1,
+          "dated": 0.3333333333333333,
+          "draft_only": 0.3333333333333333,
+          "dual_overview": 0.6666666666666666,
+          "exclude_email": 0.6666666666666666,
+          "exclude_messages": 1,
+          "files": 1,
+          "local_no_web": 0,
+          "mail_literal": 1,
+          "mail_lookup": 0.3333333333333333,
+          "mail_overview": 1,
+          "mail_range": 0.6666666666666666,
+          "mail_records": 1,
+          "mail_specific": 1,
+          "mail_unread": 0,
+          "month": 0.5,
+          "negated_effect": 1,
+          "nextmonth": 0.3333333333333333,
+          "notes_lookup": 1,
+          "public_news": 0.6666666666666666,
+          "public_week": 0.5,
+          "quoted_instruction": 0.3333333333333333,
+          "reminder": 0.6666666666666666,
+          "rolling_week": 1,
+          "send_literal": 0.6666666666666666,
+          "smalltalk": 0.8,
+          "texts_conversation": 0,
+          "texts_lookup": 1,
+          "texts_overview": 0.25,
+          "texts_records": 1,
+          "tomorrow": 0.5,
+          "week_casual": 0,
+          "week_explicit": 0.4,
+          "weekend": 0
+        },
+        "strict_failure_cases": [
+          "tomorrow-2",
+          "week_explicit-5",
+          "mail_range-2",
+          "calendar_only-2",
+          "week_casual-6",
+          "week_casual-7",
+          "mail_unread-3",
+          "calendar_query-1",
+          "send_literal-3",
+          "texts_conversation-3",
+          "week_casual-4",
+          "dated-3",
+          "nextmonth-3",
+          "tomorrow-3",
+          "public_news-1",
+          "public_week-4",
+          "dual_overview-3",
+          "draft_only-3",
+          "availability-3",
+          "local_no_web-3",
+          "calendar_query-3",
+          "texts_overview-4",
+          "smalltalk-5",
+          "quoted_instruction-2",
+          "local_no_web-2",
+          "mail_unread-2",
+          "availability-1",
+          "local_no_web-1",
+          "texts_overview-3",
+          "calendar_only-1",
+          "week_casual-3",
+          "mail_lookup-1",
+          "calendar_only-3",
+          "availability-2",
+          "texts_conversation-2",
+          "weekend-2",
+          "draft_only-2",
+          "mail_lookup-3",
+          "week_casual-5",
+          "month-2",
+          "weekend-3",
+          "calendar_query-2",
+          "week_explicit-4",
+          "exclude_email-1",
+          "public_week-2",
+          "week_casual-9",
+          "texts_overview-2",
+          "mail_unread-1",
+          "texts_conversation-1",
+          "quoted_instruction-1",
+          "weekend-1",
+          "reminder-2",
+          "dated-2",
+          "week_explicit-3",
+          "month-4",
+          "nextmonth-2"
+        ]
+      },
+      "laya_hybrid": {
+        "trials": 375,
+        "unique_cases": 125,
+        "strict_success": 180,
+        "strict_rate": 0.48,
+        "cases_all_reps_pass": 60,
+        "cases_with_varying_success": 0,
+        "tool_exact": 309,
+        "source_exact": 315,
+        "forbidden_call_trials": 9,
+        "unrequested_effect_trials": 6,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 375,
+          "p50": 0.4904870002064854,
+          "p95": 1.0366091670002788,
+          "min": 0.19802045915275812,
+          "max": 4.629762332886457
+        },
+        "memory_free_percent": {
+          "n": 375,
+          "p50": 31,
+          "p95": 33,
+          "min": 21,
+          "max": 36
+        },
+        "family_accuracy": {
+          "availability": 0.3333333333333333,
+          "battery": 1,
+          "calendar_only": 0,
+          "calendar_query": 0,
+          "create_event": 1,
+          "dated": 0,
+          "draft_only": 0.3333333333333333,
+          "dual_overview": 0.6666666666666666,
+          "exclude_email": 0.6666666666666666,
+          "exclude_messages": 1,
+          "files": 1,
+          "local_no_web": 0,
+          "mail_literal": 1,
+          "mail_lookup": 0.6666666666666666,
+          "mail_overview": 1,
+          "mail_range": 0,
+          "mail_records": 0.6666666666666666,
+          "mail_specific": 0.6666666666666666,
+          "mail_unread": 0,
+          "month": 0.5,
+          "negated_effect": 0.6666666666666666,
+          "nextmonth": 0.3333333333333333,
+          "notes_lookup": 1,
+          "public_news": 1,
+          "public_week": 0,
+          "quoted_instruction": 1,
+          "reminder": 1,
+          "rolling_week": 1,
+          "send_literal": 0.3333333333333333,
+          "smalltalk": 1,
+          "texts_conversation": 0,
+          "texts_lookup": 0.3333333333333333,
+          "texts_overview": 0,
+          "texts_records": 0.6666666666666666,
+          "tomorrow": 0.25,
+          "week_casual": 0,
+          "week_explicit": 0,
+          "weekend": 0
+        },
+        "strict_failure_cases": [
+          "send_literal-1",
+          "texts_records-2",
+          "month-2",
+          "week_explicit-4",
+          "local_no_web-3",
+          "week_explicit-1",
+          "week_explicit-3",
+          "calendar_query-3",
+          "calendar_only-3",
+          "mail_unread-1",
+          "draft_only-2",
+          "texts_overview-3",
+          "public_week-3",
+          "week_casual-4",
+          "mail_range-3",
+          "dual_overview-1",
+          "nextmonth-2",
+          "dated-3",
+          "week_casual-9",
+          "tomorrow-3",
+          "mail_unread-2",
+          "weekend-2",
+          "texts_conversation-3",
+          "tomorrow-2",
+          "mail_range-1",
+          "week_explicit-5",
+          "mail_unread-3",
+          "texts_overview-1",
+          "send_literal-3",
+          "mail_range-2",
+          "weekend-3",
+          "week_casual-6",
+          "texts_lookup-2",
+          "calendar_query-1",
+          "public_week-1",
+          "week_explicit-2",
+          "month-4",
+          "local_no_web-1",
+          "weekend-1",
+          "mail_records-3",
+          "public_week-4",
+          "texts_lookup-1",
+          "texts_overview-4",
+          "negated_effect-2",
+          "nextmonth-3",
+          "dated-1",
+          "exclude_email-3",
+          "local_no_web-2",
+          "week_casual-7",
+          "mail_lookup-1",
+          "availability-1",
+          "draft_only-3",
+          "week_casual-5",
+          "texts_overview-2",
+          "tomorrow-1",
+          "dated-2",
+          "texts_conversation-2",
+          "calendar_only-2",
+          "public_week-2",
+          "calendar_only-1",
+          "mail_specific-1",
+          "calendar_query-2",
+          "texts_conversation-1",
+          "availability-3",
+          "week_casual-3"
+        ]
+      },
+      "ling_direct": {
+        "trials": 375,
+        "unique_cases": 125,
+        "strict_success": 177,
+        "strict_rate": 0.472,
+        "cases_all_reps_pass": 59,
+        "cases_with_varying_success": 0,
+        "tool_exact": 318,
+        "source_exact": 327,
+        "forbidden_call_trials": 9,
+        "unrequested_effect_trials": 6,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 375,
+          "p50": 0.3664428750053048,
+          "p95": 0.7232030408922583,
+          "min": 0.20710862497799098,
+          "max": 3.6306944999378175
+        },
+        "memory_free_percent": {
+          "n": 375,
+          "p50": 30,
+          "p95": 33,
+          "min": 21,
+          "max": 36
+        },
+        "family_accuracy": {
+          "availability": 0.3333333333333333,
+          "battery": 1,
+          "calendar_only": 0,
+          "calendar_query": 0,
+          "create_event": 0.6666666666666666,
+          "dated": 0,
+          "draft_only": 0.3333333333333333,
+          "dual_overview": 1,
+          "exclude_email": 0.6666666666666666,
+          "exclude_messages": 1,
+          "files": 1,
+          "local_no_web": 0,
+          "mail_literal": 1,
+          "mail_lookup": 0.6666666666666666,
+          "mail_overview": 1,
+          "mail_range": 0,
+          "mail_records": 1,
+          "mail_specific": 0.3333333333333333,
+          "mail_unread": 0,
+          "month": 0.25,
+          "negated_effect": 0.6666666666666666,
+          "nextmonth": 0,
+          "notes_lookup": 1,
+          "public_news": 1,
+          "public_week": 0,
+          "quoted_instruction": 1,
+          "reminder": 1,
+          "rolling_week": 1,
+          "send_literal": 0.6666666666666666,
+          "smalltalk": 1,
+          "texts_conversation": 0,
+          "texts_lookup": 0.3333333333333333,
+          "texts_overview": 0,
+          "texts_records": 1,
+          "tomorrow": 0,
+          "week_casual": 0,
+          "week_explicit": 0,
+          "weekend": 0
+        },
+        "strict_failure_cases": [
+          "texts_overview-1",
+          "texts_overview-4",
+          "week_casual-5",
+          "week_explicit-1",
+          "calendar_query-2",
+          "tomorrow-2",
+          "week_casual-9",
+          "send_literal-1",
+          "public_week-3",
+          "calendar_query-1",
+          "texts_lookup-2",
+          "texts_overview-3",
+          "week_casual-3",
+          "availability-1",
+          "week_casual-4",
+          "local_no_web-2",
+          "week_casual-7",
+          "texts_conversation-3",
+          "calendar_only-2",
+          "mail_range-2",
+          "month-4",
+          "texts_lookup-1",
+          "draft_only-2",
+          "tomorrow-4",
+          "week_explicit-3",
+          "weekend-1",
+          "local_no_web-1",
+          "draft_only-3",
+          "public_week-2",
+          "texts_conversation-2",
+          "calendar_only-1",
+          "mail_unread-3",
+          "tomorrow-3",
+          "calendar_query-3",
+          "weekend-3",
+          "week_explicit-2",
+          "week_explicit-4",
+          "week_explicit-5",
+          "mail_unread-1",
+          "mail_unread-2",
+          "texts_overview-2",
+          "week_casual-6",
+          "mail_range-3",
+          "mail_specific-1",
+          "month-1",
+          "negated_effect-2",
+          "dated-2",
+          "mail_range-1",
+          "nextmonth-3",
+          "availability-3",
+          "create_event-2",
+          "public_week-4",
+          "calendar_only-3",
+          "tomorrow-1",
+          "exclude_email-3",
+          "month-2",
+          "mail_specific-2",
+          "dated-3",
+          "local_no_web-3",
+          "nextmonth-2",
+          "nextmonth-1",
+          "texts_conversation-1",
+          "weekend-2",
+          "public_week-1",
+          "dated-1",
+          "mail_lookup-2"
+        ]
+      },
+      "ling_intent": {
+        "trials": 375,
+        "unique_cases": 125,
+        "strict_success": 261,
+        "strict_rate": 0.696,
+        "cases_all_reps_pass": 87,
+        "cases_with_varying_success": 0,
+        "tool_exact": 306,
+        "source_exact": 342,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 375,
+          "p50": 0.7472497499547899,
+          "p95": 1.623896666103974,
+          "min": 0.3548132081050426,
+          "max": 2.70706137502566
+        },
+        "memory_free_percent": {
+          "n": 375,
+          "p50": 31,
+          "p95": 33,
+          "min": 23,
+          "max": 36
+        },
+        "family_accuracy": {
+          "availability": 0.3333333333333333,
+          "battery": 1,
+          "calendar_only": 0.3333333333333333,
+          "calendar_query": 0.3333333333333333,
+          "create_event": 1,
+          "dated": 0.6666666666666666,
+          "draft_only": 1,
+          "dual_overview": 0,
+          "exclude_email": 0.3333333333333333,
+          "exclude_messages": 0.6666666666666666,
+          "files": 1,
+          "local_no_web": 1,
+          "mail_literal": 1,
+          "mail_lookup": 1,
+          "mail_overview": 1,
+          "mail_range": 0.3333333333333333,
+          "mail_records": 1,
+          "mail_specific": 1,
+          "mail_unread": 0.3333333333333333,
+          "month": 0.5,
+          "negated_effect": 0.6666666666666666,
+          "nextmonth": 0.6666666666666666,
+          "notes_lookup": 1,
+          "public_news": 1,
+          "public_week": 0.5,
+          "quoted_instruction": 1,
+          "reminder": 1,
+          "rolling_week": 1,
+          "send_literal": 0.3333333333333333,
+          "smalltalk": 0.8,
+          "texts_conversation": 0.3333333333333333,
+          "texts_lookup": 0.6666666666666666,
+          "texts_overview": 0,
+          "texts_records": 1,
+          "tomorrow": 0.75,
+          "week_casual": 1,
+          "week_explicit": 0.8,
+          "weekend": 0
+        },
+        "strict_failure_cases": [
+          "negated_effect-2",
+          "mail_range-2",
+          "texts_conversation-1",
+          "texts_overview-2",
+          "send_literal-3",
+          "weekend-2",
+          "month-4",
+          "calendar_only-3",
+          "exclude_email-1",
+          "dated-3",
+          "weekend-3",
+          "nextmonth-2",
+          "texts_conversation-2",
+          "exclude_email-2",
+          "public_week-1",
+          "smalltalk-4",
+          "dual_overview-2",
+          "exclude_messages-3",
+          "month-2",
+          "week_explicit-5",
+          "availability-3",
+          "mail_range-3",
+          "mail_unread-2",
+          "weekend-1",
+          "calendar_query-1",
+          "public_week-4",
+          "send_literal-1",
+          "texts_overview-3",
+          "texts_lookup-2",
+          "availability-1",
+          "dual_overview-3",
+          "calendar_only-1",
+          "tomorrow-1",
+          "mail_unread-1",
+          "texts_overview-4",
+          "texts_overview-1",
+          "calendar_query-2",
+          "dual_overview-1"
+        ]
+      },
+      "ling_plan": {
+        "trials": 375,
+        "unique_cases": 125,
+        "strict_success": 153,
+        "strict_rate": 0.408,
+        "cases_all_reps_pass": 51,
+        "cases_with_varying_success": 0,
+        "tool_exact": 276,
+        "source_exact": 294,
+        "forbidden_call_trials": 6,
+        "unrequested_effect_trials": 3,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 375,
+          "p50": 0.7220083749853075,
+          "p95": 1.3105786249507219,
+          "min": 0.28545899991877377,
+          "max": 4.503187834052369
+        },
+        "memory_free_percent": {
+          "n": 375,
+          "p50": 30,
+          "p95": 33,
+          "min": 23,
+          "max": 36
+        },
+        "family_accuracy": {
+          "availability": 0,
+          "battery": 1,
+          "calendar_only": 0,
+          "calendar_query": 0,
+          "create_event": 1,
+          "dated": 0,
+          "draft_only": 0.6666666666666666,
+          "dual_overview": 0,
+          "exclude_email": 0,
+          "exclude_messages": 0,
+          "files": 1,
+          "local_no_web": 0,
+          "mail_literal": 0.6666666666666666,
+          "mail_lookup": 0.6666666666666666,
+          "mail_overview": 0,
+          "mail_range": 0.3333333333333333,
+          "mail_records": 0.3333333333333333,
+          "mail_specific": 1,
+          "mail_unread": 0,
+          "month": 0.25,
+          "negated_effect": 0.6666666666666666,
+          "nextmonth": 0.3333333333333333,
+          "notes_lookup": 1,
+          "public_news": 1,
+          "public_week": 0.75,
+          "quoted_instruction": 1,
+          "reminder": 1,
+          "rolling_week": 1,
+          "send_literal": 0,
+          "smalltalk": 1,
+          "texts_conversation": 0,
+          "texts_lookup": 0.3333333333333333,
+          "texts_overview": 0,
+          "texts_records": 0.3333333333333333,
+          "tomorrow": 0.25,
+          "week_casual": 0,
+          "week_explicit": 0.2,
+          "weekend": 0
+        },
+        "strict_failure_cases": [
+          "mail_unread-1",
+          "texts_overview-4",
+          "draft_only-2",
+          "mail_lookup-3",
+          "exclude_email-3",
+          "calendar_query-3",
+          "texts_conversation-3",
+          "week_explicit-3",
+          "texts_records-1",
+          "texts_overview-3",
+          "dual_overview-2",
+          "mail_range-3",
+          "texts_records-3",
+          "week_explicit-2",
+          "mail_unread-2",
+          "send_literal-1",
+          "send_literal-2",
+          "public_week-1",
+          "mail_overview-1",
+          "tomorrow-1",
+          "week_explicit-1",
+          "week_casual-7",
+          "exclude_messages-3",
+          "tomorrow-3",
+          "local_no_web-2",
+          "weekend-3",
+          "dated-1",
+          "mail_overview-3",
+          "tomorrow-2",
+          "mail_range-2",
+          "texts_overview-2",
+          "dual_overview-1",
+          "texts_conversation-2",
+          "exclude_messages-2",
+          "mail_literal-2",
+          "mail_records-3",
+          "week_casual-4",
+          "calendar_only-2",
+          "mail_records-1",
+          "texts_overview-1",
+          "nextmonth-2",
+          "dated-2",
+          "dated-3",
+          "local_no_web-1",
+          "dual_overview-3",
+          "exclude_messages-1",
+          "month-4",
+          "availability-3",
+          "availability-2",
+          "send_literal-3",
+          "calendar_query-2",
+          "availability-1",
+          "week_explicit-5",
+          "week_casual-5",
+          "negated_effect-2",
+          "weekend-1",
+          "week_casual-6",
+          "weekend-2",
+          "calendar_query-1",
+          "mail_overview-2",
+          "calendar_only-3",
+          "calendar_only-1",
+          "texts_conversation-1",
+          "nextmonth-3",
+          "week_casual-3",
+          "month-3",
+          "week_casual-9",
+          "mail_unread-3",
+          "texts_lookup-2",
+          "texts_lookup-3",
+          "month-2",
+          "exclude_email-2",
+          "exclude_email-1",
+          "local_no_web-3"
+        ]
+      }
+    },
+    "True": {
+      "current_rules": {
+        "trials": 39,
+        "unique_cases": 13,
+        "strict_success": 6,
+        "strict_rate": 0.15384615384615385,
+        "cases_all_reps_pass": 2,
+        "cases_with_varying_success": 0,
+        "tool_exact": 27,
+        "source_exact": 27,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 39,
+          "p50": 0.3472859999164939,
+          "p95": 1.9179118329193443,
+          "min": 0.000952624948695302,
+          "max": 1.9335302498657256
+        },
+        "memory_free_percent": {
+          "n": 39,
+          "p50": 30,
+          "p95": 35,
+          "min": 26,
+          "max": 36
+        },
+        "family_accuracy": {
+          "nextweek_context": 0.3333333333333333,
+          "reported_week_context": 0,
+          "texts_context": 0,
+          "week_context": 0.25
+        },
+        "strict_failure_cases": [
+          "texts_context-1",
+          "reported_week_context-2",
+          "texts_context-2",
+          "reported_week_context-1",
+          "texts_context-3",
+          "nextweek_context-2",
+          "week_context-4",
+          "nextweek_context-1",
+          "week_context-2",
+          "reported_week_context-3",
+          "week_context-1"
+        ]
+      },
+      "laya_hybrid": {
+        "trials": 39,
+        "unique_cases": 13,
+        "strict_success": 9,
+        "strict_rate": 0.23076923076923078,
+        "cases_all_reps_pass": 3,
+        "cases_with_varying_success": 0,
+        "tool_exact": 39,
+        "source_exact": 39,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 39,
+          "p50": 0.5378907911945134,
+          "p95": 0.7548062079586089,
+          "min": 0.18843887513503432,
+          "max": 0.8326564580202103
+        },
+        "memory_free_percent": {
+          "n": 39,
+          "p50": 31,
+          "p95": 33,
+          "min": 26,
+          "max": 35
+        },
+        "family_accuracy": {
+          "nextweek_context": 0.3333333333333333,
+          "reported_week_context": 0,
+          "texts_context": 0,
+          "week_context": 0.5
+        },
+        "strict_failure_cases": [
+          "nextweek_context-2",
+          "texts_context-2",
+          "texts_context-3",
+          "texts_context-1",
+          "reported_week_context-3",
+          "reported_week_context-1",
+          "week_context-1",
+          "nextweek_context-1",
+          "reported_week_context-2",
+          "week_context-2"
+        ]
+      },
+      "ling_direct": {
+        "trials": 39,
+        "unique_cases": 13,
+        "strict_success": 6,
+        "strict_rate": 0.15384615384615385,
+        "cases_all_reps_pass": 2,
+        "cases_with_varying_success": 0,
+        "tool_exact": 36,
+        "source_exact": 36,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {},
+        "latency_seconds": {
+          "n": 39,
+          "p50": 0.34826341597363353,
+          "p95": 0.39005470811389387,
+          "min": 0.2833819589577615,
+          "max": 0.40177829191088676
+        },
+        "memory_free_percent": {
+          "n": 39,
+          "p50": 31,
+          "p95": 33,
+          "min": 27,
+          "max": 34
+        },
+        "family_accuracy": {
+          "nextweek_context": 0.3333333333333333,
+          "reported_week_context": 0,
+          "texts_context": 0,
+          "week_context": 0.25
+        },
+        "strict_failure_cases": [
+          "nextweek_context-2",
+          "texts_context-3",
+          "reported_week_context-3",
+          "week_context-1",
+          "nextweek_context-1",
+          "reported_week_context-1",
+          "week_context-4",
+          "texts_context-1",
+          "reported_week_context-2",
+          "texts_context-2",
+          "week_context-2"
+        ]
+      },
+      "ling_intent": {
+        "trials": 39,
+        "unique_cases": 13,
+        "strict_success": 6,
+        "strict_rate": 0.15384615384615385,
+        "cases_all_reps_pass": 2,
+        "cases_with_varying_success": 0,
+        "tool_exact": 6,
+        "source_exact": 6,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {
+          "JSONDecodeError": 9,
+          "AttributeError": 24
+        },
+        "latency_seconds": {
+          "n": 39,
+          "p50": 0.6123610830400139,
+          "p95": 7.3998370410408825,
+          "min": 0.21956570795737207,
+          "max": 7.4804328749887645
+        },
+        "memory_free_percent": {
+          "n": 39,
+          "p50": 30,
+          "p95": 33,
+          "min": 27,
+          "max": 34
+        },
+        "family_accuracy": {
+          "nextweek_context": 0,
+          "reported_week_context": 0,
+          "texts_context": 0.3333333333333333,
+          "week_context": 0.25
+        },
+        "strict_failure_cases": [
+          "week_context-2",
+          "week_context-1",
+          "texts_context-1",
+          "nextweek_context-1",
+          "texts_context-2",
+          "reported_week_context-1",
+          "nextweek_context-3",
+          "nextweek_context-2",
+          "reported_week_context-2",
+          "reported_week_context-3",
+          "week_context-3"
+        ]
+      },
+      "ling_plan": {
+        "trials": 39,
+        "unique_cases": 13,
+        "strict_success": 6,
+        "strict_rate": 0.15384615384615385,
+        "cases_all_reps_pass": 2,
+        "cases_with_varying_success": 0,
+        "tool_exact": 15,
+        "source_exact": 15,
+        "forbidden_call_trials": 0,
+        "unrequested_effect_trials": 0,
+        "invalid_intent_trials": 0,
+        "repaired_trials": 0,
+        "errors": {
+          "TypeError": 24
+        },
+        "latency_seconds": {
+          "n": 39,
+          "p50": 0.18996120803058147,
+          "p95": 0.8197360408958048,
+          "min": 0.16571737499907613,
+          "max": 0.8597164591774344
+        },
+        "memory_free_percent": {
+          "n": 39,
+          "p50": 31,
+          "p95": 34,
+          "min": 26,
+          "max": 35
+        },
+        "family_accuracy": {
+          "nextweek_context": 0,
+          "reported_week_context": 0,
+          "texts_context": 0,
+          "week_context": 0.5
+        },
+        "strict_failure_cases": [
+          "nextweek_context-2",
+          "texts_context-2",
+          "nextweek_context-3",
+          "reported_week_context-3",
+          "week_context-2",
+          "texts_context-3",
+          "reported_week_context-1",
+          "texts_context-1",
+          "week_context-1",
+          "reported_week_context-2",
+          "nextweek_context-1"
+        ]
+      }
+    }
+  }
+}

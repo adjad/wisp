@@ -1,0 +1,38 @@
+{
+  "report_sha256": "a17d88f56ba352ddae813a5bfdc998e9d105a96d16533cf074d7d35e5ba75ad8",
+  "review_scope": "Internal independent read-only report/evidence audit; not a production release or native integration review",
+  "reviews": [
+    {
+      "reviewer": "answer_audit_one",
+      "verdict": "PASS_WITH_NOTES",
+      "notes_applied": [
+        "Conditional correct-first-call answer scores added",
+        "Source-order trials explicitly include dev/challenge",
+        "Primary freeze phrasing corrected"
+      ],
+      "reviewed_report_sha256": "a17d88f56ba352ddae813a5bfdc998e9d105a96d16533cf074d7d35e5ba75ad8",
+      "outstanding_notes": []
+    },
+    {
+      "reviewer": "answer_audit_three",
+      "verdict": "PASS",
+      "scope": "Frozen-source root cause, production presentation distinctions, Laya calibration and runtime/memory limits",
+      "optional_note_applied": "512/1024-token budgets added",
+      "reviewed_report_sha256": "a17d88f56ba352ddae813a5bfdc998e9d105a96d16533cf074d7d35e5ba75ad8",
+      "outstanding_notes": []
+    },
+    {
+      "reviewer": "answer_audit_two",
+      "scope": "Scoring validity and independently reconstructed default-equivalence sensitivity",
+      "result": "Zero score changes across2916 held-out trials; keep substring-query semantics and unproven bare-phone normalization caveats",
+      "status": "independent scoring-sensitivity audit complete"
+    }
+  ],
+  "parent_reconciliation": [
+    "All table numerators/percentages/latencies verified against analysis artifacts",
+    "Sensitivity independently reproduced without changing raw/gold/primary scores",
+    "Known-example weekly regression3/3 explicitly separated from held-out evidence",
+    "No claim of native/production UI validation or globally optimal/production-ready candidate"
+  ],
+  "checked_at_unix": 1791193340.969067
+}
