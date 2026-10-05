@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "wisp://router/intent/v1",
+  "title": "Wisp routing Intent v1",
+  "description": "What the user asked for in the latest turn. Never carries permission: authorization, recipients and dates are re-validated in code. See docs/ROUTING_ARCHITECTURE.md section 3.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "operation", "sources"],
+  "properties": {
+    "version": {"const": "1"},
+    "operation": {
+      "type": "string",
+      "enum": ["read", "search", "summarize", "overview", "compose", "send", "modify",
+               "delete", "remember", "compute", "chat", "clarify"]
+    },
+    "sources": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["source"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": ["calendar", "reminders", "mail", "messages", "notes", "files", "web",
+                     "weather", "memory", "device", "none"]
+          },
+          "account": {"type": "string", "maxLength": 80}
+        }
+      }
+    },
+    "excluded_sources": {
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["calendar", "reminders", "mail", "messages", "notes", "files", "web",
+                 "weather", "memory", "device"]
+      }
+    },
+    "presentation": {"type": "string", "enum": ["overview", "records", "answer"]},
+    "time": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "named": {
+          "type": "string",
+          "enum": ["today", "tomorrow", "yesterday", "tonight", "this_weekend", "next_weekend",
+                   "this_week", "next_week", "last_week", "rest_of_week", "this_month",
+                   "next_month", "last_month"]
+        },
+        "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "start": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "end": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "month": {"type": "string", "pattern": "^\\d{4}-\\d{2}$"},
+        "last_n_days": {"type": "integer", "minimum": 1, "maximum": 366},
+        "rolling_days": {"type": "integer", "minimum": 1, "maximum": 60},
+        "clock": {"type": "string", "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$"}
+      }
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "people": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 80}},
+        "keywords": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 120}},
+        "folder": {"type": "string", "maxLength": 120},
+        "conversation": {"type": "string", "maxLength": 80},
+        "unread": {"type": "boolean"},
+        "flagged": {"type": "boolean"},
+        "calendar_only": {"type": "boolean"},
+        "count": {"type": "integer", "minimum": 1, "maximum": 200},
+        "minutes": {"type": "integer", "minimum": 5, "maximum": 600}
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind"],
+      "properties": {
+        "kind": {"type": "string",
+                 "enum": ["none", "previous_result", "item_index", "item_title", "previous_request"]},
+        "index": {"type": "integer", "minimum": 1, "maximum": 50},
+        "title": {"type": "string", "maxLength": 200}
+      }
+    },
+    "literals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "recipients": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 200}},
+        "numbers": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 64}},
+        "paths": {"type": "array", "maxItems": 8, "items": {"type": "string", "maxLength": 200}},
+        "quoted": {"type": "array", "maxItems": 4, "items": {"type": "string", "maxLength": 200}}
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requested": {"type": "boolean"},
+        "draft_only": {"type": "boolean"},
+        "body_quoted": {"type": "string", "maxLength": 200}
+      }
+    },
+    "unsupported": {"type": "string", "maxLength": 120}
+  }
+}
