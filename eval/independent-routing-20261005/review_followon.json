@@ -1,0 +1,27 @@
+{
+  "reviewer": "answer_audit_two",
+  "scope": "static read-only, no held-out corpus/output inspection",
+  "verdict": "PASS",
+  "reviewed_sha256": {
+    "intent_v2.py": "365d495679de83cb0638b548542944fa08ff6a0aaa5344f39c1369b92062867c",
+    "run_followon.py": "76fbec7e92f8248c9ed25c0f939047d1ea0b66b35db390d947e2b34f9a511afd",
+    "format_probe.py": "be1e2c9cf2994ef35483a3d3c3be4e37b5b5b5c4491c6576b739e7771400001f",
+    "analyze_answer_audits.py": "b2a76a7ca1537172f74fba0f566ad3a54af7def9f88759721b01c0c509bf1d67",
+    "run_laya_english.py": "482a43f03cfad797904ad9456c1c4f65cf6aa6b327820119b7b112ccea9595ce",
+    "laya_english_worker.py": "0b292db6435adf10c0a8416751234a9c48d4b75dd9d7c50103de55412b5463a6"
+  },
+  "repairs": [
+    "invalid read compiler result enters bounded repair then fails closed",
+    "malformed empty or null message envelopes handled",
+    "completion requests respect absolute deadline",
+    "inline/none operation dominates named subject/source",
+    "checkpoint weight/config/tokenizer/manifest fingerprints verified and bound to resume",
+    "duplicate rep0 primary join keys rejected"
+  ],
+  "checks": "23 offline targeted tests passed; completed development comparison12casesx4arms; no held-out follow-on inspected before freeze; English18devcases completed without transport errors",
+  "notes": [
+    "Original executed format probe and preliminary candidate/English runner sources preserved separately under matching hashes",
+    "English .8 gate fixed before test; option-11+ calibration temperature clamps to .5 and is uncalibrated",
+    "Extended runner orchestration delegates serially to reviewed harnesses, captures failures, uses existing orchestration lock"
+  ]
+}

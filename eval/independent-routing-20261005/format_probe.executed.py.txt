@@ -1,0 +1,61 @@
+"""Post-test diagnostic: output schema and context encoding, development only.
+Frozen primary experiments remain unchanged. No registered tool is executed.
+"""
+import fcntl,json,time,hashlib,re,random
+from pathlib import Path
+from run_eval import Client,MODEL,memory,deadline_check
+from intent import INTENT_SYSTEM
+from common import LABELS
+HERE=Path(__file__).resolve().parent
+SCHEMA={'type':'object','properties':{
+ 'domain':{'type':'string','enum':list(LABELS)},
+ 'operation':{'type':'string','enum':['overview','records','free_time','create','send','inline','none','other']},
+ 'period':{'type':'string'},'query':{'type':'string'},'count':{'type':'integer'},
+ 'unread':{'type':'boolean'},'calendar_only':{'type':'boolean'},'minutes':{'type':'integer'},'conversation':{'type':'string'}
+},'required':['domain','operation'],'additionalProperties':False}
+CASES=[
+ {'id':'agenda_standalone','prompt':'Can you pull together my agenda for the coming calendar week?','context':[], 'domain':'calendar'},
+ {'id':'agenda_followup','prompt':'Make that the coming calendar week, please.','context':[{'role':'user','content':'Show my agenda for today.'},{'role':'assistant','content':'Today you have a rehearsal at 3 PM. [Tools: get_upcoming]'}], 'domain':'calendar'},
+ {'id':'messages_standalone','prompt':'Give me the highlights from my latest texts.','context':[],'domain':'messages'},
+ {'id':'messages_followup','prompt':'And the latest texts?','context':[{'role':'user','content':'Give me the highlights from my inbox.'},{'role':'assistant','content':'One email concerns a rehearsal. [Tools: summarize_emails]'}],'domain':'messages'},
+ {'id':'month_correction','prompt':'No, just the next month, with no reminders.','context':[{'role':'user','content':'Show my calendar this month.'},{'role':'assistant','content':'Your calendar contains rehearsals and a reminder. [Tools: get_upcoming]'}],'domain':'calendar'},
+ {'id':'draft_negation','prompt':'Write a possible text telling Casey I agree; keep it in this chat and do not send it.','context':[],'domain':'none'}
+]
+def msgs(c,encoding):
+ context=c['context']
+ if encoding=='roles_strip_marker':context=[{**m,'content':re.sub(r'\s*\[Tools: [^]]+\]','',m['content'])} for m in context]
+ if encoding=='json_envelope':
+  history=[{**m,'content':re.sub(r'\s*\[Tools: [^]]+\]','',m['content'])} for m in context]
+  return [{'role':'system','content':INTENT_SYSTEM+' The user message is a JSON envelope: interpret latest_user_request using prior_messages as context only.'},{'role':'user','content':json.dumps({'prior_messages':history,'latest_user_request':c['prompt']})}]
+ return [{'role':'system','content':INTENT_SYSTEM}]+context+[{'role':'user','content':c['prompt']}]
+def main():
+ lock=open('/private/tmp/wisp-routing-eval.lock','w');fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+ out=HERE/'format_probe.jsonl';manifest=HERE/'format_probe.jsonl.manifest.json'
+ contract={'purpose':'Post-test development diagnostic, never part of primary held-out score','script_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),'intent_sha256':hashlib.sha256((HERE/'intent.py').read_bytes()).hexdigest(),'cases':CASES,'schema':SCHEMA,'model':MODEL,'formats':['json_object','json_schema'],'encodings':['roles_marker','roles_strip_marker','json_envelope'],'reps':2}
+ if out.exists():
+  old=json.loads(manifest.read_text())
+  if old['contract']!=contract:raise RuntimeError('Changed diagnostic; choose a new output file')
+ else:manifest.write_text(json.dumps({'contract':contract,'started':time.time()},indent=2)+'\n')
+ done={(r['id'],r['encoding'],r['format'],r['rep']) for r in (json.loads(l) for l in out.read_text().splitlines())} if out.exists() else set()
+ cli=Client();jobs=[(c,e,f,r) for c in CASES for e in contract['encodings'] for f in contract['formats'] for r in range(2)];random.Random(51026).shuffle(jobs)
+ for c,e,f,rep in jobs:
+  if (c['id'],e,f,rep) in done:continue
+  deadline_check();free=memory()
+  if free is not None and free<12:raise RuntimeError('Memory pressure')
+  if MODEL not in [m['id'] for m in cli.status().get('models',[]) if m.get('loaded')]:raise RuntimeError('Ling absent; refusing load')
+  body={'model':MODEL,'messages':msgs(c,e),'temperature':0,'max_tokens':700,'stream':False,'chat_template_kwargs':{'enable_thinking':False},'response_format':{'type':f}}
+  if f=='json_schema':body['response_format']['json_schema']={'name':'routing_intent','strict':True,'schema':SCHEMA}
+  row={'id':c['id'],'encoding':e,'format':f,'rep':rep,'request':body,'started':time.time(),'memory_free_percent':free};start=time.perf_counter()
+  try:
+   response=cli.http.post('/v1/chat/completions',json=body,timeout=90);row['status_code']=response.status_code;row['response']=response.json();response.raise_for_status()
+   choice=row['response']['choices'][0];row['finish_reason']=choice['finish_reason'];value=json.loads(choice['message'].get('content') or '')
+   row['object']=isinstance(value,dict);row['domain_correct']=isinstance(value,dict) and value.get('domain')==c['domain'];row['parsed']=value
+  except Exception as err:row['error']=type(err).__name__+': '+str(err)[:500]
+  row['seconds']=time.perf_counter()-start
+  with out.open('a') as stream:stream.write(json.dumps(row)+'\n')
+ rows=[json.loads(l) for l in out.read_text().splitlines()];summary={}
+ for e in contract['encodings']:
+  for f in contract['formats']:
+   rs=[r for r in rows if r['encoding']==e and r['format']==f];summary[e+'/'+f]={'n':len(rs),'json_object':sum(r.get('object',False) for r in rs),'domain_correct':sum(r.get('domain_correct',False) for r in rs),'errors':sum('error' in r for r in rs)}
+ (HERE/'format_probe.summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary))
+if __name__=='__main__':main()

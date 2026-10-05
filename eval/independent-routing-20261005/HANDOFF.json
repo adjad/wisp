@@ -29,16 +29,23 @@
     "Primary harness frozen at94c3b362ba4b4d5f18469907397fc2f22027740d; independent repair re-review PASS",
     "Answer fixtures independently reviewed and repaired before first answer generation;6 targeted fixture checks pass",
     "Analysis script prepared without candidate tuning;4 checks for correlated-family metrics, duplicates, input hashes, partial writer pass",
-    "Five unchanged candidate runtime/corpus hashes verified during the running primary benchmark"
+    "Five unchanged candidate runtime/corpus hashes verified during the running primary benchmark",
+    "Primary 2070 held-out,120 challenge,165 answer continuations,504 CoreML order trials complete",
+    "All165 answers independently reviewed blind;23 critical answer cases and9 marker-only nonanswers recorded",
+    "72 post-primary development-only schema/context probes completed; original executed source preserved with matching hash",
+    "Fresh48-case follow-on corpus independently authored:12dev,36test; parent has not inspected test prompts before candidate freeze",
+    "English Laya local checkpoint separately verified; isolated laya-mlx0.3.0 environment installed without model download; no English inference yet",
+    "23 targeted offline checks pass after reviewed fail-closed and development inline-intent fixes",
+    "Follow-on dev final: v2 10/12 versus baseline8/12, direct7/12, original intent7/12; no more tuning planned",
+    "English development18trials completed; source/runtime candidate unchanged by added checkpoint hash verification"
   ],
   "pending": [
-    "Freeze harness/corpus and run held-out test for five arms with multiple repetitions",
-    "Run challenge cases separately",
-    "Measure cold-first-request vs cache-hit timing accurately; no cold model reload permitted",
-    "Audit sample outputs independently, compute per-family and paired metrics, uncertainty and limitations",
-    "Write full report and concise best-measured routing recommendation by9AM",
-    "Commit/push clean eval-only branch; retain large raw local artifacts and link",
-    "Pause both automations after9AM report"
+    "Run/finish frozen extension sequence; inspect extension_status.json before any launch",
+    "Run separately labeled English Laya fixed-threshold original-corpus replication and option-order diagnostics, serialized with follow-on",
+    "Analyze challenges and new experiments; reconcile synthetic answer findings and context-format confound",
+    "Prepare9AM report with best-measured recommendation and limitations; no claim of global optimum or production readiness",
+    "Commit/push clean evaluation branch; preserve ignored raw outputs locally",
+    "Pause overnight continuation when report ready; leave separate9AMdelivery active, pause both after report"
   ],
   "jev": "Not measured; no JEV/TYPESAFE configured environment credential found. Hosted candidate may be documentation-only unless a pre-existing explicitly authorized configuration is discovered. Never upload private debug logs.",
   "automations": [
@@ -46,5 +53,23 @@
     "report-optimal-wisp-routing-at-9-am"
   ],
   "launch_command": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python -u eval/independent-routing-20261005/overnight.py",
-  "analysis_instructions": "After overnight_status.state=measurements_complete, run /Users/adijain/Desktop/MOE_Project/.venv/bin/python eval/independent-routing-20261005/analyze_results.py --require-complete. Verify analysis.json all_stages_complete. Read blinded_answer_review.json rubric and answers; dispatch bounded read-only independent audit of anonymous answer IDs before reading answer_review_key.json for candidate attribution. Score 0-2 grounding/scope/coverage/attribution/usefulness, critical failures and completion. Report overall and conditional on first-call correctness. Do not tune frozen candidates on held-out outcomes. Complete numerical report, preserve raw local evidence, commit/push report on same branch, and deliver concise recommendation at9AM."
+  "analysis_instructions": "After overnight_status.state=measurements_complete, run /Users/adijain/Desktop/MOE_Project/.venv/bin/python eval/independent-routing-20261005/analyze_results.py --require-complete. Verify analysis.json all_stages_complete. Read blinded_answer_review.json rubric and answers; dispatch bounded read-only independent audit of anonymous answer IDs before reading answer_review_key.json for candidate attribution. Score 0-2 grounding/scope/coverage/attribution/usefulness, critical failures and completion. Report overall and conditional on first-call correctness. Do not tune frozen candidates on held-out outcomes. Complete numerical report, preserve raw local evidence, commit/push report on same branch, and deliver concise recommendation at9AM.",
+  "followon": {
+    "progress": "followon_progress.json",
+    "candidate": "intent_v2.py",
+    "runner": "run_followon.py",
+    "corpus": "followon_corpus.json",
+    "dev_outputs": [
+      "followon_dev.jsonl",
+      "followon_dev_v2.jsonl"
+    ],
+    "test_output_planned": "followon_test.jsonl",
+    "english_runner": "run_laya_english.py",
+    "english_python": "/private/tmp/wisp-routing-eval-english-venv/bin/python",
+    "english_progress": "english_progress.json",
+    "no_duplicate": "All harnesses share /private/tmp/wisp-routing-eval.lock. Inspect progress PID; do not parallelize any inference.",
+    "format_probe_note": "Completed before timeout hardening; format_probe.executed.py.txt matches executed manifest hash.",
+    "orchestration": "run_extensions.py / extension_status.json; sequential followon_test, english_heldout, english_stability",
+    "candidate_review": "review_followon.json PASS;23 offline tests; fresh test not yet inspected"
+  }
 }

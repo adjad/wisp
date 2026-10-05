@@ -1,0 +1,99 @@
+{
+  "schema_version": 1,
+  "base_commit": "fa66cb3e3b0b0c207fe0dce7cc42de4c912f93b0",
+  "fixture_clock": "2026-10-05T00:55:00-07:00",
+  "timezone": "America/Los_Angeles",
+  "independently_authored_before_followon_inference": true,
+  "author": "answer_audit_one",
+  "purpose": "New confirmatory corpus for a post-primary routing diagnostic; original frozen scores are unchanged.",
+  "corpus_file": "followon_corpus.json",
+  "corpus_sha256": "ea51072149cfe743c32f23dd210d311684045bb305eb75b0a227b180f0167bd2",
+  "counts": {
+    "prompts": 48,
+    "families": 16,
+    "development_prompts": 12,
+    "development_families": 4,
+    "heldout_prompts": 36,
+    "heldout_families": 12
+  },
+  "split_contract": {
+    "dev": "Development only; do not include in held-out accuracy.",
+    "test": "Held-out until follow-on candidate is frozen.",
+    "unit_of_holdout": "family"
+  },
+  "construction_rules": [
+    "No result JSONL, analysis, candidate implementations, or candidate mapping read.",
+    "No literal tool annotations in conversational context.",
+    "Required gold arguments follow explicit user constraints and essential tool fields only.",
+    "Absent constraints prohibit invented date/query/account/conversation filters where the user supplied none.",
+    "Explicit-send prompts are synthetic proposed-call tests, not authorization to execute any native or outbound tool.",
+    "Optional context_tools is structured runtime metadata for immediately preceding synthetic assistant source; never literal assistant prose. The baseline receives last_tools and model paths receive equivalent prior-source metadata."
+  ],
+  "validation": {
+    "status": "PASS",
+    "errors": [],
+    "unique_ids": 48,
+    "unique_prompts": 48,
+    "original_exact_prompt_overlap": 0,
+    "three_prompts_per_family": true,
+    "family_splits_disjoint": true,
+    "schema_method": "Static AST extraction of literal register schemas; no tool imports or execution.",
+    "date_method": "Isolated pure timeranges parser nodes with fixed clock; no native tool or model invocation.",
+    "gold_tools_in_common_catalog": true,
+    "required_fields_present": true,
+    "supported_argument_types": true,
+    "all_named_periods_resolve": true,
+    "context_tools_on_all_contextual_cases": true,
+    "contextual_cases": 5,
+    "unscoped_overviews_reject_invented_time": true,
+    "inline_drafts_reject_tools_and_effects": true
+  },
+  "known_measurement_limits": [
+    "Legacy gold supports one contains substring per string argument. Public web-query gold therefore mechanically verifies Portland but requires separate semantic review of the requested event type and date. A city-only query must not be narrated as full date/type compliance.",
+    "The supported email query searches sender, recipient, subject, and body; CedarWorks sender attribution must be verified after records return. Gold does not invent an unsupported sender-only argument.",
+    "Named calendar dates and ranges use period; no days value is required when period overrides the rolling horizon.",
+    "Equivalent single-day day and period representations must be accepted by the existing period matcher."
+  ],
+  "excluded_ambiguous_requests": [
+    {
+      "pattern": "Any plans for the holiday?",
+      "reason": "Holiday and personal versus public source are unspecified; clarification needed."
+    },
+    {
+      "pattern": "Tell Ren about the update.",
+      "reason": "Recipient handle, channel, and content are missing; no unique first proposed tool call."
+    },
+    {
+      "pattern": "Anything new?",
+      "reason": "No source or prior conversation establishes email, messages, calendar, or public information."
+    },
+    {
+      "pattern": "Just next Friday.",
+      "reason": "Standalone utterance lacks a source, and next-Friday convention can vary."
+    }
+  ],
+  "not_claimed": [
+    "Native integration validity",
+    "Action completion",
+    "Answer quality after tool results",
+    "Production performance",
+    "Revisions to primary scores"
+  ],
+  "pre_inference_corrections": [
+    {
+      "change": "Added optional top-level context_tools metadata to all five contextual cases for prior-source parity; conversation prose and prompts unchanged.",
+      "before_followon_inference": true,
+      "parent_has_not_read_heldout_content": true,
+      "previous_corpus_sha256": "2aa73cde122b9b606d5c48e4eb9ea0399375a500386f0d31aeedcd4bb213e31e",
+      "updated_corpus_sha256": "ea51072149cfe743c32f23dd210d311684045bb305eb75b0a227b180f0167bd2",
+      "contextual_cases": 5,
+      "gold_correctness_check": {
+        "unscoped_overviews_checked": 11,
+        "inline_no_effects_checked": 3,
+        "errors": []
+      },
+      "candidate_tuning": false,
+      "provenance_preserved": true
+    }
+  ]
+}

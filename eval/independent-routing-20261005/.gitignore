@@ -11,3 +11,6 @@ answers.manifest.json
 laya_stability.manifest.json
 blinded_answer_review.json
 answer_review_key.json
+
+*_progress.json
+extension_status.json

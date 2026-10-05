@@ -1,0 +1,907 @@
+{
+  "complete": true,
+  "complete_scope": "primary held-out rows only; check all_stages_complete before final report",
+  "expected_trials": 2070,
+  "completed_trials": 2070,
+  "unique_test_cases": 138,
+  "test_families": 42,
+  "duplicate_keys": [],
+  "scope": "Actual local first-call inference; simulated/no tool execution. Error/malformed output counts as failure.",
+  "corpus_sha256": "e306aca9c0ca967741ba87e4197c7a9ce7d0fffa73fc47c1216755e011d6873a",
+  "input_hashes": {
+    "heldout.jsonl": "2ac8a7e00509daf52fface7a3d2720d9ca3ab646cd9c8be8424323e002027775",
+    "heldout.jsonl.manifest.json": "def306db9602452f4e799bd49a583c9e7680837908ca24d70721888ff751ca3a",
+    "answers.jsonl": "1445c03fa084528255a095e0e0d55a7c5933de7216e0020e328d4e460c3e2c76",
+    "laya_stability.jsonl": "f13a1e0a63b0e7947116b11c834dec3777795b7089de8e6d0ebfbaac27bcae41",
+    "answer_audit_rubric.json": "00c12d192a1ef8429347edc525dfe7b0602e0cd77b80b5c6561c47ffb0c5b458"
+  },
+  "arms": {
+    "current_rules": {
+      "trials": 414,
+      "strict_success": 213,
+      "strict_rate": 0.5144927536231884,
+      "tool_exact": 297,
+      "source_exact": 318,
+      "raw_source_planner_correct": null,
+      "errors": {},
+      "argument_failure_trials": 174,
+      "schema_runtime_failure_trials": 6,
+      "forbidden_call_trials": 3,
+      "unrequested_effect_trials": 3,
+      "duplicate_call_trials": 3,
+      "unoffered_call_trials": 0,
+      "unique_cases_all_three_pass": 71,
+      "unique_cases_majority_pass": 71,
+      "cases_with_three_trials": 138,
+      "unique_cases_vary_across_repetitions": 0,
+      "latency_seconds": {
+        "n": 414,
+        "p50": 0.36589937494136393,
+        "p95": 1.4369179578498006,
+        "min": 0.0006034579128026962,
+        "max": 4.186269750120118
+      },
+      "stage_latency_seconds": {
+        "generation": {
+          "n": 345,
+          "p50": 0.42176408413797617,
+          "p95": 1.4905969169922173,
+          "min": 0.13161737495101988,
+          "max": 4.18139912514016
+        }
+      },
+      "cache_conditioned_stage_seconds": {
+        "generation/without_cached_prefix": {
+          "n": 178,
+          "p50": 0.541676958091557,
+          "p95": 1.7305484169628471,
+          "min": 0.20841570780612528,
+          "max": 4.153652749955654
+        },
+        "generation/with_cached_prefix": {
+          "n": 167,
+          "p50": 0.2811925420537591,
+          "p95": 0.5826114998199046,
+          "min": 0.13161737495101988,
+          "max": 4.18139912514016
+        }
+      },
+      "model_tokens": {
+        "prompt": 928707,
+        "completion": 10425,
+        "cached_prompt": 592385
+      },
+      "family_accuracy": {
+        "files": 1.0,
+        "mail_records": 1.0,
+        "mail_overview": 1.0,
+        "exclude_messages": 1.0,
+        "texts_lookup": 1.0,
+        "battery": 1.0,
+        "rolling_week": 1.0,
+        "tomorrow": 0.5,
+        "week_explicit": 0.4,
+        "texts_context": 0.0,
+        "reported_week_context": 0.0,
+        "mail_range": 0.6666666666666666,
+        "texts_overview": 0.25,
+        "smalltalk": 0.8,
+        "calendar_only": 0.0,
+        "week_casual": 0.0,
+        "mail_unread": 0.0,
+        "create_event": 1.0,
+        "calendar_query": 0.0,
+        "public_week": 0.5,
+        "send_literal": 0.6666666666666666,
+        "texts_conversation": 0.0,
+        "week_context": 0.25,
+        "mail_specific": 1.0,
+        "exclude_email": 0.6666666666666666,
+        "dated": 0.3333333333333333,
+        "nextmonth": 0.3333333333333333,
+        "draft_only": 0.3333333333333333,
+        "texts_records": 1.0,
+        "reminder": 0.6666666666666666,
+        "public_news": 0.6666666666666666,
+        "quoted_instruction": 0.3333333333333333,
+        "dual_overview": 0.6666666666666666,
+        "nextweek_context": 0.3333333333333333,
+        "availability": 0.0,
+        "local_no_web": 0.0,
+        "negated_effect": 1.0,
+        "mail_lookup": 0.3333333333333333,
+        "notes_lookup": 1.0,
+        "month": 0.5,
+        "weekend": 0.0,
+        "mail_literal": 1.0
+      },
+      "laya_fallbacks": null,
+      "memory_free_percent_observed": {
+        "n": 414,
+        "p50": 31,
+        "p95": 34,
+        "min": 23,
+        "max": 36
+      }
+    },
+    "ling_direct": {
+      "trials": 414,
+      "strict_success": 183,
+      "strict_rate": 0.4420289855072464,
+      "tool_exact": 354,
+      "source_exact": 363,
+      "raw_source_planner_correct": null,
+      "errors": {},
+      "argument_failure_trials": 210,
+      "schema_runtime_failure_trials": 15,
+      "forbidden_call_trials": 9,
+      "unrequested_effect_trials": 6,
+      "duplicate_call_trials": 0,
+      "unoffered_call_trials": 0,
+      "unique_cases_all_three_pass": 61,
+      "unique_cases_majority_pass": 61,
+      "cases_with_three_trials": 138,
+      "unique_cases_vary_across_repetitions": 0,
+      "latency_seconds": {
+        "n": 414,
+        "p50": 0.36359033291228116,
+        "p95": 0.7042057500220835,
+        "min": 0.20710862497799098,
+        "max": 3.6306944999378175
+      },
+      "stage_latency_seconds": {
+        "generation": {
+          "n": 414,
+          "p50": 0.3594804578460753,
+          "p95": 0.7005271669477224,
+          "min": 0.20380383380688727,
+          "max": 3.627233042148873
+        }
+      },
+      "cache_conditioned_stage_seconds": {
+        "generation/with_cached_prefix": {
+          "n": 414,
+          "p50": 0.3594804578460753,
+          "p95": 0.7005271669477224,
+          "min": 0.20380383380688727,
+          "max": 3.627233042148873
+        }
+      },
+      "model_tokens": {
+        "prompt": 3414534,
+        "completion": 11070,
+        "cached_prompt": 3392671
+      },
+      "family_accuracy": {
+        "texts_overview": 0.0,
+        "nextweek_context": 0.3333333333333333,
+        "week_casual": 0.0,
+        "week_explicit": 0.0,
+        "calendar_query": 0.0,
+        "battery": 1.0,
+        "tomorrow": 0.0,
+        "send_literal": 0.6666666666666666,
+        "exclude_messages": 1.0,
+        "availability": 0.3333333333333333,
+        "smalltalk": 1.0,
+        "public_week": 0.0,
+        "texts_lookup": 0.3333333333333333,
+        "files": 1.0,
+        "rolling_week": 1.0,
+        "create_event": 0.6666666666666666,
+        "month": 0.25,
+        "mail_overview": 1.0,
+        "texts_context": 0.0,
+        "mail_specific": 0.3333333333333333,
+        "local_no_web": 0.0,
+        "mail_records": 1.0,
+        "mail_literal": 1.0,
+        "reported_week_context": 0.0,
+        "texts_conversation": 0.0,
+        "calendar_only": 0.0,
+        "mail_range": 0.0,
+        "notes_lookup": 1.0,
+        "week_context": 0.25,
+        "quoted_instruction": 1.0,
+        "draft_only": 0.3333333333333333,
+        "texts_records": 1.0,
+        "weekend": 0.0,
+        "negated_effect": 0.6666666666666666,
+        "mail_lookup": 0.6666666666666666,
+        "reminder": 1.0,
+        "mail_unread": 0.0,
+        "exclude_email": 0.6666666666666666,
+        "dual_overview": 1.0,
+        "public_news": 1.0,
+        "dated": 0.0,
+        "nextmonth": 0.0
+      },
+      "laya_fallbacks": null,
+      "memory_free_percent_observed": {
+        "n": 414,
+        "p50": 30,
+        "p95": 33,
+        "min": 21,
+        "max": 36
+      }
+    },
+    "ling_plan": {
+      "trials": 414,
+      "strict_success": 159,
+      "strict_rate": 0.38405797101449274,
+      "tool_exact": 291,
+      "source_exact": 309,
+      "raw_source_planner_correct": 297,
+      "errors": {
+        "TypeError": 24
+      },
+      "argument_failure_trials": 195,
+      "schema_runtime_failure_trials": 9,
+      "forbidden_call_trials": 6,
+      "unrequested_effect_trials": 3,
+      "duplicate_call_trials": 3,
+      "unoffered_call_trials": 0,
+      "unique_cases_all_three_pass": 53,
+      "unique_cases_majority_pass": 53,
+      "cases_with_three_trials": 138,
+      "unique_cases_vary_across_repetitions": 0,
+      "latency_seconds": {
+        "n": 414,
+        "p50": 0.716533541912213,
+        "p95": 1.2767174579203129,
+        "min": 0.16571737499907613,
+        "max": 4.503187834052369
+      },
+      "stage_latency_seconds": {
+        "planner": {
+          "n": 414,
+          "p50": 0.20530899986624718,
+          "p95": 0.23371320799924433,
+          "min": 0.10866987495683134,
+          "max": 0.27368570817634463
+        },
+        "generation": {
+          "n": 390,
+          "p50": 0.5095629580318928,
+          "p95": 1.103233833098784,
+          "min": 0.11384504195302725,
+          "max": 4.27100129192695
+        }
+      },
+      "cache_conditioned_stage_seconds": {
+        "planner/without_cached_prefix": {
+          "n": 403,
+          "p50": 0.20573112508282065,
+          "p95": 0.23382908292114735,
+          "min": 0.16284391609951854,
+          "max": 0.27368570817634463
+        },
+        "generation/with_cached_prefix": {
+          "n": 89,
+          "p50": 0.35472837509587407,
+          "p95": 0.9643725419882685,
+          "min": 0.11384504195302725,
+          "max": 1.1765644170809537
+        },
+        "generation/without_cached_prefix": {
+          "n": 301,
+          "p50": 0.5310447500087321,
+          "p95": 1.103233833098784,
+          "min": 0.16235874989069998,
+          "max": 4.27100129192695
+        },
+        "planner/with_cached_prefix": {
+          "n": 11,
+          "p50": 0.11642620782367885,
+          "p95": 0.12429487495683134,
+          "min": 0.10866987495683134,
+          "max": 0.12429487495683134
+        }
+      },
+      "model_tokens": {
+        "prompt": 673335,
+        "completion": 16539,
+        "cached_prompt": 192742
+      },
+      "family_accuracy": {
+        "mail_specific": 1.0,
+        "mail_unread": 0.0,
+        "create_event": 1.0,
+        "public_week": 0.75,
+        "texts_overview": 0.0,
+        "draft_only": 0.6666666666666666,
+        "week_explicit": 0.2,
+        "mail_lookup": 0.6666666666666666,
+        "exclude_email": 0.0,
+        "week_context": 0.5,
+        "nextweek_context": 0.0,
+        "notes_lookup": 1.0,
+        "calendar_query": 0.0,
+        "texts_conversation": 0.0,
+        "nextmonth": 0.3333333333333333,
+        "negated_effect": 0.6666666666666666,
+        "texts_records": 0.3333333333333333,
+        "dual_overview": 0.0,
+        "texts_context": 0.0,
+        "mail_range": 0.3333333333333333,
+        "send_literal": 0.0,
+        "rolling_week": 1.0,
+        "mail_overview": 0.0,
+        "tomorrow": 0.25,
+        "mail_records": 0.3333333333333333,
+        "week_casual": 0.0,
+        "exclude_messages": 0.0,
+        "local_no_web": 0.0,
+        "weekend": 0.0,
+        "dated": 0.0,
+        "smalltalk": 1.0,
+        "public_news": 1.0,
+        "quoted_instruction": 1.0,
+        "mail_literal": 0.6666666666666666,
+        "reminder": 1.0,
+        "reported_week_context": 0.0,
+        "calendar_only": 0.0,
+        "month": 0.25,
+        "availability": 0.0,
+        "battery": 1.0,
+        "files": 1.0,
+        "texts_lookup": 0.3333333333333333
+      },
+      "laya_fallbacks": null,
+      "memory_free_percent_observed": {
+        "n": 414,
+        "p50": 30,
+        "p95": 33,
+        "min": 23,
+        "max": 36
+      }
+    },
+    "ling_intent": {
+      "trials": 414,
+      "strict_success": 267,
+      "strict_rate": 0.644927536231884,
+      "tool_exact": 312,
+      "source_exact": 348,
+      "raw_source_planner_correct": 342,
+      "errors": {
+        "JSONDecodeError": 9,
+        "AttributeError": 24
+      },
+      "argument_failure_trials": 84,
+      "schema_runtime_failure_trials": 3,
+      "forbidden_call_trials": 0,
+      "unrequested_effect_trials": 0,
+      "duplicate_call_trials": 3,
+      "unoffered_call_trials": 0,
+      "unique_cases_all_three_pass": 89,
+      "unique_cases_majority_pass": 89,
+      "cases_with_three_trials": 138,
+      "unique_cases_vary_across_repetitions": 0,
+      "latency_seconds": {
+        "n": 414,
+        "p50": 0.7350969999097288,
+        "p95": 1.822819208027795,
+        "min": 0.21956570795737207,
+        "max": 7.4804328749887645
+      },
+      "stage_latency_seconds": {
+        "planner": {
+          "n": 414,
+          "p50": 0.613232292002067,
+          "p95": 1.0302766670938581,
+          "min": 0.21645545889623463,
+          "max": 7.476177833974361
+        },
+        "generation": {
+          "n": 165,
+          "p50": 0.49804674996994436,
+          "p95": 0.9384492088574916,
+          "min": 0.18642595899291337,
+          "max": 1.6099626668728888
+        }
+      },
+      "cache_conditioned_stage_seconds": {
+        "planner/without_cached_prefix": {
+          "n": 400,
+          "p50": 0.62658187514171,
+          "p95": 1.0421276250854135,
+          "min": 0.21645545889623463,
+          "max": 7.476177833974361
+        },
+        "generation/without_cached_prefix": {
+          "n": 115,
+          "p50": 0.5275093340314925,
+          "p95": 0.9548428750131279,
+          "min": 0.2776754170190543,
+          "max": 1.6099626668728888
+        },
+        "generation/with_cached_prefix": {
+          "n": 50,
+          "p50": 0.37860962515696883,
+          "p95": 0.5741810000035912,
+          "min": 0.18642595899291337,
+          "max": 0.6418280000798404
+        },
+        "planner/with_cached_prefix": {
+          "n": 14,
+          "p50": 0.4583457082044333,
+          "p95": 0.6006596661172807,
+          "min": 0.35110483411699533,
+          "max": 0.6511441660113633
+        }
+      },
+      "model_tokens": {
+        "prompt": 511986,
+        "completion": 30066,
+        "cached_prompt": 154597
+      },
+      "family_accuracy": {
+        "tomorrow": 0.75,
+        "mail_lookup": 1.0,
+        "create_event": 1.0,
+        "calendar_query": 0.3333333333333333,
+        "negated_effect": 0.6666666666666666,
+        "mail_range": 0.3333333333333333,
+        "texts_conversation": 0.3333333333333333,
+        "texts_overview": 0.0,
+        "public_news": 1.0,
+        "quoted_instruction": 1.0,
+        "battery": 1.0,
+        "week_context": 0.25,
+        "notes_lookup": 1.0,
+        "exclude_messages": 0.6666666666666666,
+        "texts_records": 1.0,
+        "send_literal": 0.3333333333333333,
+        "reminder": 1.0,
+        "mail_specific": 1.0,
+        "public_week": 0.5,
+        "draft_only": 1.0,
+        "files": 1.0,
+        "dated": 0.6666666666666666,
+        "weekend": 0.0,
+        "exclude_email": 0.3333333333333333,
+        "mail_records": 1.0,
+        "mail_literal": 1.0,
+        "nextmonth": 0.6666666666666666,
+        "rolling_week": 1.0,
+        "month": 0.5,
+        "local_no_web": 1.0,
+        "week_casual": 1.0,
+        "texts_context": 0.3333333333333333,
+        "smalltalk": 0.8,
+        "calendar_only": 0.3333333333333333,
+        "nextweek_context": 0.0,
+        "availability": 0.3333333333333333,
+        "reported_week_context": 0.0,
+        "mail_overview": 1.0,
+        "week_explicit": 0.8,
+        "dual_overview": 0.0,
+        "mail_unread": 0.3333333333333333,
+        "texts_lookup": 0.6666666666666666
+      },
+      "laya_fallbacks": null,
+      "memory_free_percent_observed": {
+        "n": 414,
+        "p50": 30,
+        "p95": 33,
+        "min": 23,
+        "max": 36
+      }
+    },
+    "laya_hybrid": {
+      "trials": 414,
+      "strict_success": 189,
+      "strict_rate": 0.45652173913043476,
+      "tool_exact": 348,
+      "source_exact": 354,
+      "raw_source_planner_correct": 219,
+      "errors": {},
+      "argument_failure_trials": 207,
+      "schema_runtime_failure_trials": 15,
+      "forbidden_call_trials": 9,
+      "unrequested_effect_trials": 6,
+      "duplicate_call_trials": 0,
+      "unoffered_call_trials": 0,
+      "unique_cases_all_three_pass": 63,
+      "unique_cases_majority_pass": 63,
+      "cases_with_three_trials": 138,
+      "unique_cases_vary_across_repetitions": 0,
+      "latency_seconds": {
+        "n": 414,
+        "p50": 0.49621504195965827,
+        "p95": 1.0280466661788523,
+        "min": 0.18843887513503432,
+        "max": 4.629762332886457
+      },
+      "stage_latency_seconds": {
+        "planner": {
+          "n": 414,
+          "p50": 0.018913625041022897,
+          "p95": 0.3110290840268135,
+          "min": 0.007219082908704877,
+          "max": 0.9741617920808494
+        },
+        "generation": {
+          "n": 414,
+          "p50": 0.45473966700956225,
+          "p95": 0.7732222080230713,
+          "min": 0.16671729111112654,
+          "max": 3.6475432079751045
+        }
+      },
+      "cache_conditioned_stage_seconds": {
+        "generation/without_cached_prefix": {
+          "n": 183,
+          "p50": 0.527861249865964,
+          "p95": 0.800374791957438,
+          "min": 0.26254637516103685,
+          "max": 1.4446870000101626
+        },
+        "generation/with_cached_prefix": {
+          "n": 231,
+          "p50": 0.37121545895934105,
+          "p95": 0.7547893750015646,
+          "min": 0.16671729111112654,
+          "max": 3.6475432079751045
+        }
+      },
+      "model_tokens": {
+        "prompt": 2006112,
+        "completion": 11130,
+        "cached_prompt": 1718886
+      },
+      "family_accuracy": {
+        "create_event": 1.0,
+        "mail_specific": 0.6666666666666666,
+        "send_literal": 0.3333333333333333,
+        "nextweek_context": 0.3333333333333333,
+        "texts_context": 0.0,
+        "texts_records": 0.6666666666666666,
+        "reminder": 1.0,
+        "month": 0.5,
+        "texts_lookup": 0.3333333333333333,
+        "week_explicit": 0.0,
+        "local_no_web": 0.0,
+        "notes_lookup": 1.0,
+        "exclude_messages": 1.0,
+        "smalltalk": 1.0,
+        "reported_week_context": 0.0,
+        "quoted_instruction": 1.0,
+        "exclude_email": 0.6666666666666666,
+        "calendar_query": 0.0,
+        "calendar_only": 0.0,
+        "mail_unread": 0.0,
+        "draft_only": 0.3333333333333333,
+        "mail_literal": 1.0,
+        "rolling_week": 1.0,
+        "texts_overview": 0.0,
+        "mail_overview": 1.0,
+        "public_week": 0.0,
+        "week_casual": 0.0,
+        "mail_range": 0.0,
+        "dual_overview": 0.6666666666666666,
+        "nextmonth": 0.3333333333333333,
+        "dated": 0.0,
+        "tomorrow": 0.25,
+        "week_context": 0.5,
+        "weekend": 0.0,
+        "battery": 1.0,
+        "texts_conversation": 0.0,
+        "public_news": 1.0,
+        "files": 1.0,
+        "mail_records": 0.6666666666666666,
+        "mail_lookup": 0.6666666666666666,
+        "availability": 0.3333333333333333,
+        "negated_effect": 0.6666666666666666
+      },
+      "laya_fallbacks": 201,
+      "memory_free_percent_observed": {
+        "n": 414,
+        "p50": 31,
+        "p95": 33,
+        "min": 21,
+        "max": 36
+      }
+    }
+  },
+  "paired_family_differences": {
+    "ling_direct minus current_rules": {
+      "family_balanced_mean": -0.0642857142857143,
+      "bootstrap_95pct_interval": [
+        -0.1507936507936508,
+        0.021428571428571432
+      ],
+      "families": 42,
+      "interpretation": "Descriptive paired family bootstrap for this corpus; not an independent user-population confidence claim"
+    },
+    "ling_plan minus current_rules": {
+      "family_balanced_mean": -0.14087301587301587,
+      "bootstrap_95pct_interval": [
+        -0.25515873015873014,
+        -0.03611111111111111
+      ],
+      "families": 42,
+      "interpretation": "Descriptive paired family bootstrap for this corpus; not an independent user-population confidence claim"
+    },
+    "ling_intent minus current_rules": {
+      "family_balanced_mean": 0.1126984126984127,
+      "bootstrap_95pct_interval": [
+        0.009523809523809526,
+        0.2277777777777778
+      ],
+      "families": 42,
+      "interpretation": "Descriptive paired family bootstrap for this corpus; not an independent user-population confidence claim"
+    },
+    "laya_hybrid minus current_rules": {
+      "family_balanced_mean": -0.054365079365079366,
+      "bootstrap_95pct_interval": [
+        -0.13650793650793652,
+        0.022619047619047615
+      ],
+      "families": 42,
+      "interpretation": "Descriptive paired family bootstrap for this corpus; not an independent user-population confidence claim"
+    }
+  },
+  "limitations": [
+    "Authored English-focused synthetic corpus, not population-distributed or entire Wisp capability catalog",
+    "Three repetitions and paraphrases are correlated",
+    "Common controlled argument-generation prompt differs from production agent loop",
+    "All primary arms ran while Laya was resident; memory is not independently isolated per architecture",
+    "No Ling cold model reload; cache-hit/miss timing is not cold model timing",
+    "Desktop hardware exclusivity was not confirmed"
+  ],
+  "laya_stability": {
+    "complete": true,
+    "expected_unique_keys": 504,
+    "observed_unique_keys": 504,
+    "duplicate_keys": 0,
+    "orders": {
+      "0": {
+        "n": 138,
+        "correct": 73,
+        "high_confidence_coverage": 0.5434782608695652,
+        "high_confidence_errors": 21,
+        "confidence_bins": {
+          "2": {
+            "n": 2,
+            "mean_max_probability": 0.24635,
+            "accuracy": 0
+          },
+          "3": {
+            "n": 13,
+            "mean_max_probability": 0.35820769230769234,
+            "accuracy": 0.15384615384615385
+          },
+          "4": {
+            "n": 13,
+            "mean_max_probability": 0.4491846153846154,
+            "accuracy": 0.38461538461538464
+          },
+          "5": {
+            "n": 11,
+            "mean_max_probability": 0.5521090909090909,
+            "accuracy": 0.36363636363636365
+          },
+          "6": {
+            "n": 8,
+            "mean_max_probability": 0.6619875,
+            "accuracy": 0.125
+          },
+          "7": {
+            "n": 16,
+            "mean_max_probability": 0.7425375,
+            "accuracy": 0.4375
+          },
+          "8": {
+            "n": 19,
+            "mean_max_probability": 0.855421052631579,
+            "accuracy": 0.5789473684210527
+          },
+          "9": {
+            "n": 56,
+            "mean_max_probability": 0.9759392857142857,
+            "accuracy": 0.7678571428571429
+          }
+        },
+        "latency_seconds": {
+          "n": 138,
+          "p50": 0.007157208863645792,
+          "p95": 0.23945187497884035,
+          "min": 0.006651832954958081,
+          "max": 0.2749603339470923
+        },
+        "peak_rss_bytes_max": 1968848896,
+        "truncated": 0,
+        "collapsed_options": 0
+      },
+      "1": {
+        "n": 138,
+        "correct": 77,
+        "high_confidence_coverage": 0.5942028985507246,
+        "high_confidence_errors": 21,
+        "confidence_bins": {
+          "3": {
+            "n": 7,
+            "mean_max_probability": 0.3724571428571429,
+            "accuracy": 0
+          },
+          "4": {
+            "n": 14,
+            "mean_max_probability": 0.4459714285714286,
+            "accuracy": 0.35714285714285715
+          },
+          "5": {
+            "n": 10,
+            "mean_max_probability": 0.53721,
+            "accuracy": 0.4
+          },
+          "6": {
+            "n": 8,
+            "mean_max_probability": 0.650475,
+            "accuracy": 0.125
+          },
+          "7": {
+            "n": 17,
+            "mean_max_probability": 0.7607529411764706,
+            "accuracy": 0.35294117647058826
+          },
+          "8": {
+            "n": 13,
+            "mean_max_probability": 0.8513076923076923,
+            "accuracy": 0.46153846153846156
+          },
+          "9": {
+            "n": 69,
+            "mean_max_probability": 0.9794884057971015,
+            "accuracy": 0.7971014492753623
+          }
+        },
+        "latency_seconds": {
+          "n": 138,
+          "p50": 0.007181582972407341,
+          "p95": 0.23127350001595914,
+          "min": 0.006414209026843309,
+          "max": 0.26438624993897974
+        },
+        "peak_rss_bytes_max": 1969504256,
+        "truncated": 0,
+        "collapsed_options": 0
+      },
+      "2": {
+        "n": 138,
+        "correct": 79,
+        "high_confidence_coverage": 0.6376811594202898,
+        "high_confidence_errors": 23,
+        "confidence_bins": {
+          "2": {
+            "n": 4,
+            "mean_max_probability": 0.28250000000000003,
+            "accuracy": 0
+          },
+          "3": {
+            "n": 17,
+            "mean_max_probability": 0.3567294117647059,
+            "accuracy": 0.23529411764705882
+          },
+          "4": {
+            "n": 13,
+            "mean_max_probability": 0.45153076923076924,
+            "accuracy": 0.23076923076923078
+          },
+          "5": {
+            "n": 5,
+            "mean_max_probability": 0.55836,
+            "accuracy": 0.6
+          },
+          "6": {
+            "n": 5,
+            "mean_max_probability": 0.64932,
+            "accuracy": 0.4
+          },
+          "7": {
+            "n": 6,
+            "mean_max_probability": 0.7591833333333333,
+            "accuracy": 0.3333333333333333
+          },
+          "8": {
+            "n": 18,
+            "mean_max_probability": 0.8535111111111111,
+            "accuracy": 0.4444444444444444
+          },
+          "9": {
+            "n": 70,
+            "mean_max_probability": 0.9750457142857143,
+            "accuracy": 0.8142857142857143
+          }
+        },
+        "latency_seconds": {
+          "n": 138,
+          "p50": 0.0071830840315669775,
+          "p95": 0.24687116709537804,
+          "min": 0.006586458068341017,
+          "max": 0.38491108315065503
+        },
+        "peak_rss_bytes_max": 1970585600,
+        "truncated": 0,
+        "collapsed_options": 0
+      }
+    },
+    "complete_test_case_triplets": 138,
+    "option_order_disagreements": 48
+  },
+  "all_stages_complete": true,
+  "answers_status": {
+    "complete": true,
+    "rows": 165,
+    "expected": 165,
+    "unique_keys": 165,
+    "duplicate_keys": 0,
+    "errors": {},
+    "review_required": "Inspect blinded_answer_review.json; latency/repetition metrics alone do not establish pleasantness or factual quality.",
+    "current_rules": {
+      "n": 33,
+      "empty_answer": 0,
+      "unfinished_call_cases": 0,
+      "repeated_read_cases": 0,
+      "continuation_latency_seconds": {
+        "n": 33,
+        "p50": 1.3238241670187563,
+        "p95": 2.1136846670415252,
+        "min": 0.48014083318412304,
+        "max": 2.780401249881834
+      }
+    },
+    "ling_direct": {
+      "n": 33,
+      "empty_answer": 0,
+      "unfinished_call_cases": 0,
+      "repeated_read_cases": 0,
+      "continuation_latency_seconds": {
+        "n": 33,
+        "p50": 1.2686194579582661,
+        "p95": 2.1668014170136303,
+        "min": 0.631273957900703,
+        "max": 4.378963917028159
+      }
+    },
+    "ling_plan": {
+      "n": 33,
+      "empty_answer": 0,
+      "unfinished_call_cases": 0,
+      "repeated_read_cases": 0,
+      "continuation_latency_seconds": {
+        "n": 33,
+        "p50": 1.0807041658554226,
+        "p95": 1.825114375213161,
+        "min": 0.1283033329527825,
+        "max": 2.2437636668328196
+      }
+    },
+    "ling_intent": {
+      "n": 33,
+      "empty_answer": 0,
+      "unfinished_call_cases": 0,
+      "repeated_read_cases": 0,
+      "continuation_latency_seconds": {
+        "n": 33,
+        "p50": 1.211367999901995,
+        "p95": 2.106396666029468,
+        "min": 0.11412945808842778,
+        "max": 2.7584075417835265
+      }
+    },
+    "laya_hybrid": {
+      "n": 33,
+      "empty_answer": 0,
+      "unfinished_call_cases": 0,
+      "repeated_read_cases": 0,
+      "continuation_latency_seconds": {
+        "n": 33,
+        "p50": 1.1897005839273334,
+        "p95": 2.381711208028719,
+        "min": 0.5012332499027252,
+        "max": 2.9489214171189815
+      }
+    }
+  }
+}
