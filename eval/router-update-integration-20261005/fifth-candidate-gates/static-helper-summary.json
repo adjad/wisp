@@ -1,0 +1,23 @@
+{
+  "recorded_at": "2026-10-05T22:59:35.939377+00:00",
+  "helper": "/root/router_eval",
+  "model": "gpt-6.1-sol",
+  "reasoning": "high",
+  "review_kind": "Advisory mutable-working-tree static comparison; not release approval",
+  "execution": false,
+  "writes": false,
+  "checkout": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+  "parent_supplied_base": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+  "observed_head": null,
+  "observed_dirty_state": null,
+  "file_fingerprints": null,
+  "read_timestamps": null,
+  "provenance_limit": "Helper did not capture required HEAD/dirty-state/file fingerprints/timestamps. Line observations are prospective only and must be reconciled by sole core owner and later frozen-head independent gates. No reconstruction from changing files performed.",
+  "hypotheses": [
+    "Plus coordination can swallow effect verbs into query literal.",
+    "Exclusion extraction can swallow a later positive and-read clause.",
+    "Would-you-mind polite governor with gerund sharing may miss action recognition.",
+    "A second terminal named to-slot after title-internal to needs explicit ambiguity semantics."
+  ],
+  "reconciliation": "Forwarded to sole authorized core repair owner; tests and disposition pending. No provider cancellation diagnosis or tests authorized."
+}

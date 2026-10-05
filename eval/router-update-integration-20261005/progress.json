@@ -1,6 +1,6 @@
 {
-  "status": "literal_authority_and_delivery_boundary_repairs_integrated_preparing_frozen_gates",
-  "updated_at": "2026-10-05T22:14:27.713959+00:00",
+  "status": "r4_r7_repairs_integrated_preparing_frozen_gates",
+  "updated_at": "2026-10-05T23:19:44.828982+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,14 +10,14 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "R4/R5/R6 full-query and read-head repairs frozen clean pushed and integrated",
-      "commit": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+      "status": "R4/R7 cumulative repair and public-web regression continuation frozen clean pushed and integrated",
+      "commit": "aa607316533b17a90822e2f57bebf13107b9ddcc",
       "validation_reported": {
-        "passed": 10103,
+        "passed": 10217,
         "subtests_passed": 4640,
-        "seconds": 92.73,
+        "seconds": 101.28,
         "suites": 18,
-        "scope": "Exact worker head; complete transcript and initial failure history preserved in fourth-candidate-gates/core-repair"
+        "scope": "Exact worker head; full transcript, initial focused failures and failed f418233 gate preserved in fifth-candidate-gates/core-repair"
       }
     },
     "router_eval": {
@@ -78,10 +78,11 @@
     "model_inference": false,
     "real_tool_execution": false
   },
-  "model_measurement_window": "Blocked on external coordination: after3:01PM the Claude coordinator showed resuming but Send disabled and100% session usage; no explicit quiescence/start/end ACK. No inference started.",
+  "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
   "production_changed": false,
   "pending": [
-    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R4/R5/R6 and full-scope audit, and separate synthetic QA",
+    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R4/R7 and full-scope audit, then separate synthetic QA",
+    "Resolve retained-owner provider qualification cancellation CI failure; no separate provider diagnosis or edits authorized",
     "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
     "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
     "Protected integration handoff; no deployment or feature activation"
@@ -101,12 +102,12 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "473c28f906beeb64fe5a9cb3e29e106e74f45b63",
-    "passed": 567,
+    "revision": "c63b2c1ff4d52497a736625546142f2bb8bff890",
+    "passed": 665,
     "skipped": 1,
     "skip_reason": "Original-control-only absence check",
-    "seconds": 11.34,
-    "scope": "Integrated core/actor/workflow/eval/overviews/manifest/unchanged tomorrow/fallback",
+    "seconds": 11.74,
+    "scope": "Nine integrated intent/workflow/eval/overview/manifest/unchanged tomorrow/fallback modules",
     "model_calls": false,
     "heldout_opened": false
   },
@@ -114,7 +115,8 @@
     "Automatic approval review rejected diagnostic allowlist extension twice; no diagnostics edits executed. Existing route_source=model vocabulary retained in original-owned router serialization, with finite debug-only intent_disposition.",
     "One unintended mechanical test wording replacement was caught in review and restored before presentation freeze.",
     "Compiler repair development gate caught schedule-a-message regression; narrowed indefinite-noun masking and added regression controls before freeze.",
-    "Adapter identity tests initially exposed temporary /var versus /private/var aliasing; resolved-path equality fixed before freeze."
+    "Adapter identity tests initially exposed temporary /var versus /private/var aliasing; resolved-path equality fixed before freeze.",
+    "Pre-freeze diff check rejected trailing whitespace in verbatim worker failure logs. Stored lossless gzip copies with original/stored hashes; original evidence bytes and source tests unchanged."
   ],
   "development_replay_before_compiler_repair": {
     "revision": "b78fbdf",
@@ -849,5 +851,124 @@
     "original_metrics_preserved": true,
     "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
     "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay."
-  }
+  },
+  "fifth_frozen_candidate_gates": {
+    "revision": "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "artifact": "fifth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "FAIL178/179: test_local_provider_tools cancel-tool expected2 provider closures, observed1. Complete original log preserved; retained provider owner diagnosis pending. No flakiness or passing retry claim.",
+      "artifact": "SUCCESS; both publishing jobsSKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R4 capitalization in a governed email title incorrectly supplies destination evidence",
+        "R7 coordinated share effect swallowed into unquoted lookup data"
+      ],
+      "application_expectations_met": 64,
+      "application_expectations_total": 67,
+      "paired_expectations_met": 4,
+      "paired_expectations_total": 5,
+      "boundary_controls_passed": 36,
+      "initial_auditor_expectation_correction": "Original63/67 and corrected64/67 both preserved; generic send-without-channel expectation corrected, no product/corpus edits.",
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking new exact-SHA audit",
+    "provider_dependency": "router-1.3-provider-cancellation-ci"
+  },
+  "development_after_r4_r7_repairs": {
+    "revision": "c63b2c1ff4d52497a736625546142f2bb8bff890",
+    "artifact": "development-after-r4-r7-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "worker_f418_failed_gate": {
+    "revision": "f4182333beb0078829abe3a05a618d16d1172300",
+    "failed": 4,
+    "passed": 10204,
+    "subtests_passed": 4637,
+    "exit_code": 1,
+    "seconds": 104.86,
+    "cause": "Supplemental effect heads changed global public routing/provenance; narrowed to read-validation boundary vocabulary in aa607316. Existing current_web tests unchanged.",
+    "artifact": "fifth-candidate-gates/core-repair/prior-runs/f4182333-mechanical.log.gz",
+    "integrate_alone": false
+  },
+  "static_helper_limit": "Advisory mutable-source review only: helper did not capture required observed HEAD/dirty-state/file fingerprints/read timestamps. Not commit-bound or release approval. Suggestions independently exercised by sole core worker; formal frozen-head audit remains required."
 }

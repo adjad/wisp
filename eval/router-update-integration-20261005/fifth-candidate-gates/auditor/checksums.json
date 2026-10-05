@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "exact_sha": "6df5200d0945ee3b050bcde4115a338e392017b1",
+  "recorded_at_utc": "2026-10-05T22:31:29.090135+00:00",
+  "algorithm": "SHA256",
+  "files": {
+    "HANDOFF.json": "37c9c3767dacc59a7f281864ed87457594f9762844a63b9726ec6482e5df8a8a",
+    "REPORT.json": "19518ec301e00c12eef929aa8450917690adf91ec0d01d9204458eafa996c18a",
+    "REPORT.md": "bd7a6fabc23b3c4c87d23601f30c1b256c1a96bd675fbf57134350913351517f",
+    "application-command-initial.log": "20cd0a2be337f6af5e00ddf3c452ae52a89f79bfd47e3ee542661bc5bfd52db7",
+    "application-command.log": "f5142a38d81f50a2a142d0ebab6035cada9900fb7c21b21097a4a99eef672801",
+    "application-results-initial.json": "bc78ed192d3b431152853b935fb429352f7a236a1ada080b0bcb0860e292ff42",
+    "application-results.json": "792636c1dc4466357cf95313176152ff1c248c33cae91aa17890e468224200c1",
+    "application_controls.py": "31182b18985814a26aa6fda0ea3aefbcd6de6b1e68cccf23c98385a8e9c1ddd5",
+    "auditor-fixture-correction.json": "180369e1fced8213007e606bf3b5ca0d0e5478132690eda54ac1bfd4b3818fff",
+    "boundary-command.log": "6178335be14464a6e1d92691e4c0671b10e7cb87ef59748c9a405f851faf1ff6",
+    "boundary-results.json": "7b6271dfea15c477dbc878358bb843cd6b36fdc9e7314279384181d82c80cdd2",
+    "boundary_controls.py": "0ce12dc8268e251ab567f3b5499381e3ed3c724edaab2354b2364cc3ba47f565",
+    "finalize_report.py": "8f5a895fab1438f4d55e47ba2a6238c60287afb35fe3d0cd52fb618f7ba83185",
+    "paired-command.log": "1020aa34fcb9d9d6f1af5b91db7cadb8ab53b4d795e92dff86066b0fb2287a9c",
+    "paired-results.json": "e25d368ca4c314022ea1106c8b4557eafe49463d10cd8e132ab9cf9ed7c25dda",
+    "paired_controls.py": "d8b55576c070e4ea4ba6ccf6dd8c6790f464525621f242d547dc9de096f0ef71",
+    "parent-gate-receipt.json": "7797957bc0235c0b035a956d2f24d12d3f3c02561955d3946f943dddbbd511df",
+    "provenance-command.log": "388b6b9bbfefd546e6a0431ff3ec2ef0723aa823be54d6d95435ef1153d7ce83",
+    "provenance.json": "198e1b1ee7e254d95c1a1980da46013710401186b0731afe8d6d8f5c8ed83c56",
+    "provenance_checks.py": "d58f657c944cab1a6f39fb1f698c288372a594be94955e13416d82f4a905330e"
+  },
+  "excludes_self": true
+}

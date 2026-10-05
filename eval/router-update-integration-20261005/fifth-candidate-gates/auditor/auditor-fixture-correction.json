@@ -1,0 +1,9 @@
+{
+  "initial_evidence": "application-results-initial.json",
+  "initial_log": "application-command-initial.log",
+  "initial_expectations_met": 63,
+  "corrected_expectations_met": 64,
+  "total": 67,
+  "correction": "Generic send it to Mom did not request an email channel. Its correct channel-null delivery cannot require send_email metadata. Corrected only auditor expected-effects field to require action guard without guessing a channel, reran bounded batch, and preserved initial raw evidence. No candidate/corpus/gold/scorer/raw overwrite.",
+  "report_write_retry": "First large final-report apply_patch call stalled without writing a file and was terminated (cell103); smaller writes completed. No candidate process or full gate was stopped."
+}

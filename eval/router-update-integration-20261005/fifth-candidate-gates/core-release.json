@@ -1,0 +1,16 @@
+{
+  "released_at_utc": "2026-10-05T22:36:14.869557+00:00",
+  "owner": "/root/router_core",
+  "frozen_parent": "6df5200d0945ee3b050bcde4115a338e392017b1",
+  "worker_base": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+  "ack": "Registry activeRepair22:33:06; preservation verified22:33:39; parentMayDispatchNow true",
+  "scope": [
+    "service/router/intent/validation.py",
+    "service/router/web_request.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "formal_evidence_bundle_sha256": "973e6a83e1f12e63f7fdff3cdae4d53103dc533fa0d2c0bb722c2860bd8c9ae1",
+  "status": "DISPATCHED_EXISTING_CORE_OWNER",
+  "separate_ci_failure": "Provider-cancellation failure remains separately reserved for read-only diagnosis; no overlap or waiver"
+}
