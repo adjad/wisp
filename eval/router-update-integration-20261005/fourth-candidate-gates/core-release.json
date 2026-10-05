@@ -1,0 +1,16 @@
+{
+  "released_at_utc": "2026-10-05T22:01:55.061330+00:00",
+  "owner": "/root/router_core",
+  "frozen_parent": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "worker_base": "375cab033a326c0e251366a24cf19a78067c0ff1",
+  "ack": "Orchestrator final turn01a10e14-11b1-7251-9d83-4cd980e2a9fd; all21bundleentriesverified and parent may release without furtherACK",
+  "scope": [
+    "service/workflows/compiler.py",
+    "service/router/intent/validation.py",
+    "service/router/web_request.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "formal_evidence_bundle_sha256": "0da5656d8b628b7ec00421d7c7ce7cbee462f6cb25b50176a0a346165dcc4bda",
+  "status": "DISPATCHED_EXISTING_CORE_OWNER"
+}

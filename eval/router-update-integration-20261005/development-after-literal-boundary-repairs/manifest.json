@@ -1,0 +1,1010 @@
+{
+  "mode": "scripted-production-path",
+  "not_model_measurement": true,
+  "split": "dev",
+  "cases": 80,
+  "metrics": {
+    "answer_facts": {
+      "numerator": 0,
+      "denominator": 0
+    },
+    "completed": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "duplicate": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "effects": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "end_to_end": {
+      "numerator": 72,
+      "denominator": 80
+    },
+    "exact_arguments": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "excluded_source": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "failure_honesty": {
+      "numerator": 16,
+      "denominator": 16
+    },
+    "first_call": {
+      "numerator": 48,
+      "denominator": 48
+    },
+    "guarded_end_to_end": {
+      "numerator": 72,
+      "denominator": 80
+    },
+    "literal_fidelity": {
+      "numerator": 40,
+      "denominator": 48
+    },
+    "menu": {
+      "numerator": 18,
+      "denominator": 18
+    },
+    "query_scope_guard": {
+      "numerator": 0,
+      "denominator": 0
+    },
+    "request_argument": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "runtime_constraints": {
+      "numerator": 80,
+      "denominator": 80
+    },
+    "source": {
+      "numerator": 80,
+      "denominator": 80
+    }
+  },
+  "provenance": {
+    "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "script_sha256": "21e155411e0517aa5922933e79fef21654f8674d24b72dbc4233cb4dfddc6234",
+    "production_files": {
+      "service/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "service/agent/__init__.py": "f07f9ccdea1eb47edf3bce6d94afaa1bdd61de1b029e2812100dc1b5d9ea5e6f",
+      "service/agent/approver.py": "1415abf0c4f12babdb04a9e0b43a7404f951503f775a559ff9e4a5ed092e9a6a",
+      "service/agent/loop.py": "14b1ddc2ecea8e6c9ce4f20f99c1220d9627f41dd1b298af30e38c9bb5376923",
+      "service/agent/verification.py": "9238b03b265609b180e1fc702bcaf9191d491ef4d8916abc79eafd2c876f3fcc",
+      "service/assistant/__init__.py": "773cb1f395502306e5a1b17ac3ec9703f376dfda8f1b38c58afd16b35657532e",
+      "service/assistant/brief.py": "0dbc832282a915bf3b8dbcad12c5a56f2465f4f133df96fbee8697f4b4728be8",
+      "service/assistant/hub.py": "e3885f876cb8fc98784879242ecf6071f8d672c3e66963f35d33c1b5a3f9cb79",
+      "service/assistant/outbound_queue.py": "ccfaa6d466be266ec2e0f17c1f290b95f317034472fced95afe1d9d3dbf24114",
+      "service/assistant/outbox.py": "773ad825e6201f27c2e473fa5c970c55a3e2d98615e5686dc66e5e095e46c8b9",
+      "service/assistant/recovery.py": "f494de283fa102e507358937170a0dbdd4890a5ee58a94b317749b8a5c560cf1",
+      "service/assistant/reminders.py": "d13297c971c08c64d38d2e6b2b33b947bbe2543ac0d8b08f3e770cf80bb42374",
+      "service/assistant/scheduler.py": "6e3420141c8ae830ca2644de2d7bd2a917a47ca22fc1e482cace476b7a05db01",
+      "service/assistant/store.py": "5e2a7830f34c65c95679fb2048ca8aeb88869eda2b3d5fd0a0ff0848cfcb6087",
+      "service/assistant/sync_status.py": "fd39965eaea00124e1ca75e38c174c09e04f5ee2319a1d2350c6d2878ded36fe",
+      "service/assistant/today.py": "809dc6c6d9e807a51541101f48626ed8d9130d8b2cec5c94ab9dbdb63204bf16",
+      "service/assistant/today_api.py": "912704d703dc795ca5405fc4161ec79872521c770a4d5a319f3d53eed833c00a",
+      "service/assistant/verified_reminders.py": "57fbda91a4eca8d40c6f9d04be11736062c6ad1e396bef45026c4370fd6885f7",
+      "service/authored_message.py": "6662e67c9a4070b487ae9b484515bc0b6ad126eb627cf90724ed7049167b282e",
+      "service/browser/__init__.py": "194f05020844e34115e58a61980bcf15912e60de6f29b1d6b320010ad0415da2",
+      "service/browser/bridge.py": "57f429ce61ba619bd428601a53e1307091c5ef2d762177f4ba2458cb867777c9",
+      "service/browser/bridge_protocol.py": "4a402ffa85331945020a819f0330b607319fea1803aee152a2ff5539fe6c1052",
+      "service/browser/contracts.py": "2f7d3e4311924abb61c9a37f676518b60cc36a87cdc94c7cece2402395e1385b",
+      "service/browser/host.py": "64637f7645bba82a6114f8db1190634f783be6e5035dfab20941e317d2da2e72",
+      "service/codex_monitor.py": "4684e3a41b1a0d31b0321d65f5c891ee675131740eddbd1d9ece3ac65784674e",
+      "service/config/__init__.py": "93e5af41f13b3b160b69ef44776fdccb15651ba7518aee99cc830d18a1532834",
+      "service/config/credentials.py": "f5a91b5a3b26059dda36c1435b4f6530ed7d47327d294eaca42116684403f35f",
+      "service/config/endpoints.py": "bd16f6c2467497309532c0a5267ebaec35efd92cfc00588fb65274ebf45e1fad",
+      "service/config/provider_credentials.py": "cbfe3c0ae70895bc154593aa67dc5d1ee64f6b645d4f2226cff141bb779b5ef4",
+      "service/config/quarantine.py": "d0313663b82b465f9c5bd3285353696e7c3acbaf59edc65f3015367fe9d785c0",
+      "service/credential_pipe.py": "d98141bfe051e635bc26b9ed0150af953bd99304a25b5c1df560bfba11308c43",
+      "service/debug_capture.py": "e15412557472ecb819ba413e3ee7220d21c98d29bd2261d50e46e4c02e754895",
+      "service/diagnostics.py": "2d338192faa53f8d0f2d5d56d7691b7b44304f29f5d2c8171322c061c1f9839d",
+      "service/discovery/__init__.py": "e162edeb556965571fd5614d188869e4af7b4826656096fef9d9ff2b68bfcbc3",
+      "service/discovery/approvals.py": "6a7b9f15fe13092ec3a2d100c6853983666426bdf0a6abc989dd5238c259db02",
+      "service/discovery/contracts.py": "a7620995d8a68ae221dd161f1af42ae05597afe8d1761d8367fa493efe87c567",
+      "service/discovery/extraction.py": "7df03a55dcfdb94f5ec9f7afbd01416ddc1c2f154280c905ddae76005023b3c2",
+      "service/discovery/jobs.py": "3e28d785b92df26a1131a637564404c91eec720287d613b6f813a74e8f1257d5",
+      "service/discovery/local_model.py": "cf5c927cb0edeada944de6a2ed86f098e92f0f1e8cfebc80ee3ee9e887e827fa",
+      "service/discovery/reconciliation.py": "670937e7365451a75f4962d668f10905b2cdcdd8d14d5aa5f4c02d644d321988",
+      "service/discovery/store.py": "3330ef73a4236b5cd90d526b9bd16afca4e5adaba2e48b645093b54a7a8fc599",
+      "service/discovery/temporal.py": "95a68f4d521462d166e97b11d344e136b695863016be6fefe45d27464ea9647e",
+      "service/errors.py": "6905e58d8e96eaeb3fe775a163045c99d7ce7488a12038cd7ea2fb30f7aeaddf",
+      "service/identity.py": "fcbc8cedac9c10046b72733f71a7b309bd67beb4c52eb9ec5ddb46ac53ed3f4f",
+      "service/idle.py": "ef64faf36d02dc678418dcafaf1fa0eea2f52f9b17036234f1b10492939755eb",
+      "service/idle_unloader.py": "255e7a6c599dda8af78703fd1d402565a40f88c6e301d3592e08bddb0272752c",
+      "service/inference/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "service/inference/attributed_transport.py": "16ddf30adc473484a215b002befd57bf39e6c1845a6ce52851d097f7d0daa23c",
+      "service/inference/heartbeat.py": "053e33938093590101e64662719cb76988db4d3277d69b077f82bab3ba721c9c",
+      "service/inference/inference_errors.py": "06045c91677422edec2a7e0794d1f41fa323c51a7a36d6a3f30e154e464be66e",
+      "service/inference/local_peer.py": "75d328dd2272fef5c308d457eb73400fa7d20fe292eef01177f178f4e6e053f1",
+      "service/inference/omlx_client.py": "ee76f3cb2acb3bf52d6ca1d7af18280cb21532b9fd07345d075854e429301cca",
+      "service/inference/providers.py": "d071996897f9d77681e64c90862e205e16e94b71eca1ae05bbfa86d0e6b37576",
+      "service/inference/qualify.py": "315adb2fd8e7420c8c0283154e2be0f316dc5ea2f7c8028812b3bfcca9e14c02",
+      "service/inference/readiness.py": "37fe73218d3f28e188c28ef1dc6c255758d27410b5644ca37c39bdac9fb53dfb",
+      "service/inference/super_model.py": "7c51247b5d9efac513ba7a06ed42e956c19bf6302a407ba4d5de279905990cfc",
+      "service/linked_documents.py": "4185753e40cddc905bb8703a658c7bc1bc6d06e1fbd1efcd1863a0385b61de5e",
+      "service/mail_mime.py": "dbe690a2eb1bc7ba38838971423f29f6ffceb1eda256a7e9417e7e0bb077af7a",
+      "service/main.py": "23181b3bd36c4758756d2e403017f4faa52e7a60ae3168032b20069a990f4cd5",
+      "service/mcp/__init__.py": "2b64bc813b38c2de61cc5d1b24a01b26b1cb57c6a14463a4742a8a2990e71f5b",
+      "service/memory/__init__.py": "5e2ed914a24c4338ddbdf577c9d536f8ae9619c70c951d75c80c454e317f34fa",
+      "service/memory/api.py": "7d062144200226566b859a850da890c8e461575c9adeb05d4485ad157c9edd4a",
+      "service/memory/capture.py": "b997cdf4e2a6c04062eaeca4477519ba587627eee5479054e83d7494967454e0",
+      "service/memory/connections.py": "a0109f6fe09d23a648884a93b47c4e4878a360caaa5c6c5478606fea3a906b91",
+      "service/memory/context.py": "31f25f3ca1d3df3a776668191b6dbac6279369534446644349ed47bd55000d0b",
+      "service/memory/facts.py": "ce355996d62ba65152545a57fa2634711620a004d389dd524583c39a4dac1eee",
+      "service/memory/identity.py": "fc64c1b1465487c12a00d046a82ba827b7ddb8c028b51816dc796289ad172650",
+      "service/memory/prompt_blocks.py": "75e5f27ef49566d245077fb82cd8f575bee0e511014c165d4178abb37be72dbc",
+      "service/memory/queue.py": "18f7f0f0c8f314d246f62ab7bbaa2d0b14f5532a7085695ae7fd57971fa933dd",
+      "service/memory/retrieval.py": "9044451826ff732a7a4d759ada677e75bdaf89fab048580dfa826acbe521c668",
+      "service/memory/store.py": "fa7414c6944ec80d03be9032f3a62d1a29aa9c49a12a985e6c7f7f0086d7a940",
+      "service/message_content.py": "267f54ded0ed050efb5cfe7f2e111f371022013f6a9f06ace686513ce18ab4d3",
+      "service/nodes.py": "dbbcf6c3c78b12c856fe105b17bc8a7a12e8f90acefe714fba1074ba2204c963",
+      "service/paths.py": "9fedd2419d762fa8bb1f93833883697e04803ece5a09b206d6424e8c411330fc",
+      "service/reminder_intent.py": "a50415312a6df0954cb582152f6cbd9108231567adc5c322c3800cbbb590fe49",
+      "service/research/__init__.py": "4aa319a4fbb9c20df6d22347d829c906e33a4be4698b030b27c2abb02168fe08",
+      "service/research/cache.py": "18d458c73f52e7c2ed8023202583c0a9775d84a646e98b0993167d8937293eda",
+      "service/research/citations.py": "5d3ea69ae09afcd22072220af5e0d94c268a728829d2a5edb92f400e34921d44",
+      "service/research/coverage.py": "d5878d1959f0df870e013ff4a577b103870aab864a0967a419dc06e8ec4a6178",
+      "service/research/models.py": "fef18e333987d1d4d903f1457c708ea39f0fb2805b1474eb8d22ddb023389902",
+      "service/research/orchestrator.py": "c937307c9984b36388678e240834f2dc508033b0d361fb67091097bf76ac68eb",
+      "service/research/rank.py": "83d2d058afffc8140cc7334e1b01cdd73f2614a7d6047bae2b27681a819bbf35",
+      "service/research/store.py": "5b31ba7b3f960221183e39143314696b0979b590426ce54a58952bfa746cfd91",
+      "service/research/textutil.py": "519ea498ca8647fbe5ce9265809a7956fabd06c434e02d84be21ae9e526a5630",
+      "service/research/web.py": "d9a1fa36c4796831811cfe116847e58a0c8899dec8169883418ff3598ebef1cc",
+      "service/router/__init__.py": "8352ce5c6f8994e2d1a2c9b4d1e04782438c653ed57e970be91eb711db363589",
+      "service/router/intent/__init__.py": "93e29fc61e59b989af34e41616d671fc34671a458811414d2802ee2cafc1f11c",
+      "service/router/intent/compiler.py": "ed75a609d481eebb2656efa07b3f48d1315e82d1d4e4a2092ccace79d49964c9",
+      "service/router/intent/grammar.py": "99159aaf44e25df361bece54c7af058d523287ffbcdee59c0cf4cb328d249600",
+      "service/router/intent/planner.py": "4780f3a37a2b43801c9a9a302375d69ba2c5d7be6cf5d524270a5fcdb4f3c45e",
+      "service/router/intent/schema.py": "db5fc1b10c81d02c3c8950329ae0bd900015978f418f0ce4b8724eb08eff68f2",
+      "service/router/intent/validation.py": "f46279059c0579292f8b9fef50241a140bb5c935dd7b13795408d49f128d4c66",
+      "service/router/normalize.py": "0ec094fe6fb2cbb7c980bf0ecae0220517035b8250596ec0d6c8d84ecfe426c6",
+      "service/router/pinning.py": "6e9a75bce0f797362e39dbcc392fabd9edff4fef430bd167626f613386e2fa76",
+      "service/router/reranker.py": "7d5f4aa83c62996164d2d55f96557ecc17710e0abd7db80cafafc7887902e8a7",
+      "service/router/router.py": "d12fda05e2c876dee182faa9f1eec1a76080dcd71f9df8d590729386a1f0b83d",
+      "service/router/semantic.py": "80e538ea641686f8f9bc5603e522d38c0beff40b1ad6dfa276c144e93112971e",
+      "service/router/tool_aliases.py": "36384255fb751d20d04cf60c9103ff035c2f2ef466ce6469f288a3197aa255af",
+      "service/router/web_request.py": "66ce9572d2c0f19a1875403e8fb378737e15ce77936005d5032d01f092e1fe26",
+      "service/safety/__init__.py": "f3fe904d1d76dbdc8c52d46252a9dbd0b9c4ccba321f0b3dd4b48f35a9bf2e3f",
+      "service/safety/audit.py": "bbdf7a7fa616eb58cfe0b46df6af1d4623af13f49257a6efc2fd2749e6270359",
+      "service/safety/grants.py": "130e61d4fed64ffb79fd61024bef16af1c3dd71fea55d07d286a76b7392a9bdf",
+      "service/safety/policy.py": "8316d6b793b5bdcdb5326f8eb689f3068609b961a464526dd75766805e06442b",
+      "service/safety/redaction.py": "538d1d1b92ff2482649df35ca830264977d74327ab8b33e8e48bab13416f25ca",
+      "service/search/__init__.py": "bf79752595f2e0c50b4d3411d65e922bfe068046bc552debcc30222effb3f894",
+      "service/search/chunker.py": "ec5a29e49f6a44002e2fd537ced6d0d2590c93a3efc4e3e622cbd5c9124c3f87",
+      "service/search/embedder.py": "696c817e731a256a271fc94dd6197872524cc42eeb4b783f37138e46066526a5",
+      "service/search/engine.py": "9c689ccae50736efbf51915895558ee808796f348f266c558ba8592084b2e455",
+      "service/search/lexical.py": "da77ea09b3b087759d7f0b5c512681936076f79d23197a720b67e8d37e5c8552",
+      "service/search/query.py": "db67b1e8fda799470e6a969637b0dc97d8a7faa99b9193ab6cf5dba032d7700f",
+      "service/search/synth.py": "081a3d58cc8fbc496078efe64f9b964c5a8b16ad0a8de8e570788e30ebda490b",
+      "service/setup/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "service/setup/catalog.py": "a4dadbf6420aa5ac116f6eea5236f156825577b7fb8d94c2e81db958d1779bce",
+      "service/setup/engines.py": "d9cc4cc21e527c50a3cd50f036904b03b455ce32261548f12bfad59cfecfbb10",
+      "service/setup/guide.py": "6c04a55024375dabdeb73fe760dc9675b80d5b38af499ca4d5c31c79da796a9b",
+      "service/setup/hardware.py": "94154391e8c22045da6b85105bda84b192b9ff28f4d3a60c975ee9d1fff480ee",
+      "service/skills/__init__.py": "baa5d27c8a7d7d739a84715799aa4171853305e0850a4c0296fe86e44732a862",
+      "service/skills/sandbox.py": "cd908e656fe7202868d7fc56e3c796295f49be64ed545ed578d1aa9320e1ca8f",
+      "service/skills/scopes.py": "47d458d622880b581806f637fe39e7cd6942ba935d3cd6f9877cca54627cd3b2",
+      "service/skills/tools.py": "78d4ffbe88d966e5e9b8041c123c279a226b12178123e04b041bc9298f2e4701",
+      "service/tasks/__init__.py": "e0cbf5ca338e42cb1145ab74866f963007dfb4adcd9f681e6e352386867d4045",
+      "service/tasks/compiler.py": "cd2fb1755800c55bd9af0176c74d60dd63ff8fb075564ba474b69742ac963627",
+      "service/tasks/engine.py": "17adda5b4d5ada091b3c67f1b64d25a2f7ceb0a7c57e78111303c23ceb3ce17a",
+      "service/tasks/executor.py": "409fbc9066ebea9bdd3d1712ae65c8876ded06dcababb046c164d3a7a7636f00",
+      "service/tasks/models.py": "14472fda188645fac9b5770668ad3edd230552f8ac5d0781c4222fdb59dbd827",
+      "service/tasks/outbound_language.py": "0e229c24d481fcf6659421354f9fd76192eb066f479a75e4dd2bd72147d66d0e",
+      "service/tasks/planner.py": "4d162e58a9aae0424b59a69d2617e2e31a6d64dc1fe5525fcb719fd728673515",
+      "service/tasks/references.py": "0c509070572e567cce7e3df0f3ce68be87711d737b286324623f9e37f6cba949",
+      "service/tasks/reply_contract.py": "0cdc3ce3aa50f45db9007fa5f98042df5f33071f027c1b0e1efc77e6574218af",
+      "service/tasks/reply_engine.py": "1ddd804e43e4da50dc95eae36171b7eaadca0714cb97aa8960f1797faef652f7",
+      "service/tasks/reply_parser.py": "052f3be295b3fe021b19490db6d9663a0950c8c7a88fc09943dfae4a92a8ac46",
+      "service/tasks/source_readers.py": "cf6cf251597f0b98e2866ee490668e1f2b5a027ce78774333ebd4afb15ab4aca",
+      "service/tasks/temporal.py": "46fb5a582ad1e9b0424718c87dc1611173a8b64a078c82ae37b9675baa95da58",
+      "service/temporal_facts.py": "87a8e04190639d3184e41a26301832b91d183842517e15cb67802e8d10d6e840",
+      "service/tools/__init__.py": "f9e3fb0f99bd99e1d21e49ad0532c140cf91955ec6c6277accc0e8359c5fa224",
+      "service/tools/action_tools.py": "c2b131b9ed5943d88e6fbfdf7f8b8b1e9586f3328b817cc0806ef3bab261b7c8",
+      "service/tools/apps.py": "44ab8b1ab65bee5549ba112741d31633174f5baf5ae274c2c7a4c5d161a8e6df",
+      "service/tools/assistant_tools.py": "0cbef09c18bceaf86c609218faccc695c289f39dfa180184bf29dec3978f9446",
+      "service/tools/automation_tools.py": "643a0724489218207e7b267cb72519d0ed992bad5b1413c19343e3dae01117d7",
+      "service/tools/browser_history_tools.py": "04c2890176fe4bc0d76256715f4a549e16f3d14ac69c55c2f1d97125d3f5da38",
+      "service/tools/builtin.py": "ce99d642e1a420f4006c26e6329751f2042e510dab25ed79b41d4d176c1e9f8e",
+      "service/tools/cache_store.py": "2721a97b34abbe755aa9c9838d2c8bdfd5fdcb493731c6a9658494f7cc2762b5",
+      "service/tools/codex_tools.py": "1c5bceec47ee7854eeaf9e4f4450e7cf2fdf15e1654bdc8c65a294b2e4d0c319",
+      "service/tools/contacts_tools.py": "945604bb33d33c3ffec0c4b4ec1b658e3efc9a95226ed20b6fa25d2efa100104",
+      "service/tools/conversions.py": "2b5a1efe1ea397873b0a0ae63f557ae16511ba75ef908ff441d2610d66715a13",
+      "service/tools/doc_tools.py": "ca9fd01eae86b01b79be4c7db9c7fcc6ab3c6531855a6f1fa90196239609c73a",
+      "service/tools/email_extras.py": "8da42fdf76dd1b21e077fc1c4e15f793e91dbb084dd9c2b8c3f928ffd8d17a70",
+      "service/tools/email_tools.py": "e4f3d64a2a2f4ab864bbcb035b6fad347e14d2f983b2268885fca6517d61af8f",
+      "service/tools/everyday.py": "70bf21956c2d0241b46b44b2e06dfb7637b8565c669fa22e1505674a2d41bd9a",
+      "service/tools/files_tools.py": "c0abb065a6c2c552ac46bd4578074dee50cc55fd5e9a19da33484af4ceda09fe",
+      "service/tools/grounded_digest.py": "52ef3e2879a64c2f3469f447664254aa1a988d3f48883e5d64583b18fd95cc3c",
+      "service/tools/imessage_tools.py": "c5f3b061af030c6fad10e82fc91c7f9060c8a1be0c2da2ec5e77aa2e56351474",
+      "service/tools/local_log.py": "33c364c878e4c539ac29e8ba80d7b67c596fc778b7177ebeaf80f963b34c4617",
+      "service/tools/maps_travel.py": "76ff5e21d36fe4f0e443b6c27bb2cce02646a4e0c3c33f7f6b7ae968c98d058c",
+      "service/tools/media_tools.py": "9fe2dfaadbb081d298b48925f8c5b45a364ec3c0102436087e1e0be84512a859",
+      "service/tools/memory_tools.py": "0ab644fc4a6fa5a2beec13ca681885a7a3864917dba0ed495b6261382bd2ce52",
+      "service/tools/message_digest.py": "84de666799d5f9a1a3c7105303d5ca25725ca673ef39478da7ed422e06472a5e",
+      "service/tools/misc_t1.py": "8e9d85d0bf589b94771d0a783d3874fe623faac662755f67f51025b11fc82bdd",
+      "service/tools/notes_tools.py": "5cddeebeaa48ff84b59c59bb76c4580032a9c2b5fbfcb01053698f323a936113",
+      "service/tools/notes_write.py": "d5c1d680e676826731cf61e638e3d0bb555b2b793d27344b7c8dc9fd1d1955ea",
+      "service/tools/recent_tools.py": "cbb2e4b57a70281651f8296a6e0355c43f299577ccf8606bd9ee81353ca01c30",
+      "service/tools/reference_tools.py": "691be2e136d53ffe210e550ffd05ff93c7582208449810bea8c732f03f1f9881",
+      "service/tools/registry.py": "52ea3ad33de61f7e8d85e66605bf341eece573addd7e1be0f9d45c8b38a50301",
+      "service/tools/schedule_extras.py": "feae3d64a238f04441708b4d3925342f82e5d614ab2eed1aae23a9d97cad30bc",
+      "service/tools/search_coverage.py": "856b3539f7c9ad50a6d0cc5651f8e3294ab529f95588753ecebc17ef77665488",
+      "service/tools/security_privacy.py": "c85fdaf50e9639d2b020b231e7d32c4ce71c53f66708726effcd240e0d3a373b",
+      "service/tools/shortcuts_bridge.py": "2e676cc4109fc32f5f3892f15dbab77e857bf2be45516e13c34c5cb5607ddbb6",
+      "service/tools/speech_tools.py": "b4ebe60639c1dbbf1614a87da3ea74f2b6a877ae69d18d2d604a73723e106aa7",
+      "service/tools/system_control.py": "a8f41a7fae7a48531a70f451f2fe13a3e5136c79cb17fbfa645edd104a48f3f6",
+      "service/tools/system_extras.py": "3668f2e64a8010ffa43d544eccbb1854d0a87e31c2c55c97e51d3e946a6e5319",
+      "service/tools/system_extras2.py": "616349704c1860db273658662086b233d291c5b7708c5feb3734a88d9327f4ea",
+      "service/tools/timeranges.py": "bd895861560f248f9802386b7c3eddaf3eb92f24e09621c0f068948c55665f38",
+      "service/tools/timers_alarms.py": "1952b0af3ce41a3b2f702e08c7189529f038f0c66b6a9311308d649c92c6dc89",
+      "service/tools/tool_authoring.py": "50511eea80726e266c649986dfa123705d7837c457038b933e204b4a64ee74d8",
+      "service/tools/web_extras.py": "54bfd0728c75c4e09966318197dadc68473178470c187e7251354dd5373c67a1",
+      "service/tools/web_tools.py": "26313f31d88cf099bebbe05496eb227ba0ffebdd398700da446bbd79a5f0cd5a",
+      "service/tools/window_tools.py": "db4210633440315408e2e913540f7cf21bc2cf65971959e2de8556e0c406d175",
+      "service/user_text.py": "a624e375753267fb02247f3b723cf21f990e6590b1da140a35c55bcef67df97c",
+      "service/utterance_shape.py": "abd58cf3039e58ab613c5b228f26182c54ac5bd5339844457b357148538e4a19",
+      "service/workflows/__init__.py": "068667858082a203c6828e1fb69290c0096e791e22619ce71b595c04aa89c84e",
+      "service/workflows/compiler.py": "a230484a683dfc3fbb3c1f80eef82a3936f5a068f2e2e618a18a775111b1caaf",
+      "service/workflows/engine.py": "2dd3f9d93d66ab1dcf3556a6d9f83f353dc6ba96dc94e5460c96ad12b636c3ca",
+      "service/workflows/executor.py": "628e03d8378c4c7a7f10d08e944e41d5e38aa85b9be11d26560e645b61554742",
+      "service/workflows/models.py": "561b606c9fe2ebf4dc72e9b78da19176089f1a4ace37158e5a2c75a1cdedd217",
+      "service/workflows/notification.py": "07b3f7f42054a3cb47977c51a3319d6345c7b4514b078bb3ec472e3853893cbe",
+      "service/workflows/present.py": "033a587dd295a189e18de38465960a5ed1bc20fb92b10b0bec32383238f19b52",
+      "service/workflows/reads.py": "d4be24a1b7b4cc7ba1109163126739c60d6eec50b5f111d32d7ae5a4c1af5245"
+    },
+    "git_head": "473c28f906beeb64fe5a9cb3e29e106e74f45b63",
+    "model": {
+      "kind": "scripted",
+      "revision": null,
+      "checkpoint": null,
+      "weights_sha256": null
+    },
+    "python": "3.14.3 (v3.14.3:323c59a5e34, Feb  3 2026, 11:41:37) [Clang 16.0.0 (clang-1600.0.26.6)]",
+    "seal": {
+      "authorship": "independent original product taxonomy; no historical raw prompts imported",
+      "sealed_at": "2026-10-05",
+      "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+      "unit": "scenario",
+      "independence_unit": "family",
+      "splits": {
+        "dev": {
+          "count": 80,
+          "families": 10,
+          "categories": [
+            "calendar",
+            "draft_vs_send",
+            "effect",
+            "email",
+            "failure",
+            "messages",
+            "negation",
+            "no_tool",
+            "notes",
+            "quoted_text",
+            "recovery",
+            "reminders"
+          ],
+          "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+        },
+        "test": {
+          "count": 320,
+          "families": 40,
+          "categories": [
+            "account_literal",
+            "ambiguity",
+            "calendar",
+            "context_followup",
+            "count",
+            "coverage",
+            "day",
+            "direction",
+            "draft_vs_send",
+            "dst",
+            "duration",
+            "effect",
+            "email",
+            "exact_date",
+            "excluded_source",
+            "free_time",
+            "groundtruth",
+            "identity_literal",
+            "messages",
+            "month",
+            "multi_source",
+            "negation",
+            "no_tool",
+            "notes",
+            "partial_failure",
+            "past",
+            "public_personal",
+            "query_literal",
+            "quoted_text",
+            "records",
+            "recovery",
+            "reminders",
+            "scope",
+            "typo",
+            "unavailable_tools",
+            "unread",
+            "week",
+            "year_transition"
+          ],
+          "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+        }
+      }
+    }
+  },
+  "raw_sha256": "25762fb09af8aa4df2c3b19cbabad701ccc6e70cf850230006957716955b5c86",
+  "frozen_candidate_sha": null,
+  "per_family": {
+    "dev-calendar-simple": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-clause-mentioned": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "menu": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-explicit-prohibition": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "menu": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-fixture-failure": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 0,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 0,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 0,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-mail-recent": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-notes-simple": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-reminder-search": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-send-denied": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "first_call": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-social": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "menu": {
+        "numerator": 2,
+        "denominator": 2
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    },
+    "dev-texts-recent": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "duplicate": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "effects": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "exact_arguments": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "excluded_source": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "failure_honesty": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "first_call": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "guarded_end_to_end": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "literal_fidelity": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "menu": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "runtime_constraints": {
+        "numerator": 8,
+        "denominator": 8
+      },
+      "source": {
+        "numerator": 8,
+        "denominator": 8
+      }
+    }
+  }
+}

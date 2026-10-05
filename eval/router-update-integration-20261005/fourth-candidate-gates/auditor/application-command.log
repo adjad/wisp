@@ -1,0 +1,54 @@
+{"id": "R3-mixed-positive", "met": true, "actual_calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}], ["search_notes", {"query": "harbor sketches", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R3-mixed-reversed-positive", "met": true, "actual_calls": [["search_notes", {"query": "harbor sketches", "period": "yesterday"}], ["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R3-overview-plus-lookup", "met": false, "actual_calls": [], "route": null, "diagnosis": null}
+{"id": "R3-missing", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "A requested lookup filter was dropped"}
+{"id": "R3-truncated", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "R3-invented", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Literal filter was changed or invented"}
+{"id": "R3-date-swap", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Requested source time was dropped, changed or added"}
+{"id": "R3-repeated-positive", "met": true, "actual_calls": [["search_notes", {"period": "tomorrow"}], ["search_notes", {"query": "harbor sketches", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R3-repeated-swapped-query", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R3-unbounded-second-lookup", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "A requested clause lookup filter was dropped"}
+{"id": "literal-source-unquoted-positive", "met": false, "actual_calls": [], "route": "clarify", "diagnosis": "Missing requested source"}
+{"id": "literal-source-quoted-positive", "met": true, "actual_calls": [["search_notes", {"query": "my calendar"}]], "route": "compiled", "diagnosis": null}
+{"id": "literal-source-extra-rejected", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Literal content cannot authorize another source"}
+{"id": "literal-action-quoted-positive", "met": true, "actual_calls": [["search_notes", {"query": "send email"}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-coordinated-positive", "met": true, "actual_calls": [["view_emails", {"query": "Lyra", "strict_match": true, "period": "yesterday"}], ["view_emails", {"query": "Orion", "strict_match": true, "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-quoted-positive", "met": true, "actual_calls": [["view_emails", {"query": "Lyra", "strict_match": true, "period": "yesterday"}], ["view_emails", {"query": "Orion", "strict_match": true, "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-new-verb-positive", "met": true, "actual_calls": [["view_emails", {"query": "Lyra", "strict_match": true}], ["view_emails", {"query": "Orion", "strict_match": true, "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-new-verb-wrong-shared-date", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R4-mixed-source-noun-positive", "met": true, "actual_calls": [["search_notes", {}], ["view_emails", {"query": "harbor sketches", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "action-email-addressee", "met": true, "actual_calls": [], "route": null, "diagnosis": "Missing independently requested read clause"}
+{"id": "action-explicit-destination", "met": true, "actual_calls": [], "route": null, "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "action-pronoun-destination", "met": true, "actual_calls": [], "route": null, "diagnosis": "Missing independently requested read clause"}
+{"id": "action-text-addressee", "met": true, "actual_calls": [], "route": null, "diagnosis": "Missing requested source"}
+{"id": "action-draft-destination", "met": true, "actual_calls": [], "route": null, "diagnosis": "Missing independently requested read clause"}
+{"id": "action-later-delivery", "met": true, "actual_calls": [], "route": null, "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "action-quoted-topic", "met": true, "actual_calls": [["view_emails", {"query": "email Mom", "strict_match": true}], ["view_emails", {"query": "Orion", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "action-negated", "met": true, "actual_calls": [], "route": null, "diagnosis": "Missing explicit source exclusion"}
+{"id": "R1-whole-tuples-positive", "met": true, "actual_calls": [["view_emails", {"account": "ArchiveLab", "unread": true, "count": 3, "query": "Lyra", "strict_match": true, "period": "2026-10-01"}], ["view_emails", {"account": "Studio", "count": 7, "query": "Orion", "strict_match": true, "period": "2026-10-04"}]], "route": "compiled", "diagnosis": null}
+{"id": "R1-reverse-order-positive", "met": true, "actual_calls": [["view_emails", {"account": "Studio", "count": 7, "query": "Orion", "strict_match": true, "period": "2026-10-04"}], ["view_emails", {"account": "ArchiveLab", "unread": true, "count": 3, "query": "Lyra", "strict_match": true, "period": "2026-10-01"}]], "route": "compiled", "diagnosis": null}
+{"id": "R1-swap-query", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-time", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-account", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-count", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-unread", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-operation", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-missing-occurrence", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Missing exact quoted filter"}
+{"id": "R1-duplicate-positive", "met": true, "actual_calls": [["view_emails", {"account": "ArchiveLab", "unread": true, "count": 3, "query": "Lyra", "strict_match": true, "period": "2026-10-01"}], ["view_emails", {"account": "Studio", "count": 7, "query": "Orion", "strict_match": true, "period": "2026-10-04"}]], "route": "compiled", "diagnosis": null}
+{"id": "R2-new-query-positive", "met": true, "actual_calls": [["search_notes", {"count": 3, "query": "copper maps", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R2-stale-query-rejected", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "R2-inherited-constraints-positive", "met": true, "actual_calls": [["view_emails", {"account": "ArchiveLab", "unread": true, "count": 3, "query": "Orion", "strict_match": true, "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R2-ambiguous-context", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Query replacement needs one unambiguous contextual source"}
+{"id": "alias-calendar-positive", "met": true, "actual_calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "route": "compiled", "diagnosis": null}
+{"id": "alias-inbox-positive", "met": true, "actual_calls": [["view_emails", {"period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "alias-messages-positive", "met": true, "actual_calls": [["summarize_messages", {}]], "route": "compiled", "diagnosis": null}
+{"id": "alias-ambiguous", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Cannot establish independent source clause bounds"}
+{"id": "F1-date-omission", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Requested source time was dropped, changed or added"}
+{"id": "F1-scope-omission", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Requested reminder scope was dropped or changed"}
+{"id": "F1-minutes-omission", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Requested free-slot duration was dropped or changed"}
+{"id": "F1-duration-positive", "met": true, "actual_calls": [["find_free_time", {"period": "tomorrow", "minutes": 90}]], "route": "compiled", "diagnosis": null}
+{"id": "F3-calendar-only", "met": true, "actual_calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "route": null, "diagnosis": "Missing requested source"}
+{"id": "exclusion-positive", "met": true, "actual_calls": [["view_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "exclusion-negative", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Excluded source requested"}
+{"id": "unsupported-daypart", "met": true, "actual_calls": [], "route": "clarify", "diagnosis": "Requested time-of-day or range is not representable"}
+{"total": 53, "expectations_met": 51, "failed_cases": ["R3-overview-plus-lookup", "literal-source-unquoted-positive"]}

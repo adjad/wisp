@@ -1,0 +1,90 @@
+{
+  "task": "/root/router_core",
+  "created_utc": "2026-10-05T22:13:26.952668+00:00",
+  "branch": "codex/router-intent-core",
+  "head": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+  "repair_base": "375cab033a326c0e251366a24cf19a78067c0ff1",
+  "original_base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "origin_main_fetched": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "remote_tracking_head": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+  "worktree_clean": true,
+  "diff_check_exit_code": 0,
+  "changed_files": [
+    "service/workflows/compiler.py",
+    "service/router/intent/validation.py",
+    "service/router/web_request.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "outcome": [
+    "Read/overview source nouns are excluded from delivery preflight under supported read governors, while later actions remain visible.",
+    "Complete lookup literals supply no additional source authority, including context and per-domain allowlist admission; raw explicit exclusions remain instructions.",
+    "Coordinated read filters retain internal prepositions; explicit outer personal/address destinations and later delivery clauses retain action guards."
+  ],
+  "mechanical": {
+    "exact_sha": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
+    "command": "WISP_HOME=/private/tmp/wisp-router-r456-exact-state PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest --noconftest tests/test_router_intent_core.py tests/test_router_intent_main.py tests/test_router_intent_workflow.py tests/test_tomorrow_planning.py tests/test_multi_source_fallback.py tests/test_read_context_continuations.py tests/test_routing_semantic_correctness.py tests/test_routing_contract_regressions.py tests/test_current_web_routing.py tests/test_routing_quality_corpus.py tests/test_routing_quality_fixes.py tests/test_contextual_outbound_routing.py tests/test_outbound_language_clarification.py tests/test_outbound_payload_presentation.py tests/test_outbound_content_provenance.py tests/test_workflow_inline_delivery.py tests/test_workflow_authored_message.py tests/test_web_response_followup.py -q",
+    "suite_count": 18,
+    "exit_code": 0,
+    "tests_passed": 10103,
+    "subtests_passed": 4640,
+    "elapsed_seconds": 92.73,
+    "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/mechanical.log",
+    "full_transcript_available": true,
+    "exec_session": 90853
+  },
+  "focused_history": [
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused.log",
+      "exit_code": 1,
+      "result": "8 failed, 370 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-2.log",
+      "exit_code": 0,
+      "result": "378 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-3.log",
+      "exit_code": 1,
+      "result": "2 failed, 386 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-4.log",
+      "exit_code": 0,
+      "result": "389 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-5.log",
+      "exit_code": 1,
+      "result": "1 failed, 389 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-6.log",
+      "exit_code": 0,
+      "result": "390 passed"
+    },
+    {
+      "log": "/private/tmp/wisp-router-core-8a22eb2ec9841cb473ce1d24c308af34df22ccb5/wisp-router-r456-focused-7.log",
+      "exit_code": 0,
+      "result": "393 passed"
+    }
+  ],
+  "failure_history": [
+    "Initial 8 failures exposed literal-action eligibility and workflow source tokens in complete queries/exclusions; one assertion also expected send_email instead of existing self-delivery draft_email.",
+    "Next 2 failures were test expectations for a delivery with an unspecified channel: retained delivery is correctly detected but does not yet authorize a send effect.",
+    "One later failure was a duplicate config keyword in the new test helper call; corrected the test invocation."
+  ],
+  "integration": [
+    "Parent integrates only this frozen repair commit onto its frozen combined candidate; no merge or PR created by worker.",
+    "No API/schema/tool-signature changes. Existing policy, permission, model eligibility, settings and residency remain unchanged.",
+    "Parent owns new combined exact-head gates, independent audit, required CI and specialist QA."
+  ],
+  "limitations": [
+    "Ambiguous destinations retain existing action/clarification behavior; this repair does not grant any new tool authority.",
+    "Unsupported literal/time boundaries preserve conservative classification and strict intent validation.",
+    "No actual inference, model training, native/user-data operations, or outbound effects were performed."
+  ],
+  "independent_review": "pending parent gate; worker does not approve own repair",
+  "ci": "not run by worker; parent owns PR CI"
+}

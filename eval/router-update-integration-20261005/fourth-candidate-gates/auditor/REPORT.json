@@ -1,0 +1,494 @@
+{
+  "schema_version": 1,
+  "role": "independent read-only Wisp Release Auditor",
+  "independent_of": [
+    "builder/integrator",
+    "repair authors",
+    "Simulation QA actor"
+  ],
+  "verdict": "BLOCK",
+  "exact_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_audit_sha": "27490ae5055502423f187e84ca52d0064b794396",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "checkout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "output_directory": "/private/tmp/wisp-router-273d274-gates-20261005/auditor",
+  "recorded_at_utc": "2026-10-05T21:59:29.140134+00:00",
+  "scope": {
+    "complete_changed_files": 141,
+    "delta_since_previous_audit": 49,
+    "method": "Complete current intended base-to-head scope assessed using prior completed full source/context reviews for unchanged files plus full current production/test/docs/progress delta and relevant preflight/validator/router context. All141 changed files rehashed; opaque corpus/author/replay/archive handling is an explicit scope restriction.",
+    "production_delta": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py"
+    ],
+    "test_delta": [
+      "tests/test_message_digest.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "areas": [
+      "source/query/time/count/account occurrence authority",
+      "context correction and aliases",
+      "read/outbound workflow preflight and classifier",
+      "schema/compiler/runtime identity and exclusions",
+      "deadline/cancellation/defaultoff",
+      "multi-source grounding/coverage/rendering",
+      "G1 privacy test oracle",
+      "scorer/timezone/manifest",
+      "opaque provenance and activation limits"
+    ],
+    "changed_files_and_hashes": "provenance.json"
+  },
+  "findings": [
+    {
+      "id": "R4",
+      "priority": "P2",
+      "blocking": true,
+      "status": "ORIGINAL_REPRODUCER_CLOSED_REPAIR_INCOMPLETE",
+      "title": "Do not reinterpret a to preposition inside an unquoted email search as a delivery recipient",
+      "locations": [
+        {
+          "file": "service/router/web_request.py",
+          "start": 553,
+          "end": 557
+        },
+        {
+          "file": "service/router/web_request.py",
+          "start": 471,
+          "end": 474
+        },
+        {
+          "file": "service/router/router.py",
+          "start": 6967,
+          "end": 6974
+        }
+      ],
+      "request": "Read email from Lyra and email about road to recovery",
+      "intent_sources": [
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "Lyra"
+        },
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "road to recovery"
+        }
+      ],
+      "expected_calls": [
+        [
+          "view_emails",
+          {
+            "query": "Lyra",
+            "strict_match": true
+          }
+        ],
+        [
+          "view_emails",
+          {
+            "query": "road to recovery",
+            "strict_match": true
+          }
+        ]
+      ],
+      "local_validation": {
+        "accepted": true
+      },
+      "standalone_planner": {
+        "disposition": "compiled",
+        "calls": [
+          [
+            "view_emails",
+            {
+              "query": "Lyra",
+              "strict_match": true
+            }
+          ],
+          [
+            "view_emails",
+            {
+              "query": "road to recovery",
+              "strict_match": true
+            }
+          ]
+        ]
+      },
+      "classification": {
+        "delivery": {
+          "text": "email about road to recovery",
+          "channel": "email",
+          "address": null,
+          "phone": null,
+          "self_delivery": false,
+          "draft_only": false,
+          "scheduled": false,
+          "start": 25,
+          "target_missing": false,
+          "recipient": "recovery"
+        },
+        "effects": [
+          "send_email"
+        ],
+        "source": "Read email from Lyra"
+      },
+      "actual_main_route": {
+        "type": "routed",
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email lookup -> scoped tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "verified_results_only": false,
+        "strict_read_limits": {},
+        "reminder_action": "",
+        "trace_id": "d644cbc4d54141b893faf8e367bbca86"
+      },
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "observed_calls": [],
+      "description": "The new coordinated-read helper rejects any to token in the entire unquoted complement. In email about road to recovery, to belongs to the literal search, yet _delivery treats recovery as a recipient and classifies send_email authority. The valid standalone intent compiles two strict reads, but actual main.agent suppresses structured planning and returns to the broad legacy email lookup menu.",
+      "required_behavior": "Bind delivery destinations and payload relations structurally, after excluding the bounded read query. Preserve genuine email from Orion to Mom and later send clauses; do not classify arbitrary query prepositions as an addressee.",
+      "positive_controls": [
+        "R4-coordinated-positive",
+        "R4-quoted-positive",
+        "quoted-preposition-data"
+      ],
+      "genuine_action_controls": [
+        "action-email-addressee",
+        "action-explicit-destination",
+        "action-pronoun-destination",
+        "action-text-addressee",
+        "action-draft-destination",
+        "action-later-delivery"
+      ],
+      "impact_limits": "Incorrect effect metadata and structured-planner bypass are proven. The actual fallback exposed six legacy email tools, not send_email, and executed no tool. No unauthorized send or executable outbound capability expansion is claimed. The canned fallback answer is not actual-model failure-rate evidence.",
+      "evidence": {
+        "file": "followup-results.json",
+        "case": "unquoted-preposition-data",
+        "paired_control": "quoted-preposition-data"
+      }
+    },
+    {
+      "id": "R5",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Keep ordinary email recap requests out of the delivery workflow preflight",
+      "locations": [
+        {
+          "file": "service/workflows/compiler.py",
+          "start": 43,
+          "end": 48
+        },
+        {
+          "file": "service/workflows/compiler.py",
+          "start": 2483,
+          "end": 2484
+        },
+        {
+          "file": "service/workflows/engine.py",
+          "start": 155,
+          "end": 158
+        },
+        {
+          "file": "service/main.py",
+          "start": 1492,
+          "end": 1510
+        }
+      ],
+      "request": "Recap email",
+      "expected_calls": [
+        [
+          "summarize_emails",
+          {}
+        ]
+      ],
+      "local_validation": {
+        "accepted": true
+      },
+      "standalone_planner": {
+        "disposition": "compiled",
+        "calls": [
+          [
+            "summarize_emails",
+            {}
+          ]
+        ]
+      },
+      "classification": {
+        "delivery": null,
+        "effects": [],
+        "source": "Recap email"
+      },
+      "outbound_verb": true,
+      "workflow": {
+        "id": "1bc1b2be4e934698a9a049b97c68f5b6",
+        "revision": 0,
+        "kind": "deliver_summary",
+        "sources": [
+          "email"
+        ],
+        "source_args": {
+          "email": null
+        },
+        "recipient": "",
+        "channel": "",
+        "delivery": "send",
+        "when": "",
+        "location": "",
+        "stock_symbols": [],
+        "date_range": "",
+        "original_request": "Recap email",
+        "artifact_text": "",
+        "artifact_request": "",
+        "artifact_provenance": "",
+        "news_artifact_provenance": {},
+        "news_clarification_provenance": {},
+        "content_error": "I couldn't tell exactly what to send. I can send a summary of your unread emails, messages, calendar or daily brief \u2014 say which one and when, for example: \u201ctext Mom a summary of my unread emails from today\u201d. Or tell me what you want the message to say and I'll write it.",
+        "status": "waiting_for_content",
+        "last_error": "",
+        "created_at": 1791237340.097785,
+        "updated_at": 1791237340.0977862
+      },
+      "observed_calls": [],
+      "actual_answer": "I couldn't tell exactly what to send. I can send a summary of your unread emails, messages, calendar or daily brief \u2014 say which one and when, for example: \u201ctext Mom a summary of my unread emails from today\u201d. Or tell me what you want the message to say and I'll write it.",
+      "description": "The workflow email-noun mask supports summarize/read but omits recap. Recap email is accepted as a supported overview by the intent validator/planner and has no web-request effects, yet outbound_verb returns true and compile_new creates a deliver_summary waiting_for_content plan. Main preflight emits a delivery question and returns before routing or model interpretation. Recap email; find notes named harbor sketches loses both supported reads in the same way.",
+      "required_behavior": "Recognize the recap head as a source read in workflow admission, consistently with the structured grammar and web classifier; keep real recipients/delivery verbs and later action clauses visible.",
+      "positive_controls": [
+        "possessive-email-recap",
+        "summarize-email-mixed",
+        "possessive-recap-mixed"
+      ],
+      "impact_limits": "No source read or send occurs. This is deterministic workflow preemption and an inappropriate delivery prompt, not a real outbound effect. The defect is in full intended execution scope even though its noun mask is unchanged in the latest repair delta.",
+      "evidence": {
+        "file": "followup-results.json",
+        "case": "bare-email-recap",
+        "additional_file": "application-results.json",
+        "additional_case": "R3-overview-plus-lookup"
+      }
+    },
+    {
+      "id": "R6",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Compute source authority from instruction text before requiring domains found inside a search literal",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "start": 593,
+          "end": 593
+        },
+        {
+          "file": "service/router/intent/validation.py",
+          "start": 683,
+          "end": 693
+        }
+      ],
+      "request": "Find notes about my calendar",
+      "intent_sources": [
+        {
+          "domain": "notes",
+          "operation": "records",
+          "query": "my calendar"
+        }
+      ],
+      "expected_calls": [
+        [
+          "search_notes",
+          {
+            "query": "my calendar"
+          }
+        ]
+      ],
+      "local_validation": {
+        "accepted": false,
+        "diagnosis": "Missing requested source"
+      },
+      "standalone_planner": {
+        "disposition": "clarify",
+        "calls": [],
+        "reason": "invalid intent after bounded repair",
+        "attempts": 2
+      },
+      "observed_calls": [],
+      "description": "source_requirements(prompt) masks quoted text but treats calendar inside the recognized unquoted notes query my calendar as a requested domain. A correct notes-only intent fails Missing requested source before the newly added instruction-text authority check. Adding calendar satisfies the earlier domain requirement but the new check correctly rejects that literal-derived extra domain, leaving no valid representation of the supported query. Find notes about our messages behaves identically.",
+      "required_behavior": "Use the same bounded instruction/literal distinction for required-source and extra-source authority. Permit the complete notes-only query; continue rejecting model-invented additional reads and preserving genuine separately requested calendar/messages clauses.",
+      "positive_controls": [
+        "literal-source-quoted-positive",
+        "quoted-source-data",
+        "R3-mixed-positive"
+      ],
+      "negative_controls": [
+        "literal-source-extra-rejected",
+        "R3-missing",
+        "R3-truncated",
+        "R1-swap-query"
+      ],
+      "impact_limits": "The new authority check prevents literal-derived extra reads. This finding is safe but deterministic over-abstention for unquoted queries; no privacy expansion or native read was observed.",
+      "evidence": {
+        "file": "application-results.json",
+        "case": "literal-source-unquoted-positive",
+        "additional_file": "followup-results.json",
+        "additional_case": "unquoted-source-data"
+      }
+    }
+  ],
+  "prior_finding_reassessment": [
+    {
+      "id": "R3",
+      "status": "RESOLVED_FOR_ORIGINAL_AND_FRESH_SCOPE",
+      "details": "Mixed calendar/notes and reversed ordering compile correctly. Repeated notes with one unfiltered and one filtered occurrence compile; missing/truncated/invented filters, date swaps and misbound repeated queries reject. R5 is a distinct application preflight gap for overview wording."
+    },
+    {
+      "id": "R4",
+      "status": "ORIGINAL_REPRODUCER_RESOLVED_BUT_PARTIAL",
+      "details": "Original two-sender shared-date, quoted variants and mixed notes/email nouns work. True delivery and later effect clauses keep the read-planner guard; quoted/negated action controls grant no effects. A bounded unquoted query containing to still misclassifies delivery: current blocking R4."
+    },
+    {
+      "id": "G1",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Production redaction code unchanged. Actual repaired target test passes clean/1234/5678 fixed clocks; exact timestamps, positions, two occurrences, selected cache rows and four summaries preserve text/model/debug privacy assertions. Injecting a common private body into redact_summary_codes causes the new textual assertion to fail, proving the narrowed oracle still detects leaks."
+    },
+    {
+      "id": "R1",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Correct/reversed whole tuples execute; sender/date/account/count/unread/operation swaps and missing occurrences reject; exact duplicate dedupe works."
+    },
+    {
+      "id": "R2",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "New source-free query executes with inherited date/count/account/unread where requested; stale response and multi-source ambiguous context reject."
+    },
+    {
+      "id": "ALIASES",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Natural calendar/appointments, inbox/email, texts/messages aliases work; unclear independent date bounds clarify."
+    },
+    {
+      "id": "F1_F2_F3",
+      "status": "ORIGINAL_REPRODUCERS_RESOLVED",
+      "details": "Date/reminder scope/duration omissions, truncated query and unsupported daypart reject. Supported90-minute free slot executes; actual tomorrow shortcut is calendar-only (its synthetic unused empty intent is not separately validator-valid)."
+    },
+    {
+      "id": "F4",
+      "status": "RESOLVED",
+      "details": "All six added test modules explicitly admitted, missing/unknown entries fail closed."
+    },
+    {
+      "id": "P3",
+      "status": "MITIGATED_LEGACY_LIMIT_RETAINED",
+      "details": "Original Python numeric equality remains disclosed. Supplemental typed request_argument and guarded_end_to_end reject bool/float count mismatch."
+    },
+    {
+      "id": "UTC",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "UTC/Pacific hosts match exact23h/25h DST bounds, distinguish wrong days, restore absent/exceptional TZ and fail closed without tzset."
+    }
+  ],
+  "independent_execution": {
+    "application": {
+      "total": 53,
+      "expectations_met": 51,
+      "failed_cases": [
+        "R3-overview-plus-lookup",
+        "literal-source-unquoted-positive"
+      ]
+    },
+    "paired_followup": {
+      "total": 8,
+      "expectations_met": 5,
+      "failed_cases": [
+        "bare-email-recap",
+        "unquoted-source-data",
+        "unquoted-preposition-data"
+      ]
+    },
+    "boundary": {
+      "total": 33,
+      "passed": 33,
+      "failed": []
+    },
+    "actual_model_calls": false,
+    "native_or_outbound_execution": false,
+    "heldout_payload_opened": false,
+    "auditor_fixture_repairs": [
+      {
+        "command": "boundary_controls.py initial run",
+        "exit_code": 1,
+        "diagnosis": "Pytest prohibits calling a decorated fixture directly; fresh auditor setup called t.isolated(mp).",
+        "repair": "Only auditor-owned script changed to call the fixture underlying __wrapped__ setup with MonkeyPatch context; targeted controls then ran33/33. No candidate/test edits."
+      },
+      {
+        "command": "provenance_checks.py initial run",
+        "exit_code": 1,
+        "diagnosis": "Fresh verifier expected flat replay checksum keys; two newest bundles use per-file stored_sha256/original_sha256 records.",
+        "repair": "Only auditor-owned verifier added declared per-file schema support; all eight replay and66 archive entry hashes then verified. No raw payload repair or source edit."
+      }
+    ],
+    "commands": [
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-273d274-gates-20261005/auditor/application_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-273d274-gates-20261005/auditor/boundary_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-273d274-gates-20261005/auditor/followup_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 /private/tmp/wisp-router-273d274-gates-20261005/auditor/provenance_checks.py"
+    ],
+    "raw_evidence": [
+      "application-results.json",
+      "boundary-results.json",
+      "followup-results.json",
+      "provenance.json"
+    ]
+  },
+  "parent_mechanical_gate": {
+    "status": "PASS",
+    "modules": 179,
+    "total_modules": 179,
+    "exit_code": 0,
+    "exact_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+    "receipt": "parent-gate-receipt.json",
+    "external_log": "/private/tmp/wisp-router-update-273d274-regression.log",
+    "verified_log_sha256": "b7c4b99573d6285388493808469f29214ec5f460f089cf81405df9a40f0a4c4c",
+    "completed_at_utc": "2026-10-05T21:55:42.482152+00:00",
+    "full_gate_run_by_auditor": false
+  },
+  "provenance_summary": {
+    "head_clean_at_completion": true,
+    "changed_files": 141,
+    "replay_bundles_verified": 8,
+    "archive_entries_verified": 66,
+    "opaque_seals_and_corpus_bytes_unchanged": true,
+    "exact_registered_scope_and_handoff_pins_verified": true,
+    "candidate_source_edits": false
+  },
+  "failures_skips_limits": [
+    "Real model inference/status/endpoints, accuracy/95% targets, strict JSON support, latency and actual model generalization remain unmeasured. Scripted oracle replies do not establish activation readiness.",
+    "No real native tool bodies, personal data/settings/credentials, communications, external networking, training/model residency/configuration changes, installed-app relaunch/replacement, deployment or merge. Guard installed before service imports; application calls use registered fake interfaces.",
+    "Heldout test.jsonl, dev.jsonl and corpus author script stayed opaque bytes; raw replay/archive payloads only hashed/decompressed as bytes, never parsed or fed to repair authors. No archived script executed.",
+    "No duplicate full regression or DEV harness rerun. Parent once-only179/179PASS verified by exact receipt and complete log hash; prior27490ae178/179FAIL and auditBLOCK preserved and do not transfer.",
+    "Required CI observed still running in parent receipt; no current independent passing CI receipt inspected. A passing local gate does not approve audit defects.",
+    "Separate Simulation QA remains held by BLOCK. Separate Live QA/performance/protected integration/ship gates remain where required.",
+    "Enabled builder DEV80/80source/exact,48/48first-call,72/80original/guarded E2E and16/16failure honesty remain scripted metadata. Default-off control is distinct and preserved (78/80source/exact,70/80E2E); neither is model quality. Zero applicable answer-fact/query-guard denominators prove neither property.",
+    "Planner remains default-disabled with external resident-window dependency pending. This report grants no activation, model loading, merge or shipping authority.",
+    "No blanket action/helper PASS inferred from no-call scripts. Genuine actions were classification/planner-guard controls; native/outbound execution and installed UI were not tested. Known fallback no-call output is fixture behavior, not real-model failure incidence."
+  ],
+  "handoff": "Parent reads formal files; route current R4/R5/R6 to Orchestrator for one recorded repair owner each before editing. Read-only diagnosis reservation is not edit authority. New repairs require new freeze/ACK and independent exact-SHA review. No QA release, activation or merge approval from this BLOCK."
+}

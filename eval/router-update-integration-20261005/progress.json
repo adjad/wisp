@@ -1,6 +1,6 @@
 {
-  "status": "source_clause_and_digest_repairs_integrated_preparing_frozen_gates",
-  "updated_at": "2026-10-05T21:43:39.861097+00:00",
+  "status": "literal_authority_and_delivery_boundary_repairs_integrated_preparing_frozen_gates",
+  "updated_at": "2026-10-05T22:14:27.713959+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,14 +10,14 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "R3/R4 source-occurrence and coordinated-read repairs frozen clean pushed and integrated",
-      "commit": "375cab033a326c0e251366a24cf19a78067c0ff1",
+      "status": "R4/R5/R6 full-query and read-head repairs frozen clean pushed and integrated",
+      "commit": "8a22eb2ec9841cb473ce1d24c308af34df22ccb5",
       "validation_reported": {
-        "passed": 10025,
+        "passed": 10103,
         "subtests_passed": 4640,
-        "seconds": 79.07,
+        "seconds": 92.73,
         "suites": 18,
-        "scope": "Exact worker head; source lookup bindings, positive actual-main reads, retained genuine outbound and prior constraint controls"
+        "scope": "Exact worker head; complete transcript and initial failure history preserved in fourth-candidate-gates/core-repair"
       }
     },
     "router_eval": {
@@ -78,10 +78,10 @@
     "model_inference": false,
     "real_tool_execution": false
   },
-  "model_measurement_window": "Blocked on external coordination: Claude performance coordinator session-limited, send disabled; no quiescence/window acknowledgment. Current registry reports auto-resume at 3:01 PM Pacific. Do not infer availability from idle or rate limit.",
+  "model_measurement_window": "Blocked on external coordination: after3:01PM the Claude coordinator showed resuming but Send disabled and100% session usage; no explicit quiescence/start/end ACK. No inference started.",
   "production_changed": false,
   "pending": [
-    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R3/R4/G1 and full-scope audit, and separate synthetic QA",
+    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R4/R5/R6 and full-scope audit, and separate synthetic QA",
     "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
     "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
     "Protected integration handoff; no deployment or feature activation"
@@ -101,11 +101,11 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "d53e52f5d61112fe0d8da1c68a72fd1340a4ee74",
-    "passed": 489,
+    "revision": "473c28f906beeb64fe5a9cb3e29e106e74f45b63",
+    "passed": 567,
     "skipped": 1,
     "skip_reason": "Original-control-only absence check",
-    "seconds": 9.84,
+    "seconds": 11.34,
     "scope": "Integrated core/actor/workflow/eval/overviews/manifest/unchanged tomorrow/fallback",
     "model_calls": false,
     "heldout_opened": false
@@ -742,5 +742,112 @@
     },
     "candidate": false,
     "note": "First invocation omitted --candidate; preserved as default-off control, not compared as enabled candidate. Correct enabled invocation retained separately. No source edits between runs."
+  },
+  "fourth_frozen_candidate_gates": {
+    "revision": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+    "artifact": "fourth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179 modules; exact-head terminal receipt/log preserved",
+      "artifact": "SUCCESS; both publishing jobsSKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R4 unquoted query preposition mistaken for delivery recipient",
+        "R5 bare email recap intercepted by delivery workflow",
+        "R6 unquoted search data incorrectly establishes required source authority"
+      ],
+      "original_R3_and_R4_reproducers": "Closed",
+      "G1_privacy_test": "Closed; all three clocks and injected-text-leak control pass",
+      "main_and_planner_expectations_met": 51,
+      "main_and_planner_expectations_total": 53,
+      "paired_followup_met": 5,
+      "paired_followup_total": 8,
+      "boundary_controls_passed": 33,
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking new exact-SHA audit"
+  },
+  "development_after_literal_boundary_repairs": {
+    "revision": "473c28f906beeb64fe5a9cb3e29e106e74f45b63",
+    "artifact": "development-after-literal-boundary-repairs",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay."
   }
 }

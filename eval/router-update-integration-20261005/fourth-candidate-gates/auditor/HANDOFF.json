@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "verdict": "BLOCK",
+  "exact_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "recorded_at_utc": "2026-10-05T21:59:29.140134+00:00",
+  "blocking_findings": [
+    "R4",
+    "R5",
+    "R6"
+  ],
+  "original_R3_closed": true,
+  "original_R4_reproducer_closed": true,
+  "G1_closed": true,
+  "parent_full_gate": "PASS179/179",
+  "required_ci": "No current passing receipt independently inspected",
+  "report": "REPORT.md",
+  "structured_report": "REPORT.json",
+  "provenance": "provenance.json",
+  "checksums": "checksums.json",
+  "candidate_source_edits": false,
+  "tree_clean": true,
+  "simulation_qa_release": false,
+  "activation_or_shipping_approval": false,
+  "next_step": "Parent routes findings to Orchestrator for sole-owner edit ACKs, new freeze and independent re-review; preserve current failed positive controls. Parent reads final, no cross-chat response required."
+}

@@ -1,0 +1,10 @@
+{
+  "manifest.json": {
+    "original_sha256": "66f868c68657c2e3ce0beecf723401870f250a0da5f1752419fcfbac6ab9587b",
+    "stored_sha256": "66f868c68657c2e3ce0beecf723401870f250a0da5f1752419fcfbac6ab9587b"
+  },
+  "raw.jsonl.gz": {
+    "original_sha256": "25762fb09af8aa4df2c3b19cbabad701ccc6e70cf850230006957716955b5c86",
+    "stored_sha256": "bc21cc2617a0696aaffd2ce4729577568e526ddc100c0f1d2f6b0d95d578d951"
+  }
+}

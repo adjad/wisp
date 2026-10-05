@@ -1,0 +1,21 @@
+{
+  "exact_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "workspace": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "branch": "codex/router-update-1-3",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "status": "PASS",
+  "passed_modules": 179,
+  "total_modules": 179,
+  "exit_code": 0,
+  "command": "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python scripts/test_replay_failure_fixes.py",
+  "log": "/private/tmp/wisp-router-update-273d274-regression.log",
+  "log_sha256": "b7c4b99573d6285388493808469f29214ec5f460f089cf81405df9a40f0a4c4c",
+  "completed_at_utc": "2026-10-05T21:55:42.482152+00:00",
+  "launch": "Approved outer sandbox escalation; repository inner isolated native-peer sandbox unchanged",
+  "clean_exact_head_verified": true,
+  "model_inference": false,
+  "real_user_tools_or_outbound_effects": false,
+  "independent_audit": "Pending; provisional related scope findings, not a gate pass",
+  "required_ci": "Still running; not a pass",
+  "simulation_qa": "Held pending nonblocking same-SHA audit"
+}
