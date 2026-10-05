@@ -304,6 +304,15 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
     if re.search(r"\b(?:create|set|add|remove|delete|cancel|update|remind)\b", text, re.I):
         return None
     period = _date_range(text)
+    from service.router.intent.grammar import personal_agenda_period
+    if agenda_period := personal_agenda_period(text):
+        from service.router.intent.compiler import canonical_period, UnsupportedRead
+        from service.router.intent.schema import TimeScope
+        try:
+            resolved = canonical_period(TimeScope(named=agenda_period))
+        except UnsupportedRead as exc:
+            return [], str(exc)
+        return [("get_upcoming", {"period": resolved})], ""
     if re.fullmatch(r"(?:my\s+)?daily\s+(?:summary|brief|digest)", text, re.I):
         return [("daily_brief", {})], ""
     if re.fullmatch(r"(?:show|put|keep)?\s*(?:it|this|that)?\s*(?:here\s+)?on\s+wisp", text, re.I):
@@ -360,7 +369,14 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
         if not args["symbols"]:
             return [], "Which stock symbols or company names should I include?"
         return [("get_stock_price", args)], ""
-    if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\b(?:summaries|summary|digest)\b", text, re.I):
+    if re.fullmatch(
+            r"(?:please |can you |could you )?(?:show(?: me)? |give(?: me)? |check )?"
+            r"(?:my |the )?(?:email|inbox) (?:summaries|summary|digest)"
+            r"(?: (?:for |from )?(?:today|yesterday|this week|last week|this month|last month))?"
+            r"(?: (?:but not|without|excluding|exclude|skip) (?:my |the )?"
+            r"(?:messages?|texts?|notes?|calendar|reminders?)"
+            r"(?: (?:and|or) (?:messages?|texts?|notes?|calendar|reminders?))*)?",
+            text, re.I):
         return [("summarize_emails", _source_args("email", text, period))], ""
     if re.search(r"\b(?:email|inbox)\b", text, re.I) and re.search(r"\bpurchases?\s+from\b", text, re.I):
         match = re.search(r"\bpurchases?\s+from\s+([\w -]+)$", text, re.I)
@@ -369,6 +385,49 @@ def compile_read(prompt: str, *, last_user: str = "", last_tools: str = "",
             return [("view_emails", {"query": sender, "strict_match": True})], ""
         return None
     return None
+
+
+_READ_LABELS = {"get_upcoming": "Agenda", "search_reminders": "Reminders",
+                "view_emails": "Email", "summarize_emails": "Email",
+                "view_messages": "Messages", "summarize_messages": "Messages",
+                "search_notes": "Notes", "find_free_time": "Free time"}
+
+
+def _literal_label(value) -> str:
+    # Literal tool args remain authoritative; only their display is escaped.
+    text = re.sub(r"[\x00-\x1f\x7f]+", " ", str(value)).strip()
+    return re.sub(r"([\\`*_{}\[\]()<>#!])", r"\\\1", text)
+
+
+def read_result_label(name: str, args: dict) -> str:
+    label = _READ_LABELS.get(name, name)
+    scope = []
+    if args.get("period") or args.get("day"):
+        scope.append(_literal_label(args.get("period") or args["day"]))
+    elif args.get("scope") and args["scope"] != "all":
+        scope.append(_literal_label(args["scope"]))
+    if args.get("unread"):
+        scope.append("unread")
+    for field in ("query", "conversation", "account"):
+        if args.get(field):
+            scope.append("“" + _literal_label(args[field]) + "”")
+    if scope:
+        label += " — " + " · ".join(scope)
+    return label
+
+
+def merge_read_results(calls, results) -> str:
+    """Preserve every receipt, scope and failure; single digest is untouched."""
+    if len(results) == 1:
+        return results[0]["result"]
+    by_id = {call["id"]: call for call in calls}
+    blocks = []
+    for result in results:
+        call = by_id.get(result["id"], {})
+        args = call.get("args", {})
+        label = read_result_label(result["name"], args)
+        blocks.append("**" + label + ":**\n" + result["result"])
+    return "\n\n".join(blocks)
 
 
 async def execute_read(compiled, emit, *, test_mode=False):
@@ -402,7 +461,7 @@ async def execute_read(compiled, emit, *, test_mode=False):
         results.append(item)
         await emit({"type": "tool_result", **item})
     failed = any(r["status"] not in {"succeeded", "no_match", "planned"} for r in results)
-    response = "\n\n".join(r["result"] for r in results)
+    response = merge_read_results(calls, results)
     if has_display_only:
         response = DisplayOnlyToolResult("\n\n".join(displays), model_text=response,
                                          artifact_kind="news" if len(results) == 1 else "mixed")
