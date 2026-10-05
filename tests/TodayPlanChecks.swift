@@ -439,6 +439,33 @@ struct TodayPlanChecks {
                                                due: Date(timeIntervalSince1970: taskWithDue.due_ts!), pin: nil)
         check(preserved["due_ts"] as? Double == existingDue.timeIntervalSince1970,
               "Editing an existing deadline must preserve its exact instant")
+        let diagnosticsModel = TodayModel(timezone: TimeZone(secondsFromGMT: 0), now: { instant("2026-09-24T08:00:00Z") })
+        var debugRequested = false
+        diagnosticsModel.transport = { request in
+            debugRequested = (URLComponents(url: request.url!, resolvingAgainstBaseURL: true)!.queryItems ?? []).contains { $0.name == "debug" && $0.value == "true" }
+            if request.httpMethod == "POST" {
+                return (Data("{\"detail\":\"PRIVATE-MUTATION-FAILURE\"}".utf8), HTTPURLResponse(url: request.url!, statusCode: 409, httpVersion: nil, headerFields: nil)!)
+            }
+            var object = try JSONSerialization.jsonObject(with: planData(day: query(request, "day"), zone: query(request, "timezone"))) as! [String: Any]
+            object["trace_id"] = String(repeating: "a", count: 32)
+            object["replay"] = ["private_title": "PRIVATE-TASK"]
+            return (try JSONSerialization.data(withJSONObject: object), response(request))
+        }
+        await diagnosticsModel.refresh()
+        check(!debugRequested && diagnosticsModel.diagnosticSnapshot().details == nil)
+        diagnosticsModel.capturePlannerDetails = true
+        await diagnosticsModel.refresh()
+        check(debugRequested && diagnosticsModel.diagnosticSnapshot().details != nil)
+        diagnosticsModel.capturePlannerDetails = false
+        check(diagnosticsModel.diagnosticSnapshot().details == nil)
+        let saved = await diagnosticsModel.mutate("/assistant/today/tasks", method: "POST", body: [:])
+        check(!saved && diagnosticsModel.diagnosticSnapshot().metadata["client_outcome"] as? String == "mutation_failed")
+        check(diagnosticsModel.diagnosticSnapshot().metadata["client_error_code"] as? Int == 409)
+        check(diagnosticsModel.diagnosticSnapshot().metadata["trace_id"] == nil)
+        check(diagnosticsModel.diagnosticSnapshot().metadata["refresh_trace_id"] != nil)
+        check(!String(describing: diagnosticsModel.diagnosticSnapshot().metadata).contains("PRIVATE"))
+        diagnosticsModel.selectDate(instant("2026-09-25T08:00:00Z"))
+        check(diagnosticsModel.diagnosticSnapshot().metadata["client_outcome"] as? String == "not_loaded")
         if ProcessInfo.processInfo.environment["WISP_TODAY_WINDOW_CHECK"] == "1" {
             try await windowChecks()
         }

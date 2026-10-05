@@ -7,6 +7,7 @@ trap 'rm -rf "$today_scratch"' EXIT
 export WISP_HOME="$today_scratch/state"
 swiftc -parse-as-library -swift-version 5 \
     -module-cache-path "$today_scratch/module-cache" \
+    "$project_root/app/Sources/WispApp/DiagnosticReport.swift" \
     "$project_root/app/Sources/WispApp/TodayView.swift" \
     "$project_root/tests/TodayPlanChecks.swift" \
     -o "$today_scratch/today-checks"

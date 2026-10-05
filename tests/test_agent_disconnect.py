@@ -745,3 +745,67 @@ def test_a_stop_inside_the_real_summary_never_unsettles_a_finished_turn(monkeypa
         assert added == [("user", "tell me something"), ("assistant", "all done")], added
         assert not any("could not be completed" in text for _, text in turns(sid))
     asyncio.run(scenario())
+
+
+def test_diagnostic_trace_survives_disconnect_and_records_approval_without_contents(isolated, monkeypatch, tmp_path):
+    from service import diagnostics
+    monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)
+    async def scenario():
+        iterator = await start()
+        events = await read_until(iterator, "confirm")
+        trace_id = events[0]["trace_id"]
+        assert all(ev["trace_id"] == trace_id for ev in events)
+        await iterator.aclose()
+        payload = json.loads((tmp_path / "diagnostics" / (trace_id + ".json")).read_text())
+        assert payload["status"] == "cancelled"
+        assert any(ev["stage"] == "confirm" for ev in payload["events"])
+        assert payload["events"][-1]["stage"] == "cancelled"
+        assert "~/Desktop" not in json.dumps(payload)
+        assert "args" not in json.dumps(payload)
+    asyncio.run(scenario())
+
+
+def test_test_mode_and_unconsumed_response_create_no_journal(isolated, monkeypatch, tmp_path):
+    from service import diagnostics
+    monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)
+    async def scenario():
+        unused = await start()
+        await unused.aclose()
+        assert not list(tmp_path.iterdir())
+        iterator = await start(test_mode=True)
+        await read_until(iterator, "confirm")
+        await iterator.aclose()
+        assert not list(tmp_path.iterdir())
+    asyncio.run(scenario())
+
+
+def test_diagnostic_cancellation_before_runner_first_step(isolated, monkeypatch, tmp_path):
+    from service import diagnostics
+    monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)
+    async def scenario():
+        iterator = await start()
+        session = json.loads((await iterator.__anext__())[6:])
+        await iterator.aclose()
+        payload = json.loads((tmp_path / "diagnostics" / (session["trace_id"] + ".json")).read_text())
+        assert payload["status"] == "cancelled"
+    asyncio.run(scenario())
+
+
+def test_escaping_error_translation_is_journaled_failed(isolated, monkeypatch, tmp_path):
+    from service import diagnostics
+    monkeypatch.setattr(diagnostics, "MOE_DIR", tmp_path)
+    async def fail(*args, **kw):
+        raise ValueError("PRIVATE-INFERENCE-FAILURE")
+    def broken_translation(*args, **kw):
+        raise RuntimeError("PRIVATE-TRANSLATION-FAILURE")
+    monkeypatch.setattr(main, "run_agent", fail)
+    monkeypatch.setattr(main, "translate_error", broken_translation)
+    async def scenario():
+        iterator = await start()
+        session = json.loads((await iterator.__anext__())[6:])
+        async for _ in iterator:
+            pass
+        payload = json.loads((tmp_path / "diagnostics" / (session["trace_id"] + ".json")).read_text())
+        assert payload["status"] == "failed"
+        assert "PRIVATE" not in json.dumps(payload)
+    asyncio.run(scenario())

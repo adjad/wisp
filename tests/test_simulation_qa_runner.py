@@ -219,6 +219,9 @@ def test_commands_without_a_count_contract_are_explicitly_unreported() -> None:
 
 def test_child_process_uses_fake_home_and_strips_host_wisp_overrides(
         monkeypatch, tmp_path: Path) -> None:
+    # Prefix forwarding has its own positive contract; this probe covers the
+    # remaining host overrides independently of its caller's sandbox prefix.
+    monkeypatch.delenv("WISP_BUILD_FIXTURE_PREFIX", raising=False)
     hostile_home = tmp_path / "host-home"
     hostile_template = hostile_home / "installed-template.jinja"
     hostile_template.parent.mkdir()
@@ -482,3 +485,27 @@ def test_native_launch_error_is_reported_and_dependent_gate_is_blocked(
     assert contract_gate["status"] == "BLOCKED"
     assert contract_gate["blocked_by"] == "native/mail-db-compile"
     assert contract_gate["launch_error"] is None
+
+
+def test_child_environment_preserves_only_valid_native_fixture_prefix(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_BUILD_FIXTURE_PREFIX", "wispqa-owned-run_123")
+    monkeypatch.setenv("WISP_BUILD_OTHER_SECRET", "must-not-leak")
+    env = simqa._child_environment(tmp_path)
+    assert env["WISP_BUILD_FIXTURE_PREFIX"] == "wispqa-owned-run_123"
+    assert "WISP_BUILD_OTHER_SECRET" not in env
+
+
+@pytest.mark.parametrize("prefix", ["", "diagnostic-checks", "wispqa-../outside", "wispqa-a/b",
+                                    "wispqa-a\n", "wispqa-a;exit", "wispqa-" + "a" * 65])
+def test_child_environment_refuses_invalid_native_fixture_prefix(monkeypatch, tmp_path, prefix):
+    monkeypatch.setenv("WISP_BUILD_FIXTURE_PREFIX", prefix)
+    with pytest.raises(RuntimeError, match="Invalid native fixture prefix"):
+        simqa._child_environment(tmp_path)
+
+
+def test_run_forwards_valid_fixture_prefix_to_native_contract(monkeypatch):
+    monkeypatch.setenv("WISP_BUILD_FIXTURE_PREFIX", "wispqa-owned-run_123")
+    result = simqa._run("fixture/native-prefix", [sys.executable, "-c",
+        "import os; assert os.environ['WISP_BUILD_FIXTURE_PREFIX'] == 'wispqa-owned-run_123'; print('1 passed')"])
+    assert simqa._gate_status(result) == "PASS"
+    assert result.passed == 1

@@ -234,4 +234,6 @@ async def _maybe_daily_brief() -> None:
     # The legacy file is read for migration compatibility only. New completion
     # lives in the event receipt transaction; exhausting retries is not delivery.
     if attempts <= _MAX_BRIEF_ATTEMPTS:
-        await run_scheduled_brief("morning" if hour < 12 else "evening")
+        from service import diagnostics
+        with diagnostics.span("daily_brief"):
+            await run_scheduled_brief("morning" if hour < 12 else "evening")

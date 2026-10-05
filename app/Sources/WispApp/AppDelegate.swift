@@ -271,6 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // switching it on partway through a chat doesn't lose earlier turns.
         let debugItem = menu.addItem(withTitle: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
         debugModeItem = debugItem
+        menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: "Export Chat Debug Log…", action: #selector(exportDebugLog), keyEquivalent: "")
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
@@ -691,6 +692,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // timing, tok/s, tool calls, and any errors) to ~/Downloads as JSON + a
     // readable .txt companion, then reveals them in Finder. No-ops with a
     // brief alert if there's no conversation yet.
+    @objc private func reportProblem() { model.reportCurrentProblem() }
+
     @objc private func exportDebugLog() {
         guard let url = model.exportDebugLog() else {
             let alert = NSAlert()

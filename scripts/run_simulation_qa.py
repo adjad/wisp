@@ -192,6 +192,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Synthetic content-free journal, bounded offline planner replay; no external effects.
+    "tests/test_diagnostics.py",
     "tests/test_wisp_cowork.py",
     # Bounded public-manifest JS fixtures only; no DOM, browser or network access.
     "tests/browser_dom/test_page_extractor.py",
@@ -226,6 +228,10 @@ ADDITIONAL_FULL_TESTS = {
     # Characterization of the desktop oMLX attestation walker and _listener call shape
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
+    # Differential of the libproc executable-path lookup against the old lsof one, on disposable
+    # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
+    # port 8000, network or other process.
+    "tests/test_runtime_proc_path.py",
     "tests/test_omlx_updates.py",
     "tests/test_primary_runtime_completion.py",
     "tests/test_credential_quarantine.py",
@@ -452,6 +458,14 @@ def _child_environment(state_dir: Path, *, include_node_runtime: bool = False) -
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
     }
+    # The outer build sandbox allows Foundation replacement folders bearing
+    # only this run's executable prefix. Native contracts must retain it through
+    # the environment allowlist; it grants no new sandbox permission.
+    fixture_prefix = os.environ.get("WISP_BUILD_FIXTURE_PREFIX")
+    if fixture_prefix is not None:
+        if not re.fullmatch(r"wispqa-[A-Za-z0-9_-]{1,64}", fixture_prefix):
+            raise RuntimeError("Invalid native fixture prefix")
+        env["WISP_BUILD_FIXTURE_PREFIX"] = fixture_prefix
     if include_node_runtime:
         env["QA_NODE_RUNTIME"] = str(resolve_node_runtime(os.environ.get("QA_NODE_RUNTIME")))
     return env
@@ -598,6 +612,7 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             "native/search-contract",
             [TRUSTED_BASH, "scripts/test_search_contract.sh"],
         ),
+        ("native/diagnostic-report-contract", [TRUSTED_BASH, "scripts/test_diagnostic_report.sh"]),
         (
             "native/today-contract",
             [TRUSTED_BASH, "scripts/test_today_contract.sh"],

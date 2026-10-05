@@ -118,6 +118,17 @@ def summary_snapshot() -> dict:
 
 
 async def ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -> dict:
+    from service import diagnostics
+    with diagnostics.span("source_sync") as trace:
+        result = await _ensure_sources(sources, timeout_seconds)
+        for source in result.get("sources", []):
+            trace.event("sources", source=source.get("id"), source_state=source.get("state"))
+        trace.event("sources", ok=not result.get("syncing", False) and
+                    all(s.get("state") == "ready" for s in result.get("sources", [])))
+        return result
+
+
+async def _ensure_sources(sources: Iterable[str], timeout_seconds: float = 2.5) -> dict:
     """Ask the Swift app for current reads, then briefly await its POSTs."""
     wanted = tuple(dict.fromkeys(sources))
     if not wanted:

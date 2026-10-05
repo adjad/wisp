@@ -70,6 +70,20 @@ def reminder_create_fallback_allowed(payload: dict) -> bool:
 
 async def request(event_type: str, payload: dict,
                   timeout: float = DEFAULT_TIMEOUT_S) -> dict:
+    from service import diagnostics
+    standalone = diagnostics.current_id() is None
+    with diagnostics.span("native") as trace:
+        trace.event("requested", component="native", native_operation=event_type)
+        result = await _request(event_type, payload, timeout)
+        outcome = "succeeded" if result.get("ok") is True else "unknown" if result.get("status") == "unknown" else "failed"
+        trace.event("result", component="native", ok=result.get("ok") is True, native_outcome=outcome)
+        if standalone and outcome != "succeeded":
+            trace.finish("unknown" if outcome == "unknown" else "failed")
+        return result
+
+
+async def _request(event_type: str, payload: dict,
+                   timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     """Ask the app to do something and wait for its result.
 
     Returns {"ok": bool, "error": str, ...}. Never raises.
