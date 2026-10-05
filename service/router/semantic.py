@@ -139,6 +139,39 @@ _FILE_ACTION_RE = re.compile(
     r"\b(?:files?d?|put)\s+(?:\w+\s+){0,3}away\b", re.I)
 
 
+# Committing outbound tools and bulk/permanent deletes, offered by RETRIEVAL
+# only when the request itself asks to reach someone or to delete something.
+#
+# This is an accuracy gate, not the safety boundary — every one of these is
+# CONFIRM-gated by safety.policy. Measured on the routing-quality corpus
+# (docs/ROUTING_DIAGNOSIS.md): send tools sat in 52 of 125 retrieved menus for
+# reads, chat, code and compose prompts ("tell me a joke", "write a haiku"),
+# where they can only be picked by mistake. Domain rules that already know a
+# send is wanted (and confirmation of an offered send, which retrieves on the
+# assistant's offer text) are unaffected: the gate opens on the same verbs.
+_OUTBOUND_TOOLS = frozenset({"send_email", "send_message", "reply_to_email", "forward_email",
+                             "schedule_send", "place_call", "unsubscribe"})
+_BULK_DELETE_TOOLS = frozenset({"clear_reminders", "clear_past_reminders", "clear_memory", "delete_path"})
+_OUTBOUND_INTENT_RE = re.compile(
+    r"\b(?:send|sent|sending|re-?send|text(?:ing|ed)?|txt|e-?mail\w*|emial|mail|reply|respond|"
+    r"write\s+back|forward|fwd|i?message|msg|sms|dm|notify|inform|cc|loop\s+in|share|"
+    r"unsubscribe|call|ring|phone|dial|facetime|"
+    r"tell\s+(?!me\b|us\b)\w+|ping\s+(?!me\b)\w+|let\s+(?!me\b)\S+(?:\s+\S+)?\s+know|"
+    r"drop\s+\S+\s+a\s+line)\b", re.I)
+_DELETE_INTENT_RE = re.compile(
+    r"\b(?:delete|deleting|clear|wipe|erase|remove|purge|forget|reset|empty|trash|"
+    r"get\s+rid\s+of|clean\s*up|throw\s+(?:away|out))\b", re.I)
+
+
+def gated_tool_allowed(name: str, text: str) -> bool:
+    """Whether retrieval may offer `name` for `text` under the intent gates above."""
+    if name in _OUTBOUND_TOOLS:
+        return bool(_OUTBOUND_INTENT_RE.search(text))
+    if name in _BULK_DELETE_TOOLS:
+        return bool(_DELETE_INTENT_RE.search(text))
+    return True
+
+
 def _docs(tool: Tool) -> list[str]:
     """The documents embedded for one tool — its definition, plus ONE PER ALIAS.
 
@@ -355,7 +388,8 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
     scored = await _INDEX.rank(text, timeout=timeout)
     open_gate = _gate_open(text, writing=writing)
     eligible = [(n, s) for n, s in scored
-                if n not in _PINNED and _allowed(n, writing=open_gate)]
+                if n not in _PINNED and _allowed(n, writing=open_gate)
+                and gated_tool_allowed(n, text)]
     picked: list[str] = []
     if eligible:
         cutoff = eligible[0][1] * _REL_FLOOR

@@ -4,6 +4,8 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+- Fixed tool menus for requests that match no routing rule offering send, reply, call and bulk-delete tools when the request never asked to contact anyone or delete anything (for example "tell me a joke" or "do I have anything on Sunday"). Those tools stay available whenever the request does ask.
+
 ## [1.2.0] - Pending qualification
 
 ### Added
