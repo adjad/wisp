@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'eval/router-update-20261005'
@@ -104,6 +105,86 @@ def runtime_constraint_issues(case, calls):
     return sorted(set(issues))
 
 
+def same_typed(left, right):
+    """JSON equality without Python's bool/int or int/float coercion."""
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same_typed(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same_typed(a, b) for a, b in zip(left, right))
+    return left == right
+
+
+def advertised_message_guard(schemas):
+    # Runtime-default augmentation adds only `default`, never schema types.
+    # Require an actual Boolean registration, not a signature-only parameter.
+    prop = schemas.get('view_messages', {}).get('properties', {}).get('strict_match', {})
+    if prop.get('type') != 'boolean':
+        return False
+    if 'const' in prop and prop['const'] is not True:
+        return False
+    if 'enum' in prop and not any(value is True for value in prop['enum']):
+        return False
+    return True
+
+
+def request_arguments_match(calls, gold, normalized, desired, schemas):
+    """One bounded addition: registered view_messages query guard=True.
+
+    Explicit gold fields remain authoritative. This is a request-contract metric,
+    not a declaration that guarded and broadening tool behavior are equivalent.
+    """
+    if len(calls) != len(gold):
+        return False
+    for actual, expected, actual_norm, expected_norm in zip(calls, gold, normalized, desired):
+        if same_typed(actual_norm, expected_norm):
+            continue
+        args, expected_args = actual['args'], expected['args']
+        if (actual['name'] != 'view_messages' or expected['name'] != 'view_messages'
+                or 'strict_match' in expected_args or args.get('strict_match') is not True
+                or not advertised_message_guard(schemas)
+                or not isinstance(expected_args.get('query'), str) or not expected_args['query']
+                or not same_typed(args.get('query'), expected_args['query'])):
+            return False
+        amended = {'name': actual_norm['name'], 'args': dict(actual_norm['args'])}
+        amended['args'].pop('strict_match', None)
+        if not same_typed(amended, expected_norm):
+            return False
+    return True
+
+
+def query_scope_guard(calls, gold, schemas):
+    applicable = []
+    for index, expected in enumerate(gold):
+        args = expected['args']
+        if expected['name'] != 'view_messages' or not isinstance(args.get('query'), str) or not args['query']:
+            continue
+        # Explicit False requests the legacy contract: no guarded-success credit.
+        if 'strict_match' in args and args['strict_match'] is False:
+            continue
+        applicable.append((index, expected))
+    if not applicable:
+        return None
+    if not advertised_message_guard(schemas):
+        return False
+    return all(index < len(calls) and calls[index]['name'] == 'view_messages'
+               and same_typed(calls[index]['args'].get('query'), expected['args']['query'])
+               and calls[index]['args'].get('strict_match') is True
+               for index, expected in applicable)
+
+
+def evaluation_path(events):
+    for event in events:
+        if event.get('type') == 'routed':
+            disposition = event.get('intent_disposition')
+            if isinstance(disposition, str) and disposition in {'compiled', 'clarify', 'declined'}:
+                return 'intent_' + disposition
+            return event.get('route_source', 'router_agent')
+    return ('workflow' if any(event.get('type') == 'workflow' for event in events) else
+            'task' if any(event.get('type') == 'task_plan' for event in events) else 'shortcut_or_read')
+
+
 def score(case, run):
     expected = case['expected']
     calls = run['executed_calls']
@@ -151,6 +232,14 @@ def score(case, run):
         'completed': not errors and not planned_only and any(e.get('type') == 'done' for e in run.get('events', [])),
     }
     scored['end_to_end'] = all(v for v in scored.values() if v is not None)
+    # Preserve the original three metrics before adding this frozen amendment.
+    original_gates = {key: value for key, value in scored.items()
+                      if key not in {'exact_arguments', 'first_call', 'end_to_end'}}
+    scored['request_argument'] = request_arguments_match(calls, allowed_calls, normalized, desired, schemas)
+    scored['query_scope_guard'] = query_scope_guard(calls, allowed_calls, schemas)
+    scored['guarded_end_to_end'] = (all(value for value in original_gates.values() if value is not None)
+                                  and scored['request_argument']
+                                  and scored['query_scope_guard'] is not False)
     return {'metrics': scored, 'actual_sources': actual_sources,
             'forbidden_sources': forbidden, 'runtime_constraint_issues': runtime_issues, 'expected_calls': desired, 'actual_calls': normalized}
 
@@ -263,13 +352,22 @@ class ScriptedClient:
     managed = True
 
     def __init__(self, case):
+        from service.config.endpoints import role_target
+        import httpx
+        self.target = role_target('router')
+        self.base_url = self.target.endpoint.base_url.rstrip('/')
+        self.managed = self.target.endpoint.managed
+        self.endpoint_name = self.target.endpoint.name
+        self.api_prefix = self.target.endpoint.api_prefix
+        self.provider = SimpleNamespace(name=self.target.endpoint.provider)
+        # Identity-only fixture metadata. No transport, key loader, or socket.
+        self._credential_transport = SimpleNamespace(origin=httpx.URL(self.base_url), backend=object())
         self.case = case
         self.raw = []
         self.step = 0
 
     async def status(self):
-        from service.config import role_to_model
-        return {'models': [{'id': role_to_model('router'), 'loaded': True}]}
+        return {'models': [{'id': self.target.model, 'loaded': True}]}
 
     async def ensure_only(self, model, **kwargs):
         self.raw.append({'kind': 'fixture_readiness', 'model': model})
@@ -438,6 +536,14 @@ async def run_case(case, state, *, candidate=False, inference_adapter=None):
              patch.object(action_tools, 'prepare_reply_args', unavailable_reply):
             from contextlib import ExitStack
             with ExitStack() as stack:
+                if candidate and inference_adapter is None:
+                    planner = importlib.import_module('service.router.intent.planner')
+                    # Same frozen synthetic role target used by fake identity/status.
+                    def fixture_router_target(role):
+                        if role != 'router':
+                            raise PermissionError('Fixture planner requested a non-router role')
+                        return client.target
+                    stack.enter_context(patch.object(planner, 'role_target', fixture_router_target))
                 stack.enter_context(patch.object(time, 'time', lambda: fixed.timestamp()))
                 for module in list(sys.modules.values()):
                     if module and getattr(module, '__name__', '').startswith('service.') and getattr(module, 'datetime', None) is datetime:
@@ -471,9 +577,7 @@ async def run_case(case, state, *, candidate=False, inference_adapter=None):
                 'checkpoint_sha256': inference_adapter.grant.checkpoint_sha256,
                 'approval_receipt': inference_adapter.grant.approval_receipt}, 'candidate': candidate,
             'clock': case.get('clock'), 'synthetic_contacts': {name: contacts(name)[0] for name in names}, 'context': copy.deepcopy(case.get('context', [])),
-            'path': next((e.get('route_source', 'router_agent') for e in events if e.get('type') == 'routed'),
-                         'workflow' if any(e.get('type') == 'workflow' for e in events) else
-                         'task' if any(e.get('type') == 'task_plan' for e in events) else 'shortcut_or_read')}
+            'path': evaluation_path(events)}
 
 
 def git_revision():

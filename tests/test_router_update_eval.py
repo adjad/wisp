@@ -252,3 +252,135 @@ print('RENDERED_SYNTHETIC')
     result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'RENDERED_SYNTHETIC'
+
+
+def message_guard_schema():
+    return {'view_messages': {'properties': {'query': {'type': 'string'},
+        'count': {'type': 'integer'}, 'strict_match': {'type': 'boolean', 'default': False}}}}
+
+
+def test_added_registered_message_guard_keeps_original_metrics_and_adds_guarded_credit():
+    gold = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'count': 3}}
+    actual = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'count': 3, 'strict_match': True}}
+    result = evaluation.score(case(calls=[gold], sources=['messages']), run([actual], schemas=message_guard_schema()))
+    metrics = result['metrics']
+    assert metrics['exact_arguments'] is False
+    assert metrics['first_call'] is False
+    assert metrics['end_to_end'] is False
+    assert metrics['request_argument'] is True
+    assert metrics['query_scope_guard'] is True
+    assert metrics['guarded_end_to_end'] is True
+
+
+@pytest.mark.parametrize('args', [
+    {'query': 'prefix LITERAL-42 suffix', 'count': 3, 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': '3', 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': True, 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': 3.0, 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': 3, 'day': 'today', 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': 3, 'account': 'extra-account', 'strict_match': True},
+    {'query': ['LITERAL-42'], 'count': 3, 'strict_match': True},
+    {'query': 'LITERAL-42', 'count': 3, 'strict_match': 1},
+    {'query': 'LITERAL-42', 'count': 3, 'strict_match': 'true'},
+])
+def test_message_guard_addition_never_relaxes_other_arguments_or_types(args):
+    expected = case(calls=[{'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'count': 3}}], sources=['messages'])
+    metrics = evaluation.score(expected, run([{'name': 'view_messages', 'args': args}], schemas=message_guard_schema()))['metrics']
+    assert metrics['request_argument'] is False
+    assert metrics['guarded_end_to_end'] is False
+
+
+@pytest.mark.parametrize('properties', [{}, {'strict_match': {'default': False}},
+    {'strict_match': {'type': 'string'}}, {'strict_match': {'type': 'boolean', 'enum': [False]}},
+    {'strict_match': {'type': 'boolean', 'const': False}}])
+def test_message_guard_needs_actual_registered_boolean_capability(properties):
+    gold = {'name': 'view_messages', 'args': {'query': 'LITERAL-42'}}
+    actual = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'strict_match': True}}
+    metrics = evaluation.score(case(calls=[gold], sources=['messages']), run([actual], schemas={'view_messages': {'properties': properties}}))['metrics']
+    assert metrics['request_argument'] is False
+    assert metrics['query_scope_guard'] is False
+    assert metrics['guarded_end_to_end'] is False
+
+
+@pytest.mark.parametrize('flag', [None, False, 0, 1, 'true'])
+def test_omitted_or_invalid_message_guard_is_not_guarded_success(flag):
+    args = {'query': 'LITERAL-42'}
+    if flag is not None:
+        args['strict_match'] = flag
+    gold = {'name': 'view_messages', 'args': {'query': 'LITERAL-42'}}
+    metrics = evaluation.score(case(calls=[gold], sources=['messages']), run([{'name': 'view_messages', 'args': args}], schemas=message_guard_schema()))['metrics']
+    assert metrics['query_scope_guard'] is False
+    assert metrics['guarded_end_to_end'] is False
+
+
+@pytest.mark.parametrize('gold_flag', [True, False])
+def test_explicit_gold_message_guard_remains_authoritative(gold_flag):
+    gold = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'strict_match': gold_flag}}
+    same = evaluation.score(case(calls=[gold], sources=['messages']), run([gold], schemas=message_guard_schema()))['metrics']
+    assert same['request_argument'] is True
+    assert same['query_scope_guard'] is (True if gold_flag else None)
+    opposite = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'strict_match': not gold_flag}}
+    wrong = evaluation.score(case(calls=[gold], sources=['messages']), run([opposite], schemas=message_guard_schema()))['metrics']
+    assert wrong['request_argument'] is False
+    assert wrong['guarded_end_to_end'] is False
+
+
+def test_request_argument_amendment_does_not_include_email_or_no_query_calls():
+    for name, args in [('view_emails', {'query': 'LITERAL-42'}), ('view_messages', {})]:
+        gold = {'name': name, 'args': args}
+        actual = {'name': name, 'args': {**args, 'strict_match': True}}
+        schemas = {name: {'properties': {'strict_match': {'type': 'boolean', 'default': False}}}}
+        metrics = evaluation.score(case(calls=[gold], sources=[evaluation.SOURCES[name]]), run([actual], schemas=schemas))['metrics']
+        assert metrics['request_argument'] is False
+        assert metrics['query_scope_guard'] is None
+        assert metrics['guarded_end_to_end'] is False
+
+
+def test_guarded_end_to_end_preserves_all_other_failure_gates():
+    gold = {'name': 'view_messages', 'args': {'query': 'LITERAL-42'}}
+    actual = {'name': 'view_messages', 'args': {'query': 'LITERAL-42', 'strict_match': True}}
+    expected = case(calls=[gold], sources=['messages'], excluded_sources=['messages'])
+    metrics = evaluation.score(expected, run([actual], schemas=message_guard_schema()))['metrics']
+    assert metrics['request_argument'] and metrics['query_scope_guard']
+    assert not metrics['excluded_source'] and not metrics['guarded_end_to_end']
+
+
+@pytest.mark.parametrize('disposition', ['compiled', 'clarify', 'declined'])
+def test_finite_intent_disposition_derives_path_without_rewriting_raw_route(disposition):
+    event = {'type': 'routed', 'route_source': 'model', 'intent_disposition': disposition}
+    assert evaluation.evaluation_path([event]) == 'intent_' + disposition
+    assert event['route_source'] == 'model'
+
+
+@pytest.mark.parametrize('disposition', ['invented-private-text', '', None, ['compiled']])
+def test_unknown_or_wrong_type_intent_disposition_never_enters_path(disposition):
+    event = {'type': 'routed', 'route_source': 'model', 'intent_disposition': disposition}
+    assert evaluation.evaluation_path([event]) == 'model'
+
+
+def test_scripted_client_exposes_coherent_synthetic_router_identity_without_transport():
+    code = r'''
+import asyncio, pathlib, tempfile
+from types import SimpleNamespace
+from scripts import eval_router_update as e
+state = pathlib.Path(tempfile.mkdtemp(prefix='wisp-fake-identity-'))
+e.install_guard(state, state)
+from service.config.endpoints import role_target, Target
+client = e.ScriptedClient({'expected': {'calls': [], 'sources': []}})
+target = role_target('router')
+assert isinstance(client.target, Target) and client.target == target
+assert client.base_url == target.endpoint.base_url.rstrip('/')
+assert client.endpoint_name == target.endpoint.name
+assert client.managed is True
+assert client.provider.name == target.endpoint.provider == 'omlx'
+assert client.api_prefix == target.endpoint.api_prefix == '/v1'
+assert isinstance(client._credential_transport, SimpleNamespace)
+assert str(client._credential_transport.origin).rstrip('/') == client.base_url
+assert client._credential_transport.backend is not None
+assert asyncio.run(client.status())['models'] == [{'id': target.model, 'loaded': True}]
+assert not client.raw
+print('SYNTHETIC_IDENTITY')
+'''
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'SYNTHETIC_IDENTITY'

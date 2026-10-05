@@ -69,9 +69,62 @@ accepted only when the actual runtime resolver produces identical epoch bounds.
 The checked-in `baseline-scripted/` contains the development control raw output
 compressed losslessly, its original manifest, and hashes of both representations.
 Its production base is `4994caa15533c0cf84c07208c9097e4197f2815b` and the manifest
-records the final harness file hash. This control was captured before the worker
+records the original harness file hash from worker commit `0a71781`. This control was captured before the worker
 commit, so its HEAD is the clean production base rather than claiming commit-bound
 model evidence. Model revision/checkpoint are explicitly absent.
+
+## Frozen scorer amendment (2026-10-05 19:20:05 UTC ACK)
+
+The original `exact_arguments`, `first_call`, and `end_to_end` calculations remain
+unchanged. Added `request_argument` permits exactly one implementation safeguard:
+`view_messages(strict_match=True)` when the raw gold call omitted that field,
+the compared tool registration advertises a Boolean guard accepting true, and
+the query and every other argument match under the existing runtime-default/date
+normalization. JSON value types remain distinct, including Boolean/integer and
+integer/float. This rule applies only to `view_messages`; it does not normalize
+`view_emails` or arbitrary tool flags. Explicit gold guard values remain
+binding. Query-free reads, wrong literals/types/scopes/counts, and extra arguments
+cannot use the amendment.
+
+This is request-contract scoring, not runtime equivalence: a guarded query miss
+returns a bounded cache no-match, while the legacy path may broaden the result
+set and increase its count. Separate `query_scope_guard` is required for gold
+query-bearing `view_messages` calls whose guard is omitted or true. It requires
+the registered capability, the same literal query, and actual Boolean true at
+execution. Missing/false/string/numeric flags or unavailable registrations fail.
+An explicit gold false selects the legacy contract; guard is N/A, never credited
+as a guarded success. Other tools and query-free cases are N/A. Each metric keeps
+its own numerator/denominator. The aggregate guard denominator counts scenarios
+with at least one applicable call; a passing scenario must guard every applicable
+call.
+
+`guarded_end_to_end` uses the full typed `request_argument` sequence (which also
+proves the first-call order), this applicable guard, and every original gate
+except the old exact-argument and first-call comparisons. The old end-to-end
+result remains separately available and is never relabeled. The amendment was
+written from generic runtime behavior and synthetic cases before any candidate
+or heldout comparison. Sealed data, original corpus hashes, and saved baseline
+artifacts are immutable; the baseline manifest intentionally retains its original
+harness hash rather than being overwritten by this repair.
+
+Evaluation path metadata accepts only `intent_disposition` values `compiled`,
+`clarify`, and `declined`, yielding `intent_compiled`, `intent_clarify`, and
+`intent_declined`. Raw SSE `route_source` stays unchanged. These paths do not imply
+that a model was called; clarification can precede generation, and oracle replay
+remains scripted. Unknown or non-string dispositions are ignored.
+
+The scripted client now captures the synthetic configuration's exact router
+`Target` and supplies coherent base URL, provider, API prefix, endpoint name,
+model/status, and inert credential-origin/backend metadata. Its backend is an
+ordinary `object()`, not a credential loader or HTTP transport. Candidate replay
+supplies that same snapshot to the planner's router-role resolver. No credentials
+are resolved and no networking, model loads, or model calls are enabled by this
+fixture identity. The disabled resident-inference adapter is unchanged. The current strict-core
+identity check will reject it because it does not yet delegate the underlying
+client's existing identity metadata. A separately bounded and validated adapter
+change must delegate and verify that metadata without manufacturing authority.
+Future measured inference requires both that adapter validation and a separately
+authorized resource grant; neither prerequisite is completed by this repair.
 
 ## Candidate and heldout
 
