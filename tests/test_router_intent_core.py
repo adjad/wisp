@@ -979,7 +979,7 @@ def test_coordinated_preposition_within_query_is_not_a_recipient(prompt, query):
 
 @pytest.mark.parametrize("tail", ["email from Lyra to Mom", "email about road to recovery to Mom",
                                   "email about roadmap to me", "email about roadmap to person@example.com",
-                                  "email about roadmap to +15551234567", "email about Topic to Taylor",
+                                  "email about roadmap to +15551234567", "email it to Taylor",
                                   "email about road to recovery and send it by email to Mom"])
 def test_query_attachment_fix_keeps_explicit_and_later_destinations(tail):
     from service.router.web_request import classify
@@ -1022,3 +1022,179 @@ def test_domain_allowlist_uses_instruction_sources_not_complete_literal_words():
     good["excluded_sources"] = ["email"]
     result = asyncio.run(plan_read(prompt, client=FakeClient(good), model=MODEL, config=config, now=NOW))
     assert result.disposition == "compiled" and result.calls == (("search_notes", {"query": "my calendar"}),)
+
+
+GOVERNED_TITLE_CASES = [
+    ("Read email from Cassia and email about Guide to Gardening", "Guide to Gardening"),
+    ("Read email from Cassia and email about guide to gardening", "guide to gardening"),
+    ('Read email from Cassia and email about "Guide to Gardening"', "Guide to Gardening"),
+    ("Review email from Cassia and email named Road to Recovery", "Road to Recovery"),
+    ("Find notes about maps and email titled Guide to Gardening", "Guide to Gardening"),
+    ("Read email from Cassia and email about Topic to Taylor", "Topic to Taylor"),
+    ("Read email from Cassia and email about Send Instructions", "Send Instructions"),
+]
+
+
+@pytest.mark.parametrize("prompt,query", GOVERNED_TITLE_CASES)
+def test_governed_filter_title_cannot_authorize_recipient_by_capitalization(prompt, query):
+    from service.router.web_request import classify
+    request = classify(prompt)
+    assert request.delivery is None and not request.authorized_effects
+    assert request.source == prompt
+    first = source("notes", "records", query="maps") if prompt.startswith("Find") else source("email", "records", query="Cassia")
+    good = value(first, source("email", "records", query=query))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    bad = copy.deepcopy(good)
+    bad["sources"][1]["query"] = query.split()[0]
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+ACTION_TAIL_CASES = [
+    ("and", "share it with Mom"),
+    ("plus", "share it with Mom"),
+    ("plus", "send it by email to Mom"),
+    ("and", "would you mind sharing it with Mom"),
+    ("plus", "please forward it by email to Mom"),
+    ("plus", "save it as a note"),
+    ("and then", "please share it with Mom"),
+    ("&", "could you share it with Mom"),
+    ("but", "share it with Mom"),
+    (",", "share it with Mom"),
+    ("then", "forward it by email to Mom"),
+    ("and afterwards", "please send it to Mom"),
+    ("and", "compose an email to Mom"),
+    ("and", "save it as a note"),
+    ("and", "open it"),
+    ("and", "move it to Downloads"),
+]
+
+
+@pytest.mark.parametrize("joiner,tail", ACTION_TAIL_CASES)
+def test_complete_lookup_bounds_retain_every_established_effect_head(joiner, tail):
+    from service.router.intent.validation import _instruction_text, applicable_read
+    from service.workflows.compiler import outbound_verb
+    prompt = "Find notes about cedar maps " + joiner + " " + tail
+    masked = _instruction_text(prompt, now=NOW)
+    assert tail in masked and "cedar maps" not in masked
+    assert not applicable_read(prompt)
+    for query in ["cedar maps", "cedar maps " + joiner + " " + tail]:
+        with pytest.raises(InvalidIntent):
+            validate_intent(value(source("notes", "records", query=query)), prompt, now=NOW)
+    if any(verb in tail for verb in ["share", "send", "forward", "compose"]):
+        assert outbound_verb(prompt)
+
+
+@pytest.mark.parametrize("negation", ["don't", "do not", "never"])
+def test_negative_share_clauses_are_bound_instructions_without_effect_permission(negation):
+    from service.router.web_request import classify
+    from service.router.intent.validation import _instruction_text
+    prompt = "Find notes about cedar maps and " + negation + " share it with Mom"
+    masked = _instruction_text(prompt, now=NOW)
+    assert negation + " share it with Mom" in masked
+    assert not classify(prompt).authorized_effects
+    assert validate_intent(value(source("notes", "records", query="cedar maps")), prompt, now=NOW)
+    bad = value(source("notes", "records", query="cedar maps and " + negation + " share it with Mom"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+@pytest.mark.parametrize("query", ["cedar maps and share it with Mom", "research and development",
+                                    "draft send and forward", "maps, routes and diagrams"])
+def test_quoted_action_or_ordinary_coordination_remains_complete_literal(query):
+    prompt = 'Find notes about "' + query + '"'
+    good = value(source("notes", "records", query=query))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).calls == (("search_notes", {"query": query}),)
+
+
+@pytest.mark.parametrize("tail", ["email Taylor with the summary", "email it to Taylor",
+    "email about Guide to Gardening to Mom", "email about Guide to Gardening to person@example.com",
+    "email about Guide to Gardening to +15551234567", "send it by email to Taylor",
+    "share it with Mom", "share it by email to Taylor"])
+def test_capitalization_fix_retains_real_delivery_relations_without_guessing_channel(tail):
+    from service.router.web_request import classify
+    request = classify("Read email from Cassia and " + tail)
+    assert request.delivery is not None
+    if tail == "share it with Mom":
+        assert request.delivery.recipient == "Mom" and request.delivery.channel is None
+        assert not request.authorized_effects
+    else:
+        assert request.authorized_effects & {"send_email", "send_message"}
+
+
+@pytest.mark.parametrize("tail", ["without sharing it with Mom", "please do not share it with Mom",
+                                  "do not forward it by email to Mom", "never send it to Mom"])
+def test_inflected_and_polite_negative_effects_have_complete_clause_bounds(tail):
+    from service.router.intent.validation import _instruction_text
+    from service.router.web_request import classify
+    prompt = "Find notes about cedar maps and " + tail
+    assert tail in _instruction_text(prompt, now=NOW)
+    assert not classify(prompt).authorized_effects
+    assert validate_intent(value(source("notes", "records", query="cedar maps")), prompt, now=NOW)
+
+
+def test_negated_effect_does_not_hide_a_later_positive_effect():
+    from service.router.intent.validation import _instruction_text, applicable_read
+    prompt = "Find notes about cedar maps and do not share it with Mom and then send it by email to Taylor"
+    masked = _instruction_text(prompt, now=NOW)
+    assert "do not share" in masked and "send it by email to Taylor" in masked
+    assert not applicable_read(prompt)
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("notes", "records", query="cedar maps")), prompt, now=NOW)
+
+
+def test_unquoted_action_words_inside_one_filter_are_still_literal_data():
+    prompt = "Find notes about share it with Mom"
+    good = value(source("notes", "records", query="share it with Mom"))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).calls == (("search_notes", {"query": "share it with Mom"}),)
+
+
+@pytest.mark.parametrize("query", ["Guide to Gardening to Taylor", "Guide to Gardening"])
+def test_second_unquoted_named_destination_clarifies_without_effect_permission(query):
+    from service.router.web_request import classify
+    prompt = "Read email from Cassia and email about Guide to Gardening to Taylor"
+    request = classify(prompt)
+    assert request.source == prompt and request.delivery is None and not request.authorized_effects
+    bad = value(source("email", "records", query="Cassia"), source("email", "records", query=query))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+    assert run(prompt, FakeClient(bad, bad)).disposition == "clarify"
+
+
+def test_quoted_multiple_to_title_and_non_delivery_source_stay_literal():
+    query = "Guide to Gardening to Taylor"
+    prompt = 'Read email from Cassia and email about "' + query + '"'
+    good = value(source("email", "records", query="Cassia"), source("email", "records", query=query))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    assert validate_intent(value(source("notes", "records", query=query)), "Find notes about " + query, now=NOW)
+
+
+@pytest.mark.parametrize("joiner", ["and", "plus", "and then"])
+def test_source_exclusion_list_ends_before_independent_positive_read(joiner):
+    from service.router.intent.validation import source_requirements
+    prompt = "Find notes about cedar maps without email " + joiner + " read messages"
+    assert source_requirements(prompt) == ({"notes", "messages"}, {"email"})
+    good = value(source("notes", "records", query="cedar maps"), source("messages", "records"))
+    good["excluded_sources"] = ["email"]
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    bad = value(source("notes", "records", query="cedar maps"))
+    bad["excluded_sources"] = ["email", "messages"]
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+def test_source_exclusion_or_list_remains_complete_and_quoted_list_is_data():
+    from service.router.intent.validation import source_requirements
+    prompt = "Find notes about cedar maps without email or messages"
+    assert source_requirements(prompt) == ({"notes"}, {"email", "messages"})
+    good = value(source("notes", "records", query="cedar maps"))
+    good["excluded_sources"] = ["email", "messages"]
+    assert validate_intent(good, prompt, now=NOW)
+    quoted = 'Find notes about "cedar maps without email and read messages"'
+    assert source_requirements(quoted) == ({"notes"}, set())
+    assert validate_intent(value(source("notes", "records", query="cedar maps without email and read messages")), quoted, now=NOW)

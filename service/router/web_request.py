@@ -220,21 +220,21 @@ _LOOKUP_CANONICAL = "(?:" + "|".join(lemma for _, lemma in _LOOKUP_LEXEMES) + ")
 _SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+(?:sources?|requests?))"
 _PRESENT = r"(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me|outline|compare|list|turn)"
 _ACTION = (
-    r"(?:send|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
+    r"(?:send|share|forward|email|e-mail|text|message|draft|compose|schedule|set|add|create|"
     r"delete|remove|move|open|close|launch|run|install|explain|write|debug|fix|remind|"
-    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn)"
+    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn|reply|call|remember|cancel|update|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)"
 )
-_DELIVER = r"(?:send|forward|e-?mail|text|message|draft)"
+_DELIVER = r"(?:send|shar(?:e|ing)|forward|e-?mail|text|message|draft)"
 _NEGATIVE = r"(?:don't|do not|not|never|stop|cancel|abort|skip|avoid|refrain from|without|with no|no)"
 _PREFERENCE = r"i(?:'d|\s+would)?\s+prefer\s+not\s+to"
-_DELIVERY_PREDICATE = r"(?:send(?:ing)?|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
+_DELIVERY_PREDICATE = r"(?:send(?:ing)?|shar(?:e|ing)|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
 _REVOKE = r"(?:deny|denied|disallow(?:ed)?|revoke[ds]?|withdraw(?:n)?|withhold|withheld|forbid(?:den)?|prohibit(?:ed)?|rescind(?:ed)?)"
 _DENIED_STATE = r"(?:not\s+(?:allowed|authorized|permitted|granted)|" + _REVOKE + ")"
 _BOUNDARY = re.compile(
     r"[;!?\n]+|\.(?=\s|$)|,|"
     r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
-    r"\s+(?:and(?:\s+(?:then|afterwards?))?|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
-    r")(?:" + _ACTION + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)", re.I)
+    r"\s+(?:and(?:\s+(?:then|afterwards?))?|plus|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
+    r")(?:" + _ACTION + "|" + _DELIVERY_PREDICATE + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)", re.I)
 _AMOUNT = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a few|several|a couple of|an?)"
 _UNIT = r"(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|hrs?|mins?)"
 _TIME = re.compile(
@@ -278,6 +278,15 @@ def _lexical(text: str) -> str:
     for pattern, lemma in _LOOKUP_LEXEMES:
         result = re.sub(r"\b(?:" + pattern + r")\b", lemma, result)
     return result
+
+
+def _action_clause_head(text: str) -> re.Match[str] | None:
+    """Shared grammatical action head, including polite and negative governors.
+
+    Matching a head identifies a clause boundary, never tool permission.
+    """
+    return re.match(r"^\s*" + _POLITE + r"(?:(?P<negative>" + _NEGATIVE
+                    + r")\s+)?(?P<action>" + _ACTION + "|" + _DELIVERY_PREDICATE + r")\b", _unquoted(text), re.I)
 
 
 def _clauses(text: str) -> tuple[Clause, ...]:
@@ -468,7 +477,8 @@ def _delivery(text: str) -> Delivery | None:
     scheduled = _matches(r"\b(?:tomorrow|tonight|later|at\s+\d+(?::\d+)?(?:am|pm)?|in\s+\d+\s+(?:minutes?|hours?))\b", root)
     recipient = address.group(0) if address else phone.group(0) if phone else None
     if recipient is None:
-        destination = re.search(r"\bto\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at|now|today|tomorrow|tonight|afterwards?)\b|$)", root, re.I)
+        relation = r"(?:to|with)" if re.match(r"shar(?:e|ing)\b", root, re.I) else r"to"
+        destination = re.search(r"\b" + relation + r"\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at|now|today|tomorrow|tonight|afterwards?)\b|$)", root, re.I)
         if destination:
             recipient = _recipient_atom(destination.group(1))
         else:
@@ -546,20 +556,22 @@ def _coordinated_read_noun(text: str, clauses: tuple[Clause, ...], index: int) -
     if separator not in {"and", "&"}:
         return False
     head = _root(clauses[0].text)
-    if not re.match(r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|summari[sz]e)\b", head, re.I):
+    if not re.match(r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|lookup|locate|summari[sz]e)\b", head, re.I):
         return False
     if not _matches(r"\b(?:" + _PERSONAL + "|" + _ARTIFACT + r")\b", head):
         return False
-    root = _root(clause.text)
+    return _filtered_read_noun(clause.text)
+
+
+def _filtered_read_noun(text: str) -> bool:
+    """A filter-governed source noun with no explicit outer destination."""
+    root = _root(text)
     if not re.match(r"(?:e-?mail|text|message)\s+(?:from|with|about|containing|named|titled|called)\b", root, re.I):
         return False
-    if _matches(r"\b(?:saying|say|send|forward|draft|compose|write|schedule)\b", root):
-        return False
-    # `to` can belong to the source's filter (road to recovery). Require an
-    # outer destination attachment or an explicit personal/address destination;
-    # arbitrary text after a preposition is not evidence of a recipient.
-    if _terminal_destination(root) is not None:
-        return False
+    # The read governor binds the complete filter complement. Capitalized
+    # words and action words inside that literal are not recipient/effect
+    # evidence. Explicit personal/address destinations stay conservative;
+    # recipient-before-payload and later delivery clauses use the action path.
     for relation in re.finditer(r"\s+to\s+", root, re.I):
         recipient = _recipient_atom(root[relation.end():])
         if recipient and (_EMAIL.fullmatch(recipient) or _PHONE.fullmatch(recipient)

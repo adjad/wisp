@@ -13,7 +13,7 @@ from service.memory.store import SessionStore
 from service.router import router
 from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES, GOVERNED_TITLE_CASES, ACTION_TAIL_CASES
 
 
 @pytest.fixture
@@ -570,4 +570,108 @@ def test_actor_single_domain_allowlist_keeps_query_literal_and_exclusion(endpoin
     client.outputs = [data]
     events = asyncio.run(request("Find notes about my calendar without email"))
     assert calls == [("search_notes", {"query": "my calendar"})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("prompt,query", GOVERNED_TITLE_CASES)
+def test_actor_capitalized_governed_title_executes_exact_reads_without_recipient(endpoint, prompt, query):
+    request, client, calls, _, _ = endpoint
+    first = source("notes", "records", query="maps") if prompt.startswith("Find") else source("email", "records", query="Cassia")
+    client.outputs = [value(first, source("email", "records", query=query))]
+    events = asyncio.run(request(prompt))
+    first_call = ("search_notes", {"query": "maps"}) if prompt.startswith("Find") else ("view_emails", {"query": "Cassia", "strict_match": True})
+    assert calls == [first_call, ("view_emails", {"query": query, "strict_match": True})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("joiner,tail", ACTION_TAIL_CASES)
+@pytest.mark.parametrize("swallowed", [False, True])
+def test_actor_later_effect_never_executes_a_swallowed_or_partial_read(endpoint, monkeypatch, joiner, tail, swallowed):
+    import service.router.intent as intent_api
+    request, client, calls, _, _ = endpoint
+    prompt = "Find notes about cedar maps " + joiner + " " + tail
+    query = "cedar maps " + joiner + " " + tail if swallowed else "cedar maps"
+    client.outputs = [value(source("notes", "records", query=query))] * 2
+    planner_spy = AsyncMock(wraps=intent_api.plan_read)
+    monkeypatch.setattr(intent_api, "plan_read", planner_spy)
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        await emit({"type": "text", "text": "Synthetic guarded action path."})
+        return "Synthetic guarded action path."
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    events = asyncio.run(request(prompt))
+    assert not calls and not client.calls
+    assert "compiled" not in [e.get("intent_disposition") for e in events]
+    # Delivery heads are barred before planning. Other established local
+    # effects may reach plan_read, whose applicability must decline them.
+    if any(verb in tail for verb in ["share", "send", "forward"]):
+        planner_spy.assert_not_awaited()
+
+
+def test_actor_quoted_share_is_data_and_later_explicit_share_remains_action(endpoint):
+    request, client, calls, _, _ = endpoint
+    query = "cedar maps and share it with Mom"
+    client.outputs = [value(source("notes", "records", query=query))]
+    events = asyncio.run(request('Find notes about "' + query + '"'))
+    assert calls == [("search_notes", {"query": query})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("tail", ["do not share it with Mom", "without sharing it with Mom",
+                                  "please do not share it with Mom"])
+def test_actor_negative_effect_never_becomes_part_of_executed_query(endpoint, monkeypatch, tail):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("notes", "records", query="cedar maps"))] * 2
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        await emit({"type": "text", "text": "Synthetic negative action path."})
+        return "Synthetic negative action path."
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    events = asyncio.run(request("Find notes about cedar maps and " + tail))
+    assert all(name == "search_notes" and args == {"query": "cedar maps"} for name, args in calls)
+    assert not [e for e in events if e.get("tool") in {"send_email", "send_message"}]
+
+
+def test_actor_unquoted_action_words_under_one_filter_remain_exact_data(endpoint):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("notes", "records", query="share it with Mom"))]
+    events = asyncio.run(request("Find notes about share it with Mom"))
+    assert calls == [("search_notes", {"query": "share it with Mom"})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("query", ["Guide to Gardening to Taylor", "Guide to Gardening"])
+def test_actor_ambiguous_second_named_destination_executes_neither_read_nor_send(endpoint, query):
+    request, client, calls, _, _ = endpoint
+    bad = value(source("email", "records", query="Cassia"), source("email", "records", query=query))
+    client.outputs = [bad, bad]
+    events = asyncio.run(request("Read email from Cassia and email about Guide to Gardening to Taylor"))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_quoted_second_to_title_remains_exact_data(endpoint):
+    request, client, calls, _, _ = endpoint
+    query = "Guide to Gardening to Taylor"
+    client.outputs = [value(source("email", "records", query="Cassia"), source("email", "records", query=query))]
+    events = asyncio.run(request('Read email from Cassia and email about "' + query + '"'))
+    assert calls == [("view_emails", {"query": "Cassia", "strict_match": True}),
+                     ("view_emails", {"query": query, "strict_match": True})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("joiner", ["and", "plus", "and then"])
+def test_actor_source_exclusion_does_not_cancel_later_positive_messages_read(endpoint, joiner):
+    request, client, calls, _, _ = endpoint
+    data = value(source("notes", "records", query="cedar maps"), source("messages", "records"))
+    data["excluded_sources"] = ["email"]
+    client.outputs = [data]
+    events = asyncio.run(request("Find notes about cedar maps without email " + joiner + " read messages"))
+    assert calls == [("search_notes", {"query": "cedar maps"}), ("view_messages", {})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_quoted_polite_share_request_stays_literal(endpoint):
+    request, client, calls, _, _ = endpoint
+    query = "cedar maps and would you mind sharing it with Mom"
+    client.outputs = [value(source("notes", "records", query=query))]
+    events = asyncio.run(request('Find notes about "' + query + '"'))
+    assert calls == [("search_notes", {"query": query})]
     assert "compiled" in [e.get("intent_disposition") for e in events]
