@@ -2949,8 +2949,26 @@ def test_named_reports_survive_separate_otp_as_actions(monkeypatch, work_text):
     assert "6432" not in str(records) + str(chat.call_args_list)
 
 
-def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
-    now = time.time()
+@pytest.mark.parametrize(("now", "metadata_collision"), [
+    (1791222000.0, None),
+    (1791234567.0, "1234"),
+    (1791256782.0, "5678"),
+])
+def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch, now, metadata_collision):
+    from service.tools import timeranges
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(now, tz)
+
+    # Keep the freshness horizon, day scope, date attribution and week scope
+    # on the same synthetic clock, including adversarial OTP-like epoch digits.
+    monkeypatch.setattr(time, "time", lambda: now)
+    monkeypatch.setattr(M, "datetime", FrozenDateTime)
+    monkeypatch.setattr(D, "datetime", FrozenDateTime)
+    monkeypatch.setattr(M, "resolve_span", lambda period: timeranges.resolve_span(
+        period, now=FrozenDateTime.now()))
     source = [
         (now - 2, "Alex", "Alex: Please review the report by Friday. Verification code is 1234."),
         (now - 1, "Alex", "Alex: Please review the proposal by Friday. Verification code is 5678."),
@@ -2958,12 +2976,28 @@ def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
     rows = M.filter_summary_message_rows(source)
     assert len(rows) == 2
     assert rows[0][2] == rows[1][2]
-    assert all(secret not in str(rows) for secret in ("1234", "5678", "report", "proposal"))
+    timestamps = [now - 2, now - 1]
+    positions = [(0, 1), (1, 2)]
+    assert [row[0] for row in rows] == timestamps
+    assert [(row.source_before, row.source_after) for row in rows] == positions
+    if metadata_collision:
+        assert any(metadata_collision in str(ts) for ts in timestamps)
+    else:
+        assert all(secret not in str(timestamps) for secret in ("1234", "5678"))
+    # Numeric metadata can legitimately contain the OTP digits. Every textual
+    # field, including the conversation label, must still omit all private data.
+    assert all(secret not in value for row in rows for value in row
+               if isinstance(value, str) for secret in ("1234", "5678", "report", "proposal"))
     assert len(M.filter_summary_message_rows(rows)) == 2
     monkeypatch.setattr(M, "_lines", "\n".join(
         _freshness_record(ts, "U", 1, "Alex", body) for ts, _, body in source))
     selected = M.summary_message_rows(require_read_state=True)
     assert len(selected) == 2
+    assert selected[0][2] == selected[1][2]
+    assert sorted(row[0] for row in selected) == timestamps
+    assert sorted((row.source_before, row.source_after) for row in selected) == positions
+    assert all(secret not in value for row in selected for value in row
+               if isinstance(value, str) for secret in ("1234", "5678", "report", "proposal"))
     chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
     with debug_capture.capture() as records:
         for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"}):
