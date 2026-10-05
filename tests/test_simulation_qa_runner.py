@@ -86,6 +86,20 @@ def test_full_manifest_rejects_an_unreviewed_test_file(
         simqa._selected_tests(["full"])
 
 
+def test_full_manifest_rejects_a_missing_reviewed_test_file(
+        monkeypatch, tmp_path: Path) -> None:
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_present.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(simqa, "ROOT", tmp_path)
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", {
+        "tests/test_present.py", "tests/test_missing.py",
+    })
+
+    with pytest.raises(RuntimeError, match=r"missing reviewed tests: \['tests/test_missing.py'\]"):
+        simqa._selected_tests(["full"])
+
+
 def test_full_manifest_recursively_rejects_an_unreviewed_nested_test(
         monkeypatch, tmp_path: Path) -> None:
     nested = tmp_path / "tests" / "nested"
