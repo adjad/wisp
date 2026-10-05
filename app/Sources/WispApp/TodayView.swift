@@ -62,6 +62,7 @@ struct TodayPlan: Decodable {
     let day: String
     let timezone: String
     let generated_at: Double
+    let trace_id: String?
     let revision: Int
     let provisional: Bool
     let warnings: [String]
@@ -79,6 +80,9 @@ final class TodayModel: ObservableObject {
     @Published var plan: TodayPlan?
     @Published var error = ""
     @Published var busy = false
+    @Published var capturePlannerDetails = false
+    private var reportMetadata: [String: Any] = ["surface": "today", "client_outcome": "not_loaded"]
+    private var reportDetails: [String: Any]?
     @Published private(set) var selectedDate: Date
     private var generation = 0
     private var manualDay: String?
@@ -141,6 +145,8 @@ final class TodayModel: ObservableObject {
         generation += 1
         plan = nil
         error = ""
+        reportMetadata = ["surface": "today", "client_outcome": "not_loaded", "journal_available": false]
+        reportDetails = nil
         selectedDate = manualDay == nil ? nowProvider() : Self.pickerDate(for: key.day, in: timezone)
         return true
     }
@@ -211,18 +217,47 @@ final class TodayModel: ObservableObject {
         var components = URLComponents()
         components.path = "/assistant/today"
         components.queryItems = [URLQueryItem(name: "day", value: selected.day), URLQueryItem(name: "timezone", value: selected.zone)]
+        let capturing = capturePlannerDetails
+        if capturing { components.queryItems?.append(URLQueryItem(name: "debug", value: "true")) }
         do {
-            let next = try JSONDecoder().decode(TodayPlan.self, from: await request(components.string!))
+            let data = try await request(components.string!)
+            let next = try JSONDecoder().decode(TodayPlan.self, from: data)
             guard ticket == generation, selected == currentKey else { return }
             plan = next
+            reportMetadata = ["surface": "today", "client_outcome": "completed", "revision": next.revision,
+                              "task_count": next.tasks.count, "block_count": next.blocks.count,
+                              "unscheduled_count": next.unscheduled.count, "provisional": next.provisional,
+                              "journal_available": false]
+            if let id = next.trace_id {
+                reportMetadata["trace_id"] = id
+                if let journal = DiagnosticReport.journal(traceID: id) {
+                    reportMetadata["trace"] = journal
+                    reportMetadata["journal_available"] = true
+                }
+            }
+            reportDetails = capturing && capturePlannerDetails ? ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) : nil
             error = ""
         } catch {
             guard ticket == generation, selected == currentKey else { return }
             self.error = error.localizedDescription
+            reportMetadata = ["surface": "today", "client_outcome": "refresh_failed", "journal_available": false,
+                              "client_error_code": (error as NSError).code]
+            reportDetails = nil
             // A failed refresh must not leave stale slots looking actionable.
             plan = nil
         }
     }
+
+    func diagnosticSnapshot() -> (metadata: [String: Any], details: [String: Any]?) {
+        (reportMetadata, capturePlannerDetails ? reportDetails : nil)
+    }
+
+    func reportProblem() {
+        let snapshot = diagnosticSnapshot()
+        DiagnosticReport.present(metadata: snapshot.metadata, details: snapshot.details)
+    }
+
+    func clearPlannerDetails() { reportDetails = nil }
 
     @discardableResult
     func mutate(_ path: String, method: String, body: [String: Any]) async -> Bool {
@@ -230,11 +265,25 @@ final class TodayModel: ObservableObject {
         busy = true
         generation += 1 // invalidate any in-flight refresh before writing
         var failure: String?
+        var failureCode: Int?
         do { _ = try await request(path, method: method, body: body) }
-        catch { failure = error.localizedDescription }
+        catch { failure = error.localizedDescription; failureCode = (error as NSError).code }
         await refresh(afterMutation: true)
         busy = false
-        if let failure { error = failure }
+        if let failure {
+            error = failure
+            if let refreshID = reportMetadata.removeValue(forKey: "trace_id") {
+                reportMetadata["refresh_trace_id"] = refreshID
+            }
+            if let refreshTrace = reportMetadata.removeValue(forKey: "trace") {
+                reportMetadata["refresh_trace"] = refreshTrace
+            }
+            reportMetadata["journal_available"] = false
+            reportMetadata["client_outcome"] = "mutation_failed"
+            reportMetadata["mutation_method"] = method
+            reportMetadata["client_error_code"] = failureCode
+            reportDetails = nil
+        }
         return failure == nil
     }
 
@@ -371,7 +420,15 @@ struct TodayView: View {
                     }.disabled(model.busy)
                 }
                 Button("Refresh") { Task { await model.refresh() } }.disabled(model.busy)
+                Button("Report a problem") { model.reportProblem() }
             }
+            Toggle("Capture planner details for a problem report", isOn: $model.capturePlannerDetails)
+                .font(.caption)
+                .help("Includes private task and calendar titles. Capture starts on the next refresh; reports ask again before including it.")
+                .onChange(of: model.capturePlannerDetails) {
+                    model.clearPlannerDetails()
+                    Task { await model.refresh() }
+                }
             if !model.error.isEmpty { Text(model.error).foregroundStyle(.red).textSelection(.enabled) }
             if let plan = visiblePlan {
                 sourceStatus(plan)

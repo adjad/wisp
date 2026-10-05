@@ -6,6 +6,7 @@ All notable changes to Wisp are documented here.
 
 ### Added
 
+- Added local problem reports: a metadata-only request journal and a reviewable, never-uploaded report with an opt-in detailed section, redacted on a best-effort basis. Today refreshes and background kinds keep their own small retention so they cannot evict chat traces. See docs/DEBUGGING.md.
 - Added a local Codex/Claude coworker mailbox with correlated agent replies, acknowledgments and duplicate-delivery protection. All Git Worktrees share it without a background service or model polling.
 - Added a confirmation step for shell commands that delete irreversibly — recursive deletes, wildcard deletes, and their equivalents. These now always show the exact command for approval, in every access mode including full access, and cannot be pre-approved with "always allow". Deleting a single named file still runs without prompting.
 - Added a move action for files and folders, so reorganizing, sorting, and filing things away no longer depends on shell commands. It creates the destination folder as needed and refuses to overwrite anything that already exists.

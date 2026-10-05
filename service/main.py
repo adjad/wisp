@@ -1167,7 +1167,15 @@ async def agent(body: dict[str, Any]):
 
     queue: asyncio.Queue = asyncio.Queue()
     req_id = uuid.uuid4().hex
-    approver = InteractiveApprover(lambda ev: queue.put(ev))
+    from service import diagnostics
+    trace = None  # initialized only when the response is consumed
+
+    async def approval_event(ev):
+        if trace is not None:
+            trace.observe(ev)
+        await queue.put({**ev, "trace_id": req_id})
+
+    approver = InteractiveApprover(approval_event)
     # Set after construction (not as a constructor argument) so approver stand-ins
     # that take only `emit` keep working. It rides on every confirm event.
     approver.request_id = req_id
@@ -1199,6 +1207,11 @@ async def agent(body: dict[str, Any]):
         return persisted_user_idx
 
     async def emit(ev: dict):
+        if trace is not None:
+            diagnostic_event = ({**ev, "name": tool_names_by_id.get(str(ev.get("id", "")), "")}
+                                if ev.get("type") == "tool_result" else ev)
+            trace.observe(diagnostic_event)
+        ev = {**ev, "trace_id": req_id}
         t = ev.get("type")
         if t == "delta":
             captured["deltas"].append(ev.get("text", ""))
@@ -1230,7 +1243,7 @@ async def agent(body: dict[str, Any]):
             captured["deltas"].clear()
         await queue.put(ev)
 
-    async def runner():
+    async def runner_body():
         owned_inference_client = None
         turn_client = None
         from service.memory.capture import current_source
@@ -1926,6 +1939,7 @@ async def agent(body: dict[str, Any]):
                     prepare=prepare_local_summary,
                 )
         except Exception as e:  # noqa: BLE001
+            trace.event("error", error_kind=type(e).__name__)
             message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
                                               endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
             await emit({"type": "error", "message": message, "detail": detail})
@@ -1985,16 +1999,33 @@ async def agent(body: dict[str, Any]):
                         await close_client(owned_inference_client.aclose)
             finally:
                 idle.end_foreground()
+                trace.finish("cancelled" if isinstance(sys.exception(), asyncio.CancelledError)
+                             else "failed" if sys.exception() is not None else "completed")
                 queue.put_nowait(None)
 
+    async def runner():
+        with diagnostics.use(trace):
+            try:
+                await runner_body()
+            except asyncio.CancelledError:
+                trace.finish("cancelled")
+                raise
+            except BaseException:
+                trace.finish("failed")
+                raise
+            else:
+                trace.finish()
+
     async def stream():
+        nonlocal trace
+        trace = diagnostics.Trace("agent", req_id, enabled=not test_mode)
         # Started here, on first consumption, so the turn's lifetime is exactly the
         # stream's lifetime: whatever ends the stream (done, error, disconnect,
         # cancellation) ends the turn and unregisters it in the finally below.
-        SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver}
+        SESSIONS[req_id] = {"sid": sid, "queue": queue, "approver": approver, "trace": trace}
         runner_task = asyncio.create_task(runner())
         try:
-            yield _sse({"type": "session", "id": sid})
+            yield _sse({"type": "session", "id": sid, "trace_id": req_id})
             while True:
                 ev = await queue.get()
                 if ev is None:
@@ -2029,6 +2060,7 @@ async def agent(body: dict[str, Any]):
                         except asyncio.CancelledError:
                             cancelled = True
                 if not runner_task.done():
+                    trace.finish("unknown")
                     asyncio.get_running_loop().call_exception_handler({
                         "message": "Agent runner suppressed cancellation past its shutdown deadline",
                         "task": runner_task,
@@ -2036,8 +2068,11 @@ async def agent(body: dict[str, Any]):
                     if cancelled or isinstance(original_error, asyncio.CancelledError):
                         raise asyncio.CancelledError
                     raise RuntimeError("Agent runner did not stop after cancellation")
-                if not runner_task.cancelled():
-                    runner_task.exception()  # retrieve any failure without replaying work
+                if runner_task.cancelled():
+                    trace.finish("cancelled")  # also covers cancellation before runner's first step
+                else:
+                    failure = runner_task.exception()  # retrieve without replaying work
+                    trace.finish("failed" if failure is not None else "completed")
             finally:
                 SESSIONS.pop(req_id, None)
             if cancelled:
@@ -2590,6 +2625,8 @@ async def approve(body: dict[str, Any]) -> dict[str, Any]:
     if request_id is not None:
         entry = SESSIONS.get(request_id)
         if entry and entry["sid"] == sid and entry["approver"].resolve(action_id, approved, scope):
+            if entry.get("trace") is not None:
+                entry["trace"].event("approved" if approved else "denied")
             return {"ok": True, "scope": scope}
         return {"ok": False, "error": "no pending action for that id"}
     holders = [entry for entry in list(SESSIONS.values())
@@ -2599,6 +2636,8 @@ async def approve(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False,
                 "error": "that action id is pending in more than one request; answer from the card itself"}
     if holders and holders[0]["approver"].resolve(action_id, approved, scope):
+        if holders[0].get("trace") is not None:
+            holders[0]["trace"].event("approved" if approved else "denied")
         return {"ok": True, "scope": scope}
     return {"ok": False, "error": "no pending action for that id"}
 

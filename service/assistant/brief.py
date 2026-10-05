@@ -2088,7 +2088,9 @@ async def run_scheduled_brief(part_of_day: str) -> bool:
     if not sections.get("READY") or not sections.get("FULL", "").strip():
         return False
     from service.assistant.hub import hub
+    from service import diagnostics
     await hub.publish({
+        "trace_id": diagnostics.current_id(),
         "type": "daily_brief",
         "part_of_day": part_of_day,
         "text": sections["FULL"],

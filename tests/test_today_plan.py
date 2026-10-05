@@ -605,3 +605,31 @@ def test_cross_zone_pin_appears_only_on_days_its_interval_overlaps(store):
                            ready(start), now=day_bounds(next_day, ny)[0])
     displayed = next(b for b in following["blocks"] if b["task_id"] == saved["id"])
     assert displayed["start"] == start and displayed["end"] == start + 3600
+
+
+def test_gap_explanation_uses_deadline_and_clipped_intervals():
+    p = plan(tasks=[task(duration_minutes=60, due_ts=at(11))], commitments=[
+        event("before", start=at(7), end=at(9, 15)),
+        event("middle", start=at(9, 45), end=at(10, 15)),
+        event("after", start=at(12), end=at(13))])
+    decision = p["unscheduled"][0]
+    assert decision["reason_code"] == "no_contiguous_gap"
+    assert decision["required_minutes"] == 60
+    assert decision["largest_gap_minutes"] == 45
+    assert "45 minutes" in decision["reason"]
+
+
+def test_today_capture_requires_opt_in_and_never_enters_journal(store, monkeypatch):
+    from service import diagnostics
+    monkeypatch.setattr(today_api, "assistant_store", store)
+    monkeypatch.setattr(today_api.time, "time", lambda: NOW)
+    private = "PRIVATE-CALENDAR-TITLE-DO-NOT-JOURNAL"
+    store.sync_source("calendar", [event(title=private)])
+    normal = today_api.snapshot(DAY, ZONE)
+    assert "replay" not in normal
+    detailed = today_api.snapshot(DAY, ZONE, debug=True)
+    assert detailed["replay"]["now"] == NOW
+    assert private in str(detailed["replay"])
+    assert detailed["replay"]["planner_fingerprint"] == diagnostics.planner_fingerprint()
+    journal = (diagnostics.MOE_DIR / "diagnostics" / (detailed["trace_id"] + ".json")).read_text()
+    assert private not in journal
