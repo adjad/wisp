@@ -13,7 +13,7 @@ from service.memory.store import SessionStore
 from service.router import router
 from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES
 
 
 @pytest.fixture
@@ -337,3 +337,31 @@ def test_actor_repeated_context_date_correction_keeps_queries_and_changes_every_
     assert calls == [("view_emails", {"query": "Elara", "strict_match": True, "period": "tomorrow"}),
                      ("view_emails", {"query": "Tobias", "strict_match": True, "period": "tomorrow"})]
     assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+
+@pytest.mark.parametrize("prompt,good,expected", REFERENCE_READ_CASES)
+def test_actor_source_reference_aliases_execute_one_faithful_read(endpoint, prompt, good, expected):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(good)]
+    events = asyncio.run(request(prompt))
+    assert calls == [expected]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_referential_aliases_do_not_erase_independent_read_scopes(endpoint):
+    request, client, calls, _, _ = endpoint
+    prompt = "Read appointments on my calendar tomorrow; read appointments in the calendar next week"
+    bad = value(source("calendar", "records", time={"named": "tomorrow"}))
+    client.outputs = [bad, bad]
+    events = asyncio.run(request(prompt))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+
+def test_actor_unclear_repeated_source_boundaries_clarify_despite_complete_date_set(endpoint):
+    request, client, calls, _, _ = endpoint
+    bad = value(source("calendar", "records", time={"named": "tomorrow"}), source("calendar", "records", time={"named": "next week"}))
+    client.outputs = [bad, bad]
+    events = asyncio.run(request("Read appointments tomorrow calendar next week"))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]

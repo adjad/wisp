@@ -749,3 +749,47 @@ def test_ambiguous_replacement_of_multiple_same_domain_reads_clarifies():
     data = value(source("notes", "records", query="birch diagrams"))
     with pytest.raises(InvalidIntent):
         validate_intent(data, "Actually about birch diagrams", context=context, prior_tools=["search_notes"], now=NOW)
+
+
+
+REFERENCE_READ_CASES = [
+    ("What appointments are on my calendar tomorrow? Question 1.", source("calendar", time={"named": "tomorrow"}), ("get_upcoming", {"period": "tomorrow", "calendar_only": True})),
+    ("Read appointments on my calendar tomorrow", source("calendar", "records", time={"named": "tomorrow"}), ("get_upcoming", {"period": "tomorrow", "calendar_only": True})),
+    ("Show appointments that are in the calendar tomorrow", source("calendar", "records", time={"named": "tomorrow"}), ("get_upcoming", {"period": "tomorrow", "calendar_only": True})),
+    ("Read email in my inbox from yesterday", source("email", "records", time={"named": "yesterday"}), ("view_emails", {"period": "yesterday"})),
+    ("Recap emails that are in my inbox", source("email"), ("summarize_emails", {})),
+    ("Recap texts in my messages", source("messages"), ("summarize_messages", {})),
+]
+
+
+@pytest.mark.parametrize("prompt,good,expected", REFERENCE_READ_CASES)
+def test_referential_source_aliases_are_one_requested_read(prompt, good, expected):
+    assert validate_intent(value(good), prompt, now=NOW)
+    result = run(prompt, FakeClient(value(good)))
+    assert result.disposition == "compiled" and result.calls == (expected,)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Read appointments tomorrow calendar next week",
+    "Read email yesterday email today",
+    "Read email then recap email",
+])
+def test_alias_reference_grammar_never_hides_unclear_or_missing_repeated_scopes(prompt):
+    if "appointments" in prompt:
+        bad = value(source("calendar", "records", time={"named": "tomorrow"}), source("calendar", "records", time={"named": "next week"}))
+    elif "yesterday" in prompt:
+        bad = value(source("email", "records", time={"named": "yesterday"}), source("email", "records", time={"named": "today"}))
+    else:
+        bad = value(source("email", "records"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+    assert run(prompt, FakeClient(bad, bad)).disposition == "clarify"
+
+
+def test_alias_coalescing_inside_repeated_clauses_keeps_whole_date_associations():
+    prompt = "Read appointments on my calendar tomorrow; read appointments in the calendar next week"
+    good = value(source("calendar", "records", time={"named": "tomorrow"}), source("calendar", "records", time={"named": "next week"}))
+    assert validate_intent(good, prompt, now=NOW)
+    bad = value(source("calendar", "records", time={"named": "tomorrow"}))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
