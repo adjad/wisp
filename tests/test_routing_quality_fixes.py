@@ -139,3 +139,25 @@ def test_declined_or_meta_history_keeps_an_assent_tool_free(prior):
                       last_assistant="I found resume_2026.pdf in Documents. Want me to open it?",
                       last_tools="find_files")
     assert not decision.needs_tools
+
+
+# --- Fix 3: "any new emails?" is the user's inbox, not current public info ----
+
+@pytest.mark.parametrize("prompt,family", [
+    ("any new emails?", {"view_emails", "summarize_emails", "triage_inbox"}),
+    ("any important mail this morning", {"view_emails", "summarize_emails", "triage_inbox"}),
+    ("did I get any new emails today", {"view_emails", "summarize_emails", "triage_inbox"}),
+    ("any new texts?", {"view_messages", "summarize_messages"}),
+    ("got any messages yet", {"view_messages", "summarize_messages"}),
+])
+def test_inbox_questions_read_the_inbox_not_the_web(prompt, family):
+    decision = _route(prompt)
+    reach = _reachable(decision)
+    assert "web_search" not in reach and not decision.direct_calls, decision.reason
+    assert reach & family, decision.reason
+
+
+@pytest.mark.parametrize("prompt", ["any new iphone news", "any new covid guidance today",
+                                    "latest news about the fed"])
+def test_public_current_questions_still_search_the_web(prompt):
+    assert "web_search" in _reachable(_route(prompt))

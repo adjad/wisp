@@ -648,6 +648,14 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
     return finish(source, delivery)
 
 
+_PERSONAL_INBOX_QUESTION = (
+    r"(?:(?:are\s+there|is\s+there|do\s+i\s+have|did\s+i\s+get|have\s+i\s+got|got)\s+)?"
+    r"any\s+(?:(?:new|unread|important|recent|urgent|more|other)\s+)*"
+    r"(?:e-?mails?|mail|texts?|messages?|imessages?|voicemails?|dms?)"
+    r"(?:\s+(?:today|yet|tonight|so\s+far|this\s+(?:morning|afternoon|evening|week)|"
+    r"for\s+me|since\s+(?:this\s+morning|yesterday|lunch)))?")
+
+
 def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, bool]:
     # Quotes mask commands for consent/effect parsing, not source ownership.
     # Searching a quoted private-source phrase still needs the privacy guard.
@@ -700,6 +708,11 @@ def _provenance(source: str, *, fragment: bool = False) -> tuple[Provenance, boo
     # user's calendar. Require the complete shape: an external event, service
     # or explicit web request must retain its public-source interpretation.
     if re.fullmatch(PERSONAL_CALENDAR_READ_PATTERN + r"[.!?]*", _root(t), re.I):
+        return Provenance.PRIVATE, False
+    # Likewise a bare "any new emails?" / "any important mail this morning" /
+    # "got any texts" is the user's own inbox, not current public information
+    # (it was a router-direct web search). The complete shape is required.
+    if re.fullmatch(_PERSONAL_INBOX_QUESTION + r"[.!?]*", _root(t), re.I):
         return Provenance.PRIVATE, False
     public, ambiguous_owner = False, False
     for position in re.finditer(r"\b", t):
