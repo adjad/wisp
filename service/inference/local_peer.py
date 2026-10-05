@@ -1,4 +1,5 @@
 """Shared strict Darwin oMLX process and established-connection attribution."""
+import errno
 import hashlib
 import http.client
 import json
@@ -127,6 +128,73 @@ def process_identity(pid, uid):
         return (pid, uid, info.start_seconds, info.start_microseconds)
     except (OSError, AttributeError):
         raise AuthRefused('process_identity_unsupported') from None
+
+
+PROC_PIDPATHINFO_MAXSIZE = 4 * 1024      # <sys/proc_info.h>: 4 * MAXPATHLEN
+
+# An executable path as `lsof -d txt` used to print it unescaped: absolute, printable
+# ASCII, no backslash.  lsof printed every other byte as literal escape text (a
+# backslash as `\\`, a tab as `\t`, DEL as `\x7f`, other control bytes as `^A`, bytes
+# above 0x7e as `\xNN`); such text never named the real file, so the old caller's
+# `resolve(strict=True)` refused it with `desktop_executable_unqualified`.  The same
+# refusal, for the same names, is made here instead of trusting a name that lsof
+# would have mangled (a newline or NUL could also split or truncate a row).
+_UNESCAPED_PATH = re.compile(rb'/[\x20-\x5b\x5d-\x7e]*')
+
+
+def _proc_pidpath(pid, size):
+    """The raw libproc call: (returned length, the whole buffer, errno).  Each call has its own
+    library handle and buffer, so pool threads share nothing (ctypes releases the GIL)."""
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    call = library.proc_pidpath
+    call.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+    call.restype = ctypes.c_int
+    buffer = ctypes.create_string_buffer(size)
+    ctypes.set_errno(0)
+    length = call(pid, buffer, size)
+    return length, buffer.raw, ctypes.get_errno()
+
+
+def process_path(pid):
+    """Darwin proc_pidpath: the absolute path of the running executable of ``pid``.
+
+    Replaces the `lsof -d txt` spawn with the same facts and the same refusals; it is
+    never more permissive than lsof was:
+
+    * A pid that is not a plain positive 32-bit int is refused as a nonexistent pid
+      (`native_inspection_unavailable`, the reason `lsof` exiting 1 gave).  lsof also
+      accepted a decimal string and silently truncated a larger number to 32 bits;
+      those two inputs are refused here (stricter, and nothing passes them).
+    * A vanished process or a zombie (proc_pidpath returns 0 with ESRCH, where lsof
+      exited 1) is that same transient `native_inspection_unavailable`, so the retry
+      discipline of `connected_peer_with_retry` is unchanged.  No other failure is
+      transient: ENOENT (a deleted executable, where lsof printed a path that then
+      failed to resolve), ENOMEM, EINVAL, EPERM and anything else, an unexpected
+      length, a missing terminator, a wrong-sized buffer, a path with a byte lsof
+      would have escaped and a relative path are all the non-retried
+      `desktop_executable_unqualified`.  Nothing here ever falls back to accepting.
+    * proc_pidpath answers for another user's pid where lsof refused.  This function
+      is therefore never the gate on the owner: `_listener` checks the `ps` uid first
+      in its evaluated order (and again, signature and ownership of the file, after).
+    """
+    if type(pid) is not int or not 0 < pid <= 2 ** 31 - 1:
+        raise AuthRefused('native_inspection_unavailable')
+    size = PROC_PIDPATHINFO_MAXSIZE
+    try:
+        length, raw, error = _proc_pidpath(pid, size)
+    except Exception:  # noqa: BLE001 - any failure of the native call is a refusal, never an accept
+        raise AuthRefused('desktop_executable_unqualified') from None
+    if type(length) is not int or type(raw) is not bytes or type(error) is not int:
+        raise AuthRefused('desktop_executable_unqualified')
+    if length <= 0:
+        raise AuthRefused('native_inspection_unavailable' if error == errno.ESRCH
+                          else 'desktop_executable_unqualified')
+    if length >= size or len(raw) != size or raw[length] != 0:
+        raise AuthRefused('desktop_executable_unqualified')
+    path = raw[:length]
+    if not _UNESCAPED_PATH.fullmatch(path):
+        raise AuthRefused('desktop_executable_unqualified')
+    return path.decode('ascii')
 
 
 def socket_identity(sock, port=8000):

@@ -2067,8 +2067,11 @@ def test_group_cache_is_created_lazily_when_the_instance_has_none(monkeypatch):
 SERVER_PID, PARENT_PID = 321, 77
 LISTEN_ARGV = ('/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000', '-sTCP:LISTEN', '-Fpufn')
 PS_ARGV = {pid: ('/bin/ps', '-ww', '-p', str(pid), '-o', 'ppid=,uid=,comm=') for pid in (SERVER_PID, PARENT_PID)}
-TXT_ARGV = {pid: ('/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-Fn') for pid in (SERVER_PID, PARENT_PID)}
-EXPECTED_ARGVS = {LISTEN_ARGV, *PS_ARGV.values(), *TXT_ARGV.values()}
+# T0-path: the executable path is no longer an `lsof -d txt` spawn.  It is the module-level
+# seam `at.process_path(pid)` (libproc proc_pidpath), recorded as the event ('path', pid).
+PATH_EVENTS = {pid: ('path', pid) for pid in (SERVER_PID, PARENT_PID)}
+OLD_TXT_ARGV = {pid: ('/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-Fn') for pid in (SERVER_PID, PARENT_PID)}
+EXPECTED_ARGVS = {LISTEN_ARGV, *PS_ARGV.values()}
 
 
 # Captured at import, before any fixture can wrap it.
@@ -2108,6 +2111,7 @@ class Host:
             return PRISTINE_QUALIFIED_TREE(instance, root)
         monkeypatch.setattr(at, 'inspect_command', self.inspect)
         monkeypatch.setattr(at, 'tcp_listeners', self.tcp_listeners)
+        monkeypatch.setattr(at, 'process_path', self.process_path)
         monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                             lambda instance, pid, identity: host.signed(pid, identity))
         monkeypatch.setattr(at.DesktopOmlx, '_qualified_tree', traced_tree)
@@ -2120,9 +2124,11 @@ class Host:
             return self.listen
         if argv[0] == '/bin/ps':
             return self.ps[argv[3]].encode()
-        if argv[0] == '/usr/sbin/lsof' and '-d' in argv:
-            return f'p{argv[4]}\nftxt\nn{self.txt[argv[4]]}\n'.encode()
-        raise AssertionError(argv)
+        raise AssertionError(argv)      # T0-path: `lsof -d txt` (or anything else) is never spawned for the executable
+
+    def process_path(self, pid):
+        self.events.append(('path', pid))
+        return self.txt[str(pid)]
 
     def tcp_listeners(self):
         self.events.append(('tcp_listeners',))
@@ -2154,15 +2160,16 @@ def spawns(host):
 
 SEQUENTIAL_SUCCESS = [
     ('spawn', LISTEN_ARGV), ('tcp_listeners',),
-    ('spawn', PS_ARGV[SERVER_PID]), ('spawn', TXT_ARGV[SERVER_PID]), ('signed', SERVER_PID, 'python3'),
-    ('spawn', PS_ARGV[PARENT_PID]), ('spawn', TXT_ARGV[PARENT_PID]), ('signed', PARENT_PID, 'app.omlx'),
+    ('spawn', PS_ARGV[SERVER_PID]), PATH_EVENTS[SERVER_PID], ('signed', SERVER_PID, 'python3'),
+    ('spawn', PS_ARGV[PARENT_PID]), PATH_EVENTS[PARENT_PID], ('signed', PARENT_PID, 'app.omlx'),
 ]
 
 
 def test_listener_issues_exactly_the_reviewed_set_of_spawns(host):
     authority = host.new()
     assert authority._identity[0] == SERVER_PID and authority._identity[2] == PARENT_PID
-    assert Counter(spawns(host)) == Counter(EXPECTED_ARGVS)      # five spawns, each exactly once
+    assert Counter(spawns(host)) == Counter(EXPECTED_ARGVS)      # three spawns, each exactly once
+    assert Counter(e for e in host.events if e[0] == 'path') == Counter(PATH_EVENTS.values())   # T0-path: libproc, twice
     assert [e for e in host.events if e[0] == 'tcp_listeners'] == [('tcp_listeners',)]
     assert sorted(e[1:] for e in host.events if e[0] == 'signed') == [(PARENT_PID, 'app.omlx'), (SERVER_PID, 'python3')]
     assert [e[1] for e in host.events if e[0] == 'tree'] == [host.python_root, host.server_entry.parent]
@@ -2174,7 +2181,7 @@ def test_listener_data_dependencies_hold_in_any_scheduling(host):
     order = [e for e in host.events if e[0] != 'tree']
     at_ = {event: index for index, event in enumerate(order)}
     listen, ps_server, ps_parent = ('spawn', LISTEN_ARGV), ('spawn', PS_ARGV[SERVER_PID]), ('spawn', PS_ARGV[PARENT_PID])
-    txt_server, txt_parent = ('spawn', TXT_ARGV[SERVER_PID]), ('spawn', TXT_ARGV[PARENT_PID])
+    txt_server, txt_parent = PATH_EVENTS[SERVER_PID], PATH_EVENTS[PARENT_PID]
     # T0-spawn changed this test: the former lines also pinned orderings that are NOT data
     # dependencies (a step's ps before its own lsof -d txt before its signature check), which
     # the serial code merely happened to have.  Only the real ones are asserted here; the
@@ -2583,6 +2590,7 @@ CONTRACT = [
     ('connected_peer_with_retry', at.connected_peer_with_retry,
      '(authority, sock, pid, identity, *, attempts=3, pause=0.1)'),
     ('local_peer.process_identity', local_peer.process_identity, '(pid, uid)'),
+    ('local_peer.process_path', local_peer.process_path, '(pid)'),
     ('local_peer.tcp_listeners', local_peer.tcp_listeners, '()'),
     ('CheckedBackend.connect_tcp', at.CheckedBackend.connect_tcp, '(self, host, port, **kwargs)'),
     ('CheckedStream.write', at.CheckedStream.write, '(self, buffer, timeout=None)'),
@@ -2653,7 +2661,11 @@ def step_name(argv):
         return 'listen'
     if argv[0] == '/bin/ps':
         return 'ps-server' if argv[3] == str(SERVER_PID) else 'ps-parent'
-    return 'txt-server' if argv[4] == str(SERVER_PID) else 'txt-parent'
+    raise AssertionError(argv)          # T0-path: the executable path is `at.process_path`, never a spawn
+
+
+def path_step_name(pid):
+    return 'txt-server' if pid == SERVER_PID else 'txt-parent'
 
 
 class LegacyListener:
@@ -2742,6 +2754,7 @@ class Probe:
         if monkeypatch is not None:
             monkeypatch.setattr(at, 'inspect_command', lambda argv: self.step(step_name(argv), self.host.inspect, argv))
             monkeypatch.setattr(at, 'tcp_listeners', lambda: self.step('tcp', self.host.tcp_listeners))
+            monkeypatch.setattr(at, 'process_path', lambda pid: self.step(path_step_name(pid), self.host.process_path, pid))
             monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                                 lambda instance, pid, identity: self.step(
                                     'sig-server' if pid == SERVER_PID else 'sig-parent', self.host.signed, pid, identity))
@@ -2905,9 +2918,10 @@ def test_nothing_is_started_from_data_that_failed_its_own_check(make_host, monke
 def test_every_call_goes_through_the_module_globals_and_the_instance_seams(host, monkeypatch):
     seen = []
     base = Probe(host, monkeypatch)
-    real_inspect, real_tcp = at.inspect_command, at.tcp_listeners
+    real_inspect, real_tcp, real_path = at.inspect_command, at.tcp_listeners, at.process_path
     monkeypatch.setattr(at, 'inspect_command', lambda argv: seen.append(('inspect', step_name(argv))) or real_inspect(argv))
     monkeypatch.setattr(at, 'tcp_listeners', lambda: seen.append(('tcp',)) or real_tcp())
+    monkeypatch.setattr(at, 'process_path', lambda pid: seen.append(('process_path', pid)) or real_path(pid))
     for name in ('_process', '_executable'):
         original = getattr(at.DesktopOmlx, name)
         monkeypatch.setattr(at.DesktopOmlx, name, lambda self, pid, original=original, name=name:
@@ -2915,8 +2929,8 @@ def test_every_call_goes_through_the_module_globals_and_the_instance_seams(host,
     current(bare())
     assert sorted(seen, key=repr) == sorted([
         ('inspect', 'listen'), ('tcp',), ('_process', SERVER_PID), ('inspect', 'ps-server'), ('_executable', SERVER_PID),
-        ('inspect', 'txt-server'), ('_process', PARENT_PID), ('inspect', 'ps-parent'), ('_executable', PARENT_PID),
-        ('inspect', 'txt-parent')], key=repr)
+        ('process_path', SERVER_PID), ('_process', PARENT_PID), ('inspect', 'ps-parent'), ('_executable', PARENT_PID),
+        ('process_path', PARENT_PID)], key=repr)
     assert base.started().count('sig-server') == base.started().count('sig-parent') == 1
 
 
@@ -2932,9 +2946,11 @@ def test_instrumentation_wrappers_installed_over_the_seams_count_every_call_once
         return wrapper
     monkeypatch.setattr(at, 'inspect_command', wrap('inspect', at.inspect_command))
     monkeypatch.setattr(at, 'tcp_listeners', wrap('tcp', at.tcp_listeners))
+    monkeypatch.setattr(at, 'process_path', wrap('process_path', at.process_path))
     for _ in range(25):
         current(bare())
-    assert counts == {'inspect': 25 * 5, 'tcp': 25}
+    # T0-path: three spawns (the listener lookup and two ps) plus two libproc lookups per run.
+    assert counts == {'inspect': 25 * 3, 'tcp': 25, 'process_path': 25 * 2}
 
 
 def test_context_variables_reach_the_worker_threads(host, monkeypatch):
@@ -3293,6 +3309,8 @@ class Fleet:
         monkeypatch.setattr(at, 'inspect_command',
                             lambda argv: ACTIVE.get().step(step_name(argv), ACTIVE.get().host.inspect, argv))
         monkeypatch.setattr(at, 'tcp_listeners', lambda: ACTIVE.get().step('tcp', ACTIVE.get().host.tcp_listeners))
+        monkeypatch.setattr(at, 'process_path',
+                            lambda pid: ACTIVE.get().step(path_step_name(pid), ACTIVE.get().host.process_path, pid))
         monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
                             lambda instance, pid, identity: ACTIVE.get().step(
                                 'sig-server' if pid == SERVER_PID else 'sig-parent', ACTIVE.get().host.signed, pid, identity))
@@ -3343,3 +3361,195 @@ def test_stress_concurrent_listeners_equal_the_serial_oracle_without_leaks(make_
     assert len(pool_threads()) <= at._INSPECTION_WORKERS
     at._POOL.shutdown()
     assert thread_names() <= before                                        # no thread outlived the runs
+
+
+# ==========================================================================
+# T0-path: the executable path comes from libproc (proc_pidpath), not from lsof -d txt
+# --------------------------------------------------------------------------
+# What changed in this file, and why (nothing else was edited):
+#   * TXT_ARGV became OLD_TXT_ARGV (kept only to assert it is never issued); EXPECTED_ARGVS
+#     lost the two `lsof -d txt` argvs (five spawns became three).
+#   * Host: `inspect` no longer answers `lsof -d txt` (it raises); new `Host.process_path` is
+#     installed as the module seam `at.process_path` and records ('path', pid).  The
+#     per-pid answer is still `host.txt`, so every FAULTS entry and the `_txt` helper are unchanged.
+#   * SEQUENTIAL_SUCCESS, the data-dependency test and the spawn-set test: ('spawn', TXT_ARGV[pid])
+#     events became PATH_EVENTS[pid].
+#   * step_name no longer names a txt step (it raises); Probe and Fleet route `at.process_path`
+#     through the same 'txt-server' / 'txt-parent' steps, so every timing, hook and reason-order
+#     test still covers that step.
+#   * The module-global seam test lists `process_path` and the instrumentation-count test expects
+#     3 spawns + 2 libproc lookups per run (it was 5 spawns).
+# LegacyListener (the frozen serial oracle) is untouched: it calls ``self._executable``.  The oracle
+# for the executable lookup itself is LegacyExecutable in test_runtime_proc_path.py.
+# ==========================================================================
+from tests.test_runtime_proc_path import LegacyExecutable
+
+
+def test_the_old_lsof_txt_spawn_is_no_longer_issued(make_host):
+    for fault in [None] + [FAULTS[i] for i in range(len(FAULTS))]:
+        host = make_host()
+        if fault:
+            fault[1](host)
+        try:
+            host.new()
+        except AuthRefused:
+            pass
+        issued = spawns(host)
+        assert not set(issued) & set(OLD_TXT_ARGV.values())
+        assert not any('-d' in argv or 'txt' in argv for argv in issued), issued
+        assert set(issued) <= EXPECTED_ARGVS
+
+
+def test_the_executable_lookup_is_issued_once_per_pid_through_the_seam(host):
+    host.new()
+    assert sorted(e for e in host.events if e[0] == 'path') == sorted(PATH_EVENTS.values())
+
+
+def lsof_txt_exits_one(host):
+    """What the old `lsof -d txt` did: exit 1 (so refuse) for pid 1, which a non-root user may not inspect,
+    and print the fake pids' executables as the former Host fake did."""
+    real = host.inspect
+
+    def inspect(argv):
+        if '-d' in argv:
+            if argv[4] == '1':
+                raise AuthRefused('native_inspection_unavailable')
+            return f'p{argv[4]}\nftxt\nn{host.txt[argv[4]]}\n'.encode()
+        return real(argv)
+    return inspect
+
+
+def legacy_executable_authority(host, monkeypatch):
+    """A bare authority whose `_executable` is the frozen lsof oracle (lsof exiting 1 for pid 1)."""
+    monkeypatch.setattr(at, 'inspect_command', lsof_txt_exits_one(host))
+    authority = bare()
+    authority._executable = lambda pid: LegacyExecutable._executable(authority, pid)
+    return authority
+
+
+def real_process_path(host):
+    """The REAL libproc helper for the one real pid in play (1); the fake pids keep their fake answers."""
+    def lookup(pid):
+        host.events.append(('path', pid))
+        return local_peer.process_path(pid) if pid == 1 else host.txt[str(pid)]
+    return lookup
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='libproc')
+@pytest.mark.parametrize('profile', ['none', 'forward', 'reverse', 'jitter-a'])
+def test_a_foreign_uid_server_pid_1_is_refused_by_the_ps_uid_check_under_the_scheduler(make_host, monkeypatch, profile):
+    """proc_pidpath answers for root's pid 1 where lsof exited 1; the verdict must not depend on it."""
+    host = make_host()
+    host.listen = f'p1\nu{UID}\nf4\nn127.0.0.1:8000\n'.encode()
+    host.ps['1'] = f'{PARENT_PID} 0 omlx-server\n'                   # root's process: uid 0
+    host.process_path = real_process_path(host)
+    Probe(host, monkeypatch, delays=delays_for(profile, 5))
+    new = outcome(lambda: current(bare()))
+    assert ('path', 1) in host.events                                 # the helper really ran, speculatively...
+    assert new[:2] == ('AuthRefused', ('desktop_process_unqualified',))      # ...and was not the gate
+    old_host = make_host()
+    old_host.listen, old_host.ps['1'] = host.listen, host.ps['1']
+    old = outcome(lambda: legacy(legacy_executable_authority(old_host, monkeypatch)))
+    assert same_outcome(new, old)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='libproc')
+@pytest.mark.parametrize('profile', ['none', 'forward', 'reverse', 'jitter-a'])
+def test_a_foreign_uid_parent_pid_1_is_refused_by_the_ps_uid_check_under_the_scheduler(make_host, monkeypatch, profile):
+    host = make_host()
+    host.ps[str(SERVER_PID)] = f'1 {UID} omlx-server\n'               # the server's parent is pid 1
+    host.ps['1'] = f'1 0 {host.app_executable}\n'                      # root's launchd-like row: uid 0
+    host.process_path = real_process_path(host)
+    Probe(host, monkeypatch, delays=delays_for(profile, 6))
+    new = outcome(lambda: current(bare()))
+    assert ('path', 1) in host.events
+    assert new[:2] == ('AuthRefused', ('desktop_parent_unqualified',))
+    old_host = make_host()
+    old_host.ps[str(SERVER_PID)], old_host.ps['1'] = host.ps[str(SERVER_PID)], host.ps['1']
+    old = outcome(lambda: legacy(legacy_executable_authority(old_host, monkeypatch)))
+    assert same_outcome(new, old)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='libproc')
+def test_the_helper_is_not_the_only_gate_even_if_ps_were_to_lie_about_the_uid(make_host, monkeypatch):
+    """Second and third lines of defence that already existed: the path must lie under the app and the
+    file must be a regular, correctly owned, non-writable one.  pid 1 is /sbin/launchd, not oMLX."""
+    host = make_host()
+    host.listen = f'p1\nu{UID}\nf4\nn127.0.0.1:8000\n'.encode()
+    host.ps['1'] = f'{PARENT_PID} {UID} omlx-server\n'               # a lying ps row: our uid
+    host.process_path = real_process_path(host)
+    Probe(host, monkeypatch)
+    with pytest.raises(AuthRefused) as caught:
+        current(bare())
+    assert str(caught.value) == 'desktop_executable_unqualified'
+
+
+@pytest.mark.parametrize('reason', ['desktop_executable_unqualified', 'native_inspection_unavailable'])
+@pytest.mark.parametrize('which', ['txt-server', 'txt-parent'])
+@pytest.mark.parametrize('profile', ['none', 'forward', 'reverse', 'jitter-b'])
+def test_a_path_lookup_refusal_is_ordered_like_the_serial_code(make_host, monkeypatch, reason, which, profile):
+    """With any other single fault present, the reason is the earliest one in the former serial order."""
+    for index in [None, *PROCESS_FAULTS, 10, 11, 12]:
+        host = make_host()
+        if index is not None:
+            FAULTS[index][1](host)
+        Probe(host, monkeypatch, delays=delays_for(profile, index or 0), errors={which: AuthRefused(reason)})
+        new, old = outcome(lambda: current(bare())), outcome(lambda: legacy(bare()))
+        assert same_outcome(new, old), (index, which, reason, new[:2], old[:2])
+        assert new[0] == 'AuthRefused'
+
+
+@pytest.mark.parametrize('which', ['txt-server', 'txt-parent'])
+def test_a_failing_lookup_does_not_leave_work_running(make_host, monkeypatch, which):
+    host = make_host()
+    probe = Probe(host, monkeypatch, delays=delays_for('forward', 2), errors={which: AuthRefused('desktop_executable_unqualified')})
+    with pytest.raises(AuthRefused):
+        current(bare())
+    assert probe.inflight == 0
+
+
+# -- retry discipline: only the vanished-process reason is retried ----------------------------------
+class VanishingAuthority:
+    """connected_peer reaches the executable lookup exactly as the real one does through binding()."""
+
+    def __init__(self, script, monkeypatch):
+        self.calls = 0
+        script = list(script)
+
+        def raw(pid, size):
+            kind = script.pop(0)
+            if kind == 'ok':
+                return len(OK_PATH), OK_PATH + b'\0' * (size - len(OK_PATH)), 0
+            return 0, b'\0' * size, kind
+        monkeypatch.setattr(local_peer, '_proc_pidpath', raw)
+
+    def connected_peer(self, sock, pid, identity):
+        self.calls += 1
+        at.DesktopOmlx._executable(bare(), 4242)
+        return 'peer'
+
+
+OK_PATH = b'/Applications/oMLX.app/Contents/MacOS/oMLX'
+
+
+def test_a_vanished_process_is_retried_up_to_three_attempts_like_a_failing_lsof(monkeypatch):
+    import errno
+    authority = VanishingAuthority([errno.ESRCH, errno.ESRCH, 'ok'], monkeypatch)
+    assert at.connected_peer_with_retry(authority, None, 4242, None, pause=0) == 'peer' and authority.calls == 3
+    authority = VanishingAuthority([errno.ESRCH] * 3, monkeypatch)
+    with pytest.raises(AuthRefused) as caught:
+        at.connected_peer_with_retry(authority, None, 4242, None, pause=0)
+    assert str(caught.value) == 'native_inspection_unavailable' and authority.calls == 3
+
+
+@pytest.mark.parametrize('error', ['EPERM', 'ENOENT', 'ENOMEM', 'EINVAL', 'EACCES', 'EIO'])
+def test_every_other_failure_is_never_retried(monkeypatch, error):
+    import errno
+    authority = VanishingAuthority([getattr(errno, error), 'ok', 'ok'], monkeypatch)
+    with pytest.raises(AuthRefused) as caught:
+        at.connected_peer_with_retry(authority, None, 4242, None, pause=0)
+    assert str(caught.value) == 'desktop_executable_unqualified' and authority.calls == 1
+
+
+def test_no_new_transient_reason_exists():
+    assert at.TRANSIENT_INSPECTION_REASONS == {'native_inspection_unavailable', 'connection_inspection_unavailable'}
