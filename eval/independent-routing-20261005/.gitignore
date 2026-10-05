@@ -9,3 +9,5 @@ cache_control.json
 overnight_status.json
 answers.manifest.json
 laya_stability.manifest.json
+blinded_answer_review.json
+answer_review_key.json

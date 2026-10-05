@@ -25,7 +25,11 @@
     "Cache-control sensitivity calls recorded; not sufficient to diagnose server cache bug",
     "Corrected development_v2 run:90 actual candidate cases complete with no transport errors",
     "Six targeted harness checks pass after independent review repairs",
-    "Serialized overnight.py now runs 2070 held-out candidate trials,120 challenge trials,165 synthetic answer continuations,504 raw Laya option-order predictions"
+    "Serialized overnight.py now runs 2070 held-out candidate trials,120 challenge trials,165 synthetic answer continuations,504 raw Laya option-order predictions",
+    "Primary harness frozen at94c3b362ba4b4d5f18469907397fc2f22027740d; independent repair re-review PASS",
+    "Answer fixtures independently reviewed and repaired before first answer generation;6 targeted fixture checks pass",
+    "Analysis script prepared without candidate tuning;4 checks for correlated-family metrics, duplicates, input hashes, partial writer pass",
+    "Five unchanged candidate runtime/corpus hashes verified during the running primary benchmark"
   ],
   "pending": [
     "Freeze harness/corpus and run held-out test for five arms with multiple repetitions",
@@ -41,5 +45,6 @@
     "independent-wisp-routing-evaluation-overnight",
     "report-optimal-wisp-routing-at-9-am"
   ],
-  "launch_command": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python -u eval/independent-routing-20261005/overnight.py"
+  "launch_command": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python -u eval/independent-routing-20261005/overnight.py",
+  "analysis_instructions": "After overnight_status.state=measurements_complete, run /Users/adijain/Desktop/MOE_Project/.venv/bin/python eval/independent-routing-20261005/analyze_results.py --require-complete. Verify analysis.json all_stages_complete. Read blinded_answer_review.json rubric and answers; dispatch bounded read-only independent audit of anonymous answer IDs before reading answer_review_key.json for candidate attribution. Score 0-2 grounding/scope/coverage/attribution/usefulness, critical failures and completion. Report overall and conditional on first-call correctness. Do not tune frozen candidates on held-out outcomes. Complete numerical report, preserve raw local evidence, commit/push report on same branch, and deliver concise recommendation at9AM."
 }
