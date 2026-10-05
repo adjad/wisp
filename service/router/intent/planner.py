@@ -6,6 +6,8 @@ import os
 import re
 from datetime import datetime
 from typing import Awaitable, Callable
+from urllib.parse import urlsplit
+from service.config.endpoints import Endpoint, Target, is_loopback, role_target
 from .schema import DOMAINS, SCHEMA, PlanningResult
 from .validation import InvalidIntent, applicable_read, source_requirements, validate_intent
 from .compiler import UnsupportedRead, compile_intent
@@ -31,29 +33,61 @@ def natural_context(context) -> list[dict]:
     return result
 
 
-async def resident_eligible(client, model: str) -> bool:
-    """Read-only resource seam; never call ensure_only, ensure_engine, or load.
+def _client_matches_target(client, target: Target) -> bool:
+    """Compare frozen routing/transport metadata without reading credentials.
 
-    Preserve the supplied client's endpoint/transport identity, reject remote
-    clients and non-oMLX providers, and require the configured Ling to already
-    be loaded. Tests can inject a fake status client or an eligibility callback.
+    The legacy shared client has no Target. It can serve only the canonical
+    unqualified local binding; custom bindings need explicit target provenance.
+    Synthetic clients supply the same metadata, with an inert transport stub.
     """
-    if not model or "ling" not in model.casefold() or getattr(client, "managed", False) is not True:
+    if not isinstance(target, Target) or not isinstance(target.endpoint, Endpoint):
         return False
-    target = getattr(client, "target", None)
-    if target is not None and (not target.endpoint.managed or target.model != model):
+    ep = target.endpoint
+    if (target.role != "router" or not target.model or "ling" not in target.model.casefold()
+            or ep.name != "local" or ep.managed is not True or not is_loopback(ep.base_url)
+            or ep.provider != "omlx" or ep.api_prefix != "/v1"):
         return False
-    provider = getattr(client, "provider", None)
-    if provider is not None and getattr(provider, "name", "") != "omlx":
+    parsed = urlsplit(ep.base_url)
+    if (parsed.scheme not in {"http", "https"} or parsed.username or parsed.password
+            or parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
+        return False
+    if (getattr(client, "managed", False) is not True
+            or not isinstance(getattr(client, "base_url", None), str)
+            or client.base_url.rstrip("/") != ep.base_url.rstrip("/")
+            or getattr(client, "endpoint_name", None) != ep.name
+            or getattr(getattr(client, "provider", None), "name", None) != ep.provider
+            or getattr(client, "api_prefix", None) != ep.api_prefix):
+        return False
+    supplied = getattr(client, "target", None)
+    if supplied is None:
+        if ep.credential_ref != "local_omlx" or target.revision or target.profile or target.dimensions:
+            return False
+    elif (not isinstance(supplied, Target) or supplied.role != target.role
+          or supplied != target
+          or supplied.endpoint.credential_ref != ep.credential_ref
+          or supplied.endpoint.managed is not True):
+        return False
+    transport = getattr(client, "_credential_transport", None)
+    # CredentialTransport already enforces origin and process attribution. Do
+    # not replace it, resolve its keys, or reinterpret managed=True as identity.
+    origin = getattr(transport, "origin", None)
+    return (origin is not None and str(origin).rstrip("/") == ep.base_url.rstrip("/")
+            and getattr(transport, "backend", None) is not None)
+
+
+async def resident_eligible(client, target: Target) -> bool:
+    """Read-only resource seam; never start an engine or change residency."""
+    if not _client_matches_target(client, target):
         return False
     status = await client.status()
-    return any(row.get("id") == model and row.get("loaded") is True
+    return any(row.get("id") == target.model and row.get("loaded") is True
                for row in status.get("models", []) if isinstance(row, dict))
 
 
-async def plan_read(prompt: str, *, client, model: str, config: dict | None,
+async def plan_read(prompt: str, *, client, config: dict | None, model: str | None = None,
                     context=(), prior_tools=(), now: datetime | None = None,
-                    eligibility: Callable[..., Awaitable[bool]] | None = None) -> PlanningResult | None:
+                    eligibility: Callable[..., Awaitable[bool]] | None = None,
+                    on_generation: Callable[[Target], None] | None = None) -> PlanningResult | None:
     if not enabled(config) or not applicable_read(prompt, context, prior_tools):
         return None
     domains = config.get("domains", [])
@@ -75,10 +109,17 @@ async def plan_read(prompt: str, *, client, model: str, config: dict | None,
     attempts = 0
     try:
         async with asyncio.timeout(seconds):
+            target = role_target("router")
+            if (client is None or not _client_matches_target(client, target)
+                    or (model is not None and model != target.model)):
+                return PlanningResult("clarify", response="I cannot safely resolve this read with the configured local routing endpoint. Please name the source, date range, and filters explicitly.", reason="routing target unavailable or mismatched", attempts=0)
+            model = target.model
             for attempt in range(2 if config.get("repair", True) is True else 1):
-                if client is None or not await (eligibility or resident_eligible)(client, model):
+                if client is None or not await (eligibility or resident_eligible)(client, target):
                     return PlanningResult("clarify", response="I cannot safely resolve this read while the local routing model is unavailable. Please name the source, date range, and filters explicitly.", reason="resident model unavailable", attempts=attempts)
                 attempts += 1
+                if on_generation is not None:
+                    on_generation(target)
                 response = await client.chat(model, messages, temperature=0, max_tokens=900,
                     chat_template_kwargs={"enable_thinking": False},
                     response_format={"type": "json_schema", "json_schema": {

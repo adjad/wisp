@@ -6,6 +6,10 @@ import json
 from datetime import datetime
 from types import SimpleNamespace
 import pytest
+import httpx
+from dataclasses import replace
+from service.config.endpoints import Endpoint, Target
+from service.router.intent import planner
 import service.tools  # register signatures only
 from service.router.intent import SCHEMA, compile_intent, validate_intent, InvalidIntent, UnsupportedRead, plan_read, resident_eligible
 from service.router.intent.grammar import personal_agenda_period
@@ -13,6 +17,14 @@ from service.workflows.reads import compile_read
 
 NOW = datetime(2026, 10, 5, 10, 0)
 MODEL = "Ling-3.0-tiny-oQ6e"
+TARGET = Target("router", Endpoint("local", "http://127.0.0.1:8000", "local_omlx", True), MODEL)
+
+
+@pytest.fixture(autouse=True)
+def configured_router_target(monkeypatch):
+    monkeypatch.setattr(planner, "role_target", lambda role: TARGET if role == "router" else None)
+
+
 CONFIG = {"enabled": True, "domains": ["calendar", "reminders", "email", "messages", "notes"]}
 
 
@@ -27,7 +39,11 @@ def source(domain, operation="overview", **kw):
 class FakeClient:
     managed = True
     provider = SimpleNamespace(name="omlx")
-    target = None
+    target = TARGET
+    base_url = TARGET.endpoint.base_url
+    endpoint_name = TARGET.endpoint.name
+    api_prefix = TARGET.endpoint.api_prefix
+    _credential_transport = SimpleNamespace(origin=httpx.URL(TARGET.endpoint.base_url), backend=object())
 
     def __init__(self, *outputs, loaded=True):
         self.outputs = list(outputs)
@@ -186,11 +202,11 @@ def test_actions_assent_mentions_and_public_reads_never_enter_planner(prompt):
 def test_remote_or_wrong_model_is_not_resource_eligible():
     client = FakeClient()
     client.managed = False
-    assert not asyncio.run(resident_eligible(client, MODEL))
+    assert not asyncio.run(resident_eligible(client, TARGET))
     client.managed = True
-    assert not asyncio.run(resident_eligible(client, "OtherModel"))
+    assert not asyncio.run(resident_eligible(client, replace(TARGET, model="OtherModel")))
     client.target = SimpleNamespace(model="OtherModel", endpoint=SimpleNamespace(managed=True))
-    assert not asyncio.run(resident_eligible(client, MODEL))
+    assert not asyncio.run(resident_eligible(client, TARGET))
     assert not client.calls
 
 
@@ -372,3 +388,99 @@ def test_model_noaction_output_does_not_drop_explicit_requested_read():
     noaction = value(kind="none")
     result = run("Recap my email", FakeClient(noaction, noaction))
     assert result.disposition == "clarify" and not result.calls
+
+
+@pytest.mark.parametrize("prompt,options", [
+    ("Recap my email", {"enabled": False}),
+    ("Recap my email", {"enabled": True, "domains": ["notes"]}),
+    ("hello", CONFIG),
+])
+def test_ineligible_request_never_resolves_target(monkeypatch, prompt, options):
+    def forbidden(role):
+        raise AssertionError("ineligible request must not inspect endpoint configuration")
+    monkeypatch.setattr(planner, "role_target", forbidden)
+    client = FakeClient()
+    assert asyncio.run(plan_read(prompt, client=client, config=options)) is None
+    assert not client.calls
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda c: setattr(c, "base_url", "https://remote.example"),
+    lambda c: setattr(c, "base_url", None),
+    lambda c: setattr(c, "endpoint_name", "other"),
+    lambda c: setattr(c, "provider", None),
+    lambda c: setattr(c, "provider", SimpleNamespace(name="openai-compatible")),
+    lambda c: setattr(c, "api_prefix", "/v2"),
+    lambda c: setattr(c, "target", replace(TARGET, role="fast")),
+    lambda c: setattr(c, "target", replace(TARGET, model="Ling-other")),
+    lambda c: setattr(c, "target", replace(TARGET, revision="different")),
+    lambda c: setattr(c, "target", replace(TARGET, context_window=4096)),
+    lambda c: setattr(c, "target", replace(TARGET, endpoint=replace(TARGET.endpoint, credential_ref="env:OTHER"))),
+    lambda c: setattr(c, "_credential_transport", None),
+    lambda c: setattr(c, "_credential_transport", SimpleNamespace(origin=httpx.URL("http://127.0.0.1:9000"), backend=object())),
+    lambda c: setattr(c, "_credential_transport", SimpleNamespace(origin=httpx.URL(TARGET.endpoint.base_url), backend=None)),
+])
+def test_mismatched_identity_fails_before_status_even_with_injected_eligibility(mutation):
+    client = FakeClient()
+    mutation(client)
+    async def forbidden(*args):
+        raise AssertionError("identity must precede resource seam")
+    result = run("Recap my email", client, eligibility=forbidden)
+    assert result.disposition == "clarify" and not result.calls and result.attempts == 0
+    assert not client.calls
+
+
+@pytest.mark.parametrize("target", [None, replace(TARGET, role="fast"),
+    replace(TARGET, model="OtherModel"),
+    replace(TARGET, endpoint=replace(TARGET.endpoint, managed=False)),
+    replace(TARGET, endpoint=replace(TARGET.endpoint, base_url="https://remote.example")),
+    replace(TARGET, endpoint=replace(TARGET.endpoint, provider="openai-compatible")),
+])
+def test_invalid_configured_router_target_never_contacts_client(monkeypatch, target):
+    monkeypatch.setattr(planner, "role_target", lambda role: target)
+    client = FakeClient()
+    result = run("Recap my email", client)
+    assert result.disposition == "clarify" and not client.calls
+
+
+def test_missing_binding_or_resolution_failure_fails_closed(monkeypatch):
+    def missing(role):
+        raise ValueError("missing registered endpoint")
+    monkeypatch.setattr(planner, "role_target", missing)
+    client = FakeClient()
+    result = run("Recap my email", client)
+    assert result.disposition == "clarify" and not client.calls
+
+
+def test_configured_target_is_authoritative_over_model_argument_and_config(monkeypatch):
+    client = FakeClient(value(source("email")))
+    result = asyncio.run(plan_read("Recap my email", client=client, model="Ling-other", config=CONFIG))
+    assert result.disposition == "clarify" and not client.calls
+    roles = []
+    def configured(role):
+        roles.append(role)
+        return TARGET
+    monkeypatch.setattr(planner, "role_target", configured)
+    result = asyncio.run(plan_read("Recap my email", client=client, config={**CONFIG, "model": "remote-override"}))
+    assert result.disposition == "compiled" and roles == ["router"]
+    assert client.calls == ["status", "chat"]
+
+
+def test_legacy_client_preserves_canonical_transport_and_no_secret_access():
+    client = FakeClient(value(source("email")))
+    client.target = None
+    client.base_url += "/"
+    class MetadataOnly:
+        origin = httpx.URL(TARGET.endpoint.base_url)
+        backend = object()
+        @property
+        def key(self):
+            raise AssertionError("never inspect secrets")
+        @property
+        def key_loader(self):
+            raise AssertionError("never resolve credentials")
+    client._credential_transport = MetadataOnly()
+    assert run("Recap my email", client).disposition == "compiled"
+    assert not asyncio.run(resident_eligible(client, replace(TARGET, revision="r1")))
+    assert not asyncio.run(resident_eligible(client, replace(TARGET, endpoint=replace(TARGET.endpoint, credential_ref="env:OTHER"))))
+    assert client.calls == ["status", "chat"]
