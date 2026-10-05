@@ -7065,6 +7065,30 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 # acknowledgement must not reopen the entire registry.
                 decision = _mk_scoped(await _semantic_core(offer.action_text),
                                       "acknowledges the current standalone action offer", light=False)
+            # The offer's own words are the whole request, so they get the same
+            # execution contract as if the user had typed them: an offered
+            # reminder with no resolvable clock ("an hour before") stays on the
+            # clarify-time path and can never be written from a bare "sure".
+            _apply_execution_contract(decision, offer.action_text,
+                                      _classify_web_request(offer.action_text))
+            if decision.reminder_action and (
+                    last_user or recent_users
+                    or resolve_alert_datetime(offer.action_text) is None):
+                # A bare assent never writes a reminder from an offer when the
+                # session has history (the offer may be stale or unrelated to
+                # it, and a prior turn may have declined it — the study-slot
+                # contracts), nor from a relative offer ("an hour before") that
+                # names no date or clock. It may look the event up; the loop's
+                # clarify-time receipt then asks for the time instead of letting
+                # the model claim a reminder was set. A typed time answer
+                # continues through the existing alert-time path.
+                decision.reminder_action = "clarify_time"
+                decision.forbidden_tools |= {"add_reminder", "add_calendar_event", "set_alarm"}
+                decision.required_tool_groups = tuple(
+                    g for g in decision.required_tool_groups if "add_reminder" not in g)
+                decision.tool_argument_bindings.pop("add_reminder", None)
+                decision.tool_subset = ["get_upcoming"]
+                decision.force_first_tool = "get_upcoming"
             decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
         decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
         if offer.source_request:

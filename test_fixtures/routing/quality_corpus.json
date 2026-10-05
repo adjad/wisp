@@ -11497,7 +11497,8 @@
    "expect": "action",
    "need": [
     [
-     "add_reminder"
+     "add_reminder",
+     "get_upcoming"
     ]
    ],
    "force": null,
@@ -11572,7 +11573,8 @@
    "expect": "action",
    "need": [
     [
-     "add_reminder"
+     "add_reminder",
+     "get_upcoming"
     ]
    ],
    "force": null,
@@ -11631,7 +11633,8 @@
    "expect": "action",
    "need": [
     [
-     "add_reminder"
+     "add_reminder",
+     "get_upcoming"
     ]
    ],
    "force": null,
@@ -12177,7 +12180,8 @@
    "expect": "action",
    "need": [
     [
-     "add_reminder"
+     "add_reminder",
+     "get_upcoming"
     ]
    ],
    "force": null,
@@ -12205,7 +12209,8 @@
    "expect": "action",
    "need": [
     [
-     "add_reminder"
+     "add_reminder",
+     "get_upcoming"
     ]
    ],
    "force": null,
