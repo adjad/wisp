@@ -26,6 +26,10 @@ first, what must never be offered (hard leakage) and what should not be offered
 Usage:
   python scripts/score_routing_quality.py [--corpus PATH] [--json-out PATH]
          [--md-out PATH] [--baseline PATH] [--only DOMAIN,...] [--verbose]
+         [--write-ratchet]
+
+tests/test_routing_quality_corpus.py gates CI on this scorer: every id in
+test_fixtures/routing/quality_ratchet.json must keep passing.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 DEFAULT_CORPUS = ROOT / "test_fixtures/routing/quality_corpus.json"
+RATCHET = ROOT / "test_fixtures/routing/quality_ratchet.json"
 
 HARD = ("zero_tool", "missing_tool", "wrong_domain", "leak_forbidden", "forced_wrong",
         "full_registry", "acted_on_chat")
@@ -212,6 +217,8 @@ def main() -> int:
     ap.add_argument("--baseline", type=Path)
     ap.add_argument("--only")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--write-ratchet", action="store_true",
+                    help="record the currently passing case ids (only after an intentional improvement)")
     args = ap.parse_args()
     _isolate()
     cases = json.loads(args.corpus.read_text())["cases"]
@@ -236,6 +243,10 @@ def main() -> int:
         args.json_out.write_text(json.dumps(dict(summary=summary, rows=rows), indent=1))
     if args.md_out:
         args.md_out.write_text(md + "\n")
+    if args.write_ratchet:
+        ratchet = json.loads(RATCHET.read_text())
+        ratchet["passing"] = sorted(r["id"] for r in rows if r["passed"])
+        RATCHET.write_text(json.dumps(ratchet, indent=1) + "\n")
     return 0
 
 
