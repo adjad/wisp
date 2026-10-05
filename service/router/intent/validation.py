@@ -18,8 +18,15 @@ SOURCE_WORDS = {
     "notes": r"\bnotes?\b",
 }
 _NEGATIVE = r"(?:without|excluding|exclude|except|skip|no|not|don't (?:include|check|read)|do not (?:include|check|read))"
-_ACTION = re.compile(r"\b(?:send|text\s+\S+\s+(?:that|saying)|email\s+\S+\s+(?:that|saying)|create|add|set|remind|delete|remove|cancel|update|save|remember|forward|reply|call|draft|compose|write|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)\b", re.I)
+_ACTION = re.compile(r"\b(?:send|share|text\s+\S+\s+(?:that|saying)|email\s+\S+\s+(?:that|saying)|create|add|set|remind|delete|remove|cancel|update|save|remember|forward|reply|call|draft|compose|write|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)\b", re.I)
 
+
+
+def _source_exclusion_prefix(text: str) -> str:
+    """Consume only a coordinated source list, not a later read/effect clause."""
+    noun = r"(?:(?:my|the|any|our)\s+)?(?:" + "|".join(SOURCE_WORDS.values()) + ")"
+    match = re.match(noun + r"(?:(?:\s*(?:,|&)\s*|\s+(?:and|or)\s+)" + noun + r")*", text, re.I)
+    return match.group() if match else ""
 
 def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     """Conservative source mentions, with nearby source-negation respected.
@@ -33,10 +40,31 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
         instruction = _instruction_text(prompt, now=datetime.now().astimezone())
     except InvalidIntent:
         instruction = text  # Ambiguous bounds retain conservative admission.
+    # Negated effects do not authorize or exclude their channel/source nouns.
+    # A pure source list such as "without email or messages" remains exclusion
+    # syntax even though a singular source word can also be a delivery verb.
+    from service.router.web_request import _clauses, _action_clause_head
+    negative_effects = []
+    for clause in _clauses(text):
+        # The effect grammar need not split a later ordinary read head. Bound
+        # negated effects before that independently requested source clause.
+        later_read = re.search(r"\b(?:and(?:\s+then)?|plus|then|but|&)\s+(?:(?:please|can you|could you|would you)\s+)?(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|summari[sz]e)\b", clause.text, re.I)
+        negative_text = clause.text[:later_read.start()] if later_read else clause.text
+        head = _action_clause_head(negative_text)
+        if head and head["negative"]:
+            rest = negative_text[head.end():]
+            for word in SOURCE_WORDS.values():
+                rest = re.sub(word, " ", rest, flags=re.I)
+            rest = re.sub(r"\b(?:and|or|my|the|any|our)\b|[,&]", " ", rest, flags=re.I)
+            source_list = head["action"].lower() in {"email", "e-mail", "text", "message"} and not rest.strip()
+            if not source_list:
+                negative_effects.append((clause.start, clause.start + later_read.start() if later_read else clause.end))
     excluded, required = set(), set()
     for domain, pattern in SOURCE_WORDS.items():
         matches = list(re.finditer(pattern, text, re.I))
         for match in matches:
+            if any(start <= match.start() < end for start, end in negative_effects):
+                continue
             prefix = text[max(0, match.start() - 65):match.start()]
             if re.search(_NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?$", prefix, re.I):
                 excluded.add(domain)
@@ -44,13 +72,44 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
                 required.add(domain)
     # A trailing coordinated exclusion such as "without email or texts".
     for match in re.finditer(_NEGATIVE + r"\s+([^.;!?]+)", text, re.I):
-        tail = re.split(r"\b(?:but|then)\b", match.group(1), maxsplit=1, flags=re.I)[0]
-        if re.fullmatch(r"[\w\s,&-]+", tail):
-            for domain, pattern in SOURCE_WORDS.items():
-                if re.search(pattern, tail, re.I):
-                    excluded.add(domain)
+        if any(start <= match.start() < end for start, end in negative_effects):
+            continue
+        head = _action_clause_head(match.group())
+        if head and head["negative"] and head["action"].lower() not in {"email", "e-mail", "text", "message"}:
+            continue
+        tail = _source_exclusion_prefix(match.group(1))
+        for domain, pattern in SOURCE_WORDS.items():
+            if re.search(pattern, tail, re.I):
+                excluded.add(domain)
     return required - excluded, excluded
 
+
+
+def _positive_effect_instruction(text: str, *, now: datetime) -> bool:
+    """Reject positive effect clauses after complete literal masking.
+
+    Use the web boundary's established head/coordination vocabulary, so actions
+    cannot disappear into a lookup or be granted by model interpretation.
+    Explicit source reads under ordinary read heads remain reads.
+    """
+    from service.router.web_request import _action_clause_head, _clauses, _coordinated_read_noun, _filtered_read_noun
+    clauses = _clauses(text)
+    read_heads = {"check", "list", "open", "summarize"}
+    for index, raw_clause in enumerate(clauses):
+        if index and _coordinated_read_noun(text, clauses, index):
+            continue
+        clause = _instruction_text(raw_clause.text, now=now)
+        head = _action_clause_head(clause)
+        if head and head["negative"]:
+            continue
+        if head and head["action"].lower() in {"email", "e-mail", "text", "message"} and _filtered_read_noun(raw_clause.text):
+            continue
+        if head and head["action"].lower() in read_heads and any(
+                re.search(word, clause, re.I) for word in SOURCE_WORDS.values()):
+            continue
+        if head or _ACTION.search(clause):
+            return True
+    return False
 
 def applicable_read(prompt: str, context=(), prior_tools=()) -> bool:
     from service.utterance_shape import deliberate, mask_quoted
@@ -63,8 +122,12 @@ def applicable_read(prompt: str, context=(), prior_tools=()) -> bool:
     except InvalidIntent:
         instruction = mask_quoted(prompt)  # Strict validation will clarify bounds.
     positive = re.sub(r"\b(?:don't|do not|never)\s+(?:send|email|text|save|reply|forward)[^.;!?]*", "", instruction, flags=re.I)
-    if _ACTION.search(positive):
-        return False
+    try:
+        if _positive_effect_instruction(prompt, now=datetime.now().astimezone()):
+            return False
+    except InvalidIntent:
+        if _ACTION.search(positive):
+            return False
     required, excluded = source_requirements(prompt)
     if re.search(r"\b(?:news|headlines|public events|web|internet|online|weather)\b", positive, re.I):
         return False
@@ -248,7 +311,14 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
                     stops.append(boundary.start())
             for boundary in re.finditer(r"\b(?:and|plus|then)\s+|\b(?:limit(?:\s+to)?|at most)\s+|\b(?:in|using|on)\s+(?:the\s+)?account\s+", candidate, re.I):
                 tail = candidate[boundary.end():]
-                if boundary.group().lower().startswith(("limit", "at most", "in", "using", "on")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()) or re.match(r"(?:(?:do not|don't|never)\s+)?(?:send|forward|draft|compose|write|save|delete|create|add|set|remind|reply|call)\b", tail, re.I):
+                if boundary.group().lower().startswith(("limit", "at most", "in", "using", "on")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()):
+                    stops.append(boundary.start())
+            # Share the complete established action-head and coordination
+            # grammar with effect extraction (including share/polite/negative
+            # clauses). Ordinary commas/conjunctions within literals stay data.
+            from service.router.web_request import _BOUNDARY, _action_clause_head
+            for boundary in _BOUNDARY.finditer(_mask_literals(candidate)):
+                if _action_clause_head(candidate[boundary.end():]):
                     stops.append(boundary.start())
             # An unquoted source exclusion is instruction syntax, not part of
             # the lookup literal. Quoted occurrences remain literal data.
@@ -261,6 +331,22 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
                 found.append((domain, literal, start, start + end))
     return found
 
+
+
+def _ambiguous_filter_destination(text: str, *, now: datetime) -> bool:
+    """A second unquoted terminal destination needs explicit attachment.
+
+    A governed single-to title remains data regardless of capitalization. An
+    additional entity-like to-slot could be a title or an outer addressee; do
+    not turn that ambiguity into either a send permission or a broad read.
+    Whole quoted titles and sources that cannot be delivery verbs stay data.
+    """
+    from service.router.web_request import _terminal_destination
+    for domain, literal, _, _ in _unquoted_queries(text, now=now):
+        if domain in {"email", "messages"} and len(re.findall(r"\s+to\s+", literal, re.I)) > 1:
+            if _terminal_destination("email about " + literal) is not None:
+                return True
+    return False
 
 
 def _instruction_text(text: str, *, now: datetime) -> str:
@@ -698,6 +784,10 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
     if represented & (set(excluded) | explicit_excluded):
         raise InvalidIntent("Excluded source requested")
     if value["kind"] == "read":
+        if _positive_effect_instruction(prompt, now=now):
+            raise InvalidIntent("An effect instruction cannot be lowered to a read")
+        if _ambiguous_filter_destination(filter_prompt, now=now):
+            raise InvalidIntent("Clarify whether the terminal destination is title text or an addressee")
         if not sources or not required <= represented:
             raise InvalidIntent("Missing requested source")
         authority = required or contextual_sources
@@ -762,9 +852,12 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         if filter_requested and not literal_filters and not requested_queries and not unsupported and any(
                 source.operation != "free_time" and source.query for source in sources):
             raise InvalidIntent("Cannot establish complete unquoted query bounds")
-        if re.search(r"\b(?:except|excluding|without)\s+(?!" +
-                     r"(?:my |the )?(?:calendar|reminders?|email|mail|messages?|texts?|notes?|sending|send|web)\b)\S+", prompt, re.I) and not unsupported:
-            raise InvalidIntent("Negative entity filters cannot be silently dropped")
+        from service.router.web_request import _action_clause_head
+        for negative in re.finditer(r"\b(?:except|excluding|without)\s+(?!" +
+                     r"(?:my |the )?(?:calendar|reminders?|email|mail|messages?|texts?|notes?|sending|send|web)\b)\S+", _mask_literals(prompt), re.I):
+            head = _action_clause_head(prompt[negative.start():])
+            if not (head and head["negative"]) and not unsupported:
+                raise InvalidIntent("Negative entity filters cannot be silently dropped")
         if re.search(r"\b(?:starred|flagged|archived|read emails|unread messages|unread texts|cancelled|canceled|in [A-Z][a-z]+)\b", prompt) and not unsupported:
             raise InvalidIntent("Unsupported filter must be represented explicitly")
         period = personal_agenda_period(prompt)
