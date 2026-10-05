@@ -49,17 +49,32 @@ def fail(exc):
                         404 if isinstance(exc, KeyError) else 422, detail=str(exc)) from exc
 
 
-def snapshot(day, timezone):
-    state = assistant_store.today_snapshot(day, timezone)
-    plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
-                      state["sources"], now=time.time())
-    return {**plan, "revision": state["revision"]}
+def snapshot(day, timezone, *, debug=False):
+    from service import diagnostics
+    with diagnostics.span("today") as trace:
+        state = assistant_store.today_snapshot(day, timezone)
+        now = time.time()
+        plan = build_plan(day, timezone, state["tasks"], state["commitments"], state["preferences"],
+                          state["sources"], now=now)
+        trace.event("plan", tasks=len(plan["tasks"]), blocks=len(plan["blocks"]),
+                    unscheduled=len(plan["unscheduled"]), warnings=len(plan["warnings"]),
+                    revision=state["revision"], calendar_ready=plan["sources"]["calendar"]["ready"],
+                    reminders_ready=plan["sources"]["reminders"]["ready"])
+        result = {**plan, "revision": state["revision"], "trace_id": trace.id}
+        if debug:
+            # Returned only on explicit opt-in; never journaled. Fixed clock and
+            # exact inputs make a replay independent of current state/sources.
+            result["replay"] = {"schema_version": 1, "planner_fingerprint": diagnostics.planner_fingerprint(), "day": day, "timezone": timezone,
+                                "now": now, **{k: state[k] for k in
+                                ("tasks", "commitments", "preferences", "sources")},
+                                "expected_plan": plan}
+        return result
 
 
 @router.get("")
-def today(day: str, timezone: str):
+def today(day: str, timezone: str, debug: bool = False):
     try:
-        return snapshot(day, timezone)
+        return snapshot(day, timezone, debug=debug)
     except ValueError as exc:
         fail(exc)
 
