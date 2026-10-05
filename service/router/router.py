@@ -3326,7 +3326,9 @@ _DRAFT_ONLY_RE = re.compile(
     r"(?!.*\b(?:and|then)\s+send\b)|"
     r"\bunsent\s+(?:text|message|e-?mail|reply)\b|"
     r"\b(?:without\s+sending|leave\s+(?:it|this|the\s+message)\s+unsent|"
-    r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b)", re.I)
+    r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b|"
+    # "prepare an email to HR, I'll send it myself": the user keeps the send.
+    r"\b(?:i'?ll|i\s+will|i\s+can|let\s+me)\s+send\s+(?:it|this|that)(?:\s+myself)?\b)", re.I)
 
 # send_* removed when _DRAFT_ONLY_RE fires; the draft_* counterpart stays.
 _SEND_TOOLS = {"send_message", "send_email", "reply_to_email", "forward_email",
@@ -6057,7 +6059,8 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     # Explicit prohibitions are subtracted after every positive obligation.
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden |= set(_INBOX_READ_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward|"
+                 r"reply|respond|write\s+back)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
     positive_remainder = _positive_clause_remainder(t)
     if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
@@ -6920,7 +6923,14 @@ async def route(text: str, *,
             else:
                 forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email"})
         if request.delivery_cancelled:
-            forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"})
+            if _positive_draft_request(text):
+                # "draft a reply to Priya but don't send it": the cancelled
+                # delivery is the SEND, not the draft the user asked for.
+                # Keep the draft tools (which never send) and the contact
+                # lookup they need; every committing send stays forbidden.
+                forbidden.update(_SEND_TOOLS | {"forward_email", "place_call"})
+            else:
+                forbidden.update(_CHANNEL_OUTBOUND_TOOLS | {"forward_email", "lookup_contact"})
         if request.private or request.opted_out:
             forbidden.update({"web_search", "web_fetch", "http_request"})
             if request.opted_out or request.inherited or request.explicit or request.current:
@@ -6956,6 +6966,19 @@ async def route(text: str, *,
                 for effect in request.authorized_effects & (_CHANNEL_OUTBOUND_TOOLS | {"schedule_send"}) & set(decision.tool_subset or ()):
                     decision.tool_argument_bindings[effect] = {"to": literal}
     return decision
+
+
+_POSITIVE_DRAFT_EXTRA_RE = re.compile(
+    r"(?<!not\s)(?<!n't\s)\b(?:prepare|word|write\s+up)\s+(?:\w+\s+){0,2}"
+    r"(?:e-?mail|text|message|reply|response)\b|"
+    r"\b(?:save|keep|leave)\s+(?:it\s+|this\s+|that\s+)?(?:as\s+)?a\s+draft\b|"
+    r"\b(?:just|only)\s+(?:a\s+)?draft\b", re.I)
+
+
+def _positive_draft_request(text: str) -> bool:
+    """The user asks for a DRAFT (as opposed to only forbidding a send)."""
+    masked = mask_quoted(text)
+    return bool(_DRAFT_ONLY_RE.search(masked) or _POSITIVE_DRAFT_EXTRA_RE.search(masked))
 
 
 def _study_reminder_no_creation(reason: str) -> RouteDecision:

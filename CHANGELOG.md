@@ -7,6 +7,7 @@ All notable changes to Wisp are documented here.
 - Fixed tool menus for requests that match no routing rule offering send, reply, call and bulk-delete tools when the request never asked to contact anyone or delete anything (for example "tell me a joke" or "do I have anything on Sunday"). Those tools stay available whenever the request does ask.
 - Fixed a bare "sure", "ok" or "go ahead" to an assistant's offer (open a file, set a reminder) reaching the model with no tools at all once the conversation had earlier turns. A reminder offer still never creates a reminder from a bare assent: Wisp looks the event up and asks for the time.
 - Fixed "any new emails?", "any new texts?" and similar inbox questions being answered with a web search instead of reading the user's own mail or messages.
+- Fixed "draft a reply … but don't send it" and similar requests losing the draft tool along with the send tools, so Wisp could neither draft nor send. Send, reply and forward stay unavailable for these requests, including "do not reply" and "I'll send it myself".
 
 ## [1.2.0] - Pending qualification
 

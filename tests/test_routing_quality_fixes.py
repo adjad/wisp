@@ -161,3 +161,31 @@ def test_inbox_questions_read_the_inbox_not_the_web(prompt, family):
                                     "latest news about the fed"])
 def test_public_current_questions_still_search_the_web(prompt):
     assert "web_search" in _reachable(_route(prompt))
+
+
+# --- Fix 4: a draft request keeps its draft tool; sends stay forbidden -------
+
+@pytest.mark.parametrize("prompt,draft", [
+    ("draft a reply to Priya but don't send it", "draft_email"),
+    ("compose an email to my professor asking for an extension but don't send", "draft_email"),
+    ("draft a text to mom about thanksgiving but don't send", "draft_message"),
+    ("help me word a text to my landlord about the rent, don't send it", "draft_message"),
+    ("prepare an email to HR asking about PTO, I'll send it myself", "draft_email"),
+])
+def test_draft_request_with_a_send_prohibition_offers_the_draft_not_the_send(prompt, draft):
+    decision = _route(prompt)
+    reach = _reachable(decision)
+    assert draft in reach, decision.reason
+    assert not (reach & SENDS), decision.reason
+
+
+@pytest.mark.parametrize("prompt", ["summarize my emails, do not reply to anyone",
+                                    "read my texts from mom, don't text her back",
+                                    "find the lease email but don't send anything"])
+def test_send_prohibition_without_a_draft_request_offers_no_send(prompt):
+    assert not (_reachable(_route(prompt)) & SENDS)
+
+
+def test_draft_and_then_send_is_still_a_send():
+    assert not R._positive_draft_request("don't draft anything, just send it to Sam")
+    assert "send_email" in _reachable(_route("draft an email to dana@example.com and send it"))
