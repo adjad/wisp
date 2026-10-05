@@ -177,3 +177,139 @@ delete that the user did not ask for (forced sends appear only for explicit
 "send an email to … saying …" / "text Sam if …" requests). Sends offered in
 menus are CONFIRM-gated by `safety.policy`; `fs_write`/`fs_delete` (incl.
 `trash_file`) are CONFIRM-gated too. **No P1 routing safety issue found.**
+
+## 6. Phase 2 — fixes delivered (branch `claude/routing-quality`)
+
+All six fixes are on the branch, one commit group each, with red-to-green tests in
+`tests/test_routing_quality_fixes.py` (81 tests) and the corpus gate
+`tests/test_routing_quality_corpus.py`. Both files are registered in
+`scripts/run_simulation_qa.py` (routing profile). The corpus score was measured
+before and after every commit, and no case regressed at any step.
+
+| commit | fix | corpus | cases fixed |
+|---|---|---|---|
+| b7e1d00 | F1: retrieved send/bulk-delete tools gated on request intent (`semantic.gated_tool_allowed`, used by lexical, reranker and embedding providers) | 232 → 281 | 49 |
+| cfff7c7 | F2: bare assent to a pending local offer is routed (offer text only); reminder offers stay on clarify-time, never write | 281 → 285 | 4 |
+| 0a6e3d2 | F3: bare inbox questions ("any new emails?") are private, not current public info | 285 → 288 | 3 |
+| 905d328 | F4: a draft request with "don't send" keeps `draft_*`; "do not reply" and "I'll send it myself" forbid sends | 288 → 293 | 5 |
+| 132bf7a | F5: typo/shorthand fall-through: rules get one more pass on a normalized copy (`service/router/normalize.py`) | 293 → 296 | 3 |
+| f5847b7 | F6: CI ratchet: every passing corpus id must keep passing; floor 296 | gate | — |
+
+Corpus calibration made during Phase 2: in cfff7c7 the expectation for the five
+"assent to a reminder offer" follow-ups was changed to accept the clarify-time
+lookup (`get_upcoming`) as well as `add_reminder`. This follows the coordinator's
+contract that a bare "sure" never writes a reminder without a dated command.
+
+### Before / after (dev corpus, final calibration, both runs on the same corpus)
+
+Overall **232 → 296 of 361 (64% → 82%)**, recall 0.88 → 0.92, precision 0.40 → 0.42,
+mean menu 8.8 → 8.5. Results are identical in UTC, Pacific/Kiritimati and 8 more
+timezones covering every local hour.
+
+| domain | n | pass | recall | precision | mean menu | top classes | base pass |
+|---|---|---|---|---|---|---|---|
+| ambiguous | 12 | 7/12 (58%) | 1.00 | - | 12.1 | generic_fallback:8, leak_avoid:6, leak_forbidden:5, wide_menu:5 | 4/12 |
+| calendar | 31 | 30/31 (97%) | 1.00 | 0.46 | 9.9 | not_forced:28, generic_fallback:13, wide_menu:13, leak_avoid:9 | 22/31 |
+| calendar_write | 18 | 17/18 (94%) | 1.00 | 0.23 | 11.9 | not_forced:15, leak_avoid:13, generic_fallback:4, wide_menu:4 | 14/18 |
+| chat | 15 | 14/15 (93%) | 1.00 | - | 5.7 | generic_fallback:6, wide_menu:4, forced_wrong:1 | 10/15 |
+| code | 12 | 11/12 (92%) | 1.00 | - | 9.9 | generic_fallback:6, wide_menu:6, leak_avoid:4, leak_forbidden:1 | 7/12 |
+| compose | 11 | 10/11 (91%) | 1.00 | - | 12.5 | generic_fallback:7, wide_menu:7, leak_avoid:4, leak_forbidden:1 | 4/11 |
+| compound | 16 | 4/16 (25%) | 0.50 | 0.34 | 6.3 | missing_tool:11, wrong_domain:5, zero_tool:4, wide_menu:2 | 4/16 |
+| device | 24 | 22/24 (92%) | 0.92 | 0.24 | 13.8 | wide_menu:15, generic_fallback:6, missing_tool:2, wrong_domain:2 | 20/24 |
+| files | 16 | 14/16 (88%) | 0.88 | 0.15 | 14.7 | wide_menu:12, generic_fallback:4, missing_tool:2, wrong_domain:2 | 11/16 |
+| followup | 28 | 23/28 (82%) | 0.86 | 0.26 | 7.4 | wide_menu:7, generic_fallback:6, missing_tool:4, wrong_domain:4 | 15/28 |
+| mail | 26 | 20/26 (77%) | 0.96 | 0.57 | 7.5 | leak_avoid:23, leak_forbidden:4, generic_fallback:2, wide_menu:2 | 17/26 |
+| mail_draft | 8 | 6/8 (75%) | 1.00 | 0.07 | 10.9 | forced_wrong:2, wide_menu:1 | 3/8 |
+| mail_send | 10 | 2/10 (20%) | 0.80 | 0.13 | 10.7 | wide_menu:6, leak_forbidden:5, missing_tool:2, wrong_domain:2 | 2/10 |
+| memory | 8 | 6/8 (75%) | 0.88 | 0.24 | 8.9 | generic_fallback:4, wide_menu:3, leak_avoid:2, missing_tool:1 | 5/8 |
+| memory_write | 6 | 6/6 (100%) | 1.00 | 0.33 | 3.0 | leak_avoid:6 | 5/6 |
+| messages | 16 | 16/16 (100%) | 1.00 | 0.76 | 3.7 | leak_avoid:4, generic_fallback:1, wide_menu:1 | 14/16 |
+| messages_draft | 4 | 4/4 (100%) | 1.00 | 0.18 | 8.0 | wide_menu:1 | 2/4 |
+| messages_send | 10 | 8/10 (80%) | 1.00 | 0.18 | 5.3 | forced_wrong:2 | 7/10 |
+| named_item | 10 | 3/10 (30%) | 0.60 | 0.17 | 15.5 | wide_menu:8, missing_tool:7, generic_fallback:6, zero_tool:1 | 2/10 |
+| notes | 16 | 16/16 (100%) | 1.00 | 0.89 | 2.4 | not_forced:16, leak_avoid:2, generic_fallback:1, wide_menu:1 | 15/16 |
+| notes_write | 10 | 8/10 (80%) | 0.90 | 0.35 | 6.2 | not_forced:10, missing_tool:1, wrong_domain:1, leak_forbidden:1 | 8/10 |
+| reminders | 23 | 20/23 (87%) | 0.91 | 0.77 | 3.4 | wide_menu:3, missing_tool:2, wrong_domain:2, not_forced:2 | 18/23 |
+| reminders_read | 8 | 7/8 (88%) | 0.88 | 0.78 | 1.5 | not_forced:2, missing_tool:1, wrong_domain:1, forced_wrong:1 | 7/8 |
+| web | 23 | 22/23 (96%) | 0.96 | 0.49 | 8.7 | generic_fallback:11, wide_menu:9, missing_tool:1, wrong_domain:1 | 16/23 |
+| **overall** | 361 | 296/361 (82%) | 0.92 | 0.42 | 8.5 | wide_menu:111, generic_fallback:87, leak_avoid:78, not_forced:74 | 232/361 |
+
+| failure class | base | head |
+|---|---|---|
+| zero_tool | 11 | 7 |
+| missing_tool | 50 | 35 |
+| wrong_domain | 38 | 23 |
+| leak_forbidden | 79 | 22 |
+| forced_wrong | 15 | 13 |
+| acted_on_chat | 1 | 1 |
+| not_forced (soft) | 75 | 74 |
+| leak_avoid (soft) | 81 | 78 |
+| generic_fallback (soft) | 93 | 87 |
+| wide_menu (soft) | 114 | 111 |
+
+No domain got worse. Two domains did not move: `compound` stays at 4/16 and
+`mail_send` at 2/10. The `mail_send` failures are mostly `trash_file` sitting in
+the email write set (see gaps).
+
+### Held-out check (not used for development)
+
+The comparison set (`test_fixtures/routing/comparison_heldout.json` on branch
+`claude/routing-comparison`, 104 prompts, sha256 `1ed98721…534b`) was frozen
+before any arm ran. It was scored with this scorer only after the fixes were
+committed: **67 → 85 of 104 (64% → 82%)**, 18 fixed, 0 regressed. The gain on the
+held-out set matches the gain on the dev corpus, so the fixes generalise rather
+than fit the corpus.
+
+The weakest held-out category is **weekly calendar ranges (8/16)**. "how packed is
+next week", "give me the rundown for this weekend", "any meetings between now
+and friday" and "what's on monday through wednesday" are still router-direct
+`web_search` calls. This is the same mechanism as F3 (personal questions
+classified as current public information); F3 only covered the inbox shape. It
+has not been fixed here, because fixing it against held-out prompts would
+contaminate the held-out set.
+
+### Remaining gaps, ranked (impact × frequency)
+
+1. **Personal schedule questions still classified as current public information**
+   (held-out weekly 8/16). Proposed fix: the F3 mechanism for agenda words with a
+   time scope and no public subject. Validate it on a fresh held-out set.
+2. **Lexical fallback is still broad** (87 corpus prompts; mean menu ~16; hub tools
+   `search_coverage`, `list_shortcuts`, `list_bluetooth_devices` everywhere). F1
+   removed the dangerous part. Proposed fix: a per-domain prior or a score floor
+   for the lexical provider (the embedding provider already has one).
+3. **Compound coverage** (corpus 4/16): the second clause's tool is often missing.
+   Five reminder compounds clarify with zero tools.
+4. **`trash_file` in the email write set** (`_DOMAIN_WRITE_TOOLS["email"]`). It is a
+   file tool on every email write menu (CONFIRM-gated, but wrong).
+5. **Named personal items beyond orders** ("my locker combo", "my costco
+   membership number", "whats the code for my storage unit"). `_NT_ITEM` only
+   covers orders and receipts, and the bare word "code" routes to the coding
+   model with zero tools.
+6. **Rule misfires** (13 `forced_wrong`): "set an alarm for 7am" → `add_reminder`;
+   "do you remember my coffee order" → `remember`; "remind me what i said…" →
+   reminder creation; "find the latest screenshot" → `screen_capture`; "whats in
+   report.docx" → `write_document`; "draft an email to Sam" → forced
+   `search_notes` first.
+7. **Assent to a delivery offer** with plain local history ("yeah do it" after
+   "Should I text him back…?") is still tool-free by design. F2 is limited to
+   non-delivery offers.
+
+### Recommendation
+
+Ship F1–F6 in 1.2.x. They are bounded and fall-through or subtractive, and each
+has red-to-green tests and no corpus or held-out regression. Gap 1 should be the
+next routing change, validated on a new held-out set. Gaps 2–3 are design work
+and should wait. Gap 4 is a one-line scoping fix that can go with gap 1.
+
+### Tests run on the final routing code (f5847b7)
+
+* Router and routing suites (`test_router_*`, `test_routing_*`, semantic, lexical
+  retrieval, current-web, contextual-outbound, compound, historical, fast-path
+  intent), study-slot and reminder suites, and the new files: **3,179 passed,
+  1 skipped, 0 failed**. This held in UTC and Pacific/Kiritimati, with
+  pytest-asyncio loaded the way the QA runner loads it.
+* `run_simulation_qa.py --profile routing` (isolated per-file processes):
+  **22/22 gates, 3,328 tests, 0 failed**.
+* `audit_router_prompts.py` (PYTHONHASHSEED=0): identical to base (85 prompts, 4
+  concrete flags, the same 25 stub routes). `grade_historical_routing.py`: 22/22.
+* Full CI-equivalent `scripts/test_replay_failure_fixes.py`: see handoff.
