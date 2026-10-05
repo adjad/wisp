@@ -1,6 +1,6 @@
 {
-  "status": "code_candidate_ready_for_final_gates",
-  "updated_at": "2026-10-05T19:45:04.054002+00:00",
+  "status": "repaired_code_candidate_preparing_new_final_gates",
+  "updated_at": "2026-10-05T20:24:44.924831+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,15 +10,14 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "Frozen, exact-head checked, pushed and integrated",
-      "commit": "181d3b244089536d726fe0e4cd4642cdfa1ffce7",
+      "status": "F1/F2/F3 and fallback-test repairs frozen, pushed, exact-head tested and integrated",
+      "commit": "b0ece93154aa17c2b299ca3ad3f6ed8a75b17385",
       "validation_reported": {
-        "revision": "181d3b244089536d726fe0e4cd4642cdfa1ffce7",
-        "passed": 11374,
-        "subtests_passed": 2942,
-        "seconds": 86.02,
-        "suites": 13,
-        "scope": "intent, workflow, outbound, routing; isolated synthetic checks"
+        "passed": 783,
+        "subtests_passed": 4640,
+        "seconds": 13.43,
+        "suites": 11,
+        "scope": "Intent, actual actor synthetic controls, unchanged tomorrow contract, fallback and routing regressions"
       }
     },
     "router_eval": {
@@ -26,13 +25,25 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
       "branch": "codex/router-replay-eval",
-      "status": "Adapter identity repair frozen and integrated",
-      "commit": "ef1fcd8ebef5b19b23b2d9d918ef489d20e01534",
+      "status": "Manifest, P3 documentation and CI timezone repair frozen, pushed and integrated",
+      "commit": "e9e51cd2414113ae27a4af5badce1c22ee335db5",
       "validation_reported": {
-        "passed": 56,
-        "skipped": 3,
-        "skip_reason": "Core-dependent checks in baseline worker; combined checks run by parent",
-        "synthetic_identity_test": "PASS against integration source; no sockets/model calls"
+        "manifest_repair_revision": "06691d13bee31a95ae58ece59411478662f7b3ad",
+        "passed": 279,
+        "skipped": 1,
+        "skip_reason": "Existing original-control absence check",
+        "scope": "Each of six admitted synthetic modules and runner tests in isolated child environments; fail-closed manifest selection",
+        "documentation_revision": "44285c248f7d20d8a16a08537dd48d3ee17ecab8",
+        "documentation_validation": "Whitespace/diff check only; no unrelated repeated tests"
+      },
+      "timezone_validation_reported": {
+        "passed_each_host": 66,
+        "skipped_each_host": 1,
+        "hosts": [
+          "UTC",
+          "America/Los_Angeles"
+        ],
+        "scope": "Exact23h/25h DST boundaries, strict comparisons, timezone restoration and failure controls"
       }
     },
     "router_presentation": {
@@ -69,8 +80,7 @@
   "model_measurement_window": "Blocked on external coordination: Claude performance coordinator session-limited, send disabled; no quiescence/window acknowledgment. Current registry reports auto-resume at 3:01 PM Pacific. Do not infer availability from idle or rate limit.",
   "production_changed": false,
   "pending": [
-    "Final frozen integration head requires complete isolated mechanical gate, configured CI and independent review",
-    "Exact-SHA complete isolated mechanical gate, configured CI, independent Release Auditor and synthetic specialist QA",
+    "Freeze new clean pushed integration candidate and renew exact-SHA full regression, required CI, independent re-audit and separate synthetic QA",
     "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
     "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
     "Protected integration handoff; no deployment or feature activation"
@@ -90,12 +100,12 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "97d7fdf54dabb150e167a9f7250ed8fdf4a3b249",
-    "passed": 240,
+    "revision": "d02c03d",
+    "passed": 401,
     "skipped": 1,
-    "skip_reason": "Original-control absence check not applicable to integrated core",
-    "seconds": 4.91,
-    "scope": "Core+endpoint+workflow+eval+overview+message-scope focused tests",
+    "skip_reason": "Original-control-only absence check",
+    "seconds": 6.74,
+    "scope": "Integrated core/actor/workflow/eval/overviews/manifest/unchanged tomorrow/fallback checks",
     "model_calls": false,
     "heldout_opened": false
   },
@@ -261,5 +271,118 @@
     "adjudication": "All three previously preempted message reads now execute the exact expected synthetic read. Eight source-failure responses still fail original success-literal annotation; exact tool, source, effects, exclusions, failure-honesty and runtime checks pass. Do not replace 72/80 original end_to_end with an adjusted headline.",
     "not_model_accuracy": true,
     "answer_facts_and_query_scope_guard": "Zero applicable cases in this development corpus; separate real-helper synthetic tests cover query behavior."
+  },
+  "first_frozen_candidate_gates": {
+    "revision": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "pr": "https://github.com/adjad/wisp/pull/160",
+    "artifact": "first-candidate-gates",
+    "full_regression": {
+      "passed_modules": 175,
+      "total_modules": 179,
+      "status": "FAIL",
+      "failed_modules": [
+        "test_multi_source_fallback.py",
+        "test_runtime_peer.py",
+        "test_simulation_qa_runner.py",
+        "test_tomorrow_planning.py"
+      ]
+    },
+    "native_gate_followup": {
+      "status": "PASS",
+      "cases": 9,
+      "source_unchanged": true,
+      "reason": "Existing restricted sandbox could not start inside outer Codex sandbox; same-SHA compatible launch passed all required synthetic cases. Original full failure is preserved."
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "F1 omitted requested dates/reminder scope/duration accepted",
+        "F2 truncated complete unquoted query accepted",
+        "F3 existing calendar-only tomorrow shortcut broadened",
+        "F4 missing explicit safe-test classifications"
+      ],
+      "heldout_opened": false
+    },
+    "ci": {
+      "artifact": "FAIL: same missing-test manifest issue",
+      "python": "FAIL175/179 modules: known fallback/tomorrow/manifest failures plus direct scorer DST unit relies on host timezone (UTC CI24h versus intended LA23h). Core/native case passes in CI; original CI evidence preserved."
+    },
+    "qa": "Held pending nonblocking audit; availability acknowledged"
+  },
+  "development_replay_after_audit_repairs": {
+    "revision": "d02c03d",
+    "artifact": "development-after-audit-repairs",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases here; not validated by this replay."
   }
 }

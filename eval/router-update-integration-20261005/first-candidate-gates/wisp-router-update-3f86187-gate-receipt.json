@@ -1,0 +1,30 @@
+{
+  "candidate": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "recorded_at": "2026-10-05T20:00:49.472363+00:00",
+  "complete_regression": {
+    "command": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python scripts/test_replay_failure_fixes.py",
+    "exit_code": 1,
+    "passed_modules": 175,
+    "total_modules": 179,
+    "failed_modules": [
+      "tests/test_multi_source_fallback.py",
+      "tests/test_runtime_peer.py",
+      "tests/test_simulation_qa_runner.py",
+      "tests/test_tomorrow_planning.py"
+    ],
+    "log": "/private/tmp/wisp-router-update-3f86187-regression.log",
+    "sha256": "1d181d0eb19d2a625adebee1e8d3d971073158d2562163b3b178af83871a8608"
+  },
+  "native_environment_diagnosis": {
+    "initial_error": "sandbox-exec: sandbox_apply: Operation not permitted",
+    "no_source_change": true,
+    "rerun_status": "PASS",
+    "required_synthetic_cases": 9,
+    "clean_start": true,
+    "clean_end": true,
+    "report": "/private/tmp/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+    "report_sha256": "5dbf97e00aa0aacb127763230a1e8efcddcf03f18551b36717d464c531c1b9c8",
+    "scope": "Existing restrictive native sandbox launched outside outer Codex sandbox via approved escalation; disposable synthetic peers only."
+  },
+  "gate_status": "BLOCKED until repairs and new exact-SHA complete gate/CI/audit/QA; isolated native rerun does not change original whole-suite failure"
+}

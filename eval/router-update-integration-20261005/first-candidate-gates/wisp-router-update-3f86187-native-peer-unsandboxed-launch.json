@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "scope": "reserved-disposable-loopback-and-native-inspection",
+  "candidate_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "ending_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "clean_start": true,
+  "clean_end": true,
+  "dirty_allowed": false,
+  "returncode": 0,
+  "cases": {
+    "collected": 9,
+    "exitstatus": 0,
+    "rows": [
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[health]",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[health]",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[health]",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[prompt]",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[prompt]",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[prompt]",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[ensure]",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[ensure]",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_rogue_runtime_connection_gets_zero_bytes[ensure]",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_attributed_disposable_process_receives_health",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_attributed_disposable_process_receives_health",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_attributed_disposable_process_receives_health",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/health]",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/health]",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/health]",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/v1/chat/completions]",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/v1/chat/completions]",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_gateway_rogue_upstream_gets_no_credential_or_prompt[/v1/chat/completions]",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_epoch_change_during_prewrite_inspection_sends_zero_bytes",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_epoch_change_during_prewrite_inspection_sends_zero_bytes",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_epoch_change_during_prewrite_inspection_sends_zero_bytes",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_reclamation_excludes_only_its_exact_pinned_directory_fd",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_reclamation_excludes_only_its_exact_pinned_directory_fd",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_reclamation_excludes_only_its_exact_pinned_directory_fd",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_gate_denies_external_network_and_unrelated_execution",
+        "phase": "setup",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_gate_denies_external_network_and_unrelated_execution",
+        "phase": "call",
+        "outcome": "passed",
+        "xfail": false
+      },
+      {
+        "nodeid": "tests/test_runtime_peer.py::test_native_gate_denies_external_network_and_unrelated_execution",
+        "phase": "teardown",
+        "outcome": "passed",
+        "xfail": false
+      }
+    ]
+  },
+  "ports": [
+    61655,
+    61656,
+    61657,
+    61658,
+    61659,
+    61660,
+    61661
+  ],
+  "duration_s": 2.1797188750933856,
+  "stdout": ".........                                                                [100%]\n9 passed in 1.90s\n",
+  "stderr": "",
+  "status": "PASS"
+}

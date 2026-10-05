@@ -1,0 +1,77 @@
+{
+  "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "corpus": [
+    {
+      "split": "dev",
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49",
+      "matches_seal": true,
+      "handling": "opaque bytes hashed; no prompts or annotations deserialized"
+    },
+    {
+      "split": "test",
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c",
+      "matches_seal": true,
+      "handling": "opaque bytes hashed; no prompts or annotations deserialized"
+    }
+  ],
+  "replays": [
+    {
+      "path": "eval/router-update-20261005/baseline-scripted",
+      "sha256": {
+        "gzip_sha256": "58251b8dd65dc27a49cb21d67414a2261b65e4843d3bd743f92c1fae004813f9",
+        "manifest_sha256": "453fa6826d99d620e6e9631fa5dbd4a9710afb188f50e2de4315da48a870409a",
+        "raw_sha256": "2ee8c70ee05b4302a3c1e4d028a13b57be47e8350bdb88ebae384d281c4787e5"
+      },
+      "declared": {
+        "raw_sha256": "2ee8c70ee05b4302a3c1e4d028a13b57be47e8350bdb88ebae384d281c4787e5",
+        "raw_gzip_sha256": "58251b8dd65dc27a49cb21d67414a2261b65e4843d3bd743f92c1fae004813f9",
+        "raw_bytes": 6750266,
+        "raw_gzip_bytes": 1144996
+      },
+      "matches_declared": true,
+      "handling": "raw bytes decompressed and hashed only; no replay rows deserialized"
+    },
+    {
+      "path": "eval/router-update-integration-20261005/development-before-compiler-repair",
+      "sha256": {
+        "gzip_sha256": "369cdbab7c7ef153df9731ba1d540c7d66e788f964b854807202c83e0afca855",
+        "manifest_sha256": "baa9378c95f54d382799ee88c2a6d5ee01de241e5b1f03cd02d13a9a61f3296b",
+        "raw_sha256": "364df68dcbd8cffcc58185ebb88cc2cbe3affd088997921ec9121ef1d35ace29"
+      },
+      "declared": {
+        "raw_sha256": "364df68dcbd8cffcc58185ebb88cc2cbe3affd088997921ec9121ef1d35ace29",
+        "gzip_sha256": "369cdbab7c7ef153df9731ba1d540c7d66e788f964b854807202c83e0afca855",
+        "manifest_sha256": "baa9378c95f54d382799ee88c2a6d5ee01de241e5b1f03cd02d13a9a61f3296b"
+      },
+      "matches_declared": true,
+      "handling": "raw bytes decompressed and hashed only; no replay rows deserialized"
+    },
+    {
+      "path": "eval/router-update-integration-20261005/development-after-compiler-repair",
+      "sha256": {
+        "gzip_sha256": "9251b8cb0c5cb7a2c1f670dfea07405b4d00f4ef771a28e1a194ce2ea9d103af",
+        "manifest_sha256": "ef84df25795d836db9c4a7cc33a6e38d1778df0e153c1c55e8a5bc05cb39dd07",
+        "raw_sha256": "0f65ecfd2fa5550c6d00e83eaf02fdb71de316760fbc75b86fd05bb65c2f041d"
+      },
+      "declared": {
+        "raw_sha256": "0f65ecfd2fa5550c6d00e83eaf02fdb71de316760fbc75b86fd05bb65c2f041d",
+        "gzip_sha256": "9251b8cb0c5cb7a2c1f670dfea07405b4d00f4ef771a28e1a194ce2ea9d103af",
+        "manifest_sha256": "ef84df25795d836db9c4a7cc33a6e38d1778df0e153c1c55e8a5bc05cb39dd07"
+      },
+      "matches_declared": true,
+      "handling": "raw bytes decompressed and hashed only; no replay rows deserialized"
+    }
+  ],
+  "files": {
+    "eval/router-update-integration-20261005/HANDOFF.md": "3d8d0c4b2dfa01e1a1de78ee50121f5234f2d81a6135fa58a1ccb5c98f02581d",
+    "eval/router-update-integration-20261005/progress.json": "976eb795595ee6d419fa52bb6ee3655f4f4d6acad86533bbbbb19c7e39931024",
+    "eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md": "d0cc2d5944c9fa812fcb014262c9fae78fb45419f495aae850e2a6df05196298",
+    "eval/router-update-20261005/author_corpus.py": "326abb87e31a0adaa7c85f5aed7172b1590a5cd1b8a66697cf9819de938f330a",
+    "scripts/eval_router_update.py": "397aeac5a93705754c24dbca486a553dc69773c5870b1477965937816ce9977d",
+    "service/router/intent/validation.py": "d6bd49cdb5674f1e7b926cc23a204c59d28d3cde495d7a122d5e3b25cb135585",
+    "service/router/intent/compiler.py": "ed75a609d481eebb2656efa07b3f48d1315e82d1d4e4a2092ccace79d49964c9",
+    "service/router/router.py": "4bef1fb3b7936fefd5f3c9d3cf39cb9ac55692bd59e2f900f2101efe933656e5",
+    "service/workflows/reads.py": "5f335b374662186f876b9f4a2d2c8582f95d854db27b32959658320d8f9569e2"
+  },
+  "regression_log_sha256": "1d181d0eb19d2a625adebee1e8d3d971073158d2562163b3b178af83871a8608"
+}

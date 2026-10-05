@@ -1,0 +1,264 @@
+{
+  "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "mode": "fresh synthetic; fake status/chat only",
+  "scope_checks": [
+    {
+      "id": "explicit-date-omitted",
+      "prompt": "Read email for 2026-10-01",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "email",
+            "operation": "records"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "view_emails",
+          {}
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "explicit-month-omitted",
+      "prompt": "Read email for October 2026",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "email",
+            "operation": "records"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "view_emails",
+          {}
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "reminder-scope-omitted",
+      "prompt": "Read overdue reminders",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "reminders",
+            "operation": "records"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "search_reminders",
+          {
+            "query": "",
+            "scope": "all"
+          }
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "reminder-scope-changed",
+      "prompt": "Read overdue reminders",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "reminders",
+            "operation": "records",
+            "scope": "all"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "search_reminders",
+          {
+            "query": "",
+            "scope": "all"
+          }
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "duration-omitted",
+      "prompt": "Find a 90 minute free slot on my calendar tomorrow",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "calendar",
+            "operation": "free_time",
+            "time": {
+              "named": "tomorrow"
+            }
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "find_free_time",
+          {
+            "period": "tomorrow"
+          }
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "unquoted-query-truncated",
+      "prompt": "Find notes about audit blueprints",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "audit"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "compiled",
+      "calls": [
+        [
+          "search_notes",
+          {
+            "query": "audit"
+          }
+        ]
+      ],
+      "response": "",
+      "synthetic_client_calls": [
+        "status",
+        "chat"
+      ]
+    },
+    {
+      "id": "current-filter-regresses-to-prior",
+      "prompt": "Actually email from Mira",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "email",
+            "operation": "records",
+            "query": "Nora"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "disposition": "clarify",
+      "calls": [],
+      "response": "I could not validate all sources and filters in that read. Please clarify the source, date range, and exact search text.",
+      "synthetic_client_calls": [
+        "status",
+        "chat",
+        "status",
+        "chat"
+      ]
+    }
+  ],
+  "scorer_checks": [
+    {
+      "actual_count": true,
+      "actual_type": "bool",
+      "metrics": {
+        "runtime_constraints": true,
+        "source": true,
+        "excluded_source": true,
+        "menu": null,
+        "first_call": true,
+        "exact_arguments": true,
+        "effects": true,
+        "literal_fidelity": null,
+        "answer_facts": null,
+        "failure_honesty": null,
+        "duplicate": true,
+        "completed": true,
+        "end_to_end": true,
+        "request_argument": false,
+        "query_scope_guard": null,
+        "guarded_end_to_end": false
+      }
+    },
+    {
+      "actual_count": 1.0,
+      "actual_type": "float",
+      "metrics": {
+        "runtime_constraints": true,
+        "source": true,
+        "excluded_source": true,
+        "menu": null,
+        "first_call": true,
+        "exact_arguments": true,
+        "effects": true,
+        "literal_fidelity": null,
+        "answer_facts": null,
+        "failure_honesty": null,
+        "duplicate": true,
+        "completed": true,
+        "end_to_end": true,
+        "request_argument": false,
+        "query_scope_guard": null,
+        "guarded_end_to_end": false
+      }
+    }
+  ],
+  "heldout_read": false,
+  "actual_model_calls": false,
+  "native_or_outbound_calls": false
+}
