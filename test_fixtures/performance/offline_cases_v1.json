@@ -334,6 +334,7 @@
   "tests/test_release_performance.py::test_the_corpus_covers_the_required_scenarios_with_synthetic_data_only",
   "tests/test_release_performance.py::test_the_driver_denies_every_confirm_through_the_real_approve_endpoint",
   "tests/test_release_performance.py::test_the_driver_separates_first_visible_text_from_completion_with_real_streaming",
+  "tests/test_release_performance.py::test_the_fresh_codex_monitor_singleton_polls_only_the_empty_owned_root",
   "tests/test_release_performance.py::test_the_http_driver_times_a_plain_call_and_captures_status_and_body",
   "tests/test_release_performance.py::test_the_new_policy_requirements_cannot_be_weakened[<lambda>-acceptable_finish_reasons]",
   "tests/test_release_performance.py::test_the_new_policy_requirements_cannot_be_weakened[<lambda>-baseline_lifecycle_effect]",

@@ -2028,6 +2028,8 @@ def test_the_spawned_backend_entry_point_wires_root_state_guard_and_instrumentat
     monkeypatch.setattr(sys, "path", list(sys.path))
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("WISP_HOME", raising=False)
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "hostile-codex-root"))
+    real_home = os.environ.get("HOME")
     root, home, out = tmp_path / "root", tmp_path / "home", tmp_path / "instr.jsonl"
     root.mkdir()
     args = argparse.Namespace(root=str(root), port=18999, home=str(home), instrument_out=str(out), engine_port=8000,
@@ -2036,6 +2038,9 @@ def test_the_spawned_backend_entry_point_wires_root_state_guard_and_instrumentat
         assert rp.serve_main(args) == 0
         assert sys.path[0] == str(root.resolve()) and os.getcwd() == str(root.resolve())
         assert os.environ["WISP_HOME"] == str(home.resolve())
+        assert os.environ["CODEX_HOME"] == str(home.resolve() / "codex")
+        assert (home / "codex").is_dir() and list((home / "codex").iterdir()) == []
+        assert os.environ.get("HOME") == real_home
         assert launched == [((app,), {"host": "127.0.0.1", "port": 18999, "log_level": "warning"})]
         with pytest.raises(rp.EffectBlocked):                                   # the guard really is installed
             subprocess.Popen(["osascript", "-e", "1"])
@@ -2539,12 +2544,14 @@ def test_f03_the_backend_environment_is_an_explicit_allowlist_with_nothing_ambie
               "HTTP_PROXY": "http://p", "HTTPS_PROXY": "http://p", "ALL_PROXY": "socks5://p", "NO_PROXY": "*",
               "PYTHONPATH": "/tmp/x", "PYTHONSTARTUP": "/tmp/s.py", "PYTHONHOME": "/tmp", "PYTHONINSPECT": "1",
               "WISP_BACKEND_URL": "http://elsewhere", "WISP_LOCAL_OMLX_KEY": "SECRET", "WISP_CREDENTIAL_GENERATION": "g",
-              "OPENAI_API_KEY": "SECRET2", "SSL_CERT_FILE": "/tmp/ca", "__CF_USER_TEXT_ENCODING": "x"}
+              "OPENAI_API_KEY": "SECRET2", "SSL_CERT_FILE": "/tmp/ca", "__CF_USER_TEXT_ENCODING": "x",
+              "CODEX_HOME": "/private/hostile/codex"}
     home = tmp_path / "home"
     env = rp.child_environment(home, parent)
     assert set(env) == {"HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "PATH", "WISP_HOME", "TMPDIR",
-                        "PYTHONDONTWRITEBYTECODE"}
+                        "CODEX_HOME", "PYTHONDONTWRITEBYTECODE"}
     assert env["PATH"] == rp.CHILD_PATH and env["WISP_HOME"] == str(home) and env["TMPDIR"] == str(home / "tmp")
+    assert env["CODEX_HOME"] == str(home / "codex")
     assert env["PYTHONDONTWRITEBYTECODE"] == "1" and env["HOME"] == "/Users/x"       # HOME is kept: the engine files live there
     assert "SECRET" not in json.dumps(env)
 
@@ -2563,9 +2570,47 @@ def test_f03_the_backend_environment_is_an_explicit_allowlist_with_nothing_ambie
     backend.start()
     assert spawned["env"] == rp.child_environment(home) and spawned["start_new_session"] is True
     assert spawned["cwd"] == str(tmp_path / "wt") and (home / "tmp").is_dir()
+    assert (home / "codex").is_dir() and list((home / "codex").iterdir()) == []
     assert not any(k.startswith(("DYLD", "HTTP", "PYTHON", "WISP_BACKEND", "WISP_LOCAL", "OPENAI")) for k in spawned["env"]
                    if k not in ("PYTHONDONTWRITEBYTECODE",))
     assert backend.command()[-4:] == ["--run-id", "r", "--side", "candidate"]
+
+
+def test_the_fresh_codex_monitor_singleton_polls_only_the_empty_owned_root(tmp_path, monkeypatch):
+    import sqlite3
+    home, real_home = tmp_path / "owned", tmp_path / "real-home"
+    (home / "codex").mkdir(parents=True)
+    (real_home / ".codex").mkdir(parents=True)
+    (real_home / ".codex/state_1.sqlite").write_bytes(b"synthetic private database")
+    env = rp.child_environment(home, {"HOME": str(real_home), "CODEX_HOME": str(real_home / ".codex")})
+    monkeypatch.setenv("HOME", env["HOME"])
+    monkeypatch.setenv("CODEX_HOME", env["CODEX_HOME"])
+    monkeypatch.setitem(sys.modules, "service.paths", SimpleNamespace(MOE_DIR=home))
+    module_name = "_release_fixture_codex_monitor"
+    spec = importlib.util.spec_from_file_location(module_name, ROOT / "service/codex_monitor.py")
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    connections, scans, emitted = [], [], []
+    def no_database(*args, **kwargs):
+        connections.append(args)
+        raise AssertionError("empty owned Codex root must never open a database")
+    original_glob = Path.glob
+    def glob(path, *args, **kwargs):
+        scans.append(path)
+        return original_glob(path, *args, **kwargs)
+    monkeypatch.setattr(sqlite3, "connect", no_database)
+    monkeypatch.setattr(Path, "glob", glob)
+    policy = rp.build_fs_policy(ROOT, home, real_home=real_home)
+    with rp.EffectGuard(lambda kind, **fields: emitted.append((kind, fields)), fs=policy):
+        spec.loader.exec_module(module)
+        assert module.codex_monitor.codex_dir == home / "codex"
+        assert module.codex_monitor.state_path == home / "codex_monitor_state.json"
+        for _ in range(2):
+            with pytest.raises(module.CodexMonitorUnavailable, match="database was not found"):
+                module.codex_monitor.poll_events()
+    assert scans == [home / "codex", home / "codex"]
+    assert connections == [] and emitted == []
+    assert not (home / "codex_monitor_state.json").exists()
 
 
 def fs_world(tmp_path):

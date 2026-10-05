@@ -1655,6 +1655,10 @@ def serve_main(args: argparse.Namespace) -> int:
     os.chdir(root)
     home = Path(args.home).resolve()
     os.environ["WISP_HOME"] = str(home)
+    # Codex monitoring is unrelated to engine attribution. Never let its
+    # import-time singleton fall back to the real HOME or an ambient override.
+    os.environ["CODEX_HOME"] = str(home / "codex")
+    (home / "codex").mkdir(parents=True, exist_ok=True)
     recorder = InstrumentRecorder(args.instrument_out)
     global ACTIVE_GUARD
     guard = EffectGuard(recorder.emit, allowed_ports={args.engine_port}, fs=build_fs_policy(root, home))
@@ -1828,10 +1832,12 @@ def child_environment(home: Path, parent: dict | None = None) -> dict:
 
     HOME is kept on purpose: the engine settings and authorization record the attributed path needs live under
     the real HOME, and a fake HOME would not be a real measurement. WISP_HOME and TMPDIR point into the
-    throwaway directory, and no bytecode is written into the verified worktree."""
+    throwaway directory. CODEX_HOME is an empty owned root, and no bytecode is
+    written into the verified worktree."""
     source = os.environ if parent is None else parent
     env = {key: source[key] for key in CHILD_ENV_FROM_PARENT if key in source}
     env.update({"PATH": CHILD_PATH, "WISP_HOME": str(home), "TMPDIR": str(Path(home) / "tmp"),
+                "CODEX_HOME": str(Path(home) / "codex"),
                 "PYTHONDONTWRITEBYTECODE": "1"})
     return env
 
@@ -1861,6 +1867,7 @@ class BackendProcess:
     def start(self) -> None:
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "tmp").mkdir(exist_ok=True)
+        (self.home / "codex").mkdir(exist_ok=True)
         # A new session makes the child the leader of a process group that holds only what it spawns, so
         # teardown can end the descendants without touching any process this harness does not own.
         self.proc = subprocess.Popen(self.command(), cwd=str(self.root), env=child_environment(self.home),

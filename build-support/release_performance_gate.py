@@ -19,8 +19,8 @@ import pipeline
 from native_peer_gate import fixture_process
 
 MODULE = "tests/test_release_performance.py"
-EXPECTED_COUNT = 360
-EXPECTED_CASES_SHA256 = "1f94bc6621c8719f37148876f56fbf041f78298414de6aa8b79cfd1372998471"
+EXPECTED_COUNT = 361
+EXPECTED_CASES_SHA256 = "5825ff9a0cf70e168d2b6f552df187020414fb374222d73b6c632c7155e25596"
 EXPECTED = frozenset(json.loads((pipeline.ROOT / "test_fixtures/performance/offline_cases_v1.json").read_text()))
 PLUGIN = '''import json,os
 from pathlib import Path

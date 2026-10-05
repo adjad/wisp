@@ -252,10 +252,12 @@ the package, and the independent audit and live QA remain the control.
 * **Isolated state:** each backend gets a throwaway `WISP_HOME` (which also holds its `TMPDIR`) containing only
   a role map that points every text role at the one resident model. No user data is read.
 * **Explicit child environment:** a backend inherits only `HOME`, `USER`, `LOGNAME`, `LANG`, `LC_ALL` and
-  `LC_CTYPE`, plus a fixed `PATH`, its `WISP_HOME` and `TMPDIR`, and `PYTHONDONTWRITEBYTECODE`. No credential,
+  `LC_CTYPE`, plus a fixed `PATH`, its `WISP_HOME` and `TMPDIR`, an owned `CODEX_HOME`, and `PYTHONDONTWRITEBYTECODE`. No credential,
   proxy, loader (`DYLD_*`), bridge or interpreter-path variable crosses. `HOME` is kept on purpose: the engine
   settings and authorization record the attributed path needs live under the real `HOME`, and a fake `HOME`
-  would not be a real measurement.
+  would not be a real measurement. `CODEX_HOME` is always derived as `<child WISP_HOME>/codex`, never inherited,
+  and created empty before backend imports. Codex monitoring reports unavailable there without reading real
+  Codex task databases; direct `serve` entry also enforces this derived root before candidate imports.
 * **Synthetic leaves only:** no real contacts, calendar, Mail or Messages.
 * **No credential is sent by the harness.** The harness never reads the engine settings' key and never contacts
   the engine itself. Its only engine-facing step is a bare TCP connect to confirm something listens. Whether the
@@ -425,7 +427,7 @@ engine runner or automate that approval. The receipt's 24-hour freshness rule st
 job's rebuild. Release diagnostics retain the raw evidence; public downloads remain the app ZIP only.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
-pipeline runs its complete pinned set of 360 cases in a separate sandbox using one parent-held reserved
+pipeline runs its complete pinned set of 361 cases in a separate sandbox using one parent-held reserved
 loopback socket, then imports the exact-SHA report by digest. Its standalone profile permits only the
 canonical selected interpreter (including its exact framework launcher when necessary) and the literal Git
 shim and system-selected native Git executable, source/runtime reads and scratch writes. It grants no shell, compiler or executable directory
