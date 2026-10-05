@@ -5,6 +5,7 @@ body or network. Retrieval uses the packaged lexical provider (and the stub
 embedder, should a configuration select the embedding provider).
 """
 import asyncio
+import json
 
 import pytest
 
@@ -223,3 +224,90 @@ def test_normalization_is_a_fixed_point():
     once = normalize_typos("pls chek my calender tmrw and txt mom")
     assert once == "please check my calendar tomorrow and text mom"
     assert normalize_typos(once) == once
+
+
+# --- P1 repair (review of PR #159): normalization is a route hint only ------
+
+import itertools  # noqa: E402
+
+REVIEW_P1 = [
+    "emial appt@clinic.org about my visit", "emial bob@txt.att.net", "emial bob@msg.com",
+    "print report.txt", "what is in budget.txt", "trash ~/Desktop/old.txt", "zip up taxes.txt",
+    "share lyrics.txt with Dan", 'emial bob@example.com saying "txt me tmrw"',
+    "what does tmr stand for in medicine", "the word emial is misspelled", "what does appt mean",
+    "read notes.txt on my desktop", "open https://example.com/txt/appt?msg=tmrw",
+    "emial dana@example.com the file `notes.txt`", "rename msg_2024.txt to appt-2025.txt",
+]
+
+
+@pytest.mark.parametrize("text,kept", [
+    ("emial appt@clinic.org about my visit", "appt@clinic.org"),
+    ("emial bob@txt.att.net", "bob@txt.att.net"), ("emial bob@msg.com", "bob@msg.com"),
+    ("print report.txt", "report.txt"), ("what is in budget.txt", "budget.txt"),
+    ("trash ~/Desktop/old.txt", "~/Desktop/old.txt"), ("zip up taxes.txt", "taxes.txt"),
+    ("share lyrics.txt with Dan", "lyrics.txt"),
+    ('emial bob@example.com saying "txt me tmrw"', '"txt me tmrw"'),
+    ("open https://example.com/txt/appt?msg=tmrw", "https://example.com/txt/appt?msg=tmrw"),
+    ("emial dana@example.com the file `notes.txt`", "`notes.txt`"),
+])
+def test_normalizer_never_rewrites_addresses_paths_files_quotes_or_urls(text, kept):
+    assert kept in normalize_typos(text)
+
+
+@pytest.mark.parametrize("text", ["what does tmr stand for in medicine", "the word emial is misspelled",
+                                  "what does appt mean", "how do you spell txt", "is msg short for message"])
+def test_normalizer_leaves_meta_linguistic_text_unchanged(text):
+    assert normalize_typos(text) == text
+
+
+def _content(decision):
+    return (json.dumps(decision.tool_argument_bindings, sort_keys=True, default=str),
+            json.dumps(decision.direct_calls, sort_keys=True, default=str),
+            decision.resolved_request)
+
+
+def _route_without_normalization(text, monkeypatch, **kw):
+    import service.router.normalize as N
+    with monkeypatch.context() as m:
+        m.setattr(N, "normalize_typos", lambda t: t)
+        return _route(text, **kw)
+
+
+@pytest.mark.parametrize("text", REVIEW_P1)
+def test_recipients_bodies_and_args_never_come_from_the_normalized_copy(text, monkeypatch):
+    assert _content(_route(text)) == _content(_route_without_normalization(text, monkeypatch))
+
+
+@pytest.mark.parametrize("text", ["print report.txt", "what is in budget.txt", "trash ~/Desktop/old.txt",
+                                  "zip up taxes.txt", "share lyrics.txt with Dan", "read notes.txt on my desktop"])
+def test_file_names_with_txt_are_not_rerouted_by_the_normalizer(text):
+    decision = _route(text)
+    assert "typo-normalized" not in decision.reason
+    if "share" not in text:  # sharing with a person may legitimately offer a message
+        assert not _reachable(decision) & {"view_messages", "summarize_messages", "draft_message"}
+
+
+def test_meta_question_about_a_shorthand_is_not_a_web_search_for_its_expansion():
+    decision = _route("what does tmr stand for in medicine")
+    assert not any("tomorrow" in json.dumps(args) for _, args in decision.direct_calls)
+    assert "tomorrow" not in json.dumps(decision.tool_argument_bindings)
+
+
+def test_ping_me_about_an_appt_is_not_narrowed_to_a_calendar_read():
+    decision = _route("ping me about the appt at 3")
+    assert "typo-normalized" not in decision.reason
+    assert decision.reason.startswith("ambiguous")  # same retrieved route as main
+
+
+_ADDRS = ["appt@clinic.org", "bob@txt.att.net", "tmrw@msg.com", "chk_txt@remeber.io", "sam+txt@appt.co"]
+_PATHS = ["~/Desktop/txt", "/tmp/appt/msg.txt", "./serch.md", "C:\\\\drft\\\\pls.txt", "notes_tmrw.txt",
+          "budget-2day.csv", "#txt", "v2.txt"]
+_QUOTES = ['"txt me tmrw"', "'chk the calender'", "“pls remeber”", "`msg appt`"]
+
+
+@pytest.mark.parametrize("verb,thing", list(itertools.product(
+    ["emial", "txt", "share", "print", "open", "send"], _ADDRS + _PATHS + _QUOTES)))
+def test_fuzz_protected_tokens_survive_and_content_is_identical(verb, thing, monkeypatch):
+    text = f"{verb} {thing} tmrw pls"
+    assert thing in normalize_typos(text)
+    assert _content(_route(text)) == _content(_route_without_normalization(text, monkeypatch))

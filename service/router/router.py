@@ -7042,6 +7042,44 @@ def _study_reminder_confirmation(clock: str, confirmed_date: str | None) -> Rout
     return decision
 
 
+def _typo_route_hint(text: str, last_tools: str | None,
+                     web_request: _WebRequest) -> RouteDecision | None:
+    """The route a conservatively normalized copy of `text` would take.
+
+    Only the ROUTE is borrowed: domain, tool menu and the forced tool's name.
+    Everything content-bearing that a rule derived from the normalized words —
+    direct calls with arguments, argument bindings, recipients, a resolved
+    request — is dropped, and the caller finalizes on the ORIGINAL text, so
+    the execution contract, recipients and message bodies are re-derived from
+    what the user actually typed (independent review of PR #159: a rewritten
+    copy once bound send_email to "appointment@clinic.org" for
+    "emial appt@clinic.org"). Returns None unless a rule produced a concrete
+    tool menu for the normalized copy.
+    """
+    from service.router.normalize import normalize_typos
+
+    normalized = normalize_typos(text)
+    if normalized == text:
+        return None
+    hint = _fragment_continuation(normalized, last_tools) or rule_route(
+        normalized, web_request=web_request)
+    if hint is None or not hint.needs_tools or not hint.tool_subset:
+        return None
+    # "ping me about the appt at 3" asks for an alert; a calendar-read hint
+    # would hide the reminder tool the retrieved menu still offers.
+    if (re.search(r"\b(?:ping|nudge|buzz|alert|remind)\s+me\b", text, re.I)
+            and "add_reminder" not in hint.tool_subset):
+        return None
+    hint.tool_subset = list(dict.fromkeys(
+        [*hint.tool_subset, *(name for name, _ in hint.direct_calls)]))
+    hint.direct_calls = []
+    hint.tool_argument_bindings = {}
+    hint.conditional_tools = ()
+    hint.resolved_request = ""
+    hint.reason += " (route detected on a typo-normalized copy; content from the original)"
+    return hint
+
+
 async def _route_request(text: str, *, web_request: _WebRequest,
                          last_user: str | None = None,
                          recent_users: list[str] | None = None,
@@ -7336,14 +7374,10 @@ async def _route_request(text: str, *, web_request: _WebRequest,
     if decision is None:
         # Typos and chat shorthand ("whats on my calender tmrw", "txt alex
         # ok") defeated every keyword rule above and fell to the generic
-        # retrieved menu. Give the SAME rules one more pass over a
-        # conservatively normalized copy. Fall-through only: it runs after
-        # every rule declined the original text, so it cannot pre-empt one,
-        # and a normalized copy is a fixed point, so this recurses at most once.
-        from service.router.normalize import normalize_typos
-        if (normalized := normalize_typos(text)) != text:
-            return await route(normalized, last_user=last_user, recent_users=recent_users,
-                               last_assistant=last_assistant, last_tools=last_tools)
+        # retrieved menu. The same rules get one more look at a normalized
+        # copy — as a ROUTE-DETECTION hint only. See _typo_route_hint.
+        if (hint := _typo_route_hint(text, last_tools, web_request)) is not None:
+            return finalize(hint, text)
         # Before falling back to the generic core set: does this CONTINUE the
         # write the previous turn just made? "set some more the day before it"
         # names no domain and matches no rule, so it landed on the core tools —
