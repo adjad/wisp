@@ -7227,7 +7227,9 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             # clarify-time path and can never be written from a bare "sure".
             _apply_execution_contract(decision, offer.action_text,
                                       _classify_web_request(offer.action_text))
-            if decision.reminder_action or "add_reminder" in (decision.tool_subset or ()):
+            if decision.reminder_action or (
+                    "add_reminder" in (decision.tool_subset or ())
+                    and re.search(r"\bremind", offer.action_text, re.I)):
                 # A bare assent never writes a reminder from an offer, with or
                 # without history: the offer may be stale, unrelated, already
                 # declined (the study-slot contracts) or relative ("an hour
@@ -7243,6 +7245,12 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 decision.tool_argument_bindings.pop("add_reminder", None)
                 decision.tool_subset = ["get_upcoming"]
                 decision.force_first_tool = "get_upcoming"
+            else:
+                # Any other offer ("add that to your calendar") keeps its own
+                # tools, but an assent still cannot write a reminder.
+                decision.forbidden_tools |= {"add_reminder"}
+                if decision.tool_subset is not None:
+                    decision.tool_subset = [n for n in decision.tool_subset if n != "add_reminder"]
             decision.forbidden_tools |= _CHANNEL_OUTBOUND_TOOLS | {"forward_email"}
         decision.resolved_request = "Perform only the currently acknowledged offer: " + offer.action_text
         if offer.source_request:

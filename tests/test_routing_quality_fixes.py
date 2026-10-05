@@ -429,3 +429,9 @@ def test_email_write_menu_no_longer_carries_the_file_trash_tool():
 
 def test_voicemail_question_is_not_claimed_as_a_mail_or_messages_inbox():
     assert "view_messages" not in _reachable(_route("any new voicemails"))
+
+
+def test_assent_to_a_calendar_offer_keeps_the_calendar_write_but_not_a_reminder():
+    decision = _route("yes please", last_assistant="Should I add that to your calendar?", last_tools="get_upcoming")
+    reach = _reachable(decision)
+    assert "add_calendar_event" in reach and "add_reminder" not in reach
