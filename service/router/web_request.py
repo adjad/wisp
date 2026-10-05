@@ -546,15 +546,25 @@ def _coordinated_read_noun(text: str, clauses: tuple[Clause, ...], index: int) -
     if separator not in {"and", "&"}:
         return False
     head = _root(clauses[0].text)
-    if not re.match(r"(?:read|show|list|check|recap|summari[sz]e)\b", head, re.I):
+    if not re.match(r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|summari[sz]e)\b", head, re.I):
         return False
     if not _matches(r"\b(?:" + _PERSONAL + "|" + _ARTIFACT + r")\b", head):
         return False
     root = _root(clause.text)
     if not re.match(r"(?:e-?mail|text|message)\s+(?:from|with|about|containing|named|titled|called)\b", root, re.I):
         return False
-    if _matches(r"\b(?:to|saying|say|send|forward|draft|compose|write|schedule)\b", root):
+    if _matches(r"\b(?:saying|say|send|forward|draft|compose|write|schedule)\b", root):
         return False
+    # `to` can belong to the source's filter (road to recovery). Require an
+    # outer destination attachment or an explicit personal/address destination;
+    # arbitrary text after a preposition is not evidence of a recipient.
+    if _terminal_destination(root) is not None:
+        return False
+    for relation in re.finditer(r"\s+to\s+", root, re.I):
+        recipient = _recipient_atom(root[relation.end():])
+        if recipient and (_EMAIL.fullmatch(recipient) or _PHONE.fullmatch(recipient)
+                          or re.fullmatch(r"(?:me|myself|mom|dad|(?:my|our)\s+.+)", recipient, re.I)):
+            return False
     return True
 
 
