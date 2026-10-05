@@ -3731,3 +3731,99 @@ def test_release_intake_rejects_hard_links_to_outside_state(good, ctx, tmp_path,
     os.link(path, outside)
     code, result = rp.check_receipt(opts)
     assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+
+
+FD_OPERATIONS = ("write", "writev", "pwrite", "ftruncate", "fchmod", "fchown", "fdopen", "open", "truncate", "chmod", "chown")
+
+
+def descriptor_operation(name, fd):
+    if name == "write": return os.write(fd, b"UNREVIEWED-ENGINE-OPERATION")
+    if name == "writev": return os.writev(fd, [b"UNREVIEWED-ENGINE-OPERATION"])
+    if name == "pwrite": return os.pwrite(fd, b"UNREVIEWED-ENGINE-OPERATION", 0)
+    if name in ("ftruncate", "truncate"): return getattr(os, name)(fd, 0)
+    if name in ("fchmod", "chmod"): return getattr(os, name)(fd, 0o600)
+    if name in ("fchown", "chown"): return getattr(os, name)(fd, -1, -1)
+    if name == "fdopen": return os.fdopen(fd, "rb", closefd=False)
+    if name == "open": return open(fd, "rb", closefd=False)
+    raise AssertionError(name)
+
+
+@pytest.mark.parametrize("operation", FD_OPERATIONS)
+def test_c_closed_owned_fd_reused_for_socket_never_transmits_or_opens(operation, tmp_path):
+    emitted = []
+    with owned_fixture_socket() as listener:
+        listener.listen(1)
+        listener.settimeout(1)
+        port = listener.getsockname()[1]
+        OWNED_PORTS.add(port)
+        policy = rp.FsPolicy(home=tmp_path, write_roots=[tmp_path])
+        with rp.EffectGuard(lambda kind, **fields: emitted.append(fields), fs=policy, allowed_ports={port}):
+            stale = os.open(tmp_path / "owned.tmp", os.O_CREAT | os.O_RDWR, 0o600)
+            with os.fdopen(stale, "wb") as owned:
+                owned.write(b"owned")  # FileIO's C-level close leaves the numeric mapping behind.
+            with socket.socket() as client:
+                duplicate = client.fileno() != stale
+                if duplicate:
+                    os.dup2(client.fileno(), stale)
+                try:
+                    client.connect(("127.0.0.1", port))
+                    with listener.accept()[0] as peer:
+                        peer.settimeout(0.02)
+                        with pytest.raises(rp.EffectBlocked):
+                            descriptor_operation(operation, stale)
+                        with pytest.raises(socket.timeout):
+                            peer.recv(64)
+                finally:
+                    if duplicate:
+                        os.close(stale)
+    assert any(row["what"] == "fs_descriptor_stale" for row in emitted)
+
+
+@pytest.mark.parametrize("replacement", ["owned", "private"])
+@pytest.mark.parametrize("operation", FD_OPERATIONS)
+def test_c_closed_owned_fd_reused_for_another_file_is_not_a_capability(replacement, operation, tmp_path):
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    path = throwaway / "replacement" if replacement == "owned" else real_home / "Documents/private.txt"
+    if replacement == "owned":
+        path.write_bytes(b"preserve")
+    preserved = path.read_bytes()
+    # Fixture owns this original opener; simulate an FD replacement without
+    # blessing it through the guard's os.open registration path.
+    native_open = os.open
+    emitted = []
+    with rp.EffectGuard(lambda kind, **fields: emitted.append(fields), fs=policy):
+        stale = os.open(throwaway / "first", os.O_CREAT | os.O_RDWR, 0o600)
+        with os.fdopen(stale, "wb") as owned:
+            owned.write(b"first")
+        replacement_fd = native_open(path, os.O_RDWR)
+        duplicate = replacement_fd != stale
+        if duplicate:
+            os.dup2(replacement_fd, stale)
+        try:
+            with pytest.raises(rp.EffectBlocked):
+                descriptor_operation(operation, stale)
+        finally:
+            os.close(replacement_fd)
+            if duplicate:
+                os.close(stale)
+    assert path.read_bytes() == preserved
+    assert any(row["what"] == "fs_descriptor_stale" for row in emitted)
+
+
+def test_valid_owned_fd_writes_metadata_and_fdopen_remain_usable(tmp_path):
+    policy = rp.FsPolicy(home=tmp_path, write_roots=[tmp_path])
+    with rp.EffectGuard(lambda *a, **k: None, fs=policy):
+        fd = os.open(tmp_path / "owned", os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            assert os.write(fd, b"abc") == 3
+            assert os.pwrite(fd, b"Z", 0) == 1
+            assert os.writev(fd, [b"d", b"e"]) == 2
+            os.ftruncate(fd, 3)
+            os.fchmod(fd, 0o600)
+            os.fchown(fd, -1, -1)
+            os.lseek(fd, 0, os.SEEK_SET)
+            with os.fdopen(fd, "rb", closefd=False) as stream:
+                assert stream.read() == b"Zbc"
+        finally:
+            os.close(fd)
+    assert (tmp_path / "owned").read_bytes() == b"Zbc"

@@ -1137,14 +1137,34 @@ class EffectGuard:
         import builtins
         import io
         fs, guard = self.fs, self
-        descriptors: dict[int, str] = {}
+        descriptors: dict[int, tuple[str, tuple[int, ...]]] = {}
         lease_paths = set(fs.write_exact)
+        original_fstat = os.fstat
 
-        def check(kind: str, value: Any) -> str:
+        def identity(info):
+            return (info.st_dev, info.st_ino, stat.S_IFMT(info.st_mode), info.st_rdev)
+
+        def check(kind: str, value: Any, *, file_object=False) -> str:
             if isinstance(value, int):
-                if value not in descriptors:
+                tracked = descriptors.get(value)
+                if tracked is None:
                     guard._block("fs_descriptor", str(value))
-                value = descriptors[value]
+                path, expected = tracked
+                try:
+                    info = original_fstat(value)
+                except OSError:
+                    descriptors.pop(value, None)
+                    guard._block("fs_descriptor_stale", str(value))
+                # io.FileIO/BufferedIO close in C, and dup2 can replace an FD:
+                # a numeric descriptor is never a durable path capability.
+                if identity(info) != expected:
+                    descriptors.pop(value, None)
+                    guard._block("fs_descriptor_stale", str(value))
+                regular = stat.S_ISREG(info.st_mode)
+                null_device = os.path.realpath(path) == "/dev/null" and stat.S_ISCHR(info.st_mode)
+                if (kind != "read" or file_object) and not (regular or null_device):
+                    guard._block("fs_descriptor_type", str(value))
+                value = path
             try:
                 path = fs.absolute(value)
             except (TypeError, ValueError):
@@ -1162,7 +1182,7 @@ class EffectGuard:
         original_open = builtins.open
 
         def guarded_open(file, mode="r", *a, **k):
-            check("write" if any(c in str(mode) for c in "wax+") else "read", file)
+            check("write" if any(c in str(mode) for c in "wax+") else "read", file, file_object=True)
             return original_open(file, mode, *a, **k)
 
         self._patch(builtins, "open", guarded_open)
@@ -1181,7 +1201,11 @@ class EffectGuard:
             else:
                 check("write" if flags & write_flags else "read", path)
             fd = original_os_open(path, flags, mode)
-            descriptors[fd] = absolute
+            try:
+                descriptors[fd] = (absolute, identity(original_fstat(fd)))
+            except BaseException:
+                original_close(fd)
+                raise
             return fd
 
         def close(fd):
