@@ -224,7 +224,7 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
     found = []
     for domain, word in SOURCE_WORDS.items():
         pattern = word + r"\s+(?:(?:that|which)\s+)?(?:are\s+)?(?P<cue>about|containing|contains|named|titled|called|from|with|by|for)\s+(?P<literal>[^;!?\n]+)"
-        for match in re.finditer(pattern, masked, re.I):
+        for match in re.finditer("(?=" + pattern + ")", masked, re.I):
             start = match.start("literal")
             candidate = text[start:match.end("literal")]
             if candidate[:1] in {'"', "'", '“', '‘', '`'}:
@@ -238,9 +238,9 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
                 tail_times = _requested_times(candidate[boundary.end():], now=now)
                 if tail_times and tail_times[0][0] == 0:
                     stops.append(boundary.start())
-            for boundary in re.finditer(r"\b(?:and|plus|then)\s+|\b(?:limit(?:\s+to)?|at most)\s+", candidate, re.I):
+            for boundary in re.finditer(r"\b(?:and|plus|then)\s+|\b(?:limit(?:\s+to)?|at most)\s+|\b(?:in|using|on)\s+(?:the\s+)?account\s+", candidate, re.I):
                 tail = candidate[boundary.end():]
-                if boundary.group().lower().startswith(("limit", "at most")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()):
+                if boundary.group().lower().startswith(("limit", "at most", "in", "using", "on")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()):
                     stops.append(boundary.start())
             end = min(stops) if stops else len(candidate)
             literal = candidate[:end].strip().rstrip(".,")
@@ -332,12 +332,175 @@ def _reminder_scopes(text: str, *, sole=False) -> set[str]:
     return {"overdue" if word.lower().startswith("past") else word.lower() for word in words}
 
 
-def _validate_required_constraints(sources, text: str, *, now: datetime, reminder_text=None, duration_text=None):
+def _occurrence_clauses(text: str, *, now: datetime) -> dict[str, list[str]]:
+    """Retain independent repeated-source clauses, never a field cross product.
+
+    Separators must occur outside literal data. A common leading operation and
+    a sole trailing date in a coordinated source list can be shared; semicolon
+    reads are independent. Unknown repeated-source boundaries clarify.
+    """
+    masked = _instruction_text(text, now=now)
+    anchors = sorted((m.start(), m.end(), domain) for domain, pattern in SOURCE_WORDS.items()
+                     for m in re.finditer(pattern, masked, re.I))
+    # Adjacent aliases such as "text messages" name one source occurrence.
+    compact = []
+    for anchor in anchors:
+        if compact and compact[-1][2] == anchor[2] and not masked[compact[-1][1]:anchor[0]].strip():
+            compact[-1] = (compact[-1][0], anchor[1], anchor[2])
+        else:
+            compact.append(anchor)
+    anchors = compact
+    repeated = {domain for _, _, domain in anchors
+                if sum(owner == domain for _, _, owner in anchors) > 1}
+    if not repeated:
+        return {}
+    starts = [0]
+    ends = []
+    separators = []
+    for previous, current in zip(anchors, anchors[1:]):
+        boundaries = list(re.finditer(r"[;\n]|\b(?:and|plus|then)\b", masked[previous[1]:current[0]], re.I))
+        if not boundaries:
+            raise InvalidIntent("Cannot establish independent source clause bounds")
+        boundary = boundaries[-1]
+        ends.append(previous[1] + boundary.start())
+        starts.append(previous[1] + boundary.end())
+        separators.append(boundary.group().lower())
+    ends.append(len(text))
+    clauses = {domain: [] for domain in repeated}
+    times = _requested_times(masked, now=now)
+    shared_time = None
+    if len(times) == 1 and not any(sep in {";", "\n", "then"} for sep in separators):
+        start, end, _ = times[0]
+        later_operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", masked[anchors[0][1]:], re.I)
+        if end <= anchors[0][0] or start >= anchors[-1][1] and not later_operation:
+            # A common list suffix is shared, but a new read verb introduces
+            # an independently constrained read even when joined with "and".
+            shared_time = text[start:end]
+    leading = text[:anchors[0][0]]
+    operation = re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", leading, re.I)
+    for (anchor, _, domain), start, end in zip(anchors, starts, ends):
+        if domain not in clauses:
+            continue
+        clause = text[start:end].strip(" ;\n")
+        prefix = text[start:anchor]
+        if operation and not re.search(r"\b(?:recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", prefix, re.I):
+            clause = operation.group() + " " + clause
+        if shared_time and not _requested_times(_instruction_text(clause, now=now), now=now):
+            clause += " for " + shared_time
+        clauses[domain].append(clause)
+    return clauses
+
+
+def _correct_occurrences(clauses, prompt: str, *, now: datetime):
+    """Apply an unambiguous shared date/unread continuation to prior reads.
+
+    A source-free change to per-read count/account/scope/duration or operation
+    requires explicit clauses when multiple reads exist. Never validate the
+    unchanged prior tuples while silently dropping the current correction.
+    """
+    if not clauses:
+        return clauses
+    instruction = _instruction_text(prompt, now=now)
+    dates = _requested_times(instruction, now=now)
+    if len(dates) > 1:
+        raise InvalidIntent("Name the date for each repeated read")
+    if any(_requested_count(domain, instruction) is not None for domain in clauses) or (
+            _requested_minutes(instruction) or _reminder_scopes(instruction, sole=True) or
+            re.search(r"\b(?:account|recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", instruction, re.I)):
+        raise InvalidIntent("Name the changed constraints for each repeated read")
+    corrected = {}
+    for domain, requests in clauses.items():
+        corrected[domain] = []
+        for clause in requests:
+            if dates:
+                old_dates = _requested_times(_instruction_text(clause, now=now), now=now)
+                for start, end, _ in reversed(old_dates):
+                    glue = re.search(r"\b(?:for|from|on|during|between)\s*$", clause[:start], re.I)
+                    if glue:
+                        start = glue.start()
+                    clause = clause[:start] + clause[end:]
+                start, end, _ = dates[0]
+                clause += " for " + prompt[start:end]
+            if re.search(r"\bunread\b", instruction, re.I):
+                clause = "unread " + clause
+            corrected[domain].append(clause)
+    return corrected
+
+
+def _validate_occurrences(sources, clauses, *, now: datetime):
+    """Match entire clause signatures and require coverage, order independently.
+
+    Exact duplicate model entries may still dedupe downstream. Each distinct
+    authorized clause must match; no new query/date/account/count combination
+    can be synthesized from individually grounded fields.
+    """
+    from service.utterance_shape import quoted_spans
+    for domain, requests in clauses.items():
+        expected = []
+        for clause in requests:
+            instruction = _instruction_text(clause, now=now)
+            dates = {_time_identity(scope, now=now) for _, _, scope in _requested_times(instruction, now=now)}
+            if len(dates) > 1:
+                raise InvalidIntent("Ambiguous repeated-source date association")
+            literals = {literal for owner, literal, _, _ in _unquoted_queries(clause, now=now) if owner == domain}
+            accounts = []
+            account_spans = []
+            for match in re.finditer(r"\b(?:in|using|on)\s+(?:the\s+)?account\s+", _mask_literals(clause, keep_quotes=True), re.I):
+                following = [(start, end) for start, end in quoted_spans(clause) if start >= match.end()]
+                if not following or clause[match.end():following[0][0]].strip():
+                    raise InvalidIntent("Use an exact quoted account for repeated reads")
+                start, end = following[0]
+                accounts.append(clause[start + 1:end - 1])
+                account_spans.append((start, end))
+            if len(accounts) > 1:
+                raise InvalidIntent("Ambiguous repeated-source account")
+            literals.update(clause[start + 1:end - 1] for start, end in quoted_spans(clause)
+                            if (start, end) not in account_spans)
+            if len(literals) > 1:
+                raise InvalidIntent("Ambiguous repeated-source literal association")
+            operation_match = re.search(r"\b(recap|summarize|summary|overview|digest|read|show|list|find|search|lookup|locate)\b", instruction, re.I)
+            operation = None
+            if domain == "calendar" and re.search(r"\b(?:free|available|availability)\b", instruction, re.I):
+                operation = "free_time"
+            elif operation_match:
+                operation = "overview" if operation_match[1].lower() in {"recap", "summarize", "summary", "overview", "digest"} else "records"
+            field = "conversation" if domain == "messages" and operation == "overview" else "query"
+            scopes = _reminder_scopes(instruction, sole=True) if domain == "reminders" else set()
+            minutes = _requested_minutes(instruction) if domain == "calendar" else set()
+            if len(scopes) > 1 or len(minutes) > 1:
+                raise InvalidIntent("Ambiguous repeated-source scope or duration")
+            expected.append((operation, next(iter(dates), None), next(iter(literals), None), field,
+                             next(iter(accounts), None), _requested_count(domain, instruction),
+                             True if re.search(r"\bunread\b", instruction, re.I) else None,
+                             next(iter(scopes), None), next(iter(minutes), None)))
+        covered = set()
+        for source in (s for s in sources if s.domain == domain):
+            scope = source.time
+            if scope is None and domain == "reminders" and source.scope in {"today", "tomorrow"}:
+                scope = TimeScope(named=source.scope)
+            identity = _time_identity(scope, now=now) if scope else None
+            matches = []
+            for index, (operation, when, literal, field, account, count, unread, reminder_scope, minutes) in enumerate(expected):
+                if (operation is None or source.operation == operation) and identity == when and (
+                    getattr(source, field) == literal and
+                    getattr(source, "query" if field == "conversation" else "conversation") is None and
+                    source.account == account and source.count == count and source.unread is unread and
+                    (source.scope == reminder_scope or domain == "reminders" and reminder_scope is None
+                     and source.scope in {None, "all", "today", "tomorrow"}) and source.minutes == minutes):
+                    matches.append(index)
+            if not matches:
+                raise InvalidIntent("Read fields do not match one complete requested clause")
+            covered.update(matches)
+        if covered != set(range(len(expected))):
+            raise InvalidIntent("Missing independently requested read clause")
+
+
+def _validate_required_constraints(sources, text: str, *, now: datetime, reminder_text=None, duration_text=None, bound_domains=()):
     domains = {source.domain for source in sources}
     expected, _, unsupported_time = _source_time_requirements(text, domains, now=now)
     if unsupported_time:
         raise InvalidIntent("Requested time-of-day or range is not representable")
-    for domain in domains:
+    for domain in domains - set(bound_domains):
         entries = [s for s in sources if s.domain == domain]
         wanted = {_time_identity(scope, now=now) for scope in expected[domain]}
         actual = []
@@ -353,7 +516,7 @@ def _validate_required_constraints(sources, text: str, *, now: datetime, reminde
         if not wanted <= set(actual):
             raise InvalidIntent("Missing requested date range")
     instruction_text = _instruction_text(text, now=now)
-    if "reminders" in domains:
+    if "reminders" in domains and "reminders" not in bound_domains:
         requested = _reminder_scopes(reminder_text if reminder_text is not None else instruction_text,
                                      sole=domains == {"reminders"})
         entries = [s for s in sources if s.domain == "reminders"]
@@ -364,7 +527,7 @@ def _validate_required_constraints(sources, text: str, *, now: datetime, reminde
     duration_text = duration_text if duration_text is not None else instruction_text
     minutes = _requested_minutes(duration_text)
     free_requested = bool(re.search(r"\b(?:free|available|availability)\b", instruction_text, re.I))
-    entries = [s for s in sources if s.domain == "calendar"]
+    entries = [s for s in sources if s.domain == "calendar" and s.domain not in bound_domains]
     if (free_requested or minutes) and any(s.operation != "free_time" for s in entries):
         raise InvalidIntent("Requested availability operation was changed")
     free_entries = [s for s in entries if s.operation == "free_time"]
@@ -405,9 +568,6 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
     if flexible_personal_agenda(prompt) and not re.search(r"\b(?:this|next|last) (?:week|month)\b", time_evidence, re.I):
         if re.search(r"\b(?:my|our) (?:week|wk)\b|\bfor (?:the )?(?:week|wk)\b", prompt, re.I):
             time_evidence += " this week"
-    # A new sender/name replaces the previous literal instead of requiring both.
-    current_named = bool(_unquoted_queries(prompt, now=now)) or bool(re.search(r'"[^"\n]+"|“[^”\n]+”|`[^`\n]+`|\b(?:from|with|by)\s+(?!(?:today|tomorrow|yesterday|this|last|next)\b)[+\w@]', prompt, re.I))
-    filter_evidence = prompt if current_named else evidence
     contextual_sources = set()
     if inherit and not required:
         tool_domains = {"get_upcoming": {"calendar", "reminders"}, "find_free_time": {"calendar"},
@@ -416,6 +576,37 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
                         "summarize_messages": {"messages"}, "search_notes": {"notes"}}
         contextual_sources = prior_required or set().union(
             *(tool_domains.get(name, set()) for name in prior_tools))
+    filter_prompt = prompt
+    if inherit and not required:
+        fragment = re.match(r"^\s*(?:(?:actually|now|instead|only|just|no|make that)[, ]+)?"
+                            r"(?P<cue>about|containing|contains|named|titled|called|from|with|by|for)\s+", prompt, re.I)
+        if fragment:
+            tail = prompt[fragment.end():]
+            times = _requested_times(tail, now=now)
+            is_time = fragment["cue"].lower() in {"from", "for"} and times and times[0][0] == 0
+            if not is_time:
+                if len(contextual_sources) != 1:
+                    raise InvalidIntent("Query replacement needs one unambiguous contextual source")
+                if _occurrence_clauses(prior_user, now=now):
+                    raise InvalidIntent("Name which prior read the replacement changes")
+                filter_prompt = next(iter(contextual_sources)) + " " + prompt[fragment.start("cue"):]
+    # A current complete literal replaces the prior literal. Other inherited
+    # constraints retain their separate evidence and source authority.
+    current_named = bool(_unquoted_queries(filter_prompt, now=now)) or bool(re.search(r'"[^"\n]+"|“[^”\n]+”|`[^`\n]+`|\b(?:from|with|by)\s+(?!(?:today|tomorrow|yesterday|this|last|next)\b)[+\w@]', filter_prompt, re.I))
+    filter_evidence = filter_prompt if current_named else evidence
+    if inherit and current_named and not re.search(r"\baccount\b", _mask_literals(filter_prompt), re.I):
+        # Replacing a query does not erase an independently requested account.
+        # Carry only the exact quoted account phrase, never the old query.
+        for match in re.finditer(r"\b(?:in|using|on)\s+(?:the\s+)?account\s+", _mask_literals(prior_user, keep_quotes=True), re.I):
+            from service.utterance_shape import quoted_spans
+            accounts = [(start, end) for start, end in quoted_spans(prior_user) if start >= match.end()]
+            if not accounts or prior_user[match.end():accounts[0][0]].strip():
+                raise InvalidIntent("Cannot establish inherited account bounds")
+            filter_evidence += " " + prior_user[match.start():accounts[0][1]]
+    occurrence_text = filter_prompt if current_named or not inherit else prior_user
+    occurrence_clauses = _occurrence_clauses(occurrence_text, now=now)
+    if inherit and not current_named:
+        occurrence_clauses = _correct_occurrences(occurrence_clauses, filter_prompt, now=now)
     sources = []
     for raw in value["sources"]:
         _object(raw, SOURCE_PROPERTIES, ("domain", "operation"))
@@ -441,9 +632,9 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         if scope:
             _ground_time(scope, time_evidence, now=now)
         requested_count = _requested_count(raw["domain"], evidence)
-        if requested_count is not None and raw.get("count") != requested_count and not unsupported:
+        if raw["domain"] not in occurrence_clauses and requested_count is not None and raw.get("count") != requested_count and not unsupported:
             raise InvalidIntent("Requested result count was dropped or changed")
-        if "count" in raw and raw["count"] != requested_count:
+        if raw["domain"] not in occurrence_clauses and "count" in raw and raw["count"] != requested_count:
             raise InvalidIntent("Unrequested result count")
         if "minutes" in raw and raw["minutes"] not in _requested_minutes(evidence):
             raise InvalidIntent("Unrequested duration")
@@ -466,7 +657,7 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
             unread_domains = direct_domains or {source.domain for source in sources
                                                 if source.domain in {"email", "messages"}}
             for source in sources:
-                if source.domain in unread_domains and source.unread is not True and not unsupported:
+                if source.domain in unread_domains and source.domain not in occurrence_clauses and source.unread is not True and not unsupported:
                     raise InvalidIntent("Missing typed unread filter")
         elif any(source.unread is not None for source in sources):
             raise InvalidIntent("Unrequested unread filter")
@@ -521,7 +712,7 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         if period and any(s.domain == "calendar" and (not s.time or s.time.named != period) for s in sources):
             raise InvalidIntent("Personal agenda date scope changed")
         if not unsupported:
-            current_time_text = re.sub(r"\b(?:this|the) wk\b|\bthe week\b", "this week", prompt, flags=re.I)
+            current_time_text = re.sub(r"\b(?:this|the) wk\b|\bthe week\b", "this week", filter_prompt, flags=re.I)
             current_time_text = re.sub(r"\bnext wk\b", "next week", current_time_text, flags=re.I)
             if flexible_personal_agenda(prompt) and re.search(r"\b(?:my|our) (?:week|wk)\b|\bfor (?:the )?(?:week|wk)\b", prompt, re.I):
                 if not _requested_times(current_time_text, now=now):
@@ -532,10 +723,11 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
                 # Preserve adjacent same-source filters but prefer any current
                 # date correction over old temporal context.
                 constraint_text += "\n" + prior_user
-            current_instruction = _instruction_text(prompt, now=now)
+            current_instruction = _instruction_text(filter_prompt, now=now)
             current_reminder_scopes = _reminder_scopes(current_instruction, sole=represented == {"reminders"})
             current_minutes = _requested_minutes(current_instruction)
-            _validate_required_constraints(sources, constraint_text, now=now,
+            _validate_occurrences(sources, occurrence_clauses, now=now)
+            _validate_required_constraints(sources, constraint_text, now=now, bound_domains=occurrence_clauses,
                 reminder_text=current_instruction if current_reminder_scopes else None,
                 duration_text=current_instruction if current_minutes else None)
     elif sources:

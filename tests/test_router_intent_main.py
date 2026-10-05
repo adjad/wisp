@@ -254,3 +254,86 @@ def test_actor_preserves_independent_dates_and_complete_query_with_limit(endpoin
     client.outputs = [data]
     events = asyncio.run(request(prompt))
     assert calls == expected and "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("swapped", [False, True])
+def test_actor_binds_each_repeated_email_query_to_its_requested_date(endpoint, swapped):
+    from tests.test_router_intent_core import REPEATED_READ_PROMPT, repeated_email
+    request, client, calls, _, _ = endpoint
+    data = repeated_email(swapped=swapped)
+    client.outputs = [data, data]
+    events = asyncio.run(request(REPEATED_READ_PROMPT))
+    if swapped:
+        assert calls == []
+        assert "clarify" in [e.get("intent_disposition") for e in events]
+    else:
+        assert calls == [("view_emails", {"query": "Elara", "strict_match": True, "period": "2026-10-03"}),
+                         ("view_emails", {"query": "Tobias", "strict_match": True, "period": "2026-10-04"})]
+        assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("swap", [None, "account", "count", "time", "operation", "unread"])
+def test_actor_whole_read_binding_preserves_account_count_operation_and_unread(endpoint, swap):
+    request, client, calls, _, _ = endpoint
+    prompt = ('Read two unread emails from Elara in account "Work" for 2026-10-03; '
+              'read three emails from Tobias in account "Personal" for 2026-10-04')
+    data = value(source("email", "records", query="Elara", account="Work", count=2, unread=True, time={"date": "2026-10-03"}),
+                 source("email", "records", query="Tobias", account="Personal", count=3, time={"date": "2026-10-04"}))
+    if swap in {"account", "count", "time"}:
+        data["sources"][0][swap], data["sources"][1][swap] = data["sources"][1][swap], data["sources"][0][swap]
+    elif swap == "operation":
+        data["sources"][0]["operation"] = "overview"
+    elif swap == "unread":
+        data["sources"][0].pop("unread")
+        data["sources"][1]["unread"] = True
+    client.outputs = [data, data]
+    events = asyncio.run(request(prompt))
+    if swap:
+        assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+    else:
+        assert calls == [("view_emails", {"query": "Elara", "strict_match": True, "account": "Work", "count": 2, "unread": True, "period": "2026-10-03"}),
+                         ("view_emails", {"query": "Tobias", "strict_match": True, "account": "Personal", "count": 3, "period": "2026-10-04"})]
+        assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("query", ["cedar manuscripts", "birch diagrams"])
+def test_actor_source_free_replacement_never_executes_prior_query(endpoint, query):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.add_turn(sid, "user", "Find five notes about cedar manuscripts from yesterday")
+    store.add_turn(sid, "assistant", "Synthetic prior notes", tool_digest="search_notes")
+    data = value(source("notes", "records", query=query, count=5, time={"named": "yesterday"}))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Actually about birch diagrams", session_id=sid))
+    if query == "cedar manuscripts":
+        assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+    else:
+        assert calls == [("search_notes", {"query": "birch diagrams", "count": 5, "period": "yesterday"})]
+        assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+def test_actor_ambiguous_source_free_replacement_does_not_choose_a_source(endpoint):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.add_turn(sid, "user", "Find notes about cedar manuscripts and read email from Elara")
+    store.add_turn(sid, "assistant", "Synthetic prior reads", tool_digest="search_notes, view_emails")
+    data = value(source("notes", "records", query="birch diagrams"), source("email", "records", query="Elara"))
+    client.outputs = [data, data]
+    events = asyncio.run(request("Actually about birch diagrams", session_id=sid))
+    assert calls == [] and "clarify" in [e.get("intent_disposition") for e in events]
+
+
+
+def test_actor_repeated_context_date_correction_keeps_queries_and_changes_every_date(endpoint):
+    from tests.test_router_intent_core import REPEATED_READ_PROMPT
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    store.add_turn(sid, "user", REPEATED_READ_PROMPT)
+    store.add_turn(sid, "assistant", "Synthetic prior email reads", tool_digest="view_emails")
+    data = value(source("email", "records", query="Elara", time={"named": "tomorrow"}),
+                 source("email", "records", query="Tobias", time={"named": "tomorrow"}))
+    client.outputs = [data]
+    events = asyncio.run(request("Same for tomorrow", session_id=sid))
+    assert calls == [("view_emails", {"query": "Elara", "strict_match": True, "period": "tomorrow"}),
+                     ("view_emails", {"query": "Tobias", "strict_match": True, "period": "tomorrow"})]
+    assert "compiled" in [e.get("intent_disposition") for e in events]
