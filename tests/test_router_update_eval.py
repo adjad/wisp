@@ -174,19 +174,204 @@ def test_injected_inference_is_disabled_before_any_client_operation():
         asyncio.run(adapter.chat('Ling-fixture', []))
 
 
-def test_injected_adapter_never_loads_wrong_or_nonresident_model():
+def test_enabled_adapter_rejects_unisolated_caller_before_underlying_status():
     import asyncio
-    class Fake:
+    class Never:
         async def status(self):
-            return {'models': [{'id': 'Ling-fixture', 'loaded': False}]}
-        async def ensure_only(self, *args, **kwargs):
-            raise AssertionError('adapter called model load')
+            raise AssertionError('adapter touched underlying I/O without isolation')
     grant = evaluation.InferenceGrant('Ling-fixture', 'fixture-revision', 'a' * 64, 'synthetic-receipt', ('127.0.0.1', 1), enabled=True)
-    adapter = evaluation.ResidentInferenceAdapter(Fake(), grant)
-    with pytest.raises(PermissionError, match='not already resident'):
-        asyncio.run(adapter.ensure_only('Ling-fixture'))
+    adapter = evaluation.ResidentInferenceAdapter(Never(), grant)
+    with pytest.raises(PermissionError, match='isolated evaluation guard'):
+        asyncio.run(adapter.status())
     with pytest.raises(PermissionError, match='differs'):
         asyncio.run(adapter.ensure_only('Other-model'))
+
+
+
+def test_adapter_has_only_named_readonly_metadata_and_disabled_access():
+    metadata = {'target', 'base_url', 'endpoint_name', 'provider', 'api_prefix', '_credential_transport'}
+    properties = {name for name, value in vars(evaluation.ResidentInferenceAdapter).items() if isinstance(value, property)}
+    assert properties == metadata
+    assert '__getattr__' not in vars(evaluation.ResidentInferenceAdapter)
+    grant = evaluation.InferenceGrant('Ling-fixture', 'fixture-revision', 'a' * 64, 'synthetic-receipt', ('127.0.0.1', 1))
+    adapter = evaluation.ResidentInferenceAdapter(object(), grant)
+    for name in metadata:
+        with pytest.raises(PermissionError, match='disabled'):
+            getattr(adapter, name)
+        with pytest.raises(AttributeError):
+            setattr(adapter, name, object())
+    for name in ('api_key', 'start', 'load', 'unload', 'swap'):
+        with pytest.raises(AttributeError):
+            getattr(adapter, name)
+
+
+@pytest.mark.skipif((ROOT / 'service/router/intent/planner.py').exists(), reason='Absence check applies to original control only')
+def test_adapter_fails_closed_when_strict_core_is_unavailable():
+    code = r'''
+import asyncio, pathlib, tempfile
+from scripts import eval_router_update as e
+state = pathlib.Path(tempfile.mkdtemp(prefix='wisp-adapter-missing-core-'))
+e.install_guard(state, state)
+class Never:
+    async def status(self):
+        raise AssertionError('adapter reached I/O without strict identity verifier')
+grant = e.InferenceGrant('Ling-fixture', 'fixture-revision', 'a' * 64, 'synthetic-receipt', ('127.0.0.1', 1), enabled=True)
+try:
+    asyncio.run(e.ResidentInferenceAdapter(Never(), grant).status())
+except PermissionError as exc:
+    assert str(exc) == 'Strict isolated router identity cannot be verified'
+else:
+    raise AssertionError('unavailable core identity verifier was accepted')
+print('CLOSED')
+'''
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'CLOSED'
+
+
+# Every operation below is a fake callback, including successful chat/stream.
+# install_guard receives no inference grant, so sockets remain entirely denied.
+ADAPTER_IDENTITY_CHECKS = r'''
+import asyncio, dataclasses, pathlib, tempfile
+from types import SimpleNamespace
+from urllib.parse import urlsplit
+from scripts import eval_router_update as e
+state = pathlib.Path(tempfile.mkdtemp(prefix='wisp-adapter-identity-'))
+e.install_guard(state, state)
+from service.config import endpoints
+from service.router.intent.planner import _client_matches_target
+base = e.ScriptedClient({'expected': {'calls': []}}).target
+original_resolver = endpoints.role_target
+current = base
+endpoints.role_target = lambda role: current if role == 'router' else original_resolver(role)
+origin = urlsplit(base.endpoint.base_url)
+grant = e.InferenceGrant(base.model, 'synthetic-revision', 'a' * 64, 'synthetic-resource-receipt', (origin.hostname, origin.port), enabled=True)
+seen = []
+def fixture():
+    client = e.ScriptedClient({'expected': {'calls': []}})
+    async def status():
+        seen.append('status')
+        return {'models': [{'id': client.target.model, 'loaded': True}]}
+    async def chat(model, messages, **kwargs):
+        seen.append('chat')
+        return {'synthetic': True}
+    async def stream(model, messages, **kwargs):
+        seen.append('stream')
+        yield {'synthetic': True}
+    async def forbidden(*args, **kwargs):
+        raise AssertionError('underlying load/readiness method ran')
+    client.status, client.chat, client.stream_events = status, chat, stream
+    client.ensure_only = forbidden
+    return client
+async def exercise():
+    global current
+    client = fixture()
+    adapter = e.ResidentInferenceAdapter(client, grant)
+    for name in ('target', 'base_url', 'endpoint_name', 'provider', 'api_prefix', '_credential_transport'):
+        assert getattr(adapter, name) is getattr(client, name), name
+    assert _client_matches_target(adapter, current)
+    assert not seen, 'metadata qualification invoked I/O'
+    assert await adapter.chat(grant.model, []) == {'synthetic': True}
+    assert [event async for event in adapter.stream_events(grant.model, [])] == [{'synthetic': True}]
+    assert seen == ['status', 'chat', 'status', 'stream'], seen
+    # Original authority is borrowed, never constructed or substituted.
+    assert adapter._credential_transport is client._credential_transport
+    assert all('credential' not in row for row in adapter.raw)
+    for scenario in ('disabled', 'incomplete', 'remote', 'grant_model', 'grant_origin', 'grant_revision',
+                     'client_model', 'client_role', 'client_context', 'client_provider', 'client_prefix',
+                     'client_endpoint', 'client_origin', 'client_managed', 'missing_transport',
+                     'transport_origin', 'transport_backend', 'configuration_model', 'configuration_role',
+                     'configuration_origin', 'configuration_unavailable'):
+        current = base
+        client = fixture()
+        selected = grant
+        if scenario == 'disabled': selected = dataclasses.replace(grant, enabled=False)
+        if scenario == 'incomplete': selected = dataclasses.replace(grant, approval_receipt='')
+        if scenario == 'remote': selected = dataclasses.replace(grant, endpoint=('example.invalid', origin.port))
+        if scenario == 'grant_model': selected = dataclasses.replace(grant, model='Ling-other')
+        if scenario == 'grant_origin': selected = dataclasses.replace(grant, endpoint=(origin.hostname, origin.port + 1))
+        if scenario == 'grant_revision':
+            current = dataclasses.replace(base, revision='configured-revision')
+            client.target = current
+        if scenario == 'client_model': client.target = dataclasses.replace(base, model='Ling-other')
+        if scenario == 'client_role': client.target = dataclasses.replace(base, role='actor')
+        if scenario == 'client_context': client.target = dataclasses.replace(base, context_window=base.context_window + 1)
+        if scenario == 'client_provider': client.provider = SimpleNamespace(name='openai-compatible')
+        if scenario == 'client_prefix': client.api_prefix = '/v2'
+        if scenario == 'client_endpoint': client.endpoint_name = 'remote'
+        if scenario == 'client_origin': client.base_url = 'http://127.0.0.1:2'
+        if scenario == 'client_managed': client.managed = False
+        if scenario == 'missing_transport': del client._credential_transport
+        if scenario == 'transport_origin': client._credential_transport.origin = 'http://127.0.0.1:2'
+        if scenario == 'transport_backend': client._credential_transport.backend = None
+        if scenario == 'configuration_model': current = dataclasses.replace(base, model='Ling-other')
+        if scenario == 'configuration_role': current = dataclasses.replace(base, role='actor')
+        if scenario == 'configuration_origin': current = dataclasses.replace(base, endpoint=dataclasses.replace(base.endpoint, base_url='http://127.0.0.1:2'))
+        if scenario == 'configuration_unavailable': current = None
+        seen.clear()
+        adapter = e.ResidentInferenceAdapter(client, selected)
+        for operation in (adapter.status, lambda: adapter.chat(selected.model, [])):
+            try:
+                await operation()
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError('accepted identity mismatch: ' + scenario)
+            assert seen == [], (scenario, seen)
+    current = base
+    client = fixture()
+    async def absent():
+        seen.append('status')
+        return {'models': [{'id': grant.model, 'loaded': False}]}
+    client.status = absent
+    seen.clear()
+    try:
+        await e.ResidentInferenceAdapter(client, grant).chat(grant.model, [])
+    except PermissionError as exc:
+        assert 'not already resident' in str(exc)
+    else:
+        raise AssertionError('nonresident model was accepted')
+    assert seen == ['status']
+    for streaming in (False, True):
+        client = fixture()
+        async def mutating():
+            seen.append('status')
+            client.base_url = 'http://127.0.0.1:2'
+            return {'models': [{'id': grant.model, 'loaded': True}]}
+        client.status = mutating
+        seen.clear()
+        adapter = e.ResidentInferenceAdapter(client, grant)
+        try:
+            if streaming:
+                _ = [event async for event in adapter.stream_events(grant.model, [])]
+            else:
+                await adapter.chat(grant.model, [])
+        except PermissionError:
+            pass
+        else:
+            raise AssertionError('identity change after status reached generation')
+        assert seen == ['status']
+    # Changing state/config to a real home is rejected before any client I/O.
+    import os
+    seen.clear()
+    os.environ['WISP_HOME'] = str(state / 'unapproved')
+    try:
+        await e.ResidentInferenceAdapter(fixture(), grant).status()
+    except PermissionError:
+        pass
+    else:
+        raise AssertionError('escaped isolated configuration')
+    assert not seen
+asyncio.run(exercise())
+print('IDENTITY_CHECKS_PASSED')
+'''
+
+
+@pytest.mark.skipif(not (ROOT / 'service/router/intent/planner.py').exists(), reason='Requires integrated strict core; unavailable core fails closed separately')
+def test_adapter_borrows_existing_identity_and_rejects_mismatches_before_io():
+    result = subprocess.run([sys.executable, '-c', ADAPTER_IDENTITY_CHECKS], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'IDENTITY_CHECKS_PASSED'
 
 
 def test_matching_gold_arguments_cannot_reward_runtime_ignored_filters():

@@ -119,12 +119,10 @@ model/status, and inert credential-origin/backend metadata. Its backend is an
 ordinary `object()`, not a credential loader or HTTP transport. Candidate replay
 supplies that same snapshot to the planner's router-role resolver. No credentials
 are resolved and no networking, model loads, or model calls are enabled by this
-fixture identity. The disabled resident-inference adapter is unchanged. The current strict-core
-identity check will reject it because it does not yet delegate the underlying
-client's existing identity metadata. A separately bounded and validated adapter
-change must delegate and verify that metadata without manufacturing authority.
-Future measured inference requires both that adapter validation and a separately
-authorized resource grant; neither prerequisite is completed by this repair.
+fixture identity. The separately bounded adapter repair below borrows the supplied
+client's existing identity only after matching its frozen grant and isolated
+router configuration. Resource authorization for measured inference remains a
+separate prerequisite and has not been granted or exercised here.
 
 ## Candidate and heldout
 
@@ -146,12 +144,32 @@ execution. The CLI has no option to enable it. `InferenceGrant` defaults to
 disabled and requires an exact loopback host/port, frozen Ling model, revision,
 checkpoint SHA256, and resource/approval receipt. Only that endpoint may be allowed
 by `install_guard(..., inference_grant=...)`; native execution remains blocked.
-The adapter verifies the selected model is already resident and never invokes
-start, ensure/load/swap/unload on its underlying client. No model was loaded or
-called in this implementation. The parent must reserve resources and supply the
-client/grant before using this interface. Results then use a different mode and
-retain actual response events and model provenance; never combine them with
-oracle replay as measured model successes.
+Before status or generation, the adapter requires the installed isolation guard,
+checks that service paths still point to temporary evaluation state, resolves
+`role_target('router')` there, and uses the strict core `_client_matches_target`
+validator on the supplied client. It fails closed if that validator is unavailable.
+The frozen grant must match the configured model and exact loopback origin; an
+explicit configured revision must also match. Only six read-only properties are
+borrowed: `target`, `base_url`, `endpoint_name`, `provider`, `api_prefix`, and
+`_credential_transport`. These return the supplied references; the adapter does
+not create transport, resolve keys, copy credentials, or expose arbitrary client
+methods. Identity is checked again after awaited residency status, before chat
+or streaming begins.
+
+Status must report the exact selected model already resident. The adapter never
+invokes start, ensure/load/swap/unload on its underlying client. A grant's revision,
+checkpoint hash, and approval receipt are caller provenance, not independent proof
+of the loaded weights. Such proof must be established separately for any measured
+lane. No model was loaded or called in this implementation. The parent must reserve
+resources and supply the client/grant before using this interface. Results then use
+a different mode and retain actual response events and model provenance; never
+combine them with oracle replay as measured model successes.
+
+Synthetic adapter tests use fake status/chat/stream callbacks with all sockets
+still denied. They verify exact borrowed references, mismatches rejected before
+I/O, unavailable-model rejection without loading, and identity changes during
+status rejected before generation. The strict-core integration check is skipped
+on the original baseline and must pass on the combined candidate.
 
 ## Focused verification
 

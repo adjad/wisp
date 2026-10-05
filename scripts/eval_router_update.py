@@ -20,9 +20,11 @@ from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
 from types import SimpleNamespace
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'eval/router-update-20261005'
+_ISOLATION_ROOT = None
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 SOURCES = {
@@ -312,10 +314,64 @@ class ResidentInferenceAdapter:
         self._client, self.grant = client, grant
         self.raw = []
 
-    async def status(self):
+    def _validated_target(self):
         self.grant.validate()
-        value = await self._client.status()
-        return value
+        # Resolve only the caller's isolated configuration, never real settings.
+        if (_ISOLATION_ROOT is None or Path.home().resolve() != _ISOLATION_ROOT
+                or not os.environ.get('WISP_HOME')
+                or Path(os.environ['WISP_HOME']).resolve() != _ISOLATION_ROOT / '.moe'):
+            raise PermissionError('Injected inference requires the isolated evaluation guard')
+        try:
+            from service.paths import MOE_DIR
+            from service.config.endpoints import role_target
+            from service.router.intent.planner import _client_matches_target
+            if MOE_DIR.resolve() != (_ISOLATION_ROOT / '.moe').resolve():
+                raise PermissionError('Role configuration is outside isolated evaluation state')
+            target = role_target('router')
+            origin = urlsplit(target.endpoint.base_url)
+            if (target.model != self.grant.model
+                    or (origin.hostname, origin.port) != self.grant.endpoint
+                    or target.revision and target.revision != self.grant.revision
+                    or not _client_matches_target(self._client, target)):
+                raise PermissionError('Supplied client identity does not match the frozen grant and router configuration')
+            return target
+        except PermissionError:
+            raise
+        except Exception:
+            raise PermissionError('Strict isolated router identity cannot be verified') from None
+
+    def _borrowed_metadata(self, name):
+        self._validated_target()
+        # Exact references only. No credentials, transport copying, or authority.
+        return getattr(self._client, name)
+
+    @property
+    def target(self):
+        return self._borrowed_metadata('target')
+
+    @property
+    def base_url(self):
+        return self._borrowed_metadata('base_url')
+
+    @property
+    def endpoint_name(self):
+        return self._borrowed_metadata('endpoint_name')
+
+    @property
+    def provider(self):
+        return self._borrowed_metadata('provider')
+
+    @property
+    def api_prefix(self):
+        return self._borrowed_metadata('api_prefix')
+
+    @property
+    def _credential_transport(self):
+        return self._borrowed_metadata('_credential_transport')
+
+    async def status(self):
+        self._validated_target()
+        return await self._client.status()
 
     async def ensure_only(self, model, **kwargs):
         self.grant.validate()
@@ -327,6 +383,7 @@ class ResidentInferenceAdapter:
 
     async def chat(self, model, messages, **kwargs):
         await self.ensure_only(model)
+        self._validated_target()  # Recheck identity after awaited residency status.
         response = await self._client.chat(model, messages, **kwargs)
         self.raw.append({'kind': 'resident_injected_chat', 'model': model,
                          'messages': copy.deepcopy(messages), 'kwargs': copy.deepcopy(kwargs),
@@ -335,6 +392,7 @@ class ResidentInferenceAdapter:
 
     async def stream_events(self, model, messages, **kwargs):
         await self.ensure_only(model)
+        self._validated_target()  # Recheck identity after awaited residency status.
         record = {'kind': 'resident_injected_generation', 'model': model,
                   'messages': copy.deepcopy(messages), 'kwargs': copy.deepcopy(kwargs), 'response_events': []}
         self.raw.append(record)
@@ -438,6 +496,8 @@ def install_guard(state, output, *, inference_grant=None):
             if any(not inside(Path(os.fsdecode(value)).resolve(), allowed_writes) for value in args[:2]):
                 raise PermissionError('evaluation denies rename outside synthetic/output state')
     sys.addaudithook(audit)
+    global _ISOLATION_ROOT
+    _ISOLATION_ROOT = state.resolve()
     settings = state / '.omlx/settings.json'
     settings.parent.mkdir(parents=True)
     settings.write_text(json.dumps({'api_key': 'fixture-only', 'host': '127.0.0.1', 'port': 1}))
