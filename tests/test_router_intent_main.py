@@ -178,3 +178,20 @@ def test_actor_reports_router_model_instead_of_fast_default(endpoint, monkeypatc
     events = asyncio.run(request("Recap my email and texts"))
     assert next(e for e in events if e["type"] == "routed")["model"] == TARGET.model
     assert client.calls == ["status", "chat"] and len(calls) == 2
+
+
+@pytest.mark.parametrize("prompt", [
+    "Summarize recent text messages.",
+    "What did people text me?",
+    "Show my recent text summary.",
+])
+def test_message_read_reaches_actor_without_delivery_workflow(endpoint, prompt):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    client.outputs = [value(source("messages"))]
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert calls == [("summarize_messages", {})]
+    assert "Texts: you replied to Imani." in text(events)
+    assert "what to send" not in text(events) and "I couldn't tell" not in text(events)
+    assert store.latest_workflow(sid) is None
+    assert not any("workflow" in e["type"] for e in events)

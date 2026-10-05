@@ -51,11 +51,35 @@ _LEADING_EMAIL_NOUN = re.compile(
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 
+# Singular "text"/"message" can name a source or an earlier communication.
+# Mask only the noun/predicate span; a later delivery clause must remain visible.
+_MESSAGE_NOUN_USE = re.compile(
+    r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+"
+    r"(?:(?:new|unread|recent|latest|old)\s+)*(?:text(?:\s+messages?)?|message)\b|"
+    r"\b(?:on|in|of|from|about)\s+(?:text(?:\s+messages?)?|message)\b|"
+    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get)\s+"
+    r"(?:(?:my|the|your|our|any|all|new|unread|recent|latest|these|those|an?)\s+)*"
+    r"(?:text(?:\s+messages?)?|message)\b", re.I)
+_LEADING_MESSAGE_NOUN = re.compile(
+    r"^\s*(?:text|message)\s+(?:summary|summaries|digest|recap|history|thread|count|status)\b", re.I)
+_HISTORICAL_MESSAGE_QUESTION = re.compile(
+    r"\b(?:what|which|who)\s+(?:did|has|have|had|was|were)\b"
+    r"(?:(?!\b(?:and|but|then|also|now)\b)[^,;.!?])*?\b(?P<verb>text|message)\b", re.I)
+
+
 def outbound_verb(text: str) -> bool:
-    """True when the text asks to deliver something, not merely names email."""
+    """True for delivery/compose verbs, excluding source nouns and past reads."""
     masked = _EMAIL_NOUN_USE.sub(" ", text)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
+    masked = _MESSAGE_NOUN_USE.sub(" ", masked)
+    if _LEADING_MESSAGE_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
+        masked = _LEADING_MESSAGE_NOUN.sub(" ", masked, count=1)
+    def mask_past_predicate(match: re.Match[str]) -> str:
+        begin, end = match.span("verb")
+        relative = begin - match.start()
+        return match.group(0)[:relative] + " " * (end - begin) + match.group(0)[relative + end - begin:]
+    masked = _HISTORICAL_MESSAGE_QUESTION.sub(mask_past_predicate, masked)
     return bool(_OUTBOUND.search(masked))
 
 
