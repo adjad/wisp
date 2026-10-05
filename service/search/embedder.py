@@ -19,6 +19,7 @@ from collections import OrderedDict
 import httpx
 
 from service.config.quarantine import guard_client
+from service.inference import engine_epoch
 
 from service.config import models_config, omlx_api_key, omlx_base_url
 from service.search.chunker import Chunk
@@ -84,6 +85,8 @@ async def _embed(texts: list[str], *, timeout: float, target: Target | None = No
         return []
     target = target or embedding_target()
     url = target.endpoint.base_url + "/v1/embeddings"
+    # The engine loads the embedder on demand; a readiness proof is stale after.
+    engine_epoch.bump()
     try:
         key = target.endpoint.api_key()
     except EndpointConfigurationError as exc:

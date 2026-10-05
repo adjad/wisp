@@ -20,6 +20,7 @@ from dataclasses import dataclass
 import httpx
 
 from service.config.quarantine import guard_client
+from service.inference import engine_epoch
 
 from service.config import models_config, omlx_api_key, omlx_base_url
 from service.router.semantic import _PINNED, _allowed, _docs, _gate_open, gated_tool_allowed
@@ -156,6 +157,7 @@ def lexical_candidates(text: str, *, writing: bool, k: int = 20,
 
 async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
     """Best-effort enforcement of the two-model ceiling before reranking."""
+    engine_epoch.bump()
     try:
         status = await client.get("/v1/models/status", headers=headers)
         if status.status_code != 200:
@@ -181,6 +183,7 @@ async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) ->
 async def _rank_one(client: httpx.AsyncClient, headers: dict[str, str], query: str,
                     names: list[str], *, top_n: int, model: str | None = None) -> list[tuple[str, float]]:
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
+    engine_epoch.bump()      # the engine loads the reranker on demand
     try:
         response = await client.post(
             "/v1/rerank", headers=headers,

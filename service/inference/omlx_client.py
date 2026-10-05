@@ -14,6 +14,7 @@ import httpx
 from service.config.quarantine import guard_client
 
 from service import idle
+from service.inference import engine_epoch
 from service.config import omlx_api_key, omlx_base_url
 from service.config.endpoints import EndpointConfigurationError, Target, endpoint, is_loopback
 
@@ -185,6 +186,8 @@ class OMLXClient:
         await self._client.aclose()
 
     def invalidate_connections(self):
+        # Residency is unknown after a connection reset (engine restart path).
+        engine_epoch.bump()
         self._credential_transport.invalidate()
 
     def _check_response(self, response):
@@ -486,12 +489,14 @@ class OMLXClient:
     async def unload(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be unloaded")
+        engine_epoch.bump()
         r = await self._client.post(f"/v1/models/{model}/unload")
         r.raise_for_status()
 
     async def load(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be loaded")
+        engine_epoch.bump()
         r = await self._client.post(f"/v1/models/{model}/load")
         r.raise_for_status()
 
@@ -639,6 +644,9 @@ class OMLXClient:
         model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
         payload = self._payload(model, messages, tools, tool_choice,
                                 temperature, max_tokens, stream=False, **extra)
+        # A generation can make the engine load its model, so it counts as
+        # engine activity for every readiness proof (see engine_epoch).
+        engine_epoch.bump()
         idle.begin(self.activity_key(model))
         try:
             if self.managed:
@@ -720,6 +728,7 @@ class OMLXClient:
         output_size = 0
         metadata_size = 0
         output_limit, wire_limit = self._remote_limits(max_tokens)
+        engine_epoch.bump()
         idle.begin(self.activity_key(model))
         try:
             headers = None if self.managed else {"Accept-Encoding": "identity"}

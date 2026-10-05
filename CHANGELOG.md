@@ -10,6 +10,7 @@ All notable changes to Wisp are documented here.
 - Fixed email write requests offering the file "move to Trash" tool, which can't delete email.
 - Fixed "draft a reply … but don't send it" and similar requests losing the draft tool along with the send tools, so Wisp could neither draft nor send. Send, reply and forward stay unavailable for these requests, and for "prepare an email…, I'll send it myself". Words like "I'll send it tonight" inside the message itself do not count, and "don't reply to Sam" now rules out only a reply.
 - Fixed common typos and shorthand ("tmrw", "calender", "txt", "remeber") sending a request to a broad, generic tool list. When no routing rule matches, Wisp checks which rule a corrected copy would match and uses only that tool choice. Recipients, message text and other details always come from what the user typed, and addresses, file names, paths, quoted text and questions about a word are never corrected.
+- Reduced repeated local-engine readiness checks. A turn now confirms the engine and the loaded model with one status read instead of a health read followed by a status read before every step. Wisp still checks again after a model change, an error, a tool or retrieval step that used the engine, or ten seconds without a check, and model swaps still show their "Loading…" progress.
 
 ## [1.2.0] - Pending qualification
 
