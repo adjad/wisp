@@ -40,21 +40,35 @@ PROBES = frozenset({"denied_loopback", "denied_process", "denied_private_canary"
                     "denied_compiler", "denied_owned_script", "denied_copied_executable"})
 
 
-def profile(scratch, python, port, canary):
+def select_native_git():
+    # Resolve once in the parent; the child must execute this same native tool
+    # rather than Apple's /usr/bin/git launcher and its Xcode selection helpers.
+    selected = subprocess.run(["/usr/bin/xcrun", "--find", "git"], check=True,
+                              env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10).stdout.strip()
+    native_git = Path(selected)
+    if (not native_git.is_absolute() or not str(native_git).endswith("/usr/bin/git")
+            or not native_git.is_file() or not os.access(native_git, os.X_OK)
+            or native_git.resolve() == Path("/usr/bin/git")):
+        raise ValueError("benchmark_fixture_git_invalid")
+    return native_git.resolve()
+
+
+def fixture_environment(scratch, native_git):
+    from scripts.run_simulation_qa import _child_environment
+    env = _child_environment(scratch)
+    env["PATH"] = str(native_git.parent) + os.pathsep + env["PATH"]
+    if shutil.which("git", path=env["PATH"]) != str(native_git):
+        raise ValueError("benchmark_fixture_git_resolution_mismatch")
+    return env
+
+
+def profile(scratch, python, port, canary, native_git):
     if type(port) is not int or not 1024 < port < 65536 or port == 8000:
         raise ValueError("benchmark_fixture_port_invalid")
     def q(path): return json.dumps(str(Path(path).resolve()))
     python = Path(python)
     runtime = python.resolve().parent.parent
-    executables = {python.resolve(), Path("/usr/bin/git")}
-    # Apple's Git shim delegates to the selected developer tool. Resolve it in
-    # the parent with a fixed environment; grant that exact executable only.
-    selected = subprocess.run(["/usr/bin/xcrun", "--find", "git"], check=True,
-                              env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10).stdout.strip()
-    native_git = Path(selected)
-    if not native_git.is_absolute() or not str(native_git).endswith("/usr/bin/git") or not native_git.is_file():
-        raise ValueError("benchmark_fixture_git_invalid")
-    executables.add(native_git.resolve())
+    executables = {python.resolve(), native_git}
     # python.org framework runtimes may delegate to this exact native launcher.
     launcher = runtime / "Resources/Python.app/Contents/MacOS/Python"
     if launcher.is_file():
@@ -118,7 +132,7 @@ def run_gate(expected_sha, *, allow_dirty=False):
         raise ValueError("benchmark_fixture_source_not_exact")
     started = time.monotonic()
     sys.path.insert(0, str(pipeline.ROOT))
-    from scripts.run_simulation_qa import _child_environment
+    native_git = select_native_git()
     # Held throughout all child tests; socket duplicates preserve the parent's reservation.
     with socket.socket() as listener, socket.socket() as denied:
         listener.bind(("127.0.0.1", 0))
@@ -127,10 +141,10 @@ def run_gate(expected_sha, *, allow_dirty=False):
         port = listener.getsockname()[1]
         with tempfile.TemporaryDirectory(prefix="wisp-benchmark-contracts-") as temporary:
             scratch = Path(temporary).resolve()
-            env = _child_environment(scratch)
+            env = fixture_environment(scratch, native_git)
             canary = scratch / "private-canary"
             canary.write_bytes(b"synthetic private state")
-            policy = profile(scratch, Path(sys.executable), port, canary)
+            policy = profile(scratch, Path(sys.executable), port, canary, native_git)
             script = scratch / "owned-script"
             script.write_text("#!/bin/sh\nexit 0\n")
             script.chmod(0o700)

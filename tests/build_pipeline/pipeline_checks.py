@@ -251,8 +251,23 @@ class PipelineTests(unittest.TestCase):
 
     def test_benchmark_fixture_profile_preserves_generic_network_and_home_denials(self):
         import release_performance_gate as gate
-        with self.synthetic_profile_metadata():
-            policy = gate.profile(self.root, Path(sys.executable), 51010, self.root / "canary")
+        native_git = self.root / "developer/usr/bin/git"
+        native_git.parent.mkdir(parents=True)
+        native_git.write_text("synthetic native git")
+        native_git.chmod(0o700)
+        native_git = native_git.resolve()
+        with patch.object(gate.subprocess, "run", return_value=Namespace(stdout=str(native_git))) as selection:
+            selected = gate.select_native_git()
+            with self.synthetic_profile_metadata():
+                policy = gate.profile(self.root, Path(sys.executable), 51010, self.root / "canary", selected)
+            with patch.object(sys, "path", [str(ROOT), *sys.path]):
+                env = gate.fixture_environment(self.root, selected)
+        selection.assert_called_once_with(["/usr/bin/xcrun", "--find", "git"], check=True,
+            env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10)
+        self.assertEqual(selected, native_git)
+        self.assertEqual(gate.shutil.which("git", path=env["PATH"]), str(selected))
+        self.assertTrue(env["PATH"].startswith(str(selected.parent) + os.pathsep))
+        self.assertNotIn("DEVELOPER_DIR", env)
         self.assertIn("(deny network*)", policy)
         self.assertIn('(allow network-outbound (remote ip "localhost:51010"))', policy)
         self.assertIn('(allow network-bind network-inbound (local ip "localhost:51010"))', policy)
@@ -261,11 +276,16 @@ class PipelineTests(unittest.TestCase):
         self.assertNotIn("subpath", execution)
         for prohibited in ("/bin/sh", "/bin/bash", "/usr/bin/env", "/bin/rm", "/usr/bin/swiftc", str(self.root)):
             self.assertNotIn('(literal ' + json.dumps(prohibited) + ')', execution)
-        self.assertIn('(literal "/usr/bin/git")', execution)
+        self.assertNotIn('(literal "/usr/bin/git")', execution)
+        self.assertIn('(literal ' + json.dumps(str(selected)) + ')', execution)
+        self.assertNotIn("xcodebuild", execution)
         self.assertIn('(literal ' + json.dumps(str(Path(sys.executable).resolve())) + ')', execution)
         self.assertNotIn('(subpath ' + json.dumps(str(p.STATE.resolve())) + ')', policy)
         for invalid in (8000, 0, "51010", True):
-            with self.assertRaises(ValueError): gate.profile(self.root, Path(sys.executable), invalid, self.root / "canary")
+            with self.assertRaises(ValueError): gate.profile(self.root, Path(sys.executable), invalid, self.root / "canary", selected)
+        with patch.object(gate.subprocess, "run", return_value=Namespace(stdout="/usr/bin/git")):
+            with self.assertRaisesRegex(ValueError, "benchmark_fixture_git_invalid"):
+                gate.select_native_git()
 
     def test_native_fixture_timeout_closes_descendant_descriptors(self):
         import select
