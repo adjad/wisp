@@ -62,9 +62,14 @@ and records the checkout HEAD, Python version, model/checkpoint nulls, metric
 numerators/denominators, and each family’s results. Zero denominators are N/A.
 Source/menu/first-call/end-to-end metrics have different denominators; compare
 them separately. Menu is N/A when a deterministic path needs no model menu.
-First-call N/A means no call was requested. Exact argument comparison preserves
-types, every non-default constraint, and literal spelling. Date equivalence is
-accepted only when the actual runtime resolver produces identical epoch bounds.
+First-call N/A means no call was requested. Argument normalization retains
+non-default constraints and literal spelling. The frozen legacy `exact_arguments`
+and `first_call` comparisons use Python equality: Boolean `true` and float `1.0`
+can compare equal to integer `1`. That limitation also carries into the original
+`end_to_end`; these compatibility scores do not prove numeric JSON type fidelity.
+The supplemental `request_argument` and `guarded_end_to_end` reject Boolean/float
+values against integer expectations. Date equivalence is accepted only when the
+actual runtime resolver produces identical epoch bounds.
 
 The checked-in `baseline-scripted/` contains the development control raw output
 compressed losslessly, its original manifest, and hashes of both representations.
@@ -80,8 +85,9 @@ unchanged. Added `request_argument` permits exactly one implementation safeguard
 `view_messages(strict_match=True)` when the raw gold call omitted that field,
 the compared tool registration advertises a Boolean guard accepting true, and
 the query and every other argument match under the existing runtime-default/date
-normalization. JSON value types remain distinct, including Boolean/integer and
-integer/float. This rule applies only to `view_messages`; it does not normalize
+normalization. In these supplemental comparisons, JSON value types remain
+distinct, including Boolean/integer and integer/float. This rule applies only to
+`view_messages`; it does not normalize
 `view_emails` or arbitrary tool flags. Explicit gold guard values remain
 binding. Query-free reads, wrong literals/types/scopes/counts, and extra arguments
 cannot use the amendment.
