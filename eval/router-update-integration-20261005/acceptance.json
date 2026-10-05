@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "created_at": "2026-10-05T19:02:45.709569+00:00",
+  "purpose": "Prospective acceptance contract; recorded before integrated candidate or held-out comparisons.",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "corpus": {
+    "dev": {
+      "cases": 80,
+      "families": 10,
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+    },
+    "heldout": {
+      "cases": 320,
+      "families": 40,
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+    },
+    "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
+  },
+  "measurement_classes": {
+    "scripted-production-path": "Real application orchestration and deterministic compiler with scripted model responses and fixture-only tools. Contract/integration evidence, not model routing accuracy.",
+    "resident-inference-production-path": "Actual already-resident Ling inference and real application orchestration; all tool execution synthetic. Requires recorded serialized resource window.",
+    "training": "Independent synthetic demonstrations, development selection, reloadable checkpoint smoke gate; no old or new held-out prompt/failure-derived training."
+  },
+  "activation_targets": {
+    "supported_read_exact_correctness": 0.95,
+    "unauthorized_or_excluded_tool_execution": 0,
+    "critical_fabricated_counts_receipts_or_hidden_coverage_gaps": 0,
+    "existing_regressions": "No new failures in complete isolated Python gate.",
+    "latency": "Preserve exact-path model-call count (zero). Flexible planner has 2.5 second default total deadline, at most one repair; report p50/p95, timeout and clarification rates separately. Compare warmed latency to refreshed production baseline; do not equate a fast abstention with success.",
+    "evidence": "Exact final SHA mechanical checks, same-head configured CI, independent release audit, scoped independent synthetic QA.",
+    "meaning": "Targets are not achieved results. An unqualified candidate remains disabled; code-only tests cannot establish activation readiness."
+  },
+  "report_metrics": [
+    "source correctness",
+    "operation correctness",
+    "exact effective arguments including explicit dates and defaults",
+    "excluded/unauthorized offered vs executed tools separately",
+    "literal fidelity",
+    "correct clarifications for unsupported/ambiguous constraints",
+    "false abstention on supported reads",
+    "grounded answer facts and direction",
+    "coverage and source attribution",
+    "repeat/recovery behavior",
+    "cold/warm p50/p95 latency",
+    "model call and repair counts",
+    "process and device memory with attribution limits"
+  ],
+  "comparison_rules": [
+    "Freeze integrated candidate and model/runtime identities before opening held-out results.",
+    "Do not tune candidate or training data using held-out prompts, outputs or failure-derived variants. Later fixes require a new independently authored hold-out for fresh generalization claims.",
+    "Run candidate comparisons under matched clocks, timezone, source fixtures and bounded concurrency.",
+    "Distinguish model inference, deterministic rendering and simulated tool execution in every result.",
+    "Do not treat old prototype scores or Claude menu/reachability scores as production exact-call accuracy.",
+    "No production configuration changes, native tools, outbound actions, personal logs, model unload/reload or deployment."
+  ],
+  "resource_status": "No inference/training reservation yet; offline development only."
+}

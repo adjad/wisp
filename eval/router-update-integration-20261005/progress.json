@@ -1,6 +1,6 @@
 {
   "status": "implementation_in_progress",
-  "updated_at": "2026-10-05T18:53:22.410357+00:00",
+  "updated_at": "2026-10-05T19:03:23.499783+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -24,7 +24,12 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-overviews/MOE_Project",
       "branch": "codex/router-overviews",
-      "status": "implementing"
+      "status": "implementing",
+      "validation_reported": {
+        "focused_tests": 232,
+        "message_tests": 1435,
+        "status": "Pass; additional two legacy count expectations under recorded ownership."
+      }
     }
   },
   "baseline_validation": {
@@ -36,7 +41,7 @@
     "model_inference": false,
     "real_tool_execution": false
   },
-  "model_measurement_window": "pending Orchestrator coordination; no model inference/training started",
+  "model_measurement_window": "Blocked on external coordination: Claude performance coordinator session-limited, send disabled; no quiescence/window acknowledgment. Current registry reports auto-resume at 3:01 PM Pacific. Do not infer availability from idle or rate limit.",
   "production_changed": false,
   "pending": [
     "core implementation and contracts",
@@ -47,5 +52,19 @@
     "training feasibility and isolated comparative experiment",
     "same-SHA mechanical/CI/release audit/synthetic specialist QA",
     "clean pushed integration PR"
-  ]
+  ],
+  "acceptance_contract": "eval/router-update-integration-20261005/acceptance.json",
+  "corpus_seal": {
+    "dev": {
+      "cases": 80,
+      "families": 10,
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+    },
+    "heldout": {
+      "cases": 320,
+      "families": 40,
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+    },
+    "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
+  }
 }
