@@ -220,9 +220,9 @@ _LOOKUP_CANONICAL = "(?:" + "|".join(lemma for _, lemma in _LOOKUP_LEXEMES) + ")
 _SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+(?:sources?|requests?))"
 _PRESENT = r"(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me|outline|compare|list|turn)"
 _ACTION = (
-    r"(?:send|share|forward|email|e-mail|text|message|draft|compose|schedule|set|add|create|"
+    r"(?:send|share|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
     r"delete|remove|move|open|close|launch|run|install|explain|write|debug|fix|remind|"
-    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn|reply|call|remember|cancel|update|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)"
+    r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn)"
 )
 _DELIVER = r"(?:send|shar(?:e|ing)|forward|e-?mail|text|message|draft)"
 _NEGATIVE = r"(?:don't|do not|not|never|stop|cancel|abort|skip|avoid|refrain from|without|with no|no)"
@@ -230,11 +230,22 @@ _PREFERENCE = r"i(?:'d|\s+would)?\s+prefer\s+not\s+to"
 _DELIVERY_PREDICATE = r"(?:send(?:ing)?|shar(?:e|ing)|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
 _REVOKE = r"(?:deny|denied|disallow(?:ed)?|revoke[ds]?|withdraw(?:n)?|withhold|withheld|forbid(?:den)?|prohibit(?:ed)?|rescind(?:ed)?)"
 _DENIED_STATE = r"(?:not\s+(?:allowed|authorized|permitted|granted)|" + _REVOKE + ")"
-_BOUNDARY = re.compile(
-    r"[;!?\n]+|\.(?=\s|$)|,|"
-    r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
-    r"\s+(?:and(?:\s+(?:then|afterwards?))?|plus|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
-    r")(?:" + _ACTION + "|" + _DELIVERY_PREDICATE + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)", re.I)
+# Read-literal validation must retain every established effect head without
+# changing the public request/provenance grammar. In public requests, words
+# such as "update" can govern presentation and "cancel" can revoke consent.
+_EFFECT_HEAD = "(?:" + _ACTION + r"|compose|reply|call|remember|cancel|update|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)"
+
+
+def _boundary_pattern(action: str) -> str:
+    return (
+        r"[;!?\n]+|\.(?=\s|$)|,|"
+        r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
+        r"\s+(?:and(?:\s+(?:then|afterwards?))?|plus|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
+        r")(?:" + action + "|" + _DELIVERY_PREDICATE + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)")
+
+
+_BOUNDARY = re.compile(_boundary_pattern(_ACTION), re.I)
+_EFFECT_BOUNDARY = re.compile(_boundary_pattern(_EFFECT_HEAD), re.I)
 _AMOUNT = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a few|several|a couple of|an?)"
 _UNIT = r"(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|hrs?|mins?)"
 _TIME = re.compile(
@@ -286,7 +297,7 @@ def _action_clause_head(text: str) -> re.Match[str] | None:
     Matching a head identifies a clause boundary, never tool permission.
     """
     return re.match(r"^\s*" + _POLITE + r"(?:(?P<negative>" + _NEGATIVE
-                    + r")\s+)?(?P<action>" + _ACTION + "|" + _DELIVERY_PREDICATE + r")\b", _unquoted(text), re.I)
+                    + r")\s+)?(?P<action>" + _EFFECT_HEAD + "|" + _DELIVERY_PREDICATE + r")\b", _unquoted(text), re.I)
 
 
 def _clauses(text: str) -> tuple[Clause, ...]:
