@@ -32,3 +32,15 @@ These are proposed release targets, not achieved measurements. Freeze detailed m
 ## Evidence and current state
 
 `eval/router-update-integration-20261005/progress.json` records current workstreams, baseline checks and remaining work. Initial baseline: 2,252 tests plus 1,504 subtests passed on the recorded production base; no local-model inference or real tool execution. The original evaluation branch and raw results remain immutable. Native/user-data/outbound tools, production settings, installed app and live model residency are not changed by the test harness.
+
+## Implemented behavior and controlled activation
+
+The implementation uses the existing local `router` role and an already-resident Ling model. The planner interprets a versioned read object; local code validates sources, dates, literals, unsupported filters, and contextual corrections before compiling registered calls. Exact complete shortcuts continue without model inference. Durable action workflows remain the action path. Invalid interpretation gets at most one repair within a bounded total deadline, then an honest clarification.
+
+Configuration and supported tool limits are documented in `service/router/intent/README.md`. No `intent_router` configuration is installed by this branch, so flexible planning remains off. The opt-in has a domain allowlist and a kill switch. This implementation does not change production settings or deploy the app.
+
+Source rendering is deterministic. The agenda is grouped by day; emails fold redundant subject rows while retaining message counts; messages retain explicit sender/recipient direction. Multi-source receipts retain source/scope labels and partial failures. Compiled message queries use `strict_match=True` so a miss cannot broaden into unrelated cached messages.
+
+`eval/router-update-integration-20261005/OVERVIEW_BEFORE_AFTER.md` contains synthetic presentation examples. `TRAINING_FEASIBILITY.md` records the separate read-only training review. The installed checkpoint and current training runtime require compatibility work before an adapter smoke run; no weight update or accuracy uplift has been measured. Actual model comparisons additionally require a coordinated resource window with the existing performance owner.
+
+The production-path harness separates scripted integration checks from real inference. Its sealed corpus and original exact-call scores stay immutable. Supplemental guard metrics distinguish an added query-scope safeguard from the user-visible query/date/count arguments. Builders have not used held-out prompts or results to tune the implementation.

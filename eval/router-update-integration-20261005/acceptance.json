@@ -53,5 +53,19 @@
     "Do not treat old prototype scores or Claude menu/reachability scores as production exact-call accuracy.",
     "No production configuration changes, native tools, outbound actions, personal logs, model unload/reload or deployment."
   ],
-  "resource_status": "No inference/training reservation yet; offline development only."
+  "resource_status": "No inference/training reservation yet; offline development only.",
+  "supplemental_guard_contract": {
+    "recorded_at": "2026-10-05T19:26:03.680616+00:00",
+    "before_candidate_corpus_comparison": true,
+    "original_metrics_unchanged": [
+      "exact_arguments",
+      "first_call",
+      "end_to_end"
+    ],
+    "request_argument": "Permit an additional registered view_messages strict_match=True only when sealed gold omits it, literal nonempty query matches exactly, and all other effective arguments match with types preserved. Explicit gold guard values remain authoritative.",
+    "query_scope_guard": "Separate required metric for applicable query-bearing records requests; missing/false/nonboolean/unsupported guard cannot receive success. Report applicability explicitly.",
+    "guarded_end_to_end": "Combine request_argument with applicable query_scope_guard and original source/exclusion/effect/runtime/fact/coverage/recovery/completion checks. Preserve original end_to_end separately.",
+    "runtime_evidence": "Argument scoring cannot prove execution behavior. Separate synthetic actual view_messages tests cover matching and no-match paths, exact limit, date precedence and unavailable source.",
+    "path_metadata": "Finite intent_disposition describes routing path only; it does not prove model inference occurred."
+  }
 }
