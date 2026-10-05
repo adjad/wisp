@@ -7229,7 +7229,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                                       _classify_web_request(offer.action_text))
             if decision.reminder_action or (
                     "add_reminder" in (decision.tool_subset or ())
-                    and re.search(r"\bremind", offer.action_text, re.I)):
+                    and re.search(r"\bremind", last_assistant or offer.action_text, re.I)):
                 # A bare assent never writes a reminder from an offer, with or
                 # without history: the offer may be stale, unrelated, already
                 # declined (the study-slot contracts) or relative ("an hour

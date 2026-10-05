@@ -13,7 +13,7 @@ from pathlib import Path
 
 from scripts.score_routing_quality import DEFAULT_CORPUS, RATCHET, run
 
-FLOOR = 296  # passing cases at the commit that introduced this gate
+FLOOR = 370  # passing cases (439-case corpus) after the PR #159 review repairs
 
 
 def test_routing_quality_corpus_never_regresses():
