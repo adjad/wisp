@@ -558,7 +558,7 @@ final class OverlayModel: ObservableObject {
             "turn_count": turns.count,
             "turns": turns.map(turnJSON),
         ]
-        guard let jsonData = try? JSONSerialization.data(
+        guard JSONSerialization.isValidJSONObject(payload), let jsonData = try? JSONSerialization.data(
             withJSONObject: payload, options: [.prettyPrinted, .sortedKeys]) else { return nil }
 
         // Human-readable companion — same data, laid out to actually read.
@@ -857,7 +857,9 @@ final class OverlayModel: ObservableObject {
         guard let data = s.data(using: .utf8),
               let obj = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         else { return s }
-        return obj
+        // "-1e999" parses to -inf, which JSONSerialization cannot write back and
+        // reports as an uncatchable exception; neutralize before it is exported.
+        return DiagnosticReport.finiteJSON(obj)
     }
 
     // Throttle: at most one `answer` mutation (and the MarkdownView re-parse +

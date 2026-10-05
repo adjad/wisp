@@ -18,13 +18,22 @@ their source commit when available. Development metadata never invents a commit.
 ## Privacy and retention
 
 The service keeps only metadata in `~/.moe/diagnostics` (or
-`$WISP_HOME/diagnostics`). It retains at most 100 traces, removes traces older
-than seven days during subsequent writes, and retains at most 128 events per
-trace. Frequent Today refreshes count toward the same limit, so history may
-cover substantially less than seven days. The files and directory are private
-to the current user. Delete the directory to clear the history while Wisp is
-stopped; it is recreated on the next operation. There is no diagnostic HTTP
-reader, network reporting service, or account setup.
+`$WISP_HOME/diagnostics`), at most 128 events per trace. Retention is applied
+per kind of trace, on each write, so background polling can never push a chat
+turn out of the history:
+
+- chat turns and native operation receipts: the newest 100;
+- Today refreshes, source syncs and the daily brief: the newest 20 of each kind.
+  Today refreshes about every 30 seconds while its window is open, so that is
+  roughly the last 10 minutes of Today plans, enough to explain the plan on
+  screen;
+- any trace older than seven days is removed on a later write, whichever cap
+  applies. A trace that is still being written always keeps its own journal.
+
+The journal therefore holds at most 160 files. The files and directory are
+private to the current user. Delete the directory to clear the history while
+Wisp is stopped; it is recreated on the next operation. There is no diagnostic
+HTTP reader, network reporting service, or account setup.
 
 Metadata journals exclude prompts, titles, messages, tool arguments/results,
 route explanations, raw model I/O, arbitrary error strings and source reasons.
@@ -36,10 +45,30 @@ not interrupt the request.
 Selecting it includes private content for that specific operation. Chat reports
 can include the prompt, answer, errors, tool evidence and model I/O already
 captured in memory; raw model I/O requires enabling Debug Mode before the turn.
-Known credential keys and common credential patterns are scrubbed before the
-preview and save. This cannot recognize every possible secret or private fact;
-review the preview before sharing. The existing **Export Chat Debug Log…** is a
-separate detailed conversation export.
+Automatic redaction is best effort and the preview is the final authority:
+read it before you save or share. Wisp redacts, wherever they appear:
+
+- values of keys whose name contains password, passwd, passphrase, secret,
+  token, authorization, cookie, credential, api key, access/private/signing key,
+  session id, bearer or oauth (matched as a substring, ignoring case, separators
+  and invisible characters, so `x-api-key` and `openrouterApiKey` count; counters
+  such as `max_tokens` are kept), and secrets used as a dictionary key;
+- `label: value`, `label=value` and `"label": "value"` for the same labels in
+  prose or embedded JSON, `password is …`, `Authorization`/`Cookie` headers
+  including Basic and Bearer schemes, and URL passwords;
+- AWS access keys, Google API keys, Slack, GitHub and Stripe tokens, `sk-` style
+  keys (also upper case, full-width and `%2D`-encoded), JWTs and PEM key blocks;
+- labels split by whitespace, newlines or zero-width characters.
+
+It cannot recognise every secret or private fact. Known gaps: a secret with no
+label and no recognisable format, multi-word passphrases (only the first word
+after `passphrase is` is removed), secrets in images or attachments, and personal
+details such as names, addresses or message text. Text that is redacted is
+rewritten without invisible characters and with compatibility normalization.
+A saved report is created private to your user (mode 600) from its first byte
+and replaced atomically; if that cannot be done, saving fails and no file is
+left behind. The existing **Export Chat Debug Log…** is a separate detailed
+conversation export.
 
 To diagnose planning, enable **Capture planner details for a problem report**
 in Today before refreshing. Wisp requests the exact planner inputs, source
@@ -83,5 +112,7 @@ concurrent contexts, cancellation and unconsumed streams, approval correlation,
 source and native failure states, planner explanations, capture opt-in,
 credential scrubbing, native file reading and offline replay. They operate in
 isolated temporary state and never send communications or touch real native
-applications. The complete Simulation QA gate includes the new Python and
+applications. They also check that polling does not evict chat traces, that
+saved reports are created with private permissions from the first byte, and that
+non-finite numbers in captured content cannot crash report creation. The complete Simulation QA gate includes the new Python and
 native report contracts. Native app compilation verifies the report controls.

@@ -10,6 +10,7 @@ import contextvars
 import asyncio
 import json
 import hashlib
+import itertools
 from functools import lru_cache
 import os
 import re
@@ -23,11 +24,21 @@ from pathlib import Path
 
 from service.paths import MOE_DIR
 
+# Retention. Interactive traces (chat turns, native receipts) keep MAX_TRACES.
+# Kinds that fire on a timer or on every screen refresh get their own small cap,
+# so polling can never push a chat turn out of the journal.
 MAX_TRACES = 100
+MAX_BACKGROUND_TRACES = 20
+BACKGROUND_KINDS = frozenset({"today", "source_sync", "daily_brief"})
 MAX_EVENTS = 128
 MAX_AGE = 7 * 86400
 _current = contextvars.ContextVar("wisp_diagnostic_trace", default=None)
 _disk_lock = threading.Lock()
+# file name -> (kind, write sequence). Guarded by _disk_lock. The sequence breaks
+# ties between files whose modification times are equal.
+_known: dict[str, tuple[str, int]] = {}
+_sequence = itertools.count(1)
+_KIND_PATTERN = re.compile(rb'"kind": "([a-z_]{1,32})"')
 _labels = {"agent", "today", "daily_brief", "source_sync", "native",
            "started", "completed", "failed", "cancelled", "routed", "tool_call",
            "tool_result", "confirm", "approved", "denied", "error", "done",
@@ -67,6 +78,33 @@ def backend_build():
         return result
     except Exception:
         return {}
+
+
+def _is_builtin_tool(name):
+    """True only for a well-formed name of a registered built-in tool. Never raises."""
+    try:
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            return False
+        registry = getattr(sys.modules.get("service.tools.registry"), "REGISTRY", None)
+        tool = registry.get(name) if registry is not None else None
+        module = getattr(getattr(tool, "func", None), "__module__", None)
+        return isinstance(module, str) and module.startswith("service.tools.")
+    except Exception:
+        return False
+
+
+def _stored_kind(path):
+    """Kind recorded in a journal file, read from its first bytes. Never raises."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            head = os.read(fd, 512)
+        finally:
+            os.close(fd)
+        match = _KIND_PATTERN.search(head)
+        return match.group(1).decode() if match else "unknown"
+    except OSError:
+        return "unknown"
 
 
 def planner_fingerprint():
@@ -116,9 +154,7 @@ class Trace:
                 if isinstance(value, str) and value in choices:
                     item[key] = value
             name = fields.get("tool_name")
-            registry = getattr(sys.modules.get("service.tools.registry"), "REGISTRY", {})
-            tool = registry.get(name) if isinstance(name, str) else None
-            if tool and getattr(tool.func, "__module__", "").startswith("service.tools.") and re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name):
+            if _is_builtin_tool(name):
                 item["tool_name"] = name
             self.events.append(item)
             self._persist()
@@ -149,6 +185,31 @@ class Trace:
                 "client_terminal_event": self.terminal_event,
                 "events_dropped": self.dropped, "events": list(self.events)}
 
+    def _prune(self, directory):
+        """Apply the age rule and the per-pool caps. Caller holds _disk_lock."""
+        entries = []
+        for path in directory.glob("*.json"):
+            if not re.fullmatch(r"[a-f0-9]{32}\.json", path.name):
+                continue
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
+            if path.name not in _known:
+                _known[path.name] = (_stored_kind(path), 0)
+            entries.append((info.st_mtime_ns, _known[path.name][1], path, info.st_mtime))
+        for stale in set(_known) - {entry[2].name for entry in entries}:
+            del _known[stale]
+        kept = {}
+        for _, _, path, modified in sorted(entries, key=lambda entry: entry[:2], reverse=True):
+            kind = _known[path.name][0]
+            pool, cap = (kind, min(MAX_TRACES, MAX_BACKGROUND_TRACES)) if kind in BACKGROUND_KINDS else ("", MAX_TRACES)
+            kept[pool] = kept.get(pool, 0) + 1
+            # A trace still being written always keeps its own journal.
+            if path.name != self.id + ".json" and (kept[pool] > cap or self.clock() - modified > MAX_AGE):
+                path.unlink(missing_ok=True)
+                _known.pop(path.name, None)
+
     def _persist(self):
         try:
             with _disk_lock:
@@ -162,12 +223,9 @@ class Trace:
                     os.replace(temporary, directory / (self.id + ".json"))
                 finally:
                     temporary.unlink(missing_ok=True)
-                files = sorted((p for p in directory.glob("*.json")
-                                if re.fullmatch(r"[a-f0-9]{32}\.json", p.name)),
-                               key=lambda p: p.lstat().st_mtime, reverse=True)
-                for index, path in enumerate(files):
-                    if index >= MAX_TRACES or self.clock() - path.lstat().st_mtime > MAX_AGE:
-                        path.unlink(missing_ok=True)
+                name = self.id + ".json"
+                _known[name] = (self.kind, next(_sequence))
+                self._prune(directory)
         except Exception:
             # Diagnostics must not replace a failure, interrupt a turn, or send data.
             pass
