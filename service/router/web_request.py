@@ -651,7 +651,7 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
 _PERSONAL_INBOX_QUESTION = (
     r"(?:(?:are\s+there|is\s+there|do\s+i\s+have|did\s+i\s+get|have\s+i\s+got|got)\s+)?"
     r"any\s+(?:(?:new|unread|important|recent|urgent|more|other)\s+)*"
-    r"(?:e-?mails?|mail|texts?|messages?|imessages?|voicemails?|dms?)"
+    r"(?:e-?mails?|mail|texts?|messages?|imessages?|dms?)"
     r"(?:\s+(?:today|yet|tonight|so\s+far|this\s+(?:morning|afternoon|evening|week)|"
     r"for\s+me|since\s+(?:this\s+morning|yesterday|lunch)))?")
 

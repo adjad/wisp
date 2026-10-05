@@ -3203,7 +3203,7 @@ _DOMAIN_WRITE_TOOLS = {
     "messages": ["lookup_contact", "send_message", "draft_message"],
     "email": ["send_email", "reply_to_email", "draft_email",
               "mark_email_read", "archive_email", "flag_email",
-              "forward_email", "trash_file", "unsubscribe"],
+              "forward_email", "unsubscribe"],
     # clear_past_reminders belongs to the WRITE set, not the read one: it is
     # the only way to act on past-due items in bulk, and without it on the
     # calendar write route "delete all my old reminders" had nothing to call

@@ -418,3 +418,14 @@ def test_assent_to_a_timed_offer_without_history_does_not_force_a_write():
     assert "add_reminder" not in _reachable(decision)
     assert decision.force_first_tool != "add_reminder"
     assert decision.reminder_action == "clarify_time"
+
+
+# --- P3 (cheap) ---------------------------------------------------------------
+
+def test_email_write_menu_no_longer_carries_the_file_trash_tool():
+    assert "trash_file" not in R._DOMAIN_WRITE_TOOLS["email"]
+    assert "trash_file" not in _reachable(_route("email Sam that I'll be late"))
+
+
+def test_voicemail_question_is_not_claimed_as_a_mail_or_messages_inbox():
+    assert "view_messages" not in _reachable(_route("any new voicemails"))
