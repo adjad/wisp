@@ -4,6 +4,8 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - Pending qualification
+
 ### Added
 
 - Added local problem reports: a metadata-only request journal and a reviewable, never-uploaded report with an opt-in detailed section, redacted on a best-effort basis. Today refreshes and background kinds keep their own small retention so they cannot evict chat traces. See docs/DEBUGGING.md.
