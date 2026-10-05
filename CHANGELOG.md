@@ -4,6 +4,8 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.2.0] - Pending qualification
+
 ### Added
 
 - Added a local Codex/Claude coworker mailbox with correlated agent replies, acknowledgments and duplicate-delivery protection. All Git Worktrees share it without a background service or model polling.
