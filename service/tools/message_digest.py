@@ -493,15 +493,16 @@ def render(groups: list[Conversation], label: str, *, topics: dict[str, list[str
         return f"No substantive messages found for {plain(label, 160)}."
     heading = f"💬 **Messages digest — {plain(label, 260)}**"
     count = sum(g.count for g in groups)
-    output = [heading, f"{count} messages across {len(groups)} conversations.",
-              "Here's what stood out ✨"]
+    output = [heading, f"{count} message{'s' if count != 1 else ''} across "
+              f"{len(groups)} conversation{'s' if len(groups) != 1 else ''}."]
     shown = 0
+    has_partial = False
     for i, group in enumerate(groups[:MAX_CONVERSATIONS]):
         selected = (topics or {}).get(str(i), group.candidates()[:MAX_TOPICS])
-        section = [f"**{plain(group.label)}**"]
-        if selected:
-            section.append("Topics: " + ", ".join(plain(t, 24) for t in selected) + ".")
-        else:
+        section = [f"**{plain(group.label)}**" +
+                   (" · " + ", ".join(plain(t, 24) for t in selected) if selected else "")
+                   + (" [partial]" if group.truncated else "")]
+        if not selected:
             section.append("Brief acknowledgments/reactions; no substantive topic detected."
                            if group.reactions == group.count else "Conversation updates; no clear topic detected.")
         for category, entries in group.signals.items():
@@ -515,15 +516,17 @@ def render(groups: list[Conversation], label: str, *, topics: dict[str, list[str
                 excerpt = "; ".join(selected_entries)
                 extra = f"; +{len(unique) - 2} other signals" if len(unique) > 2 else ""
                 section.append(f"- {category}: {excerpt}{extra}.")
-        if group.truncated:
-            section.append("Long messages analyzed only in part.")
         section_text = "\n".join(section)
         # Reserve room for the explicit omission disclosure; never cut prose
         # mid-sentence or imply that omitted conversations had no activity.
-        if len("\n\n".join(output)) + len(section_text) + 180 > MAX_OUTPUT_CHARS:
+        if len("\n\n".join(output)) + len(section_text) + 280 > MAX_OUTPUT_CHARS:
             break
         output.append(section_text)
+        if group.truncated:
+            has_partial = True
         shown += 1
     if shown < len(groups):
         output.append(f"Showing {shown} of {len(groups)} conversations; {len(groups) - shown} more are included in the count. Ask for a narrower period for more detail.")
+    if has_partial:
+        output.append("Long messages analyzed only in part in conversations marked [partial].")
     return "\n\n".join(output)

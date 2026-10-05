@@ -152,7 +152,7 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         d = await route("i dont see it", last_assistant="Reminder set: repair", last_tools="add_reminder")
         self.assertEqual(d.tool_subset, ["get_upcoming"])  # verify, don't duplicate
 
-    async def test_calendar_read_explicitly_reports_zero_reminders(self):
+    async def test_calendar_read_separates_events_from_reminders(self):
         # This fixture has no running Swift app; supply the fresh native receipt
         # that get_upcoming now requires instead of reusing its prior ready flag.
         ready = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
@@ -161,8 +161,9 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
         with patch("service.assistant.sync_status.ensure_sources",
                    new_callable=AsyncMock, return_value=ready):
             text = await A.get_upcoming(days=2)
-        self.assertIn("Calendar events: 1; Wisp/Apple reminders: 0", text)
-        self.assertIn("[Calendar event]", text)
+        self.assertIn("1 calendar event", text.splitlines()[0])
+        self.assertIn("Calendar events\n", text)
+        self.assertNotIn("  Reminders\n", text)
 
     async def test_past_date_cannot_count_as_success(self):
         result = await A.add_reminder("repair", "2000-01-01T12:30")

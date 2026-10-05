@@ -12,6 +12,14 @@ from service.tools import email_tools as E
 from service.tools import email_extras as X
 
 
+def _headline_counts(output):
+    """Represented messages and sender groups in the compact headline."""
+    import re
+    match = re.search(r"^(\d+) emails?[^\n]* · (\d+) sender groups?$", output, re.M)
+    assert match, output
+    return tuple(map(int, match.groups()))
+
+
 def digest(lines: list[str], label: str = "your recent inbox") -> str:
     return asyncio.run(E._summarize(lines, label))
 
@@ -25,7 +33,7 @@ def test_legacy_rows_without_addresses_do_not_group_on_display_name():
         "[personal@example.com] University | Course registration opens Monday",
         "[school@example.edu] University | Assignment posted",
     ])
-    assert "represented 2 messages from 2 sender notes" in output
+    assert _headline_counts(output) == (2, 2)
     # No address, no proof they are the same sender: never merged, in any section.
     assert output.count("University (address unavailable)") == 2
 
@@ -40,8 +48,8 @@ def test_subject_urgency_is_labeled_as_a_subject_claim():
 def test_large_digest_is_bounded_but_discloses_hidden_senders():
     lines = [f"[mail] Sender {i} | General update {i}" for i in range(20)]
     output = digest(lines)
-    assert "represented 12 messages from 12 sender notes" in output
-    assert "truncated 8 messages" in output
+    assert _headline_counts(output) == (12, 12)
+    assert "8 more sender addresses (8 emails) omitted" in output
     assert "8 more sender addresses" in output
     assert output.count("Sender ") == 12
 
@@ -92,10 +100,11 @@ def test_identity_dedup_and_cross_account_grouping():
     parsed = E._parse_header_records(rows)
     assert len(parsed) == 4
     output = E.sender_digest(parsed, "fixture")
-    assert "represented 4 messages from 2 sender notes" in output
-    # Messages are listed individually, each tagged with its account; one display
-    # name fronting two addresses shows the addresses in full.
-    assert output.count("**Nina** · nina@example.test") == 3
+    assert _headline_counts(output) == (4, 2)
+    # Identical subject lines fold within an account without losing the count;
+    # one display name fronting two addresses shows the addresses in full.
+    assert output.count("**Nina** · nina@example.test") == 2
+    assert "(+1 more from this sender)" in output
     assert output.count("**Nina** · other@example.test") == 1
     assert "Project update”" in output
     assert "· Personal" in output and "· School" in output
@@ -112,7 +121,7 @@ def test_explicit_account_scope_does_not_count_other_account(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today", account="School"))
-    assert "Scanned 1 header; represented 1 message" in output
+    assert _headline_counts(output)[0] == 1
     assert "School update" in output
     assert "Personal update" not in output
 
@@ -125,7 +134,7 @@ def test_missing_identity_preserves_distinct_same_subject_rows():
         "101 | U | Personal | Nina | Update",
     ]))
     assert len(rows) == 4
-    assert "from 3 sender notes" in E.sender_digest(rows, "fixture")
+    assert _headline_counts(E.sender_digest(rows, "fixture"))[1] == 3
 
 
 def test_no_id_h2_same_second_preserves_multiplicity_across_snapshots():
@@ -136,7 +145,7 @@ def test_no_id_h2_same_second_preserves_multiplicity_across_snapshots():
     merged = E._unique_records(recent + history)
     assert len(merged) == 2
     digest_text = E.sender_digest(merged, "fixture")
-    assert "represented 2 messages from 1 sender note" in digest_text
+    assert _headline_counts(digest_text) == (2, 1)
     assert "lack stable message identity" in digest_text
 
 
@@ -161,7 +170,7 @@ def test_reader_switch_matches_visible_overlap_within_multiplicity(monkeypatch):
     monkeypatch.setattr(E, "_history", "\n".join(history))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in output
+    assert _headline_counts(output) == (2, 1)
     assert "different Mail readers were matched" in output
 
 
@@ -175,13 +184,13 @@ def test_reader_switch_keeps_conflicting_rfc_message_ids(monkeypatch):
         "<second>", "Update", native_id="db:12"))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in output
+    assert _headline_counts(output) == (2, 1)
     assert "different Mail readers were matched" not in output
     monkeypatch.setattr(E, "_history", h(
         now, "Personal", "different-account", "Nina", "nina@example.test",
         "<second>", "Update", native_id="db:12"))
     differing_accounts = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in differing_accounts
+    assert _headline_counts(differing_accounts) == (2, 1)
     assert "represented count may include duplicates" not in differing_accounts
 
 
@@ -195,7 +204,7 @@ def test_reader_switch_uses_rfc_id_across_account_alias_and_read_change(monkeypa
         "<same>", "Update", unread="U", native_id="db:12"))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 1 message from 1 sender note" in output
+    assert _headline_counts(output) == (1, 1)
 
 
 def test_same_label_different_accounts_keep_possible_copies(monkeypatch):
@@ -208,7 +217,7 @@ def test_same_label_different_accounts_keep_possible_copies(monkeypatch):
         "<same>", "Update", unread="U", native_id="db:12"))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in output
+    assert _headline_counts(output) == (2, 1)
     assert "represented count may include duplicates" in output
     monkeypatch.setattr(E, "_headers", h(
         now, "Gmail", "mail-account", "Nina", "nina@example.test",
@@ -217,7 +226,7 @@ def test_same_label_different_accounts_keep_possible_copies(monkeypatch):
         now, "Gmail", "db-account", "Nina", "nina@example.test",
         "", "Update", unread="U", native_id="db:12"))
     no_rfc_id = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in no_rfc_id
+    assert _headline_counts(no_rfc_id) == (2, 1)
     assert "represented count may include duplicates" in no_rfc_id
 
 
@@ -231,7 +240,7 @@ def test_same_rfc_id_in_different_labeled_accounts_remains_distinct(monkeypatch)
         "<same>", "Update", native_id="db:12"))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "represented 2 messages from 1 sender note" in output
+    assert _headline_counts(output) == (2, 1)
 
 
 def test_message_and_native_identity_form_one_duplicate_chain():
@@ -287,9 +296,9 @@ def test_period_coverage_and_truncation(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_recent(count=10))
-    assert "Scanned 25 headers; represented 10 messages" in output
-    assert "truncated 15 messages" in output
-    assert "Actual dates:" in output
+    assert _headline_counts(output)[0] == 10
+    assert "15 matching emails omitted from the overview" in output
+    assert "Header dates:" in output
 
 
 def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
@@ -300,11 +309,11 @@ def test_recent_cap_discloses_unknown_messages_beyond_cache(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_recent(count=200))
-    assert "Scanned 200 cached headers" in output
-    assert "truncated 0 known messages" in output
-    assert "total truncation is unknown" in output
+    assert _headline_counts(output)[0] == 200
+    assert "matching emails omitted from the overview" not in output
+    assert "total coverage is unknown" in output
     today = asyncio.run(E.summarize_inbox_for_day("today"))
-    assert "total truncation is unknown" in today
+    assert "total coverage is unknown" in today
 
 
 def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypatch):
@@ -317,15 +326,15 @@ def test_empty_capped_day_period_and_scheduled_summary_disclose_unknown(monkeypa
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     day = asyncio.run(E.summarize_inbox_for_day("yesterday"))
     period = asyncio.run(E.summarize_inbox_for_period("last week"))
-    assert "messages from the requested period may be outside the cache" in day
-    assert "messages from the requested period may be outside the cache" in period
+    assert "requested-period mail may be missing" in day
+    assert "requested-period mail may be missing" in period
     from service.assistant.hub import hub
     published = []
     async def capture(event):
         published.append(event)
     monkeypatch.setattr(hub, "publish", capture)
     asyncio.run(E.run_daily_email_summary())
-    assert published and "total truncation is unknown" in published[0]["summary"]
+    assert published and "total coverage is unknown" in published[0]["summary"]
 
 
 def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
@@ -342,11 +351,11 @@ def test_wire_row_cap_survives_message_identity_dedup(monkeypatch):
     day = asyncio.run(E.summarize_inbox_for_day("today"))
     triage = X.triage_inbox(count=200)
     for output in (recent, day, triage):
-        assert "Scanned 199 cached headers" in output
-        assert "total truncation is unknown" in output
+        assert _headline_counts(output)[0] == 199
+        assert "total coverage is unknown" in output
     monkeypatch.setattr(E, "_headers", "\n".join(rows[:199]))
     below_cap = asyncio.run(E.summarize_inbox_recent(count=200))
-    assert "total truncation is unknown" not in below_cap
+    assert "total coverage is unknown" not in below_cap
 
 
 def test_day_scope_keeps_headers_on_their_side_of_local_midnight(monkeypatch):
@@ -375,11 +384,11 @@ def test_native_scan_marker_survives_skipped_header_below_wire_cap(monkeypatch):
     for output in (asyncio.run(E.summarize_inbox_recent(count=200)),
                    asyncio.run(E.summarize_inbox_for_day("today")),
                    X.triage_inbox(count=200)):
-        assert "total truncation is unknown" in output
+        assert "total coverage is unknown" in output
         assert "skipped 1 malformed header" in output
     monkeypatch.setattr(E, "_headers", "\n".join(valid + [c2("Mail", "a", 199, 0, False)]))
     complete = asyncio.run(E.summarize_inbox_recent(count=200))
-    assert "total truncation is unknown" not in complete
+    assert "total coverage is unknown" not in complete
     assert "skipped 1 malformed header" not in complete
 
 
@@ -409,13 +418,13 @@ def test_account_scoped_marker_only_scan_is_not_unknown_account(monkeypatch):
     day = asyncio.run(E.summarize_emails(day="today", account="Personal"))
     recent = asyncio.run(E.summarize_emails(account="Personal"))
     assert "no linked account matches" not in day + recent
-    assert "skipped 1 malformed headers" in day + recent
+    assert "skipped 1 malformed header" in day + recent
     unknown = asyncio.run(E.summarize_emails(account="Work"))
     assert "no linked account matches" in unknown
     assert "Personal" in unknown and "School" in unknown
     monkeypatch.setattr(E, "_headers", c2("Personal", "a", 1, 1, False))
     marker_only = asyncio.run(E.summarize_emails(day="today", account="Personal"))
-    assert "skipped 1 malformed headers" in marker_only
+    assert "skipped 1 malformed header with unknown dates" in marker_only
 
 
 def test_scan_wide_skipped_header_is_not_assigned_to_a_date(monkeypatch):
@@ -429,11 +438,11 @@ def test_scan_wide_skipped_header_is_not_assigned_to_a_date(monkeypatch):
     today = asyncio.run(E.summarize_inbox_for_day("today"))
     yesterday = asyncio.run(E.summarize_inbox_for_day("yesterday"))
     period = asyncio.run(E.summarize_inbox_for_period("last week"))
-    assert "truncated 0 known messages" in today
+    assert "matching emails omitted from the overview" not in today
     assert "skipped 1 malformed header with unknown dates" in today
     for output in (yesterday, period):
-        assert "truncated 0 known matching messages" in output
-        assert "skipped 1 malformed headers" in output
+        assert "No matching headers in the available cache" in output
+        assert "skipped 1 malformed header" in output
 
 
 def test_history_scan_skips_and_limit_are_disclosed_for_date_queries(monkeypatch):
@@ -448,14 +457,14 @@ def test_history_scan_skips_and_limit_are_disclosed_for_date_queries(monkeypatch
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     day = asyncio.run(E.summarize_inbox_for_day("today", account="Personal"))
     assert "Personal update" in day and "School update" not in day
-    assert "truncated 0 known messages" in day
-    assert "History scan attempted 2 headers and skipped 1 malformed header" in day
+    assert "matching emails omitted from the overview" not in day
+    assert "History scan skipped 1 malformed header with unknown dates" in day
     assert "History scan reached its limit for Personal" in day
-    assert "total truncation is unknown" in day
+    assert "total coverage is unknown" in day
     empty = asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal"))
     assert "No matching headers" in empty
     assert "History scan reached its limit for Personal" in empty
-    assert "History scan attempted 2 headers and skipped 1 malformed header" in empty
+    assert "History scan skipped 1 malformed header with unknown dates" in empty
     period = asyncio.run(E.summarize_inbox_for_period("last week", account="Personal"))
     assert "History scan reached its limit for Personal" in period
     assert "School" not in period
@@ -473,7 +482,7 @@ def test_complete_history_scan_does_not_invent_cap_at_200_rows(monkeypatch):
     assert coverage["cap_accounts"] == []
     yesterday = asyncio.run(E.summarize_inbox_for_day("yesterday"))
     assert "History scan reached its limit" not in yesterday
-    assert "total truncation is unknown" not in yesterday
+    assert "total coverage is unknown" not in yesterday
 
 
 def test_global_history_limit_warns_account_scoped_empty_result(monkeypatch):
@@ -484,7 +493,7 @@ def test_global_history_limit_warns_account_scoped_empty_result(monkeypatch):
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     empty = asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal"))
     assert "History scan reached its limit" in empty
-    assert "total truncation is unknown" in empty
+    assert "total coverage is unknown" in empty
 
 
 def test_history_only_skipped_account_is_still_linked(monkeypatch):
@@ -500,7 +509,7 @@ def test_history_only_skipped_account_is_still_linked(monkeypatch):
     monkeypatch.setattr(E, "_ensure_email_cache", ready)
     output = asyncio.run(E.summarize_emails(day="yesterday", account="Personal"))
     assert "no linked account matches" not in output
-    assert "History scan attempted 1 header and skipped 1 malformed header" in output
+    assert "History scan skipped 1 malformed header with unknown dates" in output
 
 
 def test_global_history_limit_does_not_claim_unseen_account_is_unlinked(monkeypatch):
@@ -533,7 +542,7 @@ def test_partial_recent_account_scan_discloses_missing_account(monkeypatch):
                    asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal")),
                    X.triage_inbox()):
         assert "Recent header scan did not complete for Personal" in output
-        assert "total truncation is unknown" in output
+        assert "total coverage is unknown" in output
     assert E._unknown_account_message("Personal") is None
     # Failed AppleScript reads do not know the native account ID. A request
     # using its address instead of its display label must keep the caveat.
@@ -557,7 +566,7 @@ def test_interrupted_history_scan_discloses_missing_period(monkeypatch):
     for output in (asyncio.run(E.summarize_inbox_for_day("yesterday", account="Personal")),
                    asyncio.run(E.summarize_inbox_for_period("last week", account="Personal"))):
         assert "History scan did not complete for Personal" in output
-        assert "total truncation is unknown" in output
+        assert "total coverage is unknown" in output
     assert E._unknown_account_message("Personal") is None
 
 
@@ -580,8 +589,9 @@ def test_same_display_label_counts_cap_per_native_account(monkeypatch):
     assert E.header_scan_coverage(E._parse_header_records(E._headers),
                                   raw_headers=E._headers)["cap_accounts"] == []
     output = asyncio.run(E.summarize_inbox_recent(count=20))
-    assert "Scanned 300 headers" in output
-    assert "total truncation is unknown" not in output
+    assert _headline_counts(output)[0] == 20
+    assert "280 matching emails omitted from the overview" in output
+    assert "total coverage is unknown" not in output
 
 
 def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypatch):
@@ -596,11 +606,11 @@ def test_period_merges_history_by_identity_and_shows_top_three_subjects(monkeypa
     monkeypatch.setattr(E, "_history", "\n".join([recent[0], recent[1]]))
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_period("this week"))
-    assert "represented 4 messages from 1 sender note" in output
+    assert _headline_counts(output) == (4, 1)
     assert "Subject says: “Urgent: review form”" in output
     assert "Subject says: “Payment failed”" in output
     assert "+1 more" in output
-    assert "requested" in output and "Actual dates:" in output
+    assert "Requested:" in output and "Header dates:" in output
 
 
 def test_range_sample_discloses_omitted_messages(monkeypatch):
@@ -612,8 +622,8 @@ def test_range_sample_discloses_omitted_messages(monkeypatch):
     monkeypatch.setattr(E, "_history", "")
     monkeypatch.setattr(E, "_cache_ready", lambda: True)
     output = asyncio.run(E.summarize_inbox_for_period("this month"))
-    assert "Scanned 160 headers; represented 150 messages" in output
-    assert "truncated 10 messages (10 by scan limit" in output
+    assert _headline_counts(output)[0] == 150
+    assert "10 matching emails omitted from the overview" in output
     assert "Urgent: account action required" in output
 
 
@@ -701,7 +711,7 @@ def test_quoted_social_security_titles_are_not_account_alerts(synthetic_digest_h
     monkeypatch.setattr(E, "_headers", h(now, "Mail", "a", "LinkedIn",
                                         "notifications@linkedin.example", "post", subject))
     output = asyncio.run(E.summarize_inbox_recent())
-    assert output.splitlines()[1] == "1 email · 1 unread"
+    assert output.splitlines()[1] == "1 email · 1 unread · 1 sender group"
     assert "**💬 Social** (1)" in output
     assert "Needs your attention" not in output
     assert "Subject says:" not in output
@@ -828,7 +838,7 @@ def test_interactive_digest_refreshes_headers_before_sectioning(
     assert 'Security alert: new sign-in from "Chrome on Mac"' in output
     assert QUOTED_SOCIAL_ALERTS[0] not in output
     assert "RESTORED ONLY" not in output
-    assert "represented 2 messages" in output
+    assert _headline_counts(output)[0] == 2
     assert "local cache" not in output
 
 
@@ -889,9 +899,9 @@ def test_interactive_account_filter_counts_and_coverage_use_header_snapshot(
     assert "8 emails · 8 unread · 4 need attention" in output
     assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
     assert "+1 more from this sender" in output
-    assert "represented 8 messages" in output
+    assert _headline_counts(output)[0] == 8
     assert "skipped 2 malformed headers" in output
-    assert "total truncation is unknown" in output
+    assert "total coverage is unknown" in output
     assert "other@linkedin.example" not in output and "Offline" not in output
     unavailable = asyncio.run(E.summarize_emails(account="Offline"))
     assert "did not complete for Offline" in unavailable
@@ -1019,7 +1029,7 @@ def test_interactive_social_payment_problem_preserves_subject(
     assert "1 email · 1 unread · 1 needs attention" in output
     assert "**🔴 Needs your attention** (1)" in output
     assert subject in output and "Subject says:" in output
-    assert "represented 1 message from 1 sender note" in output
+    assert _headline_counts(output) == (1, 1)
     from service.assistant import brief as B
     assert f"Subject says: “{subject}”" in B._email_block(now)
 
@@ -1038,7 +1048,7 @@ def test_interactive_framed_payment_problem_is_social_title(
     E.cache_emails(h(now, "Mail", "a", "LinkedIn", "notifications@linkedin.example", "post", subject))
     E.set_email_availability(True, read_source="mail_app")
     output = asyncio.run(E.summarize_emails())
-    assert "1 email · 1 unread" in output and "needs attention" not in output
+    assert "1 email · 1 unread · 1 sender group" in output and "needs attention" not in output
     assert "**💬 Social** (1)" in output and "Needs your attention" not in output
     assert subject not in output and "Subject says:" not in output
 
@@ -1108,8 +1118,8 @@ def test_interactive_payment_count_folding_clipping_coverage_and_daily_flat(
     assert "**🔴 Needs your attention** (4)" in output and "**💬 Social** (4)" in output
     assert "+1 more from this sender" in output
     assert output.count("**LinkedIn**") == 3
-    assert "represented 8 messages from 1 sender note" in output
-    assert "skipped 2 malformed headers" in output and "total truncation is unknown" in output
+    assert _headline_counts(output) == (8, 1)
+    assert "skipped 2 malformed headers" in output and "total coverage is unknown" in output
     flat = B._email_block(now)
     assert "**LinkedIn <notifications@linkedin.example>** (8 messages, 8 unread)" in flat
     assert "Needs your attention" not in flat and "+5 more" in flat
