@@ -17,9 +17,12 @@ What is here
   code and the oracle.
 * 1,200 seeded randomized trees composing those mutations, asserted
   production == oracle.
-* Call-shape tests for ``_listener``: the exact argv set, the data-dependency
-  order that must survive any rescheduling, and (named "sequential") the exact
-  current serial order that T0-spawn will deliberately change.
+* Call-shape tests for ``_listener``: the exact argv set and the data-dependency
+  order that must survive any rescheduling.  (T0-spawn replaced the test that
+  pinned the exact serial order; the serial order is now pinned for the fallback
+  path only, and the section at the end of the file proves the overlap, the
+  reason order, the absence of leaks and the equivalence to a frozen copy of the
+  former serial ``_listener``.)
 * Documented blind spots pinned as behaviour.  Their names start with
   ``test_PINNED_BLIND_SPOT_``: if one of them fails because a check became
   stricter, that is a deliberate security change that needs its own review,
@@ -2172,13 +2175,24 @@ def test_listener_data_dependencies_hold_in_any_scheduling(host):
     at_ = {event: index for index, event in enumerate(order)}
     listen, ps_server, ps_parent = ('spawn', LISTEN_ARGV), ('spawn', PS_ARGV[SERVER_PID]), ('spawn', PS_ARGV[PARENT_PID])
     txt_server, txt_parent = ('spawn', TXT_ARGV[SERVER_PID]), ('spawn', TXT_ARGV[PARENT_PID])
+    # T0-spawn changed this test: the former lines also pinned orderings that are NOT data
+    # dependencies (a step's ps before its own lsof -d txt before its signature check), which
+    # the serial code merely happened to have.  Only the real ones are asserted here; the
+    # T0-spawn section proves them again with start and end timestamps under random timing.
     assert at_[listen] < at_[ps_server] < at_[ps_parent]          # pid -> ppid -> parent
-    assert at_[listen] < at_[txt_server] < at_[('signed', SERVER_PID, 'python3')]
-    assert at_[ps_parent] < at_[txt_parent] < at_[('signed', PARENT_PID, 'app.omlx')]
+    assert at_[listen] < at_[txt_server] and at_[listen] < at_[('signed', SERVER_PID, 'python3')]
+    assert at_[ps_server] < at_[txt_parent] and at_[ps_server] < at_[('signed', PARENT_PID, 'app.omlx')]
 
 
-def test_listener_current_sequential_order_is_exactly_this(host):
-    """The serial order T0-spawn will deliberately change; update it only there."""
+def test_listener_serial_fallback_order_is_exactly_the_former_serial_order(host, monkeypatch):
+    """T0-spawn changed this test (it pinned the only possible order before).
+
+    The inspections now overlap, so no order is pinned for the normal path (see the
+    T0-spawn section below).  What stays pinned is the order of the serial fallback,
+    taken when the private pool cannot accept work: it must be the former serial
+    order, spawn for spawn.
+    """
+    monkeypatch.setattr(at._POOL, 'submit', mock.Mock(side_effect=RuntimeError('cannot schedule new futures')))
     host.new()
     assert host.events == [*SEQUENTIAL_SUCCESS, ('tree', host.python_root), ('tree', host.server_entry.parent)]
 
@@ -2280,7 +2294,21 @@ def test_each_fault_alone_is_refused_with_its_reason(host, name, apply, reason, 
     with pytest.raises(AuthRefused) as caught:
         host.new()
     assert str(caught.value) == reason
-    # Sequential today: nothing after the failing step has run.  T0-spawn may issue more.
+    # T0-spawn changed this assertion: independent steps are started speculatively, so
+    # at least the former serial prefix was issued and never anything outside the
+    # reviewed set (the exact serial count is pinned by the serial-fallback test below).
+    assert len(host.events) >= issued, host.events
+    assert set(spawns(host)) <= EXPECTED_ARGVS
+    assert len([e for e in host.events if e[0] == 'tree']) <= 2
+
+
+@pytest.mark.parametrize('name,apply,reason,issued', FAULTS, ids=[f[0] for f in FAULTS])
+def test_each_fault_alone_in_the_serial_fallback_issues_exactly_the_former_events(host, monkeypatch, name, apply, reason, issued):
+    monkeypatch.setattr(at._POOL, 'submit', mock.Mock(side_effect=RuntimeError('cannot schedule new futures')))
+    apply(host)
+    with pytest.raises(AuthRefused) as caught:
+        host.new()
+    assert str(caught.value) == reason
     assert len(host.events) == issued, host.events
 
 
@@ -2595,3 +2623,723 @@ def test_process_identity_returns_the_four_tuple_and_refuses_everything_else():
         with pytest.raises(AuthRefused) as caught:
             local_peer.process_identity(pid, uid)
         assert str(caught.value) == 'process_identity_unqualified'
+
+
+# ==========================================================================
+# T0-spawn: the independent inspections of DesktopOmlx._listener overlap
+# --------------------------------------------------------------------------
+# Scheduling only.  Every fact, every refusal reason and the evaluation order
+# stay those of the former serial code, which is kept below as LegacyListener
+# and compared with the production method on every scenario.  Everything runs
+# on in-process fakes: no socket, no network, no /Applications, no chmod.
+# ==========================================================================
+import concurrent.futures
+import contextvars
+import re
+import threading
+import time
+import warnings
+
+ORDER = ['listen', 'tcp', 'ps-server', 'txt-server', 'sig-server', 'ps-parent', 'txt-parent', 'sig-parent']
+POSITION = {name: index for index, name in enumerate(ORDER)}
+# Where in the former serial order each entry of FAULTS is evaluated (a step's own
+# result is evaluated at its integer position, the check on that result just after).
+FAULT_POSITION = [0.5, 1.5, 1.5, 2.5, 3.5, 4, 5.5, 5.5, 6.5, 7, 8, 9, 10]
+PROCESS_FAULTS = list(range(10))          # the faults that need no change on disk
+
+
+def step_name(argv):
+    if '-iTCP:8000' in argv:
+        return 'listen'
+    if argv[0] == '/bin/ps':
+        return 'ps-server' if argv[3] == str(SERVER_PID) else 'ps-parent'
+    return 'txt-server' if argv[4] == str(SERVER_PID) else 'txt-parent'
+
+
+class LegacyListener:
+    """The ORACLE: DesktopOmlx._listener as of base c6bcfe78, before T0-spawn.
+
+    Verbatim except that the two module globals it reads are spelled ``at.``.
+    Never edit it while a scheduler exists; the frozen-hash test fails if it changes.
+    """
+
+    def _listener(self):
+        raw = at.inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000',
+                                  '-sTCP:LISTEN', '-Fpufn']).decode('ascii')
+        rows = raw.splitlines()
+        if (len(rows) != 4 or not re.fullmatch(r'p[1-9][0-9]*', rows[0])
+                or rows[1] != 'u' + str(self.uid)
+                or not re.fullmatch(r'f[0-9]+', rows[2])
+                or rows[3] != 'n127.0.0.1:8000'):
+            raise AuthRefused('desktop_listener_unqualified')
+        listeners = at.tcp_listeners()
+        if (listeners is None
+                or [(host, port) for host, port in listeners if port == self.port]
+                    != [('127.0.0.1', self.port)]):
+            raise AuthRefused('desktop_listener_unqualified')
+        pid = int(rows[0][1:])
+        parent_pid, uid, command = self._process(pid)
+        if uid != self.uid or command != 'omlx-server':
+            raise AuthRefused('desktop_process_unqualified')
+        executable = self._qualified_file(self._executable(pid), parent=self.python_root)
+        self._signed_process(pid, 'python3')
+
+        grandparent_pid, parent_uid, parent_command = self._process(parent_pid)
+        if (grandparent_pid != 1 or parent_uid != self.uid
+                or parent_command != str(self.app_executable)):
+            raise AuthRefused('desktop_parent_unqualified')
+        parent_executable = self._qualified_file(
+            self._executable(parent_pid), exact=self.app_executable,
+            strict_permissions=True)
+        self._signed_process(parent_pid, 'app.omlx')
+        self._qualified_file(self.server_entry, exact=self.server_entry,
+                             strict_permissions=True)
+        self._qualified_tree(self.python_root)
+        self._qualified_tree(self.server_entry.parent)
+        return pid, executable, parent_pid, parent_executable
+
+
+LEGACY_LISTENER_FROZEN_SHA256 = '8fee98d255b35b9a2b74b05c257bed622b90eb8470a64008620298d477065269'
+
+
+def test_legacy_listener_oracle_is_frozen():
+    text = textwrap.dedent(inspect.getsource(LegacyListener._listener))
+    assert hashlib.sha256(text.encode()).hexdigest() == LEGACY_LISTENER_FROZEN_SHA256
+
+
+class StepError(Exception):
+    def __init__(self, step):
+        super().__init__(step)
+        self.step = step
+
+
+class StepStop(BaseException):
+    """A BaseException that is not an Exception (as KeyboardInterrupt is not)."""
+
+
+def delays_for(profile, seed=0):
+    """Per-step sleeps in seconds that shape which inspection finishes first."""
+    unit = 0.002
+    if profile == 'none':
+        return {}
+    if profile == 'forward':                                   # later steps are slower
+        return {name: unit * POSITION[name] for name in ORDER}
+    if profile == 'reverse':                                   # later steps finish first
+        return {name: unit * (len(ORDER) - POSITION[name]) for name in ORDER}
+    rng = random.Random(f'{profile}-{seed}')
+    return {name: rng.random() * 3 * unit for name in ORDER}
+
+
+class Probe:
+    """Wraps one Host's fakes: in-flight accounting, timing log, delays, hooks, injected errors."""
+
+    def __init__(self, host, monkeypatch=None, *, delays=None, hooks=None, errors=None):
+        self.host, self.delays, self.hooks, self.errors = host, delays or {}, hooks or {}, errors or {}
+        self.lock = threading.Lock()
+        self.inflight = self.peak = 0
+        self.log = []
+        self.threads = set()
+        if monkeypatch is not None:
+            monkeypatch.setattr(at, 'inspect_command', lambda argv: self.step(step_name(argv), self.host.inspect, argv))
+            monkeypatch.setattr(at, 'tcp_listeners', lambda: self.step('tcp', self.host.tcp_listeners))
+            monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
+                                lambda instance, pid, identity: self.step(
+                                    'sig-server' if pid == SERVER_PID else 'sig-parent', self.host.signed, pid, identity))
+
+    def step(self, name, call, *args):
+        with self.lock:
+            self.inflight += 1
+            self.peak = max(self.peak, self.inflight)
+            self.log.append((name, 'start', time.monotonic_ns()))
+            self.threads.add(threading.current_thread().name)
+        try:
+            if name in self.hooks:
+                self.hooks[name]()
+            if self.delays.get(name):
+                time.sleep(self.delays[name])
+            if name in self.errors:
+                raise self.errors[name]
+            return call(*args)
+        finally:
+            with self.lock:
+                self.inflight -= 1
+                self.log.append((name, 'end', time.monotonic_ns()))
+
+    def started(self):
+        return [name for name, kind, _ in self.log if kind == 'start']
+
+    def times(self):
+        return {(name, kind): stamp for name, kind, stamp in self.log}
+
+
+def bare():
+    """A DesktopOmlx with no construction-time listener run (so _listener can be called directly)."""
+    authority = object.__new__(at.DesktopOmlx)
+    authority.uid, authority._group_cache, authority._qualified_roots = UID, {}, set()
+    authority.prep = SimpleNamespace(run=at.inspect_command)
+    return authority
+
+
+def outcome(call):
+    try:
+        return ('ok', call(), None)
+    except BaseException as error:      # noqa: BLE001 - the verdict includes the exception type
+        return (type(error).__name__, error.args, error)
+
+
+def same_outcome(new, old):
+    if new[:2] != old[:2]:
+        return False
+    if isinstance(old[2], (StepError, StepStop)):
+        return new[2] is old[2]                       # the very exception object that was injected
+    return new[2] is None or type(new[2]) is type(old[2])
+
+
+def legacy(authority):
+    return LegacyListener._listener(authority)
+
+
+def current(authority):
+    return at.DesktopOmlx._listener(authority)
+
+
+def thread_names():
+    return {t.name for t in threading.enumerate()}
+
+
+def pool_threads():
+    return {name for name in thread_names() if name.startswith('wisp-inspect')}
+
+
+@pytest.fixture(autouse=True)
+def quiet_pool():
+    """Every test starts and ends with an idle, empty private pool."""
+    yield
+    pool = getattr(at, '_POOL', None)
+    if pool is not None:
+        pool.shutdown()
+
+
+# -- equivalence ------------------------------------------------------------
+def test_listener_result_and_reviewed_calls_equal_the_oracle_without_faults(host):
+    new = current(bare())
+    new_events = list(host.events)
+    host.events.clear()
+    old = legacy(bare())
+    assert new == old == (SERVER_PID, str(host.python_root / 'cpython/bin/python3.11'), PARENT_PID, str(host.app_executable))
+    assert Counter(map(repr, new_events)) == Counter(map(repr, host.events))   # same calls, each exactly once
+
+
+@pytest.mark.parametrize('name,apply,reason,issued', FAULTS, ids=[f[0] for f in FAULTS])
+@pytest.mark.parametrize('profile', ['none', 'forward', 'reverse'])
+def test_each_fault_alone_has_the_oracle_verdict_under_every_timing(make_host, monkeypatch, name, apply, reason, issued, profile):
+    host = make_host()
+    apply(host)
+    Probe(host, monkeypatch, delays=delays_for(profile))
+    new, old = outcome(lambda: current(bare())), outcome(lambda: legacy(bare()))
+    assert old[0] == 'AuthRefused' and old[1] == (reason,)
+    assert same_outcome(new, old)
+
+
+# -- the inspections really overlap -------------------------------------------
+def must(event):
+    assert event.wait(10), 'the inspections did not overlap'
+
+
+def test_listener_overlaps_the_independent_inspections(host, monkeypatch):
+    first, server, parent = threading.Barrier(2, timeout=10), threading.Barrier(3, timeout=10), threading.Barrier(3, timeout=10)
+    parent_started = threading.Event()
+    hooks = {
+        'listen': first.wait, 'tcp': first.wait,                      # lsof LISTEN || tcp_listeners
+        'ps-server': server.wait,                                      # the server's three steps together
+        'txt-server': lambda: (server.wait(), must(parent_started)),   # and the server's txt / signature are
+        'sig-server': lambda: (server.wait(), must(parent_started)),   # still running when the parent's ps starts
+        'ps-parent': lambda: (parent_started.set(), parent.wait()),    # the parent's three steps together
+        'txt-parent': parent.wait, 'sig-parent': parent.wait,
+    }
+    probe = Probe(host, monkeypatch, hooks=hooks)
+    assert current(bare())[0] == SERVER_PID
+    assert probe.peak >= 3 and probe.inflight == 0
+    assert len(probe.started()) == 8
+
+
+def test_listener_walks_the_trees_last_on_the_calling_thread(host, monkeypatch):
+    probe = Probe(host, monkeypatch, delays=delays_for('jitter', 1))
+    caller = threading.current_thread().name
+    walks = []
+    monkeypatch.setattr(at.DesktopOmlx, '_qualified_tree',
+                        lambda self, root: walks.append((threading.current_thread().name, probe.inflight)))
+    current(bare())
+    assert walks == [(caller, 0), (caller, 0)]
+
+
+@pytest.mark.parametrize('seed', range(12))
+def test_listener_keeps_every_data_dependency_in_start_and_end_times(host, monkeypatch, seed):
+    probe = Probe(host, monkeypatch, delays=delays_for('jitter', seed))
+    current(bare())
+    t = probe.times()
+    for dependent in ('ps-server', 'txt-server', 'sig-server'):       # the pid is used only after both listener checks
+        assert t[(dependent, 'start')] >= t[('listen', 'end')] and t[(dependent, 'start')] >= t[('tcp', 'end')]
+    for dependent in ('ps-parent', 'txt-parent', 'sig-parent'):       # the parent pid comes out of the server's ps
+        assert t[(dependent, 'start')] >= t[('ps-server', 'end')]
+    last_step = max(index for index, event in enumerate(host.events) if event[0] != 'tree')
+    assert all(index > last_step for index, event in enumerate(host.events) if event[0] == 'tree')
+
+
+def test_nothing_is_started_from_data_that_failed_its_own_check(make_host, monkeypatch):
+    """A pid is inspected only after the checks on the data it came from passed."""
+    allowed = {'listener-malformed': {'listen', 'tcp'}, 'listener-extra-binder': {'listen', 'tcp'},
+               'listeners-unavailable': {'listen', 'tcp'}, 'server-command': set(ORDER[:5])}
+    for fault in FAULTS:
+        if fault[0] not in allowed:
+            continue
+        for profile in ('forward', 'reverse', 'none'):
+            host = make_host()
+            fault[1](host)
+            probe = Probe(host, monkeypatch, delays=delays_for(profile))
+            with pytest.raises(AuthRefused):
+                current(bare())
+            assert set(probe.started()) <= allowed[fault[0]], (fault[0], profile, probe.started())
+
+
+def test_every_call_goes_through_the_module_globals_and_the_instance_seams(host, monkeypatch):
+    seen = []
+    base = Probe(host, monkeypatch)
+    real_inspect, real_tcp = at.inspect_command, at.tcp_listeners
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: seen.append(('inspect', step_name(argv))) or real_inspect(argv))
+    monkeypatch.setattr(at, 'tcp_listeners', lambda: seen.append(('tcp',)) or real_tcp())
+    for name in ('_process', '_executable'):
+        original = getattr(at.DesktopOmlx, name)
+        monkeypatch.setattr(at.DesktopOmlx, name, lambda self, pid, original=original, name=name:
+                            seen.append((name, pid)) or original(self, pid))
+    current(bare())
+    assert sorted(seen, key=repr) == sorted([
+        ('inspect', 'listen'), ('tcp',), ('_process', SERVER_PID), ('inspect', 'ps-server'), ('_executable', SERVER_PID),
+        ('inspect', 'txt-server'), ('_process', PARENT_PID), ('inspect', 'ps-parent'), ('_executable', PARENT_PID),
+        ('inspect', 'txt-parent')], key=repr)
+    assert base.started().count('sig-server') == base.started().count('sig-parent') == 1
+
+
+def test_instrumentation_wrappers_installed_over_the_seams_count_every_call_once(host, monkeypatch):
+    """The release benchmark wraps these seams with a lock-protected recorder; no call may be lost or doubled."""
+    counts, lock = Counter(), threading.Lock()
+
+    def wrap(label, function):
+        def wrapper(*args, **kwargs):
+            with lock:
+                counts[label] += 1
+            return function(*args, **kwargs)
+        return wrapper
+    monkeypatch.setattr(at, 'inspect_command', wrap('inspect', at.inspect_command))
+    monkeypatch.setattr(at, 'tcp_listeners', wrap('tcp', at.tcp_listeners))
+    for _ in range(25):
+        current(bare())
+    assert counts == {'inspect': 25 * 5, 'tcp': 25}
+
+
+def test_context_variables_reach_the_worker_threads(host, monkeypatch):
+    marker = contextvars.ContextVar('t0_marker')
+    seen = set()
+    real_inspect = host.inspect
+    monkeypatch.setattr(at, 'inspect_command', lambda argv: seen.add(marker.get('lost')) or real_inspect(argv))
+    marker.set('kept')
+    current(bare())
+    assert seen == {'kept'}
+
+
+# -- reason order --------------------------------------------------------------
+PROFILES = ['none', 'forward', 'reverse', 'jitter-a', 'jitter-b']
+
+
+@pytest.mark.parametrize('profile', PROFILES)
+def test_simultaneous_faults_report_the_earliest_sequential_reason_under_every_timing(make_host, monkeypatch, profile):
+    for i, j in itertools.combinations(range(len(FAULTS)), 2):
+        host = make_host()
+        FAULTS[i][1](host)
+        FAULTS[j][1](host)
+        Probe(host, monkeypatch, delays=delays_for(profile, i * 31 + j))
+        with pytest.raises(AuthRefused) as caught:
+            host.new()
+        assert str(caught.value) == FAULTS[i][2], (profile, FAULTS[i][0], FAULTS[j][0], str(caught.value))
+
+
+def test_all_faults_at_once_report_the_first_reason(make_host, monkeypatch):
+    for profile in PROFILES:
+        host = make_host()
+        for fault in FAULTS:
+            fault[1](host)
+        Probe(host, monkeypatch, delays=delays_for(profile))
+        with pytest.raises(AuthRefused) as caught:
+            host.new()
+        assert str(caught.value) == FAULTS[0][2]
+
+
+def test_random_fault_subsets_have_the_oracle_verdict(make_host, monkeypatch):
+    rng = random.Random(20261004)
+    for case in range(120):
+        host = make_host()
+        for index in rng.sample(range(len(FAULTS)), rng.randint(1, 5)):
+            FAULTS[index][1](host)
+        Probe(host, monkeypatch, delays=delays_for(rng.choice(PROFILES), case))
+        new, old = outcome(lambda: current(bare())), outcome(lambda: legacy(bare()))
+        assert same_outcome(new, old), (case, new[:2], old[:2])
+
+
+def test_an_exception_from_any_step_is_the_one_the_serial_code_raises_first(make_host, monkeypatch):
+    """Every step can fail with its own exception (any type, not only AuthRefused); when several fail,
+    the earliest in the former serial order surfaces, whichever finished first."""
+    for profile in ('forward', 'reverse', 'jitter-a'):
+        for size in (1, 2, 3, 8):
+            for combo in itertools.combinations(ORDER, size):
+                host = make_host()
+                errors = {step: StepError(step) for step in combo}
+                Probe(host, monkeypatch, delays=delays_for(profile, size), errors=errors)
+                with pytest.raises(StepError) as caught:
+                    current(bare())
+                assert caught.value is errors[min(combo, key=POSITION.get)], (profile, combo)
+
+
+def test_a_base_exception_from_a_step_is_raised_unchanged_and_nothing_is_left_running(make_host, monkeypatch):
+    for step in ORDER:
+        host = make_host()
+        stop = StepStop(step)
+        probe = Probe(host, monkeypatch, delays=delays_for('reverse'), errors={step: stop})
+        with pytest.raises(StepStop) as caught:
+            current(bare())
+        assert caught.value is stop and probe.inflight == 0, step
+
+
+def test_a_step_exception_and_a_data_fault_follow_one_order(make_host, monkeypatch):
+    """A raised error at a step beats a data fault evaluated after it and loses to one evaluated before it."""
+    for index, fault in enumerate(FAULTS):
+        for step in ORDER:
+            if FAULT_POSITION[index] == POSITION[step]:
+                continue                                  # the same evaluation point: nothing to order
+            for profile in ('forward', 'reverse'):
+                host = make_host()
+                fault[1](host)
+                error = StepError(step)
+                Probe(host, monkeypatch, delays=delays_for(profile), errors={step: error})
+                with pytest.raises(Exception) as caught:
+                    current(bare())
+                if POSITION[step] < FAULT_POSITION[index]:
+                    assert caught.value is error, (fault[0], step, profile)
+                else:
+                    assert str(caught.value) == fault[2], (fault[0], step, profile)
+
+
+def test_a_malformed_listener_row_is_reported_before_a_failing_tcp_listeners(host, monkeypatch):
+    host.listen = b'p321\n'
+    Probe(host, monkeypatch, delays={'listen': 0.05}, errors={'tcp': StepError('tcp')})
+    with pytest.raises(AuthRefused) as caught:
+        current(bare())
+    assert str(caught.value) == 'desktop_listener_unqualified'
+
+
+def test_undecodable_listener_output_is_the_unicode_error_the_serial_code_raised(host, monkeypatch):
+    host.listen = b'p321\nu501\nf4\nn127.0.0.1:\xff\n'
+    Probe(host, monkeypatch)
+    new, old = outcome(lambda: current(bare())), outcome(lambda: legacy(bare()))
+    assert new[0] == old[0] == 'UnicodeDecodeError' and new[1] == old[1]
+
+
+# -- nothing outlives the call (I5) --------------------------------------------
+def test_a_failing_listener_returns_only_after_every_started_inspection_ended(make_host, monkeypatch):
+    for fault in FAULTS:
+        host = make_host()
+        fault[1](host)
+        probe = Probe(host, monkeypatch, delays={name: 0.03 for name in ORDER})
+        with pytest.raises(AuthRefused):
+            current(bare())
+        assert probe.inflight == 0, fault[0]
+        assert Counter(name for name, kind, _ in probe.log if kind == 'end') == Counter(probe.started()), fault[0]
+
+
+def test_an_error_while_waiting_does_not_leave_a_worker_running(host, monkeypatch):
+    slow_running = threading.Event()
+    probe = Probe(host, monkeypatch, delays={'sig-server': 0.25}, errors={'ps-server': StepError('ps')},
+                  hooks={'sig-server': slow_running.set, 'ps-server': lambda: must(slow_running)})
+    started = time.monotonic()
+    with pytest.raises(StepError):
+        current(bare())
+    assert probe.inflight == 0 and time.monotonic() - started >= 0.24       # it waited for the slow one
+
+
+def test_real_child_processes_do_not_outlive_a_failing_or_successful_listener(host, monkeypatch):
+    """Every inspection runs a real child process (a short `sh`); when _listener returns or raises, each one
+    that was ever started has been waited for (no `ps`: the CI sandbox does not allow it)."""
+    children = []
+
+    class Spawner(Probe):
+        def step(self, name, call, *args):
+            def spawn_then_call(*a):
+                child = subprocess.Popen(['/bin/sh', '-c', 'sleep 0.05; sleep 0.001'])
+                children.append(child)
+                child.communicate()
+                return call(*a)
+            return super().step(name, spawn_then_call, *args)
+
+    for number, fault in enumerate((None, FAULTS[3], FAULTS[0], FAULTS[1])):
+        children.clear()
+        fresh = Host(host.base.parent, monkeypatch, f'real-{number}')
+        if fault:
+            fault[1](fresh)
+        Spawner(fresh, monkeypatch, errors={'ps-server': StepError('ps')} if number == 3 else None)
+        outcome(lambda: current(bare()))
+        assert children and all(child.returncode is not None for child in children), number
+
+
+# -- the private pool ----------------------------------------------------------
+def test_pool_is_private_bounded_and_never_the_loops_default_executor(host, monkeypatch):
+    assert at._INSPECTION_WORKERS >= 6                       # one listener never needs more than six at once
+    probe = Probe(host, monkeypatch, delays=delays_for('jitter-a', 3))
+    with concurrent.futures.ThreadPoolExecutor(40) as callers:
+        list(callers.map(lambda _: current(bare()), range(120)))
+    assert 1 <= len(pool_threads()) <= at._INSPECTION_WORKERS
+    assert probe.peak <= at._INSPECTION_WORKERS
+    assert probe.threads and all(name.startswith('wisp-inspect') for name in probe.threads)
+
+
+def test_shutdown_joins_every_worker_and_the_pool_is_reusable(host, monkeypatch):
+    Probe(host, monkeypatch)
+    current(bare())
+    assert pool_threads()
+    at._POOL.shutdown()
+    assert not pool_threads()
+    at._POOL.shutdown()                                      # idempotent
+    assert current(bare())[0] == SERVER_PID                  # lazily recreated
+
+
+def test_closing_a_transport_shuts_the_pool_down(host, monkeypatch):
+    Probe(host, monkeypatch)
+
+    async def scenario():
+        transport = at.CredentialTransport('http://127.0.0.1:8000', 'k', managed=False)
+        await asyncio.to_thread(lambda: current(bare()))
+        assert pool_threads()
+        await transport.aclose()
+        assert not pool_threads()
+    asyncio.run(scenario())
+
+
+def test_work_in_flight_during_a_shutdown_still_completes(host, monkeypatch):
+    gate = threading.Event()
+    Probe(host, monkeypatch, hooks={'ps-server': lambda: gate.wait(10)})
+    result = []
+    runner = threading.Thread(target=lambda: result.append(outcome(lambda: current(bare()))))
+    runner.start()
+    time.sleep(0.1)
+    closer = threading.Thread(target=at._POOL.shutdown)
+    closer.start()
+    time.sleep(0.1)
+    gate.set()
+    runner.join(15)
+    closer.join(15)
+    assert not runner.is_alive() and not closer.is_alive() and result[0][0] == 'ok'
+
+
+def test_a_pool_that_cannot_schedule_falls_back_to_the_serial_code_with_the_same_verdicts(make_host, monkeypatch):
+    for fault in FAULTS:
+        host = make_host()
+        fault[1](host)
+        monkeypatch.setattr(at._POOL, 'submit', mock.Mock(side_effect=RuntimeError('cannot schedule new futures')))
+        new, old = outcome(lambda: current(bare())), outcome(lambda: legacy(bare()))
+        assert same_outcome(new, old) and new[1] == (fault[2],), fault[0]
+
+
+def test_a_queued_inspection_still_runs_when_the_pool_is_shut_down_meanwhile(host, monkeypatch):
+    """shutdown() finishes queued work (it does not cancel it), so a run in progress is never failed by a close."""
+    monkeypatch.setattr(at, '_INSPECTION_WORKERS', 1)
+    at._POOL.shutdown()
+    gate = threading.Event()
+    Probe(host, monkeypatch, hooks={'listen': lambda: gate.wait(10)})
+    result = []
+    runner = threading.Thread(target=lambda: result.append(outcome(lambda: current(bare()))))
+    runner.start()
+    time.sleep(0.2)                                  # tcp_listeners is queued behind the blocked lsof
+    closer = threading.Thread(target=at._POOL.shutdown)
+    closer.start()
+    time.sleep(0.2)
+    gate.set()
+    runner.join(15)
+    closer.join(15)
+    assert not runner.is_alive() and not closer.is_alive() and result[0][0] == 'ok', result
+
+
+def test_a_deferred_inspection_runs_its_call_once_however_often_it_is_asked(monkeypatch):
+    calls = []
+    deferred = at._Deferred(lambda value: calls.append(value) or value, (7,))
+    assert deferred.result() == 7 and deferred.result() == 7 and calls == [7]
+    failing = at._Deferred(lambda: calls.append('boom') or (_ for _ in ()).throw(StepError('x')), ())
+    for _ in range(2):
+        with pytest.raises(StepError):
+            failing.result()
+    assert calls == [7, 'boom']
+
+
+def test_listener_called_from_inside_a_pool_worker_runs_inline_and_cannot_deadlock(host, monkeypatch):
+    monkeypatch.setattr(at, '_INSPECTION_WORKERS', 1)
+    at._POOL.shutdown()
+    Probe(host, monkeypatch)
+    inner = []
+    real_tcp = host.tcp_listeners
+
+    def reentrant():
+        if not inner:
+            inner.append(None)
+            inner[0] = current(bare())                        # a worker asks for a nested _listener
+        return real_tcp()
+    host.tcp_listeners = reentrant
+    done = []
+    runner = threading.Thread(target=lambda: done.append(outcome(lambda: current(bare()))), daemon=True)
+    runner.start()
+    runner.join(20)
+    assert not runner.is_alive(), 'deadlock: a pool worker waited on its own pool'
+    assert done[0][0] == 'ok' and inner[0][0] == SERVER_PID
+
+
+def test_a_saturated_pool_only_slows_callers_down(host, monkeypatch):
+    monkeypatch.setattr(at, '_INSPECTION_WORKERS', 2)
+    at._POOL.shutdown()
+    probe = Probe(host, monkeypatch, delays=delays_for('jitter-b', 4))
+    with concurrent.futures.ThreadPoolExecutor(30) as callers:
+        results = list(callers.map(lambda _: outcome(lambda: current(bare())), range(60)))
+    assert all(r[0] == 'ok' for r in results) and probe.peak <= 2 and probe.inflight == 0
+
+
+@pytest.mark.skipif(not hasattr(os, 'fork'), reason='fork')
+def test_a_forked_child_does_not_inherit_a_dead_pool(host, monkeypatch):
+    Probe(host, monkeypatch)
+    current(bare())                                          # the parent now owns live workers
+    read, write = os.pipe()
+    with warnings.catch_warnings():
+        warnings.simplefilter('ignore')
+        pid = os.fork()
+    if pid == 0:                                             # child: must build its own workers, not hang
+        try:
+            os.close(read)
+            os.write(write, b'1' if current(bare())[0] == SERVER_PID else b'0')
+        finally:
+            os._exit(0)
+    os.close(write)
+    deadline, finished = time.monotonic() + 30, None
+    while time.monotonic() < deadline:
+        done, status = os.waitpid(pid, os.WNOHANG)
+        if done:
+            finished = status
+            break
+        time.sleep(0.05)
+    if finished is None:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+    answer = os.read(read, 1)
+    os.close(read)
+    assert finished == 0 and answer == b'1'
+
+
+def test_the_production_module_has_no_second_process_spawning_path():
+    source = inspect.getsource(at)
+    assert 'Popen' not in source
+    assert source.count('subprocess.run(') == 1               # inspect_command, nowhere else
+    assert 'subprocess.run(' in inspect.getsource(at.inspect_command)
+    listener = inspect.getsource(at.DesktopOmlx._listener)
+    assert 'subprocess' not in listener and 'Popen' not in listener
+
+
+# -- connected_peer keeps its structure ------------------------------------------
+def test_connected_peer_brackets_two_sequential_snapshots_with_the_two_bindings(monkeypatch):
+    uid = os.getuid()
+    local, remote = ('127.0.0.1', 54321), ('127.0.0.1', 8000)
+    raw = (f'p321\nu{uid}\nf4\ntIPv4\nPTCP\nn127.0.0.1:8000->127.0.0.1:54321\nTST=ESTABLISHED\n'
+           f'p{os.getpid()}\nu{uid}\nf9\ntIPv4\nPTCP\nn127.0.0.1:54321->127.0.0.1:8000\nTST=ESTABLISHED\n').encode()
+    log, lock, active = [], threading.Lock(), {'now': 0, 'peak': 0}
+
+    def traced(label, result):
+        def call(*args):
+            with lock:
+                active['now'] += 1
+                active['peak'] = max(active['peak'], active['now'])
+                log.append((label, threading.current_thread().name))
+            time.sleep(0.005)
+            with lock:
+                active['now'] -= 1
+            return result
+        return call
+    authority = object.__new__(at.DesktopOmlx)
+    authority.uid, authority.port = uid, 8000
+    authority.binding = traced('binding', 321)
+    authority.prep = SimpleNamespace(run=traced('lsof', raw))
+    incarnation = (321, uid, 100, 200)
+    monkeypatch.setattr(local_peer, 'process_identity', lambda pid, owner: incarnation)
+
+    class Socket:
+        def fileno(self): return 9
+        def getsockname(self): return local
+        def getpeername(self): return remote
+    assert authority.connected_peer(Socket(), 321, incarnation) == (incarnation, 4, (9, local, remote))
+    assert [label for label, _ in log] == ['binding', 'lsof', 'lsof', 'binding']      # bracket, two sequential snapshots
+    assert active['peak'] == 1 and len({thread for _, thread in log}) == 1             # never overlapped, one thread
+
+
+# -- stress: many concurrent runs against the serial oracle ----------------------
+ACTIVE = contextvars.ContextVar('t0_active_probe')
+
+
+class Fleet:
+    """Routes the module-level fakes to a per-run Probe through a context variable."""
+
+    def __init__(self, base, monkeypatch):
+        self.base = base
+        monkeypatch.setattr(at, 'inspect_command',
+                            lambda argv: ACTIVE.get().step(step_name(argv), ACTIVE.get().host.inspect, argv))
+        monkeypatch.setattr(at, 'tcp_listeners', lambda: ACTIVE.get().step('tcp', ACTIVE.get().host.tcp_listeners))
+        monkeypatch.setattr(at.DesktopOmlx, '_signed_process',
+                            lambda instance, pid, identity: ACTIVE.get().step(
+                                'sig-server' if pid == SERVER_PID else 'sig-parent', ACTIVE.get().host.signed, pid, identity))
+
+    def clone(self):
+        import copy
+        host = copy.copy(self.base)
+        host.events, host.ps, host.txt = [], dict(self.base.ps), dict(self.base.txt)
+        host.signature_failures, host.listeners = {}, list(self.base.listeners)
+        return host
+
+
+def run_case(fleet, case):
+    faults, errors, profile, seed = case
+    probes, results = [], []
+    for runner in (current, legacy):
+        host = fleet.clone()
+        for index in faults:
+            FAULTS[index][1](host)
+        probe = Probe(host, delays=delays_for(profile, seed), errors=dict(errors))
+        probes.append(probe)
+        token = ACTIVE.set(probe)
+        try:
+            results.append(outcome(lambda: runner(bare())))
+        finally:
+            ACTIVE.reset(token)
+    return results, probes
+
+
+def test_stress_concurrent_listeners_equal_the_serial_oracle_without_leaks(make_host, monkeypatch):
+    base = make_host()
+    fleet = Fleet(base, monkeypatch)
+    rng = random.Random(1004)
+    cases = []
+    for number in range(200):
+        faults = rng.sample(PROCESS_FAULTS, rng.choice([0, 0, 1, 1, 2, 3]))
+        errors = {step: StepError(step) for step in rng.sample(ORDER, rng.choice([0, 0, 0, 1, 2]))}
+        cases.append((faults, errors, rng.choice(PROFILES), number))
+    before = thread_names()
+    with concurrent.futures.ThreadPoolExecutor(32) as callers:
+        outcomes = list(callers.map(lambda case: run_case(fleet, case), cases))
+    for case, ((new, old), (new_probe, old_probe)) in zip(cases, outcomes):
+        assert same_outcome(new, old), (case[:2], new[:2], old[:2])
+        assert new_probe.inflight == 0 and old_probe.inflight == 0
+        new_steps, old_steps = Counter(new_probe.started()), Counter(old_probe.started())
+        assert all(count == 1 for count in new_steps.values())            # nothing issued twice
+        assert not old_steps - new_steps                                   # at least what the serial code issued
+    assert len(pool_threads()) <= at._INSPECTION_WORKERS
+    at._POOL.shutdown()
+    assert thread_names() <= before                                        # no thread outlived the runs

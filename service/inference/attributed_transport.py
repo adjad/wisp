@@ -1,5 +1,7 @@
 """Credentials and request bytes cross only an attributed established socket."""
 import asyncio
+import concurrent.futures
+import contextvars
 import ctypes
 import grp
 import hashlib
@@ -13,6 +15,7 @@ import ssl
 import stat
 import struct
 import sys
+import threading
 import time
 from types import SimpleNamespace
 
@@ -36,6 +39,111 @@ REFUSED_MESSAGE = ("Wisp couldn't verify the local AI engine (oMLX) just now. "
 TRANSIENT_INSPECTION_REASONS = frozenset({
     'native_inspection_unavailable', 'connection_inspection_unavailable',
 })
+
+
+# The independent inspections of one `DesktopOmlx._listener` run (two listener
+# lookups; then ps, lsof -d txt and the signature check for the server and for
+# its parent) wait on child processes, so they are overlapped on a small private
+# pool.  This is scheduling only: every call still goes through the module-level
+# `inspect_command` / `tcp_listeners` (or the instance's own `_process`,
+# `_executable`, `_signed_process`), and the results are evaluated afterwards in
+# the former serial order, so the first failure raised is the one the serial code
+# raised.  The pool's tasks are leaf calls that never wait on the pool, so a full
+# pool only delays callers and cannot deadlock them.
+_INSPECTION_WORKERS = 8
+_worker = threading.local()
+
+
+def _mark_worker():
+    _worker.inside = True
+
+
+class _InspectionPool:
+    """A lazily created, bounded, restartable thread pool (one per process)."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._executor = None
+
+    def submit(self, call, *args):
+        # Each task runs in a copy of the caller's context, as asyncio.to_thread does.
+        context = contextvars.copy_context()
+        with self._lock:
+            if self._executor is None:
+                self._executor = concurrent.futures.ThreadPoolExecutor(
+                    max_workers=_INSPECTION_WORKERS, thread_name_prefix='wisp-inspect',
+                    initializer=_mark_worker)
+            return self._executor.submit(context.run, call, *args)
+
+    def shutdown(self, wait=True):
+        """Finish queued and running work, then join the workers; new work restarts the pool."""
+        with self._lock:
+            executor, self._executor = self._executor, None
+        if executor is not None:
+            executor.shutdown(wait=wait and not getattr(_worker, 'inside', False))
+
+    def _reset_in_forked_child(self):
+        # The workers do not exist in a forked child; never wait on them there.
+        self._lock = threading.Lock()
+        self._executor = None
+
+
+_POOL = _InspectionPool()
+if hasattr(os, 'register_at_fork'):
+    os.register_at_fork(after_in_child=_POOL._reset_in_forked_child)
+
+
+class _Deferred:
+    """A call that runs when its result is first asked for (the serial fallback)."""
+
+    def __init__(self, call, args):
+        self._call, self._args, self._done = call, args, False
+
+    def result(self):
+        if not self._done:
+            try:
+                self._value, self._error = self._call(*self._args), None
+            except BaseException as error:  # noqa: BLE001 - re-raised below, unchanged
+                self._value, self._error = None, error
+            self._done = True
+        if self._error is not None:
+            raise self._error
+        return self._value
+
+
+class _Inspections:
+    """The inspections one `_listener` run started; none of them outlives the run."""
+
+    def __init__(self):
+        self._started = []
+
+    def run(self, call, *args):
+        # A pool worker asking for a nested `_listener`, or a pool that cannot take
+        # work, gets the former serial behaviour: each call runs when evaluated.
+        if getattr(_worker, 'inside', False):
+            return _Deferred(call, args)
+        try:
+            future = _POOL.submit(call, *args)
+        except RuntimeError:
+            return _Deferred(call, args)
+        self._started.append(future)
+        return future
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exception):
+        for future in self._started:
+            future.cancel()
+        concurrent.futures.wait(self._started)
+        return False
+
+
+async def _close_inspection_pool():
+    try:
+        await asyncio.to_thread(_POOL.shutdown)
+    except RuntimeError:  # the loop's default executor is already closed
+        _POOL.shutdown(wait=False)
 
 
 def refused():
@@ -312,39 +420,53 @@ class DesktopOmlx:
             raise AuthRefused('desktop_runtime_unqualified') from None
 
     def _listener(self):
-        raw = inspect_command(['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000',
-                               '-sTCP:LISTEN', '-Fpufn']).decode('ascii')
-        rows = raw.splitlines()
-        if (len(rows) != 4 or not re.fullmatch(r'p[1-9][0-9]*', rows[0])
-                or rows[1] != 'u' + str(self.uid)
-                or not re.fullmatch(r'f[0-9]+', rows[2])
-                or rows[3] != 'n127.0.0.1:8000'):
-            raise AuthRefused('desktop_listener_unqualified')
-        listeners = tcp_listeners()
-        if (listeners is None
-                or [(host, port) for host, port in listeners if port == self.port]
-                    != [('127.0.0.1', self.port)]):
-            raise AuthRefused('desktop_listener_unqualified')
-        pid = int(rows[0][1:])
-        parent_pid, uid, command = self._process(pid)
-        if uid != self.uid or command != 'omlx-server':
-            raise AuthRefused('desktop_process_unqualified')
-        executable = self._qualified_file(self._executable(pid), parent=self.python_root)
-        self._signed_process(pid, 'python3')
+        with _Inspections() as inspections:
+            # `lsof` for the listener and the whole-system listener table are independent.
+            listen = inspections.run(lambda: inspect_command(
+                ['/usr/sbin/lsof', '-nP', '-a', '-iTCP:8000', '-sTCP:LISTEN', '-Fpufn']))
+            table = inspections.run(lambda: tcp_listeners())
+            raw = listen.result().decode('ascii')
+            rows = raw.splitlines()
+            if (len(rows) != 4 or not re.fullmatch(r'p[1-9][0-9]*', rows[0])
+                    or rows[1] != 'u' + str(self.uid)
+                    or not re.fullmatch(r'f[0-9]+', rows[2])
+                    or rows[3] != 'n127.0.0.1:8000'):
+                raise AuthRefused('desktop_listener_unqualified')
+            listeners = table.result()
+            if (listeners is None
+                    or [(host, port) for host, port in listeners if port == self.port]
+                        != [('127.0.0.1', self.port)]):
+                raise AuthRefused('desktop_listener_unqualified')
+            pid = int(rows[0][1:])
+            # Only a pid that passed both listener checks is inspected.  Its ps, lsof -d txt
+            # and signature check are independent of each other.
+            server_process = inspections.run(self._process, pid)
+            server_lookup = inspections.run(self._executable, pid)
+            server_signature = inspections.run(self._signed_process, pid, 'python3')
+            parent_pid, uid, command = server_process.result()
+            if uid != self.uid or command != 'omlx-server':
+                raise AuthRefused('desktop_process_unqualified')
+            # The parent pid is used only after the server's ps row passed its checks.
+            parent_process = inspections.run(self._process, parent_pid)
+            parent_lookup = inspections.run(self._executable, parent_pid)
+            parent_signature = inspections.run(self._signed_process, parent_pid, 'app.omlx')
 
-        grandparent_pid, parent_uid, parent_command = self._process(parent_pid)
-        if (grandparent_pid != 1 or parent_uid != self.uid
-                or parent_command != str(self.app_executable)):
-            raise AuthRefused('desktop_parent_unqualified')
-        parent_executable = self._qualified_file(
-            self._executable(parent_pid), exact=self.app_executable,
-            strict_permissions=True)
-        self._signed_process(parent_pid, 'app.omlx')
-        self._qualified_file(self.server_entry, exact=self.server_entry,
-                             strict_permissions=True)
-        self._qualified_tree(self.python_root)
-        self._qualified_tree(self.server_entry.parent)
-        return pid, executable, parent_pid, parent_executable
+            # Every result is evaluated in the former serial order.
+            executable = self._qualified_file(server_lookup.result(), parent=self.python_root)
+            server_signature.result()
+            grandparent_pid, parent_uid, parent_command = parent_process.result()
+            if (grandparent_pid != 1 or parent_uid != self.uid
+                    or parent_command != str(self.app_executable)):
+                raise AuthRefused('desktop_parent_unqualified')
+            parent_executable = self._qualified_file(
+                parent_lookup.result(), exact=self.app_executable,
+                strict_permissions=True)
+            parent_signature.result()
+            self._qualified_file(self.server_entry, exact=self.server_entry,
+                                 strict_permissions=True)
+            self._qualified_tree(self.python_root)
+            self._qualified_tree(self.server_entry.parent)
+            return pid, executable, parent_pid, parent_executable
 
     def binding(self, expected_pid=None):
         self._manifest_absent()
@@ -477,4 +599,7 @@ class CredentialTransport(httpx.AsyncBaseTransport):
 
     async def aclose(self):
         self.invalidate()
-        await self.pool.aclose()
+        try:
+            await self.pool.aclose()
+        finally:
+            await _close_inspection_pool()
