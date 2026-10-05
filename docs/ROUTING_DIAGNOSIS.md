@@ -313,3 +313,42 @@ and should wait. Gap 4 is a one-line scoping fix that can go with gap 1.
 * `audit_router_prompts.py` (PYTHONHASHSEED=0): identical to base (85 prompts, 4
   concrete flags, the same 25 stub routes). `grade_historical_routing.py`: 22/22.
 * Full CI-equivalent `scripts/test_replay_failure_fixes.py`: see handoff.
+
+## 8. Repairs after the independent review of PR #159 (head aac5b68)
+
+| commit | repair | regression tests (tests/test_routing_quality_fixes.py) |
+|---|---|---|
+| 14e5306 | **P1** typo normalization is a route hint only: direct calls, bindings and resolved request from the normalized copy are dropped and the decision is finalized on the ORIGINAL text; tokens touching `@ . / \ ~ _ - # :` or digits, quotes/backticks, URLs, paths and meta-linguistic questions are never rewritten | `test_normalizer_never_rewrites_*`, `test_normalizer_leaves_meta_linguistic_text_unchanged`, `test_recipients_bodies_and_args_never_come_from_the_normalized_copy`, `test_file_names_with_txt_are_not_rerouted_by_the_normalizer`, `test_meta_question_about_a_shorthand_*`, `test_ping_me_about_an_appt_*`, `test_fuzz_protected_tokens_survive_and_content_is_identical` (102 fuzz cases) |
+| 6514179, deacb53 | **P2** retrieval send/delete gate is structural and fails toward availability: withheld only when no communication verb, nobody addressed (relation word, pronoun after to/at, capitalized name, address, number) and no outbound/delete tool in the previous turn; channel core tools added when ranking missed them | `test_requests_addressed_to_someone_keep_a_send_or_call_tool` (30), `test_continuing_an_outbound_turn_keeps_the_send_tools`, `test_delete_paraphrases_and_typos_open_the_bulk_delete_gate`, `test_mentions_of_people_that_address_nobody_stay_non_outbound` |
+| 5f0fda8 | **P2** "I'll send it" is draft-only only as its own clause after a compose request; "don't reply to X" forbids reply_to_email only; a forced tool the contract forbids is dropped; quoted text never opens the gate | `test_message_body_words_never_turn_a_send_into_a_draft`, `test_channel_ambiguous_body_cases_route_exactly_as_on_main`, `test_a_standalone_self_send_clause_*`, `test_do_not_reply_forbids_the_reply_only` |
+| 859013f, 76f413e, c172f36 | **P2** no assent path writes a reminder: both confirmation paths withhold add_reminder/set_alarm unless the message names a resolvable time; a pure assent to a reminder offer gets the clarify-time route; other offers keep their tools | `test_assent_after_a_calendar_lookup_never_reaches_add_reminder`, `test_pure_assent_to_a_reminder_offer_*`, `test_assent_to_a_timed_offer_without_history_*`, `test_assent_to_a_calendar_offer_keeps_the_calendar_write_*` |
+| ce6cbab | **P2** held-out evidence reproducible: frozen set + sha256, `scripts/convert_heldout_to_corpus.py`, converted fixture + sha256 | — |
+| 69bc8d4 | **P3** `trash_file` removed from the email write set; "any new voicemails" routes as on main | `test_email_write_menu_*`, `test_voicemail_question_*` |
+
+Scores after the repairs (UTC and Pacific/Kiritimati identical):
+
+* Original 361-prompt corpus: main 232 → aac5b68 296 → **303**; no domain lower than at aac5b68
+  (mail 20 → 22, mail_send 2 → 7).
+* 78 review phrasings added to the corpus (69 outbound, 9 delete): main 60/78 → **67/78**.
+  The QA 67-phrasing outbound probe: **0 phrasings lose every send tool versus main**.
+* Full 439-case corpus: **370/439**; the ratchet records those 370 (a superset of the
+  aac5b68 record) and the floor is 370.
+* Held-out (reproducible conversion, `comparison_heldout_as_corpus.json`): main 67/104 →
+  **85/104**, 0 regressions. The reviewer's own conversion (79 → 89) used different forbid
+  rules; ours is committed so the number can be re-derived.
+* F5 (typo hint) still contributes its +3 on the dev corpus with the safer normalizer.
+
+Not fixed (pre-existing on main, documented): reminder deletes like "nuke/destroy/clar my
+reminders" are rule-routed to `search_reminders` (the gate is not consulted); four outbound
+phrasings are rule-routed without a send ("compose a message to Sam" is draft-only by
+design, "answer Jane's email", "mail the form to HR", "update the team that standup
+moved"); "remindr me…" is caught by the Notes/Reminders lookup rule; channel-ambiguous
+messages ("tell Dan I'll send it over tonight") wait for "text or email?" exactly as on
+main; an assent to an offer to text or email someone still gets no tools; the
+clarify-time receipt text for a relative offer is produced by the agent loop and was not
+changed.
+
+CI note: `tests/test_local_provider_tools.py::test_qualification_response_contexts_close_and_never_save[cancel-tool]`
+(not a routing test; this branch does not touch service/inference or that test) passed
+90/90 runs on origin/main locally (40 with light, 50 with heavy CPU load) and in this
+branch's full regression run. It was not reproduced, so the test was left unchanged.
