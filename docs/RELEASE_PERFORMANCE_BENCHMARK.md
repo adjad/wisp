@@ -425,10 +425,22 @@ engine runner or automate that approval. The receipt's 24-hour freshness rule st
 job's rebuild. Release diagnostics retain the raw evidence; public downloads remain the app ZIP only.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
-pipeline runs its complete pinned set of 289 cases in a separate sandbox using one parent-held reserved
-loopback socket, then imports the exact-SHA report by digest. Unrelated loopback connections, unrelated
-process execution and synthetic private-canary reads must be denied. The generic Simulation sandbox
+pipeline runs its complete pinned set of 311 cases in a separate sandbox using one parent-held reserved
+loopback socket, then imports the exact-SHA report by digest. Its standalone profile permits only the
+canonical selected interpreter (including its exact framework launcher when necessary) and the literal Git
+shim and system-selected native Git executable, source/runtime reads and scratch writes. It grants no shell, compiler or executable directory
+access. Unrelated loopback connections, unrelated process execution, shells, compilers, owned scripts,
+copied executables and synthetic private-canary reads must be denied. The generic Simulation sandbox
 keeps its network denial. Missing, changed, skipped, duplicate or partial case evidence blocks artifact
 validation. Tests use synthetic evidence, temporary repositories and owned Python child process groups;
 registration never selects the live benchmark command. Independent exact-head review, configured
 CI, specialist QA, live qualification and a reviewed baseline remain required before a real release.
+
+Publication evidence intake opens every directory component and file with no-follow descriptors.
+Receipt and raw files share a retained package directory; symbolic/hard links, special files, mutation during reads
+and oversized evidence are refused. Hashing and JSON parsing use the same immutable byte snapshots.
+Limits are 4 MiB per receipt, 1 MiB per approval, 64 MiB per raw file, 256 MiB total raw data, 64 raw
+files, 128 raw entries and four nested raw directory levels. Relative paths are anchored to the current
+directory; callers must supply canonical paths without linked ancestors (for example `/private/tmp`,
+rather than `/tmp` on macOS). These limits bound intake; the external receipt and approval digests must
+still come from the measurement owner outside the downloaded package.

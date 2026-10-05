@@ -149,11 +149,11 @@ class PipelineTests(unittest.TestCase):
             cases=dict(collected=len(BROWSER_EXPECTED), exitstatus=0, rows=[
                 dict(nodeid=node, phase=phase, outcome='passed', xfail=False)
                 for node in sorted(BROWSER_EXPECTED) for phase in ('setup', 'call', 'teardown')]))
-        from release_performance_gate import MODULE as BENCHMARK_MODULE, EXPECTED as BENCHMARK_EXPECTED
+        from release_performance_gate import MODULE as BENCHMARK_MODULE, EXPECTED as BENCHMARK_EXPECTED, PROBES as BENCHMARK_PROBES
         benchmark = dict(schema_version=1, scope="offline-benchmark-reserved-loopback",
             candidate_sha=self.meta["commit"], ending_sha=self.meta["commit"], clean_start=True,
             clean_end=True, dirty_allowed=False, status="PASS", returncode=0, port=51010,
-            probes={name: True for name in ("denied_loopback", "denied_process", "denied_private_canary")},
+            probes={name: True for name in BENCHMARK_PROBES},
             cases=dict(collected=len(BENCHMARK_EXPECTED), exitstatus=0, rows=[
                 dict(nodeid=node, phase=phase, outcome="passed", xfail=False)
                 for node in sorted(BENCHMARK_EXPECTED) for phase in ("setup", "call", "teardown")]))
@@ -257,6 +257,13 @@ class PipelineTests(unittest.TestCase):
         self.assertIn('(allow network-outbound (remote ip "localhost:51010"))', policy)
         self.assertIn('(allow network-bind network-inbound (local ip "localhost:51010"))', policy)
         self.assertNotIn('localhost:8000', policy)
+        execution = next(line for line in policy.splitlines() if line.startswith("(allow process-exec "))
+        self.assertNotIn("subpath", execution)
+        for prohibited in ("/bin/sh", "/bin/bash", "/usr/bin/env", "/bin/rm", "/usr/bin/swiftc", str(self.root)):
+            self.assertNotIn('(literal ' + json.dumps(prohibited) + ')', execution)
+        self.assertIn('(literal "/usr/bin/git")', execution)
+        self.assertIn('(literal ' + json.dumps(str(Path(sys.executable).resolve())) + ')', execution)
+        self.assertNotIn('(subpath ' + json.dumps(str(p.STATE.resolve())) + ')', policy)
         for invalid in (8000, 0, "51010", True):
             with self.assertRaises(ValueError): gate.profile(self.root, Path(sys.executable), invalid, self.root / "canary")
 

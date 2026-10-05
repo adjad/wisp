@@ -31,6 +31,8 @@ import json
 import math
 import os
 import re
+import stat
+from contextlib import contextmanager
 import subprocess
 import sys
 import threading
@@ -2280,9 +2282,122 @@ def write_json(path: Path, data: Any) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True, ensure_ascii=True) + "\n")
 
 
+# Untrusted publication evidence is never opened through Path's link-following
+# readers. Limits cover the fixed protocol with headroom for complete raw logs.
+RECEIPT_MAX_BYTES = 4 * 1024 * 1024
+APPROVAL_MAX_BYTES = 1024 * 1024
+RAW_FILE_MAX_BYTES = 64 * 1024 * 1024
+RAW_PACKAGE_MAX_BYTES = 256 * 1024 * 1024
+RAW_MAX_FILES = 64
+RAW_MAX_ENTRIES = 128
+RAW_MAX_DEPTH = 4
+
+
+@contextmanager
+def evidence_directory(path: Path):
+    """Walk from / with no-follow directory FDs, retaining the final directory.
+
+    Do not resolve links first: that would turn a prohibited link into an
+    apparently safe target. Relative paths are anchored to the current cwd.
+    """
+    absolute = Path(os.path.abspath(path))
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open("/", flags)
+    try:
+        for component in absolute.parts[1:]:
+            child = os.open(component, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def evidence_file(parent_fd: int, name: str, limit: int) -> bytes:
+    """Hashing and parsing callers share these exact retained bytes.
+
+    NONBLOCK prevents a substituted FIFO from hanging before fstat; only
+    bounded regular files are read. Metadata must stay stable across the read.
+    """
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent_fd)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or before.st_size > limit:
+            raise ValueError("evidence_not_bounded_regular_file")
+        chunks, count = [], 0
+        while True:
+            chunk = os.read(fd, min(1024 * 1024, limit + 1 - count))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            count += len(chunk)
+            if count > limit:
+                raise ValueError("evidence_file_too_large")
+        after = os.fstat(fd)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if count != before.st_size or any(getattr(before, key) != getattr(after, key) for key in fields):
+            raise ValueError("evidence_changed_during_snapshot")
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
+
+
+def evidence_bytes(path: Path, limit: int) -> bytes:
+    with evidence_directory(Path(path).parent) as parent:
+        return evidence_file(parent, Path(path).name, limit)
+
+
+def raw_snapshot(raw_dir: Path, *, parent_fd: int | None = None) -> dict[str, bytes]:
+    """No-follow, bounded tree snapshot. Links and special files are refused.
+
+    Passing a retained receipt directory binds raw traversal to that same
+    package directory even if its pathname is replaced concurrently.
+    """
+    files: dict[str, bytes] = {}
+    total = entries = 0
+    def walk(fd, prefix="", depth=0):
+        nonlocal total, entries
+        if depth > RAW_MAX_DEPTH:
+            raise ValueError("evidence_package_entries_exceeded")
+        names = []
+        with os.scandir(fd) as scan:
+            for entry in scan:
+                entries += 1
+                if entries > RAW_MAX_ENTRIES:
+                    raise ValueError("evidence_package_entries_exceeded")
+                names.append(entry.name)
+        names.sort()
+        for name in names:
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            relative = prefix + name
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    walk(child, relative + "/", depth + 1)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                if len(files) >= RAW_MAX_FILES:
+                    raise ValueError("evidence_package_files_exceeded")
+                data = evidence_file(fd, name, min(RAW_FILE_MAX_BYTES, RAW_PACKAGE_MAX_BYTES - total))
+                files[relative] = data
+                total += len(data)
+            else:
+                raise ValueError("evidence_package_link_or_special_file")
+    if parent_fd is None:
+        with evidence_directory(raw_dir) as fd:
+            walk(fd)
+    else:
+        fd = os.open("raw", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            walk(fd)
+        finally:
+            os.close(fd)
+    return files
+
+
 def raw_manifest(raw_dir: Path) -> dict[str, str]:
-    return {p.relative_to(raw_dir).as_posix(): sha256_file(p)
-            for p in sorted(raw_dir.rglob("*")) if p.is_file()}
+    return {name: sha256_bytes(data) for name, data in raw_snapshot(raw_dir).items()}
 
 
 def load_baseline_approval(path: str | None, expected_sha256: str | None) -> tuple[dict, list[str]]:
@@ -2291,9 +2406,12 @@ def load_baseline_approval(path: str | None, expected_sha256: str | None) -> tup
     if not path:
         return {"approved": False, "problem": "no approved baseline was supplied"}, refusals
     target = Path(path)
-    if not target.is_file():
+    try:
+        raw = evidence_bytes(target, APPROVAL_MAX_BYTES)
+    except FileNotFoundError:
         return {"approved": False, "problem": f"approved baseline file is missing: {path}"}, refusals
-    raw = target.read_bytes()
+    except (OSError, ValueError):
+        return {"approved": False, "problem": "unsafe or oversized approval"}, ["approved_baseline_unsafe"]
     if not expected_sha256:
         refusals.append("approved_baseline_digest_not_bound")
     elif sha256_bytes(raw) != expected_sha256:
@@ -2728,18 +2846,15 @@ async def run_release(opts: dict, deps: Any, bundle: dict, *,
 # The receipt checker: every conclusion is re-derived from the raw files
 # --------------------------------------------------------------------------
 
-def _json_lines(path: Path) -> list[dict]:
-    out: list[dict] = []
-    for line in path.read_text().splitlines() if path.is_file() else []:
-        if line.strip():
-            out.append(json.loads(line))
-    return out
-
-
-def load_raw(raw_dir: Path) -> dict:
-    """Everything the checker re-derives from. Duplicate sample or event records are reported, never merged."""
-    samples = _json_lines(raw_dir / "samples.jsonl")
-    event_rows = _json_lines(raw_dir / "events.jsonl")
+def load_raw(raw_dir: Path, *, snapshot: dict[str, bytes] | None = None) -> dict:
+    """Re-derive only from one immutable snapshot, never reopen hashed paths."""
+    snapshot = raw_snapshot(raw_dir) if snapshot is None else snapshot
+    def lines(name):
+        return [json.loads(line) for line in snapshot.get(name, b"").decode("utf-8").splitlines() if line.strip()]
+    def document(name):
+        return json.loads(snapshot[name]) if name in snapshot else None
+    samples = lines("samples.jsonl")
+    event_rows = lines("events.jsonl")
     events: dict[str, dict] = {}
     duplicates: list[str] = []
     for row in event_rows:
@@ -2748,12 +2863,9 @@ def load_raw(raw_dir: Path) -> dict:
         events[row["id"]] = row
     return {"samples": samples, "events": events, "event_order": [r["id"] for r in event_rows],
             "duplicate_event_ids": duplicates,
-            "logs": {side: _json_lines(raw_dir / f"instrumentation.{side}.jsonl") for side in SIDES},
-            "started": _json_lines(raw_dir / "started.jsonl"),
-            "environment": json.loads((raw_dir / "environment.json").read_text())
-            if (raw_dir / "environment.json").is_file() else None,
-            "provenance": json.loads((raw_dir / "provenance.json").read_text())
-            if (raw_dir / "provenance.json").is_file() else None}
+            "logs": {side: lines(f"instrumentation.{side}.jsonl") for side in SIDES},
+            "started": lines("started.jsonl"), "environment": document("environment.json"),
+            "provenance": document("provenance.json")}
 
 
 _IDENTITY_FIELDS = ("run_id", "id", "side", "scenario", "phase", "rep", "variant", "order_slot",
@@ -2936,7 +3048,14 @@ def _check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> t
 
     receipt_path = Path(opts.receipt)
     try:
-        raw_bytes = receipt_path.read_bytes()
+        with evidence_directory(receipt_path.parent) as package:
+            raw_bytes = evidence_file(package, receipt_path.name, RECEIPT_MAX_BYTES)
+            # Capture raw bytes before any hashing or parsing, through the same
+            # retained parent descriptor; missing raw is reported below.
+            try:
+                raw_files = raw_snapshot(receipt_path.parent / "raw", parent_fd=package)
+            except FileNotFoundError:
+                raw_files = {}
         receipt = json.loads(raw_bytes)
     except OSError:
         refuse("receipt_missing", str(receipt_path))
@@ -3003,7 +3122,7 @@ def _check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> t
 
     raw_dir = receipt_path.parent / "raw"
     declared = (receipt.get("raw") or {}).get("files") or {}
-    actual = raw_manifest(raw_dir) if raw_dir.is_dir() else {}
+    actual = {name: sha256_bytes(data) for name, data in raw_files.items()}
     if not actual:
         refuse("raw_missing")
     for name, digest in declared.items():
@@ -3062,7 +3181,7 @@ def _check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> t
         refuse("schedule_digest_mismatch")
 
     try:
-        raw = load_raw(raw_dir)
+        raw = load_raw(raw_dir, snapshot=raw_files)
     except (OSError, ValueError, KeyError, TypeError):
         refuse("raw_unreadable")
         return finish()
@@ -3140,7 +3259,7 @@ def propose_baseline(receipt_path: Path, output: Path) -> Path:
     """Write a PROPOSAL. It is never approved, and it refuses to overwrite anything."""
     if Path(output).exists():
         raise FileExistsError(f"{output} exists; a baseline file is never overwritten")
-    receipt_bytes = Path(receipt_path).read_bytes()
+    receipt_bytes = evidence_bytes(Path(receipt_path), RECEIPT_MAX_BYTES)
     receipt = json.loads(receipt_bytes)
     proposal = {"schema": BASELINE_SCHEMA, "status": "proposed",
                 "approved_by": None, "review_ref": None, "approved_at": None,

@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,8 +19,8 @@ import pipeline
 from native_peer_gate import fixture_process
 
 MODULE = "tests/test_release_performance.py"
-EXPECTED_COUNT = 289
-EXPECTED_CASES_SHA256 = "8aac3f73276f3e8be12692d9ce33436358901bac383fdb93729d2dbb79ed17b1"
+EXPECTED_COUNT = 311
+EXPECTED_CASES_SHA256 = "2df4e6c97512529b3b1412637246f9b4e176909abc7d7dcb0dfdfb971d89bbb4"
 EXPECTED = frozenset(json.loads((pipeline.ROOT / "test_fixtures/performance/offline_cases_v1.json").read_text()))
 PLUGIN = '''import json,os
 from pathlib import Path
@@ -35,14 +36,46 @@ def case_digest(nodes):
     return hashlib.sha256(json.dumps(sorted(nodes), separators=(",", ":")).encode()).hexdigest()
 
 
+PROBES = frozenset({"denied_loopback", "denied_process", "denied_private_canary", "denied_shell",
+                    "denied_compiler", "denied_owned_script", "denied_copied_executable"})
+
+
 def profile(scratch, python, port, canary):
     if type(port) is not int or not 1024 < port < 65536 or port == 8000:
         raise ValueError("benchmark_fixture_port_invalid")
-    policy = pipeline.simulation_profile(scratch, python)
-    policy += f'\n(allow network-bind network-inbound (local ip "localhost:{port}"))'
-    policy += f'\n(allow network-outbound (remote ip "localhost:{port}"))'
-    policy += '\n(deny file-read-data (literal ' + json.dumps(str(canary)) + '))'
-    return policy
+    def q(path): return json.dumps(str(Path(path).resolve()))
+    python = Path(python)
+    runtime = python.resolve().parent.parent
+    executables = {python.resolve(), Path("/usr/bin/git")}
+    # Apple's Git shim delegates to the selected developer tool. Resolve it in
+    # the parent with a fixed environment; grant that exact executable only.
+    selected = subprocess.run(["/usr/bin/xcrun", "--find", "git"], check=True,
+                              env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=10).stdout.strip()
+    native_git = Path(selected)
+    if not native_git.is_absolute() or not str(native_git).endswith("/usr/bin/git") or not native_git.is_file():
+        raise ValueError("benchmark_fixture_git_invalid")
+    executables.add(native_git.resolve())
+    # python.org framework runtimes may delegate to this exact native launcher.
+    launcher = runtime / "Resources/Python.app/Contents/MacOS/Python"
+    if launcher.is_file():
+        executables.add(launcher.resolve())
+    shared_git = Path(pipeline.git("rev-parse", "--git-common-dir"))
+    if not shared_git.is_absolute():
+        shared_git = pipeline.ROOT / shared_git
+    readable = [pipeline.ROOT, shared_git, scratch, *pipeline.interpreter_read_roots(python)]
+    # Standalone boundary: no compiler, shell, env, rm, developer-directory,
+    # runtime-directory or scratch-directory execution grant; no build-state writes.
+    return "\n".join([
+        "(version 1)", "(allow default)", "(deny network*)", "(deny appleevent-send)",
+        "(deny process-exec)",
+        "(allow process-exec " + " ".join("(literal " + q(p) + ")" for p in sorted(executables)) + ")",
+        "(deny file-write*)", "(allow file-write* (subpath " + q(scratch) + ') (literal "/dev/null"))',
+        "(deny file-read-data (subpath " + q(Path.home()) + "))",
+        "(allow file-read-data " + " ".join("(subpath " + q(p) + ")" for p in readable) + ")",
+        '(allow network-bind network-inbound (local ip "localhost:' + str(port) + '"))',
+        '(allow network-outbound (remote ip "localhost:' + str(port) + '"))',
+        "(deny file-read-data (literal " + q(canary) + "))",
+    ])
 
 
 def validate(report, sha, *, allow_dirty=False):
@@ -63,7 +96,7 @@ def validate(report, sha, *, allow_dirty=False):
             or any(r.get("outcome") != "passed" or r.get("xfail") is not False for r in rows)):
         raise ValueError("benchmark_fixture_gate_incomplete")
     probes = report.get("probes", {})
-    if set(probes) != {"denied_loopback", "denied_process", "denied_private_canary"} or any(v is not True for v in probes.values()):
+    if set(probes) != PROBES or any(v is not True for v in probes.values()):
         raise ValueError("benchmark_fixture_boundary_unproven")
     port = report.get("port")
     if type(port) is not int or not 1024 < port < 65536 or port == 8000:
@@ -98,10 +131,20 @@ def run_gate(expected_sha, *, allow_dirty=False):
             canary = scratch / "private-canary"
             canary.write_bytes(b"synthetic private state")
             policy = profile(scratch, Path(sys.executable), port, canary)
+            script = scratch / "owned-script"
+            script.write_text("#!/bin/sh\nexit 0\n")
+            script.chmod(0o700)
+            copied = scratch / "copied-true"
+            shutil.copyfile("/usr/bin/true", copied)
+            copied.chmod(0o700)
             probes = {}
             commands = {
                 "denied_loopback": f"import socket; socket.create_connection(('127.0.0.1',{denied.getsockname()[1]}),timeout=1)",
                 "denied_process": "import subprocess; subprocess.run(['/usr/bin/true'],check=True)",
+                "denied_shell": "import subprocess; subprocess.run(['/bin/sh','-c','exit 0'],check=True)",
+                "denied_compiler": "import subprocess; subprocess.run(['/usr/bin/swiftc','--version'],check=True)",
+                "denied_owned_script": f"import subprocess; subprocess.run([{str(script)!r}],check=True)",
+                "denied_copied_executable": f"import subprocess; subprocess.run([{str(copied)!r}],check=True)",
                 "denied_private_canary": f"from pathlib import Path; Path({str(canary)!r}).read_bytes()",
             }
             for name, command in commands.items():

@@ -3566,3 +3566,168 @@ def test_nonfinite_or_nonnumeric_receipt_time_cannot_bypass_freshness(good, ctx,
     code, result = run_check(evd, ctx)
     assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
     assert "receipt_time_invalid" in refusal_codes(result)
+
+
+@pytest.mark.parametrize("target", ["receipt", "approval", "raw_file", "raw_directory", "raw_descendant", "receipt_parent"])
+def test_release_intake_rejects_outside_file_and_directory_links(good, ctx, tmp_path, target):
+    evd = clone(good, tmp_path)
+    opts = check_opts(evd, ctx)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    if target == "receipt":
+        replacement = outside / "receipt.json"
+        replacement.write_bytes(evd.receipt_path.read_bytes())
+        evd.receipt_path.unlink()
+        evd.receipt_path.symlink_to(replacement)
+    elif target == "approval":
+        replacement = outside / "approval.json"
+        replacement.write_bytes(Path(opts.approved_baseline).read_bytes())
+        link = evd.out / "approval-link.json"
+        link.symlink_to(replacement)
+        opts.approved_baseline = link
+    elif target == "raw_file":
+        path = evd.out / "raw" / "samples.jsonl"
+        replacement = outside / "samples.jsonl"
+        replacement.write_bytes(path.read_bytes())
+        path.unlink()
+        path.symlink_to(replacement)
+    elif target == "raw_directory":
+        raw = evd.out / "raw"
+        moved = outside / "raw"
+        raw.rename(moved)
+        raw.symlink_to(moved, target_is_directory=True)
+    elif target == "raw_descendant":
+        (evd.out / "raw" / "linked-directory").symlink_to(outside, target_is_directory=True)
+    else:
+        linked = tmp_path / "linked-package"
+        linked.symlink_to(evd.out, target_is_directory=True)
+        opts.receipt = linked / "receipt.json"
+    code, result = rp.check_receipt(opts)
+    assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+
+
+@pytest.mark.parametrize("target", ["receipt", "approval", "raw"])
+def test_release_intake_refuses_fifo_without_reading_or_blocking(good, ctx, tmp_path, monkeypatch, target):
+    evd = clone(good, tmp_path)
+    opts = check_opts(evd, ctx)
+    if target == "receipt":
+        path = evd.receipt_path
+    elif target == "approval":
+        path = evd.out / "fifo-approval"
+        opts.approved_baseline = path
+    else:
+        path = evd.out / "raw" / "samples.jsonl"
+    if path.exists():
+        path.unlink()
+    os.mkfifo(path)
+    original_read = os.read
+    fifo = path.stat()
+    def read_regular_only(fd, count):
+        info = os.fstat(fd)
+        assert (info.st_dev, info.st_ino) != (fifo.st_dev, fifo.st_ino), "attempted to read the FIFO"
+        return original_read(fd, count)
+    monkeypatch.setattr(os, "read", read_regular_only)
+    code, result = rp.check_receipt(opts)
+    assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+
+
+def test_release_raw_hash_and_derivation_use_same_retained_bytes(good, ctx, tmp_path, monkeypatch):
+    evd = clone(good, tmp_path)
+    samples = evd.out / "raw" / "samples.jsonl"
+    valid = samples.read_bytes()
+    rows = [json.loads(line) for line in valid.splitlines()]
+    rows[0]["side"] = "invented-side"
+    samples.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+    seal(evd.out, evd.receipt_path)
+    opts = check_opts(evd, ctx)
+    original_load = rp.load_raw
+    seen = []
+    def replace_after_hash(raw_dir, *, snapshot=None):
+        assert snapshot is not None and snapshot["samples.jsonl"] != valid
+        samples.write_bytes(valid)
+        seen.append(True)
+        return original_load(raw_dir, snapshot=snapshot)
+    monkeypatch.setattr(rp, "load_raw", replace_after_hash)
+    code, result = rp.check_receipt(opts)
+    assert seen and code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+
+
+@pytest.mark.parametrize("limit", ["receipt", "approval", "raw_file", "raw_package", "file_count", "entry_count"])
+def test_release_intake_enforces_bounded_package_limits(good, ctx, tmp_path, monkeypatch, limit):
+    evd = clone(good, tmp_path)
+    opts = check_opts(evd, ctx)
+    name = {"receipt": "RECEIPT_MAX_BYTES", "approval": "APPROVAL_MAX_BYTES",
+            "raw_file": "RAW_FILE_MAX_BYTES", "raw_package": "RAW_PACKAGE_MAX_BYTES",
+            "file_count": "RAW_MAX_FILES", "entry_count": "RAW_MAX_ENTRIES"}[limit]
+    monkeypatch.setattr(rp, name, 1)
+    code, result = rp.check_receipt(opts)
+    assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+
+
+def test_evidence_snapshot_refuses_mutation_during_read(tmp_path, monkeypatch):
+    path = tmp_path / "mutating.json"
+    path.write_bytes(b"before")
+    original_read = os.read
+    changed = []
+    def mutate(fd, count):
+        data = original_read(fd, count)
+        if data and not changed:
+            path.write_bytes(b"replacement with different length")
+            changed.append(True)
+        return data
+    monkeypatch.setattr(os, "read", mutate)
+    with pytest.raises(ValueError, match="evidence_changed_during_snapshot"):
+        rp.evidence_bytes(path, 1024)
+
+
+@pytest.mark.parametrize("target", ["receipt", "approval"])
+def test_external_digest_and_parsing_are_bound_to_same_snapshot(good, ctx, tmp_path, monkeypatch, target):
+    evd = clone(good, tmp_path)
+    opts = check_opts(evd, ctx)
+    if target == "receipt":
+        path = evd.receipt_path
+        valid = path.read_bytes()
+        bad = json.loads(valid)
+        bad["candidate"]["sha"] = "e" * 40
+        path.write_text(json.dumps(bad))
+        opts.expect_receipt_sha256 = rp.sha256_file(path)
+    else:
+        path = evd.out / "snapshot-approval.json"
+        valid = Path(opts.approved_baseline).read_bytes()
+        bad = json.loads(valid)
+        bad["subject"]["sha"] = "e" * 40
+        path.write_text(json.dumps(bad))
+        opts.approved_baseline = path
+        opts.approved_baseline_sha256 = rp.sha256_file(path)
+    retained = path.read_bytes()
+    original_hash = rp.sha256_bytes
+    seen = []
+    def swap_after_digest(data):
+        digest = original_hash(data)
+        if data == retained and not seen:
+            path.write_bytes(valid)
+            seen.append(True)
+        return digest
+    monkeypatch.setattr(rp, "sha256_bytes", swap_after_digest)
+    code, result = rp.check_receipt(opts)
+    assert seen and code == rp.EXIT_REFUSED and result["authorizes_release"] is False
+    expected = "candidate_sha_mismatch" if target == "receipt" else "baseline_subject_not_the_approved_one"
+    assert expected in refusal_codes(result)
+
+
+@pytest.mark.parametrize("target", ["receipt", "approval", "raw"])
+def test_release_intake_rejects_hard_links_to_outside_state(good, ctx, tmp_path, target):
+    evd = clone(good, tmp_path)
+    opts = check_opts(evd, ctx)
+    if target == "receipt":
+        path = evd.receipt_path
+    elif target == "approval":
+        path = evd.out / "hardlinked-approval"
+        path.write_bytes(Path(opts.approved_baseline).read_bytes())
+        opts.approved_baseline = path
+    else:
+        path = evd.out / "raw" / "samples.jsonl"
+    outside = tmp_path / "outside-hardlink"
+    os.link(path, outside)
+    code, result = rp.check_receipt(opts)
+    assert code == rp.EXIT_REFUSED and result["authorizes_release"] is False
