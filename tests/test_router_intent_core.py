@@ -624,3 +624,128 @@ def test_query_duration_literal_does_not_authorize_changed_calendar_operation():
     bad = value(source("calendar", "free_time", minutes=90), source("notes", "records", query="90 minute appointments"))
     result = run("Recap my calendar and find notes about 90 minute appointments", FakeClient(bad, bad))
     assert result.disposition == "clarify" and not result.calls
+
+
+REPEATED_READ_PROMPT = "Read email from Elara for 2026-10-03; read email from Tobias for 2026-10-04"
+
+
+def repeated_email(*, reverse=False, swapped=False):
+    data = [source("email", "records", query="Elara", time={"date": "2026-10-04" if swapped else "2026-10-03"}),
+            source("email", "records", query="Tobias", time={"date": "2026-10-03" if swapped else "2026-10-04"})]
+    return value(*(reversed(data) if reverse else data))
+
+
+def test_whole_occurrence_date_binding_rejects_swap_and_missing_clause():
+    for bad in [repeated_email(swapped=True), value(repeated_email()["sources"][0])]:
+        with pytest.raises(InvalidIntent):
+            validate_intent(bad, REPEATED_READ_PROMPT, now=NOW)
+        result = run(REPEATED_READ_PROMPT, FakeClient(bad, bad))
+        assert result.disposition == "clarify" and not result.calls
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_whole_occurrence_matching_is_independent_of_model_entry_order(reverse):
+    data = repeated_email(reverse=reverse)
+    intent = validate_intent(data, REPEATED_READ_PROMPT, now=NOW)
+    assert [(s.query, s.time.date) for s in intent.sources] == [(s["query"], s["time"]["date"]) for s in data["sources"]]
+    assert run(REPEATED_READ_PROMPT, FakeClient(data)).disposition == "compiled"
+
+
+@pytest.mark.parametrize("mutation", ["date", "account", "count", "operation", "unread", "query", "missing"])
+def test_repeated_read_tuple_cannot_mix_individually_authorized_fields(mutation):
+    prompt = ('Read two unread emails from Elara in account "Work" for 2026-10-03; '
+              'read three emails from Tobias in account "Personal" for 2026-10-04')
+    good = value(source("email", "records", query="Elara", account="Work", count=2, unread=True, time={"date": "2026-10-03"}),
+                 source("email", "records", query="Tobias", account="Personal", count=3, time={"date": "2026-10-04"}))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    bad = copy.deepcopy(good)
+    if mutation == "missing":
+        bad["sources"].pop()
+    elif mutation == "operation":
+        bad["sources"][0]["operation"] = "overview"
+    elif mutation == "unread":
+        bad["sources"][0].pop("unread")
+        bad["sources"][1]["unread"] = True
+    else:
+        key = "time" if mutation == "date" else mutation
+        bad["sources"][0][key], bad["sources"][1][key] = bad["sources"][1][key], bad["sources"][0][key]
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+    assert run(prompt, FakeClient(bad, bad)).disposition == "clarify"
+
+
+@pytest.mark.parametrize("prompt,data", [
+    ("Read email from Elara and email from Tobias for yesterday", value(source("email", "records", query="Elara", time={"named": "yesterday"}), source("email", "records", query="Tobias", time={"named": "yesterday"}))),
+    ("Read email from Elara; read email from Tobias for tomorrow", value(source("email", "records", query="Elara"), source("email", "records", query="Tobias", time={"named": "tomorrow"}))),
+    ("Find notes named Alpha; find notes named Beta", value(source("notes", "records", query="Alpha"), source("notes", "records", query="Beta"))),
+    ("Recap email yesterday; read email today", value(source("email", "overview", time={"named": "yesterday"}), source("email", "records", time={"named": "today"}))),
+])
+def test_repeated_read_positive_shared_independent_and_operation_controls(prompt, data):
+    assert validate_intent(data, prompt, now=NOW)
+    assert run(prompt, FakeClient(data)).disposition == "compiled"
+
+
+@pytest.mark.parametrize("fragment", ["Actually about birch diagrams", "Instead named birch diagrams", 'Actually about "birch diagrams"'])
+def test_source_free_query_replacement_uses_new_literal_and_keeps_other_constraints(fragment):
+    prior = [{"role": "user", "content": "Find five notes about cedar manuscripts from yesterday"}]
+    good = value(source("notes", "records", query="birch diagrams", count=5, time={"named": "yesterday"}))
+    bad = value(source("notes", "records", query="cedar manuscripts", count=5, time={"named": "yesterday"}))
+    assert validate_intent(good, fragment, context=prior, prior_tools=["search_notes"], now=NOW)
+    assert run(fragment, FakeClient(good), context=prior, prior_tools=["search_notes"]).disposition == "compiled"
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, fragment, context=prior, prior_tools=["search_notes"], now=NOW)
+    assert run(fragment, FakeClient(bad, bad), context=prior, prior_tools=["search_notes"]).disposition == "clarify"
+
+
+def test_source_free_query_replacement_with_multiple_contextual_sources_clarifies():
+    prior = [{"role": "user", "content": "Find notes about cedar manuscripts and read email from Elara"}]
+    data = value(source("notes", "records", query="birch diagrams"), source("email", "records", query="Elara"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(data, "Actually about birch diagrams", context=prior, prior_tools=["search_notes", "view_emails"], now=NOW)
+    assert run("Actually about birch diagrams", FakeClient(data, data), context=prior, prior_tools=["search_notes", "view_emails"]).disposition == "clarify"
+
+
+
+def test_new_read_verb_keeps_trailing_date_on_its_own_occurrence():
+    prompt = "Read email from Elara and read email from Tobias for yesterday"
+    good = value(source("email", "records", query="Elara"), source("email", "records", query="Tobias", time={"named": "yesterday"}))
+    bad = value(source("email", "records", query="Elara", time={"named": "yesterday"}), source("email", "records", query="Tobias", time={"named": "yesterday"}))
+    assert validate_intent(good, prompt, now=NOW)
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+def test_contextual_query_replacement_preserves_independently_requested_account():
+    prior = [{"role": "user", "content": 'Read two unread emails from Elara in account "Work" for yesterday'}]
+    good = value(source("email", "records", query="Tobias", account="Work", count=2, unread=True, time={"named": "yesterday"}))
+    assert validate_intent(good, "Actually from Tobias", context=prior, prior_tools=["view_emails"], now=NOW)
+    assert run("Actually from Tobias", FakeClient(good), context=prior, prior_tools=["view_emails"]).disposition == "compiled"
+    bad = copy.deepcopy(good)
+    bad["sources"][0]["query"] = "Elara"
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, "Actually from Tobias", context=prior, prior_tools=["view_emails"], now=NOW)
+
+
+
+@pytest.mark.parametrize("fragment", ["Same for tomorrow", "Now only unread email"])
+def test_contextual_repeated_reads_cannot_retain_superseded_date_or_unread(fragment):
+    context = [{"role": "user", "content": REPEATED_READ_PROMPT}]
+    data = repeated_email()
+    stale = copy.deepcopy(data)
+    for item in data["sources"]:
+        if "tomorrow" in fragment:
+            item["time"] = {"named": "tomorrow"}
+        else:
+            item["unread"] = True
+    assert validate_intent(data, fragment, context=context, prior_tools=["view_emails"], now=NOW)
+    assert run(fragment, FakeClient(data), context=context, prior_tools=["view_emails"]).disposition == "compiled"
+    with pytest.raises(InvalidIntent):
+        validate_intent(stale, fragment, context=context, prior_tools=["view_emails"], now=NOW)
+
+
+def test_ambiguous_replacement_of_multiple_same_domain_reads_clarifies():
+    context = [{"role": "user", "content": "Find notes named Alpha; find notes named Beta"}]
+    data = value(source("notes", "records", query="birch diagrams"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(data, "Actually about birch diagrams", context=context, prior_tools=["search_notes"], now=NOW)
