@@ -1,0 +1,1386 @@
+[
+  {
+    "id": "followdev_named_day-1",
+    "family": "followdev_named_day",
+    "split": "dev",
+    "prompt": "Can you walk me through my agenda for October 14, 2026?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-14"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_named_day-2",
+    "family": "followdev_named_day",
+    "split": "dev",
+    "prompt": "What have I got scheduled on 2026-10-14?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-14"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_named_day-3",
+    "family": "followdev_named_day",
+    "split": "dev",
+    "prompt": "Check my personal schedule for Wednesday, October 14, 2026.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-14"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_email_digest-1",
+    "family": "followdev_email_digest",
+    "split": "dev",
+    "prompt": "Please give me the main points from my email inbox.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_email_digest-2",
+    "family": "followdev_email_digest",
+    "split": "dev",
+    "prompt": "I need a short digest of my emails.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_email_digest-3",
+    "family": "followdev_email_digest",
+    "split": "dev",
+    "prompt": "Bring me up to speed on my email, briefly.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_message_records-1",
+    "family": "followdev_message_records",
+    "split": "dev",
+    "prompt": "Display my newest eight texts word for word.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 8
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_messages": [
+          "period",
+          "day",
+          "query"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_message_records-2",
+    "family": "followdev_message_records",
+    "split": "dev",
+    "prompt": "Pull up the full text of my eight latest messages.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 8
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_messages": [
+          "period",
+          "day",
+          "query"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_message_records-3",
+    "family": "followdev_message_records",
+    "split": "dev",
+    "prompt": "Let me read the 8 most recent iMessages verbatim.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_messages"
+      ],
+      "args": {
+        "view_messages": {
+          "count": 8
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_messages": [
+          "period",
+          "day",
+          "query"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followdev_inline_draft-1",
+    "family": "followdev_inline_draft",
+    "split": "dev",
+    "prompt": "Compose a text saying I can cover the opening shift; put the draft here and send nothing.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_message",
+        "draft_email",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline composition only; quoted or draft wording does not authorize an outbound action."
+    }
+  },
+  {
+    "id": "followdev_inline_draft-2",
+    "family": "followdev_inline_draft",
+    "split": "dev",
+    "prompt": "Help me word an email requesting the equipment checklist. Keep the draft in this chat only.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_message",
+        "draft_email",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline composition only; quoted or draft wording does not authorize an outbound action."
+    }
+  },
+  {
+    "id": "followdev_inline_draft-3",
+    "family": "followdev_inline_draft",
+    "split": "dev",
+    "prompt": "Give me a polite message declining the weekend volunteer shift, without opening any app or sending it.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "draft_message",
+        "draft_email",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Inline composition only; quoted or draft wording does not authorize an outbound action."
+    }
+  },
+  {
+    "id": "followtest_personal_week-1",
+    "family": "followtest_personal_week",
+    "split": "test",
+    "prompt": "How is my schedule shaping up for next week?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_personal_week-2",
+    "family": "followtest_personal_week",
+    "split": "test",
+    "prompt": "Run me through my agenda for the week of October 12–18, 2026.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_personal_week-3",
+    "family": "followtest_personal_week",
+    "split": "test",
+    "prompt": "What commitments have I got next week, starting Monday October 12?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "next week"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_personal_month-1",
+    "family": "followtest_personal_month",
+    "split": "test",
+    "prompt": "What have I got on my personal schedule in December 2026?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-12"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_personal_month-2",
+    "family": "followtest_personal_month",
+    "split": "test",
+    "prompt": "Give me my agenda for the whole month of December 2026.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-12"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_personal_month-3",
+    "family": "followtest_personal_month",
+    "split": "test",
+    "prompt": "Can you check my scheduled commitments for 2026-12?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-12"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_exact_agenda_range-1",
+    "family": "followtest_exact_agenda_range",
+    "split": "test",
+    "prompt": "List my scheduled commitments from October 20 through October 22, 2026, including both dates.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-20 to 2026-10-22"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_exact_agenda_range-2",
+    "family": "followtest_exact_agenda_range",
+    "split": "test",
+    "prompt": "What is in my personal agenda between 2026-10-20 and 2026-10-22, inclusive?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-20 to 2026-10-22"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_exact_agenda_range-3",
+    "family": "followtest_exact_agenda_range",
+    "split": "test",
+    "prompt": "Check my schedule for the three full days October 20, 21, and 22, 2026.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-20 to 2026-10-22"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_context_correction-1",
+    "family": "followtest_context_correction",
+    "split": "test",
+    "prompt": "Actually, switch that to my personal agenda for October 15, 2026.",
+    "context": [
+      {
+        "role": "user",
+        "content": "Give me an email digest for September 2026."
+      },
+      {
+        "role": "assistant",
+        "content": "You asked for an email overview covering September."
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-15"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    },
+    "context_tools": [
+      "summarize_emails"
+    ]
+  },
+  {
+    "id": "followtest_context_correction-2",
+    "family": "followtest_context_correction",
+    "split": "test",
+    "prompt": "I meant just October 16, 2026, not the whole week.",
+    "context": [
+      {
+        "role": "user",
+        "content": "Check my personal schedule for next week."
+      },
+      {
+        "role": "assistant",
+        "content": "I can check the week beginning October 12."
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-16"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    },
+    "context_tools": [
+      "get_upcoming"
+    ]
+  },
+  {
+    "id": "followtest_context_correction-3",
+    "family": "followtest_context_correction",
+    "split": "test",
+    "prompt": "Correction: only October 23 through October 25, 2026, inclusive.",
+    "context": [
+      {
+        "role": "user",
+        "content": "Show my personal agenda for December 2026."
+      },
+      {
+        "role": "assistant",
+        "content": "You want a month view of your personal agenda."
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-23 to 2026-10-25"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    },
+    "context_tools": [
+      "get_upcoming"
+    ]
+  },
+  {
+    "id": "followtest_unread_sender_records-1",
+    "family": "followtest_unread_sender_records",
+    "split": "test",
+    "prompt": "Open unread emails from CedarWorks and show their full bodies.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "CedarWorks"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": "The supported query searches sender/recipient/subject/body; sender matches must be verified in returned records. Gold does not require an unsupported sender argument."
+    }
+  },
+  {
+    "id": "followtest_unread_sender_records-2",
+    "family": "followtest_unread_sender_records",
+    "split": "test",
+    "prompt": "Find the CedarWorks emails I have not read and let me see the complete text.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "CedarWorks"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": "The supported query searches sender/recipient/subject/body; sender matches must be verified in returned records. Gold does not require an unsupported sender argument."
+    }
+  },
+  {
+    "id": "followtest_unread_sender_records-3",
+    "family": "followtest_unread_sender_records",
+    "split": "test",
+    "prompt": "Pull up the full content of unread mail sent by CedarWorks.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "unread": true,
+          "query": {
+            "contains": "CedarWorks"
+          }
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": "The supported query searches sender/recipient/subject/body; sender matches must be verified in returned records. Gold does not require an unsupported sender argument."
+    }
+  },
+  {
+    "id": "followtest_email_range_records-1",
+    "family": "followtest_email_range_records",
+    "split": "test",
+    "prompt": "Let me read the complete emails received September 16 through September 18, 2026, inclusive.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "2026-09-16 to 2026-09-18"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_email_range_records-2",
+    "family": "followtest_email_range_records",
+    "split": "test",
+    "prompt": "Retrieve the full bodies of my email from 2026-09-16 to 2026-09-18, including both days.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "2026-09-16 to 2026-09-18"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_email_range_records-3",
+    "family": "followtest_email_range_records",
+    "split": "test",
+    "prompt": "Show my emails verbatim for the three days September 16, 17, and 18, 2026.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "view_emails"
+      ],
+      "args": {
+        "view_emails": {
+          "period": "2026-09-16 to 2026-09-18"
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "view_emails": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_message_digest-1",
+    "family": "followtest_message_digest",
+    "split": "test",
+    "prompt": "Give me a concise catch-up on my text conversations.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day",
+          "conversation"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_message_digest-2",
+    "family": "followtest_message_digest",
+    "split": "test",
+    "prompt": "What are the main takeaways from my iMessages?",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day",
+          "conversation"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_message_digest-3",
+    "family": "followtest_message_digest",
+    "split": "test",
+    "prompt": "Please make a digest of my messages so I can catch up.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day",
+          "conversation"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_conversation_digest-1",
+    "family": "followtest_conversation_digest",
+    "split": "test",
+    "prompt": "Recap my text conversation with Imani.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Imani"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_conversation_digest-2",
+    "family": "followtest_conversation_digest",
+    "split": "test",
+    "prompt": "I need the gist of my iMessage chat with Imani.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Imani"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_conversation_digest-3",
+    "family": "followtest_conversation_digest",
+    "split": "test",
+    "prompt": "Summarize what Imani and I have been discussing in messages.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_messages": {
+          "conversation": {
+            "contains": "Imani"
+          }
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_source_exclusion-1",
+    "family": "followtest_source_exclusion",
+    "split": "test",
+    "prompt": "Catch me up on my texts; keep Mail closed and do not inspect email.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_messages"
+      ],
+      "args": {},
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [
+        "view_emails",
+        "summarize_emails"
+      ],
+      "absent": {
+        "summarize_messages": [
+          "period",
+          "day",
+          "conversation"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_source_exclusion-2",
+    "family": "followtest_source_exclusion",
+    "split": "test",
+    "prompt": "Give me an email digest only. Leave my text conversations out of it.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails"
+      ],
+      "args": {},
+      "domains": [
+        "email"
+      ],
+      "forbidden": [
+        "view_messages",
+        "summarize_messages"
+      ],
+      "absent": {
+        "summarize_emails": [
+          "period",
+          "day",
+          "account"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_source_exclusion-3",
+    "family": "followtest_source_exclusion",
+    "split": "test",
+    "prompt": "Digest my emails and texts from September 24, 2026; do not search online.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "summarize_emails",
+        "summarize_messages"
+      ],
+      "args": {
+        "summarize_emails": {
+          "period": "2026-09-24"
+        },
+        "summarize_messages": {
+          "period": "2026-09-24"
+        }
+      },
+      "domains": [
+        "email",
+        "messages"
+      ],
+      "forbidden": [
+        "web_search",
+        "web_fetch"
+      ],
+      "absent": {
+        "summarize_emails": [
+          "account"
+        ],
+        "summarize_messages": [
+          "conversation"
+        ]
+      },
+      "note": ""
+    }
+  },
+  {
+    "id": "followtest_explicit_send-1",
+    "family": "followtest_explicit_send",
+    "split": "test",
+    "prompt": "Send this exact SMS to +12025550187: The gate code is 6814.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_message"
+      ],
+      "args": {
+        "send_message": {
+          "to": "+12025550187",
+          "text": "The gate code is 6814."
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "send_message": [
+          "confirmed_self_send"
+        ]
+      },
+      "note": "Synthetic first proposed call only; no message is executed."
+    }
+  },
+  {
+    "id": "followtest_explicit_send-2",
+    "family": "followtest_explicit_send",
+    "split": "test",
+    "prompt": "Please email robin@example.invalid with subject Equipment pickup and body The cart is ready at reception.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_email"
+      ],
+      "args": {
+        "send_email": {
+          "to": "robin@example.invalid",
+          "subject": "Equipment pickup",
+          "body": "The cart is ready at reception."
+        }
+      },
+      "domains": [
+        "email"
+      ],
+      "forbidden": [],
+      "absent": {
+        "send_email": [
+          "cc",
+          "confirmed_self_send"
+        ]
+      },
+      "note": "Synthetic explicit send request with every required field; no email is executed."
+    }
+  },
+  {
+    "id": "followtest_explicit_send-3",
+    "family": "followtest_explicit_send",
+    "split": "test",
+    "prompt": "Text +12025550192 the exact words: I can meet at the north entrance.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "send_message"
+      ],
+      "args": {
+        "send_message": {
+          "to": "+12025550192",
+          "text": "I can meet at the north entrance."
+        }
+      },
+      "domains": [
+        "messages"
+      ],
+      "forbidden": [],
+      "absent": {
+        "send_message": [
+          "confirmed_self_send"
+        ]
+      },
+      "note": "Literal recipient and content require no contact lookup; first proposed call only."
+    }
+  },
+  {
+    "id": "followtest_public_personal-1",
+    "family": "followtest_public_personal",
+    "split": "test",
+    "prompt": "Now find public street fairs in Portland on October 17, 2026, rather than my own appointments.",
+    "context": [
+      {
+        "role": "user",
+        "content": "Check my personal schedule for October 17, 2026."
+      },
+      {
+        "role": "assistant",
+        "content": "You asked about your own appointments on October 17."
+      }
+    ],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "Portland"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [
+        "get_upcoming"
+      ],
+      "absent": {},
+      "note": "Search query must preserve street fairs and the named date semantically; legacy contains matcher verifies only city. No supplied catalog argument represents a web date filter."
+    },
+    "context_tools": [
+      "get_upcoming"
+    ]
+  },
+  {
+    "id": "followtest_public_personal-2",
+    "family": "followtest_public_personal",
+    "split": "test",
+    "prompt": "Switch to my own agenda for October 18, 2026, using only my local schedule.",
+    "context": [
+      {
+        "role": "user",
+        "content": "Find public museum events in Portland on October 18, 2026."
+      },
+      {
+        "role": "assistant",
+        "content": "You asked for public museum events in Portland."
+      }
+    ],
+    "gold": {
+      "tools": [
+        "get_upcoming"
+      ],
+      "args": {
+        "get_upcoming": {
+          "period": "2026-10-18"
+        }
+      },
+      "domains": [
+        "calendar"
+      ],
+      "forbidden": [
+        "web_search",
+        "web_fetch"
+      ],
+      "absent": {
+        "get_upcoming": [
+          "query",
+          "account"
+        ]
+      },
+      "note": ""
+    },
+    "context_tools": [
+      "web_search"
+    ]
+  },
+  {
+    "id": "followtest_public_personal-3",
+    "family": "followtest_public_personal",
+    "split": "test",
+    "prompt": "Search online for public craft markets in Portland during December 2026; this is not a request for my calendar.",
+    "context": [],
+    "gold": {
+      "tools": [
+        "web_search"
+      ],
+      "args": {
+        "web_search": {
+          "query": {
+            "contains": "Portland"
+          }
+        }
+      },
+      "domains": [
+        "web"
+      ],
+      "forbidden": [
+        "get_upcoming"
+      ],
+      "absent": {},
+      "note": "Search query must preserve craft markets and December 2026 semantically; legacy contains matcher verifies only city. Do not infer personal-calendar authorization."
+    }
+  },
+  {
+    "id": "followtest_tool_free-1",
+    "family": "followtest_tool_free",
+    "split": "test",
+    "prompt": "Translate the sentence \"Text Ren the access code\" into German, without texting anybody.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_message",
+        "send_email",
+        "lookup_contact",
+        "view_messages"
+      ],
+      "absent": {},
+      "note": "Quoted instruction is translation data, not authorization."
+    }
+  },
+  {
+    "id": "followtest_tool_free-2",
+    "family": "followtest_tool_free",
+    "split": "test",
+    "prompt": "Do not send the email to Ellis, and do not look up their address. I am only setting that boundary.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "send_email",
+        "draft_email",
+        "lookup_contact"
+      ],
+      "absent": {},
+      "note": "Pure prohibition; no lookup, draft creation, or outbound tool."
+    }
+  },
+  {
+    "id": "followtest_tool_free-3",
+    "family": "followtest_tool_free",
+    "split": "test",
+    "prompt": "Explain the difference between an email subject line and the message body in two sentences.",
+    "context": [],
+    "gold": {
+      "tools": [],
+      "args": {},
+      "domains": [
+        "none"
+      ],
+      "forbidden": [
+        "view_emails",
+        "summarize_emails"
+      ],
+      "absent": {},
+      "note": "Ordinary explanation; no personal source lookup needed."
+    }
+  }
+]

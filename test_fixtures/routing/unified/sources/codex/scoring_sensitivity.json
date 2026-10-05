@@ -1,0 +1,133 @@
+{
+  "scope": "Only proven omitted days=7 / count=5 equivalence, harmless explicit registered defaults in absent checks, and removal of over-specified calendar_only on local_no_web-1. Original scores preserved; day/period alias is never shadowed. No relaxation of nondefault filters, malformed output, unrequested effects, query semantics or recipient identity.",
+  "equivalences": {
+    "get_upcoming": {
+      "days": 7,
+      "calendar_only": false
+    },
+    "view_emails": {
+      "count": 5
+    },
+    "send_message": {
+      "confirmed_self_send": false
+    },
+    "send_email": {
+      "confirmed_self_send": false
+    }
+  },
+  "results": {
+    "original": {
+      "current_rules": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 213,
+        "after_trial_passes": 213,
+        "before_all_reps_case_passes": 71,
+        "after_all_reps_case_passes": 71,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "laya_hybrid": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 189,
+        "after_trial_passes": 189,
+        "before_all_reps_case_passes": 63,
+        "after_all_reps_case_passes": 63,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_direct": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 183,
+        "after_trial_passes": 183,
+        "before_all_reps_case_passes": 61,
+        "after_all_reps_case_passes": 61,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_intent": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 267,
+        "after_trial_passes": 267,
+        "before_all_reps_case_passes": 89,
+        "after_all_reps_case_passes": 89,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_plan": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 159,
+        "after_trial_passes": 159,
+        "before_all_reps_case_passes": 53,
+        "after_all_reps_case_passes": 53,
+        "changed_trials": [],
+        "changed_cases": []
+      }
+    },
+    "followon": {
+      "current_rules": {
+        "trials": 108,
+        "cases": 36,
+        "before_trial_passes": 24,
+        "after_trial_passes": 24,
+        "before_all_reps_case_passes": 8,
+        "after_all_reps_case_passes": 8,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_direct": {
+        "trials": 108,
+        "cases": 36,
+        "before_trial_passes": 33,
+        "after_trial_passes": 33,
+        "before_all_reps_case_passes": 11,
+        "after_all_reps_case_passes": 11,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_intent": {
+        "trials": 108,
+        "cases": 36,
+        "before_trial_passes": 57,
+        "after_trial_passes": 57,
+        "before_all_reps_case_passes": 19,
+        "after_all_reps_case_passes": 19,
+        "changed_trials": [],
+        "changed_cases": []
+      },
+      "ling_intent_v2": {
+        "trials": 108,
+        "cases": 36,
+        "before_trial_passes": 84,
+        "after_trial_passes": 84,
+        "before_all_reps_case_passes": 28,
+        "after_all_reps_case_passes": 28,
+        "changed_trials": [],
+        "changed_cases": []
+      }
+    },
+    "english_original": {
+      "laya_english_hybrid": {
+        "trials": 414,
+        "cases": 138,
+        "before_trial_passes": 168,
+        "after_trial_passes": 168,
+        "before_all_reps_case_passes": 56,
+        "after_all_reps_case_passes": 56,
+        "changed_trials": [],
+        "changed_cases": []
+      }
+    }
+  },
+  "input_sha256": {
+    "heldout.jsonl": "2ac8a7e00509daf52fface7a3d2720d9ca3ab646cd9c8be8424323e002027775",
+    "corpus.json": "e306aca9c0ca967741ba87e4197c7a9ce7d0fffa73fc47c1216755e011d6873a",
+    "followon_test.jsonl": "5eb4eb5113edf21f7481be9f469fed37a1ac1adc57faf994361da54cea2c627c",
+    "followon_corpus.json": "ea51072149cfe743c32f23dd210d311684045bb305eb75b0a227b180f0167bd2",
+    "english_heldout.jsonl": "1f85f2cca3c89142587977625da13177db3fd9a0043943d575c3e6a9b1c42fce"
+  }
+}
