@@ -45,6 +45,10 @@ changed this file in exactly these ways, and in no other:
   (same-tree inventory equality, a second set of seeded random trees, extra
   corpus classes, mutation during the first pass, scandir semantics).
 
+T0-path (``proc_pidpath`` instead of ``lsof -d txt``) changed this file only in the ways listed
+in the comment block headed "T0-path" near the end of the file, and added the foreign-uid,
+reason-order and retry tests there.  The helper itself is tested in ``test_runtime_proc_path.py``.
+
 Everything runs on disposable temporary directories and in-process fakes.  It
 never touches /Applications, port 8000, the Keychain or any real process.
 """
