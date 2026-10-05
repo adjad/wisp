@@ -454,6 +454,14 @@ def _child_environment(state_dir: Path, *, include_node_runtime: bool = False) -
         "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
         "PYTEST_ADDOPTS": "-p no:cacheprovider",
     }
+    # The outer build sandbox allows Foundation replacement folders bearing
+    # only this run's executable prefix. Native contracts must retain it through
+    # the environment allowlist; it grants no new sandbox permission.
+    fixture_prefix = os.environ.get("WISP_BUILD_FIXTURE_PREFIX")
+    if fixture_prefix is not None:
+        if not re.fullmatch(r"wispqa-[A-Za-z0-9_-]{1,64}", fixture_prefix):
+            raise RuntimeError("Invalid native fixture prefix")
+        env["WISP_BUILD_FIXTURE_PREFIX"] = fixture_prefix
     if include_node_runtime:
         env["QA_NODE_RUNTIME"] = str(resolve_node_runtime(os.environ.get("QA_NODE_RUNTIME")))
     return env
