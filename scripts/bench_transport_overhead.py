@@ -186,8 +186,9 @@ def spawn_benchmark(old, new, runs, process_identity):
     finally:
         for sock in sockets:
             sock.close()
-        if hasattr(new, '_POOL'):
-            new._POOL.shutdown()
+        for module in (old, new):                  # each module has its own private pool
+            if hasattr(module, '_POOL'):
+                module._POOL.shutdown()
 
 
 def executable_benchmark(old, new, runs):
@@ -243,8 +244,9 @@ def main():
         print('loadavg', result['load_before'], '->', result['load_after'], '| swap', result['swap_after'])
         if args.json:
             Path(args.json).write_text(json.dumps(result, indent=1))
-        if hasattr(new, '_POOL'):
-            new._POOL.shutdown()
+        for module in (old, new):                  # each module has its own private pool
+            if hasattr(module, '_POOL'):
+                module._POOL.shutdown()
         return
 
     if args.spawn:
