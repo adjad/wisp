@@ -161,6 +161,91 @@ def test_runtime_date_equivalence_preserves_dst_boundaries_and_scope():
     assert day != evaluation.canonical_args('view_emails', {'period': 'this week'}, {}, clock=clock)
 
 
+
+@pytest.mark.parametrize('host_timezone', ['UTC', 'America/Los_Angeles'])
+@pytest.mark.parametrize('clock,day,start,end,hours', [
+    ('2026-03-08T12:00:00-07:00', '2026-03-08', '2026-03-08T00:00:00-08:00', '2026-03-09T00:00:00-07:00', 23),
+    ('2026-11-01T12:00:00-08:00', '2026-11-01', '2026-11-01T00:00:00-07:00', '2026-11-02T00:00:00-08:00', 25),
+])
+def test_date_scoring_is_exact_across_host_timezones_and_both_dst_transitions(host_timezone, clock, day, start, end, hours):
+    code = f"""
+import os, pathlib, tempfile, time
+from datetime import datetime
+from scripts import eval_router_update as e
+state = pathlib.Path(tempfile.mkdtemp(prefix='wisp-date-host-contract-'))
+e.install_guard(state, state)
+os.environ['TZ'] = {host_timezone!r}
+time.tzset()
+original = (os.environ['TZ'], time.localtime(datetime.fromisoformat({clock!r}).timestamp()))
+expected_span = [datetime.fromisoformat({start!r}).timestamp(), datetime.fromisoformat({end!r}).timestamp()]
+for name in ('view_emails', 'summarize_emails', 'view_messages', 'summarize_messages', 'search_notes'):
+    exact_day = e.canonical_args(name, {{'day': {day!r}}}, {{}}, clock={clock!r})
+    today = e.canonical_args(name, {{'period': 'today'}}, {{}}, clock={clock!r})
+    assert exact_day == today == {{'_resolved_span': expected_span}}
+    assert e.canonical_args(name, {{'day': {day!r}}}, {{}}, clock={clock!r}[:19]) == today
+    assert today['_resolved_span'][1] - today['_resolved_span'][0] == {hours} * 3600
+    assert today != e.canonical_args(name, {{'period': 'this week'}}, {{}}, clock={clock!r})
+    assert today != e.canonical_args(name, {{'period': 'tomorrow'}}, {{}}, clock={clock!r})
+    assert e.canonical_args(name, {{'period': 'invalid synthetic scope'}}, {{}}, clock={clock!r}) == {{'period': 'invalid synthetic scope'}}
+    assert (os.environ['TZ'], time.localtime(datetime.fromisoformat({clock!r}).timestamp())) == original
+row = {{'clock': {clock!r}, 'expected': {{'calls': [{{'name':'view_emails', 'args':{{'day':{day!r}}}}}], 'sources':['email']}}}}
+run = {{'executed_calls':[{{'name':'view_emails', 'args':{{'period':'today'}}}}], 'events':[{{'type':'done'}}], 'answer':''}}
+assert e.score(row, run)['metrics']['end_to_end']
+run['executed_calls'][0]['name'] = 'view_messages'
+wrong_source = e.score(row, run)['metrics']
+assert not wrong_source['source'] and not wrong_source['exact_arguments'] and not wrong_source['end_to_end']
+run['executed_calls'][0] = {{'name':'view_emails', 'args':{{'period':'tomorrow'}}}}
+assert not e.score(row, run)['metrics']['exact_arguments']
+late_clock = {clock!r}.replace('T12:00:00', 'T23:30:00')
+agenda = {{'clock':late_clock, 'expected':{{'calls':[{{'name':'get_upcoming', 'args':{{'period':'today'}}}}]}}}}
+assert e.runtime_constraint_issues(agenda, agenda['expected']['calls']) == []
+agenda['clock'] = late_clock[:19]
+assert e.runtime_constraint_issues(agenda, agenda['expected']['calls']) == []
+assert e.runtime_constraint_issues(agenda, [{{'name':'get_upcoming', 'args':{{'period':'yesterday'}}}}]) == ['upcoming-tool-cannot-read-elapsed-calendar-window']
+assert (os.environ['TZ'], time.localtime(datetime.fromisoformat({clock!r}).timestamp())) == original
+print('EXACT_DST_SCOPE_AND_SOURCE')
+"""
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'EXACT_DST_SCOPE_AND_SOURCE'
+
+
+@pytest.mark.parametrize('host_timezone', ['UTC', 'America/Los_Angeles', None])
+def test_evaluation_timezone_restores_environment_and_local_clock_after_failure(host_timezone):
+    code = f"""
+import os, time
+from scripts import eval_router_update as e
+if {host_timezone!r} is None:
+    os.environ.pop('TZ', None)
+else:
+    os.environ['TZ'] = {host_timezone!r}
+time.tzset()
+original = (os.environ.get('TZ'), time.localtime(1772956800))
+try:
+    with e.evaluation_timezone():
+        assert os.environ['TZ'] == 'America/Los_Angeles'
+        assert time.localtime(1772956800).tm_hour == 0
+        raise ValueError('synthetic resolver failure')
+except ValueError:
+    pass
+assert (os.environ.get('TZ'), time.localtime(1772956800)) == original
+print('RESTORED')
+"""
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'RESTORED'
+
+
+def test_timezone_contract_fails_closed_without_tzset(monkeypatch):
+    import os
+    previous = os.environ.get('TZ')
+    monkeypatch.delattr(evaluation.time, 'tzset')
+    with pytest.raises(RuntimeError, match='requires time.tzset'):
+        with evaluation.evaluation_timezone():
+            raise AssertionError('unsupported timezone contract was accepted')
+    assert os.environ.get('TZ') == previous
+
+
 def test_injected_inference_is_disabled_before_any_client_operation():
     import asyncio
     class Never:

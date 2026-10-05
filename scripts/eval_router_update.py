@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 from dataclasses import dataclass
+from contextlib import contextmanager
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 from unittest.mock import patch
@@ -25,6 +26,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'eval/router-update-20261005'
 _ISOLATION_ROOT = None
+EVALUATION_TIMEZONE = 'America/Los_Angeles'
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 SOURCES = {
@@ -55,6 +57,37 @@ def read_cases(split):
     return rows
 
 
+@contextmanager
+def evaluation_timezone():
+    """Reversible process-local TZ contract; synchronous, dedicated worker only.
+
+    The production resolver creates naive midnights, whose timestamp() uses
+    process local time even when its injected `now` has an explicit offset.
+    Never use this helper concurrently with other local-time consumers.
+    """
+    if not hasattr(time, 'tzset'):
+        raise RuntimeError('Evaluation requires time.tzset for its explicit timezone contract')
+    previous = os.environ.get('TZ')
+    try:
+        os.environ['TZ'] = EVALUATION_TIMEZONE
+        time.tzset()
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop('TZ', None)
+        else:
+            os.environ['TZ'] = previous
+        time.tzset()
+
+
+def resolve_evaluation_span(scope, *, clock):
+    """Use the real resolver with the same local zone as production-path replay."""
+    from service.tools.timeranges import resolve_span
+    with evaluation_timezone():
+        now = datetime.fromisoformat(clock).astimezone(ZoneInfo(EVALUATION_TIMEZONE))
+        return resolve_span(scope, now=now)
+
+
 def canonical_args(name, args, schemas, *, clock=None):
     """Only remove actual runtime schema defaults, preserving literals/types."""
     defaults = schemas.get(name, {}).get('properties', {})
@@ -64,9 +97,8 @@ def canonical_args(name, args, schemas, *, clock=None):
     if clock and name in {'summarize_emails', 'view_emails', 'summarize_messages', 'view_messages', 'search_notes'}:
         scope = args.get('period') or args.get('day')
         if scope:
-            from service.tools.timeranges import resolve_span
             try:
-                span = resolve_span(scope, now=datetime.fromisoformat(clock).astimezone(ZoneInfo('America/Los_Angeles')))
+                span = resolve_evaluation_span(scope, clock=clock)
             except (ValueError, TypeError):
                 pass
             else:
@@ -95,10 +127,10 @@ def runtime_constraint_issues(case, calls):
         if name == 'summarize_messages' and not args.get('conversation') and count_requested and (args.get('day') or args.get('period')):
             issues.append('message-date-scope-ignores-count')
         if name == 'get_upcoming' and args.get('period') and case.get('clock'):
-            from service.tools.timeranges import resolve_span
-            now = datetime.fromisoformat(case['clock']).astimezone(ZoneInfo('America/Los_Angeles'))
+            with evaluation_timezone():
+                now = datetime.fromisoformat(case['clock']).astimezone(ZoneInfo(EVALUATION_TIMEZONE))
             try:
-                _, end, _ = resolve_span(args['period'], now=now)
+                _, end, _ = resolve_evaluation_span(args['period'], clock=case['clock'])
             except (ValueError, TypeError):
                 issues.append('unresolved-calendar-period')
             else:
@@ -461,9 +493,10 @@ def install_guard(state, output, *, inference_grant=None):
         inference_grant.validate()
     os.environ['WISP_HOME'] = str(state / '.moe')
     os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
-    os.environ['TZ'] = 'America/Los_Angeles'
-    if hasattr(time, 'tzset'):
-        time.tzset()
+    if not hasattr(time, 'tzset'):
+        raise RuntimeError('Evaluation requires time.tzset for its explicit timezone contract')
+    os.environ['TZ'] = EVALUATION_TIMEZONE
+    time.tzset()
     sys.dont_write_bytecode = True
     real_home = Path.home().resolve()
     allowed_reads = [ROOT.resolve(), Path(sys.prefix).resolve(), Path(sys.base_prefix).resolve(), state.resolve()]
@@ -562,7 +595,7 @@ async def run_case(case, state, *, candidate=False, inference_adapter=None):
     async def no_summary(*args, **kwargs):
         return None  # Rolling memory generation is outside this benchmark's scope.
 
-    fixed = datetime.fromisoformat(case.get('clock', '2026-10-05T12:00:00-07:00')).astimezone(ZoneInfo('America/Los_Angeles'))
+    fixed = datetime.fromisoformat(case.get('clock', '2026-10-05T12:00:00-07:00')).astimezone(ZoneInfo(EVALUATION_TIMEZONE))
     class FrozenDatetime(datetime):
         @classmethod
         def now(cls, tz=None):
