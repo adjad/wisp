@@ -342,10 +342,17 @@ def _occurrence_clauses(text: str, *, now: datetime) -> dict[str, list[str]]:
     masked = _instruction_text(text, now=now)
     anchors = sorted((m.start(), m.end(), domain) for domain, pattern in SOURCE_WORDS.items()
                      for m in re.finditer(pattern, masked, re.I))
-    # Adjacent aliases such as "text messages" name one source occurrence.
+    # Adjacent aliases and full source-reference bridges name one occurrence:
+    # "text messages", "appointments are on my calendar", "email in my inbox".
+    # Dates, quantities, query cues, punctuation, coordination and new read
+    # verbs cannot fit this grammar and retain independent clause validation.
+    reference_bridge = re.compile(
+        r"(?:(?:that|which)\s+)?(?:(?:is|are|was|were)\s+)?"
+        r"(?:on|in|from)(?:\s+(?:my|our|the))?", re.I)
     compact = []
     for anchor in anchors:
-        if compact and compact[-1][2] == anchor[2] and not masked[compact[-1][1]:anchor[0]].strip():
+        bridge = masked[compact[-1][1]:anchor[0]].strip() if compact else None
+        if compact and compact[-1][2] == anchor[2] and (not bridge or reference_bridge.fullmatch(bridge)):
             compact[-1] = (compact[-1][0], anchor[1], anchor[2])
         else:
             compact.append(anchor)
