@@ -1068,6 +1068,10 @@ ACTION_TAIL_CASES = [
     ("and", "save it as a note"),
     ("and", "open it"),
     ("and", "move it to Downloads"),
+    ("plus", "please update the reminder"),
+    ("and", "cancel the appointment"),
+    ("plus", "mark the reminder complete"),
+    ("and then", "clear the reminder list"),
 ]
 
 

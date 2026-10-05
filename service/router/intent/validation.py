@@ -316,8 +316,8 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
             # Share the complete established action-head and coordination
             # grammar with effect extraction (including share/polite/negative
             # clauses). Ordinary commas/conjunctions within literals stay data.
-            from service.router.web_request import _BOUNDARY, _action_clause_head
-            for boundary in _BOUNDARY.finditer(_mask_literals(candidate)):
+            from service.router.web_request import _EFFECT_BOUNDARY, _action_clause_head
+            for boundary in _EFFECT_BOUNDARY.finditer(_mask_literals(candidate)):
                 if _action_clause_head(candidate[boundary.end():]):
                     stops.append(boundary.start())
             # An unquoted source exclusion is instruction syntax, not part of
