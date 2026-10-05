@@ -1,0 +1,269 @@
+{
+  "schema": "wisp.release_performance.bundle/1",
+  "corpus": {
+    "version": "release_v2",
+    "description": "Synthetic scenarios for the pre-release Wisp performance benchmark. All leaf data below is fictional: reserved 555-01xx numbers, example.com addresses, invented people and places. No real contact, calendar, Mail or Messages data is read or needed.",
+    "qualification_note": "Version 2 has not been exercised against a live attributed environment. The first real run is the qualification run: it carries no baseline and therefore cannot pass. Version 2 supersedes version 1 (which an independent audit blocked): it adds the engine finish_reason gate and the complete denial lifecycle for the approval scenario. Any change to a scenario expectation is a new corpus version, never an edit of this one.",
+    "leaf_data": {
+      "contacts": {
+        "+15555550123": "Alex Rivera",
+        "+15555550177": "Priya Nair"
+      },
+      "notes": [
+        {
+          "id": "note_workshop",
+          "age_s": 5400,
+          "title": "Orchard Lane workshop",
+          "folder": "Notes",
+          "body": "Orchard Lane workshop: Room 204 at 2:00 PM. Bring a laptop and a charging cable. Priya owns the venue and Sam owns the agenda."
+        },
+        {
+          "id": "note_groceries",
+          "age_s": 90000,
+          "title": "Grocery list",
+          "folder": "Notes",
+          "body": "Grocery list: oat milk, lemons, rice, basil."
+        }
+      ],
+      "messages": [
+        {
+          "thread": "Studio crew",
+          "kind": "group",
+          "participants": ["Alex Rivera", "Priya Nair", "Sam Okafor"],
+          "age_s": 2400,
+          "from": "Alex Rivera",
+          "text": "Workshop moved to Room 204, please confirm you can make it."
+        },
+        {
+          "thread": "Studio crew",
+          "kind": "group",
+          "participants": ["Alex Rivera", "Priya Nair", "Sam Okafor"],
+          "age_s": 1500,
+          "from": "Priya Nair",
+          "text": "I can make it. I will bring the printed agenda."
+        },
+        {
+          "thread": "Alex Rivera",
+          "kind": "direct",
+          "participants": ["Alex Rivera"],
+          "age_s": 900,
+          "from": "Alex Rivera",
+          "text": "Can you send me the budget numbers before Friday?"
+        }
+      ]
+    },
+    "sentinels": {
+      "failure_phrases": [
+        "I don't have a reliable way to do that right now",
+        "I ran out of room working that one out",
+        "I couldn't produce a reliable answer for this request",
+        "Wisp couldn't verify the local AI engine",
+        "Credential recovery required"
+      ],
+      "refusal_phrases": [
+        "Wisp couldn't verify the local AI engine",
+        "peer attribution unavailable"
+      ],
+      "acceptable_finish_reasons": ["stop", "tool_calls", "function_call"],
+      "false_success_patterns": [
+        "\\b(?:i(?:'ve| have)?|we(?:'ve| have)?)\\s+(?:just\\s+)?(?:sent|texted|messaged|delivered)\\b",
+        "\\b(?:message|text|email)\\s+(?:has\\s+been\\s+|was\\s+|is\\s+)?(?:sent|delivered)\\b",
+        "\\bsuccessfully\\s+(?:sent|delivered)\\b"
+      ]
+    },
+    "effect_tools": [
+      "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
+      "draft_email", "draft_message", "add_calendar_event", "update_event", "cancel_event",
+      "add_reminder", "update_reminder", "complete_reminder", "create_note", "append_note",
+      "write_file", "delete_path", "move_path", "trash_file", "create_folder",
+      "run_shell", "run_applescript", "open_app", "quit_app", "place_call"
+    ],
+    "scenarios": [
+      {
+        "id": "greeting_warm",
+        "title": "Warm greeting / plain chat",
+        "kind": "turn",
+        "required": true,
+        "debug": false,
+        "deadline_s": 90,
+        "variants": ["hello", "hi there", "good morning", "hey, how are you?"],
+        "required_metrics": ["first_visible_answer_s", "first_model_delta_s", "total_completion_s"],
+        "expect": {
+          "tool_calls": "none",
+          "streams": true,
+          "answer": {"min_chars": 2, "max_chars": 800},
+          "model_calls": {"min": 1}
+        }
+      },
+      {
+        "id": "bounded_reasoning",
+        "title": "Bounded reasoning response",
+        "kind": "turn",
+        "required": true,
+        "debug": false,
+        "deadline_s": 120,
+        "variants": [
+          "A train leaves at 3:40 PM and the trip takes 2 hours 50 minutes. What time does it arrive? Answer in one sentence.",
+          "If a train departs at 3:40 PM and the journey lasts 2 hours and 50 minutes, when does it arrive? One sentence please.",
+          "Departure is 3:40 PM, travel time is 2h50m. What is the arrival time? Reply in one sentence.",
+          "I board a train at 3:40 PM for a 2 hour 50 minute ride. What time do I get there? Keep it to one sentence."
+        ],
+        "required_metrics": ["first_visible_answer_s", "total_completion_s"],
+        "expect": {
+          "tool_calls": "none",
+          "answer": {
+            "min_chars": 8,
+            "max_chars": 600,
+            "any_regex": ["6:30\\s*(?:pm|p\\.m\\.)?", "18:30", "half past six", "6\\.30"]
+          },
+          "model_calls": {"min": 1}
+        }
+      },
+      {
+        "id": "scoped_tool_selection",
+        "title": "Scoped tool selection over synthetic reads",
+        "kind": "turn",
+        "required": true,
+        "debug": true,
+        "deadline_s": 150,
+        "variants": [
+          "What do my notes say about the Orchard Lane workshop?",
+          "Check my notes for the Orchard Lane workshop details.",
+          "Look in my notes: what is the plan for the Orchard Lane workshop?",
+          "Find my Orchard Lane workshop note and tell me what is in it."
+        ],
+        "required_metrics": ["first_visible_answer_s", "total_completion_s"],
+        "expect": {
+          "route": {"direct_calls": "none", "needs_tools": true},
+          "tool_calls": {
+            "must_include": [{"name": "search_notes", "arg_regex": {"query": "(?i)orchard|workshop"}}],
+            "forbid_effect_tools": true
+          },
+          "offered_tools": {"must_include": [{"name": "search_notes", "schema_properties": ["query"]}]},
+          "answer": {
+            "min_chars": 20,
+            "max_chars": 1500,
+            "all_of": ["Room 204", "charging cable"],
+            "forbidden_any": ["oat milk", "lemons"]
+          },
+          "model_calls": {"min": 1}
+        }
+      },
+      {
+        "id": "deterministic_read",
+        "title": "Deterministic zero-generation read",
+        "kind": "turn",
+        "required": true,
+        "debug": false,
+        "deadline_s": 90,
+        "variants": ["summarize my messages", "recap my messages", "can you summarize my texts"],
+        "required_metrics": ["first_visible_answer_s", "total_completion_s"],
+        "expect": {
+          "route": {"direct_calls": "nonempty"},
+          "tool_calls": {
+            "must_include": [{"name": "summarize_messages"}],
+            "forbid_effect_tools": true
+          },
+          "answer": {
+            "min_chars": 20,
+            "max_chars": 4000,
+            "any_regex": ["(?i)workshop", "(?i)budget"],
+            "forbidden_any": ["No messages were synced", "not synced", "unavailable"]
+          },
+          "model_calls": {"exactly": 0}
+        }
+      },
+      {
+        "id": "outbound_approval_boundary",
+        "title": "Unapproved outbound request stops at the real approval boundary",
+        "kind": "turn",
+        "required": true,
+        "debug": false,
+        "deadline_s": 150,
+        "variants": [
+          "Text Alex Rivera that I will be ten minutes late.",
+          "Send a message to Alex Rivera saying I'm running ten minutes late.",
+          "Message Alex Rivera: I will be about ten minutes late."
+        ],
+        "required_metrics": ["approval_boundary_s", "total_completion_s"],
+        "expect": {
+          "approval": {
+            "tool": "send_message",
+            "action": "deny",
+            "args_any_regex": ["(?i)ten minutes|10 minutes|10 min"],
+            "args_groups": [["(?i)alex rivera", "15555550123"]]
+          },
+          "tool_calls": {"forbid_successful_effect_results": true},
+          "answer": {"forbid_false_success": true}
+        }
+      },
+      {
+        "id": "health_status_overhead",
+        "title": "Health / model-status overhead",
+        "kind": "http",
+        "required": true,
+        "deadline_s": 60,
+        "request": {"method": "GET", "path": "/health"},
+        "variants": ["GET /health"],
+        "required_metrics": ["request_latency_s"],
+        "expect": {
+          "http": {"status": 200, "json_equals": {"status": "ok"}}
+        }
+      }
+    ]
+  },
+  "policy": {
+    "version": "release_policy_v2",
+    "description": "Reviewable, versioned release gate. These values are policy, not harness constants: changing any of them is a new policy version with a new hash, and receipts are bound to that hash.",
+    "min_measured_samples": 20,
+    "warmup_samples": 2,
+    "percentile_method": "nearest-rank",
+    "percentiles": [50, 95],
+    "regression": {
+      "relative_increase": "0.20",
+      "absolute_increase_ms": 250,
+      "rule": "both_exceed"
+    },
+    "outcomes": {
+      "candidate_correctness_failure": "BLOCK",
+      "new_refusal": "BLOCK",
+      "measured_material_regression": "BLOCK",
+      "baseline_correctness_failure": "INCONCLUSIVE",
+      "unverifiable_expectation": "INCONCLUSIVE",
+      "missing_or_unapproved_baseline": "INCONCLUSIVE",
+      "unknown_gating_metric": "INCONCLUSIVE",
+      "lifecycle_blocked_effect": "BLOCK",
+      "baseline_lifecycle_effect": "INCONCLUSIVE",
+      "integrity_failure": "INCONCLUSIVE"
+    },
+    "environment": {
+      "weights_identity": "full_sha256",
+      "compare_before_and_after": true,
+      "residency": "exactly_the_named_model_before_and_after_on_both_backends",
+      "child_runtime_identical_across_sides": true
+    },
+    "execution": {
+      "accepted_mode": "actual_candidate_isolated_attributed",
+      "fake_model_can_pass": false
+    },
+    "max_receipt_age_s": 86400,
+    "order": "alternating_by_repetition",
+    "lanes": {
+      "desktop": {"release_gate": true, "label": "desktop_qualified_inference"},
+      "managed_mini": {"release_gate": false, "label": "managed_mini_compatibility_measurement_only"}
+    },
+    "comparability_invariants": [
+      "lane", "execution_mode", "hardware", "os", "engine", "model",
+      "generation_settings", "cache_warmup_treatment", "child_runtime", "containment",
+      "harness_sha256", "corpus_sha256", "policy_sha256"
+    ],
+    "advisory": {
+      "binding": false,
+      "notes": [
+        "Thirty to forty measured samples per gating scenario would make p95 more stable than the 20-sample floor.",
+        "Bootstrap intervals for p50 and p95 would quantify noise.",
+        "These are recommendations from the performance audit. They change nothing in this policy and a change needs a new policy version."
+      ]
+    }
+  }
+}

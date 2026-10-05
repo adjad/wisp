@@ -272,6 +272,8 @@ ADDITIONAL_FULL_TESTS = {
     # Disposable SQLite claims and exact synthetic native readback; no EventKit.
     "tests/test_verified_reminders.py",
     "tests/test_replay_failure_fixes.py",
+    # Synthetic benchmark evidence, owned loopback receivers and owned child process groups only.
+    "tests/test_release_performance.py",
     "tests/test_simulation_qa_runner.py",
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
