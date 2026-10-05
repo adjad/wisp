@@ -222,8 +222,15 @@ def _collapse_schedule_rows(items: list[dict]) -> list[dict]:
         else:
             key = (title, int(float(when) // 60))
         current = by_key.get(key)
-        if current is None or rank.get(item.get("source"), 9) < rank.get(current.get("source"), 9):
+        if current is None:
             by_key[key] = item
+        else:
+            winner = (item if rank.get(item.get("source"), 9) < rank.get(current.get("source"), 9)
+                      else current)
+            sources = _schedule_sources(current) | _schedule_sources(item)
+            # A display collapse must preserve the native origins of its
+            # surviving row, even when a Wisp copy wins the storage priority.
+            by_key[key] = {**winner, "duplicate_sources": sorted(sources - {winner.get("source", "")})}
     return sorted(by_key.values(), key=lambda item: float(item.get("when_ts") or 0))
 
 
@@ -235,14 +242,26 @@ def _agenda_day_label(when: datetime, today: date) -> str:
     return when.strftime("%A · %b %-d")
 
 
+def _agenda_text(value: object, *, fallback: str = "") -> str:
+    """Titles and locations are quoted source data, never agenda structure."""
+    text = " ".join(str(value or "").split()) or fallback
+    return re.sub(r"([\\`*_\[\]#])", r"\\\1", text).replace("<", "&lt;").replace(">", "&gt;")
+
+
 def _agenda_item(item: dict) -> str:
     when = datetime.fromtimestamp(float(item["when_ts"]))
     clock = "All day" if item.get("all_day") else when.strftime("%-I:%M %p")
-    location = str(item.get("location") or "").strip()
+    location = _agenda_text(item.get("location"))
     suffix = f" @ {location}" if location else ""
+    sources = _schedule_sources(item)
+    if "calendar" in sources:
+        if "reminders" in sources:
+            suffix += " [also Apple Reminder]"
+        elif "manual" in sources:
+            suffix += " [also Wisp reminder]"
     if _is_wisp_only(item):
         suffix += " [Wisp-only; Apple status unverified]"
-    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
+    return f"- {clock} — {_agenda_text(item.get('title'), fallback='Untitled')}{suffix}"
 
 
 def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
@@ -268,25 +287,27 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
             lines.append("  Reminders")
             lines.extend("  " + _agenda_item(item) for item in bucket["reminders"])
         blocks.append("\n".join(lines))
-    calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
-    reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
-                         for item in items)
+    # Counts describe the disjoint visible groups, not overlapping provenance.
+    calendar_count = sum(len(bucket["events"]) for bucket in days.values())
+    reminder_count = sum(len(bucket["reminders"]) for bucket in days.values())
     review_note = ""
     if any(_is_wisp_only(item) for item in items):
         review_note = (
-            " Wisp-only items have no matching current Apple Reminders item; "
-            "some may be older Apple mirrors and others live Wisp reminders. "
-            "Keep them unless the user picks one exactly to delete."
+            "Wisp-only items have no confirmed current Apple Reminders copy; "
+            "they may be live Wisp reminders or older Apple mirrors."
             if apple_reminders_checked else
-            " Apple Reminders could not be checked, so Wisp reminders are "
-            "listed without a confirmed Apple copy; they may still be active.")
+            "Apple Reminders could not be checked; Wisp-only items may still be active.")
     has_native = any("reminders" in _schedule_sources(item) for item in items)
     native_note = (" Apple Reminders deletion status is not independently verified."
                    if has_native else "")
-    return (f"Upcoming — {window_label} ({len(items)} item(s))\n"
-            f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
-            "[Calendar event] and [Reminder] are shown in separate sections."
-            + native_note + review_note + "\n\n" + "\n\n".join(blocks))
+    counts = []
+    if calendar_count:
+        counts.append(f"{calendar_count} calendar event{'s' if calendar_count != 1 else ''}")
+    if reminder_count:
+        counts.append(f"{reminder_count} reminder{'s' if reminder_count != 1 else ''}")
+    notes = " ".join(note.strip() for note in (native_note, review_note) if note)
+    return (f"Upcoming — {window_label} · {' · '.join(counts)}\n\n"
+            + "\n\n".join(blocks) + ("\n\n" + notes if notes else ""))
 
 
 @register(

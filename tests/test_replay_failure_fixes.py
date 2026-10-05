@@ -428,8 +428,8 @@ def test_digest_labels_have_no_model_instructions(monkeypatch):
         for i in range(25)))
     result = asyncio.run(email_tools.summarize_inbox_recent(20))
     assert "Say so" not in result and "do NOT" not in result
-    assert "Scanned 25 headers; represented 20 messages" in result
-    assert "truncated 5 messages" in result
+    assert result.splitlines()[1].startswith("20 emails")
+    assert "5 matching emails omitted from the overview" in result
     assert imessage_tools.is_summary_noise_message(
         "Fidelity: If anyone asks for this code, STOP. It's a SCAM. Code is: 660669")
 

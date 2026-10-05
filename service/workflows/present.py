@@ -127,6 +127,16 @@ def _calendar(raw: str) -> str | None:
     None when any row fails to parse — the caller then falls back to the
     sanitized source rather than shipping a partially understood schedule.
     """
+    # The current agenda is already grouped and user-facing. Preserve every
+    # line (including source limitations) and attach the sender's identity to
+    # its heading, rather than reparsing titles or reverting to source scaffolding.
+    lines = raw.splitlines()
+    for index, line in enumerate(lines):
+        if line.startswith("Upcoming — "):
+            name = sender_name()
+            heading = f"{name}’s schedule" if name else "Schedule"
+            lines[index] = heading + line.removeprefix("Upcoming")
+            return "\n".join(lines).strip()
     lead, groups = [], {"Events": [], "Reminders": []}
     for line in raw.splitlines():
         if not line.strip() or _UPCOMING_HEADER.match(line) or _COUNTS.match(line):

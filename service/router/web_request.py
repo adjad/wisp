@@ -758,6 +758,9 @@ def _independent(text: str, *, fragment: bool = False) -> bool:
 
 
 def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
+    from service.router.intent.grammar import personal_agenda_period
+    if personal_agenda_period(text):
+        return False
     t = _root(text)
     if _independent(t) and not _matches(r"^(?:give|show|tell|update|brief)\b", t):
         return False

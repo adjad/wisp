@@ -1,0 +1,265 @@
+{
+  "status": "code_candidate_ready_for_final_gates",
+  "updated_at": "2026-10-05T19:45:04.054002+00:00",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
+  "agents": {
+    "router_core": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+      "branch": "codex/router-intent-core",
+      "status": "Frozen, exact-head checked, pushed and integrated",
+      "commit": "181d3b244089536d726fe0e4cd4642cdfa1ffce7",
+      "validation_reported": {
+        "revision": "181d3b244089536d726fe0e4cd4642cdfa1ffce7",
+        "passed": 11374,
+        "subtests_passed": 2942,
+        "seconds": 86.02,
+        "suites": 13,
+        "scope": "intent, workflow, outbound, routing; isolated synthetic checks"
+      }
+    },
+    "router_eval": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
+      "branch": "codex/router-replay-eval",
+      "status": "Adapter identity repair frozen and integrated",
+      "commit": "ef1fcd8ebef5b19b23b2d9d918ef489d20e01534",
+      "validation_reported": {
+        "passed": 56,
+        "skipped": 3,
+        "skip_reason": "Core-dependent checks in baseline worker; combined checks run by parent",
+        "synthetic_identity_test": "PASS against integration source; no sockets/model calls"
+      }
+    },
+    "router_presentation": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-overviews/MOE_Project",
+      "branch": "codex/router-overviews",
+      "status": "Frozen worker integrated",
+      "validation_reported": {
+        "exact_head_tests_passed": 2203,
+        "skipped": 1,
+        "skip_reason": "explicit opt-in Ling integration",
+        "seconds": 65.67
+      },
+      "commit": "ae8efb960965a20660297f86d5fffd6e741bdcc8"
+    },
+    "router_training_review": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "status": "Read-only literature/metadata review complete",
+      "artifact": "TRAINING_FEASIBILITY.md",
+      "training_or_model_calls": false
+    }
+  },
+  "baseline_validation": {
+    "revision": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest -p pytest_asyncio.plugin -q tests/test_routing_quality_corpus.py tests/test_fast_path_intent.py tests/test_current_web_routing.py tests/test_contextual_outbound_routing.py tests/test_compound_task_routing.py tests/test_schedule_presentation.py tests/test_message_attribution.py",
+    "passed": 2252,
+    "subtests_passed": 1504,
+    "seconds": 58.54,
+    "model_inference": false,
+    "real_tool_execution": false
+  },
+  "model_measurement_window": "Blocked on external coordination: Claude performance coordinator session-limited, send disabled; no quiescence/window acknowledgment. Current registry reports auto-resume at 3:01 PM Pacific. Do not infer availability from idle or rate limit.",
+  "production_changed": false,
+  "pending": [
+    "Final frozen integration head requires complete isolated mechanical gate, configured CI and independent review",
+    "Exact-SHA complete isolated mechanical gate, configured CI, independent Release Auditor and synthetic specialist QA",
+    "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
+    "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
+    "Protected integration handoff; no deployment or feature activation"
+  ],
+  "acceptance_contract": "eval/router-update-integration-20261005/acceptance.json",
+  "corpus_seal": {
+    "dev": {
+      "cases": 80,
+      "families": 10,
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+    },
+    "heldout": {
+      "cases": 320,
+      "families": 40,
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+    },
+    "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
+  },
+  "combined_development_checks": {
+    "revision": "97d7fdf54dabb150e167a9f7250ed8fdf4a3b249",
+    "passed": 240,
+    "skipped": 1,
+    "skip_reason": "Original-control absence check not applicable to integrated core",
+    "seconds": 4.91,
+    "scope": "Core+endpoint+workflow+eval+overview+message-scope focused tests",
+    "model_calls": false,
+    "heldout_opened": false
+  },
+  "scope_review_notes": [
+    "Automatic approval review rejected diagnostic allowlist extension twice; no diagnostics edits executed. Existing route_source=model vocabulary retained in original-owned router serialization, with finite debug-only intent_disposition.",
+    "One unintended mechanical test wording replacement was caught in review and restored before presentation freeze.",
+    "Compiler repair development gate caught schedule-a-message regression; narrowed indefinite-noun masking and added regression controls before freeze.",
+    "Adapter identity tests initially exposed temporary /var versus /private/var aliasing; resolved-path equality fixed before freeze."
+  ],
+  "development_replay_before_compiler_repair": {
+    "revision": "b78fbdf",
+    "artifact": "development-before-compiler-repair",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 69,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 77,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 45,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 69,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 37,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 77,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 77,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "findings": {
+      "product_defects": 3,
+      "description": "Message summary reads misclassified as outbound workflow before routing; core repair owner acknowledged.",
+      "annotation_limitations": 8,
+      "annotation_description": "Correct synthetic source-error response fails success-literal expectation; retain original score and separate adjudication."
+    },
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Not applicable in this development corpus; zero denominators do not establish either property."
+  },
+  "development_replay_after_compiler_repair": {
+    "revision": "97d7fdf54dabb150e167a9f7250ed8fdf4a3b249",
+    "artifact": "development-after-compiler-repair",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "adjudication": "All three previously preempted message reads now execute the exact expected synthetic read. Eight source-failure responses still fail original success-literal annotation; exact tool, source, effects, exclusions, failure-honesty and runtime checks pass. Do not replace 72/80 original end_to_end with an adjusted headline.",
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases in this development corpus; separate real-helper synthetic tests cover query behavior."
+  }
+}

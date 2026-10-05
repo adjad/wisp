@@ -1547,6 +1547,33 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 return
 
+            # Flexible read interpretation uses ONLY an already-resident local
+            # client. Run before embedding readiness or session model pinning.
+            # test_mode never makes model calls, including routing calls.
+            intent_config = dict(models_config().get("intent_router") or {})
+            if test_mode or active_skill:
+                intent_config["enabled"] = False
+            decision = None
+            if intent_config.get("enabled") is True:
+                decision = await route(
+                    prompt, last_user=last_user, recent_users=recent_users,
+                    last_assistant=last_assistant, last_tools=last_tools,
+                    intent_client=client, intent_config=intent_config,
+                    intent_context=tuple({"role": role, "content": content}
+                        for role, content in (("user", last_user), ("assistant", last_assistant))
+                        if content))
+            if decision is not None and decision.route_source in {"intent_compiled", "intent_clarify"}:
+                await emit({"type": "routed", **decision.as_dict()})
+                read_result = await execute_read(
+                    (decision.direct_calls, decision.intent_response), emit, test_mode=test_mode)
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", read_result.response,
+                        tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
+                await emit({"type": "text", "text": read_result.response})
+                await emit({"type": "done"})
+                return
+
             turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
             # Optional embedding/reranker routing needs the engine before it
             # can retrieve a menu. The default lexical provider uses no model;
@@ -1572,10 +1599,11 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
             else:
-                decision = await route(prompt, last_user=last_user,
-                                       recent_users=recent_users,
-                                       last_assistant=last_assistant,
-                                       last_tools=last_tools)
+                if decision is None:
+                    decision = await route(prompt, last_user=last_user,
+                                           recent_users=recent_users,
+                                           last_assistant=last_assistant,
+                                           last_tools=last_tools)
 
             # A "pin generation to whichever big model is already resident"
             # step used to sit here, to avoid paying a swap for a trivial
