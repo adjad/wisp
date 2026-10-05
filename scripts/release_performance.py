@@ -1277,12 +1277,14 @@ class EffectGuard:
         self._patch(sp.Popen, "__init__", popen_init)
         self._patch(socket.socket, "connect", connect)
         self._patch(socket.socket, "connect_ex", connect_ex)
-        for name in ("send", "sendall", "sendto", "sendmsg"):
+        for name in ("send", "sendall", "sendto", "sendmsg", "sendfile"):
             if not hasattr(socket.socket, name):
                 continue
             original = getattr(socket.socket, name)
             def make_send(original, name):
                 def guarded(self_, *args, **kwargs):
+                    if name == "sendfile":
+                        guard._block("raw_socket_send", name)
                     if name == "sendto":
                         address = args[-1] if args else kwargs.get("address")
                         guard._check_address(address, "sendto")
@@ -1299,6 +1301,11 @@ class EffectGuard:
                     return original(self_, *args, **kwargs)
                 return guarded
             self._patch(socket.socket, name, make_send(original, name))
+        # Reviewed JSON inference/status operations never transfer file bytes.
+        # These Python APIs can bypass socket.send/sendall, even with no fs policy.
+        for name in ("sendfile", "splice"):
+            if hasattr(os, name):
+                self._patch(os, name, lambda *a, _n=name, **k: guard._block("raw_descriptor_transfer", f"os.{_n}"))
         for name in ("system", "posix_spawn", "posix_spawnp", "execv", "execve", "execvp", "execvpe", "execl",
                      "execle", "execlp", "execlpe", "spawnl", "spawnle", "spawnlp", "spawnlpe", "spawnv",
                      "spawnve", "spawnvp", "spawnvpe", "fork", "forkpty"):

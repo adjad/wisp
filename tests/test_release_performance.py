@@ -3827,3 +3827,63 @@ def test_valid_owned_fd_writes_metadata_and_fdopen_remain_usable(tmp_path):
         finally:
             os.close(fd)
     assert (tmp_path / "owned").read_bytes() == b"Zbc"
+
+
+@pytest.mark.parametrize("primitive", ["socket.sendfile", "os.sendfile", "os.splice"])
+@pytest.mark.parametrize("http_scope", [False, True])
+def test_file_transfer_primitives_refuse_before_underlying_call(monkeypatch, primitive, http_scope):
+    owner, name = (socket.socket, "sendfile") if primitive == "socket.sendfile" else (os, primitive.split(".")[1])
+    called = []
+    monkeypatch.setattr(owner, name, lambda *a, **k: called.append((a, k)), raising=False)
+    events = []
+    with socket.socket() as connection, rp.EffectGuard(lambda kind, **fields: events.append({"kind": kind, **fields})) as guard:
+        token = guard._http_operation.set(("127.0.0.1", 18775)) if http_scope else None
+        try:
+            with pytest.raises(rp.EffectBlocked):
+                if owner is socket.socket:
+                    connection.sendfile(object())
+                else:
+                    getattr(os, name)(-1, -1, 0, 1)
+        finally:
+            if token is not None:
+                guard._http_operation.reset(token)
+    assert called == []
+    assert len(events) == 1 and events[0]["kind"] == "effect_blocked"
+    assert events[0]["what"] == ("raw_socket_send" if owner is socket.socket else "raw_descriptor_transfer")
+
+
+def test_file_transfer_refusal_preserves_reviewed_http_requests_and_scope(monkeypatch):
+    import httpx
+    called = []
+    monkeypatch.setattr(socket.socket, "sendfile", lambda *a, **k: called.append(True))
+    with LoopbackBackend() as receiver:
+        port = receiver.server.server_address[1]
+        with rp.EffectGuard(lambda *a, **k: None, allowed_ports={port}) as guard:
+            with httpx.Client() as client:
+                assert client.get(receiver.url + "/health").status_code == 200
+                with socket.socket() as connection, pytest.raises(rp.EffectBlocked):
+                    connection.sendfile(object())
+                assert client.post(receiver.url + "/v1/chat/completions", json={"model": "synthetic"}).status_code == 200
+            assert guard._http_operation.get() is None
+        assert receiver.agent_bodies == [{"model": "synthetic"}]
+    assert called == []
+
+
+@pytest.mark.parametrize("primitive", ["socket.sendfile", "os.sendfile", "os.splice"])
+def test_file_transfer_refusal_cannot_be_hidden_by_clean_samples(tmp_path, ctx, monkeypatch, primitive):
+    owner, name = (socket.socket, "sendfile") if primitive == "socket.sendfile" else (os, primitive.split(".")[1])
+    called = []
+    monkeypatch.setattr(owner, name, lambda *a, **k: called.append(True), raising=False)
+    events = []
+    with socket.socket() as connection, rp.EffectGuard(lambda kind, **fields: events.append({"kind": kind, **fields})):
+        with pytest.raises(rp.EffectBlocked):
+            if owner is socket.socket:
+                connection.sendfile(object())
+            else:
+                getattr(os, name)(-1, -1, 0, 1)
+    assert called == []
+    evd = pass_evidence(tmp_path, ctx, "denied_file_transfer", startup_events={"candidate": events})
+    assert all_samples_correct_and_clean(evd)
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_BLOCK and result["authorizes_release"] is False
+    assert evd.receipt["lifecycle"]["candidate"]["blocked_effects"] == 1

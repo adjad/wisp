@@ -425,7 +425,7 @@ engine runner or automate that approval. The receipt's 24-hour freshness rule st
 job's rebuild. Release diagnostics retain the raw evidence; public downloads remain the app ZIP only.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
-pipeline runs its complete pinned set of 345 cases in a separate sandbox using one parent-held reserved
+pipeline runs its complete pinned set of 355 cases in a separate sandbox using one parent-held reserved
 loopback socket, then imports the exact-SHA report by digest. Its standalone profile permits only the
 canonical selected interpreter (including its exact framework launcher when necessary) and the literal Git
 shim and system-selected native Git executable, source/runtime reads and scratch writes. It grants no shell, compiler or executable directory
@@ -450,3 +450,8 @@ file type and device identity. Every integer-descriptor mutation or file-object 
 identity; unknown, closed or reused descriptors are refused. C-level FileIO close can leave a stale
 registry entry, but the old descriptor number cannot grant a newly created socket or other file
 permission. Valid registered owned regular files retain their ordinary descriptor operations.
+
+During the guard, `socket.sendfile`, `os.sendfile` and exposed `os.splice` are refused outright,
+before their underlying implementations run. Reviewed JSON inference and status requests have no
+file-transfer path, including inside their scoped HTTP capability. Refusals are recorded as blocked
+effects and make the candidate nonpassing; permitted reviewed HTTP requests remain available.
