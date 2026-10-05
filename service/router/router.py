@@ -6964,21 +6964,23 @@ async def route(text: str, *,
     # names, permissions or outbound operations enter the deterministic compiler.
     from service.router.intent import plan_read
     intent_result = None
+    generated_targets = []
     if not (request.authorized_effects or request.delivery or request.standalone_offer
             or _public_calendar_product_query(text)):
         intent_result = await plan_read(
-            text, client=intent_client, model=role_to_model("summarizer"),
+            text, client=intent_client,
             config=intent_config, context=intent_context or tuple(
                 {"role": role, "content": content} for role, content in (
                     ("user", last_user), ("assistant", last_assistant)) if content),
             prior_tools=tuple(name.strip() for name in (last_tools or "").split(",") if name.strip()),
-            now=intent_now)
+            now=intent_now, on_generation=generated_targets.append)
     if intent_result is not None:
         from service.tools.registry import REGISTRY
         names = [name for name, _ in intent_result.calls]
         decision = _mk_scoped(list(dict.fromkeys(names)), intent_result.reason,
                               expect=False, multi=len(names) > 1)
         decision.source = "intent"
+        decision.model = generated_targets[-1].model if generated_targets else ""
         decision.route_source = "intent_" + intent_result.disposition
         decision.direct_calls = [(name, dict(args)) for name, args in intent_result.calls]
         decision.forbidden_tools = frozenset(REGISTRY) - set(names)

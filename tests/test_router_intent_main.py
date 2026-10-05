@@ -11,8 +11,9 @@ from service import main
 from service.memory import context
 from service.memory.store import SessionStore
 from service.router import router
+from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, source, value
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value
 
 
 @pytest.fixture
@@ -26,6 +27,7 @@ def endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(context, "store", store)
     monkeypatch.setattr(main, "models_config", lambda: config)
     monkeypatch.setattr(router, "role_to_model", lambda role: MODEL)
+    monkeypatch.setattr(planner, "role_target", lambda role: TARGET if role == "router" else None)
     monkeypatch.setattr(main, "ensure_omlx", AsyncMock(side_effect=AssertionError("no startup")))
     monkeypatch.setattr(main, "maybe_summarize", AsyncMock())
     def forbidden(*a, **k):
@@ -153,3 +155,26 @@ def test_contextual_domain_cannot_be_replaced_by_model(endpoint):
     client.outputs = [value(source("calendar", time={"named": "tomorrow"})), value(source("calendar", time={"named": "tomorrow"}))]
     events = asyncio.run(request("Same for tomorrow", session_id=sid))
     assert not calls and "could not validate" in text(events)
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda c: setattr(c, "base_url", "https://remote.example"),
+    lambda c: setattr(c, "provider", None),
+    lambda c: setattr(c, "_credential_transport", None),
+])
+def test_actor_identity_mismatch_has_no_status_generation_or_source_execution(endpoint, mutation):
+    request, client, calls, _, _ = endpoint
+    mutation(client)
+    events = asyncio.run(request("Recap my email and texts"))
+    assert not client.calls and not calls
+    routed = next(e for e in events if e["type"] == "routed")
+    assert routed["intent_disposition"] == "clarify" and routed["model"] == ""
+
+
+def test_actor_reports_router_model_instead_of_fast_default(endpoint, monkeypatch):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(source("email"), source("messages"))]
+    monkeypatch.setattr(router, "role_to_model", lambda role: "other-fast-default")
+    events = asyncio.run(request("Recap my email and texts"))
+    assert next(e for e in events if e["type"] == "routed")["model"] == TARGET.model
+    assert client.calls == ["status", "chat"] and len(calls) == 2
