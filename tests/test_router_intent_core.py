@@ -793,3 +793,107 @@ def test_alias_coalescing_inside_repeated_clauses_keeps_whole_date_associations(
     bad = value(source("calendar", "records", time={"named": "tomorrow"}))
     with pytest.raises(InvalidIntent):
         validate_intent(bad, prompt, now=NOW)
+
+
+
+MIXED_LOOKUP_PROMPT = "Show my calendar tomorrow; find notes about amber notebooks from yesterday"
+MIXED_LOOKUP_GOOD = value(source("calendar", "records", time={"named": "tomorrow"}),
+                          source("notes", "records", query="amber notebooks", time={"named": "yesterday"}))
+COORDINATED_EMAIL_PROMPT = "Read email from Selene and email from Dorian for yesterday"
+COORDINATED_EMAIL_GOOD = value(source("email", "records", query="Selene", time={"named": "yesterday"}),
+                              source("email", "records", query="Dorian", time={"named": "yesterday"}))
+
+
+@pytest.mark.parametrize("prompt,data,expected", [
+    (MIXED_LOOKUP_PROMPT, MIXED_LOOKUP_GOOD,
+     (("get_upcoming", {"period": "tomorrow", "calendar_only": True}), ("search_notes", {"query": "amber notebooks", "period": "yesterday"}))),
+    ("Recap email; find notes named amber notebooks", value(source("email"), source("notes", "records", query="amber notebooks")),
+     (("summarize_emails", {}), ("search_notes", {"query": "amber notebooks"}))),
+    ("Find notes about amber notebooks and recap email", value(source("notes", "records", query="amber notebooks"), source("email")),
+     (("search_notes", {"query": "amber notebooks"}), ("summarize_emails", {}))),
+])
+def test_lookup_filter_requirement_belongs_only_to_its_source(prompt, data, expected):
+    assert validate_intent(data, prompt, now=NOW)
+    result = run(prompt, FakeClient(data))
+    assert result.disposition == "compiled" and result.calls == expected
+
+
+@pytest.mark.parametrize("mutation", ["missing", "truncated", "invented", "swapped_date"])
+def test_mixed_lookup_filter_fix_retains_exact_filter_and_time_rejection(mutation):
+    bad = copy.deepcopy(MIXED_LOOKUP_GOOD)
+    if mutation == "missing":
+        bad["sources"][1].pop("query")
+    elif mutation == "swapped_date":
+        bad["sources"][0]["time"], bad["sources"][1]["time"] = bad["sources"][1]["time"], bad["sources"][0]["time"]
+    else:
+        bad["sources"][1]["query"] = "amber" if mutation == "truncated" else "invented notebook"
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, MIXED_LOOKUP_PROMPT, now=NOW)
+    assert run(MIXED_LOOKUP_PROMPT, FakeClient(bad, bad)).disposition == "clarify"
+
+
+def test_literal_source_word_cannot_authorize_an_extra_unfiltered_read():
+    bad = value(source("notes", "records", query="my calendar"), source("calendar"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, "Find notes about my calendar", now=NOW)
+
+
+@pytest.mark.parametrize("prompt", [
+    COORDINATED_EMAIL_PROMPT,
+    'Read email from "Selene" and email from "Dorian" for yesterday',
+    "Recap texts with Imani and message from Dorian",
+    "Read my notes and email about amber notebooks",
+])
+def test_coordinated_filter_noun_is_not_a_delivery_authorization(prompt):
+    from service.router.web_request import classify as parse_web_request
+    request = parse_web_request(prompt)
+    assert request.delivery is None and not request.authorized_effects
+    assert request.source == prompt
+
+
+@pytest.mark.parametrize("tail,effect", [
+    ("email Mom", "send_email"),
+    ("email Mom with the summary", "send_email"),
+    ("email from Dorian to Mom", "send_email"),
+    ("email it to Mom", "send_email"),
+    ("send it by email to Mom", "send_email"),
+    ("draft an email to Mom", "draft_email"),
+    ("forward it by email to Mom", "send_email"),
+    ("text Mom", "send_message"),
+    ("message it to Mom", "send_message"),
+])
+def test_genuine_coordinated_delivery_remains_an_authorized_effect(tail, effect):
+    from service.router.web_request import classify as parse_web_request
+    request = parse_web_request("Read email from Selene and " + tail)
+    assert request.delivery is not None and effect in request.authorized_effects
+
+
+def test_read_noun_does_not_hide_a_later_delivery_or_quoted_and_negated_forms():
+    from service.router.web_request import classify as parse_web_request
+    prompt = COORDINATED_EMAIL_PROMPT + " and send it by email to Mom"
+    assert "send_email" in parse_web_request(prompt).authorized_effects
+    assert not parse_web_request('Read email about "email Mom" and email from Dorian').authorized_effects
+    assert not parse_web_request("Read email from Selene and do not email Mom").authorized_effects
+
+
+
+def test_only_lookup_occurrence_requires_filter_when_same_source_is_repeated():
+    prompt = "Show my notes tomorrow; find notes about amber notebooks from yesterday"
+    good = value(source("notes", "records", time={"named": "tomorrow"}),
+                 source("notes", "records", query="amber notebooks", time={"named": "yesterday"}))
+    assert validate_intent(good, prompt, now=NOW)
+    assert run(prompt, FakeClient(good)).disposition == "compiled"
+    for queries in [("amber notebooks", None), (None, None), (None, "amber")]:
+        bad = copy.deepcopy(good)
+        for item, query in zip(bad["sources"], queries):
+            item.pop("query", None)
+            if query:
+                item["query"] = query
+        with pytest.raises(InvalidIntent):
+            validate_intent(bad, prompt, now=NOW)
+
+
+def test_unbounded_repeated_lookup_does_not_become_an_unfiltered_read():
+    bad = value(source("notes", "records"))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, "Show my notes; find notes", now=NOW)

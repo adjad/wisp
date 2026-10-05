@@ -534,6 +534,30 @@ def split_delivery(text: str) -> tuple[str, Delivery | None]:
     return composed.source, composed.delivery
 
 
+def _coordinated_read_noun(text: str, clauses: tuple[Clause, ...], index: int) -> bool:
+    """A source noun under a read head is not a delivery imperative.
+
+    Only plain coordination and a read-filter complement qualify. Explicit
+    delivery verbs, destinations, payload relations and later action clauses
+    remain visible to the existing action/permission classifier.
+    """
+    clause = clauses[index]
+    separator = _unquoted(text[clauses[index - 1].end:clause.start]).strip().lower()
+    if separator not in {"and", "&"}:
+        return False
+    head = _root(clauses[0].text)
+    if not re.match(r"(?:read|show|list|check|recap|summari[sz]e)\b", head, re.I):
+        return False
+    if not _matches(r"\b(?:" + _PERSONAL + "|" + _ARTIFACT + r")\b", head):
+        return False
+    root = _root(clause.text)
+    if not re.match(r"(?:e-?mail|text|message)\s+(?:from|with|about|containing|named|titled|called)\b", root, re.I):
+        return False
+    if _matches(r"\b(?:to|saying|say|send|forward|draft|compose|write|schedule)\b", root):
+        return False
+    return True
+
+
 def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
     """Separate a source from effect clauses, retaining original query bytes."""
     source_end, delivery, continuations = len(text), None, []
@@ -565,6 +589,8 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
             if delivery or _delivery(clauses[0].text) or separator.strip():
                 cancelled = True
                 source_end = min(source_end, clauses[index - 1].end)
+            continue
+        if _coordinated_read_noun(text, clauses, index):
             continue
         action = re.match(r"(?:" + _NEGATIVE + r"\s+)?(?:" + _ACTION + r"|give)\b", root, re.I)
         if not action:
