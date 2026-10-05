@@ -550,3 +550,87 @@ async def test_exact_day_registered_execution_awaits_period_dispatch(clock):
             new=AsyncMock(return_value=ready)):
         result = await run_tool(REGISTRY["find_free_time"], {"period": "tomorrow", "minutes": 90})
     assert "Sunday, 2026-10-04: 9:00 AM–10:30 AM" in result
+
+
+REJECTED_STUDY_OFFERS = [
+    GOOD_OFFER + " Would you like me to email Mom too?",
+    GOOD_OFFER.replace("so you have time", "and email Mom so you have time"),
+    "I already set the study reminder. " + GOOD_OFFER,
+    'The example says "' + GOOD_OFFER + '"',
+    "Do not set a reminder. " + GOOD_OFFER,
+    GOOD_OFFER.replace("study session", "study\nsession") + " Would you like me to email Mom too?",
+    GOOD_OFFER.replace("8:30 AM", "8:30 a.m.") + " Would you like me to email Mom too?",
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offer", REJECTED_STUDY_OFFERS)
+@pytest.mark.parametrize("assent", ["sure", "sure, on 2026-10-04"])
+@pytest.mark.parametrize("attempt_tool", [False, True])
+async def test_rejected_offer_never_displays_false_creation(offer, assent, attempt_tool, clock):
+    from service.agent import loop
+    d = await R.route(assent, last_user="find time to study tomorrow", last_assistant=offer)
+    class Client:
+        target = SimpleNamespace(context_window=64000)
+        step = 0
+        async def ensure_only(self, *args, **kwargs):
+            pass
+        async def stream_events(self, *args, **kwargs):
+            self.step += 1
+            if attempt_tool and self.step == 1:
+                import json
+                yield {"kind":"final", "message":{"role":"assistant", "content":"", "tool_calls":[{
+                    "id":"rejected-write", "type":"function", "function":{"name":"add_reminder",
+                    "arguments":json.dumps({"title":"WRONG", "when_iso":"2026-10-05T08:30"})}}]}}
+            else:
+                text = "Done! I set the reminder for 8:30 AM."
+                yield {"kind":"content", "text":text}
+                yield {"kind":"final", "message":{"role":"assistant", "content":text}}
+    execute = AsyncMock()
+    emit = AsyncMock()
+    with patch.object(loop, "run_tool", execute), patch.object(loop, "audit"):
+        output = await loop.run_agent(Client(), "fixture-model", [{"role":"user", "content":d.resolved_request or assent}],
+            emit, SimpleNamespace(confirm=AsyncMock()), tools=d.tool_subset, direct_calls=d.direct_calls,
+            forbidden_tools=d.forbidden_tools, reminder_action=d.reminder_action,
+            include_memory_context=False, max_steps=3)
+    assert d.needs_tools and d.reminder_action == "create"
+    assert d.tool_subset == [] and d.tool_argument_bindings == {} and d.direct_calls == []
+    execute.assert_not_awaited()
+    assert output == "I couldn't create the reminder. No reminder was added."
+    assert all("I set the reminder" not in c.args[0].get("text", "") for c in emit.call_args_list if c.args)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offer", [
+    "I can set a reminder at 8 AM for your study session. What date?",
+    "What date should I use for a reminder at 8 AM for your study session?",
+    "I can explain the study session. What date?",
+])
+async def test_capability_then_date_question_keeps_generic_route(offer, clock):
+    from service.router.web_request import classify
+    request = classify("okay 2026-10-12", last_user="find time to study tomorrow", last_assistant=offer)
+    assert not request.acknowledgement_without_offer
+    assert request.study_reminder_clock is None
+    with patch.object(R, "_semantic_core", new=AsyncMock(return_value=["calculate"])):
+        d = await R.route("okay 2026-10-12", last_user="find time to study tomorrow", last_assistant=offer)
+    assert d.needs_tools and "calculate" not in d.forbidden_tools and not d.reminder_action
+
+
+@pytest.mark.parametrize("gap,expected", [(4, False), (5, True)])
+def test_legacy_zero_minutes_still_requires_five_minute_gap(gap, expected, clock):
+    rows = [{"when_ts":stamp(4, 9, gap)}, {"when_ts":stamp(4, 10, gap)},
+            {"when_ts":stamp(4, 11, gap)}, {"when_ts":stamp(4, 12, gap)},
+            {"when_ts":stamp(4, 13, gap)}, {"when_ts":stamp(4, 14, gap)},
+            {"when_ts":stamp(4, 15, gap)}, {"when_ts":stamp(4, 16, gap)},
+            {"when_ts":stamp(4, 17, gap)}]
+    with patch.object(S, "_store", SimpleNamespace(upcoming=lambda **kwargs:rows)):
+        result = S.find_free_time(days=2, minutes=0)
+    assert ("9:00 AM–9:05 AM" in result) is expected
+    assert ("No gaps" in result) is not expected
+
+
+@pytest.mark.asyncio
+async def test_explicit_assistant_denial_cannot_grant_confirmed_write(clock):
+    d = await R.route("sure, on 2026-10-04", last_user="find time to study tomorrow",
+                      last_assistant="Do not set a reminder. " + GOOD_OFFER)
+    assert "add_reminder" not in (d.tool_subset or []) and d.tool_argument_bindings == {}
