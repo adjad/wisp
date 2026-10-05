@@ -189,3 +189,37 @@ def test_send_prohibition_without_a_draft_request_offers_no_send(prompt):
 def test_draft_and_then_send_is_still_a_send():
     assert not R._positive_draft_request("don't draft anything, just send it to Sam")
     assert "send_email" in _reachable(_route("draft an email to dana@example.com and send it"))
+
+
+# --- Fix 5: typo/shorthand fall-through re-route ---------------------------
+
+from service.router.normalize import normalize_typos  # noqa: E402
+
+
+@pytest.mark.parametrize("prompt,tool", [
+    ("txt alex ok sounds good", "send_message"),
+    ("remeber that sam is vegetarian", "remember"),
+    ("whats on my calender tmrw", "get_upcoming"),
+])
+def test_typo_requests_reach_the_rule_the_spelled_out_request_reaches(prompt, tool):
+    decision = _route(prompt)
+    assert decision.source != "default", decision.reason
+    assert tool in _reachable(decision), decision.reason
+
+
+def test_typo_fragment_continues_the_previous_calendar_read():
+    decision = _route("and tmrw?", last_user="what's on my calendar today",
+                      last_assistant="Today you have a 2pm call with HR.", last_tools="get_upcoming")
+    assert "get_upcoming" in _reachable(decision), decision.reason
+
+
+@pytest.mark.parametrize("text", ["text Cal that I'm late", "email Emil the notes",
+                                  "whether or not it rains", "u up?", "tell me a joke"])
+def test_normalization_leaves_names_and_real_words_alone(text):
+    assert normalize_typos(text) == text
+
+
+def test_normalization_is_a_fixed_point():
+    once = normalize_typos("pls chek my calender tmrw and txt mom")
+    assert once == "please check my calendar tomorrow and text mom"
+    assert normalize_typos(once) == once

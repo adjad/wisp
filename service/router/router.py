@@ -7334,6 +7334,16 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                                 if decision.multi_round_on_retrieval is not None
                                 else True)
     if decision is None:
+        # Typos and chat shorthand ("whats on my calender tmrw", "txt alex
+        # ok") defeated every keyword rule above and fell to the generic
+        # retrieved menu. Give the SAME rules one more pass over a
+        # conservatively normalized copy. Fall-through only: it runs after
+        # every rule declined the original text, so it cannot pre-empt one,
+        # and a normalized copy is a fixed point, so this recurses at most once.
+        from service.router.normalize import normalize_typos
+        if (normalized := normalize_typos(text)) != text:
+            return await route(normalized, last_user=last_user, recent_users=recent_users,
+                               last_assistant=last_assistant, last_tools=last_tools)
         # Before falling back to the generic core set: does this CONTINUE the
         # write the previous turn just made? "set some more the day before it"
         # names no domain and matches no rule, so it landed on the core tools —

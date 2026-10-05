@@ -8,6 +8,7 @@ All notable changes to Wisp are documented here.
 - Fixed a bare "sure", "ok" or "go ahead" to an assistant's offer (open a file, set a reminder) reaching the model with no tools at all once the conversation had earlier turns. A reminder offer still never creates a reminder from a bare assent: Wisp looks the event up and asks for the time.
 - Fixed "any new emails?", "any new texts?" and similar inbox questions being answered with a web search instead of reading the user's own mail or messages.
 - Fixed "draft a reply … but don't send it" and similar requests losing the draft tool along with the send tools, so Wisp could neither draft nor send. Send, reply and forward stay unavailable for these requests, including "do not reply" and "I'll send it myself".
+- Fixed common typos and shorthand ("tmrw", "calender", "txt", "remeber") sending a request to a broad, generic tool list. When no routing rule matches, Wisp now tries the same rules once more on a corrected copy of the request.
 
 ## [1.2.0] - Pending qualification
 
