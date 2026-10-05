@@ -649,6 +649,8 @@ def test_a_usable_pid_reaches_libproc_unchanged(libproc, pid):
     ('5', raw_of(GOOD), 0), (None, raw_of(GOOD), 0), (len(GOOD) + 0.0, raw_of(GOOD), 0), (True, raw_of(b'/'), 0),
     (len(GOOD), raw_of(GOOD).decode(), 0), (len(GOOD), bytearray(raw_of(GOOD)), 0), (len(GOOD), None, 0),
     (0, None, '3'), (0, None, None), (0, None, 3.0),
+    (0, raw_of(b''), '3'), (0, raw_of(b''), None), (0, raw_of(b''), 3.0), (-1, raw_of(b''), 3.0),
+    (len(GOOD), raw_of(GOOD), '0'), (len(GOOD), raw_of(GOOD), None),
 ], ids=repr)
 def test_a_result_of_the_wrong_type_is_refused(monkeypatch, result):
     monkeypatch.setattr(local_peer, '_proc_pidpath', lambda pid, size: result)
