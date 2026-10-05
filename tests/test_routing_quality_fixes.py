@@ -180,11 +180,15 @@ def test_draft_request_with_a_send_prohibition_offers_the_draft_not_the_send(pro
     assert not (reach & SENDS), decision.reason
 
 
-@pytest.mark.parametrize("prompt", ["summarize my emails, do not reply to anyone",
-                                    "read my texts from mom, don't text her back",
+@pytest.mark.parametrize("prompt", ["read my texts from mom, don't text her back",
                                     "find the lease email but don't send anything"])
 def test_send_prohibition_without_a_draft_request_offers_no_send(prompt):
     assert not (_reachable(_route(prompt)) & SENDS)
+
+
+def test_do_not_reply_forbids_the_reply_only():
+    decision = _route("summarize my emails, do not reply to anyone")
+    assert "reply_to_email" not in _reachable(decision)
 
 
 def test_draft_and_then_send_is_still_a_send():
@@ -359,3 +363,36 @@ def test_delete_paraphrases_and_typos_open_the_bulk_delete_gate(prompt):
                                     "give me a polite way to say no to a meeting"])
 def test_mentions_of_people_that_address_nobody_stay_non_outbound(prompt):
     assert not semantic.outbound_intent(prompt)
+
+
+# --- P2 repair: "I'll send it" inside a message body; scoped reply negation --
+
+@pytest.mark.parametrize("prompt,tool", [
+    ("text Mom I will send it tonight", "send_message"),
+    ("email Bob that I will send it tomorrow", "send_email"),
+    ("email Dan: I'll send it myself tomorrow", "send_email"),
+    ("text Mom that I'll send it to her later", "send_message"),
+    ("email bob@example.com saying hi, don't reply to Sam", "send_email"),
+    ("forward Sam's email to Bob, don't reply to Sam", "forward_email"),
+])
+def test_message_body_words_never_turn_a_send_into_a_draft(prompt, tool):
+    decision = _route(prompt)
+    assert tool in _reachable(decision), decision.reason
+    assert decision.force_first_tool not in decision.forbidden_tools
+
+
+@pytest.mark.parametrize("prompt", ["reply to Sam saying I'll send it tomorrow",
+                                    "send Dan the file, I can send it now",
+                                    "tell Dan I'll send it over tonight"])
+def test_channel_ambiguous_body_cases_route_exactly_as_on_main(prompt):
+    # No channel named: both committing channel tools wait for "text or email?"
+    # (the tested clarify contract). The body words must not make it a draft.
+    decision = _route(prompt)
+    assert not R._self_send_instruction(prompt)
+    assert not (_reachable(decision) & {"draft_email", "draft_message"}) or decision.clarify_channel
+
+
+def test_a_standalone_self_send_clause_after_a_compose_request_is_draft_only():
+    assert R._self_send_instruction("prepare an email to HR asking about PTO, I'll send it myself")
+    assert R._self_send_instruction("write up a text to the plumber; I will send it later")
+    assert not R._self_send_instruction("email Dan: I'll send it myself tomorrow")

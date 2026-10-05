@@ -169,7 +169,10 @@ _RELATION = (
     r"teacher|professor|tutor|coach|client|customers?|assistant|recruiter|hr|everyone|"
     r"everybody|someone|somebody")
 _NOT_A_VERB = (r"my|our|your|his|her|their|its|the|a|an|this|that|these|those|of|for|about|from|"
-               r"and|or|but|in|on|at|by|with|is|are|was|were|be|what|when|where|who|how|whose")
+               r"and|or|but|in|into|onto|on|at|by|with|via|like|as|than|over|under|near|is|are|was|were|be|"
+               r"what|when|where|who|how|whose|translate|translated|spell|say|speak|learn|visit|"
+               r"visiting|fly|flying|drive|driving|travel|traveling|travelling|go|going|watch|play|"
+               r"listen|open|launch|quit|use|search|google|find|buy|order|eat|cook|read|in")
 _ADDRESSEE_RE = re.compile(
     # an address or phone number
     r"[\w.+-]+@[\w-]+\.[\w.]+|(?<!\w)\+?\d[\d\s().-]{6,}\d(?!\w)|"
@@ -200,7 +203,12 @@ _DELETE_INTENT_RE = re.compile(
 
 
 def outbound_intent(text: str) -> bool:
-    """Whether `text` might ask to communicate with someone (fails toward True)."""
+    """Whether `text` might ask to communicate with someone (fails toward True).
+
+    Quoted text is content, not a request: 'Translate "text 650-555-0134 that
+    I am outside" into French' asks for no send."""
+    from service.utterance_shape import mask_quoted
+    text = mask_quoted(text)
     return bool(_OUTBOUND_INTENT_RE.search(text) or _ADDRESSEE_RE.search(text))
 
 
@@ -216,7 +224,8 @@ def gated_tool_allowed(name: str, text: str, *, context_open: bool = False) -> b
     if name in _OUTBOUND_TOOLS:
         return outbound_intent(text)
     if name in _BULK_DELETE_TOOLS:
-        return bool(_DELETE_INTENT_RE.search(text))
+        from service.utterance_shape import mask_quoted
+        return bool(_DELETE_INTENT_RE.search(mask_quoted(text)))
     return True
 
 

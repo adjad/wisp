@@ -3348,9 +3348,24 @@ _DRAFT_ONLY_RE = re.compile(
     r"(?!.*\b(?:and|then)\s+send\b)|"
     r"\bunsent\s+(?:text|message|e-?mail|reply)\b|"
     r"\b(?:without\s+sending|leave\s+(?:it|this|the\s+message)\s+unsent|"
-    r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b|"
-    # "prepare an email to HR, I'll send it myself": the user keeps the send.
-    r"\b(?:i'?ll|i\s+will|i\s+can|let\s+me)\s+send\s+(?:it|this|that)(?:\s+myself)?\b)", re.I)
+    r"for\s+review(?:\s+only)?|not\s+sent|never\s+(?:a\s+)?send)\b)", re.I)
+
+# "prepare an email to HR asking about PTO, I'll send it myself": the user
+# keeps the send — but only as its OWN instruction clause after a compose
+# request. Inside a message ("text Mom I will send it tonight", "email Dan:
+# I'll send it myself tomorrow", "tell Dan I'll send it over") the same words
+# are the message body and the send is wanted (review of PR #159).
+_SELF_SEND_CLAUSE_RE = re.compile(
+    r"^(?P<head>[^:;\"“”]*?)[,;.]\s*(?:and\s+|but\s+)?(?:i'?ll|i\s+will|let\s+me)\s+send\s+"
+    r"(?:it|this|that)\s+(?:myself|later|after\s+i\s+(?:review|read|check)\w*\s+it)?\s*[.!]?\s*$", re.I)
+_COMPOSE_HEAD_RE = re.compile(
+    r"^\s*(?:(?:please|can\s+you|could\s+you)\s+)?(?:prepare|write(?:\s+up)?|compose|draft|"
+    r"put\s+together|get)\b(?![^,;]*\b(?:saying|that\s+i|tell)\b)", re.I)
+
+
+def _self_send_instruction(text: str) -> bool:
+    match = _SELF_SEND_CLAUSE_RE.match(mask_quoted(text))
+    return bool(match and _COMPOSE_HEAD_RE.match(match.group("head")))
 
 # send_* removed when _DRAFT_ONLY_RE fires; the draft_* counterpart stays.
 _SEND_TOOLS = {"send_message", "send_email", "reply_to_email", "forward_email",
@@ -4435,7 +4450,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # _DRAFT_ONLY_RE for the turn where both were offered and the model sent.
     # Only meaningful when a draft_* counterpart survives, so a domain with no
     # draft tool (calendar) is untouched.
-    if ((_DRAFT_ONLY_RE.search(t) or _SELF_SEND_RE.search(t))
+    if ((_DRAFT_ONLY_RE.search(t) or _SELF_SEND_RE.search(t) or _self_send_instruction(t))
             and any(x.startswith("draft_") for x in subset)):
         subset = [x for x in subset if x not in _SEND_TOOLS]
     if _PLAIN_TEXT_FILE_RE.search(t):
@@ -6081,9 +6096,12 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     # Explicit prohibitions are subtracted after every positive obligation.
     if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
         forbidden |= set(_INBOX_READ_TOOLS)
-    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward|"
-                 r"reply|respond|write\s+back)\b", t, re.I):
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
         forbidden |= set(_SEND_TOOLS)
+    # "don't reply to Sam" forbids a REPLY, scoped to that clause — not the
+    # email or forward the rest of the sentence asks for (review of PR #159).
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:reply|respond|write\s+back)\b", t, re.I):
+        forbidden.add("reply_to_email")
     positive_remainder = _positive_clause_remainder(t)
     if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
             and not has_write_intent(positive_remainder)):
@@ -6201,6 +6219,11 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
     if decision.tool_subset is not None:
         decision.tool_subset = [n for n in decision.tool_subset if n not in forbidden]
     decision.direct_calls = [(n, a) for n, a in decision.direct_calls if n not in forbidden]
+    # A forced first tool the same contract forbids can never run; drop the
+    # force rather than leave the loop insisting on an unavailable call.
+    if decision.force_first_tool in forbidden:
+        decision.force_first_tool = None
+        decision.expect_tool_first = bool(decision.direct_calls or decision.required_tool_groups)
 
 
 def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | None = None) -> RouteDecision:
@@ -7000,7 +7023,8 @@ _POSITIVE_DRAFT_EXTRA_RE = re.compile(
 def _positive_draft_request(text: str) -> bool:
     """The user asks for a DRAFT (as opposed to only forbidding a send)."""
     masked = mask_quoted(text)
-    return bool(_DRAFT_ONLY_RE.search(masked) or _POSITIVE_DRAFT_EXTRA_RE.search(masked))
+    return bool(_DRAFT_ONLY_RE.search(masked) or _POSITIVE_DRAFT_EXTRA_RE.search(masked)
+                or _self_send_instruction(text))
 
 
 def _study_reminder_no_creation(reason: str) -> RouteDecision:
