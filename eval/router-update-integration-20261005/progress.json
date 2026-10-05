@@ -1,0 +1,51 @@
+{
+  "status": "implementation_in_progress",
+  "updated_at": "2026-10-05T18:53:22.410357+00:00",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
+  "agents": {
+    "router_core": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+      "branch": "codex/router-intent-core",
+      "status": "implementing"
+    },
+    "router_eval": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
+      "branch": "codex/router-replay-eval",
+      "status": "implementing; fresh test sealed from builders"
+    },
+    "router_presentation": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-overviews/MOE_Project",
+      "branch": "codex/router-overviews",
+      "status": "implementing"
+    }
+  },
+  "baseline_validation": {
+    "revision": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest -p pytest_asyncio.plugin -q tests/test_routing_quality_corpus.py tests/test_fast_path_intent.py tests/test_current_web_routing.py tests/test_contextual_outbound_routing.py tests/test_compound_task_routing.py tests/test_schedule_presentation.py tests/test_message_attribution.py",
+    "passed": 2252,
+    "subtests_passed": 1504,
+    "seconds": 58.54,
+    "model_inference": false,
+    "real_tool_execution": false
+  },
+  "model_measurement_window": "pending Orchestrator coordination; no model inference/training started",
+  "production_changed": false,
+  "pending": [
+    "core implementation and contracts",
+    "independent full-path replay and sealed evaluation",
+    "overview rendering and fixture snapshots",
+    "integrate reviewed commits",
+    "freeze code-only candidate and measure actual inference",
+    "training feasibility and isolated comparative experiment",
+    "same-SHA mechanical/CI/release audit/synthetic specialist QA",
+    "clean pushed integration PR"
+  ]
+}
