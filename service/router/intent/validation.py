@@ -79,7 +79,8 @@ def _object(value, allowed, required=()):
 def _time(value) -> TimeScope:
     _object(value, TIME_PROPERTIES)
     keys = set(value)
-    if not keys or (keys != {"start", "end"} and len(keys) != 1):
+    if (not keys or (keys & {"start", "end"} and keys != {"start", "end"})
+            or (keys != {"start", "end"} and len(keys) != 1)):
         raise InvalidIntent("Choose one time scope, or paired start/end dates")
     for key, item in value.items():
         if key in {"last_n_days", "rolling_days"}:
@@ -111,18 +112,8 @@ def _time(value) -> TimeScope:
 
 
 _NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twenty": 20, "thirty": 30}
-
-
-def _number_requested(number: int, text: str, *, duration=False) -> bool:
-    words = [str(number)] + [word for word, value in _NUMBERS.items() if value == number]
-    if duration and number % 60 == 0:
-        hours = number // 60
-        hour_words = [str(hours)] + [word for word, value in _NUMBERS.items() if value == hours]
-        if re.search(r"\b(?:" + "|".join(hour_words) + r")[- ]hours?\b", text, re.I) or number == 60 and re.search(r"\ban? (?:free )?hour\b", text, re.I):
-            return True
-    suffix = r"[- ](?:minutes?|mins?)\b" if duration else r"\b"
-    return bool(re.search(r"\b(?:" + "|".join(words) + ")" + suffix, text, re.I))
+            "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twenty": 20, "thirty": 30, "forty": 40, "forty-five": 45,
+            "forty five": 45, "sixty": 60, "ninety": 90}
 
 
 def _requested_count(domain: str, text: str) -> int | None:
@@ -138,50 +129,253 @@ def _requested_count(domain: str, text: str) -> int | None:
     return int(raw) if raw.isdigit() else _NUMBERS[raw]
 
 
+
 def _ground_time(scope: TimeScope, evidence: str, *, now=None):
-    if scope.named and scope.named not in evidence.casefold():
-        raise InvalidIntent("Unrequested named period")
-    for key in ("last_n_days", "rolling_days"):
-        count = getattr(scope, key)
-        if count:
-            prefix = r"(?:last|past)" if key == "last_n_days" else r"next"
-            words = [str(count)] + [word for word, value in _NUMBERS.items() if value == count]
-            if not re.search(r"\b" + prefix + r"\s+(?:" + "|".join(words) + r")\s+days?\b", evidence, re.I):
-                raise InvalidIntent("Unrequested rolling date count")
-    # Model arithmetic may only canonicalize explicit dates or named days.
-    from service.workflows.reads import _MONTH_DAY, _DAY_MONTH, _MONTHS
-    dates = set(re.findall(r"\b\d{4}-\d{2}-\d{2}\b", evidence))
     anchor = now or datetime.now()
-    for word, delta in (("today", 0), ("tomorrow", 1), ("yesterday", -1)):
-        if re.search(r"\b" + word + r"\b", evidence, re.I):
-            dates.add((anchor.date() + timedelta(days=delta)).isoformat())
-    for pattern in (_MONTH_DAY, _DAY_MONTH):
-        for match in pattern.finditer(evidence):
-            month = next((i + 1 for i, name in enumerate(_MONTHS)
-                          if name.startswith(match.group("month")[:3].lower())), None)
-            try:
-                dates.add(date(int(match.group("year") or anchor.year), month, int(match.group("day"))).isoformat())
-            except (TypeError, ValueError):
-                raise InvalidIntent("Invalid explicit date") from None
+    requested = {_time_identity(item, now=anchor) for _, _, item in _requested_times(evidence, now=anchor)}
+    if _time_identity(scope, now=anchor) not in requested:
+        raise InvalidIntent("Time was changed or invented")
+
+
+def _requested_times(text: str, *, now: datetime) -> list[tuple[int, int, TimeScope]]:
+    """Supported user time phrases with exact bounds, independent of the model.
+
+    ISO/natural dates, month/year, named periods, weekdays and day counts are
+    supported. Open-ended comparisons, dayparts, ambiguous short dates and
+    unsupported units clarify rather than compile a wider read.
+    """
+    from service.workflows.reads import _MONTH_DAY, _DAY_MONTH, _MONTHS
     from service.tools.timeranges import resolve_when, BadWhen
-    for match in re.finditer(r"\b(?:(?:this|next)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", evidence, re.I):
+    spans = []
+    def add(start, end, scope):
+        if not any(start < right and end > left for left, right, _ in spans):
+            spans.append((start, end, scope))
+    for match in re.finditer(r"\b\d{4}-\d{2}-\d{2}\b|\b\d{4}-\d{2}\b", text):
+        field = "date" if len(match.group()) == 10 else "month"
+        add(*match.span(), _time({field: match.group()}))
+    month_words = sorted({*_MONTHS, *(m[:3] for m in _MONTHS), "sept"}, key=len, reverse=True)
+    for match in re.finditer(r"\b(" + "|".join(month_words) + r")\.?\s+(\d{4})\b", text, re.I):
+        month = next(i + 1 for i, name in enumerate(_MONTHS) if name.startswith(match[1][:3].lower()))
+        add(*match.span(), _time({"month": f"{int(match[2]):04d}-{month:02d}"}))
+    for pattern in (_MONTH_DAY, _DAY_MONTH):
+        for match in pattern.finditer(text):
+            if match["month"].lower() not in month_words:
+                raise InvalidIntent("Unsupported date wording")
+            month = next(i + 1 for i, name in enumerate(_MONTHS) if name.startswith(match["month"][:3].lower()))
+            try:
+                exact = date(int(match["year"] or now.year), month, int(match["day"])).isoformat()
+            except ValueError:
+                raise InvalidIntent("Invalid requested date") from None
+            add(*match.span(), TimeScope(date=exact))
+    periods = sorted(NAMED_PERIODS, key=len, reverse=True)
+    for match in re.finditer(r"\b(?:" + "|".join(periods) + r")\b", text, re.I):
+        add(*match.span(), TimeScope(named=match.group().lower()))
+    numbers = r"(\d{1,4}|" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r")"
+    for match in re.finditer(r"\b(last|past|next)\s+" + numbers + r"\s+days?\b", text, re.I):
+        raw = match[2].lower()
+        count = int(raw) if raw.isdigit() else _NUMBERS[raw]
+        field = "rolling_days" if match[1].lower() == "next" else "last_n_days"
+        add(*match.span(), _time({field: count}))
+    for match in re.finditer(r"\b(?:(?:this|next)\s+)?(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", text, re.I):
         try:
-            resolved, _ = resolve_when(match.group().lower() + " at 12pm", now=anchor)
-            dates.add(resolved.date().isoformat())
-        except (BadWhen, TypeError, ValueError):
-            raise InvalidIntent("Unsupported weekday date") from None
-    for key in ("date", "start", "end"):
-        if getattr(scope, key) and getattr(scope, key) not in dates:
-            raise InvalidIntent("Date was changed or invented")
-    if scope.month and scope.month not in evidence:
-        months = set()
-        for match in re.finditer(r"\b(" + "|".join(_MONTHS) + r")\s+(\d{4})\b", evidence, re.I):
-            months.add(f"{int(match.group(2)):04d}-{_MONTHS.index(match.group(1).lower()) + 1:02d}")
-        if scope.month not in months:
-            raise InvalidIntent("Month was changed or invented")
+            when, _ = resolve_when(match.group().lower() + " at 12pm", now=now)
+        except (BadWhen, ValueError, TypeError):
+            raise InvalidIntent("Unsupported requested weekday") from None
+        add(*match.span(), TimeScope(date=when.date().isoformat()))
+    spans.sort()
+    merged = []
+    for item in spans:
+        if merged:
+            left = merged[-1]
+            between = text[left[1]:item[0]].strip().lower()
+            day_pair = {left[2].named, item[2].named} == {"today", "tomorrow"}
+            if (between in {"to", "through", "until", "-"} or between == "and" and
+                    (day_pair or re.search(r"\bbetween\s*$", text[:left[0]], re.I))):
+                def exact(scope):
+                    if scope.date:
+                        return scope.date
+                    if scope.named in {"today", "tomorrow", "yesterday"}:
+                        return (now.date() + timedelta(days={"today": 0, "tomorrow": 1, "yesterday": -1}[scope.named])).isoformat()
+                    raise InvalidIntent("Unsupported range endpoints")
+                scope = _time({"start": exact(left[2]), "end": exact(item[2])})
+                merged[-1] = (left[0], item[1], scope)
+                continue
+        merged.append(item)
+    return merged
+
+
+
+def _mask_literals(text: str, *, keep_quotes=False) -> str:
+    from service.utterance_shape import quoted_spans
+    for start, end in reversed(quoted_spans(text)):
+        replacement = " " * (end - start)
+        if keep_quotes:
+            replacement = text[start] + " " * (end - start - 2) + text[end - 1]
+        text = text[:start] + replacement + text[end:]
+    return text
+
+def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, int]]:
+    """Bound source about/contains/named/from/with/by/for query phrases.
+
+    Explicit date and limit suffixes are separate constraints. Unknown query
+    boundaries clarify; never approximate them by a nonempty substring.
+    """
+    masked = _mask_literals(text, keep_quotes=True)
+    found = []
+    for domain, word in SOURCE_WORDS.items():
+        pattern = word + r"\s+(?:(?:that|which)\s+)?(?:are\s+)?(?P<cue>about|containing|contains|named|titled|called|from|with|by|for)\s+(?P<literal>[^;!?\n]+)"
+        for match in re.finditer(pattern, masked, re.I):
+            start = match.start("literal")
+            candidate = text[start:match.end("literal")]
+            if candidate[:1] in {'"', "'", '“', '‘', '`'}:
+                continue
+            if match["cue"].lower() in {"from", "for"}:
+                times = _requested_times(candidate, now=now)
+                if times and times[0][0] == 0:
+                    continue  # from yesterday / for October 2026 is a time filter
+            stops = []
+            for boundary in re.finditer(r"\b(?:for|from|on|during|since|between)\s+", candidate, re.I):
+                tail_times = _requested_times(candidate[boundary.end():], now=now)
+                if tail_times and tail_times[0][0] == 0:
+                    stops.append(boundary.start())
+            for boundary in re.finditer(r"\b(?:and|plus|then)\s+|\b(?:limit(?:\s+to)?|at most)\s+", candidate, re.I):
+                tail = candidate[boundary.end():]
+                if boundary.group().lower().startswith(("limit", "at most")) or any(re.search(word, tail, re.I) for word in SOURCE_WORDS.values()):
+                    stops.append(boundary.start())
+            end = min(stops) if stops else len(candidate)
+            literal = candidate[:end].strip().rstrip(".,")
+            if literal:
+                found.append((domain, literal, start, start + end))
+    return found
+
+
+
+def _instruction_text(text: str, *, now: datetime) -> str:
+    masked = _mask_literals(text)
+    for _, _, start, end in _unquoted_queries(text, now=now):
+        masked = masked[:start] + " " * (end - start) + masked[end:]
+    return masked
+
+def _source_time_requirements(text: str, domains: set[str], *, now: datetime):
+    # Dates inside a complete search literal are data, not a date constraint.
+    masked = _instruction_text(text, now=now)
+    times = _requested_times(masked, now=now)
+    anchors = sorted((m.start(), m.end(), domain) for domain, pattern in SOURCE_WORDS.items()
+                     for m in re.finditer(pattern, masked, re.I))
+    expected = {domain: [] for domain in domains}
+    if len(domains) == 1 or not anchors:
+        for domain in domains:
+            expected[domain] = [scope for _, _, scope in times]
+    elif len(times) == 1 and (times[0][0] >= anchors[-1][1] or times[0][1] <= anchors[0][0]):
+        for domain in domains:
+            expected[domain] = [times[0][2]]  # one shared leading/trailing range
+    else:
+        for start, end, scope in times:
+            before = [a for a in anchors if a[1] <= start]
+            after = [a for a in anchors if a[0] >= end]
+            following = after[0] if after else None
+            if following and re.fullmatch(r"[\s'’]*", masked[end:following[0]]):
+                owner = following[2]
+            else:
+                owner = before[-1][2] if before else (following[2] if following else None)
+            if owner in expected:
+                expected[owner].append(scope)
+    # Detect unrepresentable temporal clauses rather than silently omit them.
+    unsupported_time = re.search(
+        r"\b(?:this|last|next)\s+year\b|\b(?:last|past|next)\s+(?:\d+|\w+)\s+(?:weeks|months|years|hours)\b|"
+        r"(?<![\d-])\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|"
+        r"\b(?:at|after|before|between)\s+\d{1,2}(?::\d{2})?(?:\s*(?:am|pm))?\b|"
+        r"\b(?:morning|afternoon|evening|night|noon|midnight)\b", masked, re.I)
+    for match in re.finditer(r"\b(?:before|after|since|older than|newer than)\s+", masked, re.I):
+        tail_times = _requested_times(masked[match.end():], now=now)
+        if tail_times and tail_times[0][0] == 0:
+            unsupported_time = True
+    return expected, bool(times), bool(unsupported_time)
+
+
+def _time_identity(scope: TimeScope, *, now: datetime):
+    if scope.rolling_days is not None:
+        return ("rolling_days", scope.rolling_days)
+    from .compiler import canonical_period
+    from service.tools.timeranges import resolve_span, BadPeriod
+    try:
+        return resolve_span(canonical_period(scope, now=now), now=now)[:2]
+    except (BadPeriod, ValueError, OverflowError) as exc:
+        raise InvalidIntent("Unsupported or invalid requested date range") from exc
+
+
+def _requested_minutes(text: str) -> set[int]:
+    number = r"(?:\d+(?:\.\d+)?|" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r"|an?|half(?: an?)?)"
+    pattern = r"\b(" + number + r")[-\s]+(hours?|minutes?|mins?)\b(?:\s+and\s+(" + number + r")[-\s]+(?:minutes?|mins?)\b)?"
+    values = set()
+    def numeric(raw):
+        raw = raw.lower()
+        return 0.5 if raw.startswith("half") else 1 if raw in {"a", "an"} else _NUMBERS.get(raw, float(raw) if re.fullmatch(r"\d+(?:\.\d+)?", raw) else 0)
+    for match in re.finditer(pattern, text, re.I):
+        minutes = numeric(match[1]) * (60 if match[2].lower().startswith("hour") else 1)
+        if match[3]:
+            minutes += numeric(match[3])
+        if minutes != int(minutes) or not 1 <= minutes <= 1440:
+            raise InvalidIntent("Unsupported requested duration")
+        values.add(int(minutes))
+    return values
+
+
+
+def _reminder_scopes(text: str, *, sole=False) -> set[str]:
+    if sole:
+        words = re.findall(r"\b(?:overdue|past[ -]due|upcoming|all)\b", text, re.I)
+    else:
+        words = [next(v for v in m.groups() if v) for m in re.finditer(
+            r"\b(overdue|past[ -]due|upcoming|all)\s+(?:(?:my|the)\s+)?reminders?\b|"
+            r"\breminders?\s+(overdue|past[ -]due|upcoming|all)\b", text, re.I)]
+    return {"overdue" if word.lower().startswith("past") else word.lower() for word in words}
+
+
+def _validate_required_constraints(sources, text: str, *, now: datetime, reminder_text=None, duration_text=None):
+    domains = {source.domain for source in sources}
+    expected, _, unsupported_time = _source_time_requirements(text, domains, now=now)
+    if unsupported_time:
+        raise InvalidIntent("Requested time-of-day or range is not representable")
+    for domain in domains:
+        entries = [s for s in sources if s.domain == domain]
+        wanted = {_time_identity(scope, now=now) for scope in expected[domain]}
+        actual = []
+        for source in entries:
+            scope = source.time
+            if domain == "reminders" and scope is None and source.scope in {"today", "tomorrow"}:
+                scope = TimeScope(named=source.scope)
+            identity = _time_identity(scope, now=now) if scope else None
+            if (wanted and identity not in wanted) or (not wanted and identity is not None):
+                raise InvalidIntent("Requested source time was dropped, changed or added")
+            if identity is not None:
+                actual.append(identity)
+        if not wanted <= set(actual):
+            raise InvalidIntent("Missing requested date range")
+    instruction_text = _instruction_text(text, now=now)
+    if "reminders" in domains:
+        requested = _reminder_scopes(reminder_text if reminder_text is not None else instruction_text,
+                                     sole=domains == {"reminders"})
+        entries = [s for s in sources if s.domain == "reminders"]
+        if requested and (any(s.scope not in requested for s in entries) or not requested <= {s.scope for s in entries}):
+            raise InvalidIntent("Requested reminder scope was dropped or changed")
+        if not requested and any(s.scope in {"overdue", "upcoming"} for s in entries):
+            raise InvalidIntent("Unrequested reminder scope")
+    duration_text = duration_text if duration_text is not None else instruction_text
+    minutes = _requested_minutes(duration_text)
+    free_requested = bool(re.search(r"\b(?:free|available|availability)\b", instruction_text, re.I))
+    entries = [s for s in sources if s.domain == "calendar"]
+    if (free_requested or minutes) and any(s.operation != "free_time" for s in entries):
+        raise InvalidIntent("Requested availability operation was changed")
+    free_entries = [s for s in entries if s.operation == "free_time"]
+    if free_entries and not (free_requested or minutes):
+        raise InvalidIntent("Unrequested availability operation")
+    if free_entries and minutes and (any(s.minutes not in minutes for s in free_entries) or not minutes <= {s.minutes for s in free_entries}):
+        raise InvalidIntent("Requested free-slot duration was dropped or changed")
 
 
 def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: datetime | None = None) -> Intent:
+    now = now or datetime.now()
     _object(value, SCHEMA["properties"], SCHEMA["required"])
     if type(value["version"]) is not int or value["version"] != 1:
         raise InvalidIntent("Unknown intent version")
@@ -212,7 +406,7 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         if re.search(r"\b(?:my|our) (?:week|wk)\b|\bfor (?:the )?(?:week|wk)\b", prompt, re.I):
             time_evidence += " this week"
     # A new sender/name replaces the previous literal instead of requiring both.
-    current_named = bool(re.search(r'"[^"\n]+"|“[^”\n]+”|`[^`\n]+`|\b(?:from|with|by)\s+(?!(?:today|tomorrow|yesterday|this|last|next)\b)[+\w@]', prompt, re.I))
+    current_named = bool(_unquoted_queries(prompt, now=now)) or bool(re.search(r'"[^"\n]+"|“[^”\n]+”|`[^`\n]+`|\b(?:from|with|by)\s+(?!(?:today|tomorrow|yesterday|this|last|next)\b)[+\w@]', prompt, re.I))
     filter_evidence = prompt if current_named else evidence
     contextual_sources = set()
     if inherit and not required:
@@ -236,8 +430,6 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         if "scope" in raw:
             if raw["scope"] not in {"all", "today", "tomorrow", "overdue", "upcoming"}:
                 raise InvalidIntent("Invalid reminder scope")
-            if raw["scope"] != "all" and not re.search(r"\b" + raw["scope"] + r"\b", evidence, re.I):
-                raise InvalidIntent("Unrequested reminder scope")
         if "unread" in raw and type(raw["unread"]) is not bool:
             raise InvalidIntent("Unread must be Boolean")
         for key, maximum in (("count", 100), ("minutes", 1440)):
@@ -253,7 +445,7 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
             raise InvalidIntent("Requested result count was dropped or changed")
         if "count" in raw and raw["count"] != requested_count:
             raise InvalidIntent("Unrequested result count")
-        if "minutes" in raw and not _number_requested(raw["minutes"], evidence, duration=True):
+        if "minutes" in raw and raw["minutes"] not in _requested_minutes(evidence):
             raise InvalidIntent("Unrequested duration")
         sources.append(SourceIntent(**{**raw, **({"time": scope} if scope else {})}))
     represented = {s.domain for s in sources}
@@ -287,19 +479,37 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
             raise InvalidIntent("A requested lookup filter was dropped")
         # Exact quoted literals and explicit sender/conversation phrases must
         # survive extraction; accepting only a source would drop the request.
-        literal_filters = [next(v for v in match if v) for match in re.findall(
-            r'"([^"\n]+)"|“([^”\n]+)”|`([^`\n]+)`', filter_evidence)]
+        from service.utterance_shape import quoted_spans
+        literal_filters = [filter_evidence[start + 1:end - 1] for start, end in quoted_spans(filter_evidence)]
         for literal in literal_filters:
             if not any(literal == field for source in sources for field in
                        (source.query, source.conversation, source.account)) and not unsupported:
                 raise InvalidIntent("Missing exact quoted filter")
-        for match in re.finditer(r"\b(?:from|with|by)\s+([+\w@.'’-]+(?:[ \t]+[A-Z][\w.'’-]+){0,3})", filter_evidence):
-            literal = match.group(1).rstrip(".,!?")
-            if literal.casefold() in {"today", "tomorrow", "yesterday", "this", "last", "next", "my", "the", "unread", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"} or re.fullmatch(r"\d{4}-\d{2}(?:-\d{2})?", literal):
-                continue
-            if not any(literal == field for source in sources for field in
-                       (source.query, source.conversation, source.account)) and not unsupported:
-                raise InvalidIntent("Missing exact named filter")
+        requested_queries = _unquoted_queries(filter_evidence, now=now)
+        for domain, literal, _, _ in requested_queries:
+            if not any(source.domain == domain and literal in (source.query, source.conversation, source.account)
+                       for source in sources) and not unsupported:
+                raise InvalidIntent("Complete requested query was dropped or changed")
+        domain_filters = {domain: {literal for owner, literal, _, _ in requested_queries if owner == domain}
+                          for domain in represented}
+        quote_anchors = sorted((m.start(), m.end(), domain) for domain, word in SOURCE_WORDS.items()
+                               for m in re.finditer(word, _mask_literals(filter_evidence), re.I))
+        for start, end in quoted_spans(filter_evidence):
+            previous = [a for a in quote_anchors if a[1] <= start and a[2] in represented]
+            following = [a for a in quote_anchors if a[0] >= end and a[2] in represented]
+            owner = previous[-1][2] if previous else (following[0][2] if following else None)
+            if owner is None and len(represented) == 1:
+                owner = next(iter(represented))
+            if owner in domain_filters:
+                domain_filters[owner].add(filter_evidence[start + 1:end - 1])
+        for source in sources:
+            wanted = domain_filters[source.domain]
+            fields = [field for field in (source.query, source.conversation, source.account) if field is not None]
+            if wanted and (not fields or any(field not in wanted for field in fields)) and not unsupported:
+                raise InvalidIntent("An additional read dropped or changed the requested filter")
+        if filter_requested and not literal_filters and not requested_queries and not unsupported and any(
+                source.operation != "free_time" and source.query for source in sources):
+            raise InvalidIntent("Cannot establish complete unquoted query bounds")
         if re.search(r"\b(?:except|excluding|without)\s+(?!" +
                      r"(?:my |the )?(?:calendar|reminders?|email|mail|messages?|texts?|notes?|sending|send|web)\b)\S+", prompt, re.I) and not unsupported:
             raise InvalidIntent("Negative entity filters cannot be silently dropped")
@@ -310,28 +520,24 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
             raise InvalidIntent("Personal agenda must use its declared local sources")
         if period and any(s.domain == "calendar" and (not s.time or s.time.named != period) for s in sources):
             raise InvalidIntent("Personal agenda date scope changed")
-        # A single shared date constraint binds every requested source; compare
-        # resolved ranges so inclusive exact dates and named days can agree.
-        from service.workflows.compiler import _date_range
-        from service.tools.timeranges import resolve_span, BadPeriod
-        requested_period = _date_range(prompt)
-        if requested_period:
-            phrase = re.search(r"\b(?:today|tomorrow|yesterday)\s+(?:and|to|through)\s+(?:today|tomorrow|yesterday)\b", prompt, re.I)
-            requested_period = phrase.group().lower() if phrase else requested_period
-            other_dates = re.findall(r"\b(?:today|tomorrow|yesterday|(?:this|last|next) (?:week|month))\b", prompt, re.I)
-            if len(set(v.lower() for v in other_dates)) <= 1 or phrase:
-                try:
-                    expected = resolve_span(requested_period, now=now)[:2]
-                except BadPeriod:
-                    expected = None
-                def covers_shared_time(source):
-                    if source.domain == "reminders" and source.scope in {"today", "tomorrow"}:
-                        return resolve_span(source.scope, now=now)[:2] == expected
-                    if not source.time or not source.time.period():
-                        return False
-                    return resolve_span(source.time.period(), now=now)[:2] == expected
-                if expected is not None and any(not covers_shared_time(source) for source in sources):
-                    raise InvalidIntent("Requested time scope was dropped or changed")
+        if not unsupported:
+            current_time_text = re.sub(r"\b(?:this|the) wk\b|\bthe week\b", "this week", prompt, flags=re.I)
+            current_time_text = re.sub(r"\bnext wk\b", "next week", current_time_text, flags=re.I)
+            if flexible_personal_agenda(prompt) and re.search(r"\b(?:my|our) (?:week|wk)\b|\bfor (?:the )?(?:week|wk)\b", prompt, re.I):
+                if not _requested_times(current_time_text, now=now):
+                    current_time_text += " this week"
+            _, has_current_time, _ = _source_time_requirements(current_time_text, represented, now=now)
+            constraint_text = current_time_text
+            if inherit and not has_current_time:
+                # Preserve adjacent same-source filters but prefer any current
+                # date correction over old temporal context.
+                constraint_text += "\n" + prior_user
+            current_instruction = _instruction_text(prompt, now=now)
+            current_reminder_scopes = _reminder_scopes(current_instruction, sole=represented == {"reminders"})
+            current_minutes = _requested_minutes(current_instruction)
+            _validate_required_constraints(sources, constraint_text, now=now,
+                reminder_text=current_instruction if current_reminder_scopes else None,
+                duration_text=current_instruction if current_minutes else None)
     elif sources:
         raise InvalidIntent("Non-read intent cannot carry source calls")
     elif value["kind"] in {"none", "inline"} and (required or contextual_sources or personal_agenda_period(prompt) or flexible_personal_agenda(prompt)):

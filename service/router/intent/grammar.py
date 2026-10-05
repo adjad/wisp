@@ -1,6 +1,7 @@
 """Subject-free personal agenda grammar shared by reads and the web boundary."""
 from __future__ import annotations
 import re
+from datetime import datetime
 
 _SCOPE = r"(?:today|tomorrow|tonight|this week|next week|this weekend|next weekend|this month|next month)"
 _AGENDA = re.compile(
@@ -15,6 +16,25 @@ def personal_agenda_period(text: str) -> str | None:
     """Only complete questions with no public subject, location or extra clause."""
     match = _AGENDA.fullmatch(re.sub(r"\s+", " ", text.strip()))
     return match.group("scope").lower() if match else None
+
+
+def personal_agenda_args(text: str, *, now: datetime | None = None) -> dict | None:
+    """Complete agenda arguments shared by orchestration and read shortcuts.
+
+    An explicit calendar names one source. Existing subject-free day planning
+    also means Calendar only; broad weekly/monthly agendas retain reminders.
+    """
+    period = personal_agenda_period(text)
+    if period is None:
+        return None
+    from .compiler import canonical_period
+    from .schema import TimeScope
+    args = {"period": canonical_period(TimeScope(named=period), now=now)}
+    explicit_calendar = bool(re.search(r"\bcalendar\b", text, re.I))
+    explicit_agenda = bool(re.search(r"\b(?:agenda|schedule)\b", text, re.I))
+    if explicit_calendar or (period in {"today", "tomorrow"} and not explicit_agenda):
+        args["calendar_only"] = True
+    return args
 
 
 def flexible_personal_agenda(text: str) -> bool:

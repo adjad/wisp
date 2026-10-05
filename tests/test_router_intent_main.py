@@ -44,6 +44,8 @@ def endpoint(monkeypatch, tmp_path):
                 return "Texts: you replied to Imani. One conversation could not be checked."
             if _name == "get_upcoming":
                 return "Monday: synthetic planning. Work calendar could not be checked."
+            if _name in {"view_emails", "view_messages", "search_reminders", "find_free_time"}:
+                return "Synthetic exact fixture records."
             if _name == "search_notes":
                 return "Synthetic note: " + str(args.get("query"))
             return "(error: unexpected fixture tool)"
@@ -195,3 +197,60 @@ def test_message_read_reaches_actor_without_delivery_workflow(endpoint, prompt):
     assert "what to send" not in text(events) and "I couldn't tell" not in text(events)
     assert store.latest_workflow(sid) is None
     assert not any("workflow" in e["type"] for e in events)
+
+
+@pytest.mark.parametrize("prompt,expected", [
+    ("what is up tomorrow?", {"period": "tomorrow", "calendar_only": True}),
+    ("show my calendar this week", {"period": "this week", "calendar_only": True}),
+    ("what is up for this week?", {"period": "this week"}),
+])
+def test_actor_exact_shortcut_preserves_calendar_only_authority(endpoint, prompt, expected):
+    request, client, calls, _, _ = endpoint
+    events = asyncio.run(request(prompt))
+    assert calls == [("get_upcoming", expected)]
+    assert not client.calls
+    assert "Work calendar could not be checked" in text(events)
+
+
+@pytest.mark.parametrize("prompt,bad", [
+    ("Read email for 2026-10-01", source("email", "records")),
+    ("Read email for October 2026", source("email", "records")),
+    ("Read overdue reminders", source("reminders")),
+    ("Read overdue reminders", source("reminders", scope="all")),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"})),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=30)),
+    ("Find notes about audit blueprints", source("notes", "records", query="audit")),
+])
+def test_actor_rejects_omitted_or_wrong_constraints_before_source_execution(endpoint, prompt, bad):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(bad), value(bad)]
+    events = asyncio.run(request(prompt))
+    assert not calls
+    assert next(e for e in events if e["type"] == "routed")["intent_disposition"] == "clarify"
+
+
+@pytest.mark.parametrize("prompt,good,expected", [
+    ("Read email for 2026-10-01", source("email", "records", time={"date": "2026-10-01"}), ("view_emails", {"period": "2026-10-01"})),
+    ("Read email for October 2026", source("email", "records", time={"month": "2026-10"}), ("view_emails", {"period": "2026-10"})),
+    ("Read overdue reminders", source("reminders", scope="overdue"), ("search_reminders", {"query": "", "scope": "past_due"})),
+    ("Find a 90 minute free slot on my calendar tomorrow", source("calendar", "free_time", time={"named": "tomorrow"}, minutes=90), ("find_free_time", {"period": "tomorrow", "minutes": 90})),
+    ("Find notes about audit blueprints", source("notes", "records", query="audit blueprints"), ("search_notes", {"query": "audit blueprints"})),
+])
+def test_actor_executes_exact_supported_constraints_without_default_broadening(endpoint, prompt, good, expected):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [value(good)]
+    events = asyncio.run(request(prompt))
+    assert calls == [expected] and "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("prompt,data,expected", [
+    ("Read email today plus messages yesterday", value(source("email", "records", time={"named": "today"}), source("messages", "records", time={"named": "yesterday"})),
+     [("view_emails", {"period": "today"}), ("view_messages", {"period": "yesterday"})]),
+    ("Find notes about audit blueprints from yesterday limit to five", value(source("notes", "records", query="audit blueprints", time={"named": "yesterday"}, count=5)),
+     [("search_notes", {"query": "audit blueprints", "count": 5, "period": "yesterday"})]),
+])
+def test_actor_preserves_independent_dates_and_complete_query_with_limit(endpoint, prompt, data, expected):
+    request, client, calls, _, _ = endpoint
+    client.outputs = [data]
+    events = asyncio.run(request(prompt))
+    assert calls == expected and "compiled" in [e.get("intent_disposition") for e in events]

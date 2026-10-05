@@ -44,6 +44,7 @@ def check(name: str, cond: bool, detail: str = "") -> None:
     else:
         FAIL += 1
         print(f"  FAIL {name} {detail}")
+    assert cond, f"{name}: {detail}"
 
 
 def _register() -> None:
@@ -95,10 +96,22 @@ async def emit(ev):
 
 
 def run(script, **kw) -> str:
-    return asyncio.run(loop.run_agent(
-        ScriptedClient(script), "Agents-A1-4B-oQe6",
-        [{"role": "user", "content": "what do I need to do?"}],
-        emit, Approver(), tools=ALL4 + ["broken_tool"], **kw))
+    # pytest imports this module without entering __main__. Always install
+    # synthetic tools here and restore the shared registry after each run.
+    names = ALL4 + ["broken_tool"]
+    previous = {name: REGISTRY.get(name) for name in names}
+    try:
+        _register()
+        return asyncio.run(loop.run_agent(
+            ScriptedClient(script), "Agents-A1-4B-oQe6",
+            [{"role": "user", "content": "what do I need to do?"}],
+            emit, Approver(), tools=names, **kw))
+    finally:
+        for name, tool in previous.items():
+            if tool is None:
+                REGISTRY.pop(name, None)
+            else:
+                REGISTRY[name] = tool
 
 
 # --------------------------------------------------------------------------
@@ -110,7 +123,9 @@ def test_empty_answer_surfaces_every_source() -> None:
                         ("email", MAIL), ("messages", MSGS)):
         check(f"{label} result is present", body in out, f"missing from {out!r}")
     check("each source is labelled for the user, not named by its function",
-          "**From your calendar and reminders:**" in out and "get_upcoming:" not in out,
+          all(out.count(f"**{label}:**") == 1 for label in ("Agenda", "Notes", "Email", "Messages"))
+          and all(out.count(body) == 1 for body in (CAL, NOTES, MAIL, MSGS))
+          and "get_upcoming:" not in out,
           out[:200])
 
 
@@ -147,8 +162,8 @@ def test_all_errors_gives_the_stuck_message() -> None:
 def test_repeated_tool_gets_one_block() -> None:
     print("\na tool called twice contributes ONE labelled block, not two")
     out = run([["search_notes"], ["search_notes"]], max_steps=2)
-    check("only one 'From your notes' heading",
-          out.count("From your notes") <= 1, f"-> {out!r}")
+    check("identical scoped notes receipt appears exactly once",
+          out == f"**Notes:**\n{NOTES}" and out.count(NOTES) == 1, f"-> {out!r}")
 
 
 if __name__ == "__main__":
