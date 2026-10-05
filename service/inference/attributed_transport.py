@@ -139,11 +139,18 @@ class _Inspections:
         return False
 
 
-async def _close_inspection_pool():
-    try:
-        await asyncio.to_thread(_POOL.shutdown)
-    except RuntimeError:  # the loop's default executor is already closed
-        _POOL.shutdown(wait=False)
+def _close_inspection_pool():
+    """Release the inspection pool's threads WITHOUT suspending the caller.
+
+    Closing a transport runs inside cancellation and deadline scopes (a connection
+    test that times out, a cancelled turn). An `await` here is a point where those
+    scopes can interrupt the close before its caller's bookkeeping runs, so this is
+    deliberately synchronous: `shutdown(wait=False)` only detaches the executor.
+    Running and queued inspections (of this or any other transport) still finish,
+    and each `_listener` run waits for its own futures in `_Inspections.__exit__`;
+    the next inspection simply recreates the pool.
+    """
+    _POOL.shutdown(wait=False)
 
 
 def refused():
@@ -596,4 +603,4 @@ class CredentialTransport(httpx.AsyncBaseTransport):
         try:
             await self.pool.aclose()
         finally:
-            await _close_inspection_pool()
+            _close_inspection_pool()
