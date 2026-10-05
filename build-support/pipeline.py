@@ -380,6 +380,18 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
         from browser_bridge_gate import validate as validate_browser_bridge
         validate_browser_bridge(json.loads(browser_report.read_text()), git('rev-parse', 'HEAD'),
                                 allow_dirty=allow_dirty)
+        benchmark_report = scratch / "release-benchmark-contracts.json"
+        benchmark_command = [python, "-B", SUPPORT / "release_performance_gate.py", "--expected-sha",
+                             git("rev-parse", "HEAD"), "--report", benchmark_report]
+        if allow_dirty:
+            benchmark_command.append("--allow-dirty")
+        benchmark_code, _ = runner.run("release-benchmark-contracts", benchmark_command, timeout=300, check=False)
+        if benchmark_report.is_file():
+            shutil.copyfile(benchmark_report, runner.logs / "release-benchmark-contracts.json")
+        if benchmark_code or not benchmark_report.is_file():
+            raise BuildError("Benchmark contracts failed; inspect release-benchmark-contracts.json")
+        from release_performance_gate import validate as validate_benchmark
+        validate_benchmark(json.loads(benchmark_report.read_text()), git("rev-parse", "HEAD"), allow_dirty=allow_dirty)
         command = ["sandbox-exec", "-p", simulation_profile(scratch, python, node_runtime=node_runtime), python, "-B",
                    SUPPORT / "simulation.py", "--expected-sha", git("rev-parse", "HEAD"),
                    "--profile", "full", "--report", report]
@@ -389,6 +401,7 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
             command.append("--only-native")
         qa_env = dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
                       PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report),
+                      BENCHMARK_GATE_REPORT=str(benchmark_report), BENCHMARK_GATE_SHA256=digest(benchmark_report),
                       BROWSER_BRIDGE_GATE_REPORT=str(browser_report),
                       BROWSER_BRIDGE_GATE_SHA256=digest(browser_report))
         qa_env.pop("QA_NODE_RUNTIME", None)
@@ -425,6 +438,16 @@ def validate_simulation(report, commit, *, allow_dirty=False, native_only=False)
             validate_native_peer(json.loads(gates[0]['stdout'])['native_gate'],commit,allow_dirty=allow_dirty)
         except (KeyError,TypeError,ValueError):
             raise BuildError('Invalid mandatory native peer evidence') from None
+
+        from release_performance_gate import EXPECTED_COUNT, MODULE as BENCHMARK_MODULE, validate as validate_benchmark
+        benchmark_gates = [r for r in report.get("results", []) if r.get("name") == BENCHMARK_MODULE]
+        if len(benchmark_gates) != 1 or any(benchmark_gates[0].get(k) != v for k, v in
+                {"status": "PASS", "returncode": 0, "passed": EXPECTED_COUNT, "failed": 0, "skipped": 0}.items()):
+            raise BuildError("Missing or incomplete mandatory benchmark contract evidence")
+        try:
+            validate_benchmark(json.loads(benchmark_gates[0]["stdout"])["benchmark_gate"], commit, allow_dirty=allow_dirty)
+        except (KeyError, TypeError, ValueError):
+            raise BuildError("Invalid mandatory benchmark contract evidence") from None
 
         from browser_bridge_gate import EXPECTED as BROWSER_EXPECTED, MODULE as BROWSER_MODULE, validate as validate_browser_bridge
         browser_gates = [r for r in report.get('results', []) if r.get('name') == BROWSER_MODULE]
@@ -1187,6 +1210,10 @@ def main():
                    help="Closed Python runtime tree for the separate managed-QA artifact")
     p.add_argument("--qa-runtime-inventory-sha256",
                    help="Independently reviewed canonical inventory digest for --qa-runtime")
+    p.add_argument("--performance-receipt", type=Path, help="Live Desktop receipt required by both release commands")
+    p.add_argument("--performance-receipt-sha256", help="Receipt digest independently recorded by the measurement owner")
+    p.add_argument("--performance-baseline", type=Path, help="Reviewed baseline approval for the measured cohort")
+    p.add_argument("--performance-baseline-sha256", help="Independently reviewed baseline-approval digest")
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()

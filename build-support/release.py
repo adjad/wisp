@@ -30,6 +30,53 @@ REQUIRED_SECRETS = (
 )
 
 
+
+def require_release_performance(runner, args):
+    """Gate both publishers before credentials/effects. Hash expectations come from source;
+    receipt and approval digests come from the measurement owner's reviewed external record.
+    Downloading a package is never authority to publish it.
+    """
+    import importlib.util
+    from argparse import Namespace
+    import sys
+
+    receipt = getattr(args, "performance_receipt", None)
+    approval = getattr(args, "performance_baseline", None)
+    receipt_digest = getattr(args, "performance_receipt_sha256", None)
+    approval_digest = getattr(args, "performance_baseline_sha256", None)
+    if (not receipt or not approval or not isinstance(receipt_digest, str)
+            or not isinstance(approval_digest, str)
+            or not re.fullmatch(r"[a-f0-9]{64}", receipt_digest)
+            or not re.fullmatch(r"[a-f0-9]{64}", approval_digest)):
+        raise BuildError("Release requires a performance receipt, reviewed baseline approval and independently recorded digests")
+    path = ROOT / "scripts/release_performance.py"
+    spec = importlib.util.spec_from_file_location("_wisp_release_performance_gate", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+        bundle_path = ROOT / "test_fixtures/performance/release_v1.json"
+        bundle = module.load_bundle(bundle_path)
+        expected_sha = git("rev-parse", "HEAD")
+        if not re.fullmatch(r"[a-f0-9]{40}", expected_sha):
+            raise ValueError("candidate SHA is invalid")
+        code, result = module.check_receipt(Namespace(
+            receipt=Path(receipt), bundle=bundle_path, expect_candidate_sha=expected_sha,
+            expect_corpus_sha256=bundle["corpus_sha256"], expect_policy_sha256=bundle["policy_sha256"],
+            expect_harness_sha256=module.harness_sha256(),
+            approved_baseline=Path(approval), approved_baseline_sha256=approval_digest,
+            expect_receipt_sha256=receipt_digest, lane="desktop", repo=ROOT,
+            candidate_worktree=None, baseline_worktree=None, now=None))
+    except Exception as exc:
+        raise BuildError(f"Release performance evidence could not be verified: {type(exc).__name__}") from None
+    finally:
+        sys.modules.pop(spec.name, None)
+    json_write(runner.logs / "release-performance-gate.json", result)
+    if code != 0 or result.get("verdict") != "PASS" or result.get("authorizes_release") is not True:
+        raise BuildError("Release performance gate did not authorize publication")
+    return result
+
+
 def github_release_for_tag(env, tag):
     """Return one public or draft release for tag, failing closed on API ambiguity."""
     result = subprocess.run(
@@ -139,6 +186,7 @@ def create_public_draft(runner, assets, env, tag, meta):
 def release_ad_hoc(runner, args):
     """Publish the verified app ZIP; retain complete evidence in CI artifacts."""
     ad_hoc_preflight(args)
+    require_release_performance(runner, args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
@@ -548,6 +596,7 @@ def install_then_publish(runner, prepared, destination, tag, env):
 def release(runner, args):
     # All validation and credential checks precede any signing/upload/publication.
     preflight(args)
+    require_release_performance(runner, args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
