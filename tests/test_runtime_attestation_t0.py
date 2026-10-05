@@ -3536,18 +3536,20 @@ class VanishingAuthority:
 OK_PATH = b'/Applications/oMLX.app/Contents/MacOS/oMLX'
 
 
-def test_a_vanished_process_is_retried_up_to_three_attempts_like_a_failing_lsof(monkeypatch):
+@pytest.mark.parametrize('error', ['ESRCH', 'EPERM', 'ENOMEM', 'EINVAL', 'EACCES', 'EIO', 'EINTR', 'EAGAIN'])
+def test_native_inspection_is_retried_up_to_three_attempts_like_a_failing_lsof(monkeypatch, error):
     import errno
-    authority = VanishingAuthority([errno.ESRCH, errno.ESRCH, 'ok'], monkeypatch)
+    error = getattr(errno, error)
+    authority = VanishingAuthority([error, error, 'ok'], monkeypatch)
     assert at.connected_peer_with_retry(authority, None, 4242, None, pause=0) == 'peer' and authority.calls == 3
-    authority = VanishingAuthority([errno.ESRCH] * 3, monkeypatch)
+    authority = VanishingAuthority([error] * 3, monkeypatch)
     with pytest.raises(AuthRefused) as caught:
         at.connected_peer_with_retry(authority, None, 4242, None, pause=0)
     assert str(caught.value) == 'native_inspection_unavailable' and authority.calls == 3
 
 
-@pytest.mark.parametrize('error', ['EPERM', 'ENOENT', 'ENOMEM', 'EINVAL', 'EACCES', 'EIO'])
-def test_every_other_failure_is_never_retried(monkeypatch, error):
+@pytest.mark.parametrize('error', ['ENOENT'])
+def test_missing_executable_is_never_retried(monkeypatch, error):
     import errno
     authority = VanishingAuthority([getattr(errno, error), 'ok', 'ok'], monkeypatch)
     with pytest.raises(AuthRefused) as caught:

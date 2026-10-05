@@ -36,8 +36,8 @@ The decisions recorded here (see also the comments in ``local_peer.process_path`
    ``process_path`` refuses every such path with that same reason.
 2. FAILURE CLASSES: ``lsof`` rc 1 for a vanished pid or a zombie was the
    transient ``native_inspection_unavailable`` (retried).  ``proc_pidpath`` failing
-   with ESRCH maps to exactly that reason.  Every other failure is the
-   non-retried ``desktop_executable_unqualified``; no new transient reason exists.
+   with ESRCH and other native inspection failures retains that bounded retry.
+   ENOENT and malformed path/buffer results remain permanent refusals.
 3. OTHER-UID PIDS: ``proc_pidpath`` succeeds for another uid's pid where ``lsof``
    refused.  The ``ps`` uid check in ``_listener`` runs first in the evaluated
    order, so the verdict is unchanged; the attestation file proves that under
@@ -124,16 +124,17 @@ def old_executable_once(pid):
 
 
 def old_executable(pid):
-    """The oracle, as production would use it: lsof failing for a LIVE process is the transient
-    class that ``connected_peer_with_retry`` retries, and it does happen on a loaded machine, so
-    the oracle is retried (up to six times) while the kernel says the process exists.  A pid that
-    does not exist, and any pid the oracle answers otherwise, are not retried."""
-    for attempt in range(6):
+    """Characterize a live process with at most three seam probes.
+
+    This is not a complete listener retry. The synthetic listener tests below
+    exercise production's three complete verifications and permanent refusals.
+    """
+    for attempt in range(3):
         try:
             return old_executable_once(pid)
         except AuthRefused as error:
             alive = type(pid) is int and 0 < pid <= 2 ** 31 - 1 and independent_probe(pid)[1] != errno.ESRCH
-            if str(error) != TRANSIENT or not alive or attempt == 5:
+            if str(error) != TRANSIENT or not alive or attempt == 2:
                 raise
             time.sleep(0.1)
 
@@ -556,18 +557,18 @@ def test_the_longest_path_that_fits_is_returned(libproc):
     assert local_peer.process_path(7) == path.decode()
 
 
-@pytest.mark.parametrize('error', [errno.ESRCH])
+@pytest.mark.parametrize('error', [errno.ESRCH, errno.ENOMEM, errno.EINVAL, errno.EPERM, errno.EACCES,
+                                   errno.EIO, errno.EBADF, errno.ENAMETOOLONG, errno.EFAULT, errno.EAGAIN,
+                                   errno.EINTR, 99999, -1])
 @pytest.mark.parametrize('length', [0, -1])
-def test_only_a_vanished_process_is_the_transient_reason(libproc, length, error):
+def test_native_inspection_failures_preserve_bounded_retry(libproc, length, error):
     libproc(length, None, error)
     assert refused_with(lambda: local_peer.process_path(7)) == TRANSIENT
 
 
 @pytest.mark.parametrize('length', [0, -1])
-@pytest.mark.parametrize('error', [0, errno.ENOENT, errno.ENOMEM, errno.EINVAL, errno.EPERM, errno.EACCES,
-                                   errno.EIO, errno.EBADF, errno.ENAMETOOLONG, errno.EFAULT, errno.EAGAIN,
-                                   errno.EINTR, 99999, -1])
-def test_every_other_failure_is_refused_without_a_retry(libproc, length, error):
+@pytest.mark.parametrize('error', [0, errno.ENOENT])
+def test_missing_executable_is_refused_without_a_retry(libproc, length, error):
     libproc(length, None, error)
     assert refused_with(lambda: local_peer.process_path(7)) == UNQUALIFIED
 
@@ -666,7 +667,7 @@ def test_any_exception_from_the_native_call_is_a_refusal_never_an_acceptance(mon
     def explode(pid, size):
         raise error
     monkeypatch.setattr(local_peer, '_proc_pidpath', explode)
-    assert refused_with(lambda: local_peer.process_path(7)) == UNQUALIFIED
+    assert refused_with(lambda: local_peer.process_path(7)) == TRANSIENT
 
 
 @pytest.mark.parametrize('error', [KeyboardInterrupt(), SystemExit(1)], ids=lambda e: type(e).__name__)
@@ -682,7 +683,7 @@ def test_a_failing_native_call_is_never_a_path_for_the_executable_seam(libproc):
     libproc(0, None, errno.ENOMEM)
     with pytest.raises(AuthRefused) as caught:
         new_executable(7)
-    assert str(caught.value) == UNQUALIFIED
+    assert str(caught.value) == TRANSIENT
 
 
 # --------------------------------------------------------------------------
@@ -738,14 +739,14 @@ def test_the_raw_call_reports_errno_of_a_failed_call(fake_library):
     fake_library(None, errno.ESRCH)
     assert refused_with(lambda: local_peer.process_path(4321)) == TRANSIENT
     fake_library(None, errno.ENOMEM)
-    assert refused_with(lambda: local_peer.process_path(4321)) == UNQUALIFIED
+    assert refused_with(lambda: local_peer.process_path(4321)) == TRANSIENT
 
 
 def test_a_missing_library_or_symbol_is_a_refusal(monkeypatch):
     monkeypatch.setattr(local_peer.ctypes, 'CDLL', lambda *a, **k: (_ for _ in ()).throw(OSError('dlopen')))
-    assert refused_with(lambda: local_peer.process_path(7)) == UNQUALIFIED
+    assert refused_with(lambda: local_peer.process_path(7)) == TRANSIENT
     monkeypatch.setattr(local_peer.ctypes, 'CDLL', lambda *a, **k: SimpleLibraryWithoutSymbol())
-    assert refused_with(lambda: local_peer.process_path(7)) == UNQUALIFIED
+    assert refused_with(lambda: local_peer.process_path(7)) == TRANSIENT
 
 
 class SimpleLibraryWithoutSymbol:
@@ -876,3 +877,76 @@ def test_the_helper_does_not_spawn_or_read_the_environment():
     source = inspect.getsource(local_peer.process_path) + inspect.getsource(local_peer._proc_pidpath)
     for forbidden in ('subprocess', 'os.environ', 'getenv', 'Popen', 'system(', 'open('):
         assert forbidden not in source
+
+
+@pytest.mark.parametrize('error', [errno.ENOMEM, errno.EINTR, errno.EAGAIN, errno.EPERM])
+@pytest.mark.parametrize('recover', [True, False])
+def test_native_failure_retries_complete_listener_at_most_three_times(tmp_path, monkeypatch, error, recover):
+    from tests.test_runtime_attestation_t0 import Host, bare
+    host = Host(tmp_path, monkeypatch, 'host')
+    state = {'attempts': 0}
+    original = host.inspect
+
+    def inspect(argv):
+        if '-iTCP:8000' in argv:
+            state['attempts'] += 1
+        return original(argv)
+
+    def raw(pid, size):
+        if pid == 321 and (not recover or state['attempts'] < 3):
+            return 0, b'\0' * size, error
+        path = host.txt[str(pid)].encode()
+        return len(path), path + b'\0' * (size - len(path)), 0
+
+    monkeypatch.setattr(at, 'inspect_command', inspect)
+    monkeypatch.setattr(local_peer, '_proc_pidpath', raw)
+    monkeypatch.setattr(at, 'process_path', local_peer.process_path)
+    authority = bare()
+
+    class Peer:
+        def connected_peer(self, *args):
+            return authority._listener()
+
+    try:
+        if recover:
+            at.connected_peer_with_retry(Peer(), None, 321, None, pause=0)
+        else:
+            assert refused_with(lambda: at.connected_peer_with_retry(Peer(), None, 321, None, pause=0)) == TRANSIENT
+        assert state['attempts'] == 3
+    finally:
+        at._POOL.shutdown()
+
+
+def test_transport_timing_ratios_use_unrounded_samples():
+    from scripts import bench_transport_overhead as bench
+    assert bench.speedups([20.0, 20.0], [0.04, 0.04]) == {
+        'speedup_p50': 500.0, 'speedup_p95': 500.0, 'speedup_min': 500.0}
+    assert bench.summarize([0.04, 0.04])['p50'] == 0.04
+    assert all(value is None for value in bench.speedups([1.0], [0.0]).values())
+
+
+@pytest.mark.parametrize('fail', [False, True])
+def test_executable_benchmark_cleans_pools_on_success_and_failure(monkeypatch, fail):
+    from types import SimpleNamespace
+    from scripts import bench_transport_overhead as bench
+    stopped = []
+
+    def load():
+        if fail:
+            raise RuntimeError('synthetic inspection failure')
+        return SimpleNamespace(_identity=(321, '/exe', 1, '/parent'))
+
+    def module(label):
+        return SimpleNamespace(RuntimeAuthority=lambda: SimpleNamespace(load=load),
+                               DesktopOmlx=SimpleNamespace(_executable=lambda authority, pid: Path('/exe')),
+                               _POOL=SimpleNamespace(shutdown=lambda: stopped.append(label)))
+
+    monkeypatch.setattr(bench, 'alternate', lambda *args: ([20.0], [0.04]))
+    if fail:
+        with pytest.raises(RuntimeError):
+            bench.executable_benchmark(module('old'), module('new'), 1)
+    else:
+        monkeypatch.setattr(bench, 'fresh', lambda module: None)
+        rows = bench.executable_benchmark(module('old'), module('new'), 1)
+        assert rows['server']['speedup_p50'] == 500.0
+    assert stopped == ['old', 'new']

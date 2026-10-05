@@ -167,12 +167,13 @@ def process_path(pid):
       those two inputs are refused here (stricter, and nothing passes them).
     * A vanished process or a zombie (proc_pidpath returns 0 with ESRCH, where lsof
       exited 1) is that same transient `native_inspection_unavailable`, so the retry
-      discipline of `connected_peer_with_retry` is unchanged.  No other failure is
-      transient: ENOENT (a deleted executable, where lsof printed a path that then
-      failed to resolve), ENOMEM, EINVAL, EPERM and anything else, an unexpected
-      length, a missing terminator, a wrong-sized buffer, a path with a byte lsof
-      would have escaped and a relative path are all the non-retried
-      `desktop_executable_unqualified`.  Nothing here ever falls back to accepting.
+      discipline of `connected_peer_with_retry` is unchanged. Other native inspection
+      failures retain that bounded retry, as a failed
+      lsof inspection did. ENOENT (a deleted executable, where lsof printed a path
+      that then failed to resolve) remains `desktop_executable_unqualified`.
+      An empty result without errno, malformed buffers and paths are also
+      permanent refusals. A retry performs
+      the complete verification again; no failure supplies an accepted path.
     * proc_pidpath answers for another user's pid where lsof refused.  This function
       is therefore never the gate on the owner: `_listener` checks the `ps` uid first
       in its evaluated order (and again, signature and ownership of the file, after).
@@ -183,13 +184,15 @@ def process_path(pid):
     try:
         length, raw, error = _proc_pidpath(pid, size)
     except Exception:  # noqa: BLE001 - any failure of the native call is a refusal, never an accept
-        raise AuthRefused('desktop_executable_unqualified') from None
+        raise AuthRefused('native_inspection_unavailable') from None
     if type(length) is not int or type(raw) is not bytes or type(error) is not int:
         raise AuthRefused('desktop_executable_unqualified')
+    if len(raw) != size:
+        raise AuthRefused('desktop_executable_unqualified')
     if length <= 0:
-        raise AuthRefused('native_inspection_unavailable' if error == errno.ESRCH
-                          else 'desktop_executable_unqualified')
-    if length >= size or len(raw) != size or raw[length] != 0:
+        raise AuthRefused('desktop_executable_unqualified' if error in (0, errno.ENOENT)
+                          else 'native_inspection_unavailable')
+    if length >= size or raw[length] != 0:
         raise AuthRefused('desktop_executable_unqualified')
     path = raw[:length]
     if not _UNESCAPED_PATH.fullmatch(path):

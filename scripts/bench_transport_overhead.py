@@ -81,9 +81,21 @@ def fresh(module):
 def summarize(samples):
     ordered = sorted(samples)
     rank = max(1, math.ceil(0.95 * len(ordered)))
-    return {'n': len(ordered), 'p50': round(statistics.median(ordered), 1),
-            'p95': round(ordered[rank - 1], 1), 'min': round(ordered[0], 1),
-            'max': round(ordered[-1], 1), 'all': [round(v, 1) for v in samples]}
+    return {'n': len(ordered), 'p50': round(statistics.median(ordered), 4),
+            'p95': round(ordered[rank - 1], 4), 'min': round(ordered[0], 4),
+            'max': round(ordered[-1], 4), 'all': [round(v, 4) for v in samples]}
+
+
+def speedups(old_samples, new_samples, digits=2):
+    """Ratios use original measurements; zero-duration samples have no finite ratio."""
+    def metrics(samples):
+        ordered = sorted(samples)
+        return {'p50': statistics.median(ordered),
+                'p95': ordered[max(1, math.ceil(0.95 * len(ordered))) - 1],
+                'min': ordered[0]}
+    old, new = metrics(old_samples), metrics(new_samples)
+    return {f'speedup_{key}': round(old[key] / new[key], digits) if new[key] > 0 else None
+            for key in old}
 
 
 def alternate(runs, old_call, new_call):
@@ -176,8 +188,7 @@ def spawn_benchmark(old, new, runs, process_identity):
         for name, make in (('binding', binding), ('connected_peer', peer), ('load', load), ('request_shaped_total', request)):
             samples = alternate(runs, make('old'), make('new'))
             row = {'old': summarize(samples[0]), 'new': summarize(samples[1])}
-            row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 2)
-            row['speedup_p95'] = round(row['old']['p95'] / row['new']['p95'], 2)
+            row.update(speedups(*samples))
             rows[name] = row
             print(f"{name}: old p50 {row['old']['p50']} p95 {row['old']['p95']} min {row['old']['min']} max {row['old']['max']}"
                   f" | new p50 {row['new']['p50']} p95 {row['new']['p95']} min {row['new']['min']} max {row['new']['max']}"
@@ -193,21 +204,26 @@ def spawn_benchmark(old, new, runs, process_identity):
 
 def executable_benchmark(old, new, runs):
     """``_executable`` alone (old: lsof -d txt, new: proc_pidpath) for the live server and its parent."""
-    authority = new.RuntimeAuthority().load()
-    server, _executable, parent, _parent_executable = authority._identity
-    rows = {}
-    for label, pid in (('server', server), ('parent', parent)):
-        old_path = old.DesktopOmlx._executable(fresh(old), pid)
-        new_path = new.DesktopOmlx._executable(fresh(new), pid)
-        samples = alternate(runs, lambda pid=pid: old.DesktopOmlx._executable(fresh(old), pid),
-                            lambda pid=pid: new.DesktopOmlx._executable(fresh(new), pid))
-        row = {'old': summarize(samples[0]), 'new': summarize(samples[1]),
-               'same_path': old_path == new_path, 'path': os.fspath(new_path)}
-        row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 1)
-        rows[label] = row
-        print(f"_executable[{label}]: old p50 {row['old']['p50']} p95 {row['old']['p95']} | new p50 {row['new']['p50']} "
-              f"p95 {row['new']['p95']} | same path {row['same_path']} | p50 x{row['speedup_p50']}", flush=True)
-    return rows
+    try:
+        authority = new.RuntimeAuthority().load()
+        server, _executable, parent, _parent_executable = authority._identity
+        rows = {}
+        for label, pid in (('server', server), ('parent', parent)):
+            old_path = old.DesktopOmlx._executable(fresh(old), pid)
+            new_path = new.DesktopOmlx._executable(fresh(new), pid)
+            samples = alternate(runs, lambda pid=pid: old.DesktopOmlx._executable(fresh(old), pid),
+                                lambda pid=pid: new.DesktopOmlx._executable(fresh(new), pid))
+            row = {'old': summarize(samples[0]), 'new': summarize(samples[1]),
+                   'same_path': old_path == new_path, 'path': os.fspath(new_path)}
+            row.update(speedups(*samples))
+            rows[label] = row
+            print(f"_executable[{label}]: old p50 {row['old']['p50']} p95 {row['old']['p95']} | new p50 {row['new']['p50']} "
+                  f"p95 {row['new']['p95']} | same path {row['same_path']} | p50 x{row['speedup_p50']}", flush=True)
+        return rows
+    finally:
+        for module in (old, new):
+            if hasattr(module, '_POOL'):
+                module._POOL.shutdown()
 
 
 def main():
@@ -244,9 +260,6 @@ def main():
         print('loadavg', result['load_before'], '->', result['load_after'], '| swap', result['swap_after'])
         if args.json:
             Path(args.json).write_text(json.dumps(result, indent=1))
-        for module in (old, new):                  # each module has its own private pool
-            if hasattr(module, '_POOL'):
-                module._POOL.shutdown()
         return
 
     if args.spawn:
@@ -265,9 +278,7 @@ def main():
         old_samples, new_samples = alternate(args.runs, lambda: fresh(old)._qualified_tree(root),
                                              lambda: fresh(new)._qualified_tree(root))
         row = {'old': summarize(old_samples), 'new': summarize(new_samples)}
-        row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 2)
-        row['speedup_p95'] = round(row['old']['p95'] / row['new']['p95'], 2)
-        row['speedup_min'] = round(row['old']['min'] / row['new']['min'], 2)
+        row.update(speedups(old_samples, new_samples))
         result[name] = row
         print(f"{name}: old p50 {row['old']['p50']} p95 {row['old']['p95']} | new p50 {row['new']['p50']} "
               f"p95 {row['new']['p95']} | speedup p50 {row['speedup_p50']}x p95 {row['speedup_p95']}x")
@@ -276,7 +287,7 @@ def main():
         old_samples, new_samples = alternate(args.runs, lambda: old.RuntimeAuthority().load(),
                                              lambda: new.RuntimeAuthority().load())
         row = {'old': summarize(old_samples), 'new': summarize(new_samples)}
-        row['speedup_p50'] = round(row['old']['p50'] / row['new']['p50'], 2)
+        row.update(speedups(old_samples, new_samples))
         result['load'] = row
         print(f"RuntimeAuthority.load: old p50 {row['old']['p50']} | new p50 {row['new']['p50']} "
               f"| speedup {row['speedup_p50']}x")
