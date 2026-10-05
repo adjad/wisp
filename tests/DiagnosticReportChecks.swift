@@ -148,6 +148,15 @@ struct DiagnosticReportChecks {
         check(harmlessOut.count == harmless.count)
         for (key, value) in harmless { check("\(harmlessOut[key]!)" == "\(value)", "harmless key \(key) changed to \(harmlessOut[key]!)") }
         check(((DiagnosticReport.scrub(["tokens": "abc"]) as! [String: Any])["tokens"] as? String) == "[REDACTED]")
+        // Credential values can be numeric; only known token counters are exempt.
+        for key in ["token", "access_token", "refresh_token", "id_token", "api_token", "auth_tokens"] {
+            let redacted = DiagnosticReport.scrub([key: 123456]) as! [String: Any]
+            check(redacted[key] as? String == "[REDACTED]", "numeric credential survived: \(key)")
+        }
+        for key in ["input_tokens", "output_tokens", "prompt_tokens", "completion_tokens", "total_tokens"] {
+            let counter = DiagnosticReport.scrub([key: 12]) as! [String: Any]
+            check(counter[key] as? Int == 12, "token counter lost: \(key)")
+        }
 
         // MARK: ordinary text survives
         try keeps("The task is to ask about my keyboard and the token budget")

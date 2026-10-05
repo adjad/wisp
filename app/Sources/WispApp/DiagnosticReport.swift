@@ -142,7 +142,10 @@ enum DiagnosticReport {
         let compact = String(normalized(key).lowercased().filter { $0.isLetter || $0.isNumber })
         let terms = sensitiveTerms.filter { compact.contains($0) }
         if !terms.isEmpty {
-            if terms == ["token"], value is NSNumber { return false }
+            let counters: Set<String> = ["tokens", "maxtokens", "inputtokens", "outputtokens", "prompttokens",
+                                         "completiontokens", "totaltokens", "cachedtokens", "cachereadinputtokens",
+                                         "cachecreationinputtokens", "clientfirsttokenseconds"]
+            if terms == ["token"], value is NSNumber, counters.contains(compact) { return false }
             return true
         }
         return !(value is NSNumber) && (compact == "auth" || (compact.hasPrefix("auth") && !compact.hasPrefix("author")))
