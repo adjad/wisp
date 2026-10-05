@@ -352,3 +352,15 @@ CI note: `tests/test_local_provider_tools.py::test_qualification_response_contex
 (not a routing test; this branch does not touch service/inference or that test) passed
 90/90 runs on origin/main locally (40 with light, 50 with heavy CPU load) and in this
 branch's full regression run. It was not reproduced, so the test was left unchanged.
+
+### Re-QA follow-up (0ec861a)
+
+* N-Z04: a compound assent ("yes and also text mom") to a reminder offer now takes the same
+  guarded clarify-time path (add_reminder/set_alarm forbidden, buffered receipt), while the
+  text half keeps lookup_contact/send_message. Fake-model loop tests: a "Reminder set" claim
+  with no tool call, and a forbidden add_reminder call followed by "Done", both end in
+  "I haven't created a reminder yet…" with nothing written.
+* N13/N13b: "try again" / "retry" / "send it again" after an imperative send request whose
+  turn failed without a tool digest keeps the send tools; a retry after a read does not.
+* File names ("report.txt") and ISO dates ("2026-10-12") no longer open the outbound gate.
+* Corpus 370/439 (unchanged), held-out 87/104, outbound probe 0 lost vs main.
