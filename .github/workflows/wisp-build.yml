@@ -164,11 +164,7 @@ jobs:
           PERFORMANCE_RECEIPT_SHA256: ${{ inputs.performance_receipt_sha256 }}
           PERFORMANCE_BASELINE_SHA256: ${{ inputs.performance_baseline_sha256 }}
         run: |
-          ./scripts/wisp-build release --output dist/candidate \
-            --performance-receipt .wisp-build/performance/receipt.json \
-            --performance-baseline .wisp-build/performance/approved-baseline.json \
-            --performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256" \
-            --performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"
+          ./scripts/wisp-build release --output dist/candidate  --performance-receipt .wisp-build/performance/receipt.json  --performance-baseline .wisp-build/performance/approved-baseline.json  --performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"  --performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"
       - name: Upload release receipts and diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -234,11 +230,7 @@ jobs:
           PERFORMANCE_RECEIPT_SHA256: ${{ inputs.performance_receipt_sha256 }}
           PERFORMANCE_BASELINE_SHA256: ${{ inputs.performance_baseline_sha256 }}
         run: |
-          ./scripts/wisp-build release-ad-hoc --output dist/candidate \
-            --performance-receipt .wisp-build/performance/receipt.json \
-            --performance-baseline .wisp-build/performance/approved-baseline.json \
-            --performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256" \
-            --performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"
+          ./scripts/wisp-build release-ad-hoc --output dist/candidate  --performance-receipt .wisp-build/performance/receipt.json  --performance-baseline .wisp-build/performance/approved-baseline.json  --performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"  --performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"
       - name: Upload ad-hoc publication diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
