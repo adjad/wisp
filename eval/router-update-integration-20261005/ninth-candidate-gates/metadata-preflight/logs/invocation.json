@@ -1,0 +1,10 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "source": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "original_home": "/Users/adijain",
+  "observed_overlay_path": "/Users/adijain/.moe/config.yaml",
+  "overlay_selection": "default ~/.moe",
+  "driver": "logs/metadata_preflight.py",
+  "environment": "fresh explicit allowlist; no inherited credential bridge/reference values",
+  "constructors_status_network_generation_native_calls": false
+}

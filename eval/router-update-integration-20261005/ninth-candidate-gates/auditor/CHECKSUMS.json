@@ -1,0 +1,1288 @@
+{
+  "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "verdict": "BLOCK",
+  "file_count": 256,
+  "method": "Recursive byte seal; symlinks hash UTF-8 target text without dereference; checksum manifest excludes itself.",
+  "files": {
+    "HANDOFF.json": {
+      "kind": "file",
+      "bytes": 7000,
+      "sha256": "b9b8580c6b0ce364b5058caeca440fb05fd5e870eb7f3464ad410e60d0c74ab4"
+    },
+    "R11_FINDING.json": {
+      "kind": "file",
+      "bytes": 3282,
+      "sha256": "4db38668bcbd587e7e490955feb88a2679b1462d80559a3b220045ea8ff8a4d7"
+    },
+    "R11_FINDING.md": {
+      "kind": "file",
+      "bytes": 1152,
+      "sha256": "efd7fc7cd1a91a4b38adb59a33ab7b8abb12fc1f6fb57fb9de78bf2d563409f9"
+    },
+    "R11_FINDING_CHECKSUMS.json": {
+      "kind": "file",
+      "bytes": 1089,
+      "sha256": "1e6e357a268161e75dc8d60c48767d135fa77f331656b60237f51caafaf89a3a"
+    },
+    "REPORT.json": {
+      "kind": "file",
+      "bytes": 13414,
+      "sha256": "504a3ce6dec42c91d1fa1ae6e9cd652775bbc29d41c74fca5b8cd3740ffbdc1f"
+    },
+    "REPORT.md": {
+      "kind": "file",
+      "bytes": 6282,
+      "sha256": "9561394da01564e3e8a08b82ea4d6aa68b4f40585e34521c5bd9a45aeee39013"
+    },
+    "application-command.log": {
+      "kind": "file",
+      "bytes": 39990,
+      "sha256": "33a28fce9101d23d47029edab02adc010257ee99c8f719a00ac0b4a117f5ed3f"
+    },
+    "application-results.json": {
+      "kind": "file",
+      "bytes": 69802044,
+      "sha256": "e0918ed5520dd6a4d756e197a2ecd5a37545db62de2becff6dcf68be7eb713e9"
+    },
+    "application_controls.py": {
+      "kind": "file",
+      "bytes": 12272,
+      "sha256": "0ea9f983c4594c953afbbc59507efdcd9f88814b17f0df5e104cbb8eac6d041d"
+    },
+    "assignment-registry-snapshot.json": {
+      "kind": "file",
+      "bytes": 99357,
+      "sha256": "88000de7526b05b85335cbc22c787e00f9b7474fa4634fa6366ae95f7a90966d"
+    },
+    "assignment-snapshot.md": {
+      "kind": "file",
+      "bytes": 4846,
+      "sha256": "0851af8e80e2df0f6561016b6d37e17ee07989b766b01090742b83ba425f8039"
+    },
+    "capability-bounds-command.log": {
+      "kind": "file",
+      "bytes": 28,
+      "sha256": "cc94a67b073950a86a2e1221daecaa4d5a0327b009acf08a56d5252be942ddbf"
+    },
+    "capability-bounds-results.json": {
+      "kind": "file",
+      "bytes": 2681,
+      "sha256": "8c51aeded5fd4201ee98b26261642c0616356365df8b987aef85406a8bbdf59e"
+    },
+    "capability_bounds.py": {
+      "kind": "file",
+      "bytes": 2857,
+      "sha256": "242fa933469c1058bba4d6634ef85e88e214b6e2557421da279dbfd9dad8e791"
+    },
+    "exploratory-grammar-observations.json": {
+      "kind": "file",
+      "bytes": 52378,
+      "sha256": "0b9975c97bfe7d80747e2d72342413735edff9fc156a4125546a301889a65667"
+    },
+    "finalize-command.log": {
+      "kind": "file",
+      "bytes": 333,
+      "sha256": "16f146071f2159e9346472a635e5d82b90b61a72b2822ce09b3ed08e93b03069"
+    },
+    "finalize_report.py": {
+      "kind": "file",
+      "bytes": 17168,
+      "sha256": "323a436f88e9e64b4e04d5fc70ea2667f75929a5012f37793f22b81f6e7e7911"
+    },
+    "fixture-corrections.json": {
+      "kind": "file",
+      "bytes": 1159,
+      "sha256": "3db66f1cd014228cc19d9d83dbb6a18f08428ed54d5387fb64f23ca5ba51fd53"
+    },
+    "parent-gate-receipt.json": {
+      "kind": "file",
+      "bytes": 880,
+      "sha256": "bd970cd7c91908eacd0fa29e8167447d065cbd6cd6840f164550272bfa181133"
+    },
+    "provenance-command.log": {
+      "kind": "file",
+      "bytes": 97,
+      "sha256": "3a103e75d73f333b286fdcab718711f6dbef0d93c67edd7a6feabd78142e396b"
+    },
+    "provenance-final-command.log": {
+      "kind": "file",
+      "bytes": 97,
+      "sha256": "3a103e75d73f333b286fdcab718711f6dbef0d93c67edd7a6feabd78142e396b"
+    },
+    "provenance-final.json": {
+      "kind": "file",
+      "bytes": 1165577,
+      "sha256": "da5860d42b816ed4e0e6c1f87ca51e2be268841250968e46b0e3ffd29322c011"
+    },
+    "provenance-terminal-command.log": {
+      "kind": "file",
+      "bytes": 97,
+      "sha256": "71235f01adce39f9bd7ac21e21de845385016e87c6cc65a9b89f8d321d1ad7b4"
+    },
+    "provenance.json": {
+      "kind": "file",
+      "bytes": 1158847,
+      "sha256": "a93d5ddfa31860f196ad749710a6f47cb7c4d6a4ee2258b23fd68fc85cb38c93"
+    },
+    "provenance_controls.py": {
+      "kind": "file",
+      "bytes": 7981,
+      "sha256": "0e321d1c9ffbbfc952bb1bb10d8e89f900630d8c850b0fe3e052c8e7ab92ca60"
+    },
+    "retained-command.log": {
+      "kind": "file",
+      "bytes": 44,
+      "sha256": "113cf537b4cc5c42f8d2b6ecf562311369bbabda695e43e66c551c29bc8274cf"
+    },
+    "retained-results.json": {
+      "kind": "file",
+      "bytes": 30590,
+      "sha256": "e1839d21ebd9dad2b753b044caf937ad02e83fda094d7ef45c9dc0c905e52288"
+    },
+    "retained_controls.py": {
+      "kind": "file",
+      "bytes": 9143,
+      "sha256": "508c00eb5cacb1b855801bf9f8ba675179e591bd653c8b7e2b6dd27c764aa072"
+    },
+    "runtime-cancel-command-initial.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "8f51d14a7a09989f09952bf162c05a79975ccf355b4f2925cc9bfc6b4b85eea0"
+    },
+    "runtime-cancel-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "8f51d14a7a09989f09952bf162c05a79975ccf355b4f2925cc9bfc6b4b85eea0"
+    },
+    "runtime-cancel-command.log": {
+      "kind": "file",
+      "bytes": 62,
+      "sha256": "f32aee8da31a7f8bdad6110969f8359679a5352540b3af8fcb041545dccd06d5"
+    },
+    "runtime-cancel-results.json": {
+      "kind": "file",
+      "bytes": 4280,
+      "sha256": "64b48643caeb626f1848b5c21f39c0e431613e68e5fe3bf3a1792b4d7bc744d6"
+    },
+    "runtime-contention-command-initial.log": {
+      "kind": "file",
+      "bytes": 1396,
+      "sha256": "340a4c94f9fbc9cc3aef3c16b5447195f7d59d0a062bf1904bd760d8868ee628"
+    },
+    "runtime-contention-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1396,
+      "sha256": "340a4c94f9fbc9cc3aef3c16b5447195f7d59d0a062bf1904bd760d8868ee628"
+    },
+    "runtime-contention-command.log": {
+      "kind": "file",
+      "bytes": 66,
+      "sha256": "b9c28170e975bbe76bf2f1c8bc66919391ddecea9a5bdb5716b4450a9fb53401"
+    },
+    "runtime-contention-results.json": {
+      "kind": "file",
+      "bytes": 2209,
+      "sha256": "5b00a29523ad8adc27c8c3ad4c9a04fdc2a8517ac6ce1bbb985d29f877bffe7f"
+    },
+    "runtime-generation-command-initial.log": {
+      "kind": "file",
+      "bytes": 1396,
+      "sha256": "4b22db46edb35759b7411804fab15046680a5bccc5a41a88cb3fda495cc3b41f"
+    },
+    "runtime-generation-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1396,
+      "sha256": "4b22db46edb35759b7411804fab15046680a5bccc5a41a88cb3fda495cc3b41f"
+    },
+    "runtime-generation-command.log": {
+      "kind": "file",
+      "bytes": 66,
+      "sha256": "641049feec3b8a331f399f859b52c0bae1dd39442a9f4635b8ee18018bfcd8f5"
+    },
+    "runtime-generation-results.json": {
+      "kind": "file",
+      "bytes": 2336,
+      "sha256": "72045c879f33ab1ad77d89d059f77e6e779367f4ac9073a14e944855119eeb74"
+    },
+    "runtime-identity-command-initial.log": {
+      "kind": "file",
+      "bytes": 1394,
+      "sha256": "6d928967504973596544fd2732ce247a40412ba6e3aa9c0981936c5e117109cf"
+    },
+    "runtime-identity-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1394,
+      "sha256": "6d928967504973596544fd2732ce247a40412ba6e3aa9c0981936c5e117109cf"
+    },
+    "runtime-identity-command.log": {
+      "kind": "file",
+      "bytes": 62,
+      "sha256": "bc9d05791aea94a68bfaba795d1e672be4951c9ede3917dfeadf0aecd6c4bc3e"
+    },
+    "runtime-identity-results.json": {
+      "kind": "file",
+      "bytes": 1222,
+      "sha256": "652608ddacc48ebf2d973e4ccce02754d47bef61fb82ace7b4c6a84ad1bfec8b"
+    },
+    "runtime-managed-command-initial.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "448ee38357c64023e75d8ae50498061230099e69aa2d05f4bd7cb34712a5c7c1"
+    },
+    "runtime-managed-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "448ee38357c64023e75d8ae50498061230099e69aa2d05f4bd7cb34712a5c7c1"
+    },
+    "runtime-managed-command.log": {
+      "kind": "file",
+      "bytes": 61,
+      "sha256": "955eeeaca69106c2c0b77542f4962b1a6559782e30b4a6193b07949b1125d04c"
+    },
+    "runtime-managed-results.json": {
+      "kind": "file",
+      "bytes": 1176,
+      "sha256": "b610f787beeb33a47d83bf22872b1681eadde9a39ba6e164b2ee4748b3f4d225"
+    },
+    "runtime-marker-command-initial.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "8d422b7b124e4e69fb0d4a7cc9e8bfbc07387034b7cc4e90963ffd8c0e388b7a"
+    },
+    "runtime-marker-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "8d422b7b124e4e69fb0d4a7cc9e8bfbc07387034b7cc4e90963ffd8c0e388b7a"
+    },
+    "runtime-marker-command.log": {
+      "kind": "file",
+      "bytes": 60,
+      "sha256": "7c928bcc42ef7cb02901a22bbaa95cfb0b5a4207889d9ffbfe62e88606060490"
+    },
+    "runtime-marker-results.json": {
+      "kind": "file",
+      "bytes": 1180,
+      "sha256": "4c8c3688f8599c69b8d8c078b96465e45c101b009bdd81122a7b7ade5685c4c5"
+    },
+    "runtime-missing-command-initial.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "6b330e52e4401fece12d467c9a6f5ad590ccb14f0957825ad661649bbb1ee43e"
+    },
+    "runtime-missing-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "6b330e52e4401fece12d467c9a6f5ad590ccb14f0957825ad661649bbb1ee43e"
+    },
+    "runtime-missing-command.log": {
+      "kind": "file",
+      "bytes": 61,
+      "sha256": "cda9920449440028fb1e5a288c54328422d9a47d68810b93f0ce0b635c67e486"
+    },
+    "runtime-missing-results.json": {
+      "kind": "file",
+      "bytes": 1178,
+      "sha256": "ccadba21c8152f087682ab4a09ce91c761a1ddf5ee4babffbfb850310b7e0913"
+    },
+    "runtime-policy-command-initial.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "efaaa417130b6c06714aeab7311de24e6b3f7c4bd17575b63f5f0f703106989a"
+    },
+    "runtime-policy-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "efaaa417130b6c06714aeab7311de24e6b3f7c4bd17575b63f5f0f703106989a"
+    },
+    "runtime-policy-command.log": {
+      "kind": "file",
+      "bytes": 62,
+      "sha256": "cd3f43cef1208e14aa5a7916dcaaa26c884435939fe84853a3d155f4125ee36f"
+    },
+    "runtime-policy-results.json": {
+      "kind": "file",
+      "bytes": 4266,
+      "sha256": "f27f19fd52c7ff02bb3e37d1bade0072590719cc977d6779e0e8bab3b21d782b"
+    },
+    "runtime-race-command.log": {
+      "kind": "file",
+      "bytes": 60,
+      "sha256": "15a07e91978b3dd449020ad9ac54e73e0abdff098c48353f0355d3eada4a5e3f"
+    },
+    "runtime-race-results.json": {
+      "kind": "file",
+      "bytes": 2006,
+      "sha256": "f53d21a70675ef9a059344f7c108900d896182c98bf8da005c13b332eddfa938"
+    },
+    "runtime-stream-command-initial.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "d1d53b448eba978c9754dd198e64fe6a20916587336bba9b11efb3d19fb1c04f"
+    },
+    "runtime-stream-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1392,
+      "sha256": "d1d53b448eba978c9754dd198e64fe6a20916587336bba9b11efb3d19fb1c04f"
+    },
+    "runtime-stream-command.log": {
+      "kind": "file",
+      "bytes": 222,
+      "sha256": "9124af748eaa466861c5e595b950ba2d0f1697dc5b09c6967f5fc87eb4e60738"
+    },
+    "runtime-stream-first-command.log": {
+      "kind": "file",
+      "bytes": 222,
+      "sha256": "9124af748eaa466861c5e595b950ba2d0f1697dc5b09c6967f5fc87eb4e60738"
+    },
+    "runtime-stream-first-results.json": {
+      "kind": "file",
+      "bytes": 5543,
+      "sha256": "67a24ee8e22f7f8304d38eba473e8a27380705d2f81d0864651cafabfbbdaa83"
+    },
+    "runtime-stream-probe.json": {
+      "kind": "file",
+      "bytes": 1093,
+      "sha256": "fa612c9bfcd2d53c96f2c491974d3777ff17a5a3a24942ea00cfdc9365bca16b"
+    },
+    "runtime-stream-probe.log": {
+      "kind": "file",
+      "bytes": 916,
+      "sha256": "cdbb5a65f3fbc05541b37646af4c7c8889aa5033a4bbd9c9121477342b73b81d"
+    },
+    "runtime-stream-results.json": {
+      "kind": "file",
+      "bytes": 5543,
+      "sha256": "4d97b74524b447098fdc583e902997ca5aff91e5ca955736eb5044f85b174c46"
+    },
+    "runtime-symlink-command-initial.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "bbb573ef1f7db0cf89970dacc41b5b5ea9b7ccae1b54013394835cd7ca06c3e3"
+    },
+    "runtime-symlink-command-output-root-intermediate.log": {
+      "kind": "file",
+      "bytes": 1393,
+      "sha256": "bbb573ef1f7db0cf89970dacc41b5b5ea9b7ccae1b54013394835cd7ca06c3e3"
+    },
+    "runtime-symlink-command.log": {
+      "kind": "file",
+      "bytes": 61,
+      "sha256": "780bf541fbe13e9bb9d74e5235435fc4fcfa98c7f2f8db850412cd2deff875ac"
+    },
+    "runtime-symlink-results.json": {
+      "kind": "file",
+      "bytes": 1176,
+      "sha256": "835786d5a041286db9fc747591927813a0f1171491d45b8add6df05ae1c94997"
+    },
+    "runtime_factory_controls-initial.py": {
+      "kind": "file",
+      "bytes": 13033,
+      "sha256": "d737a38250702db56404df25e3b2e7fdb66f9b24bdcfd3041d0e56768c092f88"
+    },
+    "runtime_factory_controls-output-root-intermediate.py": {
+      "kind": "file",
+      "bytes": 13041,
+      "sha256": "db312a67359685cfbe627c877236f156dd737273aec5a8d1c675103194e71d30"
+    },
+    "runtime_factory_controls.py": {
+      "kind": "file",
+      "bytes": 14213,
+      "sha256": "42b607fb45cfb871bbe941516fdee32313fda270b65ad671b741456346929180"
+    },
+    "runtime_stream_probe.py": {
+      "kind": "file",
+      "bytes": 2248,
+      "sha256": "e988dcb12d996cbe7329d294cc2939d953b6d315f7f17453f8aa6c35685db48f"
+    },
+    "seal_bundle.py": {
+      "kind": "file",
+      "bytes": 2218,
+      "sha256": "a6b8f263a8f2a3a9d52527469a8c318a0211d778006c1c5d7fed89266f88477a"
+    },
+    "stream-fixture-pkk7s_b0/original-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 22,
+      "sha256": "8ee70548855a260d1c8b8b3f74626ee0e8cb7b00f9b4dd5973fec3d294e32d58"
+    },
+    "stream-fixture-pkk7s_b0/state/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "task-scope-command.log": {
+      "kind": "file",
+      "bytes": 42,
+      "sha256": "f1bcb2241c467ae2977a1520836d9beaee23506c92d73568ba53a653779985a1"
+    },
+    "task-scope-results.json": {
+      "kind": "file",
+      "bytes": 16978,
+      "sha256": "d4ba4dc4225df1a1a7ce0952522967c1d0a0e04ba6a7617a609aa635df183d08"
+    },
+    "task_scope_controls.py": {
+      "kind": "file",
+      "bytes": 2908,
+      "sha256": "ead14192c822fbf3cfda0bf86caa0a6c478b3ccaaf6ca546b3e775a8576942a7"
+    },
+    "wisp-67e4cef-runtime-cancel-8dxdcqnz/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-cancel-8dxdcqnz/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-cancel-8dxdcqnz/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-cancel-8dxdcqnz/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-cancel-8dxdcqnz/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-cancel-iscae173/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-cancel-iscae173/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-cancel-iscae173/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-cancel-iscae173/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-cancel-iscae173/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-cancel-yux_xzc4/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-cancel-yux_xzc4/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-cancel-yux_xzc4/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-cancel-yux_xzc4/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-cancel-yux_xzc4/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-contention-s3zxrlhc/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-contention-s3zxrlhc/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-contention-s3zxrlhc/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-contention-s3zxrlhc/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-contention-s3zxrlhc/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-contention-uknuaqh4/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-contention-uknuaqh4/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-contention-uknuaqh4/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-contention-uknuaqh4/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-contention-uknuaqh4/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-contention-x9bocqs6/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-contention-x9bocqs6/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-contention-x9bocqs6/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-contention-x9bocqs6/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-contention-x9bocqs6/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/fixture-home/.moe/.credential-generation": {
+      "kind": "file",
+      "bytes": 64,
+      "sha256": "d91323a5298f3b9f814db29efaa271f24fbdccedfdd062491b8abc8e07b7fb69"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-generation-bf63hl6l/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/fixture-home/.moe/.credential-generation": {
+      "kind": "file",
+      "bytes": 64,
+      "sha256": "d91323a5298f3b9f814db29efaa271f24fbdccedfdd062491b8abc8e07b7fb69"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-generation-imb9sz50/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/fixture-home/.moe/.credential-generation": {
+      "kind": "file",
+      "bytes": 64,
+      "sha256": "d91323a5298f3b9f814db29efaa271f24fbdccedfdd062491b8abc8e07b7fb69"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-generation-jjzh30uv/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-identity-9fk7jd2m/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-identity-9fk7jd2m/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-identity-9fk7jd2m/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-identity-9fk7jd2m/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-identity-9fk7jd2m/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-identity-epnm7v0h/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-identity-epnm7v0h/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-identity-epnm7v0h/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-identity-epnm7v0h/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-identity-epnm7v0h/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-identity-xuy22hbe/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-identity-xuy22hbe/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-identity-xuy22hbe/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-identity-xuy22hbe/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-identity-xuy22hbe/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/fixture-home/.moe/omlx-runtime-authorization.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-managed-3odbjjx7/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/fixture-home/.moe/omlx-runtime-authorization.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-managed-id1d81yk/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/fixture-home/.moe/omlx-runtime-authorization.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-managed-lgpuxit2/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/fixture-home/.moe/.helper-transaction.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-marker-k6i_s2kk/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/fixture-home/.moe/.helper-transaction.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-marker-kbj0iuno/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/fixture-home/.moe/.helper-transaction.json": {
+      "kind": "file",
+      "bytes": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-marker-nfbaq5hx/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-missing-3asskoa8/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-missing-3asskoa8/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-missing-3asskoa8/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-missing-3asskoa8/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-missing-ej_zblrs/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-missing-ej_zblrs/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-missing-ej_zblrs/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-missing-ej_zblrs/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-missing-zm5lqqn7/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-missing-zm5lqqn7/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-missing-zm5lqqn7/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-missing-zm5lqqn7/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-policy-1p3c3xvm/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-policy-1p3c3xvm/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-policy-1p3c3xvm/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-policy-1p3c3xvm/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-policy-1p3c3xvm/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-policy-bl4hnz7d/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-policy-bl4hnz7d/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-policy-bl4hnz7d/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-policy-bl4hnz7d/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-policy-bl4hnz7d/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-policy-wnmjd4rx/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-policy-wnmjd4rx/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-policy-wnmjd4rx/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-policy-wnmjd4rx/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-policy-wnmjd4rx/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-race-i0xhgcok/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-race-i0xhgcok/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-race-i0xhgcok/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-race-i0xhgcok/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-race-i0xhgcok/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-stream-f8rifhe7/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-stream-f8rifhe7/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-stream-f8rifhe7/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-stream-f8rifhe7/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-stream-f8rifhe7/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-stream-lmpvx2_1/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-stream-lmpvx2_1/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-stream-lmpvx2_1/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-stream-lmpvx2_1/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-stream-lmpvx2_1/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-stream-x82_eudv/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-stream-x82_eudv/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-stream-x82_eudv/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-stream-x82_eudv/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-stream-x82_eudv/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-stream-ye7obroo/fixture-home/.moe/.provisioning.lock": {
+      "kind": "file",
+      "bytes": 31,
+      "sha256": "c9dd4f5e4235b9a9aa45db8d90bf51f6c4e8ae2dff3b679ec472350f54b689d5"
+    },
+    "wisp-67e4cef-runtime-stream-ye7obroo/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-stream-ye7obroo/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-stream-ye7obroo/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-stream-ye7obroo/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-symlink-705u67ug/fixture-home/.moe/.provisioning.lock": {
+      "kind": "symlink",
+      "target": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-symlink-705u67ug/unrelated",
+      "sha256": "698baf08a56405e19d3e8368171d9087cb0e138eaa41608680133a7d7ef25396"
+    },
+    "wisp-67e4cef-runtime-symlink-705u67ug/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-symlink-705u67ug/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-symlink-705u67ug/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-symlink-705u67ug/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-symlink-lfujio2c/fixture-home/.moe/.provisioning.lock": {
+      "kind": "symlink",
+      "target": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-symlink-lfujio2c/unrelated",
+      "sha256": "92361a3bf4c47717175e64b31bf2f7f12229f50f257cde149289ba893a9cf0a1"
+    },
+    "wisp-67e4cef-runtime-symlink-lfujio2c/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-symlink-lfujio2c/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-symlink-lfujio2c/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-symlink-lfujio2c/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-67e4cef-runtime-symlink-o5gw4ax4/fixture-home/.moe/.provisioning.lock": {
+      "kind": "symlink",
+      "target": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-symlink-o5gw4ax4/unrelated",
+      "sha256": "baab647215e20df2e81297be7a23a5643d6012d5358dca3de06f8ab2134659b5"
+    },
+    "wisp-67e4cef-runtime-symlink-o5gw4ax4/fixture-home/.moe/config.yaml": {
+      "kind": "file",
+      "bytes": 1052,
+      "sha256": "4660c2e32858f61fbbe6b0eb7a559569fb8ac8697b03e5818d133d3732c263df"
+    },
+    "wisp-67e4cef-runtime-symlink-o5gw4ax4/fixture-home/.omlx/model_settings.json": {
+      "kind": "file",
+      "bytes": 70,
+      "sha256": "2804e883ac7e0e46a678b61d3787da5210ca476cd6e47fd25b82483f9e7c08b1"
+    },
+    "wisp-67e4cef-runtime-symlink-o5gw4ax4/fixture-home/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 99,
+      "sha256": "f69b04d30c1f4c63de591d63538b11253b406c169860a18cd9082019e4e376a0"
+    },
+    "wisp-67e4cef-runtime-symlink-o5gw4ax4/isolated/.omlx/settings.json": {
+      "kind": "file",
+      "bytes": 59,
+      "sha256": "ab5fba2f40ec7ee572820fedcc157dad8073861ba0ccd66c30941e1e1ec0aca7"
+    },
+    "wisp-router-update-67e4cef-artifact-ci-final.json": {
+      "kind": "file",
+      "bytes": 3740,
+      "sha256": "5e31a9d6fb1a5727e4750ef435a9a6017589a6292374ae6c52238819469b3917"
+    },
+    "wisp-router-update-67e4cef-artifact-ci.log": {
+      "kind": "file",
+      "bytes": 252490,
+      "sha256": "dce2bea8dac79142fe43d741386a792b5467782e871d6ec7791df0ed61579be1"
+    },
+    "wisp-router-update-67e4cef-python-ci-download.json": {
+      "kind": "file",
+      "bytes": 575,
+      "sha256": "44871d3e5118d6001fea0e921a764c05b4607f95d3ac3864513b93e9f98738ee"
+    },
+    "wisp-router-update-67e4cef-python-ci-final.json": {
+      "kind": "file",
+      "bytes": 2080,
+      "sha256": "ea680d7061a951a90dcb09bb0f341e22bb58ce009ce3ba211108ed0914a03a80"
+    },
+    "wisp-router-update-67e4cef-python-ci.log": {
+      "kind": "file",
+      "bytes": 451865,
+      "sha256": "eec21f8fecb65a18f18f96729d9fbd41b6364832e379fe8d3cc768d7411f46ed"
+    },
+    "wisp-router-update-67e4cef-regression.log": {
+      "kind": "file",
+      "bytes": 148900,
+      "sha256": "c24a0cf2722c0034069f7bf21f27233ff6f7a16e87da73d6dbed9d03a8069cac"
+    }
+  }
+}

@@ -1,0 +1,233 @@
+{
+  "artifact_type": "independent_exact_head_release_audit",
+  "audit_number": 9,
+  "recorded_at_utc": "2026-10-06T03:44:42.674156+00:00",
+  "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "pr_url": "https://github.com/adjad/wisp/pull/160",
+  "branch": "codex/router-update-1-3",
+  "target_version": "1.3.0",
+  "verdict": "BLOCK",
+  "blocking_findings": [
+    {
+      "artifact_type": "bounded_formal_blocking_finding",
+      "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+      "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+      "pr_url": "https://github.com/adjad/wisp/pull/160",
+      "id": "R11",
+      "priority": "P1",
+      "disposition": "BLOCK",
+      "title": "Streaming exposes private runtime authority to its caller and inherited tasks",
+      "file": "scripts/eval_router_update.py",
+      "locations": [
+        {
+          "line": 577,
+          "description": "_operation retains peer phase across yield at582"
+        },
+        {
+          "line": 886,
+          "description": "Audit uses ambient peer ContextVar as socket authority"
+        }
+      ],
+      "trigger": "Use supported_resident_client with synthetic config/auth and HTTP MockTransport, wrap it in ResidentInferenceAdapter, await first stream event, then create an asyncio child task and close the stream before releasing the child.",
+      "expected": "Outside the owned client operation, caller and child task have no private phase; Path.home resolves to isolated state and caller-side socket policy events remain denied.",
+      "observed": {
+        "before": {
+          "phase": null,
+          "policy": "denied",
+          "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/isolated"
+        },
+        "between": {
+          "phase": "peer",
+          "policy": "admitted",
+          "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+        },
+        "child_after_stream_close": {
+          "phase": "peer",
+          "policy": "admitted",
+          "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+        }
+      },
+      "impact": "A Python async generator yields in the consuming task context. The peer ContextVar survives the yield; create_task copies it. The copied phase remains accepted after owned stream cleanup. Thus caller-side endpoint socket policy and original-home resolution escape the intended private operation scope. This is a demonstrated isolation-policy bypass, not a claim of actual credential theft, native action or network dispatch.",
+      "verification": "4/17 supported-factory assertions fail in one R11 family; default caller denial, parent restoration, early close/caller cancellation, genuine fake auth delegation and factory cleanup controls pass. A separate direct-wrapper inert probe independently reproduces the yield leak.",
+      "recommendation": "Restore the caller context before yielding events and prevent copied contexts from authorizing I/O once the owned operation closes. Add caller/inherited-task denial oracles to the existing private thread propagation tests. Preserve normal gate/lease, expiry, cancellation and raw failure receipts.",
+      "controls": "No candidate edits, live model/native/real credentials/private data/network/outbound operations. Socket checks use sys.audit events only; transport is HTTP MockTransport, homes/auth/locks are synthetic.",
+      "full_audit_status": "Other current full-scope evidence is preserved; this bounded finding artifact does not predeclare an overall nonblocking verdict.",
+      "merge_policy": "User targets Wisp1.3.0 and forbids merging; PR remains draft.",
+      "recorded_at": "2026-10-06T03:40:28.676719+00:00"
+    }
+  ],
+  "bounded_finding_sha256": "4db38668bcbd587e7e490955feb88a2679b1462d80559a3b220045ea8ff8a4d7",
+  "bounded_finding_seal_sha256": "1e6e357a268161e75dc8d60c48767d135fa77f331656b60237f51caafaf89a3a",
+  "source_review": {
+    "full_intended_diff_paths": 449,
+    "delta_since_previous_paths": 96,
+    "source_test_delta": [
+      "scripts/eval_router_update.py",
+      "service/tasks/compiler.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py",
+      "tests/test_router_update_eval.py"
+    ],
+    "method": "Full new compiler/runtime bridge source, surrounding context, tests/docs and retained routing/overview contracts reviewed. Previously reviewed unchanged source/schema/harness context retained only after exact delta and all 449 working Git blob matches; no earlier gate pass transferred.",
+    "working_fingerprints_unchanged": true,
+    "final_clean_head_verified": true
+  },
+  "r10": {
+    "disposition": "CLOSED_FOR_SUPPORTED_EXISTING_GRAMMAR",
+    "change": "Seven existing negation checks and three existing reminder selectors apply the unchanged quote mask; extraction retains original literal title/body bytes. Patterns, order and grammar are unchanged.",
+    "positive_controls": "16/16 straight double-quoted cases and 14/14 recognized single-quoted cases; exact fake complete/delete target arguments and singular expected_id.",
+    "other_controls": "24/24 true outside negations, 5/5 unmatched/possessive boundaries, 5/5 quoted-data reads with real outside exclusions, and 7/7 individual typed compiler controls.",
+    "truthfulness": "Unmutated synthetic reminder readback yields persisted failed task and truthful requested-change-not-verified response; workflow and active/latest task snapshots retained.",
+    "exploratory_notes": "18 raw application assertions remain failed: 16 curly-double-quote title delimiter expectations and 2 nested ASCII apostrophe-in-single-quote mask expectations. Paired plain controls/source comparison show unchanged grammar limitations; these are not R10 regressions and are not credited as passes.",
+    "unsupported_syntax": "Check off reminder called remains unsupported and is not used as a valid regression oracle.",
+    "evidence": [
+      "application-results.json",
+      "task-scope-results.json",
+      "exploratory-grammar-observations.json"
+    ]
+  },
+  "verification": {
+    "groups": {
+      "application": {
+        "passed": 568,
+        "total": 586,
+        "evidence": "application-results.json"
+      },
+      "retained": {
+        "passed": 91,
+        "total": 91,
+        "evidence": "retained-results.json"
+      },
+      "task_scope": {
+        "passed": 7,
+        "total": 7,
+        "evidence": "task-scope-results.json"
+      },
+      "capability_bounds": {
+        "passed": 20,
+        "total": 20,
+        "evidence": "capability-bounds-results.json"
+      }
+    },
+    "runtime_factory": {
+      "passed": 129,
+      "total": 133,
+      "modes": {
+        "stream": {
+          "passed": 13,
+          "total": 17,
+          "evidence": "runtime-stream-results.json"
+        },
+        "policy": {
+          "passed": 28,
+          "total": 28,
+          "evidence": "runtime-policy-results.json"
+        },
+        "cancel": {
+          "passed": 21,
+          "total": 21,
+          "evidence": "runtime-cancel-results.json"
+        },
+        "generation": {
+          "passed": 13,
+          "total": 13,
+          "evidence": "runtime-generation-results.json"
+        },
+        "contention": {
+          "passed": 12,
+          "total": 12,
+          "evidence": "runtime-contention-results.json"
+        },
+        "marker": {
+          "passed": 6,
+          "total": 6,
+          "evidence": "runtime-marker-results.json"
+        },
+        "managed": {
+          "passed": 6,
+          "total": 6,
+          "evidence": "runtime-managed-results.json"
+        },
+        "identity": {
+          "passed": 6,
+          "total": 6,
+          "evidence": "runtime-identity-results.json"
+        },
+        "missing": {
+          "passed": 6,
+          "total": 6,
+          "evidence": "runtime-missing-results.json"
+        },
+        "symlink": {
+          "passed": 6,
+          "total": 6,
+          "evidence": "runtime-symlink-results.json"
+        },
+        "race": {
+          "passed": 12,
+          "total": 12,
+          "evidence": "runtime-race-results.json"
+        }
+      }
+    },
+    "actual_main_controls": 481,
+    "retained_detail": "R9 455/455, R7 6/6, R8 20/20; source/privacy/task/overview, exact provenance/actors/counts, omission/addition/exclusion, planner deadline/cancel/repair/default-off/schema/residency, manifest 179 fail-closed discovery, DST 23/25h and TZ restore, public-address delivery/cancel/revoke controls.",
+    "repeat_stream_and_direct_probe": "Corroboration only, not double counted",
+    "execution": "Fresh authored controls and current source test oracles with synthetic fixtures/inert fakes. No archived audit script execution or semantic corpus replay."
+  },
+  "provenance": {
+    "passed": 1473,
+    "total": 1473,
+    "archive_manifests": 26,
+    "archive_entries": 611,
+    "replay_bundles": 13,
+    "evidence": "provenance-final.json",
+    "method": "Opaque original/restored byte hashes, manifest metadata and assignment/freeze/worker/Git pins only; no corpus/author/heldout/archived payload interpretation."
+  },
+  "ci": {
+    "local": {
+      "result": "PASS",
+      "passed": 179,
+      "total": 179,
+      "receipt": "parent-gate-receipt.json",
+      "log_sha256": "c24a0cf2722c0034069f7bf21f27233ff6f7a16e87da73d6dbed9d03a8069cac",
+      "duplicate_gate_run": false
+    },
+    "python": {
+      "result": "SUCCESS",
+      "run": 37407801476,
+      "job": 112089162704,
+      "metadata": "wisp-router-update-67e4cef-python-ci-final.json",
+      "log_sha256": "eec21f8fecb65a18f18f96729d9fbd41b6364832e379fe8d3cc768d7411f46ed"
+    },
+    "artifact": {
+      "result": "SUCCESS",
+      "run": 37407801472,
+      "job": 112089162874,
+      "metadata": "wisp-router-update-67e4cef-artifact-ci-final.json",
+      "log_sha256": "dce2bea8dac79142fe43d741386a792b5467782e871d6ec7791df0ed61579be1",
+      "release_publish_jobs": "both skipped"
+    },
+    "interpretation": "All mechanical/CI receipts are exact candidate. They do not override the independent R11 isolation-policy BLOCK."
+  },
+  "fixture_corrections": {
+    "candidate_unchanged": true,
+    "runtime_fixture_correction": "The initial factory fixture made its allowed output root the temporary fixture base, then attempted to write evidence to the separate auditor directory. The guard correctly rejected that output write; all ten initial exit1 logs and script are retained. Fresh fixture roots now live under the owned auditor output directory, still contain only fake original homes/settings/locks, and evidence remains within the admitted output root. No production authority, source/assertion or grant contract changed.",
+    "second_output_correction": "Relocating fake fixture roots under OUT still left install_guard output=base, excluding parent evidence paths. All exit1 logs and intermediate script remain. The guard now receives the assigned auditor OUT as its output root. Genuine fixture home is synthetic; no production authority or source/assertion changed.",
+    "preparatory_error": "A correction command had an unmatched parenthesis and applied no edit; its output is preserved in tool history. The following own fixture batch still encountered the same output-root error, with no candidate change."
+  },
+  "limitations_and_holds": [
+    "Structured planner and evaluation runtime capability remain default disabled; no feature activation or CLI runtime enablement.",
+    "HTTP MockTransport and sys.audit policy events establish isolation behavior only, not actual sockets, transport authority, model residency, readiness, loaded-weight provenance, performance or model quality.",
+    "No live model, native effects, production auth, private user data, external communications, provider cancellation diagnosis, training, deployment, publishing, installed-app replacement or merges performed.",
+    "Simulation QA remains held pending a nonblocking same-SHA independent audit and explicit source-parent release. R11 BLOCK does not satisfy this requirement.",
+    "Actual runtime evaluation still requires separately attributed current identity/readiness/provenance, a valid exclusive resource window and same-SHA auth audit/QA; no invented loaded-weight hash.",
+    "The retained provider-cancellation cause and Claude owner acknowledgement/relay remain unresolved; passing CI does not diagnose them.",
+    "All prior gates remain commit-bound; any repair or new HEAD requires fresh acceptance and gates.",
+    "Direct user instruction targets Wisp 1.3.0 and forbids merging; PR #160 stays draft and unmerged."
+  ],
+  "required_repair": "Restore caller context before async-generator yields and invalidate inherited context authority after owned operation closure. Add consumer and copied-child-task denial tests while preserving genuine auth/recovery/lock/expiry/cancellation cleanup. Sole repair owner must be recorded by Orchestrator; auditor made no source edits.",
+  "sealing": "CHECKSUMS.json recursively seals every output file except itself. Symlinks are hashed as UTF-8 link target bytes and never dereferenced. The bounded 10-entry finding seal remains unchanged."
+}

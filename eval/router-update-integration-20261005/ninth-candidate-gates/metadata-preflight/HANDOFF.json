@@ -1,0 +1,116 @@
+{
+  "recorded_utc": "2026-10-06T03:32:58.498661+00:00",
+  "owner": "/root/router_eval",
+  "scope": "runtimeMetadataPreflightScopeACK recorded2026-10-06T03:22:13.886224+00:00; fresh acceptance delivered before metadata reads",
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "candidate_checkout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "candidate_clean_before_and_after": true,
+  "worker_source_frozen": "3122ed220206519fe676cd9be76a16a7705966d6",
+  "worker_clean_after": true,
+  "source_edits": false,
+  "runtime_admission": false,
+  "status": "metadata_pass_complete_with_checkpoint_and_loaded_instance_provenance_unavailable",
+  "observed_identity": {
+    "roles": [
+      "router",
+      "fast",
+      "agent",
+      "general",
+      "coding",
+      "reasoning"
+    ],
+    "model": "Ling-3.0-tiny-oQ6e",
+    "context_window": 64000,
+    "revision": "",
+    "profile": "",
+    "capabilities": [],
+    "dimensions": 0,
+    "endpoint": {
+      "name": "local",
+      "origin": "http://127.0.0.1:8000",
+      "provider": "omlx",
+      "api_prefix": "/v1",
+      "managed": true,
+      "credential_reference": "local_omlx"
+    }
+  },
+  "checkpoint": "Admitted current selected-model metadata contains only context-window metadata among allowlisted checkpoint/reference fields. No unambiguous absolute checkpoint reference was found; no model cache/HOME scans, checkpoint/tensor reads or checkpoint hashes were attempted.",
+  "commands_and_results": [
+    {
+      "command": [
+        "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+        "-I",
+        "-B",
+        "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/logs/metadata_preflight.py"
+      ],
+      "exit": 0,
+      "result": "6 complete configured Targets;0 errors/denied API attempts;constants restored;0 runtime calls."
+    },
+    {
+      "command": "git rev-parse HEAD;git status --porcelain (both frozen checkouts)",
+      "exit": 0,
+      "result": "Candidate67e4cefa and worker3122ed2 unchanged and clean."
+    }
+  ],
+  "safety": {
+    "before_service_import": "Dedicated child guard installed with fresh PATH/HOME/LC_ALL environment, stdinDEVNULL and closed inherited fds; no credential bridge/reference values inherited. Product/quarantine stores and Path.home isolated under named output logs.",
+    "supported_api_use": "cfg.role_to_model and endpoints.role_target; exact USER_CONFIG/model_settings constants selected transiently and caches/constants restored; credential-bearing omlx_settings explicitly denied, never fabricated endpoint identity.",
+    "exact_nonsecret_reads": [
+      "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/service/config/models.yaml",
+      "/Users/adijain/.moe/config.yaml",
+      "/Users/adijain/.omlx/model_settings.json"
+    ],
+    "real_credentials_settings_keychain_recovery_reads": 0,
+    "live_client_constructors": 0,
+    "status_requests": 0,
+    "model_generations": 0,
+    "socket_or_native_tool_calls": 0,
+    "heldout_prompt_reads_or_evaluation": 0,
+    "optional_memory_probe": "Not performed."
+  },
+  "provenance_limits": [
+    "Stable opaque SHA256 config hashes identify observed files, not loaded weights. Configuration files were not locked; stable hashing checks do not claim atomic API-to-hash binding across concurrent external edits.",
+    "No residency, server identity, checkpoint revision/inventory/path/hash, or loaded-weight binding was established. Empty configured revision/profile is observed absence, not inferred provenance.",
+    "No runtime resource ownership or permission is granted by this preflight. Historical handoffs and packaged defaults were not used to guess checkpoint identity."
+  ],
+  "remaining_prerequisites": [
+    "Exact bounded selected-checkpoint root/reference admission if installed checkpoint provenance is needed; preserve disk versus loaded-instance uncertainty.",
+    "Fresh resource/runtime admission and independent exact-SHA auth-boundary audit plus required synthetic QA/gates.",
+    "Genuine current qualified credential/quarantine/peer verification, already-resident selected-model status, and independently established revision/checkpoint-to-loaded-instance binding before any inference."
+  ],
+  "partial_failures": "Two rg static-read commands stalled and were cancelled exit130; permitted pathlib source reads and dedicated child completed. Partial/error receipts retained; no provider diagnosis or native process inspection.",
+  "artifact_hashes": {
+    "checksums.json": {
+      "sha256": "9bb3335a00f525f7ba89f6b127e905c5ea5f6e8ed0224582867270df76caa702",
+      "bytes": 2987
+    },
+    "logs/execution.json": {
+      "sha256": "5ca949cccd05af41fc008725d3d3a45d9dbc589642b5fa45fee6909e7dd283d4",
+      "bytes": 527
+    },
+    "logs/invocation.json": {
+      "sha256": "d82163fdd3181ab14816b59071a608054682f968bb647d58e2001feb40966f04",
+      "bytes": 487
+    },
+    "logs/metadata_preflight.py": {
+      "sha256": "2b4decbe32e7facbfb73ab9d4e69d265fbf4eb5ad41e476f61933a42e847534d",
+      "bytes": 12611
+    },
+    "logs/preflight.stderr.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    "logs/preflight.stdout.log": {
+      "sha256": "2f2b2202f78d70e79ce1c48b0ad1ebe74a2ea7ee6e8d26441aa2ce5be3ced31b",
+      "bytes": 211
+    },
+    "logs/static-read-commands.json": {
+      "sha256": "e8aa42951333e9f2d288d7f8b1d78a978e42d33ef2442c7c2948aab99149713e",
+      "bytes": 947
+    },
+    "metadata.json": {
+      "sha256": "c5ced5c53b0bbd845115255b91389a5b3f8244f433b48e5c8e24edd3c2ccf18e",
+      "bytes": 4791
+    }
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "status": "checksum_only_authorized_passed_preparing_new_frozen_gates",
-  "updated_at": "2026-10-06T03:10:38.147301+00:00",
+  "status": "r11_integrated_preparing_fresh_combined_gates_no_merge",
+  "updated_at": "2026-10-06T04:05:12.209654+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -82,8 +82,8 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
       "branch": "codex/router-replay-eval",
-      "status": "Evaluation-only bridge frozen clean pushed and locally integrated; no runtime admission",
-      "commit": "3122ed220206519fe676cd9be76a16a7705966d6",
+      "status": "R11 repaired, frozen clean pushed and locally integrated; no runtime admission",
+      "commit": "f3919c5510d73eed4ea6324450e9a14d8155abc6",
       "validation_reported": {
         "manifest_repair_revision": "06691d13bee31a95ae58ece59411478662f7b3ad",
         "passed": 279,
@@ -101,6 +101,14 @@
           "America/Los_Angeles"
         ],
         "scope": "Exact23h/25h DST boundaries, strict comparisons, timezone restoration and failure controls"
+      },
+      "integration_commit": "ce70fe8",
+      "r11_validation": {
+        "passed": 160,
+        "skipped": 1,
+        "focused_passed": 12,
+        "baseline_failures_preserved": 4,
+        "handoff": "r11-stream-authority-repair/HANDOFF.json"
       }
     },
     "router_presentation": {
@@ -135,14 +143,15 @@
     "model_inference": false,
     "real_tool_execution": false
   },
-  "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
+  "model_measurement_window": "Human reports Claude unavailable until2026-10-06T10:00:00Z. Old absence/contention hold resolved for that window; fresh serialized runtime admission remains contingent on exact loaded checkpoint provenance and independently qualified bridge. Metadata-only preflight resolved configured model/endpoint, no residency or disk binding. No current runtime admission.",
   "production_changed": false,
   "pending": [
-    "Freeze and push new candidate; run full exact-SHA local regression, required CI, independent task-literal/auth-boundary audit, then distinct synthetic QA.",
-    "Freeze and push new candidate when permitted; run full exact-SHA regression, required CI, independent R10/auth-boundary audit and distinct synthetic QA.",
-    "Admit serialized actual resident-model development comparison only after exact runtime identity, resource scope and independent checks; heldout prompts stay sealed.",
-    "Resolve retained-owner provider cancellation diagnosis; training compatibility/smoke remain separately unqualified.",
-    "Protected integration handoff; no deployment or feature activation."
+    "Freeze/push combined R11 candidate; fresh exact-SHA full local regression, required CI and independent audit.",
+    "Release distinct synthetic Simulation QA only after formal nonblocking same-SHA audit and explicit parent release.",
+    "Actual resident-model development comparison requires separate serialized admission and exact runtime binding; heldout prompts stay sealed.",
+    "Retained-owner provider cancellation diagnosis remains unresolved; later passing CI is not a diagnosis.",
+    "Keep Wisp1.3.0 draft/unmerged and disabled until explicit future user direction.",
+    "Fine-tuning plan complete; any future dataset jobs, model training or spending require separate execution scope."
   ],
   "acceptance_contract": "eval/router-update-integration-20261005/acceptance.json",
   "corpus_seal": {
@@ -1346,5 +1355,66 @@
     "no_push_or_full_gate": "Hold resolved by direct human authorization. Existing local full gate and PR-triggered CI may run the unchanged opaque checksum check; heldout prompt parsing/evaluation/tuning remains prohibited.",
     "unaffected": "Permitted offline checks, development replay, local integration and evidence commits only",
     "heldout_execution_authorized": false
+  },
+  "release_hold": {
+    "target": "Wisp1.3.0",
+    "merge_allowed": false,
+    "lift_condition": "Later explicit human instruction; release of1.2.0 alone does not lift this hold",
+    "pr": "https://github.com/adjad/wisp/pull/160",
+    "draft": true
+  },
+  "prior_model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
+  "ninth_frozen_candidate_gates": {
+    "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+    "local": {
+      "passed_modules": 179,
+      "total_modules": 179,
+      "seconds": 614.995
+    },
+    "python_ci": {
+      "run": 37407801476,
+      "status": "SUCCESS",
+      "passed_modules": 179
+    },
+    "artifact_ci": {
+      "run": 37407801472,
+      "status": "SUCCESS",
+      "publishing": "SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "finding": "R11/P1 private stream authority escapes",
+      "sealed_entries": 256,
+      "report": "ninth-candidate-gates/auditor/REPORT.md",
+      "complete_archive": "ninth-candidate-gates/auditor/complete-audit-evidence.tar.gz"
+    },
+    "simulation_qa": "HELD_NOT_RUN",
+    "stored_evidence": "ninth-candidate-gates/STORED_FILES.json"
+  },
+  "r11_repair": {
+    "worker": "f3919c5510d73eed4ea6324450e9a14d8155abc6",
+    "integration": "ce70fe8",
+    "handoff": "r11-stream-authority-repair/HANDOFF.json",
+    "status": "INTEGRATED_REQUIRES_FRESH_INDEPENDENT_GATES"
+  },
+  "fine_tuning_plan": {
+    "status": "COMPLETE_READ_ONLY_RESEARCH",
+    "actor": "/root/router_plan_review",
+    "thread": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+    "available_brev_credits_reported_usd": 30,
+    "training_or_spending_authorized": false,
+    "requested": "Dataset creation, costs, user actions; compare Brev GPUs and Unsloth Studio",
+    "artifact": "ling-finetuning-plan-20261006/plan.json",
+    "recommendation": "48GB A6000 Brev, Axolotl attention LoRA; at most$5 compatibility within proposed$30 total credit cap. Actual fit/backward/export/throughput and credit eligibility unverified.",
+    "hashes": {
+      "plan.json": "79948da05d674a79a54f1b5db93bd768bbb4bcdb576328e89c919f075cc309fb",
+      "costs.json": "ed25c3f77addd07b256bf08225565318dae74863de716d72c7a81c4b40cca2a6",
+      "sources.json": "6309f22c95831b2daa56cb8122d7c13e92269dc9db92e5ed5f864faaa57d577c",
+      "manifest.json": "775785e59bbaffbfe98a85addc4cf204205633fc660285de2adc2dd1faac139a"
+    },
+    "data_generated": false,
+    "training_run": false,
+    "spent_usd": 0,
+    "provenance_note": "Source research read prior67e4cef development-report bytes; historical source hash retained even though parent has now updated that report."
   }
 }

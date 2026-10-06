@@ -1,0 +1,274 @@
+{
+  "currency": "USD",
+  "checked_at_utc": "2026-10-06T04:04:03.357985+00:00",
+  "checked_local_date": "2026-10-05 America/Los_Angeles",
+  "rates": {
+    "runpod_product": "On-demandSecureCloudPodreferencequote,noSpot/noServerless",
+    "region": "Public globaldisplay;proposed USdatacenter exactquote notyetselected",
+    "H100SXM80GB_perhour": 3.49,
+    "H100PCIe80GB_perhour": 2.89,
+    "A10080GB_perhour": 1.59,
+    "standard_network_volume_perGBmonth": 0.07
+  },
+  "assumptions": {
+    "full_teacher_rows": 15000,
+    "teacher_input_tokens_perrow": 1000,
+    "teacher_output_tokens_perrow": 400,
+    "regeneration_reserve_fraction": 0.3,
+    "training_rows": 12000,
+    "training_total_tokens_perrow": 1200,
+    "one_epoch_training_tokens": 14400000,
+    "cloud_context": 4096,
+    "cloud_microbatch": 1,
+    "cloud_accumulation": 2,
+    "teacher_model": "Qwen/Qwen3.5-9B Apache2.0",
+    "teacher_singleGPU_output_tokenrate_assumption": "100-300 tokens/second effective output;not measured;prefill/setup accounted separately"
+  },
+  "full_teacher": {
+    "input_tokens": 19500000.0,
+    "output_tokens": 7800000.0,
+    "output_decode_hours_at300tps": 7.222222222222222,
+    "output_decode_hours_at100tps": 21.666666666666668,
+    "budget_hours_withprefillsetup": [
+      10,
+      30
+    ],
+    "H100SXM_cost": [
+      34.900000000000006,
+      104.7
+    ]
+  },
+  "reference_training_estimate": {
+    "packed4096windows_ideal": 3515.625,
+    "if12point3secondspermicrobatch_hours": 12.01171875,
+    "if12point3secondsperoptimizerstepwithaccum2_hours": 6.005859375,
+    "warning": "Axolotldocsstep unit notclarified. Also ourschema/packing/tokenlength/kernel/targets maydiffer. Reference12.3s notourthroughput;not a deliverytimequote. Replacewith actualpilot tokenspersecond beforeexpansion."
+  },
+  "full_oneepoch_compute": {
+    "training_setup_dev_eval_export_hours_budget": [
+      14,
+      32
+    ],
+    "training_setup_dev_eval_export_H100SXM_cost": [
+      48.86,
+      111.68
+    ],
+    "teacher_hours": [
+      10,
+      30
+    ],
+    "allGPU_hours": [
+      24,
+      62
+    ],
+    "allGPU_cost": [
+      83.76,
+      216.38000000000002
+    ]
+  },
+  "storage": {
+    "network_GB": 50,
+    "retention_months": 1,
+    "monthly_cost": 3.5000000000000004,
+    "seven_day_prorated_estimate": 0.8166666666666668,
+    "local_download_disk_need": "Budget50-80GB free temporary disk fororiginalteacher/LingBF16,adapters,exports,quantizedcandidate; actualinventoryunknown.",
+    "extra_running_disk_example": "Optional20GB container for62h =20*0.10*62/720 about0.172USD,ifbilledseparately;avoidduplicatedstorage."
+  },
+  "full_oneepoch_total": {
+    "base_GPUplus50GBmonth_storage": [
+      87.26,
+      219.88000000000002
+    ],
+    "with30percent_contingency": [
+      113.43800000000002,
+      285.84400000000005
+    ],
+    "recommended_stage_cap": 300,
+    "excludes": "Tax,regionquotechanges,engineeringlabor,newhardware,commercialteacherlegalclearance,significantcompatibilityrepair. Noauto-retry."
+  },
+  "first_stage_caps": {
+    "total_Brev_credits": 30,
+    "compatibility_included_max": 5,
+    "pilot_only_after_save_reload": true,
+    "later_expansion": "Separate measured budget proposed after $30 pilot, not current spend permission",
+    "not_a_spending_authorization": true
+  },
+  "pilot": {
+    "train": 2000,
+    "dev": 200,
+    "teacher_input_tokens_with30percent": 2860000.0,
+    "teacher_output_tokens_with30percent": 1144000.0,
+    "estimated_allGPU_hours": [
+      4,
+      14
+    ],
+    "H100SXMcompute": [
+      13.96,
+      48.86
+    ],
+    "plusnetwork_and30percent_contingency": [
+      22.698,
+      68.068
+    ],
+    "cap": 30,
+    "prior_H100_estimate_only": true,
+    "default": "2000 train/200 dev/300 final; optional 5000 train only if measured remaining cap permits. CPU templates and optional permitted local open teacher avoid burning rented credits on large synthesis."
+  },
+  "alternatives": {
+    "A10080GB": "1.59USD/hour;to beatH100SXMtotalcompute it musttake<3.49/1.59=2.195times H100walltime. Kernel/backward/performance notqualified;firstsmokeuseH100matchingpublishedexample.",
+    "H100PCIe": "2.89USD/hour;unknownrelativethroughput,do notmultiplySXMreference timingunchanged.",
+    "local24GiBMac": "0USD rental ifcompatibleisolatedQLoRAsmoke; memory/backward/reloadnotestablished. Self/open-teacheroutput7.8Mtokens atillustrative20-60outputtokens/s wouldalone take36.1-108.3hours;notmeasured,plusprefill/training. At50-150Wand0.30USD/kWh those36.1-108.3h implyroughly0.54-4.88USD incremental electricity,notlocaltariff/hardware/engineertime. Reserveexclusivewindows;one modelat a time.",
+    "template_only": "No APIteacher fee;smallerparaphrasediversity needsindependentreview andcandidate checks."
+  },
+  "conditional_OpenAI_not_default": {
+    "terms_clearance_required": true,
+    "model": "gpt-6.1-sol",
+    "inputM": 19.5,
+    "outputM": 7.8,
+    "standard_rates_input_output_perM": [
+      2,
+      10
+    ],
+    "standard_cost": 117.0,
+    "batch_rates_input_output_perM": [
+      1,
+      5
+    ],
+    "batch_cost": 58.5,
+    "no_cache_discount_assumed": true,
+    "reasoning_tokens": "Extrareasoningbillableoutputmayincreasecost;budgetcompletionincludes them.",
+    "permission": "No determination thatWispcommercial/broaderassistanttrainingfitsoutput-useexception;do not generate untiltermspermit."
+  },
+  "current_default": "$30 existing Brev credits total. Prior Runpod figures retained only as separate future illustrative scenario; not Brev eligible pricing.",
+  "brev_verified_public_catalog": {
+    "evidence": "Parent live public CUA catalog checked 2026-10-05 PDT; no account, launch, capacity or credit eligibility confirmed",
+    "offers": [
+      {
+        "gpu": "A6000",
+        "VRAM_GB": 48,
+        "provider": "Hyperstack",
+        "per_hour_usd": 0.6,
+        "host_RAM_GB": 58,
+        "SSD_GB": 100,
+        "stop_start": false
+      },
+      {
+        "gpu": "A6000",
+        "VRAM_GB": 48,
+        "provider": "Massed Compute via Shadeform",
+        "per_hour_usd": 0.68,
+        "SSD_GB": 256,
+        "stop_start": false
+      },
+      {
+        "gpu": "L40S",
+        "VRAM_GB": 48,
+        "provider": "Massed Compute via Shadeform",
+        "per_hour_usd": 1.06,
+        "host_RAM_GB": 72,
+        "SSD_GB": 625,
+        "stop_start": false
+      },
+      {
+        "gpu": "A100 PCIe",
+        "VRAM_GB": 80,
+        "provider": "Hyperstack",
+        "per_hour_usd": 1.62,
+        "host_RAM_GB": 120,
+        "SSD_GB": 850,
+        "stop_start": false
+      },
+      {
+        "gpu": "A100 SXM4",
+        "VRAM_GB": 80,
+        "provider": "Massed Compute via Shadeform",
+        "per_hour_usd": 1.66,
+        "host_RAM_GB": 100,
+        "SSD_GB": 625,
+        "stop_start": false
+      },
+      {
+        "gpu": "H100 PCIe",
+        "VRAM_GB": 80,
+        "provider": "Hyperstack",
+        "per_hour_usd": 3.0,
+        "host_RAM_GB": 180,
+        "SSD_GB": 850,
+        "stop_start": false
+      },
+      {
+        "gpu": "RTX 6000 Ada",
+        "VRAM_GB": 48,
+        "provider": "Massed Compute via Shadeform",
+        "per_hour_usd": 1.16,
+        "host_RAM_GB": 80,
+        "SSD_GB": 350,
+        "stop_start": false
+      },
+      {
+        "gpu": "L40",
+        "VRAM_GB": 48,
+        "provider": "Massed Compute via Shadeform",
+        "per_hour_usd": 1.06,
+        "host_RAM_GB": 192,
+        "SSD_GB": 625,
+        "stop_start": false
+      },
+      {
+        "gpu": "A40",
+        "VRAM_GB": 48,
+        "provider": "Vultr",
+        "per_hour_usd": 2.23
+      }
+    ],
+    "pricing_note": "Public quote includes a particular host/storage offer, not interchangeable GPU-only pricing. Brev storage/fees/credit eligibility must be verified for selected offer; do not apply Runpod storage pricing to Brev."
+  },
+  "brev_first_budget": {
+    "total_credits": 30,
+    "compatibility_max_included": 5,
+    "all_compute_budget_range": [
+      23,
+      25
+    ],
+    "remaining_reserve_range": [
+      5,
+      7
+    ],
+    "A6000_060_all_compute_hours": [
+      38.333333333333336,
+      41.66666666666667
+    ],
+    "A6000_068_all_compute_hours": [
+      33.8235294117647,
+      36.76470588235294
+    ],
+    "L40S_106_all_compute_hours": [
+      21.69811320754717,
+      23.58490566037736
+    ],
+    "A100_162_all_compute_hours": [
+      14.19753086419753,
+      15.432098765432098
+    ],
+    "H100PCIe_3_all_compute_hours": [
+      7.666666666666667,
+      8.333333333333334
+    ],
+    "theoretical_A6000_30_noreserve_hours": 50,
+    "note": "Allowances not throughput/delivery claims; all compute includes setup/download, smoke, any rented teacher, training, export/eval and retries. Prepare specification/CPU templates off-meter. Reprice measured smoke; do not promise full 12000-row campaign in $30. Shut down paid instances promptly after checkpoint backup; no-stop/start offers require deletion, not assuming pause preserves data. Backup first, and confirm auto-recharge disabled before a future launch."
+  },
+  "brev_efficiency": {
+    "objective": "Total credits per successfully trained and independently accepted example; include setup, kernel retries, export and eval. For same workload compute comparison is hourly_rate * measured_step_seconds /3600.",
+    "break_even_speedup_over_A6000_060": {
+      "A6000_068": 1.1333333333333335,
+      "L40S_106": 1.7666666666666668,
+      "A100PCIe_162": 2.7,
+      "A100SXM_166": 2.7666666666666666,
+      "H100PCIe_3": 5.0,
+      "RTX6000Ada_116": 1.9333333333333333
+    },
+    "no_measured_best": "A6000 is conditional cheapest plausible first candidate, not measured efficiency winner. L40S must run >1.767 times faster to win pure compute cost; A100 PCIe >2.70; H100 PCIe >5.0. No paid multi-GPU bake-off in $30.",
+    "memory": "7.9B total weights resident even though 1.3B active. Published attention LoRA uses 29GiB device at seq4096; 48GB is plausible headroom, not exact fit proof. 40GB A100 may fit but no single-GPU offer verified in parent catalog. 24GB is below published reference and cannot be recommended solely from active parameter count.",
+    "storage": "A6000 100GB disk may be tight after CUDA environment, Ling/teacher originals, adapters, merged and quantized exports. Confirm available disk. $0.68 A6000 256GB is often a better practical quote if 100GB does not suffice, otherwise L40S625GB avoids storage pressure."
+  }
+}

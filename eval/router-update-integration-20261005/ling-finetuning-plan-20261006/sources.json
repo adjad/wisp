@@ -1,0 +1,143 @@
+{
+  "checked_at_utc": "2026-10-06T04:04:03.357985+00:00",
+  "primary_sources": [
+    {
+      "url": "https://huggingface.co/inclusionAI/Ling-3.0-tiny",
+      "supports": "Official post-trained tiny checkpoint, MIT model card, 7.9B total / 1.3B active, 24 layers, 128 experts, eight routed active, hybrid KDA/MLA; no installed oQ6e binding proved."
+    },
+    {
+      "url": "https://docs.axolotl.ai/docs/models/ling3.html",
+      "supports": "Model-specific attention-only LoRA support, own modeling code, H100 80GB reference at seq4096/batch1:25GiB reserved/29GiB device/12.3s per step; Triton3.6/3.7 backward fault and3.5.1 workaround; step unit not clarified."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/axolotl-ai-cloud/axolotl/main/examples/ling3/ling-3.0-tiny-lora.yaml",
+      "supports": "Reference rank16/alpha32/dropout0.05, accumulation2, batch1, seq4096, sample packing, attention projections only; reference example is not our qualified recipe."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ml-explore/mlx-lm/main/mlx_lm/utils.py",
+      "supports": "Current architecture remapping bailing_hybrid/BailingMoeV3ForCausalLM to bailing_moe_v3."
+    },
+    {
+      "url": "https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/bailing_moe_v3.py",
+      "supports": "Training-specific KDA path uses use_kernel=not self.training. Source presence is not a successful backward/reload demonstration."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/ml-explore/mlx-lm/main/mlx_lm/LORA.md",
+      "supports": "MLX LoRA/QLoRA and saved adapter workflows; exact installed quantization compatibility and oMLX serving remain unverified."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/jundot/omlx/main/README.md",
+      "supports": "oMLX accepts MLX-format model directories; README does not establish direct Ling LoRA serving. Proposed merge/export/requantization is a gate, not a guarantee."
+    },
+    {
+      "url": "https://huggingface.co/Qwen/Qwen3.5-9B",
+      "supports": "Specific proposed open-weight text teacher,9B post-trained model, Apache2.0 card; teacher accuracy/throughput not measured."
+    },
+    {
+      "url": "https://huggingface.co/Qwen/Qwen3.5-9B/raw/main/LICENSE",
+      "supports": "Apache License2.0 file read; preserve notices/attribution for redistribution."
+    },
+    {
+      "url": "https://www.runpod.io/pricing",
+      "supports": "Published on-demand GPU Pod hourly quotes: H100SXM80GB3.49USD,H100PCIe80GB2.89USD,A10080GB1.59USD. Public pricing updated2026-09-27; SecureCloud reference tier; actual US datacenter/availability/tax quote must be recorded before future spend."
+    },
+    {
+      "url": "https://github.com/runpod/docs/blob/main/accounts-billing/billing.mdx",
+      "supports": "Standard network volume under1TB0.07USD/GB-month,hourly billing; container/running disk0.10USD/GB-month,stopped volume0.20; prepaid credits nonrefundable."
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/pricing",
+      "supports": "Optional conditional short-context teacher arithmetic: gpt-6.1-sol standard2USD input/10USD output per1M,batch1/5;gpt-6-luna standard0.10/0.50,batch0.05/0.25. API spend separate from Codex subscription."
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/guides/batch",
+      "supports": "Optional conditional batch50percent discount,24h turnaround."
+    },
+    {
+      "url": "https://openai.com/policies/services-agreement/",
+      "supports": "Output-use restriction for competing models; classifier exception requires no distribution/commercial third-party availability. No exception applicability determined for Wisp; closed API outputs are not default training source."
+    },
+    {
+      "url": "https://huggingface.co/docs/trl/main/en/grpo_trainer",
+      "supports": "Verifiable custom rewards available in generic TRL; not proof of Ling-specific training/serving compatibility."
+    },
+    {
+      "url": "https://huggingface.co/docs/trl/main/en/dpo_trainer",
+      "supports": "DPO uses chosen/rejected preference pairs; reserve for separately verified factual answer comparisons."
+    },
+    {
+      "url": "https://github.com/inclusionAI/SingProbe",
+      "supports": "Official training framework trains a separate frozen-model token probe, not Ling generation weights; not evidence that Ling LoRA/RL compatibility is established."
+    }
+  ],
+  "local_provenance": [
+    {
+      "path": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/TRAINING_FEASIBILITY.md",
+      "sha256": "e7e2ed271460b936e67846d71cba831ac14ffada6b9332baf18ac614c79606cf",
+      "bytes": 6145
+    },
+    {
+      "path": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/DEVELOPMENT_RESULTS.md",
+      "sha256": "f927071ec464bd073d0dd08efde09bdbff625d3d392d54ffe76a4fb829583795",
+      "bytes": 10765
+    },
+    {
+      "path": "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/metadata.json",
+      "sha256": "c5ced5c53b0bbd845115255b91389a5b3f8244f433b48e5c8e24edd3c2ccf18e",
+      "bytes": 4791
+    },
+    {
+      "path": "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/HANDOFF.json",
+      "sha256": "c15c0d3fe1cf483cb8876593c7658e30e61219ac242c2e66afb5807bb62323c8",
+      "bytes": 5651
+    },
+    {
+      "path": "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/checksums.json",
+      "sha256": "9bb3335a00f525f7ba89f6b127e905c5ea5f6e8ed0224582867270df76caa702",
+      "bytes": 2987
+    }
+  ],
+  "latest_primary_sources": [
+    {
+      "url": "https://docs.nvidia.com/brev/concepts/gpu-instances",
+      "supports": "Lifecycle, running hourly billing, stopped storage, credit exhaustion deletion risk."
+    },
+    {
+      "url": "https://docs.nvidia.com/brev/guides/console-reference",
+      "supports": "Credits shared compute/storage, auto-recharge settings."
+    },
+    {
+      "url": "https://brev.nvidia.com/environment/new/public?gpu=703.74",
+      "supports": "Indexed L40S48GB $1.06 quote matches parent live CUA; direct web fetch JS shell."
+    },
+    {
+      "url": "https://unsloth.ai/docs/new/studio",
+      "supports": "Generic Studio methods, Mac training claims; not exact Ling qualification."
+    },
+    {
+      "url": "https://unsloth.ai/docs/get-started/install/mac.md",
+      "supports": "Current generic Mac training claim."
+    },
+    {
+      "url": "https://unsloth.ai/docs/get-started/fine-tuning-for-beginners/unsloth-requirements",
+      "supports": "Older contradictory Apple/MLX in the works statement; generic VRAM table cannot establish Ling fit."
+    },
+    {
+      "url": "https://github.com/unslothai/unsloth/issues/8532",
+      "supports": "Ling3 Studio feature request open on official repository, not a verified support declaration."
+    },
+    {
+      "url": "https://raw.githubusercontent.com/unslothai/unsloth/main/unsloth/models/loader.py",
+      "supports": "No Ling/bailing exact-name match; generic remote-code loader is not backward/export proof."
+    },
+    {
+      "url": "https://www.nvidia.com/en-gb/data-center/l40s/",
+      "supports": "L40S48GB and864GB/s hardware specification."
+    }
+  ],
+  "parent_live_catalog_provenance": {
+    "source": "Direct collaboration messages from parent /root reporting live public Brev UI inspection via CUA on 2026-10-05 PDT. No account/launch.",
+    "offers": "Full offer attributes/rates in costs.json; cannot independently attest account credit eligibility or capacity.",
+    "limits": "No A10040 single-card rate verified; no inference/training measurements. No resources started."
+  }
+}

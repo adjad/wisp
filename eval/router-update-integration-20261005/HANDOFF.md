@@ -1,5 +1,15 @@
 # Router update implementation handoff
 
+## Current state after R11 repair
+
+This work targets **Wisp 1.3.0**. The user explicitly requires **NO MERGE until a later direct instruction lifts the hold**; releasing 1.2.0 alone does not lift it. PR160 remains draft, structured routing remains disabled, and production has not been changed.
+
+Candidate `67e4cefa53687f265287b9d068fc549c1f7955b6` passed all179 local regression modules and both required CI checks; publishing was skipped. Its independent audit remained BLOCK on R11/P1: private evaluation streaming authority escaped to consumer/copied contexts. `ninth-candidate-gates/` retains full local/CI receipts, sanitized metadata preflight, the formal finding, and the complete256-entry sealed audit in a lossless archive. Original failures and exploratory grammar limitations remain disclosed in the audit report.
+
+Worker `f3919c5510d73eed4ea6324450e9a14d8155abc6` is integrated as `ce70fe8`: request exclusivity spans a stream, while private I/O authority is restored and revoked before each event reaches its consumer. Shared phase leases revoke inherited contexts after phase exit. Worker exact-SHA validation passed160 tests with one original-control skip;12 focused checks passed and all4 original R11 failures are retained in `r11-stream-authority-repair/`. These are builder checks, not independent approval. The new combined candidate needs fresh exact-SHA mechanical validation, CI, audit and then separately released synthetic QA.
+
+No real model inference, training, credential access, native execution, or user-data effects occurred in the repair. The future runtime driver still needs an outer consumer/cleanup deadline; local closure does not establish remote generation quiescence.
+
 ## User outcome
 
 Flexible personal read requests can be interpreted by the configured resident Ling router, then validated and compiled into registered read tools. The new planner is disabled by default and never loads a model. Existing exact read shortcuts and deliberate action workflows remain authoritative. Calendar, email and message overviews are compact and preserve source, date, count, actor and partial-coverage information. Compiled message searches cannot broaden on a miss.
@@ -20,7 +30,7 @@ The production-path harness runs actual application orchestration with scripted 
 
 ## Outstanding experiments
 
-Actual resident-Ling inference needs an explicit serialized resource window acknowledged by the existing Wisp 1.2 performance owner. The inactive/rate-limited coordinator is not a resource receipt. No production configuration, live model residency, native source or outbound effect is changed by this branch.
+The user explicitly reported Claude unavailable until October6 03:00 Pacific, resolving the old contention/absence requirement for that window. Actual resident-Ling measurements still need a fresh serialized admission, a nonblocking independent review of the evaluation bridge, and exact checkpoint/loaded-instance provenance. The sanitized metadata preflight resolved all six roles to Ling-3.0-tiny-oQ6e at the managed local endpoint but did not establish a checkpoint path, revision binding or residency. No live model load/unload/restart, production setting change, native source or outbound effect is admitted.
 
 Training feasibility is documented in `TRAINING_FEASIBILITY.md`. The installed checkpoint and training runtime do not yet have a qualified loader/backward/reload path. A separately scoped compatibility check, bounded fresh-synthetic smoke run, saved-and-reloaded adapter, and frozen-code original-versus-adapted comparison remain necessary. No private session harvesting, held-out-derived training, or claimed uplift is permitted. Laya is not promoted by this branch; Jev remains unmeasured.
 
@@ -69,6 +79,10 @@ Eval `3122ed2` is locally integrated at `d8e3473`. Its disabled-by-default evalu
 
 The combined permitted nine-module check passed1310 with one original-control skip and the same blocked checksum test excluded. Enabled scripted DEV retained80/80 exact source/arguments and72/80 original end-to-end, with16/16 applicable failure honesty. Eight honest error replies retain original success-literal failures; no gold or score change was made. New evidence is in `development-after-task-literal-and-runtime-bridge/`.
 
-Automatic approval review rejected the unchanged integrity test because even opaque SHA256 reading accesses the sealed heldout file. The failed approval attempt executed no tests and is preserved. An explicit human checksum-only question is pending. No heldout prompt was decoded, displayed, evaluated or used for tuning. The integration branch remains local/unpushed because pushing PR160 would indirectly run that rejected check. Full local/CI gates, independent auth review and synthetic QA remain incomplete. Do not bypass the hold through another reader, actor or remote workflow. After permission, create one exact frozen SHA and obtain all fresh gates; actual model readiness/execution, training and activation remain separate.
+Automatic approval review rejected the unchanged integrity test because even opaque SHA256 reading accesses the sealed heldout file. The failed approval attempt executed no tests and is preserved. At that historical checkpoint, an explicit human checksum-only question was pending. No heldout prompt was decoded, displayed, evaluated or used for tuning. The integration branch remains local/unpushed because pushing PR160 would indirectly run that rejected check. Full local/CI gates, independent auth review and synthetic QA remain incomplete. Do not bypass the hold through another reader, actor or remote workflow. After permission, create one exact frozen SHA and obtain all fresh gates; actual model readiness/execution, training and activation remain separate.
 
 The human explicitly authorized checksum-only verification with “ok go ahead” in response to the pending question. The unchanged integrity test passed at `c456363` without decoding, displaying or evaluating heldout prompts. The original rejection remains preserved. `checksum-authorization-20261005/receipt.json` records scope, command and result. The push/full-gate hold is resolved; new frozen-head regression, CI, independent audit and synthetic QA remain required. This permission does not admit heldout evaluation, training or real model/native/user-data execution.
+
+## Completed fine-tuning planning request
+
+A separate GPT-6.1 Sol planning agent completed research for the user's $30 Brev credits and Unsloth screenshots. The recommended first candidate is one48GB A6000 with Axolotl attention LoRA, contingent on a train/save/reload/export smoke capped at$5 within the total$30 proposed credit budget. Full-parameter FP16/AdamW training is unsuitable for the24GiB Mac; exact Ling QLoRA/Unsloth support is unverified. The plan uses independent synthetic train/development/final families, starts with2000/200/300 examples and retains the heldout boundary. `ling-finetuning-plan-20261006/` stores the sealed plan, costs, sources and manifest. Runpod and larger-campaign scenarios in costs are historical alternatives, not the current$30 Brev default. No dataset generation, runtime allocation, model training or spending occurred.

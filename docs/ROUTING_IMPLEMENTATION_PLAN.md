@@ -1,6 +1,6 @@
 # Wisp 1.3 routing implementation
 
-Status: implementation in progress. Human approved the overarching plan and multiple GPT-6.1 Sol agents on October 5, 2026. Production base is `4994caa15533c0cf84c07208c9097e4197f2815b` (PR #159 merged). The independent overnight results measured the earlier `fa66cb3` base and are not current production scores.
+Status: Wisp1.3.0 implementation in progress, draft PR160. **Explicit user NO MERGE hold remains until the user later lifts it.** Human approved the overarching plan and multiple GPT-6.1 Sol agents on October 5, 2026. Production base is `4994caa15533c0cf84c07208c9097e4197f2815b` (PR #159 merged). The independent overnight results measured the earlier `fa66cb3` base and are not current production scores.
 
 ## Delivery contract
 
@@ -62,3 +62,7 @@ Unicode contraction repair aligns source-exclusion matching and the earlier task
 Quoted reminder titles now stay literal through existing negation and action selection; supported completion retains exact title bytes and genuine outside-quote instructions remain visible. The evaluation-only resident client capability preserves existing auth/quarantine/peer checks with narrow explicit access, expiry and cleanup boundaries. Both workers are committed and locally integrated, with1310 combined permitted tests and unchanged80-case scripted development evidence. Actual Ling inference and training are still unmeasured. Full candidate validation and PR push are held on automatic approval review's rejection of a checksum-only heldout integrity check; explicit human permission is pending. No heldout prompts, production settings or installed app were changed.
 
 The human authorized the previously blocked checksum-only integrity check, which passed without prompt inspection. Candidate preparation now proceeds to fresh exact-SHA validation; sealed prompt evaluation and actual model/training admission remain separate.
+
+## R11 integration checkpoint
+
+Candidate67e4cef passed local179/179 and both required CI checks but received independent BLOCK for evaluation stream authority escape. Frozen workerf3919c5 is integrated atce70fe8;160 worker checks pass with one original-control skip. Private peer authority now ends before consumer event transfer and copied phases are revocable. Full previous gates, complete sealed audit and failed baseline evidence are retained in the integration namespace. Fresh combined-head mechanical/CI/Auditor and separately released Simulation QA remain required. Actual resident-model binding and inference remain unqualified. The separate user-requested Ling fine-tuning plan is research only, now considering$30 existing Brev credits and Unsloth Studio compatibility; it authorizes no spending or training.

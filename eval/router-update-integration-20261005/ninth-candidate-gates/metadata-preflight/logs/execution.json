@@ -1,0 +1,19 @@
+{
+  "command": [
+    "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+    "-I",
+    "-B",
+    "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/logs/metadata_preflight.py"
+  ],
+  "environment_keys": [
+    "PATH",
+    "HOME",
+    "LC_ALL"
+  ],
+  "closed_inherited_fds": true,
+  "stdin": "DEVNULL",
+  "started_utc": "2026-10-06T03:29:54.060720+00:00",
+  "finished_utc": "2026-10-06T03:29:55.612590+00:00",
+  "driver_sha256": "2b4decbe32e7facbfb73ab9d4e69d265fbf4eb5ad41e476f61933a42e847534d",
+  "exit_code": 0
+}

@@ -50,3 +50,7 @@ At `91b7885fa5ec2551032e60319ff01881af21ef6d`, unchanged enabled scripted produc
 ## Quoted task literals and isolated runtime bridge
 
 At source revision `d8e34732f9d1b6641d4d4ff95d2989dc341f97a7`, nine combined modules passed1310, skipped one original-control-only check and deselected the single checksum check blocked by automatic approval review. This is an incomplete release gate. Enabled scripted DEV remained80/80 source/exact arguments,48/48 first calls,72/80 original end-to-end and16/16 applicable failure honesty. All original metrics and annotation limitations remain in the manifest. No real-model result or training uplift is claimed. Previous44babb7 gates/audit, complete worker failures and approval rejection are preserved in `eighth-candidate-gates/`.
+
+## Ninth candidate and R11 repair
+
+Candidate67e4cef passed179/179 local modules and both required CI checks. Its independent audit blocked R11 streaming authority; full original evidence is preserved in `ninth-candidate-gates/`. Workerf3919c5 repaired event-transfer authority and stale copied contexts, with160 exact-SHA offline tests passing and one existing control skip. It is integrated asce70fe8. No development corpus, scorer, gold or model outputs changed, so the80-case scripted replay was not rerun merely to refresh unchanged results. No current-model accuracy or training uplift is established. The new combined SHA requires all fresh final gates.
