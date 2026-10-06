@@ -268,7 +268,13 @@ the package, and the independent audit and live QA remain the control.
   * **Processes:** only the exact `lsof` and `ps` argument shapes the engine attribution uses, plus the product's
     one identity lookup `id -F` (read-only; `service/memory/identity.py` runs it once per process), are allowed. Any
     other program, any other arguments to those programs, a shell, or an `executable=` override is refused. All
-    `exec`, `spawn` and `fork` families are refused.
+    `exec`, `spawn` and `fork` families are refused. `id` is pinned to `/usr/bin/id`: the product calls it by bare
+    name, and `subprocess` would resolve a bare name through `PATH` (`os.environ` or `env=`), so a program named
+    `id` in the writable throwaway home could run outside the guard. The guard therefore never lets a bare name
+    run: it rewrites `argv[0]` (and `executable=`, when given) to the absolute path before the real `Popen`
+    starts, whatever `PATH` says. Every argument is converted to a string once, and the guard runs exactly those
+    strings, so an object whose `__fspath__` changes between the check and the start cannot become another
+    program. The alias table is part of the policy digest.
   * **Network:** loopback to the engine port only. Every other connection is refused. Python socket
     `send`, `sendall` and `sendmsg` to that port require the task-local capability scoped to a reviewed
     `httpx.send` or `http.client.endheaders` operation; raw socket writes and datagrams are refused before bytes
@@ -289,11 +295,15 @@ the package, and the independent audit and live QA remain the control.
     the worktree and interpreter the child runs from. Everything else under the real `HOME` is refused.
   * **Pipes of an allowed inspector:** `subprocess` wraps the pipes it creates with `io.open(<fd>, "rb"|"wb")`,
     which the descriptor rule would otherwise refuse as untracked. Exactly those descriptors are recognised: made by
-    `os.pipe()` on the same thread while one argv-checked `Popen.__init__` is running, still a FIFO, and opened
-    `rb` or `wb`. The window closes when that call returns. A pipe made elsewhere, a regular-file or socket
-    descriptor, any other mode, or another thread's open is refused as before. The rule is part of the guard policy
-    digest (`popen_pipe_descriptors`), so changing it changes the containment identity. `Popen.communicate(input=...)`
-    still refuses (an `os.write` on an untracked descriptor); the product's `inspect_command` passes no input.
+    `os.pipe()` on the same thread while one argv-checked `Popen.__init__` is running, opened `rb` or `wb`, and
+    still the same pipe (device and inode recorded at creation, so a `dup2` of a file, socket or another FIFO onto
+    the number is refused). Each recorded descriptor is good for one open, and the window closes when that call
+    returns. A pipe made elsewhere, a regular-file or socket descriptor, any other mode, a second open, or another
+    thread's open is refused as before. The rule is part of the guard policy digest (`popen_pipe_descriptors`), so
+    changing it changes the containment identity. Residual: code running inside that window (for example another
+    argument's `__fspath__`) can still wrap a pipe it just created itself; that gives it a pipe object and no
+    access to any path. `Popen.communicate(input=...)` still refuses (an `os.write` on an untracked descriptor);
+    the product's `inspect_command` passes no input.
   * **The harness's own directory is not on the child's `sys.path`.** `python scripts/release_performance.py serve`
     puts that directory first on `sys.path`, and `importlib.metadata` lists every `sys.path` entry, which the guard
     refuses when the directory is under the real `HOME` (it belongs to neither the worktree nor the interpreter).
