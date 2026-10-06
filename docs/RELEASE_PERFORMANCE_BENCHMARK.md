@@ -265,9 +265,16 @@ the package, and the independent audit and live QA remain the control.
   client** (a private route added to the child's app), which releases the credential only to a qualified
   connected peer.
 * **Effect guard (inside the spawned backend, installed before the candidate's code is imported):**
-  * **Processes:** only the exact `lsof` and `ps` argument shapes the engine attribution uses are allowed. Any
+  * **Processes:** only the exact `lsof` and `ps` argument shapes the engine attribution uses, plus the product's
+    one identity lookup `id -F` (read-only; `service/memory/identity.py` runs it once per process), are allowed. Any
     other program, any other arguments to those programs, a shell, or an `executable=` override is refused. All
-    `exec`, `spawn` and `fork` families are refused.
+    `exec`, `spawn` and `fork` families are refused. `id` is pinned to `/usr/bin/id`: the product calls it by bare
+    name, and `subprocess` would resolve a bare name through `PATH` (`os.environ` or `env=`), so a program named
+    `id` in the writable throwaway home could run outside the guard. The guard therefore never lets a bare name
+    run: it rewrites `argv[0]` (and `executable=`, when given) to the absolute path before the real `Popen`
+    starts, whatever `PATH` says. Every argument is converted to a string once, and the guard runs exactly those
+    strings, so an object whose `__fspath__` changes between the check and the start cannot become another
+    program. The alias table is part of the policy digest.
   * **Network:** loopback to the engine port only. Every other connection is refused. Python socket
     `send`, `sendall` and `sendmsg` to that port require the task-local capability scoped to a reviewed
     `httpx.send` or `http.client.endheaders` operation; raw socket writes and datagrams are refused before bytes
@@ -286,6 +293,21 @@ the package, and the independent audit and live QA remain the control.
     only the explicit child worktree and interpreter prefixes qualify. Under the real `HOME`, reads
     are limited to the engine settings files, the authorization record, the credential-generation record and
     the worktree and interpreter the child runs from. Everything else under the real `HOME` is refused.
+  * **Pipes of an allowed inspector:** `subprocess` wraps the pipes it creates with `io.open(<fd>, "rb"|"wb")`,
+    which the descriptor rule would otherwise refuse as untracked. Exactly those descriptors are recognised: made by
+    `os.pipe()` on the same thread while one argv-checked `Popen.__init__` is running, opened `rb` or `wb`, and
+    still the same pipe (device and inode recorded at creation, so a `dup2` of a file, socket or another FIFO onto
+    the number is refused). Each recorded descriptor is good for one open, and the window closes when that call
+    returns. A pipe made elsewhere, a regular-file or socket descriptor, any other mode, a second open, or another
+    thread's open is refused as before. The rule is part of the guard policy digest (`popen_pipe_descriptors`), so
+    changing it changes the containment identity. Residual: code running inside that window (for example another
+    argument's `__fspath__`) can still wrap a pipe it just created itself; that gives it a pipe object and no
+    access to any path. `Popen.communicate(input=...)` still refuses (an `os.write` on an untracked descriptor);
+    the product's `inspect_command` passes no input.
+  * **The harness's own directory is not on the child's `sys.path`.** `python scripts/release_performance.py serve`
+    puts that directory first on `sys.path`, and `importlib.metadata` lists every `sys.path` entry, which the guard
+    refuses when the directory is under the real `HOME` (it belongs to neither the worktree nor the interpreter).
+    `serve` drops that one entry before the candidate imports anything; no read allowance was added.
   * Every refusal is recorded in the log whatever the caller does with the exception. A refusal anywhere in
     the candidate's lifetime is a BLOCK.
 * **Approval boundary:** the real approver runs. The harness answers every `confirm` with a denial through
@@ -319,7 +341,8 @@ RAM or swap threshold and grants no model load/unload or settings-change authori
 2. The Desktop lane: no managed authorization manifest at `~/.moe/omlx-runtime-authorization.json`
    (the managed lane requires it to be present).
 3. The oMLX engine listening on `127.0.0.1:8000`, and, once the backends are up, exactly the named model
-   resident and nothing else, as each candidate's own client reports it.
+   resident and nothing else, as each candidate's own client reports it. A read the client's peer attribution
+   refuses is retried (three attempts, one second apart); a set that is still unreadable is INCONCLUSIVE.
 4. Two free ports (default 18775 and 18776) and a Python interpreter (`--python`) that can import each
    worktree's backend dependencies.
 5. A new, empty output directory.
@@ -361,10 +384,15 @@ one machine and engine configuration, so the approval carries to the rerun.
 
 ## Known limits
 
-* **The live path has never been executed.** `run` against a real engine, the spawned backend's effect guard,
-  instrumentation, response tee and residency probe under a real candidate, and the real preflight were written
-  and tested only with stand-ins (scripted drivers, stub modules, a loopback server). The first live run may
-  expose a mismatch with the real backend, which is one more reason it is a qualification run.
+* **The live path has had diagnostic smokes only.** A first live attempt exposed three harness faults, all fixed
+  here: the filesystem guard refused `subprocess`'s own pipe descriptors for an allowed inspector, the harness's
+  own directory on the child's `sys.path` was listed (and refused) by `importlib.metadata`, and the guard's
+  per-call path resolution roughly doubled the cost of the product's runtime-authority load, which pushed a
+  health check past its two-second budget and made the candidate try `omlx-cli start` (correctly refused). No
+  full, non-diagnostic run has been made. Two behaviours seen only on the v1.1.5 baseline are product traits, not
+  harness faults, and are reported as they happen: its peer attribution costs about 1.7 s per engine call, so its
+  2 s startup health check sometimes times out and tries `omlx-cli start` (refused and recorded as a blocked
+  effect), and it sometimes refuses one attribution (outcome `refused`).
 * **Containment is Python-level, not an operating-system boundary.** The guard patches Python's file, process
   and network entry points. A C extension or native call that opens a file, process or socket itself is not
   covered, and reads of file metadata (`stat`) are not restricted. An OS-level sandbox around the child would be

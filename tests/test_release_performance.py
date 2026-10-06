@@ -2025,7 +2025,8 @@ def test_the_spawned_backend_entry_point_wires_root_state_guard_and_instrumentat
     monkeypatch.setitem(sys.modules, "service.inference.local_peer", fake.lp)
     monkeypatch.setitem(sys.modules, "service.main", SimpleNamespace(app=app, client=Client()))
     monkeypatch.setitem(sys.modules, "uvicorn", SimpleNamespace(run=lambda *a, **k: launched.append((a, k))))
-    monkeypatch.setattr(sys, "path", list(sys.path))
+    harness_dir = str(Path(rp.__file__).resolve().parent)
+    monkeypatch.setattr(sys, "path", [harness_dir, *sys.path, harness_dir + "/", ""])
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("WISP_HOME", raising=False)
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "hostile-codex-root"))
@@ -2037,6 +2038,8 @@ def test_the_spawned_backend_entry_point_wires_root_state_guard_and_instrumentat
     try:
         assert rp.serve_main(args) == 0
         assert sys.path[0] == str(root.resolve()) and os.getcwd() == str(root.resolve())
+        # python scripts/release_performance.py puts the harness's own directory on sys.path; the guarded child must not
+        assert all(not entry or os.path.realpath(entry) != harness_dir for entry in sys.path) and "" in sys.path
         assert os.environ["WISP_HOME"] == str(home.resolve())
         assert os.environ["CODEX_HOME"] == str(home.resolve() / "codex")
         assert (home / "codex").is_dir() and list((home / "codex").iterdir()) == []
@@ -2445,6 +2448,32 @@ def test_f01_residency_is_read_through_the_candidates_own_client_and_unknown_is_
         assert deps.residency(Backend(faulty.url)) is None
 
 
+def test_residency_retries_a_transient_refusal_a_bounded_number_of_times(monkeypatch):
+    import httpx
+    class Backend:
+        base_url = "http://127.0.0.1:1"
+    deps = rp.LiveDeps(sys.executable, {})
+    monkeypatch.setattr(rp.LiveDeps, "RESIDENCY_PAUSE_S", 0.0)
+    replies, calls = [], []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        item = replies.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(item[0], json=item[1])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    replies[:] = [(503, {"error": "ModelLoadError"}), httpx.ConnectError("x"), (200, {"loaded": ["B", "A"]})]
+    assert deps.residency(Backend()) == ["A", "B"] and len(calls) == 3
+    calls.clear()
+    replies[:] = [(200, {"loaded": []}), (503, {})]
+    assert deps.residency(Backend()) == [] and len(calls) == 1             # an answer, even an empty one, is final
+    calls.clear()
+    replies[:] = [(503, {"error": "ModelLoadError"})] * 5
+    assert deps.residency(Backend()) is None and len(calls) == rp.LiveDeps.RESIDENCY_ATTEMPTS == 3
+
+
 # ---- F02: engine operations are permitted explicitly and refused before transmission ----
 
 @pytest.mark.parametrize("method,path,allowed", [
@@ -2705,6 +2734,216 @@ def test_f03_the_filesystem_guard_is_reversible_and_the_policy_digest_has_no_per
                            mkdir_exact=[], labels=policy.labels)
     assert sha(narrower) != sha(policy)                                            # a different policy is a different identity
     assert rp.EffectGuard(lambda *a, **k: None).policy_sha256() != sha(policy)
+
+
+SH_GRAMMAR = {"/bin/sh": (r"-c echo [a-z]+",)}   # sh is the one program the QA sandbox lets a test child exec
+
+
+def test_a_guard_allowed_subprocess_with_pipes_runs_under_the_filesystem_guard(tmp_path):
+    """The live failure: subprocess wraps its own pipes with io.open(<fd>), which the descriptor rule refused."""
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    emitted = []
+    child = [sys.executable, "-c", "print(1)"]
+    guard = rp.EffectGuard(lambda kind, **f: emitted.append((kind, f)), fs=policy,
+                           exec_grammar={sys.executable: (r"-c print\(1\)",)})
+    with guard:
+        result = subprocess.run(child, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+        assert result.returncode == 0 and result.stdout == b"1\n" and result.stderr == b""
+        with subprocess.Popen(child, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+            assert proc.communicate(timeout=30)[0] == b"1\n"
+        assert subprocess.run(child, stdout=subprocess.PIPE, text=True, timeout=30).stdout == "1\n"
+        for argv in ([sys.executable, "-c", "print(2)"], [sys.executable, "-c", "print(1)", "x"], ["/bin/ls"]):
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.run(argv, stdout=subprocess.PIPE)
+    assert [f["what"] for _, f in emitted] == ["exec"] * 3                  # nothing but the refused argv shapes
+
+
+def _popen_window(monkeypatch, body):
+    """Run `body(pipes)` inside a stand-in Popen.__init__, i.e. inside the guard's allowed-call window.
+
+    Every descriptor is made with os.pipe() INSIDE the window (so the guard records it) and is never closed by the
+    code under test (closefd=False), so a refusal can only come from the rule, not from a dead descriptor."""
+    def fake_init(self, args, *a, **k):
+        self._child_created = False
+        body()
+    monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+
+
+def test_the_popen_pipe_allowance_covers_only_the_pipes_the_allowed_call_created(tmp_path, monkeypatch):
+    import threading
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    private = real_home / "Documents/private.txt"
+    emitted, opened, kept, errors = [], [], [], []
+    outside_r, outside_w = os.pipe()                      # a FIFO that predates the call
+    private_fd = os.open(private, os.O_RDONLY)
+    sock_a, sock_b = socket.socketpair()
+
+    def attempt(label, fd, mode):
+        try:
+            open(fd, mode, closefd=False).close()
+            opened.append(label)
+        except rp.EffectBlocked:
+            pass
+
+    def body():
+        def fresh():                                     # a genuinely recorded pair, kept alive
+            pair = os.pipe()
+            kept.extend(pair)
+            return pair
+        r, w = fresh(); attempt("own_rb", r, "rb"); attempt("own_wb", w, "wb")
+        r, w = fresh(); attempt("own_again", r, "rb"); attempt("own_again", r, "rb")      # second open of one fd
+        r, w = fresh(); attempt("text_mode", r, "r"); attempt("rplus", w, "rb+")         # not the rb/wb shape
+        r, w = fresh(); attempt("wrong_mode_for_use", r, "ab")
+        r, w = fresh()                                                                   # same number, regular file
+        os.dup2(private_fd, r); attempt("replaced_by_regular_file", r, "rb")
+        r, w = fresh()                                                                   # same number, another socket
+        os.dup2(sock_a.fileno(), r); attempt("replaced_by_socket", r, "rb")
+        r, w = fresh()                                                                   # same number, other FIFO
+        os.dup2(outside_r, r); attempt("replaced_by_other_fifo", r, "rb")
+        attempt("outside_pipe", outside_r, "rb"); attempt("private_file_fd", private_fd, "rb")
+        r, w = fresh(); held.extend([r, w])                                              # opened by another thread
+        worker = threading.Thread(target=lambda: [attempt("other_thread", r, "rb"), attempt("other_thread", w, "wb")])
+        worker.start(); worker.join()
+
+    held = []
+    try:
+        _popen_window(monkeypatch, body)
+        with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f)), fs=policy, exec_grammar=SH_GRAMMAR):
+            subprocess.Popen(["/bin/sh", "-c", "echo ok"])
+            assert opened == ["own_rb", "own_wb", "own_again"] and errors == []
+            # The window closed with the call: recorded, never-opened descriptors are refused afterwards.
+            before = len(emitted)
+            for fd, mode in ((held[0], "rb"), (held[1], "wb")):
+                with pytest.raises(rp.EffectBlocked):
+                    open(fd, mode, closefd=False)
+            assert len(emitted) == before + 2
+    finally:
+        for fd in {*kept, outside_r, outside_w, private_fd}:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        sock_a.close()
+        sock_b.close()
+    assert {f["what"] for _, f in emitted} == {"fs_descriptor"}
+
+
+def test_a_pipe_fd_made_before_the_call_is_not_recognised_even_with_a_matching_number(tmp_path, monkeypatch):
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    read_end, write_end = os.pipe()
+    try:
+        monkeypatch.setattr(subprocess.Popen, "__init__", lambda self, args, *a, **k: setattr(self, "_child_created", False))
+        with rp.EffectGuard(lambda *a, **k: None, fs=policy, exec_grammar=SH_GRAMMAR):
+            subprocess.Popen(["/bin/sh", "-c", "echo ok"])
+            with pytest.raises(rp.EffectBlocked):
+                open(read_end, "rb", closefd=False)
+    finally:
+        os.close(read_end)
+        os.close(write_end)
+
+
+def _recording_popen(monkeypatch):
+    seen = []
+
+    def fake_init(self, args, *a, **k):
+        self._child_created = False
+        seen.append((list(args), k.get("executable"), k.get("env"), a))
+    monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+    return seen
+
+
+def test_the_identity_lookup_runs_only_as_the_absolute_usr_bin_id_with_exactly_dash_f(tmp_path, monkeypatch):
+    seen = _recording_popen(monkeypatch)
+    emitted = []
+    with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f))):
+        subprocess.Popen(["id", "-F"], stdout=subprocess.PIPE)          # how the product calls it
+        subprocess.Popen(["/usr/bin/id", "-F"])
+        subprocess.Popen(["id", "-F"], executable="id")
+        for argv in (["id"], ["id", "-un"], ["id", "-F", "root"], ["id", "-G"], ["id", "-F", ";", "rm"],
+                     ["/usr/bin/id"], ["/usr/bin/id", "-G"], ["/bin/id", "-F"], ["./id", "-F"], ["whoami"], ["id -F"]):
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.Popen(argv)
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], shell=True)
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], executable="/bin/sh")
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], executable="/tmp/evil/id")
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]] * 3        # the bare name never reaches Popen
+    assert [e for _, e, _, _ in seen] == [None, None, "/usr/bin/id"]
+    assert [f["what"] for _, f in emitted] == ["exec"] * 14
+    assert rp.EXEC_GRAMMAR["/usr/bin/id"] == (r"-F",) and "id" not in rp.EXEC_GRAMMAR
+    assert rp.EXEC_ALIASES == {"id": "/usr/bin/id"}
+
+
+def test_a_hijacked_path_or_a_program_in_the_throwaway_home_never_decides_what_runs(tmp_path, monkeypatch):
+    """The review's exploit: an executable named `id` in the writable home plus PATH pointing at it ran unguarded."""
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    bindir = throwaway / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "OUTSIDE_MARKER"
+    fake = bindir / "id"
+    fake.write_text(f"#!/bin/sh\necho pwned > {marker}\necho Fake\n")
+    fake.chmod(0o755)
+    seen = _recording_popen(monkeypatch)
+    with rp.EffectGuard(lambda *a, **k: None, fs=policy):
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+        subprocess.Popen(["id", "-F"])
+        subprocess.Popen(["id", "-F"], env={"PATH": str(bindir)})
+        subprocess.Popen(["id", "-F"], executable="id", env={"PATH": str(bindir)})
+        for argv in ([str(fake), "-F"], ["bin/id", "-F"], [str(bindir / "lsof"), "-F"]):
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.Popen(argv, cwd=str(throwaway))
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]] * 3 and not marker.exists()
+
+
+def test_the_checked_argument_vector_is_what_runs_even_for_a_shifting_fspath(tmp_path, monkeypatch):
+    seen = _recording_popen(monkeypatch)
+
+    class Shifting:
+        def __init__(self): self.calls = 0
+        def __fspath__(self):
+            self.calls += 1
+            return "/usr/bin/id" if self.calls == 1 else "/bin/sh"
+
+    with rp.EffectGuard(lambda *a, **k: None):
+        subprocess.Popen([Shifting(), "-F"])
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]]
+
+
+def test_an_alias_is_resolved_for_a_real_child_so_a_planted_program_of_that_name_is_never_executed(tmp_path):
+    """A real exec of the mechanism (the QA sandbox allows only the interpreter): `hijackme` resolves to python."""
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    marker = tmp_path / "OUTSIDE_MARKER"
+    planted = throwaway / "hijackme"
+    planted.write_text(f"#!/bin/sh\necho pwned > {marker}\n")
+    planted.chmod(0o755)
+    guard = rp.EffectGuard(lambda *a, **k: None, fs=policy, exec_grammar={sys.executable: (r"-c print\(1\)",)},
+                           exec_aliases={"hijackme": sys.executable})
+    with guard:
+        for kwargs in ({"env": {"PATH": str(throwaway)}}, {"executable": "hijackme", "env": {"PATH": str(throwaway)}}):
+            result = subprocess.run(["hijackme", "-c", "print(1)"], stdout=subprocess.PIPE, timeout=30, **kwargs)
+            assert result.returncode == 0 and result.stdout == b"1\n"
+        with pytest.raises(rp.EffectBlocked):                                   # an alias to something outside the grammar
+            rp.EffectGuard(lambda *a, **k: None, exec_grammar={}, exec_aliases={"x": "/bin/sh"})._check_exec(
+                {"args": ["x"]})
+    assert not marker.exists()
+
+
+def test_the_popen_pipe_allowance_is_part_of_the_guard_policy_digest(tmp_path, monkeypatch):
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    sha = lambda **k: rp.EffectGuard(lambda *a, **kw: None, fs=policy, **k).policy_sha256()
+    description = rp.EffectGuard(lambda *a, **kw: None, fs=policy).policy_description()
+    assert description["fs"]["popen_pipe_descriptors"] == rp.POPEN_PIPE_RULE
+    assert rp.EffectGuard(lambda *a, **kw: None).policy_description()["fs"] is None
+    before = sha()
+    monkeypatch.setattr(rp, "POPEN_PIPE_RULE", "any descriptor")
+    assert sha() != before                                                  # widening the allowance changes the identity
+    monkeypatch.undo()
+    assert sha() == before
+    assert sha(exec_grammar={**rp.EXEC_GRAMMAR, "/bin/sh": None}) != before
+    assert sha(exec_aliases={**rp.EXEC_ALIASES, "ps": "/bin/ps"}) != before        # an alias is part of the identity
+    assert sha(exec_aliases={}) != before
 
 
 # ---- helpers for editing constructed raw evidence ----
