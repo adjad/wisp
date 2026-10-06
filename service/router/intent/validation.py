@@ -43,13 +43,10 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     # Negated effects do not authorize or exclude their channel/source nouns.
     # A pure source list such as "without email or messages" remains exclusion
     # syntax even though a singular source word can also be a delivery verb.
-    from service.router.web_request import _clauses, _action_clause_head
+    from service.router.web_request import _effect_clauses, _action_clause_head
     negative_effects = []
-    for clause in _clauses(text):
-        # The effect grammar need not split a later ordinary read head. Bound
-        # negated effects before that independently requested source clause.
-        later_read = re.search(r"\b(?:and(?:\s+then)?|plus|then|but|&)\s+(?:(?:please|can you|could you|would you)\s+)?(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|summari[sz]e)\b", clause.text, re.I)
-        negative_text = clause.text[:later_read.start()] if later_read else clause.text
+    for clause in _effect_clauses(text):
+        negative_text = clause.text
         head = _action_clause_head(negative_text)
         if head and head["negative"]:
             rest = negative_text[head.end():]
@@ -58,7 +55,7 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
             rest = re.sub(r"\b(?:and|or|my|the|any|our)\b|[,&]", " ", rest, flags=re.I)
             source_list = head["action"].lower() in {"email", "e-mail", "text", "message"} and not rest.strip()
             if not source_list:
-                negative_effects.append((clause.start, clause.start + later_read.start() if later_read else clause.end))
+                negative_effects.append((clause.start, clause.end))
     excluded, required = set(), set()
     for domain, pattern in SOURCE_WORDS.items():
         matches = list(re.finditer(pattern, text, re.I))
@@ -92,8 +89,8 @@ def _positive_effect_instruction(text: str, *, now: datetime) -> bool:
     cannot disappear into a lookup or be granted by model interpretation.
     Explicit source reads under ordinary read heads remain reads.
     """
-    from service.router.web_request import _action_clause_head, _clauses, _coordinated_read_noun, _filtered_read_noun
-    clauses = _clauses(text)
+    from service.router.web_request import _action_clause_head, _effect_clauses, _coordinated_read_noun, _filtered_read_noun
+    clauses = _effect_clauses(text)
     read_heads = {"check", "list", "open", "summarize"}
     for index, raw_clause in enumerate(clauses):
         if index and _coordinated_read_noun(text, clauses, index):
@@ -316,9 +313,11 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
             # Share the complete established action-head and coordination
             # grammar with effect extraction (including share/polite/negative
             # clauses). Ordinary commas/conjunctions within literals stay data.
-            from service.router.web_request import _EFFECT_BOUNDARY, _action_clause_head
-            for boundary in _EFFECT_BOUNDARY.finditer(_mask_literals(candidate)):
-                if _action_clause_head(candidate[boundary.end():]):
+            from service.router.web_request import _INSTRUCTION_BOUNDARY, _action_clause_head, _read_clause_head, _unquoted
+            for boundary in _INSTRUCTION_BOUNDARY.finditer(_unquoted(_mask_literals(candidate))):
+                following = candidate[boundary.end():]
+                read = _read_clause_head(following) and any(re.search(word, _mask_literals(following), re.I) for word in SOURCE_WORDS.values())
+                if _action_clause_head(following) or read:
                     stops.append(boundary.start())
             # An unquoted source exclusion is instruction syntax, not part of
             # the lookup literal. Quoted occurrences remain literal data.

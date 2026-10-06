@@ -245,7 +245,8 @@ def _boundary_pattern(action: str) -> str:
 
 
 _BOUNDARY = re.compile(_boundary_pattern(_ACTION), re.I)
-_EFFECT_BOUNDARY = re.compile(_boundary_pattern(_EFFECT_HEAD), re.I)
+_READ_HEAD = r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|look\s+up|lookup|locate|summari[sz]e)"
+_INSTRUCTION_BOUNDARY = re.compile(_boundary_pattern("(?:" + _EFFECT_HEAD + "|" + _READ_HEAD + ")"), re.I)
 _AMOUNT = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a few|several|a couple of|an?)"
 _UNIT = r"(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|hrs?|mins?)"
 _TIME = re.compile(
@@ -296,21 +297,40 @@ def _action_clause_head(text: str) -> re.Match[str] | None:
 
     Matching a head identifies a clause boundary, never tool permission.
     """
-    return re.match(r"^\s*" + _POLITE + r"(?:(?P<negative>" + _NEGATIVE
+    return re.match(r"^\s*" + _POLITE + r"(?:(?P<negative>" + _NEGATIVE + "|" + _PREFERENCE
                     + r")\s+)?(?P<action>" + _EFFECT_HEAD + "|" + _DELIVERY_PREDICATE + r")\b", _unquoted(text), re.I)
 
 
-def _clauses(text: str) -> tuple[Clause, ...]:
+def _read_clause_head(text: str) -> re.Match[str] | None:
+    """Recognize an ordinary read governor; source authority remains separate."""
+    return re.match(r"^\s*" + _POLITE + _READ_HEAD + r"\b", _unquoted(text), re.I)
+
+
+def _split_clauses(text: str, boundary: re.Pattern[str]) -> tuple[Clause, ...]:
     masked = _unquoted(text)
     result = []
     start = 0
-    for match in _BOUNDARY.finditer(masked):
+    for match in boundary.finditer(masked):
         if text[start:match.start()].strip():
             result.append(Clause(text[start:match.start()].strip(), start, match.start()))
         start = match.end()
     if text[start:].strip():
         result.append(Clause(text[start:].strip(), start, len(text)))
     return tuple(result)
+
+
+def _clauses(text: str) -> tuple[Clause, ...]:
+    return _split_clauses(text, _BOUNDARY)
+
+
+def _effect_clauses(text: str) -> tuple[Clause, ...]:
+    """Complete instruction clauses for read/action admission and negation.
+
+    Read and supplemental effect heads delimit their own governor, while public
+    provenance and query composition retain the established public vocabulary.
+    Quoted data never creates a clause boundary.
+    """
+    return _split_clauses(text, _INSTRUCTION_BOUNDARY)
 
 
 def _explicit(text: str) -> bool:

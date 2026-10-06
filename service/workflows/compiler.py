@@ -77,18 +77,27 @@ def outbound_verb(text: str) -> bool:
         masked = _instruction_text(text, now=datetime.now().astimezone())
     except InvalidIntent:
         masked = text  # Retain the original action guard for ambiguous bounds.
-    masked = _EMAIL_NOUN_USE.sub(" ", masked)
-    if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
-        masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
-    masked = _MESSAGE_NOUN_USE.sub(" ", masked)
-    if _LEADING_MESSAGE_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
-        masked = _LEADING_MESSAGE_NOUN.sub(" ", masked, count=1)
-    def mask_past_predicate(match: re.Match[str]) -> str:
-        begin, end = match.span("verb")
-        relative = begin - match.start()
-        return match.group(0)[:relative] + " " * (end - begin) + match.group(0)[relative + end - begin:]
-    masked = _HISTORICAL_MESSAGE_QUESTION.sub(mask_past_predicate, masked)
-    return bool(_OUTBOUND.search(masked))
+    from service.router.web_request import _action_clause_head, _effect_clauses
+    for clause in _effect_clauses(masked):
+        # A prohibition owns only its complete effect clause. A later positive
+        # delivery still reaches the existing durable workflow/approval guard.
+        head = _action_clause_head(clause.text)
+        if head and head["negative"]:
+            continue
+        candidate = _EMAIL_NOUN_USE.sub(" ", clause.text)
+        if _LEADING_EMAIL_NOUN.match(candidate) and not _ADDRESSEE_CUE.search(candidate):
+            candidate = _LEADING_EMAIL_NOUN.sub(" ", candidate, count=1)
+        candidate = _MESSAGE_NOUN_USE.sub(" ", candidate)
+        if _LEADING_MESSAGE_NOUN.match(candidate) and not _ADDRESSEE_CUE.search(candidate):
+            candidate = _LEADING_MESSAGE_NOUN.sub(" ", candidate, count=1)
+        def mask_past_predicate(match: re.Match[str]) -> str:
+            begin, end = match.span("verb")
+            relative = begin - match.start()
+            return match.group(0)[:relative] + " " * (end - begin) + match.group(0)[relative + end - begin:]
+        candidate = _HISTORICAL_MESSAGE_QUESTION.sub(mask_past_predicate, candidate)
+        if _OUTBOUND.search(candidate):
+            return True
+    return False
 
 
 _SUMMARY = re.compile(

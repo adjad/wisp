@@ -1202,3 +1202,80 @@ def test_source_exclusion_or_list_remains_complete_and_quoted_list_is_data():
     quoted = 'Find notes about "cedar maps without email and read messages"'
     assert source_requirements(quoted) == ({"notes"}, set())
     assert validate_intent(value(source("notes", "records", query="cedar maps without email and read messages")), quoted, now=NOW)
+
+
+NEGATIVE_EFFECT_TAILS = [
+    "do not share it with Mom", "never share it with Mom",
+    "please do not share it with Mom", "do not forward it by email to Mom",
+    "never send it to Mom", "do not email it to Mom", "without sharing it with Mom",
+    "would you mind not sharing it with Mom", "do not delete it",
+    "I would prefer not to send it to Mom", "I prefer not to forward it by email to Mom",
+    "I’d prefer not to share it with Mom",
+]
+
+LATER_EFFECT_CASES = [
+    ("and", "update my reminders"), ("plus", "please update my reminders"),
+    ("and then", "mark my reminders complete"), ("&", "clear my reminders"),
+    (";", "update my reminders"), ("and", "send it by email to Taylor"),
+]
+
+
+@pytest.mark.parametrize("tail", NEGATIVE_EFFECT_TAILS)
+def test_negative_delivery_preflight_does_not_preempt_an_independent_read(tail):
+    from service.workflows.compiler import outbound_verb, compile_new
+    prompt = "Find notes about amber route and " + tail
+    assert not outbound_verb(prompt)
+    assert compile_new(prompt) is None
+    assert validate_intent(value(source("notes", "records", query="amber route")), prompt, now=NOW)
+
+
+@pytest.mark.parametrize("joiner,tail", LATER_EFFECT_CASES)
+@pytest.mark.parametrize("negative", ["do not delete it", "please never share it with Mom"])
+def test_each_effect_clause_owns_its_negation_and_preserves_later_source_authority(joiner, tail, negative):
+    from service.router.intent.validation import applicable_read, source_requirements
+    from service.workflows.compiler import outbound_verb
+    prompt = "Find notes about amber route and " + negative + " " + joiner + " " + tail
+    required, excluded = source_requirements(prompt)
+    assert "notes" in required and not excluded
+    if "reminders" in tail:
+        assert "reminders" in required
+    assert not applicable_read(prompt)
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("notes", "records", query="amber route")), prompt, now=NOW)
+    if tail.startswith("send"):
+        assert outbound_verb(prompt)
+
+
+@pytest.mark.parametrize("joiner,tail", LATER_EFFECT_CASES)
+def test_quoted_negative_and_positive_effect_sequence_remains_one_exact_literal(joiner, tail):
+    from service.workflows.compiler import outbound_verb, compile_new
+    query = "amber route and do not delete it " + joiner + " " + tail
+    prompt = 'Find notes about "' + query + '"'
+    assert not outbound_verb(prompt) and compile_new(prompt) is None
+    assert validate_intent(value(source("notes", "records", query=query)), prompt, now=NOW)
+
+
+READ_AFTER_NEGATIVE_JOINERS = ["and", "and then", "plus", "and afterwards", "afterwards", "&"]
+
+
+@pytest.mark.parametrize("joiner", READ_AFTER_NEGATIVE_JOINERS)
+def test_negative_effect_span_ends_before_every_coordinated_read(joiner):
+    from service.router.intent.validation import source_requirements
+    from service.workflows.compiler import outbound_verb
+    prompt = "Find notes about amber route and do not share it with Mom " + joiner + " read my reminders"
+    assert source_requirements(prompt) == ({"notes", "reminders"}, set())
+    assert not outbound_verb(prompt)
+    good = value(source("notes", "records", query="amber route"), source("reminders", "records"))
+    assert validate_intent(good, prompt, now=NOW)
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("notes", "records", query="amber route")), prompt, now=NOW)
+
+
+@pytest.mark.parametrize("joiner", READ_AFTER_NEGATIVE_JOINERS)
+def test_preference_governor_does_not_hide_a_later_positive_effect(joiner):
+    from service.router.intent.validation import applicable_read
+    from service.workflows.compiler import outbound_verb
+    prompt = "Find notes about amber route and I would prefer not to share it with Mom " + joiner + " send it by email to Taylor"
+    assert outbound_verb(prompt) and not applicable_read(prompt)
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("notes", "records", query="amber route")), prompt, now=NOW)
