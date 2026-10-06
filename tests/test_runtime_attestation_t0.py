@@ -3138,8 +3138,77 @@ def test_closing_a_transport_shuts_the_pool_down(host, monkeypatch):
         await asyncio.to_thread(lambda: current(bare()))
         assert pool_threads()
         await transport.aclose()
+        # Eventual, not immediate: closing detaches the pool without waiting for (or
+        # suspending on) its threads, so a deadline or cancellation can never cut a
+        # close short. The idle workers exit on their own.
+        deadline = time.monotonic() + 5
+        while pool_threads() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
         assert not pool_threads()
     asyncio.run(scenario())
+
+
+def _first_step(coroutine):
+    """Run a coroutine to its first suspension; return True if it finished without one."""
+    try:
+        coroutine.send(None)
+    except StopIteration:
+        return True
+    coroutine.close()
+    return False
+
+
+def test_closing_a_transport_adds_no_suspension_point_for_the_pool(monkeypatch):
+    """The CI flake: a thread-hop in aclose could be cut by a deadline/cancel before the
+    caller's bookkeeping ran. Everything after the (stubbed) HTTP pool close is synchronous."""
+    assert not inspect.iscoroutinefunction(at._close_inspection_pool)
+    transport = at.CredentialTransport('http://127.0.0.1:8000', 'k', managed=False)
+    monkeypatch.setattr(transport.pool, 'aclose', mock.AsyncMock())
+    spy = mock.Mock()
+    monkeypatch.setattr(at._POOL, 'shutdown', spy)
+    assert _first_step(transport.aclose()), 'aclose suspended for the pool shutdown'
+    spy.assert_called_once_with(wait=False)
+
+
+def test_a_cancelled_close_still_releases_the_pool_and_never_waits_for_it(monkeypatch):
+    transport = at.CredentialTransport('http://127.0.0.1:8000', 'k', managed=False)
+    spy = mock.Mock()
+    monkeypatch.setattr(at._POOL, 'shutdown', spy)
+
+    async def scenario():
+        started = asyncio.Event()
+
+        async def slow_close():
+            started.set()
+            await asyncio.sleep(30)
+        monkeypatch.setattr(transport.pool, 'aclose', slow_close)
+        task = asyncio.ensure_future(transport.aclose())
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(scenario())
+    spy.assert_called_once_with(wait=False)
+
+
+def test_closing_one_transport_does_not_wait_for_or_break_another_transports_inspection(host, monkeypatch):
+    gate = threading.Event()
+    Probe(host, monkeypatch, hooks={'ps-server': lambda: gate.wait(10)})
+    result = []
+    runner = threading.Thread(target=lambda: result.append(outcome(lambda: current(bare()))))
+    runner.start()
+    time.sleep(0.1)                                           # an inspection is in flight on the shared pool
+
+    async def scenario():
+        transport = at.CredentialTransport('http://127.0.0.1:8000', 'k', managed=False)
+        started = time.monotonic()
+        await transport.aclose()
+        return time.monotonic() - started
+    elapsed = asyncio.run(scenario())
+    assert elapsed < 2, elapsed                               # did not wait for the gated inspection
+    gate.set()
+    runner.join(15)
+    assert not runner.is_alive() and result[0][0] == 'ok'
 
 
 def test_work_in_flight_during_a_shutdown_still_completes(host, monkeypatch):
