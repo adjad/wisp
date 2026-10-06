@@ -953,7 +953,8 @@ LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENGINE_ALLOWED_OPS = (("GET", r"/health"), ("GET", r"/v1/models"), ("GET", r"/v1/models/status"),
                       ("POST", r"/v1/chat/completions"), ("POST", r"/v1/embeddings"), ("POST", r"/v1/rerank"))
 
-# The exact argument shapes of the read-only inspectors the engine attribution runs at the base commit. A
+# The exact argument shapes of the read-only inspectors the engine attribution runs at the base commit (and the one
+# identity lookup the product makes; see below). A
 # program name alone is not a capability: lsof and ps can each do more than inspect.
 EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
     "/usr/sbin/lsof": (r"-nP -a -iTCP:[0-9]{1,5} -sTCP:LISTEN -Fpufn",
@@ -961,6 +962,9 @@ EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
                        r"-nP -a -iTCP -sTCP:LISTEN -Fpufn",
                        r"-nP -a -iTCP:[0-9]{1,5} -sTCP:ESTABLISHED -FpufPtTn -Ts"),
     "/bin/ps": (r"-ww -p [1-9][0-9]* -o ppid=,uid=,comm=",),
+    # Not attestation: the product's identity layer (service/memory/identity.py, both v1.1.5 and the candidate) runs
+    # `id -F` once per process, by bare name, to read the macOS full name for its prompts. Read-only, no other flag.
+    "id": (r"-F",),
 }
 ALLOWED_EXEC = frozenset(EXEC_GRAMMAR)
 

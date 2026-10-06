@@ -2841,6 +2841,30 @@ def test_a_pipe_fd_made_before_the_call_is_not_recognised_even_with_a_matching_n
         os.close(write_end)
 
 
+def test_the_identity_lookup_is_allowed_with_exactly_one_argument_shape(monkeypatch):
+    popen = []
+    def fake_init(self, args, *a, **k):
+        self._child_created = False
+        popen.append(list(args))
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+    emitted = []
+    with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f))):
+        subprocess.Popen(["id", "-F"], stdout=subprocess.PIPE)
+        for argv in (["id"], ["id", "-un"], ["id", "-F", "root"], ["id", "-G"], ["id", "-F", ";", "rm"],
+                     ["/usr/bin/id", "-F"], ["whoami"], ["id -F"]):
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.Popen(argv)
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], shell=True)
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], executable="/bin/sh")
+    assert popen == [["id", "-F"]] and [f["what"] for _, f in emitted] == ["exec"] * 10
+    assert rp.EXEC_GRAMMAR["id"] == (r"-F",) and "id" in rp.ALLOWED_EXEC
+    assert rp.EffectGuard(lambda *a, **k: None).policy_sha256() != rp.EffectGuard(
+        lambda *a, **k: None, exec_grammar={k: v for k, v in rp.EXEC_GRAMMAR.items() if k != "id"}).policy_sha256()
+
+
 def test_the_popen_pipe_allowance_is_part_of_the_guard_policy_digest(tmp_path, monkeypatch):
     real_home, code, throwaway, policy = fs_world(tmp_path)
     sha = lambda **k: rp.EffectGuard(lambda *a, **kw: None, fs=policy, **k).policy_sha256()
