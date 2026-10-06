@@ -18,8 +18,9 @@ _CIRCUITS: dict[tuple, float] = {}
 # Every engine call pays a full attestation, so a turn must not repeat a
 # readiness read whose answer it already holds. A read is reused only while
 # ALL of these hold (see _Residency); anything else runs the full check:
-#   - engine_epoch is unchanged: no load, unload, generation, embedding,
-#     rerank or connection reset by anyone in this process since it was read;
+#   - engine_epoch is unchanged and nothing is in flight: no load, unload,
+#     generation, embedding, rerank or connection reset by anyone in this
+#     process has started, finished or is running since it was read;
 #   - it is at most RESIDENCY_LEASE_SECONDS old, counted from the last read or
 #     the last successful generation on that model;
 #   - the last status read itself is at most RESIDENCY_MAX_UNVERIFIED_SECONDS
@@ -90,7 +91,7 @@ class TurnInferenceClient:
         reader = getattr(client, "loaded_models", None)
         if reader is None or not getattr(client, "managed", True):
             return False
-        before = engine_epoch.current()
+        before = engine_epoch.mark()
         try:
             async with asyncio.timeout(ENGINE_PROBE_SECONDS):
                 loaded = await reader()
@@ -112,7 +113,7 @@ class TurnInferenceClient:
             return None
 
     def _fresh(self, proof: _Residency | None) -> bool:
-        if proof is None or proof.epoch != engine_epoch.current():
+        if proof is None or proof.epoch != engine_epoch.current() or not engine_epoch.quiet():
             return False
         now = _now()
         return (now - proof.renewed_at <= RESIDENCY_LEASE_SECONDS
@@ -155,7 +156,7 @@ class TurnInferenceClient:
                 # The engine probe's own read may already answer the question.
                 if not self._covers(model, exclusive):
                     self._residency = None
-                    before = engine_epoch.current()
+                    before = engine_epoch.mark()
                     await self._client.ensure_only(model, **kwargs)
                     self._remember(model, exclusive, before)
         else:
@@ -171,19 +172,21 @@ class TurnInferenceClient:
         close or a cancellation therefore leaves the next step to re-check.
         """
         proof, self._residency = self._residency, None
-        return (proof if self._fresh(proof) else None), engine_epoch.current()
+        return (proof if self._fresh(proof) else None), engine_epoch.mark()
 
     def _generation_finished(self, proof: _Residency | None, before: int,
                              model: str, active) -> None:
         """A completed generation on the proven model renews its proof.
 
-        The client counts exactly one epoch tick per generation, so the renewed
-        record expects before + 1; any other tick (a foreign load, embedding or
-        tool generation, even a concurrent one) leaves it stale and unused.
+        The client counts exactly two epoch ticks per generation (start and
+        end), so the renewed record expects before + 2; any other tick (a
+        foreign load, embedding or tool generation, even a concurrent one)
+        leaves it stale and unused.
         """
-        if proof is None or active is not self._client or model not in proof.loaded:
+        if (proof is None or before < 0 or active is not self._client
+                or model not in proof.loaded):
             return
-        self._residency = _Residency(proof.loaded, before + 1, proof.verified_at, _now())
+        self._residency = _Residency(proof.loaded, before + 2, proof.verified_at, _now())
 
     async def _ensure_generation(self, model: str, *, tools=None) -> None:
         if self._fallback_client is not None or self._prepared_model == model:

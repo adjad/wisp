@@ -83,10 +83,15 @@ _MAX_CONCURRENT_BATCHES = 4
 async def _embed(texts: list[str], *, timeout: float, target: Target | None = None) -> list[list[float]]:
     if not texts:
         return []
+    # The engine loads the embedder on demand; a readiness proof is stale while
+    # this runs and after it.
+    with engine_epoch.operation():
+        return await _embed_batches(texts, timeout=timeout, target=target)
+
+
+async def _embed_batches(texts: list[str], *, timeout: float, target: Target | None) -> list[list[float]]:
     target = target or embedding_target()
     url = target.endpoint.base_url + "/v1/embeddings"
-    # The engine loads the embedder on demand; a readiness proof is stale after.
-    engine_epoch.bump()
     try:
         key = target.endpoint.api_key()
     except EndpointConfigurationError as exc:

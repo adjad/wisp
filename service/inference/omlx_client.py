@@ -187,8 +187,8 @@ class OMLXClient:
 
     def invalidate_connections(self):
         # Residency is unknown after a connection reset (engine restart path).
-        engine_epoch.bump()
-        self._credential_transport.invalidate()
+        with engine_epoch.operation():
+            self._credential_transport.invalidate()
 
     def _check_response(self, response):
         if not self.managed and not response.is_success:
@@ -489,15 +489,15 @@ class OMLXClient:
     async def unload(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be unloaded")
-        engine_epoch.bump()
-        r = await self._client.post(f"/v1/models/{model}/unload")
+        with engine_epoch.operation():
+            r = await self._client.post(f"/v1/models/{model}/unload")
         r.raise_for_status()
 
     async def load(self, model: str) -> None:
         if not self.managed:
             raise EndpointConfigurationError("Only managed local models can be loaded")
-        engine_epoch.bump()
-        r = await self._client.post(f"/v1/models/{model}/load")
+        with engine_epoch.operation():
+            r = await self._client.post(f"/v1/models/{model}/load")
         r.raise_for_status()
 
     async def ensure_only(self, model: str, *, settle_timeout: float = 60.0,
@@ -646,7 +646,7 @@ class OMLXClient:
                                 temperature, max_tokens, stream=False, **extra)
         # A generation can make the engine load its model, so it counts as
         # engine activity for every readiness proof (see engine_epoch).
-        engine_epoch.bump()
+        engine_epoch.begin()
         idle.begin(self.activity_key(model))
         try:
             if self.managed:
@@ -680,6 +680,7 @@ class OMLXClient:
             return data
         finally:
             idle.end(self.activity_key(model))
+            engine_epoch.end()
 
     async def stream(self, model: str, messages: list[dict[str, Any]], **kwargs) -> AsyncIterator[str]:
         events = self.stream_events(model, messages, **kwargs)
@@ -728,7 +729,7 @@ class OMLXClient:
         output_size = 0
         metadata_size = 0
         output_limit, wire_limit = self._remote_limits(max_tokens)
-        engine_epoch.bump()
+        engine_epoch.begin()
         idle.begin(self.activity_key(model))
         try:
             headers = None if self.managed else {"Accept-Encoding": "identity"}
@@ -793,6 +794,7 @@ class OMLXClient:
                             slot["arguments"] += fn["arguments"]
         finally:
             idle.end(self.activity_key(model))
+            engine_epoch.end()
         if finish_reason not in {"stop", "length", "tool_calls"}:
             raise IncompleteStreamError("Inference stream ended before completion; no actions were executed from it")
         if not calls and finish_reason not in {"stop", "length"}:

@@ -693,10 +693,16 @@ def test_a_generation_that_fails_before_the_engine_drops_the_proof(engine, monke
     assert engine.fake.sequence() == ["status", "status"]
 
 
+def _foreign_operation():
+    """Someone else's complete engine operation (start and end)."""
+    with engine_epoch.operation():
+        pass
+
+
 def test_foreign_activity_during_a_generation_is_not_absorbed(engine, monkeypatch):
     tools = register_tools(monkeypatch, names=("fake_a",))
     engine.fake.script = [["fake_a"], None]
-    engine.fake.hooks["chat"] = lambda: (engine_epoch.bump(), engine.fake.hooks.pop("chat"))
+    engine.fake.hooks["chat"] = lambda: (_foreign_operation(), engine.fake.hooks.pop("chat"))
     loop_turn(engine, tools)
     show("foreign tick during chat", engine)
     assert engine.fake.sequence() == ["status", "chat", "status", "chat"]
@@ -717,7 +723,7 @@ def test_an_abandoned_stream_does_not_renew_the_proof(engine):
 
 
 def test_activity_during_the_engine_probe_is_not_trusted(engine):
-    engine.fake.hooks["status"] = lambda: (engine_epoch.bump(), engine.fake.hooks.pop("status"))
+    engine.fake.hooks["status"] = lambda: (_foreign_operation(), engine.fake.hooks.pop("status"))
 
     async def go():
         turn = TurnInferenceClient(engine.client, main.ensure_omlx)
@@ -824,7 +830,7 @@ def test_a_check_with_other_keep_warm_models_never_claims_the_model_is_alone(eng
 
 # ------------------------------------------------------- epoch contract
 
-def test_every_generating_or_mutating_client_call_bumps_the_epoch_once(engine):
+def test_every_generating_or_mutating_client_call_advances_the_epoch_by_a_start_and_an_end(engine):
     async def go():
         marks = {}
         c = engine.client
@@ -852,7 +858,59 @@ def test_every_generating_or_mutating_client_call_bumps_the_epoch_once(engine):
         marks["reads"] = engine_epoch.current() - e
         return marks
     marks = asyncio.run(go())
-    assert marks == {"chat": 1, "stream": 1, "load": 1, "unload": 1, "invalidate": 1, "reads": 0}
+    assert marks == {"chat": 2, "stream": 2, "load": 2, "unload": 2, "invalidate": 2, "reads": 0}
+    assert engine_epoch.quiet()
+
+
+def test_an_operation_running_during_the_probe_is_not_trusted_even_after_it_ends(engine):
+    """A change the engine applies after the status read must never be missed."""
+    engine_epoch.begin()                    # started before the probe, still running
+    try:
+        async def go():
+            turn = TurnInferenceClient(engine.client, main.ensure_omlx)
+            await turn.ensure_engine()
+            assert turn._residency.epoch == -1      # stamped as never reusable
+            engine_epoch.end()                      # it finishes after the read
+            await turn.ensure_only(MODEL, exclusive=True)
+        asyncio.run(go())
+    finally:
+        if not engine_epoch.quiet():
+            engine_epoch.end()
+    assert engine.fake.sequence() == ["status", "status"]     # the probe's read was not reused
+
+
+def test_an_operation_that_is_still_running_blocks_reuse_of_a_fresh_proof(engine):
+    async def go():
+        turn = TurnInferenceClient(engine.client, main.ensure_omlx)
+        await turn.ensure_only(MODEL, exclusive=True)
+        engine_epoch.begin()
+        try:
+            await turn.ensure_only(MODEL, exclusive=True)
+        finally:
+            engine_epoch.end()
+    asyncio.run(go())
+    assert engine.fake.sequence() == ["status", "status"]
+
+
+def test_failed_cancelled_and_abandoned_calls_leave_nothing_in_flight(engine, monkeypatch):
+    async def go():
+        c = engine.client
+        engine.fake.script = [["fake_a"]]
+        events = c.stream_events(MODEL, [{"role": "user", "content": "x"}])
+        async for _ in events:
+            break                                   # abandoned mid-stream
+        await events.aclose()
+        assert engine_epoch.quiet()
+        task = asyncio.create_task(c.chat(MODEL, [{"role": "user", "content": "x"}]))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert engine_epoch.quiet()
+        with pytest.raises(RuntimeError):
+            with engine_epoch.operation():
+                raise RuntimeError("boom")
+        assert engine_epoch.quiet()
+    asyncio.run(go())
 
 
 def test_a_read_only_poller_does_not_invalidate_the_proof(engine, monkeypatch):

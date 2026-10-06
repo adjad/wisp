@@ -157,7 +157,11 @@ def lexical_candidates(text: str, *, writing: bool, k: int = 20,
 
 async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
     """Best-effort enforcement of the two-model ceiling before reranking."""
-    engine_epoch.bump()
+    with engine_epoch.operation():
+        await _evict_embedder_locked(client, headers)
+
+
+async def _evict_embedder_locked(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
     try:
         status = await client.get("/v1/models/status", headers=headers)
         if status.status_code != 200:
@@ -183,14 +187,14 @@ async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) ->
 async def _rank_one(client: httpx.AsyncClient, headers: dict[str, str], query: str,
                     names: list[str], *, top_n: int, model: str | None = None) -> list[tuple[str, float]]:
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
-    engine_epoch.bump()      # the engine loads the reranker on demand
     try:
-        response = await client.post(
-            "/v1/rerank", headers=headers,
-            json={"model": model or reranker_model(), "query": _QUERY_INSTRUCT + query,
-                  "documents": docs, "top_n": min(top_n, len(docs)),
-                  "return_documents": False},
-        )
+        with engine_epoch.operation():      # the engine loads the reranker on demand
+            response = await client.post(
+                "/v1/rerank", headers=headers,
+                json={"model": model or reranker_model(), "query": _QUERY_INSTRUCT + query,
+                      "documents": docs, "top_n": min(top_n, len(docs)),
+                      "return_documents": False},
+            )
     except httpx.HTTPError as exc:
         raise RerankUnavailable(str(exc)) from exc
     if response.status_code != 200:
