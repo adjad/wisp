@@ -147,6 +147,7 @@ PROFILE_TESTS = {
         "tests/test_error_translation.py",
         "tests/test_latency_prompt_contract.py",
         "tests/test_lazy_inference_readiness.py",
+        "tests/test_turn_engine_calls.py",
         "tests/test_mini_http.py",
         "tests/test_mini_store.py",
         "tests/test_mini_contract.py",
