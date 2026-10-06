@@ -1,0 +1,50 @@
+[
+  {
+    "original": "/private/tmp/wisp-router-r78-initial.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-initial.log",
+    "sha256": "7879bc5b522c959d439a01424b1259134b0947d8f02bc6917b64ffeaf758cca2",
+    "bytes": 38846,
+    "summary": "27 failed, 27 passed, 474 deselected in 1.48s",
+    "disposition": "27 failures:26 reproduced production-class regressions and1 overly narrow expectation for a legitimate reminder clarification;27 controls passed."
+  },
+  {
+    "original": "/private/tmp/wisp-router-r78-focused.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused.log",
+    "sha256": "a404dd858c1a08b4697b0dab33c0843e6646c77417c2214926fc881f5b095468",
+    "bytes": 6208,
+    "summary": "2 failed, 611 passed, 1504 subtests passed in 10.09s",
+    "disposition": "2 overly narrow expectations for legitimate operation-specific mark/clear clarifications;611 tests+1504subtests passed."
+  },
+  {
+    "original": "/private/tmp/wisp-router-r78-focused-2.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-2.log",
+    "sha256": "56e364995be09558ed81393a7ae9c6b4a32566f9076605244809b04a1e8494fb",
+    "bytes": 770,
+    "summary": "613 passed, 1504 subtests passed in 9.77s",
+    "disposition": "613 tests+1504subtests passed before additional static hypotheses were tested."
+  },
+  {
+    "original": "/private/tmp/wisp-router-r78-static-initial.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-static-initial.log",
+    "sha256": "51489d2ba29f00e92df4f3be073ac406b1ad4ed8f8d78cd2dda93394ec170a40",
+    "bytes": 46562,
+    "summary": "18 failed, 32 passed, 510 deselected in 1.46s",
+    "disposition": "18 failures:15 genuine preference/ordinary-read authority failures and3 incorrect default reminder-argument expectations;32 controls passed."
+  },
+  {
+    "original": "/private/tmp/wisp-router-r78-focused-3.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-3.log",
+    "sha256": "9da420995ad9b002304b61af64ed4603a000030ed58e8530b353f3cecde322da",
+    "bytes": 16157,
+    "summary": "2 failed, 643 passed, 1504 subtests passed in 9.53s",
+    "disposition": "2 curly-apostrophe preference boundary failures;643 tests+1504subtests passed."
+  },
+  {
+    "original": "/private/tmp/wisp-router-r78-focused-4.log",
+    "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-4.log",
+    "sha256": "1360a7faa9ef3e6442e5fccd96e7788068f7f820f26645be04e11d0fd962eb7e",
+    "bytes": 771,
+    "summary": "645 passed, 1504 subtests passed in 54.91s",
+    "disposition": "645 tests+1504subtests passed after all scoped repairs."
+  }
+]

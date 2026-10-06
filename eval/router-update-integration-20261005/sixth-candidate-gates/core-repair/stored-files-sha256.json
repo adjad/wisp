@@ -1,0 +1,62 @@
+{
+  "HANDOFF.json": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/HANDOFF.json",
+    "original_sha256": "4509458cd756fd9d9116c58e5260cea5d7c2592be1911f97e25914da32bfdac4",
+    "stored_sha256": "4509458cd756fd9d9116c58e5260cea5d7c2592be1911f97e25914da32bfdac4"
+  },
+  "mechanical.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/mechanical.log",
+    "original_sha256": "6b05c4757ac35a9b01aa3a5254106e3e704c3a84f941dbba7371578b234d0837",
+    "stored_sha256": "fec2487ce81d7cf35e07704dc43d8a8954fb3433d553a04840adf837d15d78e1"
+  },
+  "mechanical-receipt.json": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/mechanical-receipt.json",
+    "original_sha256": "f7570f6ccd6a36190c9d30a174ac0964c2ab7f66d77d7507ab776f780b583f43",
+    "stored_sha256": "f7570f6ccd6a36190c9d30a174ac0964c2ab7f66d77d7507ab776f780b583f43"
+  },
+  "development-history.json": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history.json",
+    "original_sha256": "5fa055fabf6c138c105b8055997d397f5442fe4f9988695c773a4af672ea36e2",
+    "stored_sha256": "5fa055fabf6c138c105b8055997d397f5442fe4f9988695c773a4af672ea36e2"
+  },
+  "wisp-router-r78-approval-timeout.json": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-timeout.json",
+    "original_sha256": "ea520958c83076ffd2dcb505532982468e4fe4154d3316f344dffd8bdb8df82a",
+    "stored_sha256": "ea520958c83076ffd2dcb505532982468e4fe4154d3316f344dffd8bdb8df82a"
+  },
+  "wisp-router-r78-approval-recovery.json": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-recovery.json",
+    "original_sha256": "056508efcbd677847ea4a8f441c336ef2d259a378e60fd1f827d57f6b3151431",
+    "stored_sha256": "056508efcbd677847ea4a8f441c336ef2d259a378e60fd1f827d57f6b3151431"
+  },
+  "development-history/wisp-router-r78-focused-2.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-2.log",
+    "original_sha256": "56e364995be09558ed81393a7ae9c6b4a32566f9076605244809b04a1e8494fb",
+    "stored_sha256": "543dcdfffc209d542de50c5accf29ea17bf8dbbe6eb315d0e3acee637d5557e9"
+  },
+  "development-history/wisp-router-r78-focused-3.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-3.log",
+    "original_sha256": "9da420995ad9b002304b61af64ed4603a000030ed58e8530b353f3cecde322da",
+    "stored_sha256": "8d0af6c18ded592e09c583853ef70f0362fc631e9a7426a6dac4356106c23f58"
+  },
+  "development-history/wisp-router-r78-focused-4.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-4.log",
+    "original_sha256": "1360a7faa9ef3e6442e5fccd96e7788068f7f820f26645be04e11d0fd962eb7e",
+    "stored_sha256": "bffd090ff894440a657b1788855a6f46fcf8d07a4e2499fb70ad38a0769a6ef3"
+  },
+  "development-history/wisp-router-r78-focused.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused.log",
+    "original_sha256": "a404dd858c1a08b4697b0dab33c0843e6646c77417c2214926fc881f5b095468",
+    "stored_sha256": "f003b0e0d672cb1e52e13056f330cd2565f028bd5919e1df120d55a12c0d13ca"
+  },
+  "development-history/wisp-router-r78-initial.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-initial.log",
+    "original_sha256": "7879bc5b522c959d439a01424b1259134b0947d8f02bc6917b64ffeaf758cca2",
+    "stored_sha256": "f755ed2d996374f0850042623e6e698b534c570882755f6940739da1e666b31d"
+  },
+  "development-history/wisp-router-r78-static-initial.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-static-initial.log",
+    "original_sha256": "51489d2ba29f00e92df4f3be073ac406b1ad4ed8f8d78cd2dda93394ec170a40",
+    "stored_sha256": "79072519fbcbf5e0bb8064cf71e948c1ab328b869bf6a7459b17d0912d11e9de"
+  }
+}

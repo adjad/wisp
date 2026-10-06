@@ -1,0 +1,57 @@
+{
+  "recorded_at": "2026-10-05T23:57:31.465757+00:00",
+  "helper": "/root/router_eval",
+  "model": "gpt-6.1-sol",
+  "reasoning": "high",
+  "review_kind": "Advisory static WIP review, not release approval",
+  "execution": false,
+  "writes": false,
+  "observed_head_before": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+  "observed_head_after": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+  "observed_at_before": "2026-10-05T23:54:28Z",
+  "observed_at_after": "2026-10-05T23:55:31Z",
+  "dirty_state": "Same five authorized repair files modified before and after; service/main.py unchanged",
+  "mutation_observed": false,
+  "files": {
+    "service/workflows/compiler.py": {
+      "sha256_before_and_after": "47cd64f9b103c81314215f86daa11773c04ae9f4f6a042376930aef4b2f58cec",
+      "mtime_epoch_before_and_after": 1791244374,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    },
+    "service/router/intent/validation.py": {
+      "sha256_before_and_after": "92ca6a8204d9a953128e7c9f2709b9209a4f8d4487d0240a4262d49af7dad102",
+      "mtime_epoch_before_and_after": 1791244374,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    },
+    "service/router/web_request.py": {
+      "sha256_before_and_after": "bd5056144ae76c9a59a022679dbd63608f2fb43e769c7c8795f0f4f14d8b3e64",
+      "mtime_epoch_before_and_after": 1791244374,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    },
+    "tests/test_router_intent_core.py": {
+      "sha256_before_and_after": "5c38e3755c8e8880ca9d13c3d05c40e9f5d06762874cec2f236fc68170cf6c56",
+      "mtime_epoch_before_and_after": 1791244327,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    },
+    "tests/test_router_intent_main.py": {
+      "sha256_before_and_after": "a9bb4e14b2a98c484a6edd822cea16c2e0283502676697036a0c9bf381225388",
+      "mtime_epoch_before_and_after": 1791244420,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    },
+    "service/main.py": {
+      "sha256_before_and_after": "23181b3bd36c4758756d2e403017f4faa52e7a60ae3168032b20069a990f4cd5",
+      "mtime_epoch_before_and_after": 1791226744,
+      "size_report": "Helper says unchanged, numeric size not included in final report"
+    }
+  },
+  "hypotheses": [
+    "Existing negative-preference grammar is a boundary but not recognized as negative action head, so it may trigger a send workflow or enter query data.",
+    "A later ordinary read after and afterwards may remain within the preceding negative span and lose source authority."
+  ],
+  "positive_observations": [
+    "Endpoint assertions require exact calls, exact answer and no stored workflow; non-vacuous.",
+    "Later effect controls require no planner/read calls and bounded existing clarification.",
+    "Main workflow preflight still precedes typed read admission."
+  ],
+  "reconciliation": "Forwarded to sole core owner before freeze; synthetic confirmation and any class repair pending. No heldout, provider or runtime access."
+}

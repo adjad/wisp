@@ -1,0 +1,353 @@
+{
+  "branch": "codex/router-update-1-3",
+  "prURL": "https://github.com/adjad/wisp/pull/160",
+  "verifiedCheckout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "sourceParentDispatcher": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+  "requiredModel": "gpt-6.1-sol",
+  "requiredReasoningEffort": "high",
+  "holdout": "Opaque seal/provenance metadata only, no heldout/archived payload opening, comparison or tuning; no raw case feed to builder.",
+  "resourceDependency": "router-1.3-resident-ling-window remains PENDING_EXTERNAL_ACK",
+  "providerCIDiagnosisReservation": {
+    "recordedAtUTC": "2026-10-05T22:38:59.185026+00:00",
+    "status": "ROUTED_TO_RETAINED_CLAUDE_OWNER_ACK_PENDING_DELIVERY_UNCONFIRMED",
+    "candidateSHA": "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "existingOwner": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+    "ownerTitle": "Daily summary reminders sync bug",
+    "ownerEvidence": "buildOwnershipTransfer20261003 ownershipTransferComplete=true; ClaudeAcceptance.outcomes_and_file_reservations.outcomes0 reservedtests/test_local_provider_tools.py; claudePR130BackendActivation20261003 completionCustody sayssameClaudeownerretained/allfurthereditsheld.",
+    "requestedCodexDiagnosticActor": "/root/router_eval",
+    "codexActorDiagnosticExecutionAllowed": false,
+    "activeWritePaths": [],
+    "editingAllowedNow": false,
+    "boundedTestExecutionAllowed": false,
+    "readOnlyDiagnosisRequestToExistingOwner": "Confirm existingresponsibleprovideractor; inspect unchangedbaseprovenance and existing cancellation/test/qualificationfixture lifecycle; onlybounded existingfakeengine synthetic controls inisolatedstate, nofullgateduplicate; preserve failures and returncause/exactscope beforeedits. Delivery/acceptance unconfirmed; no Codexdiagnosticexecution released.",
+    "unchangedBaseToCandidateObjects": {
+      "tests/test_local_provider_tools.py": "e2b6030d5dbf4bf98e1d8e3f01c052df3e946236",
+      "service/inference/qualify.py": "108a4dd795a83daf78ad215d32919bf72ba36fb3",
+      "service/inference/attributed_transport.py": "2e0dadee60713272b1b6b5b89227030870beb8f6"
+    },
+    "baseSHA": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "delivery": {
+      "recordedAtUTC": "2026-10-05T22:38:59.185026+00:00",
+      "session": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+      "title": "Daily summary reminders sync bug",
+      "status": "DELIVERY_UNCONFIRMED_DO_NOT_RESEND",
+      "messageDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_CLAUDE_PROVIDER_AND_LING_RELAY_2026-10-05.md",
+      "messageDocumentSHA256": "56824fe8fb7da38e8489704b19418db492491a58b13a1316f9e6328bb296cf73",
+      "messageTextSHA256": "faf6be5bf74d5426333dad63719aeb35c48de450ad46e14400841dfd2d73004c",
+      "priorDeliveryChecked": "Previousresourceattempt notsent; currentcomposer initiallyempty, nohuman draft overwritten.",
+      "attempt": "setValue didnot visiblyupdate; click/paste put exactrelay intoAXcomposer, Sendenabled. SingleSendclick made no message92/acceptance visible. AXretaineddraft while screenshotshowedemptycomposer, then coordinate retryfailed noWindowsAvailable.",
+      "visibleResponseCursorBeforeAttempt": "message91",
+      "lastUIError": "Computer Use server error-10005:noWindowsAvailable",
+      "receiptOrACK": null,
+      "noDuplicateRetry": "Do not resend blindly. Inspect sessionhistory/queue/draft when app available; if sameownedrelay remainsunsent reconcile beforeany retry. Preserve human drafts.",
+      "boundaries": "No runtime tests/probes/inference performed; no source/test edit permission, ownershiptransfer or resourcewindow inferred."
+    },
+    "boundaries": [
+      "No duplicate providerowner orownershiptransfer fromquiescence/mergedhistory.",
+      "No source/test/assertion/deadline edits, weakenedchecks, fullgatererun orpassingrerun substitution.",
+      "No native/realmodels/network/credentials/user/outboundendpointprobes.",
+      "CoreR4/R7fourfiles remainseparate; providerpathsexcluded.",
+      "NewCI failure blocks release; exactmechanical/audit/CI/QA/resource gates persist."
+    ]
+  },
+  "recordedAtUTC": "2026-10-05T23:24:00.527791+00:00",
+  "updatedAtUTC": "2026-10-05T23:33:09.689438+00:00",
+  "status": "98916CF_LOCAL_179_PASS_AUDIT_CONTINUATION_ACTIVE_QA_HELD",
+  "exactSHA": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+  "baseSHA": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "assignmentDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_98916CF_GATE_ASSIGNMENTS_2026-10-05.md",
+  "assignmentDocumentSHA256": "a2bab5b9f2ec93e54db0bb058529e27385ff11eb16787f718ecfb62adf434f95",
+  "changedFiles": 231,
+  "candidateVerification": {
+    "localHead": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "actualRemoteHead": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "prHead": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "prBase": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "prDraft": true,
+    "clean": true,
+    "baseAncestor": true,
+    "sourceTestPathsChangedSince6df5200": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "otherChangesOwnedEvidenceDocsVerified": true
+  },
+  "handoffFingerprints": {
+    "HANDOFF.md": "01df221975656b990505dfc544d00bbbb9f0d912786f3cce954185a2e51014ed",
+    "progress.json": "a4c5af83573f961ec711933674c0eb7af4e89f616db0a113cfadea664373e435"
+  },
+  "handoffSnapshotNote": "Parent-provided fingerprints match saved files; no actual model accuracy or terminal candidate gate pass inferred.",
+  "previousCandidates": [
+    "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "40ee88a409eaec943ae4474130bd87263ea794e1",
+    "27490ae5055502423f187e84ca52d0064b794396",
+    "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+    "6df5200d0945ee3b050bcde4115a338e392017b1"
+  ],
+  "priorReceiptsDisposition": "All previous exact-SHA results retained in candidateGateHistory; no pass transfer. Previous provider cancellation diagnosis remains independently unresolved.",
+  "auditVerdict": "PENDING",
+  "simulationQAVerdict": "HELD",
+  "auditRequired": [
+    "Complete currentdiff/context, not patch-only approval",
+    "R1 per-occurrence full tuple pairing/coverage and positive controls",
+    "R2 current query correction and inherited constraints/ambiguity",
+    "Alias distinction without over-abstention or relaxed R1/R2",
+    "Original F1-F4/P3/timezone/harness safety",
+    "Privacy/exclusions/endpoint/outbound/native/cross-component/presentation boundaries",
+    "Opaque provenance, no heldout payload, default-disabled/resource separation",
+    "R3 per-source-occurrence lookup completeness with supported mixed-source positives",
+    "R4 bounded coordinated-read noun versus genuine delivery/action/quoted/negated controls",
+    "G1 fixed clean+both OTP metadata-collision clocks; exact timestamp/cardinality and all actual text/model/debug/output privacy checks",
+    "R4 bounded preposition/literal versus actualdestination/control and lateraction",
+    "R5 governingrecap/readhead workflowpreflight without suppressing genuineeffects",
+    "R6 fullquerymask positive/extra source/context/per-domainadmission authority preserving explicitexclusions",
+    "R4 capitalized governed query titles / explicit and ambiguous terminal destinations",
+    "R7 share/plus/polite/negative action boundaries and separately governed reads after exclusions",
+    "Unchanged current_web_routing public update / explicit cancellation / delivery punctuation-address-later-turn controls"
+  ],
+  "admission": "Parent may request fresh exact-SHA scope ACK and dispatch same existing independent Release Auditor. Existing distinct Simulation QA may ACK scope/availability only; execution held pending formal nonblocking same-SHA audit and explicit parent release. Root neither messages nor dispatches.",
+  "simulationQAHold": "Exact98916cf availability ACK verified; no execution before completed formal nonblocking same-SHA audit and explicit parent release.",
+  "codeFreeze": "Clean pushed98916cf frozen; all source writers frozen until separately scoped repair release.",
+  "fullRegression": {
+    "recordedAtUTC": "2026-10-05T23:33:09.689438+00:00",
+    "status": "PASS",
+    "exactSHA": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "passedModules": 179,
+    "totalModules": 179,
+    "exitCode": 0,
+    "completedAtUTC": "2026-10-05T23:31:16.896049+00:00",
+    "elapsedSeconds": 620.3883754999842,
+    "receipt": "/private/tmp/wisp-router-update-98916cf-gate-receipt.json",
+    "receiptSHA256": "29a2187461e29787490c27127aef6ee11b944a514bd224b225cfc1a4067480cc",
+    "log": "/private/tmp/wisp-router-update-98916cf-regression.log",
+    "logSHA256": "966187e0d6a9059b8f4a30bb13deadd48cde419ec04aeae6b15edf784ac8f201",
+    "logBytes": 148180,
+    "headAfter": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "cleanAfter": true,
+    "currentCleanHeadVerified": true,
+    "outerLaunchReceipt": "approved compatible host; inner restrictive native sandbox unchanged",
+    "rootVerification": "Read saved receipt/full-log bytes and terminal summary, verify SHA256 and current clean head; no gate execution by root.",
+    "doesNotOverrideAuditCIQAOrProviderDiagnosis": true
+  },
+  "ciObserved": {
+    "status": "IN_PROGRESS_PARENT_REPORTED_NOT_INDEPENDENT_TERMINAL_VERIFIED",
+    "python": {
+      "run": 37387940899,
+      "job": 112025875624
+    },
+    "artifact": {
+      "run": 37387940671,
+      "job": 112025875465
+    }
+  },
+  "developmentReported": {
+    "revision": "c63b2c1ff4d52497a736625546142f2bb8bff890",
+    "artifact": "development-after-r4-r7-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "combinedReported": {
+    "passed": 665,
+    "skipped": 1,
+    "seconds": 11.74,
+    "skip": "Existing original-control-only",
+    "evidence": "Source parent report; builder result, not independent approval"
+  },
+  "coreCompletionReference": {
+    "workerSHA": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+    "cleanActualRemoteVerified": true,
+    "fourPathObjectsMatchCandidate": true,
+    "HANDOFF": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/fifth-candidate-gates/core-repair/HANDOFF.json",
+    "HANDOFFSHA256": "ab3ee75249c92fd6e6f8b31b041664182a5fef63d0c639962b7539ec924b4ab7",
+    "mechanicalReceipt": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/fifth-candidate-gates/core-repair/mechanical-receipt.json",
+    "mechanicalReceiptSHA256": "bd7cceacc96cf2915182d1d15b7e51cc63aefde702a9129c5ad7c41abde1b42a",
+    "mechanicalLogOriginalSHA256": "5737e292abbca331e036f4048f1f39624b540bbb425d845354c06f67a44e7cea",
+    "passed": 10217,
+    "subtestsPassed": 4640,
+    "exitCode": 0,
+    "durationSeconds": 101.28,
+    "workerExternalSealSHA256": "1ac77c498643293762851a76cd5d4e41cad3b042e9ad58140415b10d06cf69a4",
+    "externalSealEntriesVerified": 11,
+    "fullTranscriptAvailable": true
+  },
+  "priorEvidencePreservation": {
+    "completeManifest": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/fifth-candidate-gates/complete-bundle-sha256.json",
+    "sha256": "69d9246ed7bf2d2cac93755d262ecaeeee50fd011980123b581bdaf2ae0b3f41",
+    "storedEntriesVerified": 44,
+    "previousCandidateStoredAndRestoredEntriesVerified": 27,
+    "workerStoredAndRestoredLogsVerified": 9,
+    "failedF418LogSHA256": "5645a9a98f247b1a07fffe25a5003a37b2368857b4c1b5e7d403096f67893b58"
+  },
+  "staticHelperDisposition": {
+    "receipt": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/fifth-candidate-gates/static-helper-summary.json",
+    "sha256": "055480a9293aeb48e72706262311e2dc9774503fc384c72ac6b42413a0aa91ba",
+    "missingHEADDirtyFingerprints": true,
+    "advisoryOnly": true,
+    "releaseCredit": false
+  },
+  "rootActions": "Read-only saved regression receipt/loghash/summary, current clean candidate metadata and direct audit snapshot; record same actor continuation. No tests/audit/QA/probes, source edits or actor dispatch/messages by root.",
+  "gateDisposition": "Local179/179PASSexit0 verified for98916cf; requiredCI terminal receipts and independent formal verdict remain pending. QA/source writers held. Provider cancellation diagnosis, residentLing resource, training, activation and shipping boundaries unchanged.",
+  "roles": [
+    {
+      "title": "Wisp Release Auditor",
+      "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+      "hostId": "local",
+      "verdicts": [
+        "PASS",
+        "PASS_WITH_NOTES",
+        "BLOCK"
+      ],
+      "waitCursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:129",
+      "evidenceDirectory": "/private/tmp/wisp-router-98916cf-gates-20261005/auditor/",
+      "availabilityObserved": "active",
+      "status": "SAME_ACCEPTED_AUDITOR_CONTINUATION_ACTIVE_NO_FORMAL_VERDICT",
+      "previousCandidate": "6df5200d0945ee3b050bcde4115a338e392017b1",
+      "actorAcceptedExactSHA": true,
+      "currentTurnId": "01a10e64-8352-7853-bee3-f213bfbfea57",
+      "acceptanceReceipt": {
+        "turnId": "01a10e62-7446-7a33-880c-a1ca25937a36",
+        "messageId": "msg_025568a98ac5d255016ac431cfe41887d09c26039beeb6a1e4",
+        "phase": "commentary",
+        "text": "I acknowledge the read-only audit of PR #160 at 98916cf5d17fee49c94045e5a0e3a713d47dce39. I\u2019ll verify the R4/R7 repairs and retained boundaries with fresh controls, including public-search behavior. The earlier provider-cancellation failure remains separate and unresolved; I\u2019ll preserve that limit in the report.",
+        "recordedAtUTC": "2026-10-05T23:26:49.049823+00:00",
+        "exactSHA": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+        "verification": "Direct app wait_threads snapshot; source-parent dispatch report independently corroborated by actor acceptance/status."
+      },
+      "executionAllowedNow": true,
+      "continuationHistory": [
+        {
+          "recordedAtUTC": "2026-10-05T23:33:09.689438+00:00",
+          "turnId": "01a10e64-8352-7853-bee3-f213bfbfea57",
+          "parentReportedReason": "Initial turn ended status-only after compaction; same actor resumed same read-only scope.",
+          "newScope": false,
+          "newActor": false,
+          "directObservation": {
+            "messageId": "msg_025568a98ac5d255016ac432fa974c87d0bef093218d93eeae",
+            "phase": "commentary",
+            "text": "The first application batch confirms the capitalized-title and positive-sharing repairs. It also found a remaining issue: several \u201cdo not share/send\u201d variants validate as reads, but the application instead asks what to send. I\u2019m checking paired variants to isolate the cause. Three date-scope failures also need a fixture check because the validator may treat a trailing date as shared."
+          },
+          "verification": "Direct wait_threads snapshot at cursor129; no formal verdict or repaired behavior approval inferred."
+        }
+      ]
+    },
+    {
+      "title": "Wisp Simulation QA",
+      "threadId": "01a08531-b393-7690-a072-5776c3cbed4c",
+      "hostId": "local",
+      "verdicts": [
+        "SIM_PASS",
+        "NOTES",
+        "FAIL"
+      ],
+      "waitCursor": "27abf245-52c5-4234-a66f-42aeaedccba1:8",
+      "evidenceDirectory": "/private/tmp/wisp-router-98916cf-gates-20261005/simulation-qa/",
+      "availabilityObserved": "idle",
+      "status": "ACKNOWLEDGED_AVAILABLE_IDLE_EXECUTION_HELD",
+      "previousCandidate": "6df5200d0945ee3b050bcde4115a338e392017b1",
+      "actorAcceptedExactSHA": true,
+      "currentTurnId": "01a10e62-7e7e-74c0-b248-f142e84b9f5d",
+      "acceptanceReceipt": {
+        "turnId": "01a10e62-7e7e-74c0-b248-f142e84b9f5d",
+        "messageId": "msg_0f4ac374dfdf1a13016ac431cd861887d0b99ffad524da26cb",
+        "phase": "final_answer",
+        "text": "ACK\u2014available as the existing independent Simulation QA role for PR #160, exact candidate 98916cf5d17fee49c94045e5a0e3a713d47dce39. Synthetic-only scope and provider-path exclusions confirmed. All QA execution remains held pending a formal nonblocking same-SHA audit and explicit parent release. No old ACK transfers; no tests, edits, heldout access, or real model/native/user-data/outbound effects. Stopped.",
+        "recordedAtUTC": "2026-10-05T23:26:49.049823+00:00",
+        "exactSHA": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+        "verification": "Direct app wait_threads snapshot; source-parent dispatch report independently corroborated by actor acceptance/status."
+      },
+      "executionAllowedNow": false
+    }
+  ],
+  "actorDispatchReceipt": {
+    "recordedAtUTC": "2026-10-05T23:26:49.049823+00:00",
+    "sourceParent": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "auditorTurn": "01a10e62-7446-7a33-880c-a1ca25937a36",
+    "qaAvailabilityTurn": "01a10e62-7e7e-74c0-b248-f142e84b9f5d",
+    "existingActorsOnly": true,
+    "qaExecutionReleased": false,
+    "rootDispatched": false
+  },
+  "preliminaryIndependentObservations": {
+    "recordedAtUTC": "2026-10-05T23:33:09.689438+00:00",
+    "status": "PROVISIONAL_PAIRED_DIAGNOSIS_AND_DATE_FIXTURE_CHECK_PENDING",
+    "actorTurnId": "01a10e64-8352-7853-bee3-f213bfbfea57",
+    "readOnly": true,
+    "sourceWritersFrozen": true,
+    "repairDispatchRequested": false,
+    "formalVerdict": "PENDING",
+    "note": "Application commentary reports some negative share/send reads enter delivery clarification; capitalized-title/positive-share batch passes. Date controls require fixture reconciliation. No blocker closure or release verdict inferred."
+  }
+}

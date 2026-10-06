@@ -1,0 +1,30 @@
+{
+  "candidate_unchanged": true,
+  "raw_results_unchanged": true,
+  "items": [
+    {
+      "kind": "auditor bootstrap",
+      "detail": "Initial application invocation requested e.git_revision after guard installation; guard denied reading the real Git metadata location before any case ran. Initial script/log retained. Resolve HEAD before guard in the fresh worker."
+    },
+    {
+      "kind": "auditor metadata path",
+      "detail": "Initial provenance invocation looked for HANDOFF.md/progress.json at repository root; these live under eval/router-update-integration-20261005. Initial script/log retained and exact registered hashes now match."
+    },
+    {
+      "kind": "date fixture assumption",
+      "detail": "Original application exclusion-read-68/70/72 and paired exclusion-33/35/37 assigned the sole trailing/possessive date to messages only. The established conservative shared-time grammar also requires notes time here. Original outcomes preserved; focused focus-7/9/11 supplies the shared yesterday scope and passes. Explicit today notes plus yesterday messages focus-8/10/12 also passes. No candidate/scorer/corpus/gold mutation."
+    },
+    {
+      "kind": "supplemental guard probe",
+      "detail": "Paired probes deliberately assert standalone effect rejection and admission decline as well as no main read. Some main workflow guards block execution despite wrong standalone admission; these are not claimed as extra executions beyond the three exact focused reproducers."
+    },
+    {
+      "kind": "unsupported negative save",
+      "detail": "Paired negative-7 honestly clarifies due to the existing unsupported in Notes filter. It is not counted as a third release finding."
+    },
+    {
+      "kind": "tool write failure",
+      "detail": "One paired-control apply_patch cell stalled before producing a file; terminated, verified absent, then authored the same fresh controls using a quoted heredoc. No candidate writes or tests occurred in the stalled call."
+    }
+  ]
+}

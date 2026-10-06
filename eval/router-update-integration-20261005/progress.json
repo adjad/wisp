@@ -1,6 +1,6 @@
 {
-  "status": "r4_r7_repairs_integrated_preparing_frozen_gates",
-  "updated_at": "2026-10-05T23:19:44.828982+00:00",
+  "status": "negative_governor_repairs_integrated_preparing_frozen_gates",
+  "updated_at": "2026-10-06T00:45:46.737984+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,14 +10,14 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "R4/R7 cumulative repair and public-web regression continuation frozen clean pushed and integrated",
-      "commit": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+      "status": "R7-negative/R8 five-file repair frozen clean pushed and integrated",
+      "commit": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
       "validation_reported": {
-        "passed": 10217,
+        "passed": 10300,
         "subtests_passed": 4640,
-        "seconds": 101.28,
+        "seconds": 100.62,
         "suites": 18,
-        "scope": "Exact worker head; full transcript, initial focused failures and failed f418233 gate preserved in fifth-candidate-gates/core-repair"
+        "scope": "Exact worker head; full transcript and six development histories retained in sixth-candidate-gates/core-repair"
       }
     },
     "router_eval": {
@@ -81,7 +81,7 @@
   "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
   "production_changed": false,
   "pending": [
-    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R4/R7 and full-scope audit, then separate synthetic QA",
+    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R7-negative/R8 and full-scope audit, then separate synthetic QA",
     "Resolve retained-owner provider qualification cancellation CI failure; no separate provider diagnosis or edits authorized",
     "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
     "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
@@ -102,11 +102,11 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "c63b2c1ff4d52497a736625546142f2bb8bff890",
-    "passed": 665,
+    "revision": "cf6a0379761979e5a7445e911d74046797609967",
+    "passed": 748,
     "skipped": 1,
     "skip_reason": "Original-control-only absence check",
-    "seconds": 11.74,
+    "seconds": 12.28,
     "scope": "Nine integrated intent/workflow/eval/overview/manifest/unchanged tomorrow/fallback modules",
     "model_calls": false,
     "heldout_opened": false
@@ -116,7 +116,8 @@
     "One unintended mechanical test wording replacement was caught in review and restored before presentation freeze.",
     "Compiler repair development gate caught schedule-a-message regression; narrowed indefinite-noun masking and added regression controls before freeze.",
     "Adapter identity tests initially exposed temporary /var versus /private/var aliasing; resolved-path equality fixed before freeze.",
-    "Pre-freeze diff check rejected trailing whitespace in verbatim worker failure logs. Stored lossless gzip copies with original/stored hashes; original evidence bytes and source tests unchanged."
+    "Pre-freeze diff check rejected trailing whitespace in verbatim worker failure logs. Stored lossless gzip copies with original/stored hashes; original evidence bytes and source tests unchanged.",
+    "One bounded core edit approval timed out before execution; tool expressly permitted one retry. Cancellation/no-execution verified, single same-scope retry succeeded, then tests ran sequentially. Original timeout and recovery receipts preserved."
   ],
   "development_replay_before_compiler_repair": {
     "revision": "b78fbdf",
@@ -970,5 +971,112 @@
     "artifact": "fifth-candidate-gates/core-repair/prior-runs/f4182333-mechanical.log.gz",
     "integrate_alone": false
   },
-  "static_helper_limit": "Advisory mutable-source review only: helper did not capture required observed HEAD/dirty-state/file fingerprints/read timestamps. Not commit-bound or release approval. Suggestions independently exercised by sole core worker; formal frozen-head audit remains required."
+  "static_helper_limit": "Advisory mutable-source review only: helper did not capture required observed HEAD/dirty-state/file fingerprints/read timestamps. Not commit-bound or release approval. Suggestions independently exercised by sole core worker; formal frozen-head audit remains required.",
+  "sixth_frozen_candidate_gates": {
+    "revision": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "artifact": "sixth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179; does not diagnose or close retained prior provider cancellation failure",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R7-negative: prohibited share clause enters delivery preflight",
+        "R8-later-effect: positive effect after negative governor disappears from read admission"
+      ],
+      "public_controls_passed": 40,
+      "runtime_privacy_overview_controls_passed": 51,
+      "heldout_opened": false
+    },
+    "qa": "Not executed; held pending nonblocking new exact-SHA independent audit"
+  },
+  "development_after_negative_governor_repairs": {
+    "revision": "cf6a0379761979e5a7445e911d74046797609967",
+    "artifact": "development-after-negative-governor-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "static_helper_r78": {
+    "artifact": "sixth-candidate-gates/static-helper-summary.json",
+    "scope": "Static read-only helper with before/after HEAD, dirty state, six file hashes and mtimes. Advisory only; no release approval.",
+    "hypotheses": "Preference negation and afterwards-read coverage reproduced by sole core; final actual-main controls pass."
+  }
 }
