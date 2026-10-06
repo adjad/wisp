@@ -2448,6 +2448,32 @@ def test_f01_residency_is_read_through_the_candidates_own_client_and_unknown_is_
         assert deps.residency(Backend(faulty.url)) is None
 
 
+def test_residency_retries_a_transient_refusal_a_bounded_number_of_times(monkeypatch):
+    import httpx
+    class Backend:
+        base_url = "http://127.0.0.1:1"
+    deps = rp.LiveDeps(sys.executable, {})
+    monkeypatch.setattr(rp.LiveDeps, "RESIDENCY_PAUSE_S", 0.0)
+    replies, calls = [], []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        item = replies.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return httpx.Response(item[0], json=item[1])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    replies[:] = [(503, {"error": "ModelLoadError"}), httpx.ConnectError("x"), (200, {"loaded": ["B", "A"]})]
+    assert deps.residency(Backend()) == ["A", "B"] and len(calls) == 3
+    calls.clear()
+    replies[:] = [(200, {"loaded": []}), (503, {})]
+    assert deps.residency(Backend()) == [] and len(calls) == 1             # an answer, even an empty one, is final
+    calls.clear()
+    replies[:] = [(503, {"error": "ModelLoadError"})] * 5
+    assert deps.residency(Backend()) is None and len(calls) == rp.LiveDeps.RESIDENCY_ATTEMPTS == 3
+
+
 # ---- F02: engine operations are permitted explicitly and refused before transmission ----
 
 @pytest.mark.parametrize("method,path,allowed", [

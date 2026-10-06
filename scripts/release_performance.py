@@ -985,6 +985,7 @@ class FsPolicy:
                  write_exact=(), mkdir_exact=(), labels: dict | None = None) -> None:
         self.labels = dict(labels or {})
         self.home = self.absolute(home)
+        self._real_home = os.path.realpath(self.home)   # fixed per policy: a per-call lookup cost a full lstat walk
         self.read_roots = self._both(read_roots)
         self.write_roots = self._both(write_roots)
         self.read_exact = self._both(read_exact)
@@ -993,7 +994,8 @@ class FsPolicy:
 
     @staticmethod
     def absolute(path: str | os.PathLike) -> str:
-        return os.path.normpath(os.path.join(os.getcwd(), os.fsdecode(os.fspath(path))))
+        text = os.fsdecode(os.fspath(path))
+        return os.path.normpath(text if os.path.isabs(text) else os.path.join(os.getcwd(), text))
 
     @classmethod
     def _both(cls, paths) -> tuple[str, ...]:
@@ -1009,20 +1011,21 @@ class FsPolicy:
     def _under(path: str, roots) -> bool:
         return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
 
-    def read_allowed(self, path: str) -> bool:
-        path = os.path.realpath(path)
-        if not self._under(path, [os.path.realpath(self.home)]):
+    def read_allowed(self, path: str, real: str | None = None) -> bool:
+        path = os.path.realpath(path) if real is None else real
+        if not self._under(path, [self._real_home]):
             return True
         return (self._under(path, self.read_roots) or self._under(path, self.write_roots)
                 or path in self.read_exact or path in self.write_exact)
 
-    def write_allowed(self, path: str) -> bool:
-        real = os.path.realpath(path)
+    def write_allowed(self, path: str, real: str | None = None) -> bool:
+        real = os.path.realpath(path) if real is None else real
         return (real == "/dev/null" or self._under(real, self.write_roots) or real in self.write_exact
                 or path in self.write_exact)
 
-    def mkdir_allowed(self, path: str) -> bool:
-        return self.write_allowed(path) or path in self.mkdir_exact or os.path.realpath(path) in self.mkdir_exact
+    def mkdir_allowed(self, path: str, real: str | None = None) -> bool:
+        real = os.path.realpath(path) if real is None else real
+        return self.write_allowed(path, real) or path in self.mkdir_exact or real in self.mkdir_exact
 
     def portable(self) -> dict:
         """The policy WITHOUT per-run paths, so two children of one run (different worktree roots) have the
@@ -1184,7 +1187,7 @@ class EffectGuard:
             # through the exact os.open grammar below. No data/metadata mutation is allowed.
             if kind != "read" and (path in lease_paths or real in lease_paths):
                 guard._block("fs_lease_mutation", path)
-            allowed = {"write": fs.write_allowed, "mkdir": fs.mkdir_allowed}.get(kind, fs.read_allowed)(path)
+            allowed = {"write": fs.write_allowed, "mkdir": fs.mkdir_allowed}.get(kind, fs.read_allowed)(path, real)
             if not allowed:
                 guard._block("fs_read" if kind == "read" else "fs_write", path)
             return path
@@ -2083,16 +2086,28 @@ class LiveDeps:
         backend.start()
         return backend
 
+    # The attributed client's peer attribution (lsof/ps against a live listener the desktop app and other clients
+    # also use) can refuse a single read transiently: the v1.1.5 client did so on 1 of ~4 consecutive reads in
+    # isolation. Reading the resident set is a prerequisite check, not a measurement, so it is retried a bounded
+    # number of times; a set that is still unreadable stays None and the run stays INCONCLUSIVE.
+    RESIDENCY_ATTEMPTS = 3
+    RESIDENCY_PAUSE_S = 1.0
+
     def residency(self, backend: BackendProcess) -> Any:
         """Resident model ids per the candidate's own attributed client, or None if it cannot say."""
         import httpx
-        try:
-            reply = httpx.get(backend.base_url + RESIDENCY_PROBE_PATH, timeout=30.0)
-            body = reply.json()
-            loaded = body.get("loaded") if reply.status_code == 200 and isinstance(body, dict) else None
-            return sorted(str(m) for m in loaded) if isinstance(loaded, list) else None
-        except (httpx.HTTPError, ValueError):
-            return None
+        for attempt in range(self.RESIDENCY_ATTEMPTS):
+            if attempt:
+                time.sleep(self.RESIDENCY_PAUSE_S)
+            try:
+                reply = httpx.get(backend.base_url + RESIDENCY_PROBE_PATH, timeout=30.0)
+                body = reply.json()
+                loaded = body.get("loaded") if reply.status_code == 200 and isinstance(body, dict) else None
+            except (httpx.HTTPError, ValueError):
+                loaded = None
+            if isinstance(loaded, list):
+                return sorted(str(m) for m in loaded)
+        return None
 
     def make_driver(self, backend: BackendProcess) -> HttpTurnDriver:
         return HttpTurnDriver(backend.base_url)
