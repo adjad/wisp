@@ -1,0 +1,47 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "target_release": "1.3.0",
+  "merge_hold": "Direct human do not merge; only explicit later user release lifts hold",
+  "mechanical": "179/179 pass",
+  "python_ci": "179/179 pass",
+  "artifact_ci": "pending",
+  "audit": "confirmed streaming isolation finding, formal report pending",
+  "simulation_qa": "held",
+  "files": {
+    "wisp-router-update-67e4cef-freeze.json": {
+      "sha256": "00d322602f662dbd67db9fc3f8da384b2780b81a0acf88372eabdad9fa1e3c23",
+      "bytes": 54412,
+      "original": "/private/tmp/wisp-router-update-67e4cef-freeze.json"
+    },
+    "wisp-router-update-67e4cef-gate-receipt.json": {
+      "sha256": "bd970cd7c91908eacd0fa29e8167447d065cbd6cd6840f164550272bfa181133",
+      "bytes": 880,
+      "original": "/private/tmp/wisp-router-update-67e4cef-gate-receipt.json"
+    },
+    "wisp-router-update-67e4cef-regression.log": {
+      "sha256": "c24a0cf2722c0034069f7bf21f27233ff6f7a16e87da73d6dbed9d03a8069cac",
+      "bytes": 148900,
+      "original": "/private/tmp/wisp-router-update-67e4cef-regression.log"
+    },
+    "wisp-router-update-67e4cef-python-ci-final.json": {
+      "sha256": "ea680d7061a951a90dcb09bb0f341e22bb58ce009ce3ba211108ed0914a03a80",
+      "bytes": 2080,
+      "original": "/private/tmp/wisp-router-update-67e4cef-python-ci-final.json"
+    },
+    "wisp-router-update-67e4cef-python-ci.log": {
+      "sha256": "eec21f8fecb65a18f18f96729d9fbd41b6364832e379fe8d3cc768d7411f46ed",
+      "bytes": 451865,
+      "original": "/private/tmp/wisp-router-update-67e4cef-python-ci.log"
+    },
+    "wisp-router-update-67e4cef-python-ci-download.json": {
+      "sha256": "44871d3e5118d6001fea0e921a764c05b4607f95d3ac3864513b93e9f98738ee",
+      "bytes": 575,
+      "original": "/private/tmp/wisp-router-update-67e4cef-python-ci-download.json"
+    },
+    "wisp-router-update-67e4cef-python-ci-initial-empty.log": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "original": "/private/tmp/wisp-router-update-67e4cef-python-ci-initial-empty.log"
+    }
+  }
+}

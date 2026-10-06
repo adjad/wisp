@@ -2026,6 +2026,8 @@ class RouteDecision:
     source: str          # "rules" or "llm"
     reason: str
     route_source: str = ""
+    # Bounded structured-read limitation; surfaced before session pinning.
+    intent_response: str = ""
     # Forces tool_choice="required" + retry-and-nudge in the agent loop (see
     # run_agent's `expect_tool_first`) — ONLY when a rule confidently detected
     # tool intent. False for the ambiguous fallback (tools are still AVAILABLE,
@@ -2176,7 +2178,14 @@ class RouteDecision:
         # value is a constant.
         return {"role": self.role, "model": self.model, "needs_tools": self.needs_tools,
                 "needs_vision": False, "source": self.source, "reason": self.reason,
-                "route_source": self.route_source or self.source,
+                # Preserve the journal's bounded vocabulary. Internal intent
+                # dispositions control orchestration; only this finite enum is
+                # exposed as additive non-journal routing debug metadata.
+                "route_source": "model" if self.route_source in {
+                    "intent_compiled", "intent_clarify", "intent_declined"}
+                    else self.route_source or self.source,
+                **({"intent_disposition": self.route_source.removeprefix("intent_")}
+                   if self.route_source in {"intent_compiled", "intent_clarify", "intent_declined"} else {}),
                 # JSON-shaped (not the internal tuples) because this dict is the
                 # wire format for the `routed` SSE event. Worth emitting: it is
                 # the only record of WHY a turn had no tool-selection step,
@@ -6901,7 +6910,9 @@ async def route(text: str, *,
                 last_user: str | None = None,
                 recent_users: list[str] | None = None,
                 last_assistant: str | None = None,
-                last_tools: str | None = None) -> RouteDecision:
+                last_tools: str | None = None,
+                intent_client=None, intent_config: dict | None = None,
+                intent_context=(), intent_now=None) -> RouteDecision:
     request = _classify_web_request(text, last_user, recent_users=tuple(recent_users or ()),
                                     last_assistant=last_assistant)
     # Only the two shapes the fast paths misread: a sentence ABOUT words, and a
@@ -6933,6 +6944,52 @@ async def route(text: str, *,
             return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
+    from service.router.intent.grammar import personal_agenda_args
+    from service.router.intent.compiler import UnsupportedRead
+    try:
+        agenda_args = personal_agenda_args(text, now=intent_now)
+    except UnsupportedRead as exc:
+        decision = _mk_scoped([], "unsupported exact agenda time filter", expect=False)
+        decision.source = "intent"
+        decision.route_source = "intent_clarify"
+        decision.intent_response = str(exc)
+        return decision
+    if agenda_args is not None:
+        return _verified_private_read(
+            [("get_upcoming", agenda_args)],
+            "complete personal agenda scope -> deterministic read", text)
+    # The model interprets supported reads only. Safety/mention/device and
+    # authored-action boundaries above remain authoritative. No model tool
+    # names, permissions or outbound operations enter the deterministic compiler.
+    from service.router.intent import plan_read
+    intent_result = None
+    generated_targets = []
+    if not (request.authorized_effects or request.delivery or request.standalone_offer
+            or _public_calendar_product_query(text)):
+        intent_result = await plan_read(
+            text, client=intent_client,
+            config=intent_config, context=intent_context or tuple(
+                {"role": role, "content": content} for role, content in (
+                    ("user", last_user), ("assistant", last_assistant)) if content),
+            prior_tools=tuple(name.strip() for name in (last_tools or "").split(",") if name.strip()),
+            now=intent_now, on_generation=generated_targets.append)
+    if intent_result is not None:
+        from service.tools.registry import REGISTRY
+        names = [name for name, _ in intent_result.calls]
+        decision = _mk_scoped(list(dict.fromkeys(names)), intent_result.reason,
+                              expect=False, multi=len(names) > 1)
+        decision.source = "intent"
+        decision.model = generated_targets[-1].model if generated_targets else ""
+        decision.route_source = "intent_" + intent_result.disposition
+        decision.direct_calls = [(name, dict(args)) for name, args in intent_result.calls]
+        decision.forbidden_tools = frozenset(REGISTRY) - set(names)
+        decision.verified_results_only = True
+        decision.strict_read_limits = {name: names.count(name) for name in set(names)}
+        decision.required_tool_groups = tuple(frozenset({name}) for name in dict.fromkeys(names))
+        decision.narration_after = frozenset(names)
+        decision.intent_response = intent_result.response
+        decision.resolved_request = text
+        return decision
     if (private_read := _strict_private_read_decision(
             text, last_user=last_user, recent_users=recent_users)) is not None:
         private_request = replace(

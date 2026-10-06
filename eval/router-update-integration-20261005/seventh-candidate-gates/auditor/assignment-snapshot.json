@@ -1,0 +1,633 @@
+{
+  "branch": "codex/router-update-1-3",
+  "prURL": "https://github.com/adjad/wisp/pull/160",
+  "verifiedCheckout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "sourceParentDispatcher": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+  "requiredModel": "gpt-6.1-sol",
+  "requiredReasoningEffort": "high",
+  "holdout": "Opaque seal/provenance metadata only, no heldout/archived payload opening, comparison or tuning; no raw case feed to builder.",
+  "resourceDependency": "router-1.3-resident-ling-window remains PENDING_EXTERNAL_ACK",
+  "providerCIDiagnosisReservation": {
+    "recordedAtUTC": "2026-10-05T22:38:59.185026+00:00",
+    "status": "ROUTED_TO_RETAINED_CLAUDE_OWNER_ACK_PENDING_DELIVERY_UNCONFIRMED",
+    "candidateSHA": "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "existingOwner": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+    "ownerTitle": "Daily summary reminders sync bug",
+    "ownerEvidence": "buildOwnershipTransfer20261003 ownershipTransferComplete=true; ClaudeAcceptance.outcomes_and_file_reservations.outcomes0 reservedtests/test_local_provider_tools.py; claudePR130BackendActivation20261003 completionCustody sayssameClaudeownerretained/allfurthereditsheld.",
+    "requestedCodexDiagnosticActor": "/root/router_eval",
+    "codexActorDiagnosticExecutionAllowed": false,
+    "activeWritePaths": [],
+    "editingAllowedNow": false,
+    "boundedTestExecutionAllowed": false,
+    "readOnlyDiagnosisRequestToExistingOwner": "Confirm existingresponsibleprovideractor; inspect unchangedbaseprovenance and existing cancellation/test/qualificationfixture lifecycle; onlybounded existingfakeengine synthetic controls inisolatedstate, nofullgateduplicate; preserve failures and returncause/exactscope beforeedits. Delivery/acceptance unconfirmed; no Codexdiagnosticexecution released.",
+    "unchangedBaseToCandidateObjects": {
+      "tests/test_local_provider_tools.py": "e2b6030d5dbf4bf98e1d8e3f01c052df3e946236",
+      "service/inference/qualify.py": "108a4dd795a83daf78ad215d32919bf72ba36fb3",
+      "service/inference/attributed_transport.py": "2e0dadee60713272b1b6b5b89227030870beb8f6"
+    },
+    "baseSHA": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "delivery": {
+      "recordedAtUTC": "2026-10-05T22:38:59.185026+00:00",
+      "session": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+      "title": "Daily summary reminders sync bug",
+      "status": "DELIVERY_UNCONFIRMED_DO_NOT_RESEND",
+      "messageDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_CLAUDE_PROVIDER_AND_LING_RELAY_2026-10-05.md",
+      "messageDocumentSHA256": "56824fe8fb7da38e8489704b19418db492491a58b13a1316f9e6328bb296cf73",
+      "messageTextSHA256": "faf6be5bf74d5426333dad63719aeb35c48de450ad46e14400841dfd2d73004c",
+      "priorDeliveryChecked": "Previousresourceattempt notsent; currentcomposer initiallyempty, nohuman draft overwritten.",
+      "attempt": "setValue didnot visiblyupdate; click/paste put exactrelay intoAXcomposer, Sendenabled. SingleSendclick made no message92/acceptance visible. AXretaineddraft while screenshotshowedemptycomposer, then coordinate retryfailed noWindowsAvailable.",
+      "visibleResponseCursorBeforeAttempt": "message91",
+      "lastUIError": "Computer Use server error-10005:noWindowsAvailable",
+      "receiptOrACK": null,
+      "noDuplicateRetry": "Do not resend blindly. Inspect sessionhistory/queue/draft when app available; if sameownedrelay remainsunsent reconcile beforeany retry. Preserve human drafts.",
+      "boundaries": "No runtime tests/probes/inference performed; no source/test edit permission, ownershiptransfer or resourcewindow inferred.",
+      "reconciliationHistory": [
+        {
+          "recordedAtUTC": "2026-10-05T23:41:42.983058+00:00",
+          "sourceParentRequest": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+          "status": "READ_ONLY_RECONCILIATION_BLOCKED_COMPUTER_USE_TIMEOUT",
+          "session": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+          "title": "Daily summary reminders sync bug",
+          "ownedRelayDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_CLAUDE_PROVIDER_AND_LING_RELAY_2026-10-05.md",
+          "ownedRelayDocumentSHA256Verified": "56824fe8fb7da38e8489704b19418db492491a58b13a1316f9e6328bb296cf73",
+          "ownedRelayMessageTextSHA256PreviouslyRecorded": "faf6be5bf74d5426333dad63719aeb35c48de450ad46e14400841dfd2d73004c",
+          "uiAttempts": [
+            {
+              "call": "cua.rewriteDocumentation",
+              "result": "Documentation returned; no app history observed"
+            },
+            {
+              "call": "cua.listApps",
+              "result": "js execution timed out after30.0358s; kernel reset"
+            },
+            {
+              "call": "cua.getApp(Claude)",
+              "requestedTimeoutMs": 30000,
+              "result": "Tool transport timed out awaiting tools/call after300s; no app state returned"
+            }
+          ],
+          "deliveryStatus": "DELIVERY_UNCONFIRMED_DO_NOT_RESEND",
+          "actualMessageOrQueueOrComposerRead": false,
+          "ownerReplyOrACKVerified": false,
+          "providerDiagnosisReceipt": null,
+          "lingQuiescenceStartEndReceipt": null,
+          "limitation": "Available computer-use calls returned no app inventory or Claude UI state. Cannot establish whether prior relay is sent, queued or remains an owned draft; no safe delivery resumption established.",
+          "actionsPerformed": "Read documentation and attempted app observation only. No paste, send, click, draft overwrite, duplicate session, source change, provider test, model/native/benchmark probe or resource inference.",
+          "nextAction": "Keep existing unresolved dependencies; reconcile exact existing session history/queue/owned draft on a later authorized check when app state is available, never blindly resend."
+        }
+      ],
+      "lastReconciliation": {
+        "recordedAtUTC": "2026-10-05T23:41:42.983058+00:00",
+        "sourceParentRequest": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+        "status": "READ_ONLY_RECONCILIATION_BLOCKED_COMPUTER_USE_TIMEOUT",
+        "session": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+        "title": "Daily summary reminders sync bug",
+        "ownedRelayDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_CLAUDE_PROVIDER_AND_LING_RELAY_2026-10-05.md",
+        "ownedRelayDocumentSHA256Verified": "56824fe8fb7da38e8489704b19418db492491a58b13a1316f9e6328bb296cf73",
+        "ownedRelayMessageTextSHA256PreviouslyRecorded": "faf6be5bf74d5426333dad63719aeb35c48de450ad46e14400841dfd2d73004c",
+        "uiAttempts": [
+          {
+            "call": "cua.rewriteDocumentation",
+            "result": "Documentation returned; no app history observed"
+          },
+          {
+            "call": "cua.listApps",
+            "result": "js execution timed out after30.0358s; kernel reset"
+          },
+          {
+            "call": "cua.getApp(Claude)",
+            "requestedTimeoutMs": 30000,
+            "result": "Tool transport timed out awaiting tools/call after300s; no app state returned"
+          }
+        ],
+        "deliveryStatus": "DELIVERY_UNCONFIRMED_DO_NOT_RESEND",
+        "actualMessageOrQueueOrComposerRead": false,
+        "ownerReplyOrACKVerified": false,
+        "providerDiagnosisReceipt": null,
+        "lingQuiescenceStartEndReceipt": null,
+        "limitation": "Available computer-use calls returned no app inventory or Claude UI state. Cannot establish whether prior relay is sent, queued or remains an owned draft; no safe delivery resumption established.",
+        "actionsPerformed": "Read documentation and attempted app observation only. No paste, send, click, draft overwrite, duplicate session, source change, provider test, model/native/benchmark probe or resource inference.",
+        "nextAction": "Keep existing unresolved dependencies; reconcile exact existing session history/queue/owned draft on a later authorized check when app state is available, never blindly resend."
+      }
+    },
+    "boundaries": [
+      "No duplicate providerowner orownershiptransfer fromquiescence/mergedhistory.",
+      "No source/test/assertion/deadline edits, weakenedchecks, fullgatererun orpassingrerun substitution.",
+      "No native/realmodels/network/credentials/user/outboundendpointprobes.",
+      "CoreR4/R7fourfiles remainseparate; providerpathsexcluded.",
+      "NewCI failure blocks release; exactmechanical/audit/CI/QA/resource gates persist."
+    ],
+    "lastReadOnlyReconciliation": {
+      "recordedAtUTC": "2026-10-05T23:41:42.983058+00:00",
+      "sourceParentRequest": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+      "status": "READ_ONLY_RECONCILIATION_BLOCKED_COMPUTER_USE_TIMEOUT",
+      "session": "local_17df622f-2dbf-4b3d-801f-8b5b1725a38c",
+      "title": "Daily summary reminders sync bug",
+      "ownedRelayDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_CLAUDE_PROVIDER_AND_LING_RELAY_2026-10-05.md",
+      "ownedRelayDocumentSHA256Verified": "56824fe8fb7da38e8489704b19418db492491a58b13a1316f9e6328bb296cf73",
+      "ownedRelayMessageTextSHA256PreviouslyRecorded": "faf6be5bf74d5426333dad63719aeb35c48de450ad46e14400841dfd2d73004c",
+      "uiAttempts": [
+        {
+          "call": "cua.rewriteDocumentation",
+          "result": "Documentation returned; no app history observed"
+        },
+        {
+          "call": "cua.listApps",
+          "result": "js execution timed out after30.0358s; kernel reset"
+        },
+        {
+          "call": "cua.getApp(Claude)",
+          "requestedTimeoutMs": 30000,
+          "result": "Tool transport timed out awaiting tools/call after300s; no app state returned"
+        }
+      ],
+      "deliveryStatus": "DELIVERY_UNCONFIRMED_DO_NOT_RESEND",
+      "actualMessageOrQueueOrComposerRead": false,
+      "ownerReplyOrACKVerified": false,
+      "providerDiagnosisReceipt": null,
+      "lingQuiescenceStartEndReceipt": null,
+      "limitation": "Available computer-use calls returned no app inventory or Claude UI state. Cannot establish whether prior relay is sent, queued or remains an owned draft; no safe delivery resumption established.",
+      "actionsPerformed": "Read documentation and attempted app observation only. No paste, send, click, draft overwrite, duplicate session, source change, provider test, model/native/benchmark probe or resource inference.",
+      "nextAction": "Keep existing unresolved dependencies; reconcile exact existing session history/queue/owned draft on a later authorized check when app state is available, never blindly resend."
+    }
+  },
+  "recordedAtUTC": "2026-10-06T00:48:53.072181+00:00",
+  "updatedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+  "status": "8DFD5C9_AUDIT_ACTIVE_UNICODE_EXCLUSION_THREE_FILE_RESERVATION_HELD",
+  "exactSHA": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "baseSHA": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "assignmentDocument": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_8DFD5C9_GATE_ASSIGNMENTS_2026-10-05.md",
+  "assignmentDocumentSHA256": "d25ad61a148194fe0ef6ba0ead12b2124ace8d4ed20d396155be75f7a6e9eb46",
+  "changedFiles": 298,
+  "candidateVerification": {
+    "localHead": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "actualRemoteHead": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "prHead": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "prBase": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "prDraft": true,
+    "clean": true,
+    "baseAncestor": true,
+    "sourceTestPathsChangedSince98916cf": [
+      "service/workflows/compiler.py",
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "deltaPaths": 76,
+    "otherChangesOwnedEvidenceDocsVerified": true,
+    "freezeReceipt": "/private/tmp/wisp-router-update-8dfd5c9-freeze.json",
+    "freezeReceiptSHA256": "66937c731ce71742797ec18690d17aff946bb890463810c6722497f163838c95"
+  },
+  "handoffFingerprints": {
+    "HANDOFF.md": "c782ea0eddb73ee59c1443115a5ac952eb7c626629ef7978822ac12903794dd7",
+    "progress.json": "1f3d2a6b3b13d4b4b21b61cee4cdf7a9de06e814017cd993d5884a57875c94cc"
+  },
+  "previousCandidates": [
+    "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "40ee88a409eaec943ae4474130bd87263ea794e1",
+    "27490ae5055502423f187e84ca52d0064b794396",
+    "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+    "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "98916cf5d17fee49c94045e5a0e3a713d47dce39"
+  ],
+  "priorReceiptsDisposition": "Prior exact-SHA results preserved in history; no pass/ACK transfer. Provider diagnosis remains unresolved.",
+  "auditVerdict": "PENDING",
+  "simulationQAVerdict": "HELD",
+  "auditRequired": [
+    "Complete currentdiff/context, not patch-only approval",
+    "R1 per-occurrence full tuple pairing/coverage and positive controls",
+    "R2 current query correction and inherited constraints/ambiguity",
+    "Alias distinction without over-abstention or relaxed R1/R2",
+    "Original F1-F4/P3/timezone/harness safety",
+    "Privacy/exclusions/endpoint/outbound/native/cross-component/presentation boundaries",
+    "Opaque provenance, no heldout payload, default-disabled/resource separation",
+    "R3 per-source-occurrence lookup completeness with supported mixed-source positives",
+    "R4 bounded coordinated-read noun versus genuine delivery/action/quoted/negated controls",
+    "G1 fixed clean+both OTP metadata-collision clocks; exact timestamp/cardinality and all actual text/model/debug/output privacy checks",
+    "R4 bounded preposition/literal versus actualdestination/control and lateraction",
+    "R5 governingrecap/readhead workflowpreflight without suppressing genuineeffects",
+    "R6 fullquerymask positive/extra source/context/per-domainadmission authority preserving explicitexclusions",
+    "R4 capitalized governed query titles / explicit and ambiguous terminal destinations",
+    "R7 share/plus/polite/negative action boundaries and separately governed reads after exclusions",
+    "Unchanged current_web_routing public update / explicit cancellation / delivery punctuation-address-later-turn controls",
+    "R7-negative complete clauses/prohibitions; exact actual-main read/response/no-stored-send intention",
+    "R8-later-effect per-clause negation vs subsequent genuine positive actions",
+    "Preference/curly-apostrophe and afterwards/& ordinary-read authority, quoted data and public-vocabulary separation"
+  ],
+  "admission": "Parent may request fresh exact-SHA ACK and dispatch same existing independent Release Auditor; existing distinct Simulation QA may ACK availability/scope only. QA execution held for formal nonblocking same-SHA audit and explicit parent release. Root does not message/dispatch.",
+  "simulationQAHold": "Formal8dfd5c9 audit pending, fresh exclusion finding still undergoing paired verification; all QA execution held.",
+  "codeFreeze": "Clean pushed8dfd5c9 frozen; all source writers closed.",
+  "fullRegression": {
+    "status": "RUNNING_NO_TERMINAL_RECEIPT_AT_OBSERVATION",
+    "log": "/private/tmp/wisp-router-update-8dfd5c9-regression.log",
+    "expectedReceipt": "/private/tmp/wisp-router-update-8dfd5c9-gate-receipt.json",
+    "rootDidNotExecute": true,
+    "sessionParentReported": 82643
+  },
+  "ciObserved": {
+    "recordedAtUTC": "2026-10-06T00:50:59.335961+00:00",
+    "status": "RUNNING_SAME_SHA_PARENT_REPORTED_NO_TERMINAL_RECEIPT",
+    "python": {
+      "run": 37395706278
+    },
+    "artifact": {
+      "run": 37395705962
+    }
+  },
+  "developmentReported": {
+    "revision": "cf6a0379761979e5a7445e911d74046797609967",
+    "artifact": "development-after-negative-governor-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "combinedReported": {
+    "passed": 748,
+    "skipped": 1,
+    "seconds": 12.28,
+    "skip": "Existing original-control-only",
+    "evidence": "Sourceparent report, builder validation only"
+  },
+  "coreCompletionReference": {
+    "recordedAtUTC": "2026-10-06T00:47:03.875987+00:00",
+    "status": "FROZEN_CLEAN_PUSHED_WORKER_COMPLETE_NEW_PARENT_GATES_REQUIRED",
+    "owner": "/root/router_core",
+    "workerSHA": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+    "baseSHA": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+    "actualRemoteHeadVerified": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+    "workerCleanVerified": true,
+    "actualRemoteMainVerified": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "changedPathsVerified": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "service/workflows/compiler.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "fiveFileFingerprintsVerified": {
+      "service/router/intent/validation.py": "a05a61b30dc61adbc5d6fc8aac78946a6ce5e2aae9932c8cd58b65a6bda41f94",
+      "service/router/web_request.py": "145f91a63cbb76a4b34eed84cb453e1b7fb61605629b3fd3c904af037de09ae2",
+      "service/workflows/compiler.py": "47cd64f9b103c81314215f86daa11773c04ae9f4f6a042376930aef4b2f58cec",
+      "tests/test_router_intent_core.py": "2ce13fa8d107c2d08a0585af6f501bcff5322b34c0ffbbdfe5bfca2edefe82a6",
+      "tests/test_router_intent_main.py": "2a02a83d68aae08b8b1b152e34355b1907a3e1991089d68230ad07a841abee2d"
+    },
+    "parentObservedHEAD": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "parentObservedClean": true,
+    "parentFiveObjectsMatchWorkerVerified": true,
+    "parentObservationDisposition": "Now verified clean pushed frozen candidate matching PR160; old worker checks remain builder evidence.",
+    "handoff": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/HANDOFF.json",
+    "handoffSHA256": "4509458cd756fd9d9116c58e5260cea5d7c2592be1911f97e25914da32bfdac4",
+    "bundle": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/bundle-sha256.json",
+    "bundleSHA256": "1c15e3c23475be18fc8ec6a759e3fa919d5265224058b8e5c5ee929dc4caa89d",
+    "sealedEntriesVerified": 12,
+    "mechanicalReceipt": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/mechanical-receipt.json",
+    "mechanicalReceiptSHA256": "f7570f6ccd6a36190c9d30a174ac0964c2ab7f66d77d7507ab776f780b583f43",
+    "mechanicalLog": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/mechanical.log",
+    "mechanicalLogSHA256": "6b05c4757ac35a9b01aa3a5254106e3e704c3a84f941dbba7371578b234d0837",
+    "fullTranscriptAvailable": true,
+    "suiteCount": 18,
+    "passed": 10300,
+    "subtestsPassed": 4640,
+    "exitCode": 0,
+    "testDurationSeconds": 100.62,
+    "runnerElapsedSeconds": 101.4587562084198,
+    "staticHypothesisDispositionsBuilderReported": {
+      "preference_negation": "Reproduced in pure/main controls, repaired for plain/would/curly contracted preferences, with positive-tail and quoted-data controls.",
+      "read_after_negation": "Reproduced source loss for and afterwards/afterwards/&; repaired with shared complete instruction boundaries and paired correctly represented/omitted-source actual main controls. Existing and/and then/plus controls preserved."
+    },
+    "failureHistory": [
+      {
+        "original": "/private/tmp/wisp-router-r78-initial.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-initial.log",
+        "sha256": "7879bc5b522c959d439a01424b1259134b0947d8f02bc6917b64ffeaf758cca2",
+        "bytes": 38846,
+        "summary": "27 failed, 27 passed, 474 deselected in 1.48s",
+        "disposition": "27 failures:26 reproduced production-class regressions and1 overly narrow expectation for a legitimate reminder clarification;27 controls passed."
+      },
+      {
+        "original": "/private/tmp/wisp-router-r78-focused.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused.log",
+        "sha256": "a404dd858c1a08b4697b0dab33c0843e6646c77417c2214926fc881f5b095468",
+        "bytes": 6208,
+        "summary": "2 failed, 611 passed, 1504 subtests passed in 10.09s",
+        "disposition": "2 overly narrow expectations for legitimate operation-specific mark/clear clarifications;611 tests+1504subtests passed."
+      },
+      {
+        "original": "/private/tmp/wisp-router-r78-focused-2.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-2.log",
+        "sha256": "56e364995be09558ed81393a7ae9c6b4a32566f9076605244809b04a1e8494fb",
+        "bytes": 770,
+        "summary": "613 passed, 1504 subtests passed in 9.77s",
+        "disposition": "613 tests+1504subtests passed before additional static hypotheses were tested."
+      },
+      {
+        "original": "/private/tmp/wisp-router-r78-static-initial.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-static-initial.log",
+        "sha256": "51489d2ba29f00e92df4f3be073ac406b1ad4ed8f8d78cd2dda93394ec170a40",
+        "bytes": 46562,
+        "summary": "18 failed, 32 passed, 510 deselected in 1.46s",
+        "disposition": "18 failures:15 genuine preference/ordinary-read authority failures and3 incorrect default reminder-argument expectations;32 controls passed."
+      },
+      {
+        "original": "/private/tmp/wisp-router-r78-focused-3.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-3.log",
+        "sha256": "9da420995ad9b002304b61af64ed4603a000030ed58e8530b353f3cecde322da",
+        "bytes": 16157,
+        "summary": "2 failed, 643 passed, 1504 subtests passed in 9.53s",
+        "disposition": "2 curly-apostrophe preference boundary failures;643 tests+1504subtests passed."
+      },
+      {
+        "original": "/private/tmp/wisp-router-r78-focused-4.log",
+        "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-4.log",
+        "sha256": "1360a7faa9ef3e6442e5fccd96e7788068f7f820f26645be04e11d0fd962eb7e",
+        "bytes": 771,
+        "summary": "645 passed, 1504 subtests passed in 54.91s",
+        "disposition": "645 tests+1504subtests passed after all scoped repairs."
+      }
+    ],
+    "approvalRecovery": {
+      "timeoutReceipt": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-timeout.json",
+      "timeoutReceiptSHA256": "ea520958c83076ffd2dcb505532982468e4fe4154d3316f344dffd8bdb8df82a",
+      "recoveryReceipt": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-recovery.json",
+      "recoveryReceiptSHA256": "056508efcbd677847ea4a8f441c336ef2d259a378e60fd1f827d57f6b3151431",
+      "disposition": "Saved worker receipts report no original command/edit/test started, explicit one-retry allowance, successful same-scope retry and subsequent sequential tests. No pending operation reported; root did not retry/execute."
+    },
+    "rootVerification": "Read-only clean local/actualremote/path/git object metadata, saved handoff/mechanical receipt/complete log summary, twelve sealed hashes/bytes and five source byte fingerprints. No root implementation, tests/audit/QA/probes or actor dispatch.",
+    "gatesDisposition": "Worker pass is builder evidence; formal finding closure requires new frozen parent fullmechanical/CI/independent audit/distinctQA. Old passes never transfer. Provider cancellation diagnosis/resource/training/activation/shipping holds unchanged."
+  },
+  "priorEvidencePreservation": {
+    "completeManifest": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/eval/router-update-integration-20261005/sixth-candidate-gates/complete-bundle-sha256.json",
+    "completeManifestSHA256": "9c6cac5ee0f77f921d5fad89f3cd9e68473c758ebdce86dd3c302473bff5178c",
+    "storedEntriesVerified": 61,
+    "priorCandidateStoredAndRestoredEntriesVerified": 43,
+    "workerStoredAndRestoredEntriesVerified": 12,
+    "originalPrior41EntryManifestSHA256": "745025cac04f51634d39128f49d1da265c92d7c15aea69d78835e1025f7e7ae4",
+    "noPayloadParsedOrScriptExecuted": true
+  },
+  "rootActions": "Read-only direct actor snapshots and clean candidate metadata; record fresh actor acceptance/dispatch and QA hold. Gate progress sourceparent-reported only; no terminal result, root execution or new actor/scope.",
+  "gateDisposition": "New fullmechanical/requiredCI/independent audit/distinctQA required at8dfd5c9; provider cancellation/resource/training/activation/shipping holds unchanged.",
+  "roles": [
+    {
+      "title": "Wisp Release Auditor",
+      "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+      "hostId": "local",
+      "verdicts": [
+        "PASS",
+        "PASS_WITH_NOTES",
+        "BLOCK"
+      ],
+      "waitCursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:162",
+      "evidenceDirectory": "/private/tmp/wisp-router-8dfd5c9-gates-20261005/auditor/",
+      "availabilityObserved": "active",
+      "status": "ACKNOWLEDGED_DISPATCHED_AUDIT_ACTIVE_NO_VERDICT",
+      "previousCandidate": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+      "actorAcceptedExactSHA": true,
+      "currentTurnId": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+      "acceptanceReceipt": {
+        "turnId": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+        "messageId": "msg_025568a98ac5d255016ac445c31b2c87d0b843a774da2f4d7e",
+        "phase": "commentary",
+        "text": "I accept the read-only audit of 8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736. The checkout is clean at that SHA. The repair introduces a separate instruction-clause parser; I\u2019ll test whether it preserves literals, exclusions, and preferences while keeping later actions visible.",
+        "recordedAtUTC": "2026-10-06T00:50:59.335961+00:00",
+        "exactSHA": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+        "verification": "Direct app wait_threads snapshot; existing actor acceptance/status verified."
+      },
+      "executionAllowedNow": true
+    },
+    {
+      "title": "Wisp Simulation QA",
+      "threadId": "01a08531-b393-7690-a072-5776c3cbed4c",
+      "hostId": "local",
+      "verdicts": [
+        "SIM_PASS",
+        "NOTES",
+        "FAIL"
+      ],
+      "waitCursor": "27abf245-52c5-4234-a66f-42aeaedccba1:11",
+      "evidenceDirectory": "/private/tmp/wisp-router-8dfd5c9-gates-20261005/simulation-qa/",
+      "availabilityObserved": "idle",
+      "status": "ACKNOWLEDGED_AVAILABLE_IDLE_EXECUTION_HELD",
+      "previousCandidate": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+      "actorAcceptedExactSHA": true,
+      "currentTurnId": "01a10eaf-fa04-7e20-a080-2acf954a1018",
+      "acceptanceReceipt": {
+        "turnId": "01a10eaf-fa04-7e20-a080-2acf954a1018",
+        "messageId": "msg_0f4ac374dfdf1a13016ac445b9cb5087d08c4d895a80c5e896",
+        "phase": "final_answer",
+        "text": "ACK\u2014assignment read; available as the existing independent Simulation QA role for exact candidate 8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736, PR #160. Bounded synthetic scope with fake interfaces and isolated state accepted. QA remains held until a completed nonblocking same-SHA audit and explicit parent release. No tests, edits, restricted payload access, provider diagnosis, or real effects. Prior ACKs and passes do not transfer.",
+        "recordedAtUTC": "2026-10-06T00:50:59.335961+00:00",
+        "exactSHA": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+        "verification": "Direct app wait_threads snapshot; existing actor acceptance/status verified."
+      },
+      "executionAllowedNow": false
+    }
+  ],
+  "actorDispatchReceipt": {
+    "recordedAtUTC": "2026-10-06T00:50:59.335961+00:00",
+    "sourceParent": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "auditorTurn": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+    "qaAvailabilityTurn": "01a10eaf-fa04-7e20-a080-2acf954a1018",
+    "existingActorsOnly": true,
+    "qaExecutionReleased": false,
+    "rootDispatched": false
+  },
+  "prospectiveRepairDiagnosis": {
+    "recordedAtUTC": "2026-10-06T00:54:05.157907+00:00",
+    "status": "ACK_PROSPECTIVE_SAME_CORE_READ_ONLY_DIAGNOSIS_NO_EDIT_RELEASE",
+    "owner": "/root/router_core",
+    "requesterChat": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "candidateSHA": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "workerHeadVerified": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+    "workerCleanVerified": true,
+    "candidateCleanUnchangedVerified": true,
+    "reviewCheckout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+    "readOnlyPaths": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "service/router/intent/schema.py",
+      "service/router/intent/intent.schema.v1.json"
+    ],
+    "activeWritePaths": [],
+    "editingAllowedNow": false,
+    "testsOrRuntimeExecutionAllowed": false,
+    "allowedNow": "Same existing sole core may statically diagnose source exclusion/governor normalization and raw/quoted data authority in current frozen candidate validation/web request/schema context. Read relevant fresh independent synthetic evidence supplied by parent only; no source/test/evidence writes or reproduction execution. Root records only; parent may route same-owner read-only diagnosis.",
+    "metadataAllowed": "Read-only HEAD/dirty/path/fingerprint metadata; capture exact reviewed SHA and clean state. No project imports/application scripts/tests/probes.",
+    "independentObservation": {
+      "recordedAtUTC": "2026-10-06T00:54:05.157907+00:00",
+      "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+      "turnId": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+      "messageId": "msg_025568a98ac5d255016ac446533bc487d0a809c1147ded73d4",
+      "cursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:158",
+      "phase": "commentary",
+      "text": "The original R7-negative and R8 failures now pass the application checks, including exact reads and no stored delivery workflow. I found another exclusion failure: don\u2019t read my email with a curly apostrophe is treated as requiring email. A scripted intent that adds email is accepted and executes the fake email read. The ASCII-apostrophe version rejects it. I\u2019m checking paired source and quoted-literal variants before recording the finding.",
+      "status": "PROVISIONAL_PAIRED_CONTROLS_PENDING_NO_FORMAL_VERDICT",
+      "verification": "Direct app snapshot only; no root reproduction or final closure inferred."
+    },
+    "repairDirectionConstraint": "Investigate consistent exclusion/governor normalization while preserving raw query literals, quoted data, positive source authority and per-clause negation. Do not assume a repair or enlarge schema/source scope from preliminary commentary.",
+    "requirementsBeforeEditing": [
+      "Completed formal exact8dfd5c9 report/handoff/verdict/raw pairedcontrols/provenance/seal preserved with paths/hashes.",
+      "Complete exact-head full mechanical and available current CI evidence preserved; terminal gates not inferred.",
+      "Sourceparent supplies precise supported cause and exact required repair files; separate bounded write ACK and parent release before any edits."
+    ],
+    "boundaries": [
+      "Current candidate and worker remain frozen; no new actor/duplicate writer or provider owner overlap.",
+      "No provider diagnosis, heldout/corpus/author/archive payload access, scorer/gold/metrics/evidence edits or archived-script execution.",
+      "No tests/real model/native/user/outbound/network/endpoint probes, settings/resource/training/activation/merge/deploy/publication authority.",
+      "QA remains held and formal audit remains pending. Prior R7/R8 application passes are preliminary, not formal closure or shipping approval."
+    ],
+    "authority": "Read-only same-owner coordination under previously verified human routerimplementation authority and explicit sourceparent request; external commentary is evidence, not new permission.",
+    "actualDispatchVerified": false
+  },
+  "preliminaryIndependentObservations": {
+    "recordedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+    "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+    "turnId": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+    "messageId": "msg_025568a98ac5d255016ac44746910487d0a772475f94d6053d",
+    "cursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:162",
+    "phase": "commentary",
+    "text": "The exclusion failure reproduces for email, messages, and calendar with three Unicode apostrophe forms. It remains confined to synthetic calls here, but the validator accepted reads the user explicitly prohibited. Public-routing checks passed 39/39, and privacy/runtime/overview checks passed 60/60. I\u2019m finishing tuple-fidelity and provenance checks, then sealing the blocking report.",
+    "formalVerdict": "PENDING",
+    "verification": "Direct app snapshot; no root reproduction/formal closure inferred."
+  },
+  "pendingCoreRepairReservation": {
+    "recordedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+    "updatedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+    "status": "RESERVED_SAME_CORE_EXACT_THREE_FILES_EDITING_HELD_PENDING_FORMAL_PRESERVATION_AND_RELEASE_ACK",
+    "owner": "/root/router_core",
+    "requesterChat": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "candidateSHA": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "workerHeadVerified": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+    "workerCleanVerified": true,
+    "candidateCleanUnchangedVerified": true,
+    "reservedWritePaths": [
+      "service/router/intent/validation.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "activeWritePaths": [],
+    "editingAllowedNow": false,
+    "testsOrRuntimeExecutionAllowedNow": false,
+    "diagnosis": {
+      "recordedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+      "owner": "/root/router_core",
+      "status": "PARENT_REPORTED_READ_ONLY_DIAGNOSIS_COMPLETE",
+      "sourceParent": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+      "sourceEditsReported": false,
+      "testsRuntimeReported": false,
+      "causeReported": "validation._NEGATIVE is ASCII-only; source_requirements and _unquoted_queries scan raw quote-masked text while existing web helpers normalize one-codepoint Unicode apostrophes. Negative read is not an effect head, so explicit exclusion can become required source.",
+      "proposalReported": "Reuse existing web _normalize only for quote-masked grammatical exclusion views/boundaries; preserve original query text and offsets. Web source need not be edited.",
+      "relatedUnconfirmedHypothesis": "Negative check generic-effect masking before source exclusion matching; solecore synthetic confirmation only after precise edit/execution release.",
+      "verificationLimit": "Sourceparent diagnosis report; no saved separate diagnosis receipt supplied. Root source search stalled and was terminated before results; not an independent root-cause audit."
+    },
+    "independentObservation": {
+      "recordedAtUTC": "2026-10-06T00:58:32.760841+00:00",
+      "threadId": "01a08523-47c7-76e3-be42-aee801a314fd",
+      "turnId": "01a10eb0-094e-7350-8f6d-61fd391e827e",
+      "messageId": "msg_025568a98ac5d255016ac44746910487d0a772475f94d6053d",
+      "cursor": "e1085248-9b3b-40a9-8f24-a1880e8bd57a:162",
+      "phase": "commentary",
+      "text": "The exclusion failure reproduces for email, messages, and calendar with three Unicode apostrophe forms. It remains confined to synthetic calls here, but the validator accepted reads the user explicitly prohibited. Public-routing checks passed 39/39, and privacy/runtime/overview checks passed 60/60. I\u2019m finishing tuple-fidelity and provenance checks, then sealing the blocking report.",
+      "formalVerdict": "PENDING",
+      "verification": "Direct app snapshot; no root reproduction/formal closure inferred."
+    },
+    "requiredBehavior": [
+      "Consistent one-codepoint apostrophe normalization only in quote-masked grammatical source exclusion views/boundaries. Preserve raw literal values, offsets and quoted exclusion/title/name data such as O\u2019Neill.",
+      "Pair ASCII and supported Unicode forms across source domains/lists/later reads; rejected omitted/excluded scripted model sources and faithful allowed-source authority. Related check-masking hypothesis must be confirmed, not assumed.",
+      "Use existing core/main modules for non-vacuous actual-main exact expected fake calls, response and no invented stored outbound workflow. Preserve genuine positive/negative action guards and per-clause semantics.",
+      "Only validation.py and existing core/main test modules may be reopened after release. Web/schema/compiler/provider files remain frozen; no new modules, source/tool/policy/permission or ownership expansion.",
+      "Preserve every initial/final raw log; same sole core freezes clean pushed bounded repair with full same18-suite exact-head evidence. Parent new freeze requires fresh full regression/requiredCI/independent audit/distinctQA. No pass transfer."
+    ],
+    "requirementsBeforeEditing": [
+      "Completed formal exact8dfd5c9 report/handoff/verdict/raw paired controls/provenance/seal preserved with paths/hashes.",
+      "Complete exacthead mechanical and available currentCI evidence preserved; preserve terminal results as they arrive.",
+      "Root explicit release ACK after evidence verification, followed by sourceparent sameowner release/dispatch receipt. No dispatch or edits allowed now."
+    ],
+    "conditionalRelease": {
+      "requirementsFulfilled": false,
+      "parentMayDispatchNow": false,
+      "rootExplicitReleaseACKRequired": true,
+      "editingAllowedAfterCurrentReservation": false
+    },
+    "boundaries": [
+      "No provider diagnosis or overlap with retained Claude owner.",
+      "No heldout/corpus/author/rawarchive/scorer/gold/metrics/evidence edits or archived-script execution.",
+      "No real models/native/user/outbound/network/endpoint probes, production settings/resource/training/activation/merge/deploy/publication authority.",
+      "Frozen candidate unchanged, QA held and independent formal report pending. No automatic-review or unresolved approval boundary bypass."
+    ],
+    "authority": "Conditional exact same-owner reservation under previously verified human routerimplementation scope plus explicit sourceparent request; not source-write/test execution release or new user authorization from report text.",
+    "scopeACKIsNotAuditPass": true,
+    "scopeACKIsNotShippingApproval": true,
+    "rootExecution": "Coordination only; no edits/tests/audit/QA/probes/actor dispatch. Read-only metadata succeeded; stalled source rg was terminated without source-search results."
+  }
+}

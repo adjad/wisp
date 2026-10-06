@@ -1,0 +1,294 @@
+{
+  "status": "planning_complete_no_execution",
+  "checked_at_utc": "2026-10-06T04:06:25.829632+00:00",
+  "actor": "/root/router_plan_review",
+  "thread_id": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+  "requested_model": "gpt-6.1-sol",
+  "requested_reasoning": "high",
+  "actual_runtime_settings_independently_verified": false,
+  "candidate_base": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "authority": "training.fineTuningPlanningScopeACK20261006; explicit parent release",
+  "scope": {
+    "source_edits": false,
+    "training": false,
+    "model_calls": false,
+    "dataset_generation": false,
+    "spending": false,
+    "runtime_allocation": false,
+    "sealed_payload_reads": false,
+    "real_personal_data_reads": false,
+    "allowed_output": "planning/provenance JSON only in this directory",
+    "release_hold": "Wisp1.3 remains unmerged; no activation/deployment/release"
+  },
+  "baseline_limits": [
+    "Configured Ling-3.0-tiny-oQ6e on24GiB Mac with64000 configured max context; exact installed root/revision and loaded-weight binding unverified by admitted metadata.",
+    "Historical feasibility report describes index quantization/names and6.16GiB tensor bytes, not current selected loaded binding or training peak.",
+    "Earlier28/36=77.8percent strict and94.4percent toolset actual-model results used older base and a small difficult corpus; not current baseline or trained result.",
+    "Current80/80 source/argument and72/80 original end-to-end development checks use scripted oracle replies and synthetic tools;179-module gates are mechanical evidence, not Ling accuracy. No training uplift exists."
+  ],
+  "recommendation": "With existing $30 NVIDIA Brev credits, prepare data off-meter, prefer one 48GB A6000 at the parent-verified public $0.60/hour quote for a bounded Axolotl Ling attention-LoRA compatibility smoke, then a 2000-example pilot within remaining credits. Select L40S instead only if qualified kernels or measured useful-step throughput justify its higher hourly price. No model-specific Unsloth Ling training/export qualification was found; its generic Studio method selector is insufficient. No resources or spending now.",
+  "phases": [
+    {
+      "phase": 0,
+      "outcome": "Freeze current untrained production-path baseline and dataset/evaluation contract",
+      "work": "Pin exact permitted source checkpoint/tokenizer/template/runtime revisions; establish base-versus-installed quantization/control equivalence; independent reference oracle and full synthetic orchestration eval; no real tools.",
+      "estimated_engineering_days": "1-2",
+      "gate": "Checkpoint identity/loader contract, source licensing and resource ownership known; actual base metrics collected under separately admitted runtime."
+    },
+    {
+      "phase": 1,
+      "outcome": "10-20 throwaway synthetic examples compatibility smoke",
+      "future_budget_cap_usd": 5,
+      "work": "10-20 disposable synthetic examples in an isolated pinned Axolotl environment. Attention-only LoRA, frozen experts/router/embedding/head. Require finite nonzero backward update, nonempty adapter and config, save, terminate trainer, reload trained high-precision result, export/merge/requantize if necessary, then reload through actual intended oMLX/Wisp serving and independent dev examples. Compare same-base control, trained high-precision result and Mac artifact; pin tokenizer, chat template, tool schema, think mode and decoding. Actual Mac export support is a gate, not a promise.",
+      "gate": "Stop if identity, backward/kernel, save/reload/export or memory gate fails; maximum $5 credits for compatibility. Do not spend the rest of the $30 or generate a large teacher dataset until the serving save/reload gate passes."
+    },
+    {
+      "phase": 2,
+      "outcome": "2000 train / 200 development / 300 untouched final examples routing-first pilot; only expand train toward 5000 if measured time and remaining $30 cap permit",
+      "future_budget_cap_usd": 30,
+      "work": "After phase1 gate passes, create curated synthetic data off-meter where possible, one attention-LoRA SFT epoch initially. 60 percent routing, 20 percent grounded answers, 20 percent general-assistant retention. One training configuration; no automatic paid retries. Choose best checkpoint using development only; independent final once frozen. Teacher use is optional and must fit the same cap; templates and specification-derived labels are the default budget path.",
+      "estimated_elapsed": "2-4 focused engineering days after compatibility; GPU time is unknown until smoke. At $0.60/hour, $23-$25 compute allows 38.3-41.7 hours for all GPU work, including the smoke, setup/download and evaluation. This is a purchasing allowance, not a runtime forecast.",
+      "gate": "Useful held-family development gain without critical or broad-behavior regression; exact serving artifact reload works; observed cost/throughput enables honest expansion budget.",
+      "budget_relation": "Total across compatibility, pilot, preparation, teacher generation if rented, export, dev/final evaluation and retry/storage reserve must remain <=$30 existing credits. This is not $30 on top of the $5 smoke."
+    },
+    {
+      "phase": 3,
+      "outcome": "12000 train/1500 dev/1500 independent final routing-first campaign",
+      "future_budget_cap_usd": null,
+      "work": "One attention-LoRA SFT pass initially, checkpoints eachquarter epoch or200 steps; quick100-case dev slices plus fulldev for candidate selection; stop after2 non-improving checkpoints, save best. Reprice from pilot before spend; single training-scale attempt and no automatic paid retries.",
+      "estimated_elapsed": "Replace with pilot measurements; provisional engineering 2-5 additional focused days, compatibility/conversion work may add days or block.",
+      "gate": "Freeze best checkpoint/runtime/code; untouched final evaluation by independent owner only. Failed final cannot become training examples; future training needs fresh specification families and fresh final set.",
+      "budget_relation": "Separate future budget expansion only after the $30 pilot proves useful. Reprice measured tokens/step and actual required GPU/storage; existing $300 H100 reference scenario is illustrative, not a recommendation to spend or Brev credit quote."
+    },
+    {
+      "phase": 4,
+      "outcome": "Optional broader grounded-assistant tuning after routing succeeds",
+      "future_budget_cap_usd": null,
+      "work": "New separate8000train/1000dev/1000final scenarios;50percent grounded answers,25percent general tasks,25percent routing retention. Demonstration SFT first; optional fact-equivalent preferenceDPO only with trustworthy labels and qualified trainer. Preserve routing baseline and general/multilingual/coding/reasoning metrics.",
+      "gate": "Separate answer-quality improvement plus routing retention; no automatic global-model promotion.",
+      "budget_relation": "Separate objective and future costed scope after routing acceptance; not authorized by this plan."
+    }
+  ],
+  "methods": {
+    "sft": "First practical candidate because correct typed intent and evidence-grounded answers can be demonstrated, and published Ling attention-LoRA support exists. This is a low-cost starting hypothesis, not proof SFT beats RL.",
+    "attention_only": "Freeze routed/shared experts, router gate, embeddings and output head; explicit KDA/MLA projections appropriate to backend. Cloud reference rank16/alpha32/dropout0.05. Initial pilot LR1e-5 is a proposed conservative setting to qualify; one configuration, no hyperparameter sweep within $30. Local feasibility candidate rank8,last4layers,LR1e-5 per report.",
+    "verified_rejection_sft": "On training split only, sample at most4 candidates with current policy/open teacher, keep exact independent-verifier successes; log acceptance by family. Abort empty/collapsed acceptance; do not replace gold with plausible teacher output.",
+    "rl": "Routing has parser-decidable reward; GRPO/RLOO are appropriate later contenders if exact verifier reliable and Ling log-probability/backward/serving path qualified. Binary full correctness after strict safety/literal/schema gates, not format-only orsource-only reward. Use development selection, never sealed final rewards. No reliable model-specific cheap RL runtime established here.",
+    "dpo": "For answer readability/preferences only afterboth responses factual/equally scoped, human/independent reviewed pairs; reward cannot legitimize invented counts or denial-as-empty.",
+    "not_proposed": "No full7.9B parameter training, expert tuning, broad pretrained-base restart or knowledge installation claim. No local GRPO default."
+  },
+  "dataset": {
+    "creation": "Future agent builds artificial scene/tool-schema specifications and independent reference truth oracle; scripts make gold before teacher paraphrase. No private logs, build_lora_dataset.py personal harvesting, historical eval prompts/failures/paraphrases or sealed corpus.",
+    "split_before_paraphrases": {
+      "train": "1500 independently assigned scenario/template families times8 variants=12000",
+      "dev": "250 distinct scenario/template families times6=1500",
+      "final": "300 distinct scenario/template families times5=1500; independent author/custodian locks before modelselection",
+      "warning": "Broad sources may span splits, but scene facts, template motifs/compositions, IDs and all paraphrase descendants stay within one split. Report family-level uncertainty; variants are correlated."
+    },
+    "train_mix": {
+      "typed_intent_routing": 7200,
+      "grounded_answer_and_error_honesty": 2400,
+      "general_assistant_retention": 2400
+    },
+    "negative_control_target": "At least25percent routing examples chat/no-action, quoted instructions, incompatible source/time, insufficient authorization, draft-only, ambiguous entity/channel, denial/unavailable, and unsupported capability; balance with genuine authorized action descriptors.",
+    "routing_dimensions": [
+      "sources and ALL requested sources",
+      "summary versus raw records versus conversation recap",
+      "typed unread/account/sender filters only where supported",
+      "exact named-date/week/month spans,timezone/DST and fixed-clock boundary cases",
+      "explicit source exclusion/negation,public/private separation",
+      "literal names/addresses/leadingplus/message bodies/quoted query preservation",
+      "context correction/source change drops stale filter",
+      "clarification and capability limitations",
+      "draft versus send,permission/effect preconditions remain code-authoritative"
+    ],
+    "grounded_answers": [
+      "Fake calendar agenda byday; email digest without subject repetition; message conversations withYou/correspondentdirection",
+      "counts anddates derived from fixtures,sourcecoverage andpartial/failed/denied clearly different fromempty",
+      "quoted retrievedinstructions never gain authority",
+      "same queryscope avoid redundantreads;changed scope permits newread",
+      "brief readable summaries without inventedfacts/completeness/actions"
+    ],
+    "general_retention": [
+      "ordinary conversation andwriting",
+      "summarization andextraction over provided synthetictext",
+      "small verifiablecoding/math",
+      "multilingual instructions andappropriateclarification",
+      "no-tool answers andhonestuncertainty"
+    ],
+    "teacher_default": {
+      "model": "Qwen/Qwen3.5-9B",
+      "license": "Apache2.0 officialcard andlicensefile checked",
+      "role": "Text-only paraphrase andgrounded-prose candidates,not truthoracle",
+      "execution": "Optional permitted quantized local teacher in an isolated window, or sequential rented GPU use within the same $30 cap after compatibility passes. Templates/specification-derived gold default; do not rent H100 solely for pilot synthesis. No concurrent teacher/student on 24GiB Mac.",
+      "limits": "No teacher quality/throughput measured;512-1024 completion caps andbrief nonthinking mode ifsupported; token accounting includes billed/generatedreasoning"
+    },
+    "teacher_options": [
+      "Templates plus authored gold cheapest/no model-generationfee; add human-reviewed paraphrase diversity",
+      "Self-generation with frozen Ling+independent rejectfilter possible but correlated/self-reinforcement risk",
+      "Closed API only after explicit teacher-output terms permission for intendedWisp use; not default because commercial/distributed classifier exception not established"
+    ],
+    "qa": [
+      "Schema validation andliteral span/byte checks for everyrow",
+      "Independent reference-date/filter/effect oracle;mutationtests rejectplausiblewrongcalls",
+      "Grounded factualanswers checkedagainst fixture truth; teacherdoesnot gradeitself",
+      "Normalization/exact/ngram/minhash/embedding-nearduplicatechecks within/acrosssplitfamilies",
+      "Isolatedcustodian contaminationcheck against sealedset,returnonlycollisioncounts/opaque IDs;planner/generatorneverreadssealedpayload",
+      "Human/independentspotreview10percentpilot=200trainexamples plus50dev;fullrandom300rows plus100criticalstrata;excludefinalcontentfrombuilder",
+      "Dataset/model/runtime/promptversion,seed,source/schema/license,teacherrevision,validatorresults,reviewstatus,splitancestry,sha256row/shardmanifest; nounlicensedpublicdatasetneeded"
+    ],
+    "context": "Match actual productionprompt/schema andLing chattemplate/thinkingmode;retain completecontext, no256-token truncationtoforcefit. Traincompletiontokensonly. Cloud4096reference/localstartatshortestcompleteprompt;longcontextretention mustbeseparatelychecked.",
+    "credit_pilot": {
+      "train": 2000,
+      "development": 200,
+      "final": 300,
+      "split_before_paraphrases": {
+        "train": "250 independently specified families x 8 variants",
+        "development": "40 separate families x 5 variants",
+        "final": "60 separate families x 5 variants"
+      },
+      "mix_train": {
+        "routing": 1200,
+        "grounded_readable_answers": 400,
+        "general_assistant_retention": 400
+      },
+      "tokens": "Illustrative train average 1200 total tokens =>2.4M tokens for one epoch; preserve full schema/context and measure actual length distribution, including a long-context stratum. Teacher full rewrite of 2500 rows at 1000 input/400 output tokens with 30 percent rejection/regeneration would consume 3.25M input and 1.3M output tokens, optional not required.",
+      "QA": "Deterministic validation on every row, 200 pilot training samples plus 50 development spot reviews; final labels independently reviewed, final never used for training decisions. Require family-level splits and provenance before teacher paraphrase."
+    },
+    "scope_note": "credit_pilot counts are the first current recommendation; the original 12000/1500/1500 schema describes only a separately budgeted later expansion."
+  },
+  "acceptance": {
+    "proposed_targets_not_promises": [
+      "Routingstrict complete-source/operation/argument score target95percent onpredeclared freshsupported-readfinal; seek>=5percentagepoint gain versusmatcheduntrainedbase whenbaselinebelow95, withpairedfamily-levelconfidence reporting. Ifbasealready>=95,preregisternoninferiorityandhard-strataimprovement insteadofunattainable5pointgain.",
+      "Zeroobserved unauthorizedeffectproposals/excludedreads/literalcorruption/falsecompletion incriticalset; anycriticalfailure blocks regardlessmean. No finitecorpusprovesgeneral safety.",
+      "General retention no morethan2percentagepoint absolute loss ondeterministicmetrics; no criticalcoding/math/clarification/tool-free regressions.",
+      "Broaderanswerphase:zero criticalungroundedcount/date/action/coverageclaims and>=80percent blindpreferencewin amongfactualnon-tiedpairs;reportties,agreement,anduncertainty.",
+      "Warmroutingp95 <=1.2times matchedbase, no unexplainedrepeatedreads;measurecoldstart/context/cache/end-to-endseparately.",
+      "24GiBMacmemory preliminarytraining/process cap18GiBsubject to measuredOSheadroom; no sustainedswap/unsafe resourceconflict. Servingpeak mustfitapprovedcap."
+    ],
+    "evaluation": "RunrealLing through actualWisp typedtask/workflow/read/router/pin/agent/digestorchestration withsynthetictools; no native/outbound/userdata. Comparebaseandadapter onsamefrozencode,schema,sampling,clock,context/cache. Reportmodel metrics separatelyfrom scriptedmechanical checks. Freezeartifactandrunrequiredexactheadmechanical/CI/audit/syntheticQA gatesbeforeanylaterpromotion.",
+    "stop_conditions": [
+      "NaN/Inf/zero adapter update",
+      "OOM/swap/resourceownership conflict",
+      "unsupportedloader/adapternamespace or serving reloadfailure",
+      "packing/padding/causal-mask failure ortemplate drift",
+      "anycriticalvalidation/retentionregression",
+      "2nonimprovingdevcheckpoints",
+      "budget/elapsedcap orthroughput materiallybelowestimate",
+      "contamination/license/provenanceuncertainty"
+    ],
+    "fallback": "Retain current untrained Ling plus deterministicintentcompiler, improve specs/validation. Ifinstalledquantizednamespace conversionunproven, use separatelyqualified immutableofficialBF16base;stop if no preserved-equivalence servingexport. Unsupportedtrainingis not reason toalterproductionenvironment.",
+    "three_way_controls": {
+      "control_1": "Original immutable same-source base, with matched tokenizer, template, schema, thinking mode and runtime settings.",
+      "control_2": "Trained high-precision adapter/model on that exact base; establishes training effect.",
+      "control_3": "Merged/exported/requantized Mac serving artifact; establishes conversion/serving loss separately.",
+      "comparison": "Same independently held development cases, same frozen Wisp orchestration, fixture tools and decoding settings; inspect effective arguments, grounded answers, latency and memory. Baseline checkpoint mismatch is not training gain.",
+      "version_all": "Source and served checkpoint hashes/revisions, tokenizer, chat template, typed intent/tool schema, thinking mode, runtime/kernel/framework versions, quantization and adapter configuration.",
+      "release_distinction": "Training acceptance does not constitute repository release approval or lift the Wisp1.3 merge hold."
+    },
+    "pilot_limit": "The small 300-case final is directional evidence with family-level confidence, not sufficient for full release confidence. Keep source/argument and full-Wisp/model metrics distinct. The larger untouched final set is a later acceptance gate; no claim of trained gain before runs.",
+    "targets_status": "Numerical targets are proposed acceptance criteria to agree after fresh same-base baseline measurement, not arbitrary required uplift or a claim of achievable gain. Prior95percent target must not substitute for measured baseline and family-level uncertainty."
+  },
+  "user_later_decisions": {
+    "minimum": "Confirm $30 total credit cap and exact launch quote/credit eligibility/expiration; secure Brev account access and disabled auto-recharge (no credentials in chat); permit checkpoint/optional Apache-2.0 teacher downloads and synthetic/public sources; permit isolated Mac serving validation window; agree acceptance criteria. No thousands of manually written examples expected. Agent constructs/validates dataset and reports before scaling.",
+    "optional": "Review 20-30 representative desired responses to set voice/readability preferences; model activation/deployment/release remains separate."
+  },
+  "engineering_estimate": "About4-8 focusedagent/engineeringdays forclean cloud-first compatibility/pilot/fullcampaign;2-5additionaldaysforbroaderphase. New checkpointconversion/servingsupport canaddseveraldays orblock;no paidlaborrate assumed.",
+  "latest_user_steering": {
+    "budget": "$30 existing NVIDIA Brev credits, not additional cash authorized",
+    "trainer": "User asks whether Unsloth Studio is best; compare model-specific qualification with Axolotl",
+    "gpu_catalog_evidence": "Parent live public Brev CUA, no account/launch/credit eligibility verification",
+    "license": "Ling model card MIT; Qwen3.5-9B teacher actual Apache-2.0 LICENSE verified; pin licenses/revisions before jobs"
+  },
+  "trainer_decision": {
+    "preferred": "Axolotl Ling-specific attention-only BF16-base LoRA on a 48GB rental; official 4096-token example reports 29GiB device memory on H100. Hardware transfer to A6000 remains unmeasured and kernel-smoke gated.",
+    "unsloth": "Studio and Brev are complementary software/compute. Generic QLoRA/LoRA/full options do not prove Ling KDA/MLA backward or export. Official feature request #8532 is open; no exact Ling entry found in current official loader/doc search. Current Studio/Mac pages advertise Mac training while older requirements say MLX is in the works. Do not claim blanket Mac impossibility; exact Ling training remains unverified.",
+    "methods": "Start attention-only LoRA matching the model-specific Axolotl recipe; QLoRA only after exact Ling quantization/backward/export qualification. No full fine-tuning or continued pretraining for the $30 behavior pilot.",
+    "local": "24GiB Mac quantized MLX training may be possible after exact checkpoint mapping/backward/save/reload qualification; historical installed runtime lacks Ling mapping. Local cash rental cost zero, but unqualified and occupies user machine."
+  },
+  "user_screenshot_settings": {
+    "observation": "Parent relayed user screenshots; no model training or runtime verified.",
+    "checkpoint": "DJRSYSTEMSERVICES/Ling-3.0-tiny-oQ6e",
+    "method": "Full fine-tune",
+    "precision": "fp16",
+    "device": "Apple M5 Pro 24GiB Apple Silicon",
+    "dataset": "pending",
+    "evaluation_split": "None",
+    "max_steps": 30,
+    "context": 2048,
+    "learning_rate": 2e-05,
+    "optimizer": "AdamW",
+    "scheduler": "linear",
+    "micro_batch": 2,
+    "gradient_accumulation": 4,
+    "effective_batch": 8,
+    "weight_decay": 0.001,
+    "downloads": "Model download begins on start; HF token not set."
+  },
+  "corrected_starting_settings": [
+    {
+      "field": "Trainer / mode",
+      "proposed": "Isolated Axolotl Ling-specific attention-only LoRA on rented NVIDIA GPU; freeze experts/router/embeddings/head",
+      "reason": "Published model-specific code/backward recipe; no full fine-tune and no unverified quantized training default."
+    },
+    {
+      "field": "Checkpoint",
+      "proposed": "Pinned official inclusionAI/Ling-3.0-tiny BF16 source, including tokenizer/template/config revision",
+      "reason": "Selected oQ6e is an MLX quantized serving artifact; it is not automatically a CUDA training checkpoint. Source-to-Mac conversion and same-base equivalence must be qualified."
+    },
+    {
+      "field": "Precision",
+      "proposed": "BF16 base and compute on capable GPU; verify finite backward numerics",
+      "reason": "Use model-specific recipe; do not infer FP16 full-training compatibility from UI selection."
+    },
+    {
+      "field": "Micro-batch / accumulation",
+      "proposed": "1 / 8, effective batch 8",
+      "reason": "Preserve nominal effective batch while reducing per-microbatch activations. This differs from Axolotl reference accumulation2; its step timing cannot be transferred."
+    },
+    {
+      "field": "Context",
+      "proposed": "2048 only if complete production prompt, schema, conversation and target fit; otherwise measure longest necessary context, initial reference4096",
+      "reason": "Never truncate semantics to force memory fit; include long-context retention development checks."
+    },
+    {
+      "field": "Steps / epochs",
+      "proposed": "30 maximum steps for compatibility only; subsequent pilot one epoch initially, with development checkpoints and early stopping",
+      "reason": "30-step loss movement is not quality evidence or sufficient training campaign."
+    },
+    {
+      "field": "Learning rate",
+      "proposed": "1e-5 conservative compatibility starting value; pilot rate separately chosen with independent development evidence",
+      "reason": "Not a tuned recommendation or promised uplift. Screenshot2e-5 is not established as optimal; no paid sweep inside $30."
+    },
+    {
+      "field": "Adapter rank / alpha / dropout",
+      "proposed": "16 / 32 / 0.05 for explicit backend-supported attention projections",
+      "reason": "Axolotl Ling attention-LoRA reference settings; verify actual trainable names and frozen tensors."
+    },
+    {
+      "field": "Optimizer / weight decay",
+      "proposed": "AdamW on adapter parameters only; retain0.001 weight decay as provisional",
+      "reason": "All-parameter AdamW states would exceed Mac memory; provisional settings require actual update check."
+    },
+    {
+      "field": "Scheduler",
+      "proposed": "Linear acceptable for a fixed smoke; pilot schedule and warmup recorded separately",
+      "reason": "Scheduler choice is not evidence of convergence or improvement."
+    },
+    {
+      "field": "Gradient checkpointing",
+      "proposed": "Enabled in qualified Ling training backend; verify packing/causal masks and gradients",
+      "reason": "Reduce activation memory without assuming custom KDA/MLA backward correctness."
+    },
+    {
+      "field": "Development split",
+      "proposed": "Explicit family-based development set, never None;10-20 independent smoke dev examples, then200 pilot development and300 untouched final",
+      "reason": "Split scene families before paraphrases. No random row split or training-loss-only selection."
+    }
+  ],
+  "full_finetune_memory_correction": "Memory depends on7.9B total parameters, not1.3B active per token. Full FP16 AdamW needs all weights, gradients and optimizer states; ordinary mixed-precision implementations can approach roughly100GiB or more before activations and runtime buffers. Exact implementation-dependent total is unmeasured. It is far beyond24GiB, so do not start the screenshot configuration. Attention-LoRA freezes base weights and limits optimizer states to adapters; published29GiB device use is a reference, not A6000 or Mac fit proof.",
+  "checkpoint_control_correction": "Original installed oQ6e exact loaded checkpoint binding remains unverified. Cloud training uses a pinned official BF16 checkpoint. Compare untrained same official base, trained high-precision artifact, and both untrained/trained exports through identical Mac quantization/serving settings to separate training, quantization and checkpoint differences. Do not call an official-base versus unknown oQ6e difference training gain.",
+  "download_note": "A public checkpoint may not need an HF token; confirm selected pinned model access before future download. No token collection, downloads or training performed in planning.",
+  "completion_status": "Planning completed with screenshot correction. Actor quiescent after this bounded update; no source edits, model calls, dataset jobs, training, downloads, resources or spend."
+}

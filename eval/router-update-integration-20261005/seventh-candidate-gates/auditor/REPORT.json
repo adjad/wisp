@@ -1,0 +1,259 @@
+{
+  "verdict": "BLOCK",
+  "sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "completed_at": "2026-10-06T01:03:04.720538+00:00",
+  "findings": [
+    {
+      "id": "R9-source-exclusion-normalization",
+      "priority": 1,
+      "title": "Unicode apostrophes turn explicit source prohibitions into positive read requirements",
+      "prompt": "Find notes about quartz birds and don\u2019t read my email",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "line": 38
+        },
+        {
+          "file": "service/router/intent/validation.py",
+          "line": 66
+        },
+        {
+          "file": "service/router/intent/validation.py",
+          "line": 20
+        },
+        {
+          "file": "service/router/web_request.py",
+          "line": 179
+        }
+      ],
+      "cause": "source_requirements applies the ASCII-only source-negation regex to raw mask_quoted(prompt), while instruction/action helpers normalize Unicode apostrophes. The curly/modifier/fullwidth contraction fails both exclusion scans, so the email noun becomes a required positive source. A read governor is not an effect head that would otherwise mask it.",
+      "actual": "Correct notes-only intent with excluded_sources=[email] clarifies as Missing requested source. A wrong intent that adds email and omits the exclusion is validated/compiled; actual main calls fake search_notes and summarize_emails and includes both receipts in its answer.",
+      "paired": "ASCII apostrophe and do not/excluding/without forms retain notes-only reads and reject added sources. U+2019/U+02BC/U+FF07 each reproduce the inverted authority for email/messages/calendar. Explicit model-declared exclusion still rejects an extra source. Fully quoted prohibition text stays exact data.",
+      "requested_repair": "Normalize semantic source-negation matching consistently, preserving original query bytes and offsets, or fail closed on an unresolved prohibition. Do not permit a model to add a user-prohibited source by omitting excluded_sources. Add non-vacuous actual-main correctly represented and malicious extra-source paired controls with source-call and response assertions.",
+      "evidence": {
+        "primary": "application-results.json excluded-good-104/106/108 and excluded-extra-105/107/109",
+        "paired": "exclusion-results.json exclusion-9/10 (email),12/13 (messages),15/16 (calendar); later apostrophe variants18\u201335",
+        "minimal": "R9-proof.json"
+      },
+      "limits": "Opt-in structured path with scripted model output and wholly replaced registered callables. No real data, model, endpoint or native-source access occurred. This proves failed grounding of explicit source exclusions, not measured model failure frequency. No claim that the exclusion regex newly changed in this delta."
+    }
+  ],
+  "scope": {
+    "full_changed_paths": 298,
+    "delta_paths": 76,
+    "source_test_delta_paths": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "service/workflows/compiler.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "method": "Retained prior full independent production/schema/harness/overview/current-context reviews for unchanged objects, complete76-path current delta assessment with opaque archived payload custody, and fresh independent actual-main/runtime/public/privacy/provenance controls. No old verdict transfer."
+  },
+  "checks": {
+    "application": {
+      "cases": 140,
+      "expectations_met": 134,
+      "failed_ids": [
+        "excluded-good-104",
+        "excluded-extra-105",
+        "excluded-good-106",
+        "excluded-extra-107",
+        "excluded-good-108",
+        "excluded-extra-109"
+      ]
+    },
+    "exclusion": {
+      "cases": 43,
+      "expectations_met": 25,
+      "failed_ids": [
+        "exclusion-9",
+        "exclusion-10",
+        "exclusion-12",
+        "exclusion-13",
+        "exclusion-15",
+        "exclusion-16",
+        "exclusion-18",
+        "exclusion-19",
+        "exclusion-21",
+        "exclusion-22",
+        "exclusion-24",
+        "exclusion-25",
+        "exclusion-27",
+        "exclusion-28",
+        "exclusion-30",
+        "exclusion-31",
+        "exclusion-33",
+        "exclusion-34"
+      ]
+    },
+    "tuple": {
+      "cases": 20,
+      "expectations_met": 20,
+      "failed_ids": []
+    },
+    "public": {
+      "cases": 39,
+      "expectations_met": 39,
+      "failed_ids": []
+    },
+    "boundary": {
+      "cases": 60,
+      "expectations_met": 60,
+      "failed_ids": []
+    }
+  },
+  "application_families": {
+    "negative": {
+      "expectations_met": 13,
+      "cases": 13
+    },
+    "later-effect": {
+      "expectations_met": 56,
+      "cases": 56
+    },
+    "later-read": {
+      "expectations_met": 14,
+      "cases": 14
+    },
+    "positive-share": {
+      "expectations_met": 4,
+      "cases": 4
+    },
+    "governed-title": {
+      "expectations_met": 5,
+      "cases": 5
+    },
+    "truncated-title": {
+      "expectations_met": 5,
+      "cases": 5
+    },
+    "multi-to": {
+      "expectations_met": 2,
+      "cases": 2
+    },
+    "quoted-effects": {
+      "expectations_met": 3,
+      "cases": 3
+    },
+    "excluded-good": {
+      "expectations_met": 1,
+      "cases": 4
+    },
+    "excluded-extra": {
+      "expectations_met": 1,
+      "cases": 4
+    },
+    "excluded-later": {
+      "expectations_met": 4,
+      "cases": 4
+    },
+    "excluded-omitted": {
+      "expectations_met": 4,
+      "cases": 4
+    },
+    "literal-domains": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "literal-extra": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "retained-alias": {
+      "expectations_met": 5,
+      "cases": 5
+    },
+    "tuple-good": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-reverse": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-swap-query": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-omit-query": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-swap-time": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-omit-time": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-swap-count": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "tuple-omit-count": {
+      "expectations_met": 1,
+      "cases": 1
+    },
+    "context-replace": {
+      "expectations_met": 3,
+      "cases": 3
+    },
+    "retained-constraint": {
+      "expectations_met": 4,
+      "cases": 4
+    }
+  },
+  "closures": [
+    "R7-negative:13/13 exact main reads/responses, no persisted delivery or workflow events including preference/apostrophe variants",
+    "R8:56/56 later effects retain own action guard after plain/preference negative governors and varied joiners; no notes-only read or intent generation. Genuine later email binds Rowan, not preceding Mom.",
+    "Later read source coverage14/14 includes correctly represented7 and omitted7; afterwards/and afterwards/&/plus retained",
+    "Earlier R4/R7 title/second-to/quoted/positive-share boundaries retained",
+    "Full query/date/count/account/unread/operation tuple and inherited replacement controls20/20; exact duplicates dedupe",
+    "Public routing39/39; runtime/privacy/overview/scorer/manifest/DST controls60/60"
+  ],
+  "gates": {
+    "parent_full_regression": {
+      "parent_reported_passed_modules": 179,
+      "parent_reported_total_modules": 179,
+      "receipt_verified": true,
+      "exit_code": 0,
+      "candidate_sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+      "head_unchanged": true,
+      "clean": true,
+      "completed_at": "2026-10-06T00:56:45.176603+00:00",
+      "elapsed_seconds": 600.8015423328616,
+      "receipt_sha256": "b05e48f5ff18ebc91474a6eb20f27a4abddd0dced3550f596eb58a0389df65f9",
+      "log_sha256": "33f7a42b797d273f910501823ad5e41395745f88e016c643cccf120ec06acf58",
+      "auditor_did_not_duplicate": true
+    },
+    "required_ci": "Both same-head required CI jobs last parent-reported running. No terminal current-head CI receipt available to Auditor at seal.",
+    "python_ci_run": 37395706278,
+    "python_ci_job": 112051025918,
+    "artifact_ci_run": 37395705962,
+    "artifact_ci_job": 112051025311,
+    "prior_provider_failure": "6df provider cancellation failure still needs retained Claude owner diagnosis/ACK; later local/CI passes do not diagnose or waive it. Auditor performed no provider-path diagnosis or tests.",
+    "simulation_qa": "HELD by this BLOCK; no execution release",
+    "resident_ling_training_activation": "Blocked/unreleased; planner stays disabled by default"
+  },
+  "provenance": {
+    "checks": 33,
+    "all_passed": true,
+    "archive_entry_checks": 307,
+    "replay_bundles": 11,
+    "opaque_corpus_seals_verified": true,
+    "clean_exact_head_final": true,
+    "all_changed_hashes_reverified": true
+  },
+  "limits": [
+    "Synthetic scripted model responses and replaced registered tools only; no actual-model quality, strict-schema support, latency, generalization, training or resident-resource claim",
+    "No real model/status/endpoint/network/native/user data/settings/credentials/outbound effects or provider diagnosis",
+    "No heldout/dev corpus/author/archive/replay payload parsing and no archived helper execution",
+    "No candidate/source edits, full gate duplication, old pass transfer, builder self-approval, new owners or other-chat messages",
+    "Distinct Simulation QA and applicable Live QA, final performance, activation and shipping remain separate; no merge/deploy/installed replacement/publication approval"
+  ]
+}

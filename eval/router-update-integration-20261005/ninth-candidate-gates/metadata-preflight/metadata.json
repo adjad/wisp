@@ -1,0 +1,171 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "observed_at_utc": "2026-10-06T03:29:54.129175+00:00",
+  "configuration_sources": [
+    {
+      "path": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/service/config/models.yaml",
+      "kind": "packaged",
+      "exists": true,
+      "qualified_stable": true
+    },
+    {
+      "path": "/Users/adijain/.moe/config.yaml",
+      "kind": "configured_overlay",
+      "exists": true,
+      "qualified_stable": true
+    },
+    {
+      "path": "/Users/adijain/.omlx/model_settings.json",
+      "kind": "nonsecret_model_settings",
+      "exists": true,
+      "qualified_stable": true
+    }
+  ],
+  "roles": {
+    "router": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    },
+    "fast": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    },
+    "agent": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    },
+    "general": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    },
+    "coding": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    },
+    "reasoning": {
+      "configured_model": "Ling-3.0-tiny-oQ6e",
+      "target_complete": true,
+      "model": "Ling-3.0-tiny-oQ6e",
+      "revision": "",
+      "profile": "",
+      "context_window": 64000,
+      "capabilities": [],
+      "dimensions": 0,
+      "endpoint": {
+        "name": "local",
+        "origin": "http://127.0.0.1:8000",
+        "provider": "omlx",
+        "api_prefix": "/v1",
+        "managed": true,
+        "credential_reference": "local_omlx"
+      }
+    }
+  },
+  "errors": [],
+  "selected_checkpoint": {
+    "model": "Ling-3.0-tiny-oQ6e",
+    "resolution": "unavailable_no_unambiguous_absolute_selected_model_reference",
+    "broader_cache_or_home_scan_performed": false,
+    "loaded_weight_binding": "unverified"
+  },
+  "runtime": {
+    "constructors": 0,
+    "status_requests": 0,
+    "model_generations": 0,
+    "native_commands": 0,
+    "sockets": 0,
+    "loaded_weight_binding": "unverified",
+    "residency": "not inspected"
+  },
+  "isolation": {
+    "stores": "/private/tmp/wisp-router-67e4cef-runtime-preflight-20261005/logs/isolated-state",
+    "environment": "fresh allowlist",
+    "guard_before_service_import": true,
+    "credentials_settings_recovery_denied": true
+  },
+  "optional_memory_metadata": "not requested",
+  "selected_model_ids": [
+    "Ling-3.0-tiny-oQ6e"
+  ],
+  "selected_model_settings": {
+    "model": "Ling-3.0-tiny-oQ6e",
+    "metadata": {
+      "max_context_window": 64000
+    },
+    "source": "/Users/adijain/.omlx/model_settings.json"
+  },
+  "configuration_constants_restored": true,
+  "denied_api_attempts": [],
+  "finished_at_utc": "2026-10-06T03:29:55.590100+00:00",
+  "scope_status": "metadata_only_no_runtime"
+}

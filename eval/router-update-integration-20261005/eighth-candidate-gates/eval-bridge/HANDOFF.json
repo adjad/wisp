@@ -1,0 +1,39 @@
+{
+  "status": "design_complete_no_runtime_admission",
+  "owner": "/root/router_eval",
+  "recorded_at_utc": "2026-10-06T02:21:29.562347+00:00",
+  "candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "candidate_clean_before_and_after_static_reads": true,
+  "registered_worker_head": "e9e51cd2414113ae27a4af5badce1c22ee335db5",
+  "branch": "codex/router-replay-eval",
+  "fresh_read_only_ack": "01a10efb-f7f8-71a0-ba83-78bd6b62a8fb",
+  "proposed_source_paths": [
+    "scripts/eval_router_update.py",
+    "tests/test_router_update_eval.py",
+    "eval/router-update-20261005/README.md"
+  ],
+  "proposal_sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373",
+  "requests": {
+    "constructors": 0,
+    "status": 0,
+    "generation": 0,
+    "native_inspections": 0
+  },
+  "source_edits": 0,
+  "credential_or_private_configuration_reads": 0,
+  "heldout_opened": false,
+  "requires_before_implementation": "Exact-path write ACK and clean registered-worker reconciliation base; no runtime authorization implied.",
+  "requires_before_runtime": [
+    "New clean frozen candidate and exact-SHA tests/independent auth-boundary review",
+    "Fresh resource/execution ACK including exact auth/config paths, existing-lock lease and read-only native attribution capability",
+    "Verified current exact target, residency, revision/checkpoint identity bound to loaded instance",
+    "Real-clock expiry/cleanup enforcement"
+  ],
+  "key_constraints": [
+    "Default guard unchanged; private capability only, no HOME/subprocess/network wildcard",
+    "Normal configured OMLXClient/CredentialTransport/RuntimeAuthority and genuine recovery quarantine preserved",
+    "Existing qualified lock acquisition/release without content mutation; missing/unqualified lock fails closed",
+    "Only status and completions on one origin/model; no load/unload/start/native tools",
+    "Original corpus/gold/scorer/metric definitions and actual actor execution unchanged"
+  ]
+}

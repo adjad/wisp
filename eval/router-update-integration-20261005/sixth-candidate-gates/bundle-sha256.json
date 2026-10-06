@@ -1,0 +1,207 @@
+{
+  "auditor/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "41f14590659a929b1ab1535ee176a234b96701f7d34d18465d6069965c79f011",
+    "stored_sha256": "41f14590659a929b1ab1535ee176a234b96701f7d34d18465d6069965c79f011"
+  },
+  "auditor/REPORT.json": {
+    "original_name": "REPORT.json",
+    "original_sha256": "75145b6e7cca9c872755920ff5260815a0303298e8609f616935ef9841dec38a",
+    "stored_sha256": "75145b6e7cca9c872755920ff5260815a0303298e8609f616935ef9841dec38a"
+  },
+  "auditor/REPORT.md": {
+    "original_name": "REPORT.md",
+    "original_sha256": "9f8fcbe10127fc13cf2468e2efc2a2385483cfb916a6c65f45c8bbb7998fdbaa",
+    "stored_sha256": "9f8fcbe10127fc13cf2468e2efc2a2385483cfb916a6c65f45c8bbb7998fdbaa"
+  },
+  "auditor/application-command-initial.log.gz": {
+    "original_name": "application-command-initial.log",
+    "original_sha256": "eefdf9512b1db1adc9b4974d4707c1312097f9a73764203075b79923fc1b9afb",
+    "stored_sha256": "6627401d5939299ae185dd54e5b1257a9276f95b52ee15305ea2beea80a68d25"
+  },
+  "auditor/application-command.log.gz": {
+    "original_name": "application-command.log",
+    "original_sha256": "8ec038e27f9465457b402a20c8f57f979c5fafeda802fb5d735d6179dd0fecf3",
+    "stored_sha256": "9bb6024a6c483e6090fa9704a3a2ad83867c2143c6343cd6a484614a25f602bb"
+  },
+  "auditor/application-results.json.gz": {
+    "original_name": "application-results.json",
+    "original_sha256": "6267cc9c2d06bd8e7dd76b9d36f47e24079387a94b86230abe064e787056f2bb",
+    "stored_sha256": "e7ad09ec05e5000a30d64f44087e8edadefce204a11f1633607a27147a9c287f"
+  },
+  "auditor/application_controls.initial.py": {
+    "original_name": "application_controls.initial.py",
+    "original_sha256": "80ddeab37516dd567ef99cdd41d43e4bd66a435ae0a15e8abf96bc0d61931be6",
+    "stored_sha256": "80ddeab37516dd567ef99cdd41d43e4bd66a435ae0a15e8abf96bc0d61931be6"
+  },
+  "auditor/application_controls.py": {
+    "original_name": "application_controls.py",
+    "original_sha256": "112209fae8539a892dfe69e54eab50598314d5421a3376add929bb3d38a9cb5e",
+    "stored_sha256": "112209fae8539a892dfe69e54eab50598314d5421a3376add929bb3d38a9cb5e"
+  },
+  "auditor/assignment-snapshot.json": {
+    "original_name": "assignment-snapshot.json",
+    "original_sha256": "28d51b75848d961500446dbf972bd34d39a748b86a6fd429614cf8508f666048",
+    "stored_sha256": "28d51b75848d961500446dbf972bd34d39a748b86a6fd429614cf8508f666048"
+  },
+  "auditor/auditor-fixture-notes.json": {
+    "original_name": "auditor-fixture-notes.json",
+    "original_sha256": "4315b92a4ecb5108f89e4d17cd53fb37f30082e5188313ee6cc658fb612d6219",
+    "stored_sha256": "4315b92a4ecb5108f89e4d17cd53fb37f30082e5188313ee6cc658fb612d6219"
+  },
+  "auditor/boundary-command.log.gz": {
+    "original_name": "boundary-command.log",
+    "original_sha256": "1dd32d25e2e9133fa9a168d58814f9a44b6cae3b976092922886b52448593ffb",
+    "stored_sha256": "95467cf02b690cb57176b2a8919645c9a4472179984831cdf808da8ca1cfca23"
+  },
+  "auditor/boundary-results.json.gz": {
+    "original_name": "boundary-results.json",
+    "original_sha256": "db32f21a2a8617b2973399c47fe124d21671cde3433a4290c35806ce1351c818",
+    "stored_sha256": "56fae07019c302a9d7e701969aaa479c2214a316f748bd2a386ba9aa1d5adc15"
+  },
+  "auditor/boundary_controls.py": {
+    "original_name": "boundary_controls.py",
+    "original_sha256": "50e1d4160a3e8419c34c3f2beb623674216ea377005ab49bf5c22c5d3cdf36c6",
+    "stored_sha256": "50e1d4160a3e8419c34c3f2beb623674216ea377005ab49bf5c22c5d3cdf36c6"
+  },
+  "auditor/final-verification.json": {
+    "original_name": "final-verification.json",
+    "original_sha256": "0ecb72a020ea686162bf396bd50f51100ac8a40a15ded0a4dc222557aca550aa",
+    "stored_sha256": "0ecb72a020ea686162bf396bd50f51100ac8a40a15ded0a4dc222557aca550aa"
+  },
+  "auditor/finalize_report.py": {
+    "original_name": "finalize_report.py",
+    "original_sha256": "08586c9c04fa9705178bd4d52a6252c42995947f930c8b9b517555d70a9021d2",
+    "stored_sha256": "08586c9c04fa9705178bd4d52a6252c42995947f930c8b9b517555d70a9021d2"
+  },
+  "auditor/focused-command.log.gz": {
+    "original_name": "focused-command.log",
+    "original_sha256": "69011b13d2e68a526c11b4ba5c018fbaf056ec42a46e8a3111bfe1542eee50c4",
+    "stored_sha256": "9efd2a5941a8697a4600f7aad8f6a702b5558ea952cc0960d36faf507e4f9888"
+  },
+  "auditor/focused-results.json.gz": {
+    "original_name": "focused-results.json",
+    "original_sha256": "872a2326633392cd396386c5ed0c136a77d15bf39ee11f0b7a2a49c2d8e5c3aa",
+    "stored_sha256": "d85dd772d09e9e3845e2773b8c6f42985a9559a91a94022470820ad010160d22"
+  },
+  "auditor/focused_controls.py": {
+    "original_name": "focused_controls.py",
+    "original_sha256": "70d1822388758c3ea2090835fc474f32fd3c45d6d9cbf141481dd9e387a60e3f",
+    "stored_sha256": "70d1822388758c3ea2090835fc474f32fd3c45d6d9cbf141481dd9e387a60e3f"
+  },
+  "auditor/paired-command.log.gz": {
+    "original_name": "paired-command.log",
+    "original_sha256": "66fedf74a92352ad0d15102147b98ebe9b7d8b0152595e5cbd2791a07d40e903",
+    "stored_sha256": "5b906c5bc24d56d35f240b5d19932070bdd6279fbe9ef9380127533bfaa77b75"
+  },
+  "auditor/paired-results.json.gz": {
+    "original_name": "paired-results.json",
+    "original_sha256": "6bef06f5f9bf9ee84a9a9a931dc94ba279cc7eff628b8097175bf32bb5bc4a0e",
+    "stored_sha256": "272cc2459928184772176faab63c6bddba645feeb2410d55aa96ecc7bf161b71"
+  },
+  "auditor/paired_controls.py": {
+    "original_name": "paired_controls.py",
+    "original_sha256": "24e5eb49affc3b085e33520758133e7f95b48f2d806f64ddc68af8bbc143eea5",
+    "stored_sha256": "24e5eb49affc3b085e33520758133e7f95b48f2d806f64ddc68af8bbc143eea5"
+  },
+  "auditor/parent-gate-receipt.json": {
+    "original_name": "parent-gate-receipt.json",
+    "original_sha256": "29a2187461e29787490c27127aef6ee11b944a514bd224b225cfc1a4067480cc",
+    "stored_sha256": "29a2187461e29787490c27127aef6ee11b944a514bd224b225cfc1a4067480cc"
+  },
+  "auditor/pre-python-ci-HANDOFF.json": {
+    "original_name": "pre-python-ci-HANDOFF.json",
+    "original_sha256": "168814aef5c9164aad3bd71f0dd68e688cc8c0b1cc6228bd91fd7aefe90878ce",
+    "stored_sha256": "168814aef5c9164aad3bd71f0dd68e688cc8c0b1cc6228bd91fd7aefe90878ce"
+  },
+  "auditor/pre-python-ci-REPORT.json": {
+    "original_name": "pre-python-ci-REPORT.json",
+    "original_sha256": "e0271542f2e57f392f9042f147e818418c34fb647e27ce2e2fbcfa565cd2b621",
+    "stored_sha256": "e0271542f2e57f392f9042f147e818418c34fb647e27ce2e2fbcfa565cd2b621"
+  },
+  "auditor/pre-python-ci-REPORT.md": {
+    "original_name": "pre-python-ci-REPORT.md",
+    "original_sha256": "8b4e098fffa43fe02f9281d94702927df7a914231b10f184ecf4a1169bfad308",
+    "stored_sha256": "8b4e098fffa43fe02f9281d94702927df7a914231b10f184ecf4a1169bfad308"
+  },
+  "auditor/pre-python-ci-checksums.json": {
+    "original_name": "pre-python-ci-checksums.json",
+    "original_sha256": "50ee017618de40dd6732f9fcd61020c3bf69ebfd62d35de7e774464f8c217a82",
+    "stored_sha256": "50ee017618de40dd6732f9fcd61020c3bf69ebfd62d35de7e774464f8c217a82"
+  },
+  "auditor/provenance-command-initial.log.gz": {
+    "original_name": "provenance-command-initial.log",
+    "original_sha256": "632df9d1d06e687c3fbcded521f486984e395efa5dd6cb6c8c21d8cc78f9e837",
+    "stored_sha256": "d9d3fccd8a03e310265b0b8e81d1538e7ca76179757f796368c17fe04e075ce3"
+  },
+  "auditor/provenance-command.log.gz": {
+    "original_name": "provenance-command.log",
+    "original_sha256": "e6f8ee032f29300c1a59dacf95e814649ada89b0888a708c1237db17e2bc6c14",
+    "stored_sha256": "ee4b75b3c96cc28242d52780582e4b6d3f87f36cc8b0f3242eabebe0f1147b11"
+  },
+  "auditor/provenance.json": {
+    "original_name": "provenance.json",
+    "original_sha256": "d6b1f9cdf455609adec6fffc79a43190e3c6e6e9f19d99692af58edb2bf86f90",
+    "stored_sha256": "d6b1f9cdf455609adec6fffc79a43190e3c6e6e9f19d99692af58edb2bf86f90"
+  },
+  "auditor/provenance_checks.initial.py": {
+    "original_name": "provenance_checks.initial.py",
+    "original_sha256": "5696fba6a3ad0acc1b1dd5e31e0ca3821b34c701be5686db40502f7f6cb47a30",
+    "stored_sha256": "5696fba6a3ad0acc1b1dd5e31e0ca3821b34c701be5686db40502f7f6cb47a30"
+  },
+  "auditor/provenance_checks.py": {
+    "original_name": "provenance_checks.py",
+    "original_sha256": "8864a75830cd692b652db6acf9d6d6226aa1f32e1b3d08f19efef353bad848e7",
+    "stored_sha256": "8864a75830cd692b652db6acf9d6d6226aa1f32e1b3d08f19efef353bad848e7"
+  },
+  "auditor/public-command.log.gz": {
+    "original_name": "public-command.log",
+    "original_sha256": "b7a3e70722b9c1eb22c39563d67733dd946a842450462f5d28cef0a10fbdfe76",
+    "stored_sha256": "71b16ab604f81f58cbdc58f8d01ff75f1cb5db9ae13d31fa97e7e3e5b3931cfc"
+  },
+  "auditor/public-results.json.gz": {
+    "original_name": "public-results.json",
+    "original_sha256": "982d6b2662b523f92f352ac21bc842d367313fdcde5c59e1bba207d6f38f5e84",
+    "stored_sha256": "83030a31b31535972f0a75c528f05df7ababa0f05828b6cf5144901a496e7b44"
+  },
+  "auditor/public_controls.py": {
+    "original_name": "public_controls.py",
+    "original_sha256": "99c0e5102dc79e5f97151346c01b3621fe29fbb170973be45e01398cfc30c22f",
+    "stored_sha256": "99c0e5102dc79e5f97151346c01b3621fe29fbb170973be45e01398cfc30c22f"
+  },
+  "auditor/python-ci-receipt.json": {
+    "original_name": "python-ci-receipt.json",
+    "original_sha256": "732a0aff1412f72977d158b1c112654b7ed51b587f3b2295941fb10ea63f05f1",
+    "stored_sha256": "732a0aff1412f72977d158b1c112654b7ed51b587f3b2295941fb10ea63f05f1"
+  },
+  "auditor/record_terminal_ci.py": {
+    "original_name": "record_terminal_ci.py",
+    "original_sha256": "cb3464d93fe4623b88998e0d8e4c81735dc9606f9029e010c0a57d621e20e87b",
+    "stored_sha256": "cb3464d93fe4623b88998e0d8e4c81735dc9606f9029e010c0a57d621e20e87b"
+  },
+  "auditor/checksums.json": {
+    "original_name": "checksums.json",
+    "original_sha256": "67d37e1980bb0a33a4ff5436266251a8a9fe449095893e88379a592cd66eb00e",
+    "stored_sha256": "67d37e1980bb0a33a4ff5436266251a8a9fe449095893e88379a592cd66eb00e"
+  },
+  "wisp-router-update-98916cf-gate-receipt.json": {
+    "original_name": "wisp-router-update-98916cf-gate-receipt.json",
+    "original_sha256": "29a2187461e29787490c27127aef6ee11b944a514bd224b225cfc1a4067480cc",
+    "stored_sha256": "29a2187461e29787490c27127aef6ee11b944a514bd224b225cfc1a4067480cc"
+  },
+  "wisp-router-update-98916cf-regression.log.gz": {
+    "original_name": "wisp-router-update-98916cf-regression.log",
+    "original_sha256": "966187e0d6a9059b8f4a30bb13deadd48cde419ec04aeae6b15edf784ac8f201",
+    "stored_sha256": "3726793c594c94eb5a46d01ca79bb7205ea3e82daf1eacd6ae8ee9ca9e54201e"
+  },
+  "wisp-router-update-98916cf-python-ci.json": {
+    "original_name": "wisp-router-update-98916cf-python-ci.json",
+    "original_sha256": "732a0aff1412f72977d158b1c112654b7ed51b587f3b2295941fb10ea63f05f1",
+    "stored_sha256": "732a0aff1412f72977d158b1c112654b7ed51b587f3b2295941fb10ea63f05f1"
+  },
+  "wisp-router-update-98916cf-python-ci.log.gz": {
+    "original_name": "wisp-router-update-98916cf-python-ci.log",
+    "original_sha256": "c72f98a6cdf9fa9012dd7f7027dae13a306f361dadb4882e148452521bbb71c4",
+    "stored_sha256": "37b350c36e852fb3f8fffaec8e7771057b036ec3baaaf14aae07085d98d0735b"
+  }
+}

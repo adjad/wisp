@@ -1,0 +1,19 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "run": 37407801476,
+  "command": [
+    "gh",
+    "run",
+    "view",
+    "37407801476",
+    "--repo",
+    "adjad/wisp",
+    "--log"
+  ],
+  "cache": "/private/tmp/wisp-router-github-cache",
+  "exit_code": 0,
+  "stderr": "",
+  "prior_attempt": "gh cache write to ~/.cache denied by filesystem sandbox; empty output retained; retry uses permitted temporary cache",
+  "log": "/private/tmp/wisp-router-update-67e4cef-python-ci.log",
+  "log_sha256": "eec21f8fecb65a18f18f96729d9fbd41b6364832e379fe8d3cc768d7411f46ed"
+}

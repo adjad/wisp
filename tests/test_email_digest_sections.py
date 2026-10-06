@@ -15,6 +15,14 @@ from service.tools import email_tools as E
 NOW = time.time()
 
 
+def _headline_counts(output):
+    """Represented messages and sender groups in the compact headline."""
+    import re
+    match = re.search(r"^(\d+) emails?[^\n]* · (\d+) sender groups?$", output, re.M)
+    assert match, output
+    return tuple(map(int, match.groups()))
+
+
 def row(name, address, subject, unread=False, account="Personal", age_h=1):
     return {"sender": name, "sender_address": address, "subject": subject, "unread": unread,
             "account": account, "account_id": account, "ts": NOW - age_h * 3600,
@@ -116,7 +124,7 @@ def test_sections_come_in_reading_order(digest):
 def test_the_top_line_is_a_plain_count_not_a_statistics_paragraph(digest):
     first, second = digest.splitlines()[:2]
     assert first == "📬 **Inbox digest — your recent inbox**"
-    assert second == "8 emails · 4 unread · 2 need attention"
+    assert second == "8 emails · 4 unread · 2 need attention · 7 sender groups"
     assert "Scanned" not in "\n".join(digest.splitlines()[:4])
 
 
@@ -141,8 +149,8 @@ def test_noisy_sections_are_one_line_of_names_without_subjects(digest):
 
 
 def test_the_coverage_disclosure_is_kept_but_moved_to_the_end(digest):
-    assert digest.rstrip().splitlines()[-1].startswith("**Coverage:** Scanned 212 headers")
-    assert "truncated 198 messages" in digest and "Actual dates:" in digest
+    assert digest.rstrip().splitlines()[-1].startswith("**Coverage:** 198 matching emails omitted")
+    assert "198 matching emails omitted from the overview" in digest and "Header dates:" in digest
     assert digest.index("**Coverage:**") > digest.index("Newsletters & updates")
 
 

@@ -1,0 +1,18 @@
+{
+  "checked_at_utc": "2026-10-06T04:06:25.829632+00:00",
+  "files": {
+    "plan.json": {
+      "bytes": 27038,
+      "sha256": "79948da05d674a79a54f1b5db93bd768bbb4bcdb576328e89c919f075cc309fb"
+    },
+    "costs.json": {
+      "bytes": 10397,
+      "sha256": "ed25c3f77addd07b256bf08225565318dae74863de716d72c7a81c4b40cca2a6"
+    },
+    "sources.json": {
+      "bytes": 7687,
+      "sha256": "6309f22c95831b2daa56cb8122d7c13e92269dc9db92e5ed5f864faaa57d577c"
+    }
+  },
+  "checks": "All planning artifacts parse as JSON; updated only allowed plan.json and manifest.json. No source/runtime/model/dataset/spend actions. Bounded planning complete and actor quiescent."
+}

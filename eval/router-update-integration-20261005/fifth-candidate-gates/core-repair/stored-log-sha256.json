@@ -1,0 +1,47 @@
+{
+  "focused.log.gz": {
+    "original_name": "focused.log",
+    "original_sha256": "a8dbd2916de0d0680bf741892ec27bcad8eeaca9ad4aad1b2770cc5839b211d5",
+    "stored_sha256": "02d73acafe5159e5a38a5daf92a8e717f17b958ae08aaf695c86c108bab81bbe"
+  },
+  "mechanical.log.gz": {
+    "original_name": "mechanical.log",
+    "original_sha256": "5737e292abbca331e036f4048f1f39624b540bbb425d845354c06f67a44e7cea",
+    "stored_sha256": "87d94b304cf8a0321b49701ff2695e729594d9a7976fc2c92f132e3a299911fa"
+  },
+  "prior-runs/f4182333-mechanical.log.gz": {
+    "original_name": "prior-runs/f4182333-mechanical.log",
+    "original_sha256": "5645a9a98f247b1a07fffe25a5003a37b2368857b4c1b5e7d403096f67893b58",
+    "stored_sha256": "34d6133e0654f70832c0a91e57edfa2b7c59ec43db4bf317c1b334a92351d053"
+  },
+  "prior-runs/wisp-router-r47-focused-2.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused-2.log",
+    "original_sha256": "d78174cb51ce122157551bd17b04b44831d61b45e4d2adf860804b5279222e69",
+    "stored_sha256": "db0aad132f15e31b41ae0ab229a4ba2a4ba6127227402b4f0b0d774d5dc00f0a"
+  },
+  "prior-runs/wisp-router-r47-focused-3.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused-3.log",
+    "original_sha256": "e6c4f1ebc589d6888b754798822939cf174659ded41b024aaaeb3abc71f06df0",
+    "stored_sha256": "e63a29d37574f26a61f5e2df0e56b3bca73534db933746047ffbe1bf180dc94a"
+  },
+  "prior-runs/wisp-router-r47-focused-4.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused-4.log",
+    "original_sha256": "346943ed459f11ed711b0a51a5a7dbcbff957c03be9bf82ac4e192bc546a10c5",
+    "stored_sha256": "93ec5d0a79f3a37921063251ed3acff210b4a55a94eef9c3c1d28476d96480f6"
+  },
+  "prior-runs/wisp-router-r47-focused-5.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused-5.log",
+    "original_sha256": "2ce54ea8ceabd3116caaa5d2ca2d4b70952e3635d79bf19b06e9993b31530e66",
+    "stored_sha256": "ac19cec06226ffa598f82704f25f70b8069d515d4f826b781cbc6055ee751a43"
+  },
+  "prior-runs/wisp-router-r47-focused-6.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused-6.log",
+    "original_sha256": "6cff88032d9b0225dd01296e5fdafc9d09cceb42f78aec1ce793b93fcd32ac8f",
+    "stored_sha256": "456097ee4a197397768e83dcfc4b1cf8c1e462a2bdc6f6a4700b3c336263d8a2"
+  },
+  "prior-runs/wisp-router-r47-focused.log.gz": {
+    "original_name": "prior-runs/wisp-router-r47-focused.log",
+    "original_sha256": "df261b13c12e3f4cfb7d67deb8928f4e8d0746dda1fd978c56aa0580beaaa6aa",
+    "stored_sha256": "a34ed9af27c4dcae1df1fc6829ed0ad24ba1b2fe9a6b0834e3da9f3e37ee96ef"
+  }
+}

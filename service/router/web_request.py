@@ -220,21 +220,33 @@ _LOOKUP_CANONICAL = "(?:" + "|".join(lemma for _, lemma in _LOOKUP_LEXEMES) + ")
 _SOURCE_CUE = r"(?:web|websites?|internet|online|google|bing|wikipedia|external\s+(?:sources?|requests?))"
 _PRESENT = r"(?:explain|summari[sz]e|teach(?:\s+me)?|give\s+me|outline|compare|list|turn)"
 _ACTION = (
-    r"(?:send|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
+    r"(?:send|share|forward|email|e-mail|text|message|draft|schedule|set|add|create|"
     r"delete|remove|move|open|close|launch|run|install|explain|write|debug|fix|remind|"
     r"translate|calculate|summarize|compare|implement|build|change|save|log|append|store|record|teach|define|check|keep|stay|help|outline|list|turn)"
 )
-_DELIVER = r"(?:send|forward|e-?mail|text|message|draft)"
+_DELIVER = r"(?:send|shar(?:e|ing)|forward|e-?mail|text|message|draft)"
 _NEGATIVE = r"(?:don't|do not|not|never|stop|cancel|abort|skip|avoid|refrain from|without|with no|no)"
 _PREFERENCE = r"i(?:'d|\s+would)?\s+prefer\s+not\s+to"
-_DELIVERY_PREDICATE = r"(?:send(?:ing)?|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
+_DELIVERY_PREDICATE = r"(?:send(?:ing)?|shar(?:e|ing)|forward(?:ing)?|e-?mail(?:ing)?|text(?:ing)?|messag(?:e|ing)|deliver(?:y|ing)?)"
 _REVOKE = r"(?:deny|denied|disallow(?:ed)?|revoke[ds]?|withdraw(?:n)?|withhold|withheld|forbid(?:den)?|prohibit(?:ed)?|rescind(?:ed)?)"
 _DENIED_STATE = r"(?:not\s+(?:allowed|authorized|permitted|granted)|" + _REVOKE + ")"
-_BOUNDARY = re.compile(
-    r"[;!?\n]+|\.(?=\s|$)|,|"
-    r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
-    r"\s+(?:and(?:\s+(?:then|afterwards?))?|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
-    r")(?:" + _ACTION + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)", re.I)
+# Read-literal validation must retain every established effect head without
+# changing the public request/provenance grammar. In public requests, words
+# such as "update" can govern presentation and "cancel" can revoke consent.
+_EFFECT_HEAD = "(?:" + _ACTION + r"|compose|reply|call|remember|cancel|update|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)"
+
+
+def _boundary_pattern(action: str) -> str:
+    return (
+        r"[;!?\n]+|\.(?=\s|$)|,|"
+        r"\s+(?=(?:without|don't|do not)\s+" + _DELIVERY_PREDICATE + r"\b)|"
+        r"\s+(?:and(?:\s+(?:then|afterwards?))?|plus|then|afterwards?|&|but)\s+(?=(?:" + _POLITE +
+        r")(?:" + action + "|" + _DELIVERY_PREDICATE + "|" + _NEGATIVE + "|" + _PREFERENCE + "|" + _REVOKE + r"|give|i\s+(?:do|revoke|withdraw|deny))\b)")
+
+
+_BOUNDARY = re.compile(_boundary_pattern(_ACTION), re.I)
+_READ_HEAD = r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|look\s+up|lookup|locate|summari[sz]e)"
+_INSTRUCTION_BOUNDARY = re.compile(_boundary_pattern("(?:" + _EFFECT_HEAD + "|" + _READ_HEAD + ")"), re.I)
 _AMOUNT = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|a few|several|a couple of|an?)"
 _UNIT = r"(?:minutes?|hours?|days?|weeks?|months?|quarters?|years?|hrs?|mins?)"
 _TIME = re.compile(
@@ -280,17 +292,45 @@ def _lexical(text: str) -> str:
     return result
 
 
-def _clauses(text: str) -> tuple[Clause, ...]:
+def _action_clause_head(text: str) -> re.Match[str] | None:
+    """Shared grammatical action head, including polite and negative governors.
+
+    Matching a head identifies a clause boundary, never tool permission.
+    """
+    return re.match(r"^\s*" + _POLITE + r"(?:(?P<negative>" + _NEGATIVE + "|" + _PREFERENCE
+                    + r")\s+)?(?P<action>" + _EFFECT_HEAD + "|" + _DELIVERY_PREDICATE + r")\b", _unquoted(text), re.I)
+
+
+def _read_clause_head(text: str) -> re.Match[str] | None:
+    """Recognize an ordinary read governor; source authority remains separate."""
+    return re.match(r"^\s*" + _POLITE + _READ_HEAD + r"\b", _unquoted(text), re.I)
+
+
+def _split_clauses(text: str, boundary: re.Pattern[str]) -> tuple[Clause, ...]:
     masked = _unquoted(text)
     result = []
     start = 0
-    for match in _BOUNDARY.finditer(masked):
+    for match in boundary.finditer(masked):
         if text[start:match.start()].strip():
             result.append(Clause(text[start:match.start()].strip(), start, match.start()))
         start = match.end()
     if text[start:].strip():
         result.append(Clause(text[start:].strip(), start, len(text)))
     return tuple(result)
+
+
+def _clauses(text: str) -> tuple[Clause, ...]:
+    return _split_clauses(text, _BOUNDARY)
+
+
+def _effect_clauses(text: str) -> tuple[Clause, ...]:
+    """Complete instruction clauses for read/action admission and negation.
+
+    Read and supplemental effect heads delimit their own governor, while public
+    provenance and query composition retain the established public vocabulary.
+    Quoted data never creates a clause boundary.
+    """
+    return _split_clauses(text, _INSTRUCTION_BOUNDARY)
 
 
 def _explicit(text: str) -> bool:
@@ -468,7 +508,8 @@ def _delivery(text: str) -> Delivery | None:
     scheduled = _matches(r"\b(?:tomorrow|tonight|later|at\s+\d+(?::\d+)?(?:am|pm)?|in\s+\d+\s+(?:minutes?|hours?))\b", root)
     recipient = address.group(0) if address else phone.group(0) if phone else None
     if recipient is None:
-        destination = re.search(r"\bto\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at|now|today|tomorrow|tonight|afterwards?)\b|$)", root, re.I)
+        relation = r"(?:to|with)" if re.match(r"shar(?:e|ing)\b", root, re.I) else r"to"
+        destination = re.search(r"\b" + relation + r"\s+(.+?)(?=\s+(?:by|via|through|over|with|about|at|now|today|tomorrow|tonight|afterwards?)\b|$)", root, re.I)
         if destination:
             recipient = _recipient_atom(destination.group(1))
         else:
@@ -534,6 +575,42 @@ def split_delivery(text: str) -> tuple[str, Delivery | None]:
     return composed.source, composed.delivery
 
 
+def _coordinated_read_noun(text: str, clauses: tuple[Clause, ...], index: int) -> bool:
+    """A source noun under a read head is not a delivery imperative.
+
+    Only plain coordination and a read-filter complement qualify. Explicit
+    delivery verbs, destinations, payload relations and later action clauses
+    remain visible to the existing action/permission classifier.
+    """
+    clause = clauses[index]
+    separator = _unquoted(text[clauses[index - 1].end:clause.start]).strip().lower()
+    if separator not in {"and", "&"}:
+        return False
+    head = _root(clauses[0].text)
+    if not re.match(r"(?:read|show|list|check|recap|review|inspect|browse|scan|open|refresh|get|find|search|lookup|locate|summari[sz]e)\b", head, re.I):
+        return False
+    if not _matches(r"\b(?:" + _PERSONAL + "|" + _ARTIFACT + r")\b", head):
+        return False
+    return _filtered_read_noun(clause.text)
+
+
+def _filtered_read_noun(text: str) -> bool:
+    """A filter-governed source noun with no explicit outer destination."""
+    root = _root(text)
+    if not re.match(r"(?:e-?mail|text|message)\s+(?:from|with|about|containing|named|titled|called)\b", root, re.I):
+        return False
+    # The read governor binds the complete filter complement. Capitalized
+    # words and action words inside that literal are not recipient/effect
+    # evidence. Explicit personal/address destinations stay conservative;
+    # recipient-before-payload and later delivery clauses use the action path.
+    for relation in re.finditer(r"\s+to\s+", root, re.I):
+        recipient = _recipient_atom(root[relation.end():])
+        if recipient and (_EMAIL.fullmatch(recipient) or _PHONE.fullmatch(recipient)
+                          or re.fullmatch(r"(?:me|myself|mom|dad|(?:my|our)\s+.+)", recipient, re.I)):
+            return False
+    return True
+
+
 def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
     """Separate a source from effect clauses, retaining original query bytes."""
     source_end, delivery, continuations = len(text), None, []
@@ -565,6 +642,8 @@ def _compose(text: str, clauses: tuple[Clause, ...]) -> Composition:
             if delivery or _delivery(clauses[0].text) or separator.strip():
                 cancelled = True
                 source_end = min(source_end, clauses[index - 1].end)
+            continue
+        if _coordinated_read_noun(text, clauses, index):
             continue
         action = re.match(r"(?:" + _NEGATIVE + r"\s+)?(?:" + _ACTION + r"|give)\b", root, re.I)
         if not action:
@@ -758,6 +837,9 @@ def _independent(text: str, *, fragment: bool = False) -> bool:
 
 
 def _current(text: str, scopes: tuple[TimeScope, ...]) -> bool:
+    from service.router.intent.grammar import personal_agenda_period
+    if personal_agenda_period(text):
+        return False
     t = _root(text)
     if _independent(t) and not _matches(r"^(?:give|show|tell|update|brief)\b", t):
         return False

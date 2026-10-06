@@ -1,0 +1,6 @@
+{"id": "later-share-with-channel", "met": true, "calls": [], "intent_invoked": false, "outbound": true, "previous_stage_outbound": true}
+{"id": "later-forward", "met": true, "calls": [], "intent_invoked": false, "outbound": true, "previous_stage_outbound": true}
+{"id": "quoted-share-data", "met": true, "calls": [["search_notes", {"query": "cedar maps and share it with Mom"}]], "intent_invoked": true, "outbound": false, "previous_stage_outbound": true}
+{"id": "literal-share-then-send", "met": true, "calls": [], "intent_invoked": false, "outbound": true, "previous_stage_outbound": true}
+{"id": "later-share-without-channel", "met": false, "calls": [["search_notes", {"query": "cedar maps and share it with Mom"}]], "intent_invoked": true, "outbound": false, "previous_stage_outbound": true}
+{"total": 5, "expectations_met": 4, "failed_cases": ["later-share-without-channel"]}

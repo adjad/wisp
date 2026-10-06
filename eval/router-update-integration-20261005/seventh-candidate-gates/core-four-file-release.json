@@ -1,0 +1,19 @@
+{
+  "status": "dispatched_existing_core_exact_four_files",
+  "at_utc": "2026-10-06T01:19:53.136120+00:00",
+  "orchestrator_ack_turn": "01a10ec9-6b92-7871-aa3e-df930fde0606",
+  "candidate_sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "worker_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+  "owner": "/root/router_core",
+  "paths": [
+    "service/router/intent/validation.py",
+    "service/tasks/compiler.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "added_path_constraint": "Existing task compiler _NEGATED apostrophe spellings only; no policy, permissions, guard ordering, execution or raw slot changes",
+  "diagnosis_log": "/private/tmp/wisp-router-r9-reminder-diagnosis-2.log",
+  "diagnosis_log_sha256": "b4761c80143471f422371fe14a2fcf95188984451d0de3e351fec38aa43cfac2",
+  "parent_frozen": true,
+  "qa_execution_held": true
+}

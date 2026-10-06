@@ -1,0 +1,19 @@
+{
+  "auditor/HANDOFF.json": "2696f3ac1de417c1c573e2821fa0b4fdc97ee7cd219c53d19c6b01317fd8bf49",
+  "auditor/REPORT.json": "a67e372c751821e7b0e25475645c3ab365bdc74048e36d29530daac2f90e4ef5",
+  "auditor/REPORT.md": "f6c5fc702a7c86f9dac04bc289b81a22653c80f832744aeb9ba88db2b2e6995c",
+  "auditor/checksums.json": "efca6c305cd475336af01e6e61ff515866d4bafc2ba1577699661f54ab4b0d9d",
+  "auditor/finalize_report.py": "f82c887a18ba8ef5ddab177dc1b16769199a724073bf83c08b2d886382b9c5c6",
+  "auditor/main-results.json": "e8f633b0a46d63d0c5991bdcaf2aa1f067bab678a40f0b563284dcfb82e46eac",
+  "auditor/main_checks.py": "9f00d4902ba1bc44df4cb39cc46873f328f40c3c0cd400ae41db27ec84712edc",
+  "auditor/provenance.json": "4cb57791d2d213ce3a80f8175612a5550c18c78a2fd6c19b5c1f962e602748dc",
+  "auditor/targeted-results.json": "4f8ebf9333123ba8aecb7ae0e9c9f689a9784245fd4c01845cdc0467874e76f4",
+  "auditor/targeted_checks.py": "7a96b2773e5533af3d81281096cb4c6047c792968d656a54f951e533e6cecaf0",
+  "auditor/verify_evidence.py": "0be413feb04f8c4873a619413211d47031f04326c63ae5e1a3e71cb52dfd65b4",
+  "wisp-router-update-3f86187-artifact-ci-failure.log.gz": "0f40ffa69d7b1e5a504ac91c02513ddfaf5fb5a10af945ac1e03c9d6aa3d8861",
+  "wisp-router-update-3f86187-gate-receipt.json": "40618e0add2307c8ccb20149fa2f98333952353c61de6ea7bc808680c2c5ba6f",
+  "wisp-router-update-3f86187-native-peer-diagnosis.json": "c9bcbf1cea292a0d00ee62e11dd641f162edac3bbd38349ad97ceb5c943dafac",
+  "wisp-router-update-3f86187-native-peer-unsandboxed-launch.json": "5dbf97e00aa0aacb127763230a1e8efcddcf03f18551b36717d464c531c1b9c8",
+  "wisp-router-update-3f86187-python-ci-failure.log.gz": "2ef8f4c2f986c31feb71f3c40679c59d54e541aea34e6ae95ee4ea98902d47a0",
+  "wisp-router-update-3f86187-regression.log.gz": "c66b75bb07f0ea07235c9ee7f40e27c37de2898a69762d6b5f6d292d17427da5"
+}

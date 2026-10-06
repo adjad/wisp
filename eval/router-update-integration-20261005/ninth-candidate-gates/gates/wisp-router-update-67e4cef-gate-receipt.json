@@ -1,0 +1,20 @@
+{
+  "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "command": [
+    "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+    "scripts/test_replay_failure_fixes.py"
+  ],
+  "started_at": "2026-10-06T03:11:53.984997+00:00",
+  "completed_at": "2026-10-06T03:22:08.981517+00:00",
+  "elapsed_seconds": 614.9950490831397,
+  "exit_code": 0,
+  "head_unchanged": true,
+  "status_porcelain": "",
+  "log": "/private/tmp/wisp-router-update-67e4cef-regression.log",
+  "log_sha256": "c24a0cf2722c0034069f7bf21f27233ff6f7a16e87da73d6dbed9d03a8069cac",
+  "model_inference": false,
+  "real_tool_execution": false,
+  "launcher": "Approved outer host launch; unchanged restrictive runner/native inner sandbox",
+  "checksum_authorized": "Direct human checksum-only authorization; no heldout prompt decoding/evaluation/tuning."
+}

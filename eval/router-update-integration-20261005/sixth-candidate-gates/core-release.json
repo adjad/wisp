@@ -1,0 +1,21 @@
+{
+  "recorded_at": "2026-10-05T23:49:25.084190+00:00",
+  "status": "dispatched_existing_core_exact_five_files",
+  "owner": "/root/router_core",
+  "base": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+  "candidate": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+  "paths": [
+    "service/workflows/compiler.py",
+    "service/router/intent/validation.py",
+    "service/router/web_request.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "registry": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
+  "ack_status": "ACK_SAME_CORE_EXACT_FIVE_FILES_PRESERVATION_VERIFIED_PARENT_MAY_RELEASE",
+  "preserved_manifest": "/private/tmp/wisp-router-98916cf-preserved/bundle-sha256.json",
+  "preserved_manifest_sha256": "745025cac04f51634d39128f49d1da265c92d7c15aea69d78835e1025f7e7ae4",
+  "core_clean_before_release": true,
+  "parent_remains_frozen": true,
+  "dispatched_at": "2026-10-05T23:50:23.470645+00:00"
+}

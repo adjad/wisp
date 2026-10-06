@@ -1,0 +1,22 @@
+{
+  "candidate_head_before_and_after": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "candidate_dirty_before_and_after": false,
+  "worker_head_after": "3122ed220206519fe676cd9be76a16a7705966d6",
+  "worker_dirty_after": false,
+  "partial_commands": [
+    {
+      "command": "sed config/credential source followed by rg model path fields and remaining source reads",
+      "session": 45474,
+      "exit": 130,
+      "reason": "rg stalled; owned static-read command cancelled; source portion returned through tool"
+    },
+    {
+      "command": "rg consume/credential/role helper names in admitted source files",
+      "session": 40400,
+      "exit": 130,
+      "reason": "rg stalled; owned static-read command cancelled"
+    }
+  ],
+  "fallback": "Read only admitted frozen source using pathlib; no process/listener/server probes",
+  "raw_output_limitation": "Partial static reads returned through tools; not fabricated as complete raw shell logs"
+}

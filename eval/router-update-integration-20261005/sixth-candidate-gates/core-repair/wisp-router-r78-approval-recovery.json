@@ -1,0 +1,37 @@
+{
+  "original_timeout_receipt": "/private/tmp/wisp-router-r78-approval-timeout.json",
+  "original_receipt_sha256": "ea520958c83076ffd2dcb505532982468e4fe4154d3316f344dffd8bdb8df82a",
+  "exact_pending_edit_arguments": {
+    "workdir": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+    "login": false,
+    "sandbox_permissions": "require_escalated",
+    "justification": "May I finish the bounded preference negation repair by applying the existing offset-preserving quote normalization to private instruction boundaries and removing an unused private boundary constant?",
+    "cmd": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python - <<'PY'\nfrom pathlib import Path\nr=Path('/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project')\np=r/'service/router/intent/validation.py'\ns=p.read_text().replace('from service.router.web_request import _INSTRUCTION_BOUNDARY, _action_clause_head, _read_clause_head', 'from service.router.web_request import _INSTRUCTION_BOUNDARY, _action_clause_head, _read_clause_head, _unquoted').replace('for boundary in _INSTRUCTION_BOUNDARY.finditer(_mask_literals(candidate)):', 'for boundary in _INSTRUCTION_BOUNDARY.finditer(_unquoted(_mask_literals(candidate))):')\np.write_text(s)\np=r/'service/router/web_request.py'\ns=p.read_text().replace('_EFFECT_BOUNDARY = re.compile(_boundary_pattern(_EFFECT_HEAD), re.I)\\n','')\np.write_text(s)\nPY",
+    "max_output_tokens": 1000
+  },
+  "pending_test_command_never_started": "WISP_HOME=/private/tmp/wisp-router-r78-focused-4-state PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest --noconftest tests/test_router_intent_core.py tests/test_router_intent_main.py tests/test_router_intent_workflow.py tests/test_current_web_routing.py -q > /private/tmp/wisp-router-r78-focused-4.log 2>&1; result=$?; tail -n 35 /private/tmp/wisp-router-r78-focused-4.log; exit \"$result\"",
+  "termination_result": "CreateProcess Rejected: automatic permission approval review did not finish before its deadline. Tool explicitly allows one retry.",
+  "verification": {
+    "no_started_command_session": true,
+    "no_edit_occurred": true,
+    "test_log_did_not_exist": true,
+    "file_hashes": {
+      "service/router/intent/validation.py": {
+        "sha256": "cc20600f974ecca4de574500d6b74fb2fdbf1320f0959b1b1e71c4bf7e3506ef",
+        "mtime_ns": 1791244778303160072
+      },
+      "service/router/web_request.py": {
+        "sha256": "359cd5ba2380f35a35dae6404042f5f137e003dca8394a0f6d20622660be6077",
+        "mtime_ns": 1791244778302715862
+      }
+    }
+  },
+  "recovery": {
+    "one_retry": true,
+    "edit_exit_code": 0,
+    "same_paths_and_change": true,
+    "test_started_in_separate_sequential_call": true,
+    "test_session_id": 97785
+  },
+  "serialization_note": "Original receipt preserved unchanged. Exact command corrects doubled backslash serialization in the nested Python removal string; no original audit evidence is modified."
+}

@@ -1,0 +1,194 @@
+{
+  "status": "FROZEN_CLEAN_PUSHED_WORKER_READY_FOR_PARENT_INTEGRATION_AND_NEW_GATES",
+  "completed_at_utc": "2026-10-06T00:42:03.225010+00:00",
+  "owner": "/root/router_core",
+  "branch": "codex/router-intent-core",
+  "head": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+  "remote_head": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+  "repair_base": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+  "original_base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "fetched_origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "clean": true,
+  "cumulative_repair_commits": [
+    "26ab4a20ce9599e63b486b2010edd30e90dbfa53"
+  ],
+  "files": [
+    "service/router/intent/validation.py",
+    "service/router/web_request.py",
+    "service/workflows/compiler.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "file_fingerprints": {
+    "service/router/intent/validation.py": "a05a61b30dc61adbc5d6fc8aac78946a6ce5e2aae9932c8cd58b65a6bda41f94",
+    "service/router/web_request.py": "145f91a63cbb76a4b34eed84cb453e1b7fb61605629b3fd3c904af037de09ae2",
+    "service/workflows/compiler.py": "47cd64f9b103c81314215f86daa11773c04ae9f4f6a042376930aef4b2f58cec",
+    "tests/test_router_intent_core.py": "2ce13fa8d107c2d08a0585af6f501bcff5322b34c0ffbbdfe5bfca2edefe82a6",
+    "tests/test_router_intent_main.py": "2a02a83d68aae08b8b1b152e34355b1907a3e1991089d68230ad07a841abee2d"
+  },
+  "outcome": [
+    "Compiler outbound preflight processes complete instruction clauses and ignores only negatively governed clauses, preserving independently requested reads and later positive delivery guards.",
+    "Validator admission, source authority and literal boundaries share complete private instruction grammar, including supplementary effect heads and ordinary read clauses, while public provenance/composition vocabulary stays unchanged.",
+    "Negative preference governors I prefer/I would prefer/I\u2019d prefer are recognized with existing offset-preserving quote normalization; a later positive action retains its own governor.",
+    "Actual main tests require exact registered fake read calls and fixture response with no stored outbound workflow; later effects cannot succeed as a notes-only read, and omitted later read sources clarify."
+  ],
+  "static_hypothesis_dispositions": {
+    "preference_negation": "Reproduced in pure/main controls, repaired for plain/would/curly contracted preferences, with positive-tail and quoted-data controls.",
+    "read_after_negation": "Reproduced source loss for and afterwards/afterwards/&; repaired with shared complete instruction boundaries and paired correctly represented/omitted-source actual main controls. Existing and/and then/plus controls preserved."
+  },
+  "checks": {
+    "focused": {
+      "command": [
+        "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+        "-m",
+        "pytest",
+        "--noconftest",
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py",
+        "tests/test_router_intent_workflow.py",
+        "tests/test_current_web_routing.py",
+        "-q"
+      ],
+      "environment": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "WISP_HOME": "/private/tmp/wisp-router-r78-focused-4-state"
+      },
+      "exit_code": 0,
+      "summary": "645 passed, 1504 subtests passed in 54.91s",
+      "log": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-4.log",
+      "note": "Same source content before freeze; exact-head full gate includes every focused suite."
+    },
+    "exact_head_mechanical": {
+      "head": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+      "repair_base": "aa607316533b17a90822e2f57bebf13107b9ddcc",
+      "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+      "command": [
+        "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+        "-m",
+        "pytest",
+        "--noconftest",
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py",
+        "tests/test_router_intent_workflow.py",
+        "tests/test_tomorrow_planning.py",
+        "tests/test_multi_source_fallback.py",
+        "tests/test_read_context_continuations.py",
+        "tests/test_routing_semantic_correctness.py",
+        "tests/test_routing_contract_regressions.py",
+        "tests/test_current_web_routing.py",
+        "tests/test_routing_quality_corpus.py",
+        "tests/test_routing_quality_fixes.py",
+        "tests/test_contextual_outbound_routing.py",
+        "tests/test_outbound_language_clarification.py",
+        "tests/test_outbound_payload_presentation.py",
+        "tests/test_outbound_content_provenance.py",
+        "tests/test_workflow_inline_delivery.py",
+        "tests/test_workflow_authored_message.py",
+        "tests/test_web_response_followup.py",
+        "-q"
+      ],
+      "environment": {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "WISP_HOME": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/state"
+      },
+      "exit_code": 0,
+      "elapsed_seconds": 101.4587562084198,
+      "head_unchanged": true,
+      "status_porcelain": "",
+      "log": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/mechanical.log"
+    },
+    "exact_head_summary": "10300 passed, 4640 subtests passed in 100.62s (0:01:40)",
+    "diff_check": {
+      "command": [
+        "git",
+        "diff",
+        "--check",
+        "aa607316533b17a90822e2f57bebf13107b9ddcc..26ab4a20ce9599e63b486b2010edd30e90dbfa53"
+      ],
+      "exit_code": 0
+    },
+    "remote_head_verified": true
+  },
+  "failure_history": [
+    {
+      "original": "/private/tmp/wisp-router-r78-initial.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-initial.log",
+      "sha256": "7879bc5b522c959d439a01424b1259134b0947d8f02bc6917b64ffeaf758cca2",
+      "bytes": 38846,
+      "summary": "27 failed, 27 passed, 474 deselected in 1.48s",
+      "disposition": "27 failures:26 reproduced production-class regressions and1 overly narrow expectation for a legitimate reminder clarification;27 controls passed."
+    },
+    {
+      "original": "/private/tmp/wisp-router-r78-focused.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused.log",
+      "sha256": "a404dd858c1a08b4697b0dab33c0843e6646c77417c2214926fc881f5b095468",
+      "bytes": 6208,
+      "summary": "2 failed, 611 passed, 1504 subtests passed in 10.09s",
+      "disposition": "2 overly narrow expectations for legitimate operation-specific mark/clear clarifications;611 tests+1504subtests passed."
+    },
+    {
+      "original": "/private/tmp/wisp-router-r78-focused-2.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-2.log",
+      "sha256": "56e364995be09558ed81393a7ae9c6b4a32566f9076605244809b04a1e8494fb",
+      "bytes": 770,
+      "summary": "613 passed, 1504 subtests passed in 9.77s",
+      "disposition": "613 tests+1504subtests passed before additional static hypotheses were tested."
+    },
+    {
+      "original": "/private/tmp/wisp-router-r78-static-initial.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-static-initial.log",
+      "sha256": "51489d2ba29f00e92df4f3be073ac406b1ad4ed8f8d78cd2dda93394ec170a40",
+      "bytes": 46562,
+      "summary": "18 failed, 32 passed, 510 deselected in 1.46s",
+      "disposition": "18 failures:15 genuine preference/ordinary-read authority failures and3 incorrect default reminder-argument expectations;32 controls passed."
+    },
+    {
+      "original": "/private/tmp/wisp-router-r78-focused-3.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-3.log",
+      "sha256": "9da420995ad9b002304b61af64ed4603a000030ed58e8530b353f3cecde322da",
+      "bytes": 16157,
+      "summary": "2 failed, 643 passed, 1504 subtests passed in 9.53s",
+      "disposition": "2 curly-apostrophe preference boundary failures;643 tests+1504subtests passed."
+    },
+    {
+      "original": "/private/tmp/wisp-router-r78-focused-4.log",
+      "preserved_copy": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/development-history/wisp-router-r78-focused-4.log",
+      "sha256": "1360a7faa9ef3e6442e5fccd96e7788068f7f820f26645be04e11d0fd962eb7e",
+      "bytes": 771,
+      "summary": "645 passed, 1504 subtests passed in 54.91s",
+      "disposition": "645 tests+1504subtests passed after all scoped repairs."
+    }
+  ],
+  "earlier_worker_history": {
+    "bundle": "/private/tmp/wisp-router-core-aa607316533b17a90822e2f57bebf13107b9ddcc/bundle-sha256.json",
+    "sha256": "1ac77c498643293762851a76cd5d4e41cad3b042e9ad58140415b10d06cf69a4",
+    "contains_failed_f418_and_prior_R4_R7_history": true,
+    "historical_evidence_only_no_pass_transfer": true
+  },
+  "approval_recovery": {
+    "timeout_receipt": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-timeout.json",
+    "recovery_receipt": "/private/tmp/wisp-router-core-26ab4a20ce9599e63b486b2010edd30e90dbfa53/wisp-router-r78-approval-recovery.json",
+    "initial_result": "CreateProcess rejected because automatic permission approval review did not finish before deadline; explicit one-retry allowance.",
+    "no_original_command_or_test_started_verified": true,
+    "single_same_scope_retry_succeeded": true,
+    "test_started_sequentially_after_edit": true,
+    "no_pending_tool_or_blocker": true
+  },
+  "known_limits": [
+    "Synthetic fixtures/fake clients only; no actual-model accuracy, strict-JSON, latency or production activation claim.",
+    "Later actions still require existing workflow/policy handling or explicit clarification; read planner never grants effect permission.",
+    "No worker CI/Auditor/QA approval claimed; parent must independently gate its integrated SHA."
+  ],
+  "integration_dependencies": [
+    "One repair commit26ab4a20 applies from clean worker aa607316; exactly five source/test objects, no provider or other-path changes.",
+    "Parent98916cf remains separate and blocked by original formal findings until a new integrated candidate passes fresh full mechanical/required CI/independent Auditor/applicable distinct QA.",
+    "Retained provider-cancellation and resident-resource/model window holds are outside this repair and remain unchanged."
+  ],
+  "authority": {
+    "registry": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
+    "recorded_at_utc": "2026-10-05T23:48:37.898807+00:00",
+    "status": "ACK_SAME_CORE_EXACT_FIVE_FILES_PRESERVATION_VERIFIED_PARENT_MAY_RELEASE",
+    "parent_release": "/private/tmp/wisp-router-98916cf-preserved/core-release.json"
+  },
+  "no_real_model_native_personal_outbound_resource_training_or_production_changes": true
+}

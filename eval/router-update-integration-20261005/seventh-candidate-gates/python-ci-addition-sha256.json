@@ -1,0 +1,10 @@
+{
+  "wisp-router-update-8dfd5c9-python-ci.json": {
+    "original_sha256": "9e98da252423fbd894ca322dc6e71e4dfe5bd5bc33a1b88693f19ec4c6d20d57",
+    "stored_sha256": "9e98da252423fbd894ca322dc6e71e4dfe5bd5bc33a1b88693f19ec4c6d20d57"
+  },
+  "wisp-router-update-8dfd5c9-python-ci.log.gz": {
+    "original_sha256": "85cf17719e7576f4f96fb5141153260c2f0ad203e02082a71f1fe64475eed53a",
+    "stored_sha256": "b469ca3488a4f71ef583a0ee7179d76a9175c30480938065197fef659aaf8f9e"
+  }
+}

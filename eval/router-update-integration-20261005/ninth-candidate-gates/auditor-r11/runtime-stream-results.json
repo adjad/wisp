@@ -1,0 +1,241 @@
+{
+  "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "mode": "stream",
+  "fixture_root": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv",
+  "synthetic_only": true,
+  "no_actual_sockets_native_or_production_auth": true,
+  "rows": [
+    {
+      "id": "configuration-constants-restored-in-body",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "isolated-config-no-auth-material",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "no-load-or-start-method",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "default-caller-socket-denied",
+      "actual": "denied",
+      "expected": "denied",
+      "pass_": true
+    },
+    {
+      "id": "supported-status-auth-delegation",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "metadata-transport-is-borrowed",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "caller-after-yield-private-phase-denied",
+      "actual": false,
+      "expected": true,
+      "pass_": false
+    },
+    {
+      "id": "caller-after-yield-socket-policy-denied",
+      "actual": "admitted",
+      "expected": "denied",
+      "pass_": false
+    },
+    {
+      "id": "child-after-close-phase-denied",
+      "actual": false,
+      "expected": true,
+      "pass_": false
+    },
+    {
+      "id": "child-after-close-socket-policy-denied",
+      "actual": "admitted",
+      "expected": "denied",
+      "pass_": false
+    },
+    {
+      "id": "parent-after-close-restored",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "caller-cancellation-propagates",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "caller-cancellation-clears-busy-and-parent-phase",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "capability-revoked-after-factory",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "all-constants-restored",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "projection-removed",
+      "actual": true,
+      "expected": true,
+      "pass_": true
+    },
+    {
+      "id": "caller-policy-denied-after-factory",
+      "actual": "denied",
+      "expected": "denied",
+      "pass_": true
+    }
+  ],
+  "raw": {
+    "captured_target": {
+      "role": "router",
+      "model": "Ling-Independent-Auditor",
+      "revision": "auditor-revision",
+      "context": 4096
+    },
+    "before": {
+      "phase": null,
+      "policy": "denied",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/isolated"
+    },
+    "first": {
+      "kind": "content",
+      "text": "Independent frame"
+    },
+    "between": {
+      "phase": "peer",
+      "policy": "admitted",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+    },
+    "child-after-close": {
+      "phase": "peer",
+      "policy": "admitted",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+    },
+    "stream_raw": [
+      {
+        "kind": "runtime_stream",
+        "model": "Ling-Independent-Auditor",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Independent synthetic request"
+          }
+        ],
+        "kwargs": {},
+        "outcome": "GeneratorExit",
+        "events": [
+          {
+            "kind": "content",
+            "text": "Independent frame"
+          }
+        ]
+      },
+      {
+        "kind": "runtime_stream",
+        "model": "Ling-Independent-Auditor",
+        "messages": [],
+        "kwargs": {
+          "wait": true
+        },
+        "outcome": "GeneratorExit",
+        "events": [
+          {
+            "kind": "content",
+            "text": "Independent frame"
+          }
+        ]
+      }
+    ],
+    "calls": [
+      {
+        "method": "GET",
+        "path": "/v1/models/status",
+        "auth_present": true
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/status",
+        "auth_present": true
+      },
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_present": true
+      },
+      {
+        "stream_finalized": true
+      },
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "auth_present": true
+      },
+      {
+        "stream_finalized": true
+      },
+      {
+        "closed": true
+      }
+    ],
+    "capability_receipts": [
+      {
+        "kind": "runtime_stream",
+        "model": "Ling-Independent-Auditor",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Independent synthetic request"
+          }
+        ],
+        "kwargs": {},
+        "outcome": "GeneratorExit",
+        "events": [
+          {
+            "kind": "content",
+            "text": "Independent frame"
+          }
+        ]
+      },
+      {
+        "kind": "runtime_stream",
+        "model": "Ling-Independent-Auditor",
+        "messages": [],
+        "kwargs": {
+          "wait": true
+        },
+        "outcome": "GeneratorExit",
+        "events": [
+          {
+            "kind": "content",
+            "text": "Independent frame"
+          }
+        ]
+      }
+    ]
+  },
+  "passed": 13,
+  "total": 17
+}

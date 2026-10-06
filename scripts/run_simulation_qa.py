@@ -90,6 +90,9 @@ PROFILE_TESTS = {
         "tests/test_reply_bridge_simulation.py",
         "tests/test_sandbox_wire.py",
         "tests/test_schedule_presentation.py",
+        # Pure overview formatting and fixture-backed source readiness/cache reads.
+        "tests/test_router_overview_grounding.py",
+        "tests/test_router_overview_message_scope.py",
         "tests/test_tomorrow_planning.py",
         "tests/test_tomorrow_study_slot.py",
         "tests/test_reminder_source_truth.py",
@@ -174,6 +177,14 @@ PROFILE_TESTS = {
         "tests/test_historical_routing_regressions.py",
         "tests/test_router_adversarial_cases.py",
         "tests/test_router_execution_contract.py",
+        # Typed intents use fake clients/inert identity; actor tests replace every
+        # tool and deny sockets/native processes; workflows use temporary SQLite.
+        "tests/test_router_intent_core.py",
+        "tests/test_router_intent_main.py",
+        "tests/test_router_intent_workflow.py",
+        # Scripted evaluation subprocesses install temporary-home/effect guards;
+        # adapter checks use fake callbacks, never live inference or heldout replay.
+        "tests/test_router_update_eval.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
         "tests/test_fast_path_intent.py",

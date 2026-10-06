@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "role": "independent read-only Wisp Release Auditor",
+  "verdict": "BLOCK",
+  "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "checkout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "output_directory": "/private/tmp/wisp-router-3f86187-gates-20261005/auditor",
+  "scope": "Complete candidate production/schema/harness/test/documentation diff and relevant surrounding context; corpus authoring structure and provenance only. Heldout payloads excluded by assignment. Reused prior review reads; no duplicate full gate.",
+  "findings": [
+    {
+      "id": "F1",
+      "priority": "P1",
+      "blocking": true,
+      "title": "Reject omitted date, reminder-scope and duration constraints before execution",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "lines": [
+            236,
+            248,
+            256,
+            317,
+            333
+          ]
+        },
+        {
+          "file": "service/router/intent/compiler.py",
+          "lines": [
+            90,
+            110,
+            132
+          ]
+        },
+        {
+          "file": "service/tools/schedule_extras.py",
+          "lines": [
+            168
+          ]
+        }
+      ],
+      "evidence_cases": [
+        "explicit-date-omitted",
+        "explicit-month-omitted",
+        "reminder-scope-omitted",
+        "reminder-scope-changed",
+        "duration-omitted"
+      ],
+      "description": "Validation grounds provided time/scope/minutes fields but does not reliably require requested fields. The shared-time omission check depends on _date_range, which does not recognize explicit ISO dates or named month/year requests. Missing reminder scope becomes all, and supplied all is exempt from grounding. Missing minutes is accepted and the runtime defaults to 30.",
+      "observed": "Actual main.agent executes Read email for 2026-10-01 and Read email for October 2026 as view_emails({}); Read overdue reminders as search_reminders(query='', scope='all'); a 90 minute free-slot request as find_free_time(period='tomorrow') without minutes. Pure planner also accepts explicit scope='all' for the overdue prompt. All report compiled rather than repair/clarification.",
+      "remediation": "Validate the presence and equality of every requested supported date/scope/duration before compilation; reject or explicitly clarify unsupported constraints. Bind constraints to their source, and do not rely on the model to declare its own omissions.",
+      "evidence": [
+        "targeted-results.json",
+        "main-results.json"
+      ]
+    },
+    {
+      "id": "F2",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Preserve complete unquoted query literals",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "lines": [
+            234,
+            282,
+            284,
+            290
+          ]
+        }
+      ],
+      "evidence_cases": [
+        "unquoted-query-truncated"
+      ],
+      "description": "A supplied literal is accepted when it appears anywhere in the request, and lookup validation requires only some query/conversation. Complete-fidelity checks apply to quoted literals and certain sender phrases, so ordinary multiword query text can be truncated.",
+      "observed": "Find notes about audit blueprints with a model intent query='audit' is accepted and actual main.agent executes search_notes(query='audit'), broadening the requested search without a clarification.",
+      "remediation": "Preserve the complete requested search phrase for supported query forms, or ask for clarification when its bounds cannot be established. A nonempty substring does not prove filter fidelity.",
+      "evidence": [
+        "targeted-results.json",
+        "main-results.json"
+      ]
+    },
+    {
+      "id": "F3",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Preserve the existing calendar-only tomorrow shortcut",
+      "locations": [
+        {
+          "file": "service/workflows/reads.py",
+          "lines": [
+            308,
+            315
+          ]
+        },
+        {
+          "file": "service/router/router.py",
+          "lines": [
+            6948,
+            6960
+          ]
+        },
+        {
+          "file": "service/tools/assistant_tools.py",
+          "lines": [
+            335,
+            339
+          ]
+        },
+        {
+          "file": "tests/test_tomorrow_planning.py",
+          "lines": [
+            18
+          ]
+        }
+      ],
+      "evidence_cases": [
+        "tomorrow-shortcut-calendar-scope"
+      ],
+      "description": "The new shared agenda grammar runs before the existing exact tomorrow rules and emits get_upcoming with period only. The established route for what is up tomorrow? requires calendar_only=True. Omitting it permits reminder readiness/reads as well as calendar reads, and the unconditional shortcut is active independently of the opt-in model planner.",
+      "observed": "Fresh actual-main synthetic run executes get_upcoming(period='tomorrow') with no calendar_only. Parent full regression independently fails tests/test_tomorrow_planning.py on the same argument difference.",
+      "remediation": "Preserve the established source scope when adding the shared deterministic shortcut, consistently in main read compilation and router routing; retain separate combined-agenda behavior where explicitly intended.",
+      "evidence": [
+        "main-results.json",
+        "/private/tmp/wisp-router-update-3f86187-regression.log:2746"
+      ]
+    },
+    {
+      "id": "F4",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Classify new test modules in the explicit full Simulation QA manifest",
+      "locations": [
+        {
+          "file": "scripts/run_simulation_qa.py",
+          "lines": [
+            746,
+            754
+          ]
+        },
+        {
+          "file": "tests/test_simulation_qa_runner.py",
+          "lines": [
+            19
+          ]
+        }
+      ],
+      "description": "The six new router/overview test modules are absent from SAFE_FULL_TESTS. The full profile correctly fails closed on manifest drift; the candidate cannot satisfy this required gate.",
+      "observed": "Parent completed regression log reports RuntimeError: unsafe full-profile manifest drift and enumerates test_router_intent_core, test_router_intent_main, test_router_intent_workflow, test_router_overview_grounding, test_router_overview_message_scope, and test_router_update_eval.",
+      "remediation": "The sole owner assigned by Orchestrator must review and classify the six modules without weakening the fail-closed manifest check. Parent is routing this known mechanical repair; auditor made no edit.",
+      "evidence": [
+        "/private/tmp/wisp-router-update-3f86187-regression.log:2488"
+      ]
+    }
+  ],
+  "notes": [
+    {
+      "priority": "P3",
+      "blocking": false,
+      "title": "Original legacy exact metrics do not distinguish numeric JSON types",
+      "locations": [
+        {
+          "file": "scripts/eval_router_update.py",
+          "lines": [
+            221,
+            228,
+            240
+          ]
+        },
+        {
+          "file": "eval/router-update-20261005/README.md",
+          "lines": [
+            59
+          ]
+        }
+      ],
+      "description": "Fresh pure-score checks show actual count=True or 1.0 against gold count=1 passes original exact_arguments/first_call/end_to_end under Python equality. Supplemental request_argument and guarded_end_to_end correctly reject both. Preserving originals is explicitly required, so this is a compatibility/interpretation caveat, not a demand to rewrite frozen baselines. Clarify the broad README type-preservation claim and use the typed supplemental metric for type fidelity.",
+      "evidence": "targeted-results.json"
+    }
+  ],
+  "validation": [
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-3f86187-gates-20261005/auditor/targeted_checks.py",
+      "exit_code": 0,
+      "result": "Seven fresh synthetic planner cases and two pure scorer cases; omissions reproduced; replacement-sender control rejected with no source calls."
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-3f86187-gates-20261005/auditor/main_checks.py",
+      "exit_code": 0,
+      "result": "Six fresh synthetic main.agent cases; all compiled broadened/changed requests reach fixture tool execution; no SSE errors."
+    },
+    {
+      "command": "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 /private/tmp/wisp-router-3f86187-gates-20261005/auditor/verify_evidence.py",
+      "exit_code": 0,
+      "result": "Both opaque corpus hashes match seal; all three stored replay bundles match their declared raw/gzip hashes and, where declared, manifest hash and byte counts. Initial verifier assumed one checksum schema; auditor fixed its own verifier to support baseline raw_gzip_sha256/byte-count schema. No product/evidence repair."
+    }
+  ],
+  "parent_mechanical_gate": {
+    "status": "FAIL",
+    "modules_passed": 175,
+    "modules_total": 179,
+    "log": "/private/tmp/wisp-router-update-3f86187-regression.log",
+    "failures": [
+      {
+        "module": "tests/test_multi_source_fallback.py",
+        "assessment": "Existing heading assertion expects From your calendar and reminders; new output is Agenda. Results themselves remain present. Resolve intended heading contract rather than claiming content loss."
+      },
+      {
+        "module": "tests/test_runtime_peer.py",
+        "assessment": "Original nested native gate failed before collection because sandbox-exec sandbox_apply was denied by the outer Codex sandbox. Separate same-SHA compatible-launch receipt now reports PASS for all nine synthetic cases, with clean start/end. This resolves that diagnosis; the original 175/179 full-gate result remains unchanged."
+      },
+      {
+        "module": "tests/test_simulation_qa_runner.py",
+        "assessment": "F4: missing manifest classifications."
+      },
+      {
+        "module": "tests/test_tomorrow_planning.py",
+        "assessment": "F3: existing calendar-only exact tomorrow contract is broadened."
+      }
+    ],
+    "native_peer_followup": {
+      "status": "PASS",
+      "cases": 9,
+      "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+      "receipt": "/private/tmp/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+      "sha256": "5dbf97e00aa0aacb127763230a1e8efcddcf03f18551b36717d464c531c1b9c8"
+    }
+  },
+  "ci": {
+    "status": "UNVERIFIED",
+    "description": "No fresh required-CI receipt read by this audit; assignment snapshot was queued. Unavailability is not established and no CI pass is claimed."
+  },
+  "positive_observations": [
+    "Model planner remains disabled absent explicit configuration; no activation approval implied.",
+    "Planner validates role target and attributed client/credential transport before status/generation and bounds repair/cancellation.",
+    "Compiler emits registered read capabilities only; active action workflows precede planning and effects remain subject to existing boundaries.",
+    "Repeated read receipts retain source/scope labels and partial errors; inspected digest changes retain counts, actor direction, duplicate provenance and coverage caveats.",
+    "Stored replay is explicitly scripted and not model accuracy; original 72/80 end-to-end and eight annotation limitations are retained."
+  ],
+  "limitations": [
+    "No heldout prompt/annotation parsing, comparisons, failure-based tuning or heldout execution. Only opaque hashes and seal/provenance were inspected.",
+    "No actual model call, training, load/unload, native source body, personal data/settings/credentials, real outbound tool, network, application activation, deployment or merge.",
+    "Synthetic intent injection proves local validation/orchestration behavior for the reproduced cases; it does not measure the probability of model omissions.",
+    "Actual resident-Ling validity, model quality, latency/energy and native synchronization remain unmeasured/resource-dependent.",
+    "No duplicate full regression; parent log is evidence and final required-CI/specialist gates remain separate.",
+    "Candidate source unchanged; this verdict applies only to the stated SHA and is invalidated by any repair/new commit."
+  ],
+  "handoff": "BLOCK; route F1-F4 through Orchestrator for recorded sole repair ownership, then obtain independent review and required exact-new-SHA gates. Preserve frozen corpus/baseline metrics. No repair owner may approve its own changes.",
+  "completed_at_utc": "2026-10-05T20:01:01.316578+00:00",
+  "final_checkout_verification": {
+    "head": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "porcelain": "",
+    "clean": true
+  }
+}

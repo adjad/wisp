@@ -1,0 +1,47 @@
+{
+  "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "verdict": "BLOCK",
+  "role": "independent read-only Wisp Release Auditor",
+  "candidate_changed": false,
+  "findings": [
+    {
+      "id": "F1",
+      "priority": "P1",
+      "title": "Reject omitted date, reminder-scope and duration constraints before execution",
+      "blocking": true
+    },
+    {
+      "id": "F2",
+      "priority": "P2",
+      "title": "Preserve complete unquoted query literals",
+      "blocking": true
+    },
+    {
+      "id": "F3",
+      "priority": "P2",
+      "title": "Preserve the existing calendar-only tomorrow shortcut",
+      "blocking": true
+    },
+    {
+      "id": "F4",
+      "priority": "P2",
+      "title": "Classify new test modules in the explicit full Simulation QA manifest",
+      "blocking": true
+    }
+  ],
+  "report_md": "/private/tmp/wisp-router-3f86187-gates-20261005/auditor/REPORT.md",
+  "report_json": "/private/tmp/wisp-router-3f86187-gates-20261005/auditor/REPORT.json",
+  "required_next_action": "BLOCK; route F1-F4 through Orchestrator for recorded sole repair ownership, then obtain independent review and required exact-new-SHA gates. Preserve frozen corpus/baseline metrics. No repair owner may approve its own changes.",
+  "heldout_payload_opened": false,
+  "actual_model_calls": false,
+  "native_or_outbound_execution_by_auditor": false,
+  "ci_pass_claimed": false,
+  "full_gate_pass_claimed": false,
+  "parent_native_peer_followup": {
+    "status": "PASS",
+    "cases": 9,
+    "exact_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "receipt": "/private/tmp/wisp-router-update-3f86187-native-peer-unsandboxed-launch.json",
+    "sha256": "5dbf97e00aa0aacb127763230a1e8efcddcf03f18551b36717d464c531c1b9c8"
+  }
+}

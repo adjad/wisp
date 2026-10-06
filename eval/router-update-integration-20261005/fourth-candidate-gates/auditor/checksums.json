@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "exact_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "recorded_at_utc": "2026-10-05T21:59:29.140134+00:00",
+  "algorithm": "SHA256",
+  "files": {
+    "HANDOFF.json": "fa32f1f7b5e004ffc9c293f91dc77b0fa3aaf5413e2c73a08597180c26b6747b",
+    "REPORT.json": "840e6548011c10902f51d9ebfe0fe44ff1b879a4fed362e01a06f71159e59919",
+    "REPORT.md": "7fb0fa9db07bc36dbb39273d5ce9fd7f294c0c01541496535fa741f5449279c5",
+    "application-command.log": "bade9da0b5d0cdd364d8b9a1a1519f6c522d020fdb239d4d427f6cba03d15f65",
+    "application-results.json": "15bbf75ede19d9fcb56e92f1bc264bff5f77935b1e9b1ee1ee5e83a228a9e73c",
+    "application_controls.py": "c430ce04f5d01fea59866cb5abd597db52365b1eadfd1faecd171f25cacfacea",
+    "auditor-fixture-repairs.json": "7a7ffd9fdddade55f3122a3b468ea3a2d55557a386c66efc1f85dc47adef511e",
+    "boundary-command.log": "52e6d2d4992520191f47e480feceeb0aab6b1fd42ea933debeabcb1683daa74f",
+    "boundary-results.json": "ae81a2522910ddb209248072c82625cd6a09307bb45f6405d2bc7861e6d7d69e",
+    "boundary_controls.py": "6d7ab5b8e1544763f40e69447e9b421d495cc7b3189ec26501bd97083552ae2f",
+    "finalize_report.py": "e3c1e42a7aea2eb687b2729ed471b16a8fa34a0df9738091b76c9e664ca06b70",
+    "followup-command.log": "f4934ff1e791d18c63184e4076f79a7ef72e7acba7f1a09f6292e56adb5dd348",
+    "followup-results.json": "452393289e6ea383b343309973711f1fb8ab886a77522a5ae0a39f4dc98a4881",
+    "followup_controls.py": "e1d9f6ea2863c3537f28a190bb88d33c5337177dd804ba2a1f9d2a9319404f87",
+    "parent-gate-receipt.json": "37874620128deb31c46b584db7c4bda910ec7de701965b0ccb1d0906de218367",
+    "provenance-command.log": "fd9b3614d9d5f298ac611077ed5977743fc306d730013a90aedfd32619efc925",
+    "provenance.json": "1bb3150d259b8fbbaf6aad2dfab1f6cd1623b8dcd66caf1853da1b8bf4b62c0b",
+    "provenance_checks.py": "f92982b5bccd785f35a1869d1aad50c6e6047c1c373720af63a9dbe0aa728334"
+  },
+  "excludes_self": true,
+  "external_regression_log": {
+    "path": "/private/tmp/wisp-router-update-273d274-regression.log",
+    "sha256": "b7c4b99573d6285388493808469f29214ec5f460f089cf81405df9a40f0a4c4c"
+  }
+}

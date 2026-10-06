@@ -1,0 +1,1420 @@
+{
+  "status": "r11_integrated_preparing_fresh_combined_gates_no_merge",
+  "updated_at": "2026-10-06T04:05:12.209654+00:00",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
+  "agents": {
+    "router_core": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
+      "branch": "codex/router-intent-core",
+      "status": "R10 repair frozen clean pushed and locally integrated",
+      "commit": "27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55",
+      "validation_reported": {
+        "mechanical": {
+          "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+          "repair_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+          "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+          "command": [
+            "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--noconftest",
+            "tests/test_router_intent_core.py",
+            "tests/test_router_intent_main.py",
+            "tests/test_router_intent_workflow.py",
+            "tests/test_tomorrow_planning.py",
+            "tests/test_multi_source_fallback.py",
+            "tests/test_read_context_continuations.py",
+            "tests/test_routing_semantic_correctness.py",
+            "tests/test_routing_contract_regressions.py",
+            "tests/test_current_web_routing.py",
+            "tests/test_routing_quality_corpus.py",
+            "tests/test_routing_quality_fixes.py",
+            "tests/test_contextual_outbound_routing.py",
+            "tests/test_outbound_language_clarification.py",
+            "tests/test_outbound_payload_presentation.py",
+            "tests/test_outbound_content_provenance.py",
+            "tests/test_workflow_inline_delivery.py",
+            "tests/test_workflow_authored_message.py",
+            "tests/test_web_response_followup.py",
+            "-q"
+          ],
+          "environment": {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "WISP_HOME": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical-state"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 101.67,
+          "head_unchanged": true,
+          "status_porcelain": "",
+          "log": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical.log"
+        },
+        "typed-mechanical": {
+          "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+          "repair_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+          "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+          "command": [
+            "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--noconftest",
+            "tests/test_typed_task_engine.py",
+            "tests/test_typed_reminder_operations.py",
+            "-q"
+          ],
+          "environment": {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "WISP_HOME": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical-state"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 1.41,
+          "head_unchanged": true,
+          "status_porcelain": "",
+          "log": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical.log"
+        }
+      }
+    },
+    "router_eval": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
+      "branch": "codex/router-replay-eval",
+      "status": "R11 repaired, frozen clean pushed and locally integrated; no runtime admission",
+      "commit": "f3919c5510d73eed4ea6324450e9a14d8155abc6",
+      "validation_reported": {
+        "manifest_repair_revision": "06691d13bee31a95ae58ece59411478662f7b3ad",
+        "passed": 279,
+        "skipped": 1,
+        "skip_reason": "Existing original-control absence check",
+        "scope": "Each of six admitted synthetic modules and runner tests in isolated child environments; fail-closed manifest selection",
+        "documentation_revision": "44285c248f7d20d8a16a08537dd48d3ee17ecab8",
+        "documentation_validation": "Whitespace/diff check only; no unrelated repeated tests"
+      },
+      "timezone_validation_reported": {
+        "passed_each_host": 66,
+        "skipped_each_host": 1,
+        "hosts": [
+          "UTC",
+          "America/Los_Angeles"
+        ],
+        "scope": "Exact23h/25h DST boundaries, strict comparisons, timezone restoration and failure controls"
+      },
+      "integration_commit": "ce70fe8",
+      "r11_validation": {
+        "passed": 160,
+        "skipped": 1,
+        "focused_passed": 12,
+        "baseline_failures_preserved": 4,
+        "handoff": "r11-stream-authority-repair/HANDOFF.json"
+      }
+    },
+    "router_presentation": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "workspace": "/Users/adijain/.codex/worktrees/router-overviews/MOE_Project",
+      "branch": "codex/router-overviews",
+      "status": "G1 deterministic timestamp-metadata test repair frozen clean pushed and integrated",
+      "validation_reported": {
+        "passed": 2019,
+        "subtests_passed": 2942,
+        "seconds": 47.43,
+        "suites": 7,
+        "scope": "Exact worker head; one test file only, all content/model/debug privacy assertions retained"
+      },
+      "commit": "c7f870ab0c40452aec857122eddac0542bb43291"
+    },
+    "router_training_review": {
+      "model": "gpt-6.1-sol",
+      "reasoning": "high",
+      "status": "Read-only literature/metadata review complete",
+      "artifact": "TRAINING_FEASIBILITY.md",
+      "training_or_model_calls": false
+    }
+  },
+  "baseline_validation": {
+    "revision": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "command": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest -p pytest_asyncio.plugin -q tests/test_routing_quality_corpus.py tests/test_fast_path_intent.py tests/test_current_web_routing.py tests/test_contextual_outbound_routing.py tests/test_compound_task_routing.py tests/test_schedule_presentation.py tests/test_message_attribution.py",
+    "passed": 2252,
+    "subtests_passed": 1504,
+    "seconds": 58.54,
+    "model_inference": false,
+    "real_tool_execution": false
+  },
+  "model_measurement_window": "Human reports Claude unavailable until2026-10-06T10:00:00Z. Old absence/contention hold resolved for that window; fresh serialized runtime admission remains contingent on exact loaded checkpoint provenance and independently qualified bridge. Metadata-only preflight resolved configured model/endpoint, no residency or disk binding. No current runtime admission.",
+  "production_changed": false,
+  "pending": [
+    "Freeze/push combined R11 candidate; fresh exact-SHA full local regression, required CI and independent audit.",
+    "Release distinct synthetic Simulation QA only after formal nonblocking same-SHA audit and explicit parent release.",
+    "Actual resident-model development comparison requires separate serialized admission and exact runtime binding; heldout prompts stay sealed.",
+    "Retained-owner provider cancellation diagnosis remains unresolved; later passing CI is not a diagnosis.",
+    "Keep Wisp1.3.0 draft/unmerged and disabled until explicit future user direction.",
+    "Fine-tuning plan complete; any future dataset jobs, model training or spending require separate execution scope."
+  ],
+  "acceptance_contract": "eval/router-update-integration-20261005/acceptance.json",
+  "corpus_seal": {
+    "dev": {
+      "cases": 80,
+      "families": 10,
+      "sha256": "b2f071e22af8cb8552e670ee40653b92e6378b779248dc2bb7d950f17f76ee49"
+    },
+    "heldout": {
+      "cases": 320,
+      "families": 40,
+      "sha256": "9923e3468f3d96998944c1920b8a65aab157f4314aa3a4c63db98203e232a72c"
+    },
+    "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
+  },
+  "combined_development_checks": {
+    "revision": "d8e34732f9d1b6641d4d4ff95d2989dc341f97a7",
+    "passed": 1310,
+    "skipped": 1,
+    "skip_reason": "Original-control-only absence check",
+    "deselected": 1,
+    "deselected_reason": "Automatic approval review blocked unchanged opaque heldout checksum integrity test; explicit human checksum-only question pending",
+    "seconds": 20.15,
+    "scope": "Nine integrated intent/workflow/eval/overview/manifest/tomorrow/fallback modules with only blocked checksum test excluded",
+    "model_calls": false,
+    "heldout_prompts_accessed": false,
+    "full_release_gate": false
+  },
+  "scope_review_notes": [
+    "Automatic approval review rejected diagnostic allowlist extension twice; no diagnostics edits executed. Existing route_source=model vocabulary retained in original-owned router serialization, with finite debug-only intent_disposition.",
+    "One unintended mechanical test wording replacement was caught in review and restored before presentation freeze.",
+    "Compiler repair development gate caught schedule-a-message regression; narrowed indefinite-noun masking and added regression controls before freeze.",
+    "Adapter identity tests initially exposed temporary /var versus /private/var aliasing; resolved-path equality fixed before freeze.",
+    "Pre-freeze diff check rejected trailing whitespace in verbatim worker failure logs. Stored lossless gzip copies with original/stored hashes; original evidence bytes and source tests unchanged.",
+    "One bounded core edit approval timed out before execution; tool expressly permitted one retry. Cancellation/no-execution verified, single same-scope retry succeeded, then tests ran sequentially. Original timeout and recovery receipts preserved."
+  ],
+  "development_replay_before_compiler_repair": {
+    "revision": "b78fbdf",
+    "artifact": "development-before-compiler-repair",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 69,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 77,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 45,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 69,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 37,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 77,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 77,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "findings": {
+      "product_defects": 3,
+      "description": "Message summary reads misclassified as outbound workflow before routing; core repair owner acknowledged.",
+      "annotation_limitations": 8,
+      "annotation_description": "Correct synthetic source-error response fails success-literal expectation; retain original score and separate adjudication."
+    },
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Not applicable in this development corpus; zero denominators do not establish either property."
+  },
+  "development_replay_after_compiler_repair": {
+    "revision": "97d7fdf54dabb150e167a9f7250ed8fdf4a3b249",
+    "artifact": "development-after-compiler-repair",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "adjudication": "All three previously preempted message reads now execute the exact expected synthetic read. Eight source-failure responses still fail original success-literal annotation; exact tool, source, effects, exclusions, failure-honesty and runtime checks pass. Do not replace 72/80 original end_to_end with an adjusted headline.",
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases in this development corpus; separate real-helper synthetic tests cover query behavior."
+  },
+  "first_frozen_candidate_gates": {
+    "revision": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+    "pr": "https://github.com/adjad/wisp/pull/160",
+    "artifact": "first-candidate-gates",
+    "full_regression": {
+      "passed_modules": 175,
+      "total_modules": 179,
+      "status": "FAIL",
+      "failed_modules": [
+        "test_multi_source_fallback.py",
+        "test_runtime_peer.py",
+        "test_simulation_qa_runner.py",
+        "test_tomorrow_planning.py"
+      ]
+    },
+    "native_gate_followup": {
+      "status": "PASS",
+      "cases": 9,
+      "source_unchanged": true,
+      "reason": "Existing restricted sandbox could not start inside outer Codex sandbox; same-SHA compatible launch passed all required synthetic cases. Original full failure is preserved."
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "F1 omitted requested dates/reminder scope/duration accepted",
+        "F2 truncated complete unquoted query accepted",
+        "F3 existing calendar-only tomorrow shortcut broadened",
+        "F4 missing explicit safe-test classifications"
+      ],
+      "heldout_opened": false
+    },
+    "ci": {
+      "artifact": "FAIL: same missing-test manifest issue",
+      "python": "FAIL175/179 modules: known fallback/tomorrow/manifest failures plus direct scorer DST unit relies on host timezone (UTC CI24h versus intended LA23h). Core/native case passes in CI; original CI evidence preserved."
+    },
+    "qa": "Held pending nonblocking audit; availability acknowledged"
+  },
+  "development_replay_after_audit_repairs": {
+    "revision": "d02c03d",
+    "artifact": "development-after-audit-repairs",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases here; not validated by this replay."
+  },
+  "second_frozen_candidate_gates": {
+    "revision": "40ee88a409eaec943ae4474130bd87263ea794e1",
+    "artifact": "second-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179 modules",
+      "artifact": "SUCCESS; terminal receipt appended alongside original in-progress snapshot"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R1 P1 repeated-email sender/date pairing swap executes",
+        "R2 P2 source-free query replacement can execute prior query"
+      ],
+      "fresh_scope_expectations_met": 23,
+      "fresh_scope_expectations_total": 25,
+      "boundary_controls_passed": 25,
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking exact-SHA audit"
+  },
+  "development_clause_repair_regression": {
+    "revision": "dfa0c9163752ae5fdd14fdff7746c3a77f953699",
+    "artifact": "development-clause-repair-regression",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 64,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 64,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 32,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 72,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "finding": "All eight dev-calendar-simple cases unnecessarily clarify because appointments and calendar in one noun/reference clause are misclassified as independent reads. Same core repair owner acknowledged; preserve original raw/gold/scores."
+  },
+  "development_after_alias_repair": {
+    "revision": "ddc70d2bf07852268d99f88aefb76c2b8bd934b5",
+    "artifact": "development-after-alias-repair",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases here; not validated by this replay."
+  },
+  "third_frozen_candidate_gates": {
+    "revision": "27490ae5055502423f187e84ca52d0064b794396",
+    "artifact": "third-candidate-gates",
+    "full_regression": {
+      "status": "FAIL",
+      "passed_modules": 178,
+      "total_modules": 179,
+      "exit_code": 1,
+      "failed_modules": [
+        "test_message_digest.py"
+      ],
+      "reason": "Existing privacy assertion scanned numeric timestamp metadata for OTP digits; original failure preserved, bounded G1 test repair separately integrated"
+    },
+    "ci": {
+      "python": "Run FAILURE; sole job CANCELLED with zero executed steps. No product-test result or pass inferred.",
+      "artifact": "SUCCESS; exact-head terminal receipt and log preserved"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R3 P2 cross-source lookup-filter requirement wrongly rejects valid mixed requests",
+        "R4 P2 coordinated email read noun misclassified as delivery"
+      ],
+      "prior_R1_R2": "Closed by independent audit",
+      "fresh_scope_expectations_met": 42,
+      "fresh_scope_expectations_total": 44,
+      "boundary_controls_passed": 24,
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking new exact-SHA audit"
+  },
+  "development_after_source_clause_repairs": {
+    "revision": "d53e52f5d61112fe0d8da1c68a72fd1340a4ee74",
+    "artifact": "development-after-source-clause-repairs",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay."
+  },
+  "development_default_off_control": {
+    "revision": "d53e52f5d61112fe0d8da1c68a72fd1340a4ee74",
+    "artifact": "development-default-off-control",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 70,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 78,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 8,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 46,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 70,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 63,
+        "denominator": 65
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 78,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 78,
+        "denominator": 80
+      }
+    },
+    "candidate": false,
+    "note": "First invocation omitted --candidate; preserved as default-off control, not compared as enabled candidate. Correct enabled invocation retained separately. No source edits between runs."
+  },
+  "fourth_frozen_candidate_gates": {
+    "revision": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+    "artifact": "fourth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179 modules; exact-head terminal receipt/log preserved",
+      "artifact": "SUCCESS; both publishing jobsSKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R4 unquoted query preposition mistaken for delivery recipient",
+        "R5 bare email recap intercepted by delivery workflow",
+        "R6 unquoted search data incorrectly establishes required source authority"
+      ],
+      "original_R3_and_R4_reproducers": "Closed",
+      "G1_privacy_test": "Closed; all three clocks and injected-text-leak control pass",
+      "main_and_planner_expectations_met": 51,
+      "main_and_planner_expectations_total": 53,
+      "paired_followup_met": 5,
+      "paired_followup_total": 8,
+      "boundary_controls_passed": 33,
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking new exact-SHA audit"
+  },
+  "development_after_literal_boundary_repairs": {
+    "revision": "473c28f906beeb64fe5a9cb3e29e106e74f45b63",
+    "artifact": "development-after-literal-boundary-repairs",
+    "cases": 80,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "original_metrics_preserved": true,
+    "remaining_eight_failures": "Unchanged honest-source-error success-literal annotation limitations; no score rewriting.",
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay."
+  },
+  "fifth_frozen_candidate_gates": {
+    "revision": "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "artifact": "fifth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "FAIL178/179: test_local_provider_tools cancel-tool expected2 provider closures, observed1. Complete original log preserved; retained provider owner diagnosis pending. No flakiness or passing retry claim.",
+      "artifact": "SUCCESS; both publishing jobsSKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R4 capitalization in a governed email title incorrectly supplies destination evidence",
+        "R7 coordinated share effect swallowed into unquoted lookup data"
+      ],
+      "application_expectations_met": 64,
+      "application_expectations_total": 67,
+      "paired_expectations_met": 4,
+      "paired_expectations_total": 5,
+      "boundary_controls_passed": 36,
+      "initial_auditor_expectation_correction": "Original63/67 and corrected64/67 both preserved; generic send-without-channel expectation corrected, no product/corpus edits.",
+      "heldout_opened": false
+    },
+    "qa": "Held pending nonblocking new exact-SHA audit",
+    "provider_dependency": "router-1.3-provider-cancellation-ci"
+  },
+  "development_after_r4_r7_repairs": {
+    "revision": "c63b2c1ff4d52497a736625546142f2bb8bff890",
+    "artifact": "development-after-r4-r7-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "worker_f418_failed_gate": {
+    "revision": "f4182333beb0078829abe3a05a618d16d1172300",
+    "failed": 4,
+    "passed": 10204,
+    "subtests_passed": 4637,
+    "exit_code": 1,
+    "seconds": 104.86,
+    "cause": "Supplemental effect heads changed global public routing/provenance; narrowed to read-validation boundary vocabulary in aa607316. Existing current_web tests unchanged.",
+    "artifact": "fifth-candidate-gates/core-repair/prior-runs/f4182333-mechanical.log.gz",
+    "integrate_alone": false
+  },
+  "static_helper_limit": "Advisory mutable-source review only: helper did not capture required observed HEAD/dirty-state/file fingerprints/read timestamps. Not commit-bound or release approval. Suggestions independently exercised by sole core worker; formal frozen-head audit remains required.",
+  "sixth_frozen_candidate_gates": {
+    "revision": "98916cf5d17fee49c94045e5a0e3a713d47dce39",
+    "artifact": "sixth-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179; does not diagnose or close retained prior provider cancellation failure",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R7-negative: prohibited share clause enters delivery preflight",
+        "R8-later-effect: positive effect after negative governor disappears from read admission"
+      ],
+      "public_controls_passed": 40,
+      "runtime_privacy_overview_controls_passed": 51,
+      "heldout_opened": false
+    },
+    "qa": "Not executed; held pending nonblocking new exact-SHA independent audit"
+  },
+  "development_after_negative_governor_repairs": {
+    "revision": "cf6a0379761979e5a7445e911d74046797609967",
+    "artifact": "development-after-negative-governor-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; preserve72/80 original E2E."
+  },
+  "static_helper_r78": {
+    "artifact": "sixth-candidate-gates/static-helper-summary.json",
+    "scope": "Static read-only helper with before/after HEAD, dirty state, six file hashes and mtimes. Advisory only; no release approval.",
+    "hypotheses": "Preference negation and afterwards-read coverage reproduced by sole core; final actual-main controls pass."
+  },
+  "seventh_frozen_candidate_gates": {
+    "revision": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "artifact": "seventh-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179; does not close retained prior provider cancellation failure",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R9 P1 Unicode apostrophe source exclusions reverse source authority"
+      ],
+      "R7_negative_closed": 13,
+      "R8_later_effect_closed": 56,
+      "later_read_controls_passed": 14,
+      "tuple_controls_passed": 20,
+      "public_controls_passed": 39,
+      "runtime_privacy_overview_controls_passed": 60,
+      "heldout_opened": false
+    },
+    "qa": "Not executed; held pending nonblocking new exact-SHA independent audit"
+  },
+  "development_after_unicode_exclusion_repairs": {
+    "revision": "91b7885fa5ec2551032e60319ff01881af21ef6d",
+    "artifact": "development-after-unicode-exclusion-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; original score retained."
+  },
+  "eighth_frozen_candidate_gates": {
+    "revision": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+    "artifact": "eighth-candidate-gates",
+    "local_regression": "179/179 PASS",
+    "required_ci": {
+      "python": "SUCCESS 179/179",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "independent_audit": {
+      "verdict": "BLOCK",
+      "finding": "R10 P2 quoted reminder title mistaken for grammatical negation",
+      "controls_passed": 622,
+      "controls_total": 630,
+      "R9_source_exclusions_passed": 395
+    },
+    "qa": "Held, not executed",
+    "scope": "Prior SHA evidence only; no pass transfers to new combined candidate"
+  },
+  "development_after_task_literal_and_runtime_bridge": {
+    "source_revision": "d8e34732f9d1b6641d4d4ff95d2989dc341f97a7",
+    "artifact": "development-after-task-literal-and-runtime-bridge",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "unchanged_annotations": true,
+    "annotation_limit": "Eight honest source-failure replies still fail original success-literal requirements; original 72/80 retained. Answer-fact/query-scope metrics have zero applicable cases."
+  },
+  "checksum_approval_hold": {
+    "status": "RESOLVED_DIRECT_HUMAN_CHECKSUM_ONLY_AUTHORIZATION",
+    "blocked_test": "tests/test_router_update_eval.py::test_seal_metadata_family_splits_and_dev_integrity",
+    "reason": "Automatic approval review treated even SHA256-only reading as conflicting with unopened-heldout scope; parent clarification insufficient; no workaround used",
+    "receipt": "checksum-authorization-20261005/receipt.json",
+    "no_push_or_full_gate": "Hold resolved by direct human authorization. Existing local full gate and PR-triggered CI may run the unchanged opaque checksum check; heldout prompt parsing/evaluation/tuning remains prohibited.",
+    "unaffected": "Permitted offline checks, development replay, local integration and evidence commits only",
+    "heldout_execution_authorized": false
+  },
+  "release_hold": {
+    "target": "Wisp1.3.0",
+    "merge_allowed": false,
+    "lift_condition": "Later explicit human instruction; release of1.2.0 alone does not lift this hold",
+    "pr": "https://github.com/adjad/wisp/pull/160",
+    "draft": true
+  },
+  "prior_model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
+  "ninth_frozen_candidate_gates": {
+    "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+    "local": {
+      "passed_modules": 179,
+      "total_modules": 179,
+      "seconds": 614.995
+    },
+    "python_ci": {
+      "run": 37407801476,
+      "status": "SUCCESS",
+      "passed_modules": 179
+    },
+    "artifact_ci": {
+      "run": 37407801472,
+      "status": "SUCCESS",
+      "publishing": "SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "finding": "R11/P1 private stream authority escapes",
+      "sealed_entries": 256,
+      "report": "ninth-candidate-gates/auditor/REPORT.md",
+      "complete_archive": "ninth-candidate-gates/auditor/complete-audit-evidence.tar.gz"
+    },
+    "simulation_qa": "HELD_NOT_RUN",
+    "stored_evidence": "ninth-candidate-gates/STORED_FILES.json"
+  },
+  "r11_repair": {
+    "worker": "f3919c5510d73eed4ea6324450e9a14d8155abc6",
+    "integration": "ce70fe8",
+    "handoff": "r11-stream-authority-repair/HANDOFF.json",
+    "status": "INTEGRATED_REQUIRES_FRESH_INDEPENDENT_GATES"
+  },
+  "fine_tuning_plan": {
+    "status": "COMPLETE_READ_ONLY_RESEARCH",
+    "actor": "/root/router_plan_review",
+    "thread": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+    "available_brev_credits_reported_usd": 30,
+    "training_or_spending_authorized": false,
+    "requested": "Dataset creation, costs, user actions; compare Brev GPUs and Unsloth Studio",
+    "artifact": "ling-finetuning-plan-20261006/plan.json",
+    "recommendation": "48GB A6000 Brev, Axolotl attention LoRA; at most$5 compatibility within proposed$30 total credit cap. Actual fit/backward/export/throughput and credit eligibility unverified.",
+    "hashes": {
+      "plan.json": "79948da05d674a79a54f1b5db93bd768bbb4bcdb576328e89c919f075cc309fb",
+      "costs.json": "ed25c3f77addd07b256bf08225565318dae74863de716d72c7a81c4b40cca2a6",
+      "sources.json": "6309f22c95831b2daa56cb8122d7c13e92269dc9db92e5ed5f864faaa57d577c",
+      "manifest.json": "775785e59bbaffbfe98a85addc4cf204205633fc660285de2adc2dd1faac139a"
+    },
+    "data_generated": false,
+    "training_run": false,
+    "spent_usd": 0,
+    "provenance_note": "Source research read prior67e4cef development-report bytes; historical source hash retained even though parent has now updated that report."
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "status": "OWNED_SYNTHETIC_TEST_INTERRUPTED_EXPLICITLY",
+  "session_id": 47681,
+  "exit_code": 130,
+  "command": [
+    "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+    "-m",
+    "pytest",
+    "--noconftest",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py",
+    "tests/test_router_intent_workflow.py",
+    "tests/test_current_web_routing.py",
+    "-q"
+  ],
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "WISP_HOME": "/private/tmp/wisp-router-r10-focused-state"
+  },
+  "summary": "13 failed,1000 passed in96.02s before explicitKeyboardInterrupt",
+  "reason": "Raw positive operation selectors interpreted quoted delete/update/mark/clear data as task instruction after negation masking; synthetic positive task could await normal InteractiveApprover. No real tool funcs present; interrupted to avoid confirmation wait.",
+  "log": "/private/tmp/wisp-router-r10-focused.log",
+  "log_sha256": "d996e539ae3c3362d5758ea4a5530bf2bda14e466c0612936f7cd29aef813200",
+  "no_pending_session": true
+}

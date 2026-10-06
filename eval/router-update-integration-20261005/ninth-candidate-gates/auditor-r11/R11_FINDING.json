@@ -1,0 +1,47 @@
+{
+  "artifact_type": "bounded_formal_blocking_finding",
+  "candidate_sha": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "pr_url": "https://github.com/adjad/wisp/pull/160",
+  "id": "R11",
+  "priority": "P1",
+  "disposition": "BLOCK",
+  "title": "Streaming exposes private runtime authority to its caller and inherited tasks",
+  "file": "scripts/eval_router_update.py",
+  "locations": [
+    {
+      "line": 577,
+      "description": "_operation retains peer phase across yield at582"
+    },
+    {
+      "line": 886,
+      "description": "Audit uses ambient peer ContextVar as socket authority"
+    }
+  ],
+  "trigger": "Use supported_resident_client with synthetic config/auth and HTTP MockTransport, wrap it in ResidentInferenceAdapter, await first stream event, then create an asyncio child task and close the stream before releasing the child.",
+  "expected": "Outside the owned client operation, caller and child task have no private phase; Path.home resolves to isolated state and caller-side socket policy events remain denied.",
+  "observed": {
+    "before": {
+      "phase": null,
+      "policy": "denied",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/isolated"
+    },
+    "between": {
+      "phase": "peer",
+      "policy": "admitted",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+    },
+    "child_after_stream_close": {
+      "phase": "peer",
+      "policy": "admitted",
+      "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/wisp-67e4cef-runtime-stream-x82_eudv/fixture-home"
+    }
+  },
+  "impact": "A Python async generator yields in the consuming task context. The peer ContextVar survives the yield; create_task copies it. The copied phase remains accepted after owned stream cleanup. Thus caller-side endpoint socket policy and original-home resolution escape the intended private operation scope. This is a demonstrated isolation-policy bypass, not a claim of actual credential theft, native action or network dispatch.",
+  "verification": "4/17 supported-factory assertions fail in one R11 family; default caller denial, parent restoration, early close/caller cancellation, genuine fake auth delegation and factory cleanup controls pass. A separate direct-wrapper inert probe independently reproduces the yield leak.",
+  "recommendation": "Restore the caller context before yielding events and prevent copied contexts from authorizing I/O once the owned operation closes. Add caller/inherited-task denial oracles to the existing private thread propagation tests. Preserve normal gate/lease, expiry, cancellation and raw failure receipts.",
+  "controls": "No candidate edits, live model/native/real credentials/private data/network/outbound operations. Socket checks use sys.audit events only; transport is HTTP MockTransport, homes/auth/locks are synthetic.",
+  "full_audit_status": "Other current full-scope evidence is preserved; this bounded finding artifact does not predeclare an overall nonblocking verdict.",
+  "merge_policy": "User targets Wisp1.3.0 and forbids merging; PR remains draft.",
+  "recorded_at": "2026-10-06T03:40:28.676719+00:00"
+}

@@ -1,0 +1,93 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "disk_hashes_prove_loaded_weights": false,
+  "files": [
+    {
+      "path": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/service/config/models.yaml",
+      "category": "packaged",
+      "sha256": "7946752a4ba964f841fd959eef72ef9c8a17c5edfb7c2f10a5fc4bf144b176e9",
+      "bytes": 8529,
+      "mtime_ns": 1791225964058203230,
+      "device": 16777232,
+      "inode": 298915000,
+      "uid": 501,
+      "mode": "0o644",
+      "stable_before_after": true
+    },
+    {
+      "path": "/Users/adijain/.moe/config.yaml",
+      "category": "configured_overlay",
+      "sha256": "110a11a9601f9d46b31db7c1aa2db21fb7e134ac0e9fd3a3e42d1f1dcd4dc342",
+      "bytes": 2691,
+      "mtime_ns": 1791184234977428943,
+      "device": 16777232,
+      "inode": 286434271,
+      "uid": 501,
+      "mode": "0o600",
+      "stable_before_after": true
+    },
+    {
+      "path": "/Users/adijain/.omlx/model_settings.json",
+      "category": "nonsecret_model_settings",
+      "sha256": "afe69a669a328c4c59a1dadcfff24cd4d245bf09b6fa76008a94344ddd8ed487",
+      "bytes": 45429,
+      "mtime_ns": 1790709627939090223,
+      "device": 16777232,
+      "inode": 155494058,
+      "uid": 501,
+      "mode": "0o644",
+      "stable_before_after": true
+    }
+  ],
+  "frozen_source_files": [
+    {
+      "path": "service/config/__init__.py",
+      "sha256": "93e5af41f13b3b160b69ef44776fdccb15651ba7518aee99cc830d18a1532834",
+      "bytes": 33630,
+      "mtime_ns": 1791225964058011230,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/config/endpoints.py",
+      "sha256": "bd16f6c2467497309532c0a5267ebaec35efd92cfc00588fb65274ebf45e1fad",
+      "bytes": 10263,
+      "mtime_ns": 1791225964058141813,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/config/credentials.py",
+      "sha256": "f5a91b5a3b26059dda36c1435b4f6530ed7d47327d294eaca42116684403f35f",
+      "bytes": 3300,
+      "mtime_ns": 1791225964058078897,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/config/quarantine.py",
+      "sha256": "d0313663b82b465f9c5bd3285353696e7c3acbaf59edc65f3015367fe9d785c0",
+      "bytes": 7569,
+      "mtime_ns": 1791225964058444480,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/credential_pipe.py",
+      "sha256": "d98141bfe051e635bc26b9ed0150af953bd99304a25b5c1df560bfba11308c43",
+      "bytes": 3498,
+      "mtime_ns": 1791225964058493064,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/config/models.yaml",
+      "sha256": "7946752a4ba964f841fd959eef72ef9c8a17c5edfb7c2f10a5fc4bf144b176e9",
+      "bytes": 8529,
+      "mtime_ns": 1791225964058203230,
+      "stable_before_after": true
+    },
+    {
+      "path": "service/paths.py",
+      "sha256": "9fedd2419d762fa8bb1f93833883697e04803ece5a09b206d6424e8c411330fc",
+      "bytes": 829,
+      "mtime_ns": 1791225964064917362,
+      "stable_before_after": true
+    }
+  ]
+}

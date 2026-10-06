@@ -1,0 +1,14 @@
+[
+  {
+    "command": "boundary_controls.py initial run",
+    "exit_code": 1,
+    "diagnosis": "Pytest prohibits calling a decorated fixture directly; fresh auditor setup called t.isolated(mp).",
+    "repair": "Only auditor-owned script changed to call the fixture underlying __wrapped__ setup with MonkeyPatch context; targeted controls then ran33/33. No candidate/test edits."
+  },
+  {
+    "command": "provenance_checks.py initial run",
+    "exit_code": 1,
+    "diagnosis": "Fresh verifier expected flat replay checksum keys; two newest bundles use per-file stored_sha256/original_sha256 records.",
+    "repair": "Only auditor-owned verifier added declared per-file schema support; all eight replay and66 archive entry hashes then verified. No raw payload repair or source edit."
+  }
+]

@@ -1,0 +1,170 @@
+{
+  "recorded_utc": "2026-10-06T02:48:50.237814+00:00",
+  "owner": "/root/router_eval",
+  "scope_ack": "runtimeBridgeImplementationScopeACK recorded2026-10-06T02:26:01.134378+00:00",
+  "checkout": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
+  "branch": "codex/router-replay-eval",
+  "base": "e9e51cd2414113ae27a4af5badce1c22ee335db5",
+  "sha": "3122ed220206519fe676cd9be76a16a7705966d6",
+  "remote_head_verified": true,
+  "tree_clean_verified": true,
+  "changed_files": [
+    "scripts/eval_router_update.py",
+    "tests/test_router_update_eval.py",
+    "eval/router-update-20261005/README.md"
+  ],
+  "diff": "980 insertions,6 deletions; only three owned paths; git diff --check exit0",
+  "outcome": "Disabled evaluation-only supported-client factory/private capability, exact desktop identity/request/process/file/lock constraints, genuine normal credential/quarantine/authority delegates, transactional fixture projection, retained real clocks/monotonic deadline, synthetic verification.",
+  "runtime_admission": false,
+  "actual_status_requests": 0,
+  "actual_model_generations": 0,
+  "actual_native_inspection_commands": 0,
+  "actual_live_client_constructions": 0,
+  "actual_auth_or_private_settings_reads": 0,
+  "heldout": "No sealed prompt parsing, display, evaluation or tuning; opaque integrity hash check excluded following automatic rejection.",
+  "exact_sha_checks": [
+    {
+      "cmd": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest -p pytest_asyncio.plugin -q tests/test_router_update_eval.py tests/test_simulation_qa_runner.py -k 'not seal_metadata_family_splits_and_dev_integrity'",
+      "exit": 0,
+      "result": "153 passed,1 skipped,1 deselected in7.72s",
+      "log": "exact-3122ed2-offline-subset.log"
+    },
+    {
+      "cmd": "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python scripts/eval_router_update.py --split dev --output /private/tmp/wisp-router-runtime-bridge-design-20261005/exact-3122ed2-scripted-dev",
+      "exit": 0,
+      "result": "80 completed;78/80 source and exact/request arguments;70/80 strict and guarded end-to-end;8/16 failure honesty. Scripted integration correctness, not model interpretation accuracy.",
+      "log": "exact-3122ed2-scripted-dev.log"
+    },
+    {
+      "cmd": "git diff e9e51cd2414113ae27a4af5badce1c22ee335db5 HEAD --check",
+      "exit": 0
+    },
+    {
+      "cmd": "git fetch origin main; git merge-base --is-ancestor origin/main HEAD",
+      "exit": 0,
+      "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+      "reconciliation": "Already ancestor; no source merge required."
+    },
+    {
+      "cmd": "git push origin codex/router-replay-eval; git ls-remote origin refs/heads/codex/router-replay-eval",
+      "exit": 0,
+      "remote_sha": "3122ed220206519fe676cd9be76a16a7705966d6"
+    }
+  ],
+  "historical_failed_checks": [
+    {
+      "log": "factory-check-1.log",
+      "result": "4 failed,2 passed: synthetic fixture read/write setup violated the intended guard; fixture ordering corrected, assertions retained; rerun6passed."
+    },
+    {
+      "log": "recovery-boundaries-1.log",
+      "result": "2 failed: close label fixture assertion expected fixture versus actual local; corrected label, genuine gate denial assertions retained."
+    },
+    {
+      "log": "final-precommit-offline-subset-2.log",
+      "result": "1 failed,152 passed: strengthened fstat pin detects renamed-back lock ctime during cleanup; test now requires truthful cleanup failure and client closure, no bypass."
+    }
+  ],
+  "unlogged_initial_check": {
+    "cmd": "PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python -m pytest -p pytest_asyncio.plugin -q tests/test_router_update_eval.py -k runtime",
+    "exit": 0,
+    "result": "21 passed,70 deselected; output was returned by tool, not saved as raw file. Not fabricated/reconstructed."
+  },
+  "skip": "Existing original-control API absence check skips because intent API is present.",
+  "deselected": "test_seal_metadata_family_splits_and_dev_integrity reads sealed test.jsonl bytes for opaque hashing; automatic approval rejected admission. Full corpus integrity remains blocked, not passing.",
+  "pending_requirements": [
+    "Parent integration with core27cca3f into a new frozen candidate",
+    "Fresh exact-SHA mechanical/CI evidence and independent auth-boundary release audit plus applicable distinct synthetic QA",
+    "Trusted resolution of the heldout opaque-integrity approval blocker",
+    "Separate actual-runtime ACK, deadline/candidate validation and current genuine configured/readiness/peer/revision/checkpoint evidence"
+  ],
+  "risks": [
+    "In-process guard/context and os.open/os.mkdir patches require a dedicated trusted worker; no blanket sandbox claim.",
+    "Offline tests substitute inert supported client/MockTransport; actual credential/peer/native attribution and installed runtime paths are not exercised.",
+    "Configured identity and caller grant checkpoint/hash do not prove loaded weights; uncertain loaded-instance binding must block measured readiness.",
+    "Local cancellation/client close does not prove remote generation quiescence; future invocation must report incomplete cleanup and enforce resource deadline.",
+    "No PR/CI workflow triggered; CI is unavailable/non-passing for this worker source repair, not a CI pass."
+  ],
+  "artifact_hashes": {
+    "HANDOFF.json": {
+      "bytes": 1972,
+      "sha256": "eea5596e02285bc0ea1b8c9ced2c701604a03fba10543cbc4b343f1de6240b4d"
+    },
+    "IMPLEMENTATION_APPROVAL_REJECTION.json": {
+      "bytes": 1299,
+      "sha256": "469dcd109b38c2319bd526b426919edae771f6f99edf4e2d3db8e4c16fe2c9e6"
+    },
+    "PROPOSAL.md": {
+      "bytes": 12858,
+      "sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373"
+    },
+    "cleanup-boundaries-1.log": {
+      "bytes": 113,
+      "sha256": "6ed9ebfd07e33b78e7eec8bc5e41dcd6b02ffca4babc417d7dd071fc478e5b01"
+    },
+    "default-scripted-dev/manifest.json": {
+      "bytes": 37129,
+      "sha256": "d4932381a08aa8271dc2a283990beec452e672fb783e5eb8ba49898b1fd2845c"
+    },
+    "default-scripted-dev/raw.jsonl": {
+      "bytes": 6840447,
+      "sha256": "179792b3db1de7bccaf2577a8bc28be0f9d8113a0f0d880ab7495cd699d49152"
+    },
+    "default-scripted-dev.log": {
+      "bytes": 959,
+      "sha256": "036998509c80465cfa1488f62f29e6429df4652f78f8196c456bbd2953df7ff4"
+    },
+    "eval-offline-1.log": {
+      "bytes": 383,
+      "sha256": "0efb90777c42a7af454ed667b19bf5dd4d96409d9c68d20859652799df809785"
+    },
+    "eval-offline-2.log": {
+      "bytes": 383,
+      "sha256": "04d0a52f80e77e8802de9a916372fa070dbe10841ce95b42751fb0f91f879d79"
+    },
+    "exact-3122ed2-offline-subset.log": {
+      "bytes": 463,
+      "sha256": "8598b7dc481458c61a08a46a260e3ceebfc3ebf76d09d505569e6359a5ecdcb7"
+    },
+    "exact-3122ed2-scripted-dev/manifest.json": {
+      "bytes": 37129,
+      "sha256": "0576c0158aec44287e525ac6b1d3ec19ca32d9b488169b6328f4f45248680454"
+    },
+    "exact-3122ed2-scripted-dev/raw.jsonl": {
+      "bytes": 6840450,
+      "sha256": "935f8027a7878ee11da67592539d840550634a49a80da1ad17087714945f53a3"
+    },
+    "exact-3122ed2-scripted-dev.log": {
+      "bytes": 959,
+      "sha256": "036998509c80465cfa1488f62f29e6429df4652f78f8196c456bbd2953df7ff4"
+    },
+    "factory-check-1.log": {
+      "bytes": 16402,
+      "sha256": "97d1628d344a27c6de277a87b5fe6011ad4f7e59d727028d251d72bacc3bc60d"
+    },
+    "factory-check-2.log": {
+      "bytes": 113,
+      "sha256": "446d796aead9625af354dad5c23e99d86a7ca86b41a2fa3e34ee55d497f08e3e"
+    },
+    "final-precommit-offline-subset-2.log": {
+      "bytes": 4305,
+      "sha256": "a764501a6725831dcf3b0eae54ba5d3e1012878b2d523c08db939b9d927d62d9"
+    },
+    "final-precommit-offline-subset-3.log": {
+      "bytes": 463,
+      "sha256": "603d9e2e1df8874974bbfbe3337bd6744f4c1dadbb18b18becdd2ff9895d33d6"
+    },
+    "final-precommit-offline-subset.log": {
+      "bytes": 463,
+      "sha256": "ac4e2fbc937231fe71aeac70b9415244f16dfaaaa312ec8db94b307963064c35"
+    },
+    "recovery-boundaries-1.log": {
+      "bytes": 5314,
+      "sha256": "fde8f5c6e89833f680b27e24d8f3d2333adbf617b57a69837984fe7e0df5e095"
+    },
+    "simulation-manifest-1.log": {
+      "bytes": 99,
+      "sha256": "ee38f45457931d40823f3595a78c891c4d37e14f36e9c4d009f1370ba6e2b587"
+    }
+  }
+}

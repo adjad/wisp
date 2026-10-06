@@ -1,0 +1,68 @@
+{"id": "R4-original", "met": true, "calls": [["view_emails", {"query": "Lyra", "strict_match": true}], ["view_emails", {"query": "road to recovery", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-class-named", "met": true, "calls": [["view_emails", {"query": "Cassia", "strict_match": true}], ["view_emails", {"query": "guide to weaving", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-class-containing", "met": true, "calls": [["view_emails", {"query": "Cassia", "strict_match": true}], ["view_emails", {"query": "response to update", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-class-about", "met": true, "calls": [["view_emails", {"query": "Cassia", "strict_match": true}], ["view_emails", {"query": "path to progress", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R4-title-literal", "met": false, "calls": [], "route": null, "diagnosis": null}
+{"id": "R4-title-quoted", "met": true, "calls": [["view_emails", {"query": "Cassia", "strict_match": true}], ["view_emails", {"query": "Guide to Gardening", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-original", "met": true, "calls": [["summarize_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-original-mixed", "met": true, "calls": [["summarize_emails", {}], ["search_notes", {"query": "harbor sketches"}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-head-Review", "met": true, "calls": [["summarize_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-head-Inspect", "met": true, "calls": [["summarize_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-head-Scan", "met": true, "calls": [["summarize_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-head-Browse", "met": true, "calls": [["summarize_emails", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-noun-text", "met": true, "calls": [["summarize_messages", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R5-noun-message", "met": true, "calls": [["summarize_messages", {}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-original", "met": true, "calls": [["search_notes", {"query": "my calendar"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-messages", "met": true, "calls": [["search_notes", {"query": "our messages"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-named", "met": true, "calls": [["search_notes", {"query": "email reminders"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-action-literal", "met": true, "calls": [["search_notes", {"query": "send email"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-negative-extra", "met": true, "calls": [], "route": "clarify", "diagnosis": "Unrequested or missing contextual source"}
+{"id": "R6-negative-missing", "met": true, "calls": [], "route": "clarify", "diagnosis": "A requested lookup filter was dropped"}
+{"id": "R6-negative-truncated", "met": true, "calls": [], "route": "clarify", "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "R6-quoted-source", "met": true, "calls": [["search_notes", {"query": "our messages"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-exclusions", "met": true, "calls": [["search_notes", {"query": "our calendar"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-exclusion-missing", "met": true, "calls": [], "route": "clarify", "diagnosis": "Missing explicit source exclusion"}
+{"id": "R6-quoted-negative-data", "met": true, "calls": [["search_notes", {"query": "our calendar without email"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-notes-domain-only", "met": true, "calls": [["search_notes", {"query": "my calendar"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-independent-source", "met": true, "calls": [["search_notes", {"query": "our calendar"}], ["view_emails", {"query": "Cassia", "strict_match": true}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-independent-missing", "met": true, "calls": [], "route": "clarify", "diagnosis": "Missing requested source"}
+{"id": "R6-context-positive", "met": true, "calls": [["search_notes", {"query": "our calendar", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R6-context-wrong-domain", "met": true, "calls": [], "route": "clarify", "diagnosis": "Unrequested or missing contextual source"}
+{"id": "R3-mixed", "met": true, "calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}], ["search_notes", {"query": "cedar maps", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R3-missing", "met": true, "calls": [], "route": "clarify", "diagnosis": "A requested lookup filter was dropped"}
+{"id": "R3-repeated", "met": true, "calls": [["search_notes", {"period": "tomorrow"}], ["search_notes", {"query": "cedar maps", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R3-repeated-misbound", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-tuples", "met": true, "calls": [["view_emails", {"account": "FieldLab", "unread": true, "count": 5, "query": "Cassia", "strict_match": true, "period": "2026-10-02"}], ["view_emails", {"account": "HomeLab", "count": 2, "query": "Soren", "strict_match": true, "period": "2026-10-04"}]], "route": "compiled", "diagnosis": null}
+{"id": "R1-reversed", "met": true, "calls": [["view_emails", {"account": "HomeLab", "count": 2, "query": "Soren", "strict_match": true, "period": "2026-10-04"}], ["view_emails", {"account": "FieldLab", "unread": true, "count": 5, "query": "Cassia", "strict_match": true, "period": "2026-10-02"}]], "route": "compiled", "diagnosis": null}
+{"id": "R1-swap-query", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-time", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-count", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-account", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-unread", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-swap-operation", "met": true, "calls": [], "route": "clarify", "diagnosis": "Read fields do not match one complete requested clause"}
+{"id": "R1-missing", "met": true, "calls": [], "route": "clarify", "diagnosis": "Missing exact quoted filter"}
+{"id": "R1-duplicate", "met": true, "calls": [["view_emails", {"account": "FieldLab", "unread": true, "count": 5, "query": "Cassia", "strict_match": true, "period": "2026-10-02"}], ["view_emails", {"account": "HomeLab", "count": 2, "query": "Soren", "strict_match": true, "period": "2026-10-04"}]], "route": "compiled", "diagnosis": null}
+{"id": "R2-correction", "met": true, "calls": [["search_notes", {"count": 5, "query": "river charts", "period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "R2-stale", "met": true, "calls": [], "route": "clarify", "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "alias-calendar", "met": true, "calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "route": "compiled", "diagnosis": null}
+{"id": "alias-inbox", "met": true, "calls": [["view_emails", {"period": "yesterday"}]], "route": "compiled", "diagnosis": null}
+{"id": "F1-date", "met": true, "calls": [], "route": "clarify", "diagnosis": "Requested source time was dropped, changed or added"}
+{"id": "F1-reminder", "met": true, "calls": [], "route": "clarify", "diagnosis": "Requested reminder scope was dropped or changed"}
+{"id": "F1-duration", "met": true, "calls": [], "route": "clarify", "diagnosis": "Requested free-slot duration was dropped or changed"}
+{"id": "F1-duration-valid", "met": true, "calls": [["find_free_time", {"period": "tomorrow", "minutes": 60}]], "route": "compiled", "diagnosis": null}
+{"id": "F3-shortcut", "met": true, "calls": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "route": null, "diagnosis": "Missing requested source"}
+{"id": "unsupported-daypart", "met": true, "calls": [], "route": "clarify", "diagnosis": "Requested time-of-day or range is not representable"}
+{"id": "excluded-violation", "met": true, "calls": [], "route": "clarify", "diagnosis": "Excluded source requested"}
+{"id": "action-recap-email", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-review-text", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-draft", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-outer-destination", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-literal-address", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-later-send", "met": true, "calls": [], "route": null, "diagnosis": "Literal filter was changed or invented"}
+{"id": "action-lookup-send", "met": false, "calls": [], "route": null, "diagnosis": null}
+{"id": "action-lookup-forward", "met": true, "calls": [], "route": null, "diagnosis": "Missing requested source"}
+{"id": "action-share-full", "met": false, "calls": [["search_notes", {"query": "cedar maps and share it with Mom"}]], "route": "compiled", "diagnosis": null}
+{"id": "action-share-prefix", "met": false, "calls": [], "route": "clarify", "diagnosis": "Complete requested query was dropped or changed"}
+{"id": "quoted-action", "met": true, "calls": [["search_notes", {"query": "send email to Mom"}]], "route": "compiled", "diagnosis": null}
+{"id": "negated-action", "met": true, "calls": [], "route": "clarify", "diagnosis": "Missing explicit source exclusion"}
+{"total": 67, "expectations_met": 63, "failed_cases": ["R4-title-literal", "action-lookup-send", "action-share-full", "action-share-prefix"]}

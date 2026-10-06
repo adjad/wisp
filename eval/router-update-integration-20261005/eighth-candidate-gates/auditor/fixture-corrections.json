@@ -1,0 +1,14 @@
+{
+  "candidate_unchanged": true,
+  "initial_results": "473/484",
+  "corrections": [
+    {
+      "controls": 5,
+      "reason": "Independent fixture guessed complete_reminder API id/expected_ids; source planner uses literal title and singular expected_id. Positive fake tool does not mutate reminder readback: exact failure response and stored failed task are expected, with no delivery workflow."
+    },
+    {
+      "controls": 6,
+      "reason": "An explicit later send is authorized to create its own waiting_for_content workflow. Enforce exact request, recipient Kai/channel email/status, no fake tool calls or read interpretation. No-workflow assertion still applies to every pure read/negative read control."
+    }
+  ]
+}

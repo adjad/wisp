@@ -1,0 +1,592 @@
+{
+  "schema_version": 1,
+  "role": "independent read-only Wisp Release Auditor",
+  "independent_of": [
+    "builder/integrator",
+    "repair authors",
+    "Simulation QA actor"
+  ],
+  "verdict": "BLOCK",
+  "exact_sha": "6df5200d0945ee3b050bcde4115a338e392017b1",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_audit_sha": "273d2748d01ed978b4e4fb56c8ee503b18143bc4",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "checkout": "/Users/adijain/.codex/worktrees/router-update-integration/MOE_Project",
+  "output_directory": "/private/tmp/wisp-router-6df5200-gates-20261005/auditor",
+  "recorded_at_utc": "2026-10-05T22:31:29.090135+00:00",
+  "scope": {
+    "complete_changed_files": 181,
+    "delta_since_previous_audit": 49,
+    "method": "Complete intended current base-to-head scope assessed through prior full source/schema/harness/overview reviews for unchanged code plus full current production/tests/docs/progress delta and relevant execution context. All181 paths rehashed; opaque corpus/author/archive treatment explicitly required.",
+    "production_delta": [
+      "service/router/intent/validation.py",
+      "service/router/web_request.py",
+      "service/workflows/compiler.py"
+    ],
+    "test_delta": [
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "areas": [
+      "source/literal/context/exclusion authority",
+      "query/date/count/account/operation occurrence pairing",
+      "workflow/read/outbound classification",
+      "schema/compiler/main/runtime",
+      "identity/transport/residency/defaultoff/repair/deadline/cancellation",
+      "privacy and overview grounding/partial attribution",
+      "scorer/manifest/UTC",
+      "opaque provenance/activation limits"
+    ],
+    "paths_and_hashes": "provenance.json"
+  },
+  "findings": [
+    {
+      "id": "R4",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Capitalized search title still becomes a delivery recipient",
+      "locations": [
+        {
+          "file": "service/router/web_request.py",
+          "start": 521,
+          "end": 527
+        },
+        {
+          "file": "service/router/web_request.py",
+          "start": 558,
+          "end": 562
+        },
+        {
+          "file": "service/router/router.py",
+          "start": 6967,
+          "end": 6974
+        }
+      ],
+      "request": "Read email from Cassia and email about Guide to Gardening",
+      "intent_sources": [
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "Cassia"
+        },
+        {
+          "domain": "email",
+          "operation": "records",
+          "query": "Guide to Gardening"
+        }
+      ],
+      "local_validation": {
+        "accepted": true
+      },
+      "standalone_planner": {
+        "disposition": "compiled",
+        "calls": [
+          [
+            "view_emails",
+            {
+              "query": "Cassia",
+              "strict_match": true
+            }
+          ],
+          [
+            "view_emails",
+            {
+              "query": "Guide to Gardening",
+              "strict_match": true
+            }
+          ]
+        ],
+        "reason": "validated read intent",
+        "attempts": 1
+      },
+      "classification": {
+        "effects": [
+          "send_email"
+        ],
+        "delivery": {
+          "text": "email about Guide to Gardening",
+          "channel": "email",
+          "address": null,
+          "phone": null,
+          "self_delivery": false,
+          "draft_only": false,
+          "scheduled": false,
+          "start": 27,
+          "target_missing": false,
+          "recipient": "Gardening"
+        },
+        "source": "Read email from Cassia"
+      },
+      "instruction_text": "Read email from        and email about                   ",
+      "outbound_verb": false,
+      "observed_calls": [],
+      "actual_route": {
+        "type": "routed",
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "rules",
+        "reason": "email lookup -> scoped tools (6)",
+        "route_source": "rules",
+        "direct_calls": [],
+        "required_tool_groups": [],
+        "forbidden_tools": [
+          "http_request",
+          "web_fetch",
+          "web_search"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "",
+        "verified_results_only": false,
+        "strict_read_limits": {},
+        "reminder_action": "",
+        "trace_id": "15ac240bbe884909970fc3331219f306"
+      },
+      "expected_calls": [
+        [
+          "view_emails",
+          {
+            "query": "Cassia",
+            "strict_match": true
+          }
+        ],
+        [
+          "view_emails",
+          {
+            "query": "Guide to Gardening",
+            "strict_match": true
+          }
+        ]
+      ],
+      "offered_tools": [
+        "scan_subscriptions",
+        "summarize_emails",
+        "summarize_thread",
+        "triage_inbox",
+        "unsubscribe",
+        "view_emails"
+      ],
+      "description": "The new coordinated read guard invokes _terminal_destination on raw query text. Its capitalized-complement heuristic considers Guide a complete topic and Gardening an addressee, grants send_email metadata, and bypasses structured planning. The shared instruction mask and workflow helper correctly recognize a read; standalone planning compiles both strict queries.",
+      "required_behavior": "Bind destinations outside the complete read literal. Capitalization alone must not establish effect authority; unresolved attachment may clarify without authorizing delivery. Retain explicit personal/address recipients and genuine later actions.",
+      "controls": [
+        "R4-original",
+        "R4-class-named",
+        "R4-class-containing",
+        "R4-class-about",
+        "R4-title-quoted",
+        "action-outer-destination",
+        "action-literal-address",
+        "action-later-send"
+      ],
+      "limits": "Six legacy email tools offered, not send_email; no calls or sends occur. Metadata/planner bypass proven; no executable outbound expansion or real-model failure rate claimed.",
+      "evidence": {
+        "file": "application-results.json",
+        "case": "R4-title-literal",
+        "paired": "R4-title-quoted"
+      }
+    },
+    {
+      "id": "R7",
+      "priority": "P2",
+      "blocking": true,
+      "title": "Shared literal mask consumes genuine later share instruction",
+      "locations": [
+        {
+          "file": "service/router/intent/validation.py",
+          "start": 249,
+          "end": 270
+        },
+        {
+          "file": "service/workflows/compiler.py",
+          "start": 71,
+          "end": 80
+        }
+      ],
+      "request": "Find notes about cedar maps and share it with Mom",
+      "intent_sources": [
+        {
+          "domain": "notes",
+          "operation": "records",
+          "query": "cedar maps and share it with Mom"
+        }
+      ],
+      "local_validation": {
+        "accepted": true
+      },
+      "standalone_planner": {
+        "disposition": "compiled",
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "cedar maps and share it with Mom"
+            }
+          ]
+        ],
+        "reason": "validated read intent",
+        "attempts": 1
+      },
+      "classification": {
+        "effects": [],
+        "delivery": null,
+        "source": "Find notes about cedar maps and share it with Mom"
+      },
+      "instruction_text": "Find notes about                                 ",
+      "outbound_verb": false,
+      "observed_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "cedar maps and share it with Mom"
+          },
+          "source": "notes",
+          "fixture": true,
+          "execution_stage": "service/workflows/reads.py"
+        }
+      ],
+      "actual_route": {
+        "type": "routed",
+        "role": "agent",
+        "model": "Ling-3.0-tiny-oQ4e",
+        "needs_tools": true,
+        "needs_vision": false,
+        "source": "intent",
+        "reason": "validated read intent",
+        "route_source": "model",
+        "intent_disposition": "compiled",
+        "direct_calls": [
+          {
+            "tool": "search_notes",
+            "args": {
+              "query": "cedar maps and share it with Mom"
+            }
+          }
+        ],
+        "required_tool_groups": [
+          [
+            "search_notes"
+          ]
+        ],
+        "forbidden_tools": [
+          "accessibility_toggle",
+          "add_calendar_event",
+          "add_reminder",
+          "air_quality",
+          "airdrop_file",
+          "append_note",
+          "archive_email",
+          "archive_files",
+          "astronomy",
+          "backup_folder",
+          "calculate",
+          "cancel_event",
+          "cancel_scheduled_send",
+          "clear_clipboard",
+          "clear_memory",
+          "clear_past_reminders",
+          "clear_reminders",
+          "clipboard_read",
+          "clipboard_write",
+          "complete_reminder",
+          "connect_wifi",
+          "contact_dates",
+          "convert_currency",
+          "convert_file",
+          "convert_units",
+          "country_info",
+          "create_folder",
+          "create_note",
+          "create_tool",
+          "daily_brief",
+          "define_word",
+          "delete_path",
+          "draft_email",
+          "draft_message",
+          "encrypt_file",
+          "find_files",
+          "find_free_time",
+          "find_local_events",
+          "find_my_device",
+          "find_place",
+          "flag_email",
+          "force_quit_app",
+          "forget",
+          "forward_email",
+          "generate_password",
+          "get_battery_status",
+          "get_codex_updates",
+          "get_directions",
+          "get_lyrics",
+          "get_past_events",
+          "get_recent_activity",
+          "get_sports_scores",
+          "get_stock_price",
+          "get_upcoming",
+          "get_volume",
+          "get_weather",
+          "health_summary",
+          "http_request",
+          "identify_song",
+          "install_shortcut",
+          "join_video_call",
+          "keychain_read",
+          "keychain_store",
+          "list_bluetooth_devices",
+          "list_contacts",
+          "list_dir",
+          "list_running_apps",
+          "list_scheduled_sends",
+          "list_shortcuts",
+          "live_captions",
+          "lock_screen",
+          "log_entry",
+          "lookup_contact",
+          "lookup_media_title",
+          "manage_contacts",
+          "manage_login_items",
+          "manage_spaces",
+          "manage_timers",
+          "mark_email_read",
+          "move_path",
+          "music",
+          "network_info",
+          "open_app",
+          "organize_files",
+          "place_call",
+          "play_ambient",
+          "play_audiobook",
+          "play_podcast",
+          "play_radio",
+          "play_streaming",
+          "power_control",
+          "print_document",
+          "quit_app",
+          "rain_radar",
+          "random_pick",
+          "read_file",
+          "read_log",
+          "recall",
+          "recipe_lookup",
+          "remember",
+          "reply_to_email",
+          "reveal_in_finder",
+          "run_applescript",
+          "run_shell",
+          "run_shortcut",
+          "run_speed_test",
+          "scan_subscriptions",
+          "scan_to_note",
+          "schedule_send",
+          "schedule_task",
+          "screen_capture",
+          "search_browser_history",
+          "search_conversations",
+          "search_coverage",
+          "search_reminders",
+          "send_email",
+          "send_message",
+          "set_alarm",
+          "set_appearance",
+          "set_display",
+          "set_fitness_goal",
+          "set_hotkey",
+          "set_keyboard_backlight",
+          "set_screen_lock_timeout",
+          "set_sleep_timer",
+          "set_timer",
+          "set_volume",
+          "set_wifi",
+          "software_update",
+          "spotify",
+          "spreadsheet_ops",
+          "stop_radio",
+          "stopwatch",
+          "summarize_emails",
+          "summarize_messages",
+          "summarize_thread",
+          "switch_app",
+          "system_status",
+          "tag_file",
+          "text_to_speech",
+          "toggle_setting",
+          "track_flight",
+          "track_package",
+          "transcribe_audio",
+          "transit_info",
+          "trash_file",
+          "travel_time",
+          "triage_inbox",
+          "uninstall_app",
+          "unsubscribe",
+          "update_event",
+          "update_reminder",
+          "view_emails",
+          "view_messages",
+          "weather_alerts",
+          "web_fetch",
+          "web_search",
+          "wikipedia_summary",
+          "window_control",
+          "wisp_capabilities",
+          "wisp_mcp",
+          "wisp_skills",
+          "wisp_status",
+          "wisp_sync",
+          "world_time",
+          "write_document",
+          "write_file"
+        ],
+        "conditional_tools": [],
+        "tool_argument_bindings": {},
+        "resolved_request": "Find notes about cedar maps and share it with Mom",
+        "verified_results_only": true,
+        "strict_read_limits": {
+          "search_notes": 1
+        },
+        "reminder_action": "",
+        "trace_id": "719d8d1b69194996ac3c16f19148d428"
+      },
+      "description": "Later-action bounds omit share, already present in workflow outbound vocabulary. The new shared mask swallows cedar maps and share it with Mom; outbound_verb becomes false, applicable_read true, and actual main executes a pure notes lookup with the action tail inside the query. Supplying only cedar maps instead fails completeness and clarifies via read interpretation.",
+      "required_behavior": "Preserve complete established action vocabulary at clause boundaries or decline structured admission conservatively. Do not validate genuine action tails as lookup text. Keep quoted share text as data.",
+      "controls": [
+        "action-lookup-send",
+        "action-lookup-forward",
+        "later-share-with-channel",
+        "literal-share-then-send",
+        "quoted-share-data"
+      ],
+      "limits": "Only a registered fake read executes. No real share, communication, native body or permission bypass observed; wrong query semantics and loss of action guard are proven.",
+      "regression_evidence": "Pure prior masking-stage expressions detect outbound share on this input; current helper does not. No old application/script executed or receipt transferred.",
+      "evidence": {
+        "file": "application-results.json",
+        "cases": [
+          "action-share-full",
+          "action-share-prefix"
+        ],
+        "paired_file": "paired-results.json",
+        "paired_case": "later-share-without-channel"
+      }
+    }
+  ],
+  "prior_finding_reassessment": [
+    {
+      "id": "R4",
+      "status": "PARTIAL",
+      "details": "Original lowercase road to recovery and named/containing/about variants work; quoted capitalized title works. Capitalization variant remains blocking."
+    },
+    {
+      "id": "R5",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Bare/mixed Recap email, Review/Inspect/Scan/Browse and recap text/message execute reads; real delivery/draft/later action guards remain."
+    },
+    {
+      "id": "R6",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Complete unquoted source/action literals grant only notes authority. Missing/truncated/extra sources reject; raw exclusions visible and quoted exclusions data. Contextual domain/independent source authority and notes-only standalone admission work."
+    },
+    {
+      "id": "R3_R1_R2_ALIASES",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Mixed and one-filter repeated reads work. Correct/reversed tuples and dedupe work; query/date/count/account/unread/operation swaps and omission reject. New source-free query replaces stale text with inherited count/date; calendar/inbox aliases work. Prior completed account/unread/ambiguity/messages alias coverage retained through unchanged context/alias code review."
+    },
+    {
+      "id": "F1_F2_F3",
+      "status": "ORIGINAL_REPRODUCERS_RESOLVED",
+      "details": "Date/reminder scope/duration omissions and unsupported daypart reject; valid60minute slot and calendar-only tomorrow shortcut work. Shortcut unused empty intent is not separately validator-valid."
+    },
+    {
+      "id": "G1",
+      "status": "RESOLVED_FOR_AUDITED_SCOPE",
+      "details": "Actual repaired test passes three fixed clocks with timestamps/positions/cardinality/cache/text/model/debug/four summaries. Injected private body fails new textual assertion; production redaction unchanged."
+    },
+    {
+      "id": "F4_P3_UTC",
+      "status": "RESOLVED_OR_MITIGATED",
+      "details": "Six modules admitted and unknown/missing failclosed. Typed supplemental scorer rejects bool/float equality caveat; legacy scores unchanged. UTC/Pacific23h/25h DST/restoration/missing-tzset controls pass."
+    }
+  ],
+  "independent_execution": {
+    "application": {
+      "total": 67,
+      "expectations_met": 64,
+      "failed_cases": [
+        "R4-title-literal",
+        "action-share-full",
+        "action-share-prefix"
+      ]
+    },
+    "paired": {
+      "total": 5,
+      "expectations_met": 4,
+      "failed_cases": [
+        "later-share-without-channel"
+      ]
+    },
+    "boundary": {
+      "total": 36,
+      "passed": 36
+    },
+    "fixture_correction": {
+      "initial_evidence": "application-results-initial.json",
+      "initial_log": "application-command-initial.log",
+      "initial_expectations_met": 63,
+      "corrected_expectations_met": 64,
+      "total": 67,
+      "correction": "Generic send it to Mom did not request an email channel. Its correct channel-null delivery cannot require send_email metadata. Corrected only auditor expected-effects field to require action guard without guessing a channel, reran bounded batch, and preserved initial raw evidence. No candidate/corpus/gold/scorer/raw overwrite.",
+      "report_write_retry": "First large final-report apply_patch call stalled without writing a file and was terminated (cell103); smaller writes completed. No candidate process or full gate was stopped."
+    },
+    "actual_model_calls": false,
+    "native_or_outbound_execution": false,
+    "heldout_payload_opened": false,
+    "commands": [
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-6df5200-gates-20261005/auditor/application_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-6df5200-gates-20261005/auditor/paired_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /Users/adijain/Desktop/MOE_Project/.venv/bin/python /private/tmp/wisp-router-6df5200-gates-20261005/auditor/boundary_controls.py",
+      "PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 /private/tmp/wisp-router-6df5200-gates-20261005/auditor/provenance_checks.py"
+    ],
+    "evidence": [
+      "application-results-initial.json",
+      "application-results.json",
+      "paired-results.json",
+      "boundary-results.json",
+      "provenance.json"
+    ]
+  },
+  "parent_mechanical_gate": {
+    "status": "PASS",
+    "exact_sha": "6df5200d0945ee3b050bcde4115a338e392017b1",
+    "passed_modules": 179,
+    "total_modules": 179,
+    "exit_code": 0,
+    "receipt": "parent-gate-receipt.json",
+    "external_log": "/private/tmp/wisp-router-update-6df5200-regression.log",
+    "verified_log_sha256": "d7683188e2e2a2cb4a72e178031aed79a50bfc0db9ac1ded3f61fbbe4d7d7102",
+    "completed_at_utc": "2026-10-05T22:25:55.452075+00:00",
+    "full_gate_run_by_auditor": false
+  },
+  "ci": "Required jobs running; no independently inspected current terminal PASS receipts",
+  "provenance_summary": {
+    "head_clean_at_completion": true,
+    "changed_files": 181,
+    "replay_bundles_verified": 9,
+    "archive_entries_verified": 102,
+    "opaque_corpus_bytes_and_seals_unchanged": true,
+    "registered_scope_and_handoff_pins_verified": true,
+    "candidate_source_edits": false
+  },
+  "failures_skips_limits": [
+    "No real model/status/endpoint/inference/native/user data/settings/credentials/outbound/network effects, training/residency/configuration, installed-app change, deploy or merge. Guard installed before service imports; registered callables all synthetic.",
+    "Heldout/dev corpus/author/raw archive and replay payloads opaque: bytes/hashes and permitted metadata only. No archived script executed or raw cases supplied to repair authors.",
+    "No duplicate full regression or DEV run. Exact parent179/179PASS receipt/log verified; prior pass/fail/BLOCK stages preserved and do not transfer. RequiredCI stillrunning per parent; no independent terminal pass receipt.",
+    "Separate Simulation QA held by BLOCK. Separate LiveQA/performance/protected integration/shipping gates remain where required.",
+    "Planner default-disabled and resident resource-window ACK pending. Actual model95%/strict-JSON/latency/training/generalization/activation unmeasured.",
+    "BuilderDEV80/80exact/source48/48firstcall72/80original/guardedE2E16/16failurehonesty is scripted metadata with annotation limits; zero-applicable answer-fact/query guards prove neither. Defaultoff control retained separately.",
+    "Correlated synthetic probes are not accuracy samples. Genuine actions tested for guard/classification/absence of unintended calls, not real delivery approval execution.",
+    "Notes-only domain restriction tested at standalone planner; main fixture uses standard all-domain fake config. No production config changed.",
+    "One auditor expectation correction and initial raw evidence retained explicitly; generic send without channel cannot imply email-specific effect."
+  ],
+  "handoff": "Parent reads files. Orchestrator must record one repair owner perR4/R7 before edits; newfreeze/ACK/review required. No QA release/activation/merge/ship approval."
+}

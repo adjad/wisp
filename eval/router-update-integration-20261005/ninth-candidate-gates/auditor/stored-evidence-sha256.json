@@ -1,0 +1,15 @@
+{
+  "candidate": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "verdict": "BLOCK",
+  "original_entries_verified": 256,
+  "storage": "All original sealed entries and original checksum manifest preserved in tar.gz without dereferencing symlinks. Every archive entry rehashed without extraction. Root reports duplicated for reading.",
+  "archive": "complete-audit-evidence.tar.gz",
+  "archive_bytes": 8011177,
+  "archive_sha256": "d447c97abfc8923a913572030922fbea6d2b0803800c80a5fc43aa7000931a9b",
+  "files": {
+    "REPORT.md": "9561394da01564e3e8a08b82ea4d6aa68b4f40585e34521c5bd9a45aeee39013",
+    "REPORT.json": "504a3ce6dec42c91d1fa1ae6e9cd652775bbc29d41c74fca5b8cd3740ffbdc1f",
+    "HANDOFF.json": "b9b8580c6b0ce364b5058caeca440fb05fd5e870eb7f3464ad410e60d0c74ab4",
+    "CHECKSUMS.json": "19faa82838e8d2acdca7a466757c0123b18e68d28b93972b64c6293b34de6354"
+  }
+}

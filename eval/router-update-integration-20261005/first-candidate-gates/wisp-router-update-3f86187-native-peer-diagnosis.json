@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scope": "reserved-disposable-loopback-and-native-inspection",
+  "candidate_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "ending_sha": "3f86187ccfca1a20423506c883acecc6fec59ae1",
+  "clean_start": true,
+  "clean_end": true,
+  "dirty_allowed": false,
+  "returncode": 71,
+  "cases": {},
+  "ports": [
+    61581,
+    61582,
+    61583,
+    61584,
+    61585,
+    61586,
+    61587
+  ],
+  "duration_s": 0.05437779100611806,
+  "stdout": "",
+  "stderr": "sandbox-exec: sandbox_apply: Operation not permitted\n",
+  "status": "FAIL"
+}

@@ -1,0 +1,14 @@
+{
+  "CHECKSUMS.json": {
+    "bytes": 3596,
+    "sha256": "9db18446770943fb2c0a58ba94d3233ef50a5cd664b4f25469eea1f6fa709746"
+  },
+  "HANDOFF.json": {
+    "bytes": 11269,
+    "sha256": "002804d997f937c1852cf7be2938d8145bb5ae80c1248cbd643e8e32f4394dbb"
+  },
+  "complete-repair-evidence.tar.gz": {
+    "bytes": 23418,
+    "sha256": "acb7118ce3bbd0565c3ede0751f0fcb9122c7a65ee3ae1e28b9dec96545d784b"
+  }
+}

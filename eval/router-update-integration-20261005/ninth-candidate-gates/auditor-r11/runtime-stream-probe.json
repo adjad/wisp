@@ -1,0 +1,40 @@
+{
+  "head": "67e4cefa53687f265287b9d068fc549c1f7955b6",
+  "mode": "inert fake client; sys.audit policy events only; no socket/HTTP/native process/auth read",
+  "before": {
+    "phase": null,
+    "socket_policy_only": "denied",
+    "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/stream-fixture-pkk7s_b0/state"
+  },
+  "first": {
+    "kind": "content",
+    "text": "Synthetic frame one"
+  },
+  "between": {
+    "phase": "peer",
+    "socket_policy_only": "admitted",
+    "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/stream-fixture-pkk7s_b0/original-home"
+  },
+  "after": {
+    "phase": null,
+    "socket_policy_only": "denied",
+    "home": "/private/tmp/wisp-router-67e4cef-gates-20261005/auditor/stream-fixture-pkk7s_b0/state",
+    "busy": false
+  },
+  "raw": [
+    {
+      "kind": "runtime_stream",
+      "model": "Ling-AuditorFixture",
+      "messages": [],
+      "kwargs": {},
+      "outcome": "GeneratorExit",
+      "events": [
+        {
+          "kind": "content",
+          "text": "Synthetic frame one"
+        }
+      ]
+    }
+  ],
+  "pass_": false
+}

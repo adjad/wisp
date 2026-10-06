@@ -1,0 +1,147 @@
+{
+  "auditor/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "7092e19ec9d26383b40cb823c166f529d88a1138c69c5753389ab35745574b4f",
+    "stored_sha256": "7092e19ec9d26383b40cb823c166f529d88a1138c69c5753389ab35745574b4f"
+  },
+  "auditor/REPORT.json": {
+    "original_name": "REPORT.json",
+    "original_sha256": "f427b452cfd8274daee2a3b06461d55b50a68052e7aa7c0c8a90a73a8810f296",
+    "stored_sha256": "f427b452cfd8274daee2a3b06461d55b50a68052e7aa7c0c8a90a73a8810f296"
+  },
+  "auditor/REPORT.md": {
+    "original_name": "REPORT.md",
+    "original_sha256": "2888ff74c01cd8ef895561e06ae87f48db3e6a1ccca63701b5c4ba1cd11c6b42",
+    "stored_sha256": "2888ff74c01cd8ef895561e06ae87f48db3e6a1ccca63701b5c4ba1cd11c6b42"
+  },
+  "auditor/boundary-command.log": {
+    "original_name": "boundary-command.log",
+    "original_sha256": "5a71fcbd1fb6f5b11ba4ace083fb2354725a10ea2f001381b07748a6751dae21",
+    "stored_sha256": "5a71fcbd1fb6f5b11ba4ace083fb2354725a10ea2f001381b07748a6751dae21"
+  },
+  "auditor/boundary-results.json.gz": {
+    "original_name": "boundary-results.json",
+    "original_sha256": "6d09a90b171d450117e589c39b276f645829d28a1d2e785df11780d7e5a23b0b",
+    "stored_sha256": "212c317c42e5a03e22f4d457575b19a4e39f19af3bb4603accaf787be867ea34"
+  },
+  "auditor/boundary_controls.py": {
+    "original_name": "boundary_controls.py",
+    "original_sha256": "e758c437b5e8ff21a4247d0775623c7106423c989eb7395537498202d01a3a73",
+    "stored_sha256": "e758c437b5e8ff21a4247d0775623c7106423c989eb7395537498202d01a3a73"
+  },
+  "auditor/finalize_report.py": {
+    "original_name": "finalize_report.py",
+    "original_sha256": "3799896934893ea294e178eb95a70a36d0b291c570982a488a012afb96830196",
+    "stored_sha256": "3799896934893ea294e178eb95a70a36d0b291c570982a488a012afb96830196"
+  },
+  "auditor/independent-command.log": {
+    "original_name": "independent-command.log",
+    "original_sha256": "d622b9d9a2a3bf0c63bc843cbe2fa8a4b72ffc4c63f7e285745de8ee730fb20b",
+    "stored_sha256": "d622b9d9a2a3bf0c63bc843cbe2fa8a4b72ffc4c63f7e285745de8ee730fb20b"
+  },
+  "auditor/independent-results.json.gz": {
+    "original_name": "independent-results.json",
+    "original_sha256": "db32562ced2bf7e733b798b1c63a44ad3e7ac30d1456617454bf88e5a00e16e8",
+    "stored_sha256": "211925e43cd4e888e3ce82374c9bbff87eb6ee0fc6d45ba7b7f47a910d50e3e8"
+  },
+  "auditor/independent_cases.py": {
+    "original_name": "independent_cases.py",
+    "original_sha256": "5a850f09c882c49cf4ac1f44c61cb2ece5b45b5923200b4b3cd81df93ed940a2",
+    "stored_sha256": "5a850f09c882c49cf4ac1f44c61cb2ece5b45b5923200b4b3cd81df93ed940a2"
+  },
+  "auditor/parent-gate-receipt.json": {
+    "original_name": "parent-gate-receipt.json",
+    "original_sha256": "06b8365ca559c92a09bb4687f4d6f654b2bef95503aa4c0c82840b20d80a356d",
+    "stored_sha256": "06b8365ca559c92a09bb4687f4d6f654b2bef95503aa4c0c82840b20d80a356d"
+  },
+  "auditor/provenance.json": {
+    "original_name": "provenance.json",
+    "original_sha256": "8675653ebad374b415365e92b472c8093aeaa65f8b1831d3092b8a06ea20c037",
+    "stored_sha256": "8675653ebad374b415365e92b472c8093aeaa65f8b1831d3092b8a06ea20c037"
+  },
+  "auditor/provenance_checks.py": {
+    "original_name": "provenance_checks.py",
+    "original_sha256": "6958953316dbac047e6696733ffcfb6e808e4b2d2e2992f41cde07ecdde894db",
+    "stored_sha256": "6958953316dbac047e6696733ffcfb6e808e4b2d2e2992f41cde07ecdde894db"
+  },
+  "auditor/supplemental-command.log": {
+    "original_name": "supplemental-command.log",
+    "original_sha256": "7f6def732eae3c4d3660afb592cd2bab489da9357b8d48dabca1c505b09c2181",
+    "stored_sha256": "7f6def732eae3c4d3660afb592cd2bab489da9357b8d48dabca1c505b09c2181"
+  },
+  "auditor/supplemental-results.json.gz": {
+    "original_name": "supplemental-results.json",
+    "original_sha256": "7f6def732eae3c4d3660afb592cd2bab489da9357b8d48dabca1c505b09c2181",
+    "stored_sha256": "2d11866bafcd4f90f1b08f6c1e7f26c7d4aa4101357b8270f455d8687b04b3db"
+  },
+  "auditor/supplemental_controls.py": {
+    "original_name": "supplemental_controls.py",
+    "original_sha256": "d63a2501c5c945866c62aea580d6886f76ff473fc8e36941ea28668c50b1f408",
+    "stored_sha256": "d63a2501c5c945866c62aea580d6886f76ff473fc8e36941ea28668c50b1f408"
+  },
+  "auditor/checksums.json": {
+    "original_sha256": "fcd299befcb6c55cc7e4da60702d7875dd4e0474b0beefac343de02576c0b84f",
+    "stored_sha256": "fcd299befcb6c55cc7e4da60702d7875dd4e0474b0beefac343de02576c0b84f"
+  },
+  "wisp-router-update-27490ae-gate-receipt.json": {
+    "original_sha256": "06b8365ca559c92a09bb4687f4d6f654b2bef95503aa4c0c82840b20d80a356d",
+    "stored_sha256": "06b8365ca559c92a09bb4687f4d6f654b2bef95503aa4c0c82840b20d80a356d"
+  },
+  "wisp-router-update-27490ae-regression.log.gz": {
+    "original_sha256": "2d5448d21bdfd1d83f3d0dbd06bf0724a28bc3d53b900299607c7f59b324b39c",
+    "stored_sha256": "99899d71162a6584f1e286757a1e9c3797a3b90609f23ccbdc78920f2cf4075b"
+  },
+  "wisp-router-update-27490ae-python-ci.json": {
+    "original_sha256": "3be1946627b845f96fe8a27d205b6ad62b863dc7a52e9d9e86930c77f9c94131",
+    "stored_sha256": "3be1946627b845f96fe8a27d205b6ad62b863dc7a52e9d9e86930c77f9c94131"
+  },
+  "wisp-router-update-27490ae-artifact-ci-final.json": {
+    "original_name": "wisp-router-update-27490ae-artifact-ci-final.json",
+    "original_sha256": "ab9516b58b8a4b20da29dbec543099ebb1eac8e771e4fca1e749b6aceba749ec",
+    "stored_sha256": "ab9516b58b8a4b20da29dbec543099ebb1eac8e771e4fca1e749b6aceba749ec"
+  },
+  "wisp-router-update-27490ae-artifact-ci.log.gz": {
+    "original_name": "wisp-router-update-27490ae-artifact-ci.log",
+    "original_sha256": "029b7244fea8a4a24bb3f517954b7fb315205e1f33a127608bf89fceca25c29b",
+    "stored_sha256": "0f92d618563333019f3af4990d1f025f533eec8306df996416e74fbff07046f2"
+  },
+  "WISP_DIGEST_METADATA_DIAGNOSIS.md": {
+    "original_name": "WISP_DIGEST_METADATA_DIAGNOSIS.md",
+    "original_sha256": "6d35ce87ed7112d1b92a1a43c2f13239576649bb6da907797b8f241d5666633e",
+    "stored_sha256": "6d35ce87ed7112d1b92a1a43c2f13239576649bb6da907797b8f241d5666633e"
+  },
+  "WISP_DIGEST_CLOCK_REPAIR_HANDOFF.json": {
+    "original_name": "WISP_DIGEST_CLOCK_REPAIR_HANDOFF.json",
+    "original_sha256": "3dfd2e37ec485fe2a6572718a09ef3e526adcb56b874e53b4c702cd832e2a681",
+    "stored_sha256": "3dfd2e37ec485fe2a6572718a09ef3e526adcb56b874e53b4c702cd832e2a681"
+  },
+  "wisp-digest-clock-repair-exact-head.log.gz": {
+    "original_name": "wisp-digest-clock-repair-exact-head.log",
+    "original_sha256": "bfc344f28896a145d86ca6f96d6e716097c9c029904fc50dcdc12f8b409cc4c3",
+    "stored_sha256": "2ca8cf89f1b9c1e5f6af64fdd75596d8d936a4bfc732fa8cf7d9a1ea59177a92"
+  },
+  "wisp_digest_metadata_diag.py": {
+    "original_name": "wisp_digest_metadata_diag.py",
+    "original_sha256": "131cd95e5cf6d12c7d226df48ffbda30a5ec83f31f401163ac53d316d8f36d18",
+    "stored_sha256": "131cd95e5cf6d12c7d226df48ffbda30a5ec83f31f401163ac53d316d8f36d18"
+  },
+  "WISP_DIGEST_DIAG_clean.json": {
+    "original_name": "WISP_DIGEST_DIAG_clean.json",
+    "original_sha256": "d646eb45885a42302d7facbe5e97ebb9b15588ddbe01e77487c5f65b1399395d",
+    "stored_sha256": "d646eb45885a42302d7facbe5e97ebb9b15588ddbe01e77487c5f65b1399395d"
+  },
+  "WISP_DIGEST_DIAG_otp1234.json": {
+    "original_name": "WISP_DIGEST_DIAG_otp1234.json",
+    "original_sha256": "70e4c7320f0f9d2e16a301882357ae84d1e17cc21e32bebfb6283c1e211a1bd1",
+    "stored_sha256": "70e4c7320f0f9d2e16a301882357ae84d1e17cc21e32bebfb6283c1e211a1bd1"
+  },
+  "WISP_DIGEST_DIAG_otp5678.json": {
+    "original_name": "WISP_DIGEST_DIAG_otp5678.json",
+    "original_sha256": "f531148aeeab72e935c14bf5fa54330c7e850ece9e2fec0eedbc439bc329a8fb",
+    "stored_sha256": "f531148aeeab72e935c14bf5fa54330c7e850ece9e2fec0eedbc439bc329a8fb"
+  },
+  "conditional-core-release.json": {
+    "original_sha256": "0487a412d3ef160cdeb5de75271b9f8b68ca568629a845d8fabca8d02965ae4c",
+    "stored_sha256": "0487a412d3ef160cdeb5de75271b9f8b68ca568629a845d8fabca8d02965ae4c"
+  }
+}

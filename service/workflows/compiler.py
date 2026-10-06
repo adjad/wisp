@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 
 from service.utterance_shape import deliberate
 from service.authored_message import authored_message_intent
@@ -42,21 +43,61 @@ CONTENT_QUESTION = ("I couldn't tell exactly what to send. I can send a summary 
 # delivery. Verbs such as send/text/forward are unaffected.
 _EMAIL_NOUN_USE = re.compile(
     r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+e-?mails?\b|"
-    r"\b(?:on|in|of|from|about)\s+e-?mails?\b|"
-    r"\b(?:check|read|summari[sz]e|show|list|open|refresh|get|have|what|any)\s+"
+    r"\b(?:on|in|of|from|about|without|excluding|exclude|except|skip|no|not)\s+e-?mails?\b|"
+    r"\b(?:check|read|summari[sz]e|recap|review|inspect|browse|scan|show|list|open|refresh|get|have|what|any)\s+"
     r"(?:new\s+|unread\s+)?e-?mails?\b|"
-    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about)\b", re.I)
+    r"\bhow\s+(?:much|many)\s+e-?mails?\b|\be-?mails?\s+(?:from|about|with|containing|named|titled|called)\b", re.I)
 _LEADING_EMAIL_NOUN = re.compile(
     r"^\s*e-?mails?\s+(?:summary|summaries|digest|recap|inbox|updates?|count|status)\b", re.I)
 _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 
+# Singular "text"/"message" can name a source or an earlier communication.
+# Mask only the noun/predicate span; a later delivery clause must remain visible.
+_MESSAGE_NOUN_USE = re.compile(
+    r"\b(?:my|the|your|our|any|all|new|unread|recent|latest|these|those)\s+"
+    r"(?:(?:new|unread|recent|latest|old)\s+)*(?:text(?:\s+messages?)?|message)\b|"
+    r"\b(?:on|in|of|from|about|without|excluding|exclude|except|skip|no|not)\s+(?:text(?:\s+messages?)?|message)\b|"
+    r"\b(?:check|read|summari[sz]e|recap|review|inspect|browse|scan|show|list|open|refresh|get)\s+"
+    r"(?:(?:my|the|your|our|any|all|new|unread|recent|latest|these|those|an?)\s+)*"
+    r"(?:text(?:\s+messages?)?|message)\b", re.I)
+_LEADING_MESSAGE_NOUN = re.compile(
+    r"^\s*(?:text|message)\s+(?:summary|summaries|digest|recap|history|thread|count|status)\b", re.I)
+_HISTORICAL_MESSAGE_QUESTION = re.compile(
+    r"\b(?:what|which|who)\s+(?:did|has|have|had|was|were)\b"
+    r"(?:(?!\b(?:and|but|then|also|now)\b)[^,;.!?])*?\b(?P<verb>text|message)\b", re.I)
+
+
 def outbound_verb(text: str) -> bool:
-    """True when the text asks to deliver something, not merely names email."""
-    masked = _EMAIL_NOUN_USE.sub(" ", text)
-    if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
-        masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
-    return bool(_OUTBOUND.search(masked))
+    """True for delivery/compose verbs, excluding source nouns and past reads."""
+    # Share complete lookup-literal bounds with intent authority. Literal
+    # source/action words do not create delivery intent; later clauses remain.
+    from service.router.intent.validation import InvalidIntent, _instruction_text
+    try:
+        masked = _instruction_text(text, now=datetime.now().astimezone())
+    except InvalidIntent:
+        masked = text  # Retain the original action guard for ambiguous bounds.
+    from service.router.web_request import _action_clause_head, _effect_clauses
+    for clause in _effect_clauses(masked):
+        # A prohibition owns only its complete effect clause. A later positive
+        # delivery still reaches the existing durable workflow/approval guard.
+        head = _action_clause_head(clause.text)
+        if head and head["negative"]:
+            continue
+        candidate = _EMAIL_NOUN_USE.sub(" ", clause.text)
+        if _LEADING_EMAIL_NOUN.match(candidate) and not _ADDRESSEE_CUE.search(candidate):
+            candidate = _LEADING_EMAIL_NOUN.sub(" ", candidate, count=1)
+        candidate = _MESSAGE_NOUN_USE.sub(" ", candidate)
+        if _LEADING_MESSAGE_NOUN.match(candidate) and not _ADDRESSEE_CUE.search(candidate):
+            candidate = _LEADING_MESSAGE_NOUN.sub(" ", candidate, count=1)
+        def mask_past_predicate(match: re.Match[str]) -> str:
+            begin, end = match.span("verb")
+            relative = begin - match.start()
+            return match.group(0)[:relative] + " " * (end - begin) + match.group(0)[relative + end - begin:]
+        candidate = _HISTORICAL_MESSAGE_QUESTION.sub(mask_past_predicate, candidate)
+        if _OUTBOUND.search(candidate):
+            return True
+    return False
 
 
 _SUMMARY = re.compile(

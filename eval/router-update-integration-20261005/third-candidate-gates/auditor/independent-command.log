@@ -1,0 +1,45 @@
+{"id": "full-tuples-positive", "disposition": "compiled", "actual": [["view_emails", {"account": "Research", "unread": true, "count": 4, "query": "Selene", "strict_match": true, "period": "2026-10-02"}], ["view_emails", {"account": "Household", "count": 6, "query": "Dorian", "strict_match": true, "period": "2026-10-03"}]], "expectation_met": true}
+{"id": "full-tuples-reversed-positive", "disposition": "compiled", "actual": [["view_emails", {"account": "Household", "count": 6, "query": "Dorian", "strict_match": true, "period": "2026-10-03"}], ["view_emails", {"account": "Research", "unread": true, "count": 4, "query": "Selene", "strict_match": true, "period": "2026-10-02"}]], "expectation_met": true}
+{"id": "tuple-swap-time", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-swap-query", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-swap-account", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-swap-count", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-swap-unread", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-swap-operation", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-coverage-missing", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "tuple-extra-cross-product", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "duplicate-identical-positive", "disposition": "compiled", "actual": [["view_emails", {"account": "Research", "unread": true, "count": 4, "query": "Selene", "strict_match": true, "period": "2026-10-02"}], ["view_emails", {"account": "Household", "count": 6, "query": "Dorian", "strict_match": true, "period": "2026-10-03"}]], "expectation_met": true}
+{"id": "coordinated-shared-date-positive", "disposition": "compiled", "actual": [], "expectation_met": false}
+{"id": "new-verb-independent-date-positive", "disposition": "compiled", "actual": [["view_emails", {"query": "Selene", "strict_match": true}], ["view_emails", {"query": "Dorian", "strict_match": true, "period": "yesterday"}]], "expectation_met": true}
+{"id": "new-verb-date-broadened", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "fragment-new-query-positive", "disposition": "compiled", "actual": [["search_notes", {"count": 4, "query": "violet charts", "period": "yesterday"}]], "expectation_met": true}
+{"id": "fragment-stale-query-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "fragment-quoted-positive", "disposition": "compiled", "actual": [["search_notes", {"count": 4, "query": "violet charts", "period": "yesterday"}]], "expectation_met": true}
+{"id": "fragment-multisource-ambiguous", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "fragment-repeated-source-ambiguous", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "fragment-inherited-other-filters-positive", "disposition": "compiled", "actual": [["view_emails", {"account": "Research", "unread": true, "count": 4, "query": "Dorian", "strict_match": true, "period": "yesterday"}]], "expectation_met": true}
+{"id": "fragment-inherited-stale-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "repeated-shared-correction-positive", "disposition": "compiled", "actual": [["view_emails", {"query": "Selene", "strict_match": true, "period": "tomorrow"}], ["view_emails", {"query": "Dorian", "strict_match": true, "period": "tomorrow"}]], "expectation_met": true}
+{"id": "repeated-shared-correction-stale-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "calendar-alias-positive", "disposition": "compiled", "actual": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "expectation_met": true}
+{"id": "email-alias-positive", "disposition": "compiled", "actual": [["view_emails", {"period": "yesterday"}]], "expectation_met": true}
+{"id": "messages-alias-positive", "disposition": "compiled", "actual": [["summarize_messages", {}]], "expectation_met": true}
+{"id": "unclear-alias-scopes-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "alias-repeated-scope-positive", "disposition": "compiled", "actual": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}], ["get_upcoming", {"period": "next week", "calendar_only": true}]], "expectation_met": true}
+{"id": "alias-repeated-missing-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "mixed-source-filter-positive", "disposition": "clarify", "actual": [], "expectation_met": false}
+{"id": "mixed-source-no-filter-positive", "disposition": "compiled", "actual": [["view_emails", {"period": "today"}], ["view_messages", {"period": "yesterday"}]], "expectation_met": true}
+{"id": "reminder-repeated-positive", "disposition": "compiled", "actual": [["search_reminders", {"query": "dawn task", "scope": "past_due"}], ["search_reminders", {"query": "dusk task", "scope": "upcoming"}]], "expectation_met": true}
+{"id": "reminder-repeated-swap-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "duration-repeated-positive", "disposition": "compiled", "actual": [["find_free_time", {"period": "tomorrow", "minutes": 75}], ["find_free_time", {"period": "today", "minutes": 45}]], "expectation_met": true}
+{"id": "duration-repeated-swap-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "quoted-separator-data-positive", "disposition": "compiled", "actual": [["search_notes", {"query": "amber and violet"}], ["search_notes", {"query": "green then blue"}]], "expectation_met": true}
+{"id": "original-date-omission-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "original-overdue-omission-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "original-duration-omission-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "original-truncated-query-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "unsupported-daypart-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"id": "calendar-only-shortcut-positive", "disposition": "clarify", "actual": [["get_upcoming", {"period": "tomorrow", "calendar_only": true}]], "expectation_met": true}
+{"id": "excluded-notes-positive", "disposition": "compiled", "actual": [["view_emails", {}]], "expectation_met": true}
+{"id": "excluded-notes-rejected", "disposition": "clarify", "actual": [], "expectation_met": true}
+{"total": 44, "expectations_met": 42, "failures": ["coordinated-shared-date-positive", "mixed-source-filter-positive"]}

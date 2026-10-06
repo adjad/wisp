@@ -1,0 +1,179 @@
+{
+  "auditor/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "fa32f1f7b5e004ffc9c293f91dc77b0fa3aaf5413e2c73a08597180c26b6747b",
+    "stored_sha256": "fa32f1f7b5e004ffc9c293f91dc77b0fa3aaf5413e2c73a08597180c26b6747b"
+  },
+  "auditor/REPORT.json": {
+    "original_name": "REPORT.json",
+    "original_sha256": "840e6548011c10902f51d9ebfe0fe44ff1b879a4fed362e01a06f71159e59919",
+    "stored_sha256": "840e6548011c10902f51d9ebfe0fe44ff1b879a4fed362e01a06f71159e59919"
+  },
+  "auditor/REPORT.md": {
+    "original_name": "REPORT.md",
+    "original_sha256": "7fb0fa9db07bc36dbb39273d5ce9fd7f294c0c01541496535fa741f5449279c5",
+    "stored_sha256": "7fb0fa9db07bc36dbb39273d5ce9fd7f294c0c01541496535fa741f5449279c5"
+  },
+  "auditor/application-command.log": {
+    "original_name": "application-command.log",
+    "original_sha256": "bade9da0b5d0cdd364d8b9a1a1519f6c522d020fdb239d4d427f6cba03d15f65",
+    "stored_sha256": "bade9da0b5d0cdd364d8b9a1a1519f6c522d020fdb239d4d427f6cba03d15f65"
+  },
+  "auditor/application-results.json.gz": {
+    "original_name": "application-results.json",
+    "original_sha256": "15bbf75ede19d9fcb56e92f1bc264bff5f77935b1e9b1ee1ee5e83a228a9e73c",
+    "stored_sha256": "d5194db05ab384f4f3b16b2747bb798812a18e52fe224c4c1d6ed0962a42f5a5"
+  },
+  "auditor/application_controls.py": {
+    "original_name": "application_controls.py",
+    "original_sha256": "c430ce04f5d01fea59866cb5abd597db52365b1eadfd1faecd171f25cacfacea",
+    "stored_sha256": "c430ce04f5d01fea59866cb5abd597db52365b1eadfd1faecd171f25cacfacea"
+  },
+  "auditor/auditor-fixture-repairs.json": {
+    "original_name": "auditor-fixture-repairs.json",
+    "original_sha256": "7a7ffd9fdddade55f3122a3b468ea3a2d55557a386c66efc1f85dc47adef511e",
+    "stored_sha256": "7a7ffd9fdddade55f3122a3b468ea3a2d55557a386c66efc1f85dc47adef511e"
+  },
+  "auditor/boundary-command.log": {
+    "original_name": "boundary-command.log",
+    "original_sha256": "52e6d2d4992520191f47e480feceeb0aab6b1fd42ea933debeabcb1683daa74f",
+    "stored_sha256": "52e6d2d4992520191f47e480feceeb0aab6b1fd42ea933debeabcb1683daa74f"
+  },
+  "auditor/boundary-results.json.gz": {
+    "original_name": "boundary-results.json",
+    "original_sha256": "ae81a2522910ddb209248072c82625cd6a09307bb45f6405d2bc7861e6d7d69e",
+    "stored_sha256": "689470bd5f9a8d207ffbaf51d43a47f4a59f272fe14fe409459df16e4616ebee"
+  },
+  "auditor/boundary_controls.py": {
+    "original_name": "boundary_controls.py",
+    "original_sha256": "6d7ab5b8e1544763f40e69447e9b421d495cc7b3189ec26501bd97083552ae2f",
+    "stored_sha256": "6d7ab5b8e1544763f40e69447e9b421d495cc7b3189ec26501bd97083552ae2f"
+  },
+  "auditor/finalize_report.py": {
+    "original_name": "finalize_report.py",
+    "original_sha256": "e3c1e42a7aea2eb687b2729ed471b16a8fa34a0df9738091b76c9e664ca06b70",
+    "stored_sha256": "e3c1e42a7aea2eb687b2729ed471b16a8fa34a0df9738091b76c9e664ca06b70"
+  },
+  "auditor/followup-command.log": {
+    "original_name": "followup-command.log",
+    "original_sha256": "f4934ff1e791d18c63184e4076f79a7ef72e7acba7f1a09f6292e56adb5dd348",
+    "stored_sha256": "f4934ff1e791d18c63184e4076f79a7ef72e7acba7f1a09f6292e56adb5dd348"
+  },
+  "auditor/followup-results.json.gz": {
+    "original_name": "followup-results.json",
+    "original_sha256": "452393289e6ea383b343309973711f1fb8ab886a77522a5ae0a39f4dc98a4881",
+    "stored_sha256": "a62bd3273947085b070957d8752b3f4f2c918699421d851386c6f827bad6fa22"
+  },
+  "auditor/followup_controls.py": {
+    "original_name": "followup_controls.py",
+    "original_sha256": "e1d9f6ea2863c3537f28a190bb88d33c5337177dd804ba2a1f9d2a9319404f87",
+    "stored_sha256": "e1d9f6ea2863c3537f28a190bb88d33c5337177dd804ba2a1f9d2a9319404f87"
+  },
+  "auditor/parent-gate-receipt.json": {
+    "original_name": "parent-gate-receipt.json",
+    "original_sha256": "37874620128deb31c46b584db7c4bda910ec7de701965b0ccb1d0906de218367",
+    "stored_sha256": "37874620128deb31c46b584db7c4bda910ec7de701965b0ccb1d0906de218367"
+  },
+  "auditor/provenance-command.log": {
+    "original_name": "provenance-command.log",
+    "original_sha256": "fd9b3614d9d5f298ac611077ed5977743fc306d730013a90aedfd32619efc925",
+    "stored_sha256": "fd9b3614d9d5f298ac611077ed5977743fc306d730013a90aedfd32619efc925"
+  },
+  "auditor/provenance.json": {
+    "original_name": "provenance.json",
+    "original_sha256": "1bb3150d259b8fbbaf6aad2dfab1f6cd1623b8dcd66caf1853da1b8bf4b62c0b",
+    "stored_sha256": "1bb3150d259b8fbbaf6aad2dfab1f6cd1623b8dcd66caf1853da1b8bf4b62c0b"
+  },
+  "auditor/provenance_checks.py": {
+    "original_name": "provenance_checks.py",
+    "original_sha256": "f92982b5bccd785f35a1869d1aad50c6e6047c1c373720af63a9dbe0aa728334",
+    "stored_sha256": "f92982b5bccd785f35a1869d1aad50c6e6047c1c373720af63a9dbe0aa728334"
+  },
+  "auditor/checksums.json": {
+    "original_sha256": "337eee8f3e444f919ea0d1a168aba1998f3bd45d97a450019636d029eff5ce5b",
+    "stored_sha256": "337eee8f3e444f919ea0d1a168aba1998f3bd45d97a450019636d029eff5ce5b"
+  },
+  "wisp-router-update-273d274-gate-receipt.json": {
+    "original_sha256": "37874620128deb31c46b584db7c4bda910ec7de701965b0ccb1d0906de218367",
+    "stored_sha256": "37874620128deb31c46b584db7c4bda910ec7de701965b0ccb1d0906de218367"
+  },
+  "wisp-router-update-273d274-regression.log.gz": {
+    "original_sha256": "b7c4b99573d6285388493808469f29214ec5f460f089cf81405df9a40f0a4c4c",
+    "stored_sha256": "42e2857eb863bd963c0f7ef0809c3cba9cc692d6a7321c2f4662ccd9a78b1222"
+  },
+  "wisp-router-update-273d274-python-ci.json": {
+    "original_name": "wisp-router-update-273d274-python-ci.json",
+    "original_sha256": "183d4fb92f83334bae52ca778a766f80ca7e0533fa1859bae7c09c88f27c13b5",
+    "stored_sha256": "183d4fb92f83334bae52ca778a766f80ca7e0533fa1859bae7c09c88f27c13b5"
+  },
+  "wisp-router-update-273d274-python-ci.log.gz": {
+    "original_name": "wisp-router-update-273d274-python-ci.log",
+    "original_sha256": "4109267d483e9b79c84c8a1b938dcedb6b0eccd834c876342f09c41e99065c0c",
+    "stored_sha256": "7b09d6d1174edccf2565a55e70bf42ab52f8c545ae1f71991c2a51ce9c686f10"
+  },
+  "wisp-router-update-273d274-artifact-ci-final.json": {
+    "original_name": "wisp-router-update-273d274-artifact-ci-final.json",
+    "original_sha256": "5130ca96c8abd9051910227f4ccd8a51430a255e2184678f0f377cb6846c8f55",
+    "stored_sha256": "5130ca96c8abd9051910227f4ccd8a51430a255e2184678f0f377cb6846c8f55"
+  },
+  "wisp-router-update-273d274-artifact-ci.log.gz": {
+    "original_name": "wisp-router-update-273d274-artifact-ci.log",
+    "original_sha256": "3af3abf57a2046a886831085da50430bb8497200084f39bfe4064a8fbc6bdc44",
+    "stored_sha256": "9ac52cc2681a16d3f3af8e066189227674ed90be4d3b9e0a7bd320e9e11d7355"
+  },
+  "core-release.json": {
+    "original_name": "core-release.json",
+    "original_sha256": "e594bbabfe64edceaaab08f6603d423d525b951bf6ee4ab1893cfdb50892ebb5",
+    "stored_sha256": "e594bbabfe64edceaaab08f6603d423d525b951bf6ee4ab1893cfdb50892ebb5"
+  },
+  "core-repair/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "483da0c96233c6bec9920c38fdf1ca52f12246eae542dd3c07e395d872b1b3c5",
+    "stored_sha256": "483da0c96233c6bec9920c38fdf1ca52f12246eae542dd3c07e395d872b1b3c5"
+  },
+  "core-repair/sha256.json": {
+    "original_name": "sha256.json",
+    "original_sha256": "4a8323ebed05ec6a39c17a0b5f09531d86cf99e30831ef87b91e2b3c134e8d69",
+    "stored_sha256": "4a8323ebed05ec6a39c17a0b5f09531d86cf99e30831ef87b91e2b3c134e8d69"
+  },
+  "core-repair/wisp-router-r456-focused-6.log.gz": {
+    "original_name": "wisp-router-r456-focused-6.log",
+    "original_sha256": "ffe9199add9cc07fcedcaf891f472cc7087db6feaee96c3b3d20c42fe72cb336",
+    "stored_sha256": "0c49ae7bf66fbc3305855740d4e5b0a95f5be4311dee89dd62e8b57d88b81cbd"
+  },
+  "core-repair/wisp-router-r456-focused-7.log.gz": {
+    "original_name": "wisp-router-r456-focused-7.log",
+    "original_sha256": "1c73fcaefd5e67ae0d56460defffa84070af24e1e84b24856a9451d158a5da8f",
+    "stored_sha256": "e5b9b0f339d1a768f9024973a21a2482b8f81f75e611a5dda2fd96a4ca777c8c"
+  },
+  "core-repair/wisp-router-r456-focused-5.log.gz": {
+    "original_name": "wisp-router-r456-focused-5.log",
+    "original_sha256": "ab967fe785c49919904345fe3727cf66c08adc2c74784bc64bfbf6690be15e95",
+    "stored_sha256": "8d96780deff87b6d7c65998465bcc072b8d0f79dcfd47e8a06bf717eac53efff"
+  },
+  "core-repair/wisp-router-r456-focused-4.log.gz": {
+    "original_name": "wisp-router-r456-focused-4.log",
+    "original_sha256": "e2db888e9c93a36610848776208790f79cffcf3a80c898857383dbfec9e78a79",
+    "stored_sha256": "ed572ee7f3ad84fee9c524580f54e0842206a024b2c2452623bb7179ad09990e"
+  },
+  "core-repair/wisp-router-r456-focused-3.log.gz": {
+    "original_name": "wisp-router-r456-focused-3.log",
+    "original_sha256": "96cceb300caeeebaaf84c772a7e914a5506ed12000fc3fa76f3bed4a6c489e33",
+    "stored_sha256": "c742f407909099057eaf5cefb4ec9d0b6c19dea3787d8f88a08f5c4e3b52fcf6"
+  },
+  "core-repair/wisp-router-r456-focused.log.gz": {
+    "original_name": "wisp-router-r456-focused.log",
+    "original_sha256": "ffae4cdec6cb212da18c3807db9b595c65f8a6e68655ee6bfcf94435f6087b96",
+    "stored_sha256": "15565f2dd84e8bc368d3924ec75346ccb76677c87f60e3eb96cbf2749e696e54"
+  },
+  "core-repair/wisp-router-r456-focused-2.log.gz": {
+    "original_name": "wisp-router-r456-focused-2.log",
+    "original_sha256": "35b0fe404e7f1d455ad986d69baf00a2485e39ebcdda39bc5a44b6940801faad",
+    "stored_sha256": "ef4c00192fbcf5bd2f3d13bc84465a771052402769a5469f2ffad5aef5c8c044"
+  },
+  "core-repair/mechanical.log.gz": {
+    "original_name": "mechanical.log",
+    "original_sha256": "1f187e5f261aaf09632666f2ecee955836a567729c2a34c19d828dbb0e39eee5",
+    "stored_sha256": "fe34598a5c10aac4385e561a430223ad8995474d83a36d2581d77e28fd095a9a"
+  }
+}

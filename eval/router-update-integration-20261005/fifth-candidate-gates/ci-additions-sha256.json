@@ -1,0 +1,22 @@
+{
+  "wisp-router-update-6df5200-python-ci.json": {
+    "original_name": "wisp-router-update-6df5200-python-ci.json",
+    "original_sha256": "00816b7037d68507f9208599e45e3e7994457ff0bb9bb325e7aa13bdd2ce3195",
+    "stored_sha256": "00816b7037d68507f9208599e45e3e7994457ff0bb9bb325e7aa13bdd2ce3195"
+  },
+  "wisp-router-update-6df5200-python-ci.log.gz": {
+    "original_name": "wisp-router-update-6df5200-python-ci.log",
+    "original_sha256": "14b92405c19c40f0132527f53049a1edce272ad339da7d83fdf2c173d0862610",
+    "stored_sha256": "0433efbc7fadd6d42fde3f4a117ea42bbb4d68ecc2ebefee6d530e1c572f0445"
+  },
+  "wisp-router-update-6df5200-artifact-ci-final.json": {
+    "original_name": "wisp-router-update-6df5200-artifact-ci-final.json",
+    "original_sha256": "856e6f25e763af2e955dd309f209502ef67c50fb18fbe322e9999e823566f65f",
+    "stored_sha256": "856e6f25e763af2e955dd309f209502ef67c50fb18fbe322e9999e823566f65f"
+  },
+  "wisp-router-update-6df5200-artifact-ci.log.gz": {
+    "original_name": "wisp-router-update-6df5200-artifact-ci.log",
+    "original_sha256": "1885263f07bcc841083810602a51079ee75cf0c663e37d63703f92e43b82b8b4",
+    "stored_sha256": "51fca4c428934a34883dcc78221003f93f392243527f530fdc1e528d89d1f58f"
+  }
+}

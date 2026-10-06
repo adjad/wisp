@@ -1,0 +1,114 @@
+{
+  "auditor/HANDOFF.json": {
+    "original_name": "HANDOFF.json",
+    "original_sha256": "37c9c3767dacc59a7f281864ed87457594f9762844a63b9726ec6482e5df8a8a",
+    "stored_sha256": "37c9c3767dacc59a7f281864ed87457594f9762844a63b9726ec6482e5df8a8a"
+  },
+  "auditor/REPORT.json": {
+    "original_name": "REPORT.json",
+    "original_sha256": "19518ec301e00c12eef929aa8450917690adf91ec0d01d9204458eafa996c18a",
+    "stored_sha256": "19518ec301e00c12eef929aa8450917690adf91ec0d01d9204458eafa996c18a"
+  },
+  "auditor/REPORT.md": {
+    "original_name": "REPORT.md",
+    "original_sha256": "bd7a6fabc23b3c4c87d23601f30c1b256c1a96bd675fbf57134350913351517f",
+    "stored_sha256": "bd7a6fabc23b3c4c87d23601f30c1b256c1a96bd675fbf57134350913351517f"
+  },
+  "auditor/application-command-initial.log": {
+    "original_name": "application-command-initial.log",
+    "original_sha256": "20cd0a2be337f6af5e00ddf3c452ae52a89f79bfd47e3ee542661bc5bfd52db7",
+    "stored_sha256": "20cd0a2be337f6af5e00ddf3c452ae52a89f79bfd47e3ee542661bc5bfd52db7"
+  },
+  "auditor/application-command.log": {
+    "original_name": "application-command.log",
+    "original_sha256": "f5142a38d81f50a2a142d0ebab6035cada9900fb7c21b21097a4a99eef672801",
+    "stored_sha256": "f5142a38d81f50a2a142d0ebab6035cada9900fb7c21b21097a4a99eef672801"
+  },
+  "auditor/application-results-initial.json.gz": {
+    "original_name": "application-results-initial.json",
+    "original_sha256": "bc78ed192d3b431152853b935fb429352f7a236a1ada080b0bcb0860e292ff42",
+    "stored_sha256": "7929bf157dd76abbf5b735cb32117d6be19e65c34e8c3db0fc75a7ae11ce4b51"
+  },
+  "auditor/application-results.json.gz": {
+    "original_name": "application-results.json",
+    "original_sha256": "792636c1dc4466357cf95313176152ff1c248c33cae91aa17890e468224200c1",
+    "stored_sha256": "f32955a3f4019ed28558b6249011404a36aab2c4b223b755ce2c42a19ef8b16d"
+  },
+  "auditor/application_controls.py": {
+    "original_name": "application_controls.py",
+    "original_sha256": "31182b18985814a26aa6fda0ea3aefbcd6de6b1e68cccf23c98385a8e9c1ddd5",
+    "stored_sha256": "31182b18985814a26aa6fda0ea3aefbcd6de6b1e68cccf23c98385a8e9c1ddd5"
+  },
+  "auditor/auditor-fixture-correction.json": {
+    "original_name": "auditor-fixture-correction.json",
+    "original_sha256": "180369e1fced8213007e606bf3b5ca0d0e5478132690eda54ac1bfd4b3818fff",
+    "stored_sha256": "180369e1fced8213007e606bf3b5ca0d0e5478132690eda54ac1bfd4b3818fff"
+  },
+  "auditor/boundary-command.log": {
+    "original_name": "boundary-command.log",
+    "original_sha256": "6178335be14464a6e1d92691e4c0671b10e7cb87ef59748c9a405f851faf1ff6",
+    "stored_sha256": "6178335be14464a6e1d92691e4c0671b10e7cb87ef59748c9a405f851faf1ff6"
+  },
+  "auditor/boundary-results.json.gz": {
+    "original_name": "boundary-results.json",
+    "original_sha256": "7b6271dfea15c477dbc878358bb843cd6b36fdc9e7314279384181d82c80cdd2",
+    "stored_sha256": "02ae00440b2b5367f61eec2849b25685294beadda9e9d798bc309030fb45f80f"
+  },
+  "auditor/boundary_controls.py": {
+    "original_name": "boundary_controls.py",
+    "original_sha256": "0ce12dc8268e251ab567f3b5499381e3ed3c724edaab2354b2364cc3ba47f565",
+    "stored_sha256": "0ce12dc8268e251ab567f3b5499381e3ed3c724edaab2354b2364cc3ba47f565"
+  },
+  "auditor/finalize_report.py": {
+    "original_name": "finalize_report.py",
+    "original_sha256": "8f5a895fab1438f4d55e47ba2a6238c60287afb35fe3d0cd52fb618f7ba83185",
+    "stored_sha256": "8f5a895fab1438f4d55e47ba2a6238c60287afb35fe3d0cd52fb618f7ba83185"
+  },
+  "auditor/paired-command.log": {
+    "original_name": "paired-command.log",
+    "original_sha256": "1020aa34fcb9d9d6f1af5b91db7cadb8ab53b4d795e92dff86066b0fb2287a9c",
+    "stored_sha256": "1020aa34fcb9d9d6f1af5b91db7cadb8ab53b4d795e92dff86066b0fb2287a9c"
+  },
+  "auditor/paired-results.json.gz": {
+    "original_name": "paired-results.json",
+    "original_sha256": "e25d368ca4c314022ea1106c8b4557eafe49463d10cd8e132ab9cf9ed7c25dda",
+    "stored_sha256": "e5491643cd03b8289e5ae09c96b57f66e12775c7228e65e2a820786af1c3a23f"
+  },
+  "auditor/paired_controls.py": {
+    "original_name": "paired_controls.py",
+    "original_sha256": "d8b55576c070e4ea4ba6ccf6dd8c6790f464525621f242d547dc9de096f0ef71",
+    "stored_sha256": "d8b55576c070e4ea4ba6ccf6dd8c6790f464525621f242d547dc9de096f0ef71"
+  },
+  "auditor/parent-gate-receipt.json": {
+    "original_name": "parent-gate-receipt.json",
+    "original_sha256": "7797957bc0235c0b035a956d2f24d12d3f3c02561955d3946f943dddbbd511df",
+    "stored_sha256": "7797957bc0235c0b035a956d2f24d12d3f3c02561955d3946f943dddbbd511df"
+  },
+  "auditor/provenance-command.log": {
+    "original_name": "provenance-command.log",
+    "original_sha256": "388b6b9bbfefd546e6a0431ff3ec2ef0723aa823be54d6d95435ef1153d7ce83",
+    "stored_sha256": "388b6b9bbfefd546e6a0431ff3ec2ef0723aa823be54d6d95435ef1153d7ce83"
+  },
+  "auditor/provenance.json": {
+    "original_name": "provenance.json",
+    "original_sha256": "198e1b1ee7e254d95c1a1980da46013710401186b0731afe8d6d8f5c8ed83c56",
+    "stored_sha256": "198e1b1ee7e254d95c1a1980da46013710401186b0731afe8d6d8f5c8ed83c56"
+  },
+  "auditor/provenance_checks.py": {
+    "original_name": "provenance_checks.py",
+    "original_sha256": "d58f657c944cab1a6f39fb1f698c288372a594be94955e13416d82f4a905330e",
+    "stored_sha256": "d58f657c944cab1a6f39fb1f698c288372a594be94955e13416d82f4a905330e"
+  },
+  "auditor/checksums.json": {
+    "original_sha256": "0e3f218fd794b11f18d9924e8ac0440ae230048ed0cf98960c6c92d2f437ce30",
+    "stored_sha256": "0e3f218fd794b11f18d9924e8ac0440ae230048ed0cf98960c6c92d2f437ce30"
+  },
+  "wisp-router-update-6df5200-gate-receipt.json": {
+    "original_sha256": "7797957bc0235c0b035a956d2f24d12d3f3c02561955d3946f943dddbbd511df",
+    "stored_sha256": "7797957bc0235c0b035a956d2f24d12d3f3c02561955d3946f943dddbbd511df"
+  },
+  "wisp-router-update-6df5200-regression.log.gz": {
+    "original_sha256": "d7683188e2e2a2cb4a72e178031aed79a50bfc0db9ac1ded3f61fbbe4d7d7102",
+    "stored_sha256": "74153fa3ddb788c3f78c3f3152f28ed4799a0c28b378f5a9824688d5370191c8"
+  }
+}

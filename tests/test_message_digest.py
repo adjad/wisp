@@ -279,7 +279,7 @@ def test_reported_6268_character_source_dump_is_never_the_summary():
     rows = [(i, 'Group "Project"', body) for i, body in enumerate(raw.splitlines())]
     with debug_capture.capture() as records:
         out = summarize(rows)
-    assert "Messages digest" in out and "Here's what stood out" in out
+    assert "Messages digest" in out and "Here's what stood out" not in out
     assert "Basic digest" not in out and "not verified outcomes" not in out
     assert len(out) < 1300
     assert "project outline" in out and "tomorrow" in out
@@ -295,8 +295,7 @@ def test_offline_digest_has_grouped_decisions_times_actions_and_reply_checks():
     out = summarize(ROWS)
     for text in ('Group "Dinner"', "Jamie", "Decisions mentioned", "Friday", "7 pm",
                  "Action items mentioned", "dessert", "budget report", "project outline",
-                 "Reply check", "group question/request", "You: commitment",
-                 "Here's what stood out"):
+                 "Reply check", "group question/request", "You: commitment"):
         assert text in out
     for _, _, text in ROWS:
         assert text not in out
@@ -440,7 +439,7 @@ def test_day_boundaries_noise_and_duplicates_are_filtered_before_digest(monkeypa
                        (start + 3, "67890", "67890: Flash sale today! Reply STOP to opt out."),
                        (end, "Future", "Future: dinner tomorrow")])
     out = asyncio.run(M.summarize_messages(day="today"))
-    assert label in out and "1 messages across 1 conversations" in out
+    assert label in out and "1 message across 1 conversation" in out
     assert "123456" not in out and "Old" not in out and "Future" not in out
 
 
@@ -736,7 +735,7 @@ def test_explicit_named_group_summary_bypasses_importance_filter(monkeypatch):
                    in M.summary_message_rows())
     out = asyncio.run(M.summarize_messages(conversation="Dinner", count=30))
     assert 'Group "Dinner"' in out
-    assert "2 messages across 1 conversations" in out
+    assert "2 messages across 1 conversation" in out
     assert 'Group "Other"' not in out
 
 
@@ -904,7 +903,7 @@ def test_real_presynthesized_tool_path_returns_digest_after_only_selection_call(
         emit, Approver(), tools=["summarize_messages"], max_steps=2,
         short_circuit_tools={"summarize_messages"}))
     assert selection.calls == 1
-    assert "Messages digest" in output and "Here's what stood out" in output
+    assert "Messages digest" in output and "Here's what stood out" not in output
     assert "Basic digest" not in output
     assert "private fixture detail" not in output
     assert len(output) <= D.MAX_OUTPUT_CHARS
@@ -1435,7 +1434,7 @@ def test_public_dedup_preserves_substantive_attachment_boundary(monkeypatch, pat
     out = _public_digest(monkeypatch, path, source, mode)
     assert "Latest report:" not in out and "earlier reports superseded" not in out
     assert "Dinner confirmed Friday at 7 pm" in out and "It is delayed" in out
-    assert "3 messages across 1 conversations" in out
+    assert "3 messages across 1 conversation" in out
 
 
 @pytest.mark.parametrize("path", ["day", "period", "recent"])
@@ -2950,8 +2949,26 @@ def test_named_reports_survive_separate_otp_as_actions(monkeypatch, work_text):
     assert "6432" not in str(records) + str(chat.call_args_list)
 
 
-def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
-    now = time.time()
+@pytest.mark.parametrize(("now", "metadata_collision"), [
+    (1791222000.0, None),
+    (1791234567.0, "1234"),
+    (1791256782.0, "5678"),
+])
+def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch, now, metadata_collision):
+    from service.tools import timeranges
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls.fromtimestamp(now, tz)
+
+    # Keep the freshness horizon, day scope, date attribution and week scope
+    # on the same synthetic clock, including adversarial OTP-like epoch digits.
+    monkeypatch.setattr(time, "time", lambda: now)
+    monkeypatch.setattr(M, "datetime", FrozenDateTime)
+    monkeypatch.setattr(D, "datetime", FrozenDateTime)
+    monkeypatch.setattr(M, "resolve_span", lambda period: timeranges.resolve_span(
+        period, now=FrozenDateTime.now()))
     source = [
         (now - 2, "Alex", "Alex: Please review the report by Friday. Verification code is 1234."),
         (now - 1, "Alex", "Alex: Please review the proposal by Friday. Verification code is 5678."),
@@ -2959,17 +2976,33 @@ def test_distinct_redacted_requests_keep_both_source_occurrences(monkeypatch):
     rows = M.filter_summary_message_rows(source)
     assert len(rows) == 2
     assert rows[0][2] == rows[1][2]
-    assert all(secret not in str(rows) for secret in ("1234", "5678", "report", "proposal"))
+    timestamps = [now - 2, now - 1]
+    positions = [(0, 1), (1, 2)]
+    assert [row[0] for row in rows] == timestamps
+    assert [(row.source_before, row.source_after) for row in rows] == positions
+    if metadata_collision:
+        assert any(metadata_collision in str(ts) for ts in timestamps)
+    else:
+        assert all(secret not in str(timestamps) for secret in ("1234", "5678"))
+    # Numeric metadata can legitimately contain the OTP digits. Every textual
+    # field, including the conversation label, must still omit all private data.
+    assert all(secret not in value for row in rows for value in row
+               if isinstance(value, str) for secret in ("1234", "5678", "report", "proposal"))
     assert len(M.filter_summary_message_rows(rows)) == 2
     monkeypatch.setattr(M, "_lines", "\n".join(
         _freshness_record(ts, "U", 1, "Alex", body) for ts, _, body in source))
     selected = M.summary_message_rows(require_read_state=True)
     assert len(selected) == 2
+    assert selected[0][2] == selected[1][2]
+    assert sorted(row[0] for row in selected) == timestamps
+    assert sorted((row.source_before, row.source_after) for row in selected) == positions
+    assert all(secret not in value for row in selected for value in row
+               if isinstance(value, str) for secret in ("1234", "5678", "report", "proposal"))
     chat = client(monkeypatch, error=RuntimeError("synthetic offline"))
     with debug_capture.capture() as records:
         for args in ({}, {"day": "today"}, {"period": "this week"}, {"conversation": "Alex"}):
             out = asyncio.run(M.summarize_messages(**args))
-            assert "2 messages across 1 conversations" in out
+            assert "2 messages across 1 conversation" in out
             assert "Action items mentioned" in out
             assert all(secret not in out for secret in ("1234", "5678", "report", "proposal"))
     assert all(secret not in str(records) + str(chat.call_args_list)
