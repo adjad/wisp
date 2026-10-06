@@ -43,7 +43,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-HARNESS_VERSION = "release_performance/3"
+HARNESS_VERSION = "release_performance/4"
 BUNDLE_SCHEMA = "wisp.release_performance.bundle/1"
 SAMPLE_SCHEMA = "wisp.release_performance.sample/2"
 RECEIPT_SCHEMA = "wisp.release_performance.receipt/2"
@@ -963,16 +963,22 @@ EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
                        r"-nP -a -iTCP:[0-9]{1,5} -sTCP:ESTABLISHED -FpufPtTn -Ts"),
     "/bin/ps": (r"-ww -p [1-9][0-9]* -o ppid=,uid=,comm=",),
     # Not attestation: the product's identity layer (service/memory/identity.py, both v1.1.5 and the candidate) runs
-    # `id -F` once per process, by bare name, to read the macOS full name for its prompts. Read-only, no other flag.
-    "id": (r"-F",),
+    # `id -F` once per process to read the macOS full name for its prompts. Read-only, no other flag. The product
+    # calls it by BARE name; see EXEC_ALIASES for how that is made safe.
+    "/usr/bin/id": (r"-F",),
 }
+# A bare program name is resolved through PATH by subprocess (os.environ or env=), and a program in the writable
+# throwaway home could be named `id`. So a bare name is never run as such: the guard rewrites argv[0] (and
+# executable=, when given) to the absolute path below BEFORE the real Popen starts, whatever PATH says.
+EXEC_ALIASES: dict[str, str] = {"id": "/usr/bin/id"}
 ALLOWED_EXEC = frozenset(EXEC_GRAMMAR)
 
 # subprocess.Popen wraps the pipes it creates for an allowed inspector with io.open(<int fd>, 'rb'|'wb'). Under
 # the filesystem guard that is an "untracked descriptor", so exactly those descriptors are recognised: created by
 # os.pipe() on this thread while one argv-checked Popen.__init__ is running, still a FIFO, opened rb/wb. Part of
 # the policy digest so a change to this allowance is a different containment identity.
-POPEN_PIPE_RULE = "os.pipe() fds of one argv-checked Popen.__init__ call, same thread, FIFO, io.open rb|wb"
+POPEN_PIPE_RULE = ("os.pipe() fds of one argv-checked Popen.__init__ call, same thread, still the same FIFO "
+                   "(device+inode), io.open rb|wb, each fd once")
 
 
 class FsPolicy:
@@ -1089,11 +1095,13 @@ class EffectGuard:
 
     def __init__(self, emit: Callable[..., None], *,
                  exec_grammar: dict[str, tuple[str, ...] | None] | None = None,
+                 exec_aliases: dict[str, str] | None = None,
                  allowed_ports: set[int] | frozenset[int] = frozenset({8000}),
                  engine_ops: tuple[tuple[str, str], ...] = ENGINE_ALLOWED_OPS,
                  fs: FsPolicy | None = None) -> None:
         self.emit, self.allowed_ports = emit, set(allowed_ports)
         self.exec_grammar = dict(EXEC_GRAMMAR if exec_grammar is None else exec_grammar)
+        self.exec_aliases = dict(EXEC_ALIASES if exec_aliases is None else exec_aliases)
         self.engine_ops, self.fs = tuple(engine_ops), fs
         self._originals: list[tuple[Any, str, Any]] = []
         import contextvars
@@ -1107,6 +1115,7 @@ class EffectGuard:
 
     def policy_description(self) -> dict:
         return {"exec": {k: (list(v) if v is not None else None) for k, v in sorted(self.exec_grammar.items())},
+                "exec_aliases": dict(sorted(self.exec_aliases.items())),
                 "engine_ops": [list(op) for op in self.engine_ops], "ports": sorted(self.allowed_ports),
                 "fs": ({**self.fs.portable(), "popen_pipe_descriptors": POPEN_PIPE_RULE} if self.fs else None)}
 
@@ -1134,21 +1143,30 @@ class EffectGuard:
         if not any(method == m and re.fullmatch(pattern, path) for m, pattern in self.engine_ops):
             self._block("engine_operation", f"{method} {path}"[:160])
 
-    def _check_exec(self, bound: dict) -> None:
+    def _check_exec(self, bound: dict) -> list[str]:
+        """Refuse any argument vector outside the grammar; return the vector that is allowed to run.
+
+        Every element is converted to str exactly ONCE here and the caller runs these strings, so an object with a
+        shifting __fspath__ cannot pass the check as one program and start as another. A bare alias name is
+        replaced by its absolute path, so PATH (os.environ or env=) never decides what runs."""
         argv_in = bound.get("args")
-        argv = [argv_in] if isinstance(argv_in, (str, bytes, os.PathLike)) else list(argv_in or [])
-        first = os.fsdecode(argv[0]) if argv else ""
+        raw = [argv_in] if isinstance(argv_in, (str, bytes, os.PathLike)) else list(argv_in or [])
+        argv = [os.fsdecode(a) for a in raw]
+        first = argv[0] if argv else ""
         if bound.get("shell"):
             self._block("exec", f"shell=True {first}"[:120])
         executable = bound.get("executable")
         if executable is not None and os.fsdecode(executable) != first:
             self._block("exec", f"executable override {os.fsdecode(executable)} for {first}"[:160])
-        if first not in self.exec_grammar:
+        program = self.exec_aliases.get(first, first)
+        if program not in self.exec_grammar or (first != program and first not in self.exec_aliases):
             self._block("exec", first or "<empty>")
-        patterns = self.exec_grammar[first]
-        rest = " ".join(os.fsdecode(a) for a in argv[1:])
+        patterns = self.exec_grammar[program]
+        rest = " ".join(argv[1:])
         if patterns is not None and not any(re.fullmatch(p, rest) for p in patterns):
             self._block("exec", f"{first} {rest}"[:160])
+        argv[0] = program
+        return argv
 
     def _install_fs(self) -> None:
         import builtins
@@ -1203,10 +1221,13 @@ class EffectGuard:
             pipes = getattr(guard._popen_local, "pipes", None)
             if not pipes or type(file) is not int or mode not in ("rb", "wb") or file not in pipes:
                 return False
+            expected = pipes.pop(file)                     # each recorded descriptor is good for one open
             try:
-                return stat.S_ISFIFO(original_fstat(file).st_mode)
+                info = original_fstat(file)
             except OSError:
                 return False
+            # Still the same pipe: a dup2 onto the number (a file, a socket, another FIFO) changes the identity.
+            return stat.S_ISFIFO(info.st_mode) and identity(info) == expected
 
         def guarded_open(file, mode="r", *a, **k):
             if popen_pipe(file, mode):
@@ -1249,7 +1270,8 @@ class EffectGuard:
             pair = original_pipe()
             pipes = getattr(guard._popen_local, "pipes", None)
             if pipes is not None:
-                pipes.update(pair)
+                for fd in pair:
+                    pipes[fd] = identity(original_fstat(fd))
             return pair
 
         self._patch(os, "open", guarded_os_open)
@@ -1290,23 +1312,30 @@ class EffectGuard:
 
         def popen_init(self_, *args, **kwargs):
             try:
-                arguments = signature.bind(self_, *args, **kwargs).arguments
+                call = signature.bind(self_, *args, **kwargs)
             except TypeError:
                 guard._block("exec", "unparseable Popen call")
             bound: dict[str, Any] = {}
-            for name, value in arguments.items():
+            for name, value in call.arguments.items():
                 kind = signature.parameters[name].kind
                 if kind is inspect.Parameter.VAR_KEYWORD:
                     bound.update(value)
                 elif kind is not inspect.Parameter.VAR_POSITIONAL:
                     bound[name] = value
-            guard._check_exec(bound)
+            argv = guard._check_exec(bound)
+            # Run exactly what was checked: plain strings, with the absolute program path.
+            call.arguments["args"] = argv
+            # `executable` is a named parameter of the real Popen; a wrapped init may take it through **kwargs.
+            for holder in (call.arguments, *(v for n, v in call.arguments.items()
+                                             if signature.parameters[n].kind is inspect.Parameter.VAR_KEYWORD)):
+                if holder.get("executable") is not None:
+                    holder["executable"] = argv[0]
             if guard.fs is None:
-                return original_init(self_, *args, **kwargs)
+                return original_init(*call.args, **call.kwargs)
             local = guard._popen_local
-            local.pipes = set()
+            local.pipes = {}
             try:
-                return original_init(self_, *args, **kwargs)
+                return original_init(*call.args, **call.kwargs)
             finally:
                 local.pipes = None
 

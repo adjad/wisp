@@ -2758,73 +2758,74 @@ def test_a_guard_allowed_subprocess_with_pipes_runs_under_the_filesystem_guard(t
     assert [f["what"] for _, f in emitted] == ["exec"] * 3                  # nothing but the refused argv shapes
 
 
+def _popen_window(monkeypatch, body):
+    """Run `body(pipes)` inside a stand-in Popen.__init__, i.e. inside the guard's allowed-call window.
+
+    Every descriptor is made with os.pipe() INSIDE the window (so the guard records it) and is never closed by the
+    code under test (closefd=False), so a refusal can only come from the rule, not from a dead descriptor."""
+    def fake_init(self, args, *a, **k):
+        self._child_created = False
+        body()
+    monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+
+
 def test_the_popen_pipe_allowance_covers_only_the_pipes_the_allowed_call_created(tmp_path, monkeypatch):
     import threading
     real_home, code, throwaway, policy = fs_world(tmp_path)
     private = real_home / "Documents/private.txt"
-    emitted, opened, errors = [], [], []
-    outside_r, outside_w = os.pipe()
+    emitted, opened, kept, errors = [], [], [], []
+    outside_r, outside_w = os.pipe()                      # a FIFO that predates the call
     private_fd = os.open(private, os.O_RDONLY)
     sock_a, sock_b = socket.socketpair()
-    original_init = subprocess.Popen.__init__
 
-    def fake_init(self, args, *a, **k):
-        self._child_created = False
-        read_end, write_end = os.pipe()
+    def attempt(label, fd, mode):
         try:
-            for label, attempt in (
-                    ("own_pipe_rb", lambda: open(read_end, "rb", 0)),
-                    ("own_pipe_wb", lambda: open(write_end, "wb", 0)),
-                    ("own_pipe_text", lambda: open(read_end, "r", closefd=False)),          # not the rb/wb shape
-                    ("own_pipe_rplus", lambda: open(write_end, "rb+", closefd=False)),
-                    ("outside_pipe", lambda: open(outside_r, "rb", 0)),                     # not created by this call
-                    ("private_file_fd", lambda: open(private_fd, "rb", closefd=False)),
-                    ("socket_fd", lambda: open(sock_a.fileno(), "rb", closefd=False)),
-                    ("by_path", lambda: open(private, "rb"))):
-                try:
-                    attempt().close()
-                    opened.append(label)
-                except rp.EffectBlocked:
-                    pass
+            open(fd, mode, closefd=False).close()
+            opened.append(label)
+        except rp.EffectBlocked:
+            pass
 
-            def other_thread():
-                try:
-                    open(read_end, "rb", closefd=False).close()
-                    opened.append("other_thread")
-                except rp.EffectBlocked:
-                    pass
-                except BaseException as exc:                                                  # noqa: BLE001
-                    errors.append(exc)
+    def body():
+        def fresh():                                     # a genuinely recorded pair, kept alive
+            pair = os.pipe()
+            kept.extend(pair)
+            return pair
+        r, w = fresh(); attempt("own_rb", r, "rb"); attempt("own_wb", w, "wb")
+        r, w = fresh(); attempt("own_again", r, "rb"); attempt("own_again", r, "rb")      # second open of one fd
+        r, w = fresh(); attempt("text_mode", r, "r"); attempt("rplus", w, "rb+")         # not the rb/wb shape
+        r, w = fresh(); attempt("wrong_mode_for_use", r, "ab")
+        r, w = fresh()                                                                   # same number, regular file
+        os.dup2(private_fd, r); attempt("replaced_by_regular_file", r, "rb")
+        r, w = fresh()                                                                   # same number, another socket
+        os.dup2(sock_a.fileno(), r); attempt("replaced_by_socket", r, "rb")
+        r, w = fresh()                                                                   # same number, other FIFO
+        os.dup2(outside_r, r); attempt("replaced_by_other_fifo", r, "rb")
+        attempt("outside_pipe", outside_r, "rb"); attempt("private_file_fd", private_fd, "rb")
+        r, w = fresh(); held.extend([r, w])                                              # opened by another thread
+        worker = threading.Thread(target=lambda: [attempt("other_thread", r, "rb"), attempt("other_thread", w, "wb")])
+        worker.start(); worker.join()
 
-            worker = threading.Thread(target=other_thread)
-            worker.start()
-            worker.join()
-        finally:
-            for fd in (read_end, write_end):
-                try:
-                    os.close(fd)
-                except OSError:
-                    pass
+    held = []
     try:
-        monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+        _popen_window(monkeypatch, body)
         with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f)), fs=policy, exec_grammar=SH_GRAMMAR):
             subprocess.Popen(["/bin/sh", "-c", "echo ok"])
-            assert opened == ["own_pipe_rb", "own_pipe_wb"] and errors == []
-            # The window closes with the call: the same numbers (recorded or not) are refused afterwards.
+            assert opened == ["own_rb", "own_wb", "own_again"] and errors == []
+            # The window closed with the call: recorded, never-opened descriptors are refused afterwards.
             before = len(emitted)
-            for fd in (outside_r, private_fd, sock_a.fileno()):
+            for fd, mode in ((held[0], "rb"), (held[1], "wb")):
                 with pytest.raises(rp.EffectBlocked):
-                    open(fd, "rb", closefd=False)
-            with pytest.raises(rp.EffectBlocked):
-                subprocess.Popen(["/bin/sh", "-c", "rm x"])
-            assert len(emitted) == before + 4
-        assert subprocess.Popen.__init__ is fake_init and original_init is not fake_init
+                    open(fd, mode, closefd=False)
+            assert len(emitted) == before + 2
     finally:
-        for fd in (outside_r, outside_w, private_fd):
-            os.close(fd)
+        for fd in {*kept, outside_r, outside_w, private_fd}:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
         sock_a.close()
         sock_b.close()
-    assert {f["what"] for _, f in emitted} == {"fs_descriptor", "fs_read", "exec"}
+    assert {f["what"] for _, f in emitted} == {"fs_descriptor"}
 
 
 def test_a_pipe_fd_made_before_the_call_is_not_recognised_even_with_a_matching_number(tmp_path, monkeypatch):
@@ -2841,28 +2842,92 @@ def test_a_pipe_fd_made_before_the_call_is_not_recognised_even_with_a_matching_n
         os.close(write_end)
 
 
-def test_the_identity_lookup_is_allowed_with_exactly_one_argument_shape(monkeypatch):
-    popen = []
+def _recording_popen(monkeypatch):
+    seen = []
+
     def fake_init(self, args, *a, **k):
         self._child_created = False
-        popen.append(list(args))
-
+        seen.append((list(args), k.get("executable"), k.get("env"), a))
     monkeypatch.setattr(subprocess.Popen, "__init__", fake_init)
+    return seen
+
+
+def test_the_identity_lookup_runs_only_as_the_absolute_usr_bin_id_with_exactly_dash_f(tmp_path, monkeypatch):
+    seen = _recording_popen(monkeypatch)
     emitted = []
     with rp.EffectGuard(lambda kind, **f: emitted.append((kind, f))):
-        subprocess.Popen(["id", "-F"], stdout=subprocess.PIPE)
+        subprocess.Popen(["id", "-F"], stdout=subprocess.PIPE)          # how the product calls it
+        subprocess.Popen(["/usr/bin/id", "-F"])
+        subprocess.Popen(["id", "-F"], executable="id")
         for argv in (["id"], ["id", "-un"], ["id", "-F", "root"], ["id", "-G"], ["id", "-F", ";", "rm"],
-                     ["/usr/bin/id", "-F"], ["whoami"], ["id -F"]):
+                     ["/usr/bin/id"], ["/usr/bin/id", "-G"], ["/bin/id", "-F"], ["./id", "-F"], ["whoami"], ["id -F"]):
             with pytest.raises(rp.EffectBlocked):
                 subprocess.Popen(argv)
         with pytest.raises(rp.EffectBlocked):
             subprocess.Popen(["id", "-F"], shell=True)
         with pytest.raises(rp.EffectBlocked):
             subprocess.Popen(["id", "-F"], executable="/bin/sh")
-    assert popen == [["id", "-F"]] and [f["what"] for _, f in emitted] == ["exec"] * 10
-    assert rp.EXEC_GRAMMAR["id"] == (r"-F",) and "id" in rp.ALLOWED_EXEC
-    assert rp.EffectGuard(lambda *a, **k: None).policy_sha256() != rp.EffectGuard(
-        lambda *a, **k: None, exec_grammar={k: v for k, v in rp.EXEC_GRAMMAR.items() if k != "id"}).policy_sha256()
+        with pytest.raises(rp.EffectBlocked):
+            subprocess.Popen(["id", "-F"], executable="/tmp/evil/id")
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]] * 3        # the bare name never reaches Popen
+    assert [e for _, e, _, _ in seen] == [None, None, "/usr/bin/id"]
+    assert [f["what"] for _, f in emitted] == ["exec"] * 14
+    assert rp.EXEC_GRAMMAR["/usr/bin/id"] == (r"-F",) and "id" not in rp.EXEC_GRAMMAR
+    assert rp.EXEC_ALIASES == {"id": "/usr/bin/id"}
+
+
+def test_a_hijacked_path_or_a_program_in_the_throwaway_home_never_decides_what_runs(tmp_path, monkeypatch):
+    """The review's exploit: an executable named `id` in the writable home plus PATH pointing at it ran unguarded."""
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    bindir = throwaway / "bin"
+    bindir.mkdir()
+    marker = tmp_path / "OUTSIDE_MARKER"
+    fake = bindir / "id"
+    fake.write_text(f"#!/bin/sh\necho pwned > {marker}\necho Fake\n")
+    fake.chmod(0o755)
+    seen = _recording_popen(monkeypatch)
+    with rp.EffectGuard(lambda *a, **k: None, fs=policy):
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+        subprocess.Popen(["id", "-F"])
+        subprocess.Popen(["id", "-F"], env={"PATH": str(bindir)})
+        subprocess.Popen(["id", "-F"], executable="id", env={"PATH": str(bindir)})
+        for argv in ([str(fake), "-F"], ["bin/id", "-F"], [str(bindir / "lsof"), "-F"]):
+            with pytest.raises(rp.EffectBlocked):
+                subprocess.Popen(argv, cwd=str(throwaway))
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]] * 3 and not marker.exists()
+
+
+def test_the_checked_argument_vector_is_what_runs_even_for_a_shifting_fspath(tmp_path, monkeypatch):
+    seen = _recording_popen(monkeypatch)
+
+    class Shifting:
+        def __init__(self): self.calls = 0
+        def __fspath__(self):
+            self.calls += 1
+            return "/usr/bin/id" if self.calls == 1 else "/bin/sh"
+
+    with rp.EffectGuard(lambda *a, **k: None):
+        subprocess.Popen([Shifting(), "-F"])
+    assert [a for a, _, _, _ in seen] == [["/usr/bin/id", "-F"]]
+
+
+def test_an_alias_is_resolved_for_a_real_child_so_a_planted_program_of_that_name_is_never_executed(tmp_path):
+    """A real exec of the mechanism (the QA sandbox allows only the interpreter): `hijackme` resolves to python."""
+    real_home, code, throwaway, policy = fs_world(tmp_path)
+    marker = tmp_path / "OUTSIDE_MARKER"
+    planted = throwaway / "hijackme"
+    planted.write_text(f"#!/bin/sh\necho pwned > {marker}\n")
+    planted.chmod(0o755)
+    guard = rp.EffectGuard(lambda *a, **k: None, fs=policy, exec_grammar={sys.executable: (r"-c print\(1\)",)},
+                           exec_aliases={"hijackme": sys.executable})
+    with guard:
+        for kwargs in ({"env": {"PATH": str(throwaway)}}, {"executable": "hijackme", "env": {"PATH": str(throwaway)}}):
+            result = subprocess.run(["hijackme", "-c", "print(1)"], stdout=subprocess.PIPE, timeout=30, **kwargs)
+            assert result.returncode == 0 and result.stdout == b"1\n"
+        with pytest.raises(rp.EffectBlocked):                                   # an alias to something outside the grammar
+            rp.EffectGuard(lambda *a, **k: None, exec_grammar={}, exec_aliases={"x": "/bin/sh"})._check_exec(
+                {"args": ["x"]})
+    assert not marker.exists()
 
 
 def test_the_popen_pipe_allowance_is_part_of_the_guard_policy_digest(tmp_path, monkeypatch):
@@ -2877,6 +2942,8 @@ def test_the_popen_pipe_allowance_is_part_of_the_guard_policy_digest(tmp_path, m
     monkeypatch.undo()
     assert sha() == before
     assert sha(exec_grammar={**rp.EXEC_GRAMMAR, "/bin/sh": None}) != before
+    assert sha(exec_aliases={**rp.EXEC_ALIASES, "ps": "/bin/ps"}) != before        # an alias is part of the identity
+    assert sha(exec_aliases={}) != before
 
 
 # ---- helpers for editing constructed raw evidence ----
