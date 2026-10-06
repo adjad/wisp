@@ -43,7 +43,7 @@ from fractions import Fraction
 from pathlib import Path
 from typing import Any, Callable
 
-HARNESS_VERSION = "release_performance/3"
+HARNESS_VERSION = "release_performance/4"
 BUNDLE_SCHEMA = "wisp.release_performance.bundle/1"
 SAMPLE_SCHEMA = "wisp.release_performance.sample/2"
 RECEIPT_SCHEMA = "wisp.release_performance.receipt/2"
@@ -953,7 +953,8 @@ LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 ENGINE_ALLOWED_OPS = (("GET", r"/health"), ("GET", r"/v1/models"), ("GET", r"/v1/models/status"),
                       ("POST", r"/v1/chat/completions"), ("POST", r"/v1/embeddings"), ("POST", r"/v1/rerank"))
 
-# The exact argument shapes of the read-only inspectors the engine attribution runs at the base commit. A
+# The exact argument shapes of the read-only inspectors the engine attribution runs at the base commit (and the one
+# identity lookup the product makes; see below). A
 # program name alone is not a capability: lsof and ps can each do more than inspect.
 EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
     "/usr/sbin/lsof": (r"-nP -a -iTCP:[0-9]{1,5} -sTCP:LISTEN -Fpufn",
@@ -961,8 +962,23 @@ EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
                        r"-nP -a -iTCP -sTCP:LISTEN -Fpufn",
                        r"-nP -a -iTCP:[0-9]{1,5} -sTCP:ESTABLISHED -FpufPtTn -Ts"),
     "/bin/ps": (r"-ww -p [1-9][0-9]* -o ppid=,uid=,comm=",),
+    # Not attestation: the product's identity layer (service/memory/identity.py, both v1.1.5 and the candidate) runs
+    # `id -F` once per process to read the macOS full name for its prompts. Read-only, no other flag. The product
+    # calls it by BARE name; see EXEC_ALIASES for how that is made safe.
+    "/usr/bin/id": (r"-F",),
 }
+# A bare program name is resolved through PATH by subprocess (os.environ or env=), and a program in the writable
+# throwaway home could be named `id`. So a bare name is never run as such: the guard rewrites argv[0] (and
+# executable=, when given) to the absolute path below BEFORE the real Popen starts, whatever PATH says.
+EXEC_ALIASES: dict[str, str] = {"id": "/usr/bin/id"}
 ALLOWED_EXEC = frozenset(EXEC_GRAMMAR)
+
+# subprocess.Popen wraps the pipes it creates for an allowed inspector with io.open(<int fd>, 'rb'|'wb'). Under
+# the filesystem guard that is an "untracked descriptor", so exactly those descriptors are recognised: created by
+# os.pipe() on this thread while one argv-checked Popen.__init__ is running, still a FIFO, opened rb/wb. Part of
+# the policy digest so a change to this allowance is a different containment identity.
+POPEN_PIPE_RULE = ("os.pipe() fds of one argv-checked Popen.__init__ call, same thread, still the same FIFO "
+                   "(device+inode), io.open rb|wb, each fd once")
 
 
 class FsPolicy:
@@ -979,6 +995,7 @@ class FsPolicy:
                  write_exact=(), mkdir_exact=(), labels: dict | None = None) -> None:
         self.labels = dict(labels or {})
         self.home = self.absolute(home)
+        self._real_home = os.path.realpath(self.home)   # fixed per policy: a per-call lookup cost a full lstat walk
         self.read_roots = self._both(read_roots)
         self.write_roots = self._both(write_roots)
         self.read_exact = self._both(read_exact)
@@ -987,7 +1004,8 @@ class FsPolicy:
 
     @staticmethod
     def absolute(path: str | os.PathLike) -> str:
-        return os.path.normpath(os.path.join(os.getcwd(), os.fsdecode(os.fspath(path))))
+        text = os.fsdecode(os.fspath(path))
+        return os.path.normpath(text if os.path.isabs(text) else os.path.join(os.getcwd(), text))
 
     @classmethod
     def _both(cls, paths) -> tuple[str, ...]:
@@ -1003,20 +1021,21 @@ class FsPolicy:
     def _under(path: str, roots) -> bool:
         return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
 
-    def read_allowed(self, path: str) -> bool:
-        path = os.path.realpath(path)
-        if not self._under(path, [os.path.realpath(self.home)]):
+    def read_allowed(self, path: str, real: str | None = None) -> bool:
+        path = os.path.realpath(path) if real is None else real
+        if not self._under(path, [self._real_home]):
             return True
         return (self._under(path, self.read_roots) or self._under(path, self.write_roots)
                 or path in self.read_exact or path in self.write_exact)
 
-    def write_allowed(self, path: str) -> bool:
-        real = os.path.realpath(path)
+    def write_allowed(self, path: str, real: str | None = None) -> bool:
+        real = os.path.realpath(path) if real is None else real
         return (real == "/dev/null" or self._under(real, self.write_roots) or real in self.write_exact
                 or path in self.write_exact)
 
-    def mkdir_allowed(self, path: str) -> bool:
-        return self.write_allowed(path) or path in self.mkdir_exact or os.path.realpath(path) in self.mkdir_exact
+    def mkdir_allowed(self, path: str, real: str | None = None) -> bool:
+        real = os.path.realpath(path) if real is None else real
+        return self.write_allowed(path, real) or path in self.mkdir_exact or real in self.mkdir_exact
 
     def portable(self) -> dict:
         """The policy WITHOUT per-run paths, so two children of one run (different worktree roots) have the
@@ -1076,22 +1095,29 @@ class EffectGuard:
 
     def __init__(self, emit: Callable[..., None], *,
                  exec_grammar: dict[str, tuple[str, ...] | None] | None = None,
+                 exec_aliases: dict[str, str] | None = None,
                  allowed_ports: set[int] | frozenset[int] = frozenset({8000}),
                  engine_ops: tuple[tuple[str, str], ...] = ENGINE_ALLOWED_OPS,
                  fs: FsPolicy | None = None) -> None:
         self.emit, self.allowed_ports = emit, set(allowed_ports)
         self.exec_grammar = dict(EXEC_GRAMMAR if exec_grammar is None else exec_grammar)
+        self.exec_aliases = dict(EXEC_ALIASES if exec_aliases is None else exec_aliases)
         self.engine_ops, self.fs = tuple(engine_ops), fs
         self._originals: list[tuple[Any, str, Any]] = []
         import contextvars
+        import threading
+        # The pipe descriptors one guard-allowed Popen call is creating RIGHT NOW, on this thread only
+        # (None outside such a call). See _install_fs: subprocess wraps its own pipes with io.open.
+        self._popen_local = threading.local()
         # Task-local and reset after each reviewed HTTP operation. This is a Python guard,
         # not protection against malicious code recovering the originals or native I/O.
         self._http_operation = contextvars.ContextVar("release_http_operation", default=None)
 
     def policy_description(self) -> dict:
         return {"exec": {k: (list(v) if v is not None else None) for k, v in sorted(self.exec_grammar.items())},
+                "exec_aliases": dict(sorted(self.exec_aliases.items())),
                 "engine_ops": [list(op) for op in self.engine_ops], "ports": sorted(self.allowed_ports),
-                "fs": self.fs.portable() if self.fs else None}
+                "fs": ({**self.fs.portable(), "popen_pipe_descriptors": POPEN_PIPE_RULE} if self.fs else None)}
 
     def policy_sha256(self) -> str:
         return canonical_sha(self.policy_description())
@@ -1117,21 +1143,30 @@ class EffectGuard:
         if not any(method == m and re.fullmatch(pattern, path) for m, pattern in self.engine_ops):
             self._block("engine_operation", f"{method} {path}"[:160])
 
-    def _check_exec(self, bound: dict) -> None:
+    def _check_exec(self, bound: dict) -> list[str]:
+        """Refuse any argument vector outside the grammar; return the vector that is allowed to run.
+
+        Every element is converted to str exactly ONCE here and the caller runs these strings, so an object with a
+        shifting __fspath__ cannot pass the check as one program and start as another. A bare alias name is
+        replaced by its absolute path, so PATH (os.environ or env=) never decides what runs."""
         argv_in = bound.get("args")
-        argv = [argv_in] if isinstance(argv_in, (str, bytes, os.PathLike)) else list(argv_in or [])
-        first = os.fsdecode(argv[0]) if argv else ""
+        raw = [argv_in] if isinstance(argv_in, (str, bytes, os.PathLike)) else list(argv_in or [])
+        argv = [os.fsdecode(a) for a in raw]
+        first = argv[0] if argv else ""
         if bound.get("shell"):
             self._block("exec", f"shell=True {first}"[:120])
         executable = bound.get("executable")
         if executable is not None and os.fsdecode(executable) != first:
             self._block("exec", f"executable override {os.fsdecode(executable)} for {first}"[:160])
-        if first not in self.exec_grammar:
+        program = self.exec_aliases.get(first, first)
+        if program not in self.exec_grammar or (first != program and first not in self.exec_aliases):
             self._block("exec", first or "<empty>")
-        patterns = self.exec_grammar[first]
-        rest = " ".join(os.fsdecode(a) for a in argv[1:])
+        patterns = self.exec_grammar[program]
+        rest = " ".join(argv[1:])
         if patterns is not None and not any(re.fullmatch(p, rest) for p in patterns):
             self._block("exec", f"{first} {rest}"[:160])
+        argv[0] = program
+        return argv
 
     def _install_fs(self) -> None:
         import builtins
@@ -1174,14 +1209,29 @@ class EffectGuard:
             # through the exact os.open grammar below. No data/metadata mutation is allowed.
             if kind != "read" and (path in lease_paths or real in lease_paths):
                 guard._block("fs_lease_mutation", path)
-            allowed = {"write": fs.write_allowed, "mkdir": fs.mkdir_allowed}.get(kind, fs.read_allowed)(path)
+            allowed = {"write": fs.write_allowed, "mkdir": fs.mkdir_allowed}.get(kind, fs.read_allowed)(path, real)
             if not allowed:
                 guard._block("fs_read" if kind == "read" else "fs_write", path)
             return path
 
         original_open = builtins.open
 
+        def popen_pipe(file, mode) -> bool:
+            """True only for a pipe end the allowed Popen call in progress on this thread just created."""
+            pipes = getattr(guard._popen_local, "pipes", None)
+            if not pipes or type(file) is not int or mode not in ("rb", "wb") or file not in pipes:
+                return False
+            expected = pipes.pop(file)                     # each recorded descriptor is good for one open
+            try:
+                info = original_fstat(file)
+            except OSError:
+                return False
+            # Still the same pipe: a dup2 onto the number (a file, a socket, another FIFO) changes the identity.
+            return stat.S_ISFIFO(info.st_mode) and identity(info) == expected
+
         def guarded_open(file, mode="r", *a, **k):
+            if popen_pipe(file, mode):
+                return original_open(file, mode, *a, **k)
             check("write" if any(c in str(mode) for c in "wax+") else "read", file, file_object=True)
             return original_open(file, mode, *a, **k)
 
@@ -1214,8 +1264,19 @@ class EffectGuard:
             finally:
                 descriptors.pop(fd, None)
 
+        original_pipe = os.pipe
+
+        def guarded_pipe():
+            pair = original_pipe()
+            pipes = getattr(guard._popen_local, "pipes", None)
+            if pipes is not None:
+                for fd in pair:
+                    pipes[fd] = identity(original_fstat(fd))
+            return pair
+
         self._patch(os, "open", guarded_os_open)
         self._patch(os, "close", close)
+        self._patch(os, "pipe", guarded_pipe)
         for name in ("write", "pwrite", "writev", "ftruncate", "fchmod", "fchown"):
             if not hasattr(os, name):
                 continue
@@ -1251,18 +1312,32 @@ class EffectGuard:
 
         def popen_init(self_, *args, **kwargs):
             try:
-                arguments = signature.bind(self_, *args, **kwargs).arguments
+                call = signature.bind(self_, *args, **kwargs)
             except TypeError:
                 guard._block("exec", "unparseable Popen call")
             bound: dict[str, Any] = {}
-            for name, value in arguments.items():
+            for name, value in call.arguments.items():
                 kind = signature.parameters[name].kind
                 if kind is inspect.Parameter.VAR_KEYWORD:
                     bound.update(value)
                 elif kind is not inspect.Parameter.VAR_POSITIONAL:
                     bound[name] = value
-            guard._check_exec(bound)
-            return original_init(self_, *args, **kwargs)
+            argv = guard._check_exec(bound)
+            # Run exactly what was checked: plain strings, with the absolute program path.
+            call.arguments["args"] = argv
+            # `executable` is a named parameter of the real Popen; a wrapped init may take it through **kwargs.
+            for holder in (call.arguments, *(v for n, v in call.arguments.items()
+                                             if signature.parameters[n].kind is inspect.Parameter.VAR_KEYWORD)):
+                if holder.get("executable") is not None:
+                    holder["executable"] = argv[0]
+            if guard.fs is None:
+                return original_init(*call.args, **call.kwargs)
+            local = guard._popen_local
+            local.pipes = {}
+            try:
+                return original_init(*call.args, **call.kwargs)
+            finally:
+                local.pipes = None
 
         original_connect, original_connect_ex = socket.socket.connect, socket.socket.connect_ex
 
@@ -1651,6 +1726,11 @@ RESIDENCY_PROBE_PATH = "/__release_probe/residency"
 def serve_main(args: argparse.Namespace) -> int:
     """Child entry point: run the candidate's own backend with the guard and instrumentation installed."""
     root = Path(args.root).resolve()
+    # `python scripts/release_performance.py serve` puts the harness's own directory first on sys.path. It is not
+    # part of the candidate, and importlib.metadata lists every sys.path entry, which the filesystem guard (rightly)
+    # refuses when that directory is under the real HOME. Nothing here imports from it, so it is dropped.
+    harness_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+    sys.path[:] = [entry for entry in sys.path if not entry or os.path.realpath(entry) != harness_dir]
     sys.path.insert(0, str(root))
     os.chdir(root)
     home = Path(args.home).resolve()
@@ -2039,16 +2119,28 @@ class LiveDeps:
         backend.start()
         return backend
 
+    # The attributed client's peer attribution (lsof/ps against a live listener the desktop app and other clients
+    # also use) can refuse a single read transiently: the v1.1.5 client did so on 1 of ~4 consecutive reads in
+    # isolation. Reading the resident set is a prerequisite check, not a measurement, so it is retried a bounded
+    # number of times; a set that is still unreadable stays None and the run stays INCONCLUSIVE.
+    RESIDENCY_ATTEMPTS = 3
+    RESIDENCY_PAUSE_S = 1.0
+
     def residency(self, backend: BackendProcess) -> Any:
         """Resident model ids per the candidate's own attributed client, or None if it cannot say."""
         import httpx
-        try:
-            reply = httpx.get(backend.base_url + RESIDENCY_PROBE_PATH, timeout=30.0)
-            body = reply.json()
-            loaded = body.get("loaded") if reply.status_code == 200 and isinstance(body, dict) else None
-            return sorted(str(m) for m in loaded) if isinstance(loaded, list) else None
-        except (httpx.HTTPError, ValueError):
-            return None
+        for attempt in range(self.RESIDENCY_ATTEMPTS):
+            if attempt:
+                time.sleep(self.RESIDENCY_PAUSE_S)
+            try:
+                reply = httpx.get(backend.base_url + RESIDENCY_PROBE_PATH, timeout=30.0)
+                body = reply.json()
+                loaded = body.get("loaded") if reply.status_code == 200 and isinstance(body, dict) else None
+            except (httpx.HTTPError, ValueError):
+                loaded = None
+            if isinstance(loaded, list):
+                return sorted(str(m) for m in loaded)
+        return None
 
     def make_driver(self, backend: BackendProcess) -> HttpTurnDriver:
         return HttpTurnDriver(backend.base_url)
