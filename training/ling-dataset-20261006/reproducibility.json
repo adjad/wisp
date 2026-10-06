@@ -1,0 +1,39 @@
+{
+  "all_files_byte_identical": true,
+  "command": "python3 generate.py (second final corrected run) with SHA-256 byte equality",
+  "files_compared": 16,
+  "generator_version": "1.1.0",
+  "hashes": {
+    "DATA_CARD.md": "60d9d861ceeecf5446dd649e704c7d48794d1f5505014073edb19279b2bf5d65",
+    "dev.jsonl": "a1128ba290a4f820acaf59f93df3ca9b1654102439c888c4968d35005e266ecd",
+    "dev.provenance.jsonl": "6b7ab54d29ade88d927ee3f552bd955af7cdcc195149b99ba60d1bf0dbbae29d",
+    "families.json": "b11dced5d37caaecabd0d898b8c8587b74a98473c9bd5cbfb599fa0e0d838d7b",
+    "final.jsonl": "e3ac8308d671cc7dbc4744aeefaf2450904312b52aaf4af033b497c906d29337",
+    "final.provenance.jsonl": "93ef015c04a991eb094f568defe03a23ddf127e92a653f488c9f0c4af8bb2ab8",
+    "generate.py": "fd95ee6ade8ef6010ed3216d22aadc06607223340883ed1710a4a6c941e8583f",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+    "ling-train-dev-20261006.zip": "fc07cca6782d324cdec0adbbd9ebd4b33dbe9c40f652031c46239c9ef3b3557b",
+    "manifest.json": "74bbbd597d12e3fa937bd6826aedd88227bcbfb6b86b32b72d7a3fc7fd47c4a1",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "train.jsonl": "b4ea93caa2a82799c90621d77f126728f6be3b246d43cbb29200adb5fc520549",
+    "train.provenance.jsonl": "ea725c84a0192a8a4ec58feee95074763eb3ffdbeb13dac56b9196bc033f0e7b",
+    "upload-manifest.json": "a2409dc317b031ee3c72e4ddcad5f7914d78d4e8b639a699816cf8b41a6e37a5",
+    "upload-zip.json": "e74b5428b6758469d0332a3382a8f4710c0ce14c94094b7b6fef1f68b497a092",
+    "validate.py": "243955143c9136216e4a3904681b0a18e61604cfbddea61055ac070771242f6b"
+  },
+  "initial_failures_repaired": [
+    "surface-capacity exhaustion detected rather than padding repeated prompts",
+    "accidental exact duplicate synthetic empty/unavailable fixture removed",
+    "period-pool capacity updated after source-specific temporal repair"
+  ],
+  "passed": true,
+  "review_repairs": [
+    "D1 unsupported reminder period retained",
+    "D2 realistic temporal pools and grammar",
+    "D3 natural agenda coverage rebalanced",
+    "D4 simple/filter/person/account/ordinary-none routing contrasts",
+    "D5 topics,coverage,attributed assertion summaries and grouped weekly agendas",
+    "D6 explicit calendar exclusion retained in definition-only request; ambiguous broad prohibition removed"
+  ],
+  "runtime": "CPU standard-library generation; jsonschema CPU checks; no model imports/inference/cloud"
+}

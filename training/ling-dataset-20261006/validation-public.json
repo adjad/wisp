@@ -1,0 +1,171 @@
+{
+  "mode": "public_train_dev_only",
+  "passed": true,
+  "splits_read": [
+    "train",
+    "dev"
+  ],
+  "counts": {
+    "train": 2000,
+    "dev": 200
+  },
+  "supervised_assistant_messages": 2200,
+  "schema_semantic_grounding_checks": "PASS",
+  "dedup_screen": {
+    "exact_duplicate_count": 0,
+    "cross_split_normalized_duplicate_count": 0,
+    "normalized_near_duplicate_threshold": 0.88,
+    "normalized_cross_split_pairs_compared": 15846,
+    "maximum_cross_split_similarity": 0.81448,
+    "unique_normalized_surfaces": 371,
+    "unique_normalized_surfaces_by_split_task": {
+      "train/overview": 34,
+      "train/routing": 265,
+      "dev/overview": 14,
+      "dev/routing": 58
+    },
+    "limitations": "Lexical/task screen only, not model embedding or human independence proof; shared behavioral labels and within-split templates are intentional."
+  },
+  "negative_controls": [
+    {
+      "control": "dropped_agenda_period_constraint",
+      "result": "rejected"
+    },
+    {
+      "control": "invented_agenda_reminder_time",
+      "result": "rejected"
+    },
+    {
+      "control": "invented_unfiltered_defaults",
+      "result": "rejected"
+    },
+    {
+      "control": "read_email_false_inverted",
+      "result": "rejected"
+    },
+    {
+      "control": "ordinary_chat_source_access",
+      "result": "rejected"
+    },
+    {
+      "control": "missing_requested_source",
+      "result": "rejected"
+    },
+    {
+      "control": "literal_plus_address_corruption",
+      "result": "rejected"
+    },
+    {
+      "control": "wrong_date",
+      "result": "rejected"
+    },
+    {
+      "control": "competing_time_forms",
+      "result": "rejected"
+    },
+    {
+      "control": "unpaired_range",
+      "result": "rejected"
+    },
+    {
+      "control": "messages_unread_field",
+      "result": "rejected"
+    },
+    {
+      "control": "reminders_arbitrary_time",
+      "result": "rejected"
+    },
+    {
+      "control": "email_overview_query",
+      "result": "rejected"
+    },
+    {
+      "control": "non_calendar_free_time",
+      "result": "rejected"
+    },
+    {
+      "control": "excluded_source_present",
+      "result": "rejected"
+    },
+    {
+      "control": "inline_source_access",
+      "result": "rejected"
+    },
+    {
+      "control": "none_source_access",
+      "result": "rejected"
+    },
+    {
+      "control": "effect_read_authorization",
+      "result": "rejected"
+    },
+    {
+      "control": "old_source_filter_leak",
+      "result": "rejected"
+    },
+    {
+      "control": "same_source_filter_loss",
+      "result": "rejected"
+    },
+    {
+      "control": "dropped_unsupported_constraint",
+      "result": "rejected"
+    },
+    {
+      "control": "nonliteral_constraint",
+      "result": "rejected"
+    },
+    {
+      "control": "ordinary_definition_prohibition_dropped",
+      "result": "rejected"
+    },
+    {
+      "control": "actual_leading_plus_removed",
+      "result": "rejected"
+    },
+    {
+      "control": "fabricated_number",
+      "result": "rejected"
+    },
+    {
+      "control": "denied_as_empty",
+      "result": "rejected"
+    },
+    {
+      "control": "missing_partial_honesty",
+      "result": "rejected"
+    },
+    {
+      "control": "proposal_as_confirmed",
+      "result": "rejected"
+    },
+    {
+      "control": "claimed_send",
+      "result": "rejected"
+    },
+    {
+      "control": "speaker_body_swap",
+      "result": "rejected"
+    },
+    {
+      "control": "exact_cross_split_duplicate",
+      "result": "rejected"
+    },
+    {
+      "control": "entity_substitution_cross_split_duplicate",
+      "result": "rejected"
+    }
+  ],
+  "negative_controls_rejected": 32,
+  "zip_members": [
+    "DATA_CARD.md",
+    "dev.jsonl",
+    "dev.provenance.jsonl",
+    "intent.schema.v1.json",
+    "router-system.txt",
+    "train.jsonl",
+    "train.provenance.jsonl",
+    "upload-manifest.json"
+  ],
+  "limitations": "Deterministic author/reference checks; no model inference, downstream training, embedding-based contamination audit, or measured gain. Final has been read only for initial author validation."
+}

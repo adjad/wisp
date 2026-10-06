@@ -1,0 +1,66 @@
+{
+  "reviewer": "/root/ling_routing_review",
+  "authority": "Parent recorded explicit v3 delta release under same Orchestrator ACK scope",
+  "read_scope": [
+    "/private/tmp/ling-dataset-review-routing-v2",
+    "/private/tmp/ling-dataset-review-routing-v3"
+  ],
+  "read_names": [
+    "train.jsonl",
+    "dev.jsonl",
+    "train.provenance.jsonl",
+    "dev.provenance.jsonl",
+    "router-system.txt",
+    "intent.schema.v1.json",
+    "SNAPSHOT.json"
+  ],
+  "writes": [
+    "/private/tmp/ling-dataset-routing-review/report-v3.json",
+    "/private/tmp/ling-dataset-routing-review/review-provenance-v3.json"
+  ],
+  "snapshot_integrity": {
+    "dev.provenance.jsonl": {
+      "v3_expected": "b458bcee4475fe74bd3af5f38eeaaa23c06fdf8d4ae739dd3f019e8c7b65b0d4",
+      "v3_end": "b458bcee4475fe74bd3af5f38eeaaa23c06fdf8d4ae739dd3f019e8c7b65b0d4",
+      "matches_manifest": true,
+      "v2_actual": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3",
+      "v2_matches_initial_manifest": true
+    },
+    "train.jsonl": {
+      "v3_expected": "75b4403ae9af1a8c44432337d48a61d153cf39a0793c0121c5d32a606da121d6",
+      "v3_end": "75b4403ae9af1a8c44432337d48a61d153cf39a0793c0121c5d32a606da121d6",
+      "matches_manifest": true,
+      "v2_actual": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e",
+      "v2_matches_initial_manifest": true
+    },
+    "intent.schema.v1.json": {
+      "v3_expected": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "v3_end": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "matches_manifest": true,
+      "v2_actual": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "v2_matches_initial_manifest": true
+    },
+    "router-system.txt": {
+      "v3_expected": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "v3_end": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "matches_manifest": true,
+      "v2_actual": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "v2_matches_initial_manifest": true
+    },
+    "dev.jsonl": {
+      "v3_expected": "44a3de133f2e5d3eb4153034e3ac27aed9cfb90cbf00239293d3fd315de1008a",
+      "v3_end": "44a3de133f2e5d3eb4153034e3ac27aed9cfb90cbf00239293d3fd315de1008a",
+      "matches_manifest": true,
+      "v2_actual": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1",
+      "v2_matches_initial_manifest": true
+    },
+    "train.provenance.jsonl": {
+      "v3_expected": "ae7b39f4497e17088711e0f87fb57021ad871cce76f95b1c42793b281ca5cf6b",
+      "v3_end": "ae7b39f4497e17088711e0f87fb57021ad871cce76f95b1c42793b281ca5cf6b",
+      "matches_manifest": true,
+      "v2_actual": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740",
+      "v2_matches_initial_manifest": true
+    }
+  },
+  "snapshot_manifest_end_sha256": "c6c030ce064c689e25783ef2f9fdcc26a80a84a4de74653ab5fe69d9e9ceb8da"
+}

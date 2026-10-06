@@ -1,0 +1,198 @@
+{
+  "snapshot_version": 2,
+  "scope": "Focused read-only re-review of same allowed seven immutable files; D5 overview quality only. No project imports, source edits, generator/tests, inference, model/cloud/native tools, private logs or final assets.",
+  "snapshot_base": "c1ef1be4c95f4806688484f8785e36c4b06138c0",
+  "snapshot_source_identity": "uncommitted corrected D1-D5 source, immutable copy",
+  "snapshot_path": "/private/tmp/ling-dataset-review-grounded-v2",
+  "recorded_source_hashes": {
+    "train.jsonl": "3bd15db194c68a9196df19808ba0b9e29f44a3b044be96c4dcf8f9e62ad2a061",
+    "dev.jsonl": "eeacbce385fc3b868e56122007c6d7f05ed30264b9ba467d77b17a07019786c3",
+    "train.provenance.jsonl": "3c67e4939ac6b1a8969e272a6aaf088152df990924ecb4a14467c9df625c9832",
+    "dev.provenance.jsonl": "5cbdd8794947a59d082dcb68feb4c6543b4ed73ee56a7930d5ff011e487f77d4",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+  },
+  "advisory_verdict": "PASS_WITH_NOTES",
+  "blocking_findings": [],
+  "findings": [
+    {
+      "id": "GROUNDED-V2-01",
+      "severity": "P3",
+      "blocking": false,
+      "title": "Email and note targets still mainly enumerate full supplied text",
+      "row_ids": [
+        "train-s-0086",
+        "dev-s-0007",
+        "train-s-0181",
+        "dev-s-0019"
+      ],
+      "evidence": "Topic and scope repair is complete. Email bullets retain subject, sender and body but repeat the same Requested by date for each item; notes still repeat Status: draft and each full text. Messages now use genuine attributed paraphrases and weekly rows group across days. Remaining concern is style/coverage for longer summaries, not factual correctness.",
+      "fix_direction": "Optional future enrichment: consolidate shared requested-by dates and draft qualifiers, and use larger mixed-topic fixtures that require prioritization and grouping.",
+      "reproduction": "Compare these row answers with their fixture item bodies/text and requested_by values."
+    },
+    {
+      "id": "GROUNDED-V2-02",
+      "severity": "P3",
+      "blocking": false,
+      "title": "Weekly and delivery-state additions cover the missing basics but remain narrow",
+      "row_ids": [
+        "train-s-0550",
+        "dev-s-0056",
+        "train-s-0570",
+        "dev-s-0058"
+      ],
+      "evidence": "33 weekly fixtures have actual multi-day coverage and correct chronological date grouping; 33 draft_sent fixtures explicitly label one draft and one sent record, with delivery_state consistent with sent. Weekly rows contain only two or three calendar events and one or two reminder due dates; no mixed-topic or busy-week selection challenge. The delivery fixtures reuse received_date/sender/body on both states rather than demonstrate a fuller realistic outgoing record. This does not invalidate the explicit draft/sent labels.",
+      "fix_direction": "Optional future enrichment: larger weeks, mixed topics, unplaced/no-due reminders, irregular intervals, and realistic authored/sent timestamps and recipient fields for outgoing records.",
+      "reproduction": "Inventory weekly_agenda and draft_sent fixture item counts and fields, then inspect listed representative rows."
+    }
+  ],
+  "v1_resolution": {
+    "GROUNDED-01": "RESOLVED: every one of 306 supplied email subjects appears in its answer.",
+    "GROUNDED-02": "RESOLVED for nonempty email/messages: every supplied account/date/conversation and unread=true qualifier appears; returned counts present except explicitly labeled draft/sent records.",
+    "GROUNDED-03": "Core missing weekly and draft/sent coverage RESOLVED: 33 actual multi-day weekly rows and 33 explicit draft/sent rows. Broader realistic variety remains a future improvement.",
+    "GROUNDED-04": "PARTIALLY RESOLVED: all 270 message bodies are now meaning-preserving speaker-attributed paraphrases, and weekly rows synthesize chronological cross-source agendas. Email/note enumeration remains a minor nonblocking note."
+  },
+  "all_row_checks": {
+    "rows": 660,
+    "train": 600,
+    "dev": 60,
+    "categories": 20,
+    "fixture_user_provenance_mismatches": 0,
+    "independent_static_flags": 0,
+    "email_items_subject_sender_body_preserved": 306,
+    "nonempty_email_source_results_scope_preserved": 165,
+    "nonempty_message_source_results_scope_preserved": 132,
+    "message_items_attributed_paraphrases": 270,
+    "weekly_rows_range_date_and_chronological_grouping_checked": 33,
+    "draft_sent_rows_delivery_state_checked": 33,
+    "method": "Independent static JSON/literal/regex checks of all rows. Compare item facts and source statuses, nonempty overview scope/counts, meaning-preserving message body transforms with speaker attribution, weekly inclusive date range and per-item date grouping/order, and delivery_state/sent consistency. No existing generator/tests used."
+  },
+  "manual_representative_coverage": {
+    "agenda": {
+      "train": "train-s-0045",
+      "dev": "dev-s-0004"
+    },
+    "calendar": {
+      "train": "train-s-0016",
+      "dev": "dev-s-0002"
+    },
+    "denied": {
+      "train": "train-s-0250",
+      "dev": "dev-s-0025"
+    },
+    "draft_sent": {
+      "train": "train-s-0570",
+      "dev": "dev-s-0058"
+    },
+    "email": {
+      "train": "train-s-0086",
+      "dev": "dev-s-0007"
+    },
+    "empty": {
+      "train": "train-s-0236",
+      "dev": "dev-s-0023"
+    },
+    "messages": {
+      "train": "train-s-0103",
+      "dev": "dev-s-0010"
+    },
+    "missing": {
+      "train": "train-s-0381",
+      "dev": "dev-s-0036"
+    },
+    "mixed_status": {
+      "train": "train-s-0506",
+      "dev": "dev-s-0050"
+    },
+    "multi": {
+      "train": "train-s-0136",
+      "dev": "dev-s-0012"
+    },
+    "no_deadline": {
+      "train": "train-s-0528",
+      "dev": "dev-s-0052"
+    },
+    "notes": {
+      "train": "train-s-0181",
+      "dev": "dev-s-0019"
+    },
+    "overlap": {
+      "train": "train-s-0428",
+      "dev": "dev-s-0043"
+    },
+    "partial": {
+      "train": "train-s-0318",
+      "dev": "dev-s-0031"
+    },
+    "proposal": {
+      "train": "train-s-0402",
+      "dev": "dev-s-0039"
+    },
+    "reminders": {
+      "train": "train-s-0158",
+      "dev": "dev-s-0015"
+    },
+    "timeout": {
+      "train": "train-s-0296",
+      "dev": "dev-s-0029"
+    },
+    "truncated": {
+      "train": "train-s-0357",
+      "dev": "dev-s-0034"
+    },
+    "weekly_agenda": {
+      "train": "train-s-0550",
+      "dev": "dev-s-0056"
+    },
+    "zones": {
+      "train": "train-s-0465",
+      "dev": "dev-s-0045"
+    }
+  },
+  "manual_sample_count": 40,
+  "verdict_limits": "Advisory grounding/quality verdict on immutable overview subset only. No blocker for scoped D5 repairs. Does not certify model training efficacy, generalization, candidate mechanical tests, CI, or final artifact identity.",
+  "snapshot_integrity": {
+    "all_six_review_manifest_hashes_match_at_end": true,
+    "files": {
+      "dev.provenance.jsonl": {
+        "expected_sha256": "8a8c38f6ed85dfa366de05a1f6bec2b7035a1617bef52732d50929964356d6e4",
+        "observed_sha256": "8a8c38f6ed85dfa366de05a1f6bec2b7035a1617bef52732d50929964356d6e4",
+        "bytes": 151207,
+        "matches": true
+      },
+      "train.jsonl": {
+        "expected_sha256": "f14e6d748fe7ce5e41179412679430821faf19396b60a33a1778e82fade6d9a0",
+        "observed_sha256": "f14e6d748fe7ce5e41179412679430821faf19396b60a33a1778e82fade6d9a0",
+        "bytes": 944564,
+        "matches": true
+      },
+      "intent.schema.v1.json": {
+        "expected_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+        "observed_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+        "bytes": 3860,
+        "matches": true
+      },
+      "router-system.txt": {
+        "expected_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+        "observed_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+        "bytes": 2472,
+        "matches": true
+      },
+      "dev.jsonl": {
+        "expected_sha256": "63a31cc4c054d34cb5f6e9ee7ba9a3c2c91ea23681420d2b5045cb240e492399",
+        "observed_sha256": "63a31cc4c054d34cb5f6e9ee7ba9a3c2c91ea23681420d2b5045cb240e492399",
+        "bytes": 106900,
+        "matches": true
+      },
+      "train.provenance.jsonl": {
+        "expected_sha256": "1958fdeec0721bdb6374df2cef0c3252426f109619bb4733166ca84a7927ac02",
+        "observed_sha256": "1958fdeec0721bdb6374df2cef0c3252426f109619bb4733166ca84a7927ac02",
+        "bytes": 1331180,
+        "matches": true
+      }
+    },
+    "snapshot_manifest_sha256": "6449cd5c5c830e9c38355ac117b74229dd836f1fa3a9130d086024f6ea7e316f"
+  },
+  "source_writes": false,
+  "created_utc": "2026-10-06T06:54:42.804988+00:00"
+}

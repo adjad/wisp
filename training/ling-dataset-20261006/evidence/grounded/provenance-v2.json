@@ -1,0 +1,55 @@
+{
+  "inputs": [
+    "/private/tmp/ling-dataset-review-grounded-v2/train.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v2/dev.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v2/train.provenance.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v2/dev.provenance.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v2/router-system.txt",
+    "/private/tmp/ling-dataset-review-grounded-v2/intent.schema.v1.json",
+    "/private/tmp/ling-dataset-review-grounded-v2/SNAPSHOT.json"
+  ],
+  "method": "Independent static JSON/literal/regex checks of all rows. Compare item facts and source statuses, nonempty overview scope/counts, meaning-preserving message body transforms with speaker attribution, weekly inclusive date range and per-item date grouping/order, and delivery_state/sent consistency. No existing generator/tests used.",
+  "end_hashes": {
+    "dev.provenance.jsonl": {
+      "expected_sha256": "8a8c38f6ed85dfa366de05a1f6bec2b7035a1617bef52732d50929964356d6e4",
+      "observed_sha256": "8a8c38f6ed85dfa366de05a1f6bec2b7035a1617bef52732d50929964356d6e4",
+      "bytes": 151207,
+      "matches": true
+    },
+    "train.jsonl": {
+      "expected_sha256": "f14e6d748fe7ce5e41179412679430821faf19396b60a33a1778e82fade6d9a0",
+      "observed_sha256": "f14e6d748fe7ce5e41179412679430821faf19396b60a33a1778e82fade6d9a0",
+      "bytes": 944564,
+      "matches": true
+    },
+    "intent.schema.v1.json": {
+      "expected_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "observed_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "bytes": 3860,
+      "matches": true
+    },
+    "router-system.txt": {
+      "expected_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "observed_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "bytes": 2472,
+      "matches": true
+    },
+    "dev.jsonl": {
+      "expected_sha256": "63a31cc4c054d34cb5f6e9ee7ba9a3c2c91ea23681420d2b5045cb240e492399",
+      "observed_sha256": "63a31cc4c054d34cb5f6e9ee7ba9a3c2c91ea23681420d2b5045cb240e492399",
+      "bytes": 106900,
+      "matches": true
+    },
+    "train.provenance.jsonl": {
+      "expected_sha256": "1958fdeec0721bdb6374df2cef0c3252426f109619bb4733166ca84a7927ac02",
+      "observed_sha256": "1958fdeec0721bdb6374df2cef0c3252426f109619bb4733166ca84a7927ac02",
+      "bytes": 1331180,
+      "matches": true
+    }
+  },
+  "outputs": [
+    "/private/tmp/ling-dataset-grounded-review/review-v2.json",
+    "/private/tmp/ling-dataset-grounded-review/provenance-v2.json"
+  ],
+  "v1_outputs_preserved": true
+}

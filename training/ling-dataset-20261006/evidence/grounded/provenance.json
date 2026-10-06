@@ -1,0 +1,54 @@
+{
+  "inputs": [
+    "/private/tmp/ling-dataset-review-grounded-v1/train.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v1/dev.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v1/train.provenance.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v1/dev.provenance.jsonl",
+    "/private/tmp/ling-dataset-review-grounded-v1/router-system.txt",
+    "/private/tmp/ling-dataset-review-grounded-v1/intent.schema.v1.json",
+    "/private/tmp/ling-dataset-review-grounded-v1/SNAPSHOT.json"
+  ],
+  "method": "Manual review of 36 representative rows across 18 categories and both splits plus independent Python static JSON/literal/regex checks on all 660 rows. Advisory only.",
+  "end_hashes": {
+    "dev.provenance.jsonl": {
+      "expected_sha256": "acf001921a311b11b428654269246557cba40f59c5e61689de5f2205860fb94a",
+      "observed_sha256": "acf001921a311b11b428654269246557cba40f59c5e61689de5f2205860fb94a",
+      "bytes": 136122,
+      "matches": true
+    },
+    "train.jsonl": {
+      "expected_sha256": "f487db55bf1f88bbe6b928077dac7211392885f74365d55aa89e3f60058523de",
+      "observed_sha256": "f487db55bf1f88bbe6b928077dac7211392885f74365d55aa89e3f60058523de",
+      "bytes": 910266,
+      "matches": true
+    },
+    "intent.schema.v1.json": {
+      "expected_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "observed_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "bytes": 3860,
+      "matches": true
+    },
+    "router-system.txt": {
+      "expected_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "observed_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "bytes": 2472,
+      "matches": true
+    },
+    "dev.jsonl": {
+      "expected_sha256": "527e5cd74b8140cd0d96922e14c72c4612b38b1ffbbb86c031c8099da18b36d7",
+      "observed_sha256": "527e5cd74b8140cd0d96922e14c72c4612b38b1ffbbb86c031c8099da18b36d7",
+      "bytes": 104099,
+      "matches": true
+    },
+    "train.provenance.jsonl": {
+      "expected_sha256": "d0fe7718958666911bb88350bf11f2516d7e7b8d3d72d0424aee5fd5d8bd2391",
+      "observed_sha256": "d0fe7718958666911bb88350bf11f2516d7e7b8d3d72d0424aee5fd5d8bd2391",
+      "bytes": 1173703,
+      "matches": true
+    }
+  },
+  "outputs": [
+    "/private/tmp/ling-dataset-grounded-review/review.json",
+    "/private/tmp/ling-dataset-grounded-review/provenance.json"
+  ]
+}

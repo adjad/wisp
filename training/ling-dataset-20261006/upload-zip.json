@@ -1,0 +1,25 @@
+{
+  "filename": "ling-train-dev-20261006.zip",
+  "sha256": "fc07cca6782d324cdec0adbbd9ebd4b33dbe9c40f652031c46239c9ef3b3557b",
+  "bytes": 444907,
+  "members": [
+    "DATA_CARD.md",
+    "dev.jsonl",
+    "dev.provenance.jsonl",
+    "intent.schema.v1.json",
+    "router-system.txt",
+    "train.jsonl",
+    "train.provenance.jsonl",
+    "upload-manifest.json"
+  ],
+  "excludes": [
+    "final.jsonl",
+    "final.provenance.jsonl",
+    "families.json",
+    "generate.py",
+    "validate.py",
+    "all generation assets",
+    "private data",
+    "original heldout"
+  ]
+}

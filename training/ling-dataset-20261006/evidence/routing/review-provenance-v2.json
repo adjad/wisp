@@ -1,0 +1,53 @@
+{
+  "reviewer": "/root/ling_routing_review",
+  "authority": "Same read-only scope under recorded ACK; explicit parent v2 release",
+  "scope_files": [
+    "dev.provenance.jsonl",
+    "train.jsonl",
+    "intent.schema.v1.json",
+    "router-system.txt",
+    "dev.jsonl",
+    "train.provenance.jsonl",
+    "SNAPSHOT.json"
+  ],
+  "snapshot": "/private/tmp/ling-dataset-review-routing-v2",
+  "source_hashes": {
+    "train.jsonl": "3bd15db194c68a9196df19808ba0b9e29f44a3b044be96c4dcf8f9e62ad2a061",
+    "dev.jsonl": "eeacbce385fc3b868e56122007c6d7f05ed30264b9ba467d77b17a07019786c3",
+    "train.provenance.jsonl": "3c67e4939ac6b1a8969e272a6aaf088152df990924ecb4a14467c9df625c9832",
+    "dev.provenance.jsonl": "5cbdd8794947a59d082dcb68feb4c6543b4ed73ee56a7930d5ff011e487f77d4",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+  },
+  "snapshot_integrity": {
+    "dev.provenance.jsonl": {
+      "expected": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3",
+      "end": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3"
+    },
+    "train.jsonl": {
+      "expected": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e",
+      "end": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e"
+    },
+    "intent.schema.v1.json": {
+      "expected": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "end": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+    },
+    "router-system.txt": {
+      "expected": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "end": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830"
+    },
+    "dev.jsonl": {
+      "expected": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1",
+      "end": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1"
+    },
+    "train.provenance.jsonl": {
+      "expected": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740",
+      "end": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740"
+    }
+  },
+  "writes": [
+    "/private/tmp/ling-dataset-routing-review/report-v2.json",
+    "/private/tmp/ling-dataset-routing-review/review-provenance-v2.json",
+    "/private/tmp/ling-dataset-routing-review/remaining-candidates-v2.jsonl"
+  ]
+}

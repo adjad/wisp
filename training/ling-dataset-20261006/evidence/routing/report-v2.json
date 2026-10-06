@@ -1,0 +1,348 @@
+{
+  "review_type": "focused bounded static dataset advisory, not production release approval",
+  "snapshot": "/private/tmp/ling-dataset-review-routing-v2",
+  "base": "c1ef1be4c95f4806688484f8785e36c4b06138c0",
+  "source_hashes": {
+    "train.jsonl": "3bd15db194c68a9196df19808ba0b9e29f44a3b044be96c4dcf8f9e62ad2a061",
+    "dev.jsonl": "eeacbce385fc3b868e56122007c6d7f05ed30264b9ba467d77b17a07019786c3",
+    "train.provenance.jsonl": "3c67e4939ac6b1a8969e272a6aaf088152df990924ecb4a14467c9df625c9832",
+    "dev.provenance.jsonl": "5cbdd8794947a59d082dcb68feb4c6543b4ed73ee56a7930d5ff011e487f77d4",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+  },
+  "verdict": "BLOCK",
+  "blocking_rows": [
+    {
+      "id": "dev-r-0139",
+      "severity": "P2",
+      "user": "Define calendar without opening mine.",
+      "actual": {
+        "excluded_sources": [],
+        "kind": "none",
+        "sources": [],
+        "unsupported_constraints": [],
+        "version": 1
+      },
+      "expected_delta": {
+        "excluded_sources": [
+          "calendar"
+        ]
+      },
+      "reason": "The ordinary request explicitly prohibits opening the personal calendar. Preserve that exclusion while retaining kind:none and sources:[]; matches pure-prohibition convention and router instruction to preserve exclusions."
+    }
+  ],
+  "nonblocking_notes": [
+    {
+      "id": "train-r-1397",
+      "severity": "P3",
+      "user": "Explain what a reminder is without accessing my data.",
+      "actual": {
+        "excluded_sources": [],
+        "kind": "none",
+        "sources": [],
+        "unsupported_constraints": [],
+        "version": 1
+      },
+      "recommendation": "Avoid ambiguity by using a pure definition question, or explicitly enumerate intended prohibited domains. No source access is authorized by its current kind:none label."
+    },
+    {
+      "severity": "P3",
+      "topic": "Explicit future personal-history slots",
+      "detail": "Train/dev exact message-record dates and note-record months remain in 2027/2028. Their routing labels correctly preserve requested values; this remains a naturalness note, not a label blocker or request to expand scope."
+    },
+    {
+      "severity": "P3",
+      "topic": "Free-time capability summary",
+      "detail": "router-system still omits minutes from calendar capability summary while all explicit availability durations are labeled consistently. Previously reported minor wording ambiguity remains."
+    },
+    {
+      "severity": "P3",
+      "topic": "Scope of evidence",
+      "detail": "No runtime/tests/model behavior checked; no formal production-release PASS. Broad v1 coverage suggestions are not required expansion for this focused repair recheck."
+    }
+  ],
+  "splits": {
+    "train": {
+      "rows": 1400,
+      "categories": {
+        "messages_search": 42,
+        "agenda_typos": 12,
+        "calendar_free": 42,
+        "agenda_week": 128,
+        "switch_email_calendar": 42,
+        "same_calendar": 39,
+        "effect": 38,
+        "calendar_month": 72,
+        "calendar_literal_date": 42,
+        "calendar_range": 42,
+        "email_literal": 42,
+        "daily_read": 28,
+        "same_email": 42,
+        "same_messages": 39,
+        "calendar_day": 48,
+        "unfiltered_read": 25,
+        "switch_calendar_messages": 42,
+        "calendar_location": 40,
+        "messages_overview": 42,
+        "inline_draft": 30,
+        "web_unsupported": 30,
+        "calendar_rolling": 33,
+        "agenda_informal": 40,
+        "email_read_false": 18,
+        "messages_person": 24,
+        "email_person": 24,
+        "email_overview": 42,
+        "agenda_exclusion": 24,
+        "reminders_scope": 42,
+        "calendar_account": 39,
+        "reminder_time": 24,
+        "email_constraint": 39,
+        "mixed_effect": 31,
+        "notes_records": 42,
+        "multi_source": 18,
+        "agenda_day": 16,
+        "ordinary_none": 7,
+        "messages_unread": 24,
+        "pure_exclusions": 3,
+        "prohibition": 3
+      },
+      "repair_counts": {
+        "calendar_plus_reminders": 196,
+        "supported_day_agenda": 28,
+        "unsupported_time_agenda_preserved": 168,
+        "rolling_days": 33,
+        "unread_false": 18,
+        "individual_message_conversation": 24,
+        "person_email_query": 24,
+        "explicit_from_my_account": 14,
+        "calendar_account": 39,
+        "ordinary_none": 7,
+        "notes_overview": 9
+      },
+      "unfiltered_no_default_domains": {
+        "reminders": 5,
+        "calendar": 5,
+        "email": 5,
+        "notes": 5,
+        "messages": 5
+      },
+      "reminder_scope_counts": {
+        "tomorrow": 26,
+        "overdue": 7,
+        "today": 28,
+        "all": 8,
+        "upcoming": 9
+      },
+      "static_errors": [],
+      "literal_fields_checked": 567,
+      "future_named_mail_messages_rows": [],
+      "past_availability_rows": [],
+      "explicit_future_history_rows": [
+        "train-r-0458",
+        "train-r-0459",
+        "train-r-0460",
+        "train-r-0461",
+        "train-r-0462",
+        "train-r-0463",
+        "train-r-0464",
+        "train-r-0465",
+        "train-r-0466",
+        "train-r-0467",
+        "train-r-0468",
+        "train-r-0469",
+        "train-r-0470",
+        "train-r-0471",
+        "train-r-0472",
+        "train-r-0473",
+        "train-r-0474",
+        "train-r-0475",
+        "train-r-0476",
+        "train-r-0477",
+        "train-r-0478",
+        "train-r-0479",
+        "train-r-0480",
+        "train-r-0481",
+        "train-r-0482",
+        "train-r-0483",
+        "train-r-0484",
+        "train-r-0485",
+        "train-r-0486",
+        "train-r-0487",
+        "train-r-0488",
+        "train-r-0489",
+        "train-r-0490",
+        "train-r-0491",
+        "train-r-0492",
+        "train-r-0493",
+        "train-r-0494",
+        "train-r-0495",
+        "train-r-0496",
+        "train-r-0497",
+        "train-r-0498",
+        "train-r-0499",
+        "train-r-0500",
+        "train-r-0501",
+        "train-r-0502",
+        "train-r-0503",
+        "train-r-0504",
+        "train-r-0505",
+        "train-r-0506",
+        "train-r-0507",
+        "train-r-0508",
+        "train-r-0509",
+        "train-r-0510",
+        "train-r-0511",
+        "train-r-0512",
+        "train-r-0513",
+        "train-r-0514",
+        "train-r-0515",
+        "train-r-0516",
+        "train-r-0517",
+        "train-r-0518",
+        "train-r-0519",
+        "train-r-0520",
+        "train-r-0521",
+        "train-r-0522",
+        "train-r-0523",
+        "train-r-0524",
+        "train-r-0525",
+        "train-r-0526",
+        "train-r-0527",
+        "train-r-0528",
+        "train-r-0529",
+        "train-r-0530",
+        "train-r-0531",
+        "train-r-0532",
+        "train-r-0533",
+        "train-r-0534",
+        "train-r-0535",
+        "train-r-0536",
+        "train-r-0537",
+        "train-r-0538",
+        "train-r-0539",
+        "train-r-0540",
+        "train-r-0541"
+      ]
+    },
+    "dev": {
+      "rows": 140,
+      "categories": {
+        "mixed_effect": 3,
+        "calendar_literal_date": 4,
+        "calendar_range": 4,
+        "agenda_day": 4,
+        "same_calendar": 3,
+        "agenda_informal": 6,
+        "inline_draft": 4,
+        "unfiltered_read": 6,
+        "messages_overview": 4,
+        "switch_email_calendar": 4,
+        "agenda_week": 4,
+        "email_literal": 4,
+        "same_email": 4,
+        "email_read_false": 3,
+        "notes_records": 4,
+        "effect": 4,
+        "switch_calendar_messages": 4,
+        "reminders_scope": 4,
+        "agenda_typos": 1,
+        "pure_exclusions": 1,
+        "daily_read": 3,
+        "email_constraint": 3,
+        "calendar_month": 4,
+        "reminder_time": 3,
+        "agenda_exclusion": 4,
+        "messages_search": 4,
+        "calendar_free": 4,
+        "calendar_location": 3,
+        "multi_source": 4,
+        "web_unsupported": 4,
+        "ordinary_none": 2,
+        "calendar_rolling": 3,
+        "messages_unread": 3,
+        "calendar_account": 3,
+        "messages_person": 3,
+        "same_messages": 3,
+        "calendar_day": 4,
+        "email_person": 3,
+        "email_overview": 4,
+        "prohibition": 1
+      },
+      "repair_counts": {
+        "calendar_plus_reminders": 15,
+        "supported_day_agenda": 5,
+        "unsupported_time_agenda_preserved": 10,
+        "unread_false": 3,
+        "notes_overview": 1,
+        "ordinary_none": 2,
+        "rolling_days": 3,
+        "calendar_account": 3,
+        "individual_message_conversation": 3,
+        "person_email_query": 3
+      },
+      "unfiltered_no_default_domains": {
+        "calendar": 2,
+        "email": 1,
+        "messages": 2,
+        "reminders": 1
+      },
+      "reminder_scope_counts": {
+        "tomorrow": 5,
+        "today": 2,
+        "overdue": 1,
+        "upcoming": 1
+      },
+      "static_errors": [],
+      "literal_fields_checked": 54,
+      "future_named_mail_messages_rows": [],
+      "past_availability_rows": [],
+      "explicit_future_history_rows": [
+        "dev-r-0032",
+        "dev-r-0033",
+        "dev-r-0034",
+        "dev-r-0035",
+        "dev-r-0036",
+        "dev-r-0037",
+        "dev-r-0038",
+        "dev-r-0039"
+      ]
+    }
+  },
+  "repair_assessment": {
+    "agenda_temporal_constraint": "repaired across all current calendar+reminders requests",
+    "everyday_no_defaults": "repaired; all five domains represented in train unfiltered_read, dev omits notes unfiltered but includes notes daily overview",
+    "ordinary_none": "new conversational examples present; one explicit exclusion remains incorrect in dev-r-0139",
+    "unread_false_rolling_person_account": "repaired with literal values and domain applicability intact",
+    "future_named_mail_messages_past_availability": "repaired; zero remaining current target rows in either split",
+    "account_wording": "repaired in all affected from-account surfaces",
+    "agenda_language_coverage": "substantially expanded and retained supported day scopes"
+  },
+  "snapshot_integrity": {
+    "dev.provenance.jsonl": {
+      "expected": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3",
+      "end": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3"
+    },
+    "train.jsonl": {
+      "expected": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e",
+      "end": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e"
+    },
+    "intent.schema.v1.json": {
+      "expected": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "end": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+    },
+    "router-system.txt": {
+      "expected": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "end": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830"
+    },
+    "dev.jsonl": {
+      "expected": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1",
+      "end": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1"
+    },
+    "train.provenance.jsonl": {
+      "expected": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740",
+      "end": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740"
+    }
+  },
+  "all_manifest_files_unchanged": true,
+  "snapshot_manifest_end_sha256": "84fd48611815070bbf9aaec5666b536393dee5099a8f7e05969f148fe87f4e34"
+}

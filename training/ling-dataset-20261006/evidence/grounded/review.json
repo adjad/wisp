@@ -1,0 +1,203 @@
+{
+  "scope": "Read-only grounded overview quality advisory; no source edits, project imports, generator, tests, inference, cloud/native tools, private logs or final payload inspected.",
+  "snapshot_base": "c1ef1be4c95f4806688484f8785e36c4b06138c0",
+  "snapshot_path": "/private/tmp/ling-dataset-review-grounded-v1",
+  "reviewed_rows": 660,
+  "train_rows": 600,
+  "dev_rows": 60,
+  "advisory_verdict": "PASS_WITH_NOTES",
+  "verdict_limits": "No row-level factual contradiction found in the sampled targets or independent static checks. This verdict applies to grounding in this immutable overview subset only; it is not a release gate, training efficacy claim, or proof of generalization. The four findings warrant improvement before relying on the dataset for useful real weekly/message/email overviews.",
+  "findings": [
+    {
+      "id": "GROUNDED-01",
+      "severity": "P2",
+      "blocking": false,
+      "kind": "usefulness",
+      "title": "Email overview drops the subject that identifies what each fact concerns",
+      "row_ids": [
+        "train-s-0086",
+        "dev-s-0010"
+      ],
+      "evidence": "All 268 supplied email subjects are omitted from assistant answers. In dev-s-0010, all three subjects concern archive intake, but the answer only lists materials readiness, arrival at 14:00, and 240 credits. Sender attribution remains correct; the missing topic makes these otherwise true statements less useful as an overview.",
+      "reproduction": "For each email item, test item[\"subject\"] in assistant text. Manually compare the subject topic to the generic body. All 268 subjects are absent; sample rows also omit the topic phrase.",
+      "fix_direction": "Include the subject or a grounded topic label, then summarize facts and a shared requested-by date once. Add mixed-topic email fixtures so dropping topic context produces an observable quality failure."
+    },
+    {
+      "id": "GROUNDED-02",
+      "severity": "P2",
+      "blocking": false,
+      "kind": "coverage_context",
+      "title": "Successful email and message summaries omit the scope needed to interpret an overview",
+      "row_ids": [
+        "train-s-0086",
+        "dev-s-0010",
+        "train-s-0103",
+        "dev-s-0015"
+      ],
+      "evidence": "All 302 message items have conversation names, and none appear in assistant answers. Of 148 nonempty message results, 110 answers omit the coverage date; the other 38 inherit a calendar date elsewhere. Of 148 nonempty email results, 110 answers omit the coverage date; 110 omit an available account; all 73 nonempty email results marked unread omit that qualifier. These are omissions rather than false assertions of completeness.",
+      "reproduction": "Compare fixture coverage.date/account/unread and message conversation with assistant text. Interpret counts per source result, not per item; inspect examples for semantic context.",
+      "fix_direction": "Add short scope headings such as work unread email for the supplied date and a conversation/date heading for messages. Avoid implying broader account, conversation, or time coverage."
+    },
+    {
+      "id": "GROUNDED-03",
+      "severity": "P2",
+      "blocking": false,
+      "kind": "capability_coverage",
+      "title": "Single-day, fixed-fact fixtures do not demonstrate weekly overviews or email draft/sent distinctions",
+      "row_ids": [
+        "train-s-0066",
+        "dev-s-0004",
+        "train-s-0465",
+        "dev-s-0045",
+        "train-s-0236",
+        "dev-s-0025"
+      ],
+      "evidence": "Every dated source result uses a single date; no source result has date-range/week coverage and no prompt requests a weekly digest. All 268 email items have sent=false with received_date and sender, with no draft/outgoing item or explicit state, so they cannot establish a draft-versus-sent contrast. Draft status is represented only in 77 note texts. All 35 proposals are unconfirmed, all 122 reminders are incomplete, all 494 calendar events last 45 minutes, and only three normalized email body patterns occur. Source-status coverage is also fixed: successful empty only calendar, denied only email, timeout only messages, partial only email, truncated only messages. This is a quality/coverage limitation, not evidence of false targets or the known duplicate-fixture issue.",
+      "reproduction": "Inventory source coverage keys, item state/sent/completed fields, calendar durations, normalized email bodies, and statuses by source in the six immutable JSONL files.",
+      "fix_direction": "Add genuinely multi-day weekly fixtures; mixed topics, relevant exceptions and dates; explicit outgoing draft and sent states; confirmed and rejected proposals; varied event intervals, reminder states and source-status pairings. Do not infer that sent=false alone means an email is a draft."
+    },
+    {
+      "id": "GROUNDED-04",
+      "severity": "P3",
+      "blocking": false,
+      "kind": "readability",
+      "title": "Targets teach exhaustive copying more than concise synthesis",
+      "row_ids": [
+        "train-s-0103",
+        "dev-s-0015",
+        "train-s-0236",
+        "dev-s-0025",
+        "dev-s-0010"
+      ],
+      "evidence": "Message answers reproduce every supplied body verbatim with speaker prefixes; note answers concatenate every title and full text, repeatedly saying Status: draft; email answers repeat Requested by the same date after each item. Targets are short (maximum 303 characters), but this style does not demonstrate consolidation, grouping, or highlighting in longer overviews.",
+      "reproduction": "Read the listed answers and compare them with fixture item bodies/text and requested_by values.",
+      "fix_direction": "Preserve source/speaker attribution while grouping related facts, putting shared dates and draft qualifiers once, and adding longer synthetic inputs that require selection and synthesis. Keep equivalents acceptable rather than enforce exact wording."
+    }
+  ],
+  "manual_representative_coverage": {
+    "agenda": {
+      "train": "train-s-0066",
+      "dev": "dev-s-0004"
+    },
+    "calendar": {
+      "train": "train-s-0016",
+      "dev": "dev-s-0002"
+    },
+    "denied": {
+      "train": "train-s-0296",
+      "dev": "dev-s-0031"
+    },
+    "email": {
+      "train": "train-s-0086",
+      "dev": "dev-s-0010"
+    },
+    "empty": {
+      "train": "train-s-0250",
+      "dev": "dev-s-0029"
+    },
+    "messages": {
+      "train": "train-s-0103",
+      "dev": "dev-s-0015"
+    },
+    "missing": {
+      "train": "train-s-0428",
+      "dev": "dev-s-0043"
+    },
+    "mixed_status": {
+      "train": "train-s-0550",
+      "dev": "dev-s-0056"
+    },
+    "multi": {
+      "train": "train-s-0158",
+      "dev": "dev-s-0019"
+    },
+    "no_deadline": {
+      "train": "train-s-0570",
+      "dev": "dev-s-0058"
+    },
+    "notes": {
+      "train": "train-s-0236",
+      "dev": "dev-s-0025"
+    },
+    "overlap": {
+      "train": "train-s-0478",
+      "dev": "dev-s-0050"
+    },
+    "partial": {
+      "train": "train-s-0357",
+      "dev": "dev-s-0036"
+    },
+    "proposal": {
+      "train": "train-s-0465",
+      "dev": "dev-s-0045"
+    },
+    "reminders": {
+      "train": "train-s-0181",
+      "dev": "dev-s-0020"
+    },
+    "timeout": {
+      "train": "train-s-0335",
+      "dev": "dev-s-0034"
+    },
+    "truncated": {
+      "train": "train-s-0381",
+      "dev": "dev-s-0039"
+    },
+    "zones": {
+      "train": "train-s-0528",
+      "dev": "dev-s-0052"
+    }
+  },
+  "manual_sample_count": 36,
+  "static_checks": {
+    "rows_parsed_and_fixture_matches": 660,
+    "required_facts_literal_absence": 0,
+    "user_fixture_provenance_mismatch": 0,
+    "independent_core_fact_status_or_count_flags": 0,
+    "checked": "Calendar title/start/timezone/date, reminder title/due or missing-due wording, email sender/body/requested_by, message speaker/body, note title/text, scoped empty wording and coverage, denied/timeout/missing wording, partial missing-part, truncated returned/total count, unconfirmed proposal, no-deadline, mixed-timezone and equal-interval overlap caveats. All rows checked independently using JSON and literal/regex comparisons; no existing generator or test used."
+  },
+  "snapshot_integrity": {
+    "all_six_manifest_hashes_match_at_end": true,
+    "files": {
+      "dev.provenance.jsonl": {
+        "expected_sha256": "acf001921a311b11b428654269246557cba40f59c5e61689de5f2205860fb94a",
+        "observed_sha256": "acf001921a311b11b428654269246557cba40f59c5e61689de5f2205860fb94a",
+        "bytes": 136122,
+        "matches": true
+      },
+      "train.jsonl": {
+        "expected_sha256": "f487db55bf1f88bbe6b928077dac7211392885f74365d55aa89e3f60058523de",
+        "observed_sha256": "f487db55bf1f88bbe6b928077dac7211392885f74365d55aa89e3f60058523de",
+        "bytes": 910266,
+        "matches": true
+      },
+      "intent.schema.v1.json": {
+        "expected_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+        "observed_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+        "bytes": 3860,
+        "matches": true
+      },
+      "router-system.txt": {
+        "expected_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+        "observed_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+        "bytes": 2472,
+        "matches": true
+      },
+      "dev.jsonl": {
+        "expected_sha256": "527e5cd74b8140cd0d96922e14c72c4612b38b1ffbbb86c031c8099da18b36d7",
+        "observed_sha256": "527e5cd74b8140cd0d96922e14c72c4612b38b1ffbbb86c031c8099da18b36d7",
+        "bytes": 104099,
+        "matches": true
+      },
+      "train.provenance.jsonl": {
+        "expected_sha256": "d0fe7718958666911bb88350bf11f2516d7e7b8d3d72d0424aee5fd5d8bd2391",
+        "observed_sha256": "d0fe7718958666911bb88350bf11f2516d7e7b8d3d72d0424aee5fd5d8bd2391",
+        "bytes": 1173703,
+        "matches": true
+      }
+    },
+    "snapshot_manifest_sha256": "35bdd2e7d7ca1a2e7c022b7d02891b82af3b310877369d5a8fc7cdd56e50952f"
+  },
+  "source_writes": false,
+  "created_utc": "2026-10-06T06:48:40.203614+00:00"
+}

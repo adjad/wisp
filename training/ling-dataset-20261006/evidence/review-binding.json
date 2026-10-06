@@ -1,0 +1,80 @@
+{
+  "copied_receipts": {
+    "grounded": {
+      "provenance-v2.json": {
+        "bytes": 2642,
+        "sha256": "02913bf4b4fcf104de0a78c8a186ac09b0761b0eb9f9f407a40ef448455cf2d6"
+      },
+      "provenance.json": {
+        "bytes": 2438,
+        "sha256": "8513de5673889ac7642922522831cd84723f0af396bfa21a078b8c7db4d5cfef"
+      },
+      "review-v2.json": {
+        "bytes": 8850,
+        "sha256": "837723d332441032e3663dd2b5421204ab521029f23e804c682c7878984d6002"
+      },
+      "review.json": {
+        "bytes": 10112,
+        "sha256": "53447da265c7e73876c2b70c858cc1a80e93d9e675050afdead9d50c40208af0"
+      }
+    },
+    "routing": {
+      "ambiguous-account-rows.jsonl": {
+        "bytes": 10728,
+        "sha256": "c2fc939523ba8bfea5b9fc3fdf9982da2b5c2dc5cbd0fbd1eaee3ef2c100a0e4"
+      },
+      "confirmed-label-candidates.jsonl": {
+        "bytes": 16862,
+        "sha256": "89e235629b94a56d87403b592de88e2487f1761a4a9d2cbe98a205e61d2d3c84"
+      },
+      "remaining-candidates-v2.jsonl": {
+        "bytes": 489,
+        "sha256": "7b1bde84414fcd3a86f38cb9ae93366878483488b0a412a55836fead92a5e1c8"
+      },
+      "report-v2.json": {
+        "bytes": 11493,
+        "sha256": "4af52fa62adf524d28808b5010a0ec2e109eb422aae54d3596c789d634894723"
+      },
+      "report-v3.json": {
+        "bytes": 11941,
+        "sha256": "3121c0dfabf7af8a8340ea04e70a2fbf4bbd109eec31856b261782b94c17cde6"
+      },
+      "report.json": {
+        "bytes": 19051,
+        "sha256": "f37dc4485cc00c9205fcc09a607785aeb957f050306bb2684eaca5370a28790f"
+      },
+      "review-provenance-v2.json": {
+        "bytes": 2427,
+        "sha256": "3b1bbdba0c18d566237f94b2ad39e78914c38006feaae128b9cb5d10aa4aea7a"
+      },
+      "review-provenance-v3.json": {
+        "bytes": 2948,
+        "sha256": "248f2eb30767e26ff4fe42525cf1469e6a35214bde08a10fa0adb21a809d69aa"
+      },
+      "review-provenance.json": {
+        "bytes": 2253,
+        "sha256": "f036c7278c9223db0818847305fee03286a395d5cfa0be97d5aa4de998f1e9e4"
+      }
+    }
+  },
+  "counts": {
+    "grounded_train_dev": 660,
+    "routing_train_dev": 1540
+  },
+  "grounded_current_subset_matches_v2": true,
+  "grounded_verdict": "PASS_WITH_NOTES",
+  "nonblocking_notes": [
+    "Finite deterministic templates and narrow fixture compositions; no measured training gain or semantic-embedding leakage proof",
+    "Email/note summaries can still enumerate facts; richer mixed-topic selection is optional future work",
+    "No final payload or inference reviewed by parent/advisory reviewers"
+  ],
+  "review_scope": "Independent advisory train/dev-only review, not production release audit or final evaluation",
+  "routing_current_subset_matches_v3": true,
+  "routing_verdict": "PASS_WITH_NOTES",
+  "source_full_payload_hashes": {
+    "dev.jsonl": "a1128ba290a4f820acaf59f93df3ca9b1654102439c888c4968d35005e266ecd",
+    "dev.provenance.jsonl": "6b7ab54d29ade88d927ee3f552bd955af7cdcc195149b99ba60d1bf0dbbae29d",
+    "train.jsonl": "b4ea93caa2a82799c90621d77f126728f6be3b246d43cbb29200adb5fc520549",
+    "train.provenance.jsonl": "ea725c84a0192a8a4ec58feee95074763eb3ffdbeb13dac56b9196bc033f0e7b"
+  }
+}

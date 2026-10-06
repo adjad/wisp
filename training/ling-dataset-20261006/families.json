@@ -1,0 +1,3125 @@
+{
+  "partition_policy": "Split-owned linguistic surfaces and composition profiles assigned before deterministic slot expansion; broad behavioral categories deliberately reused. No human authoring or measured performance claim.",
+  "families": [
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-0",
+      "template": "whats on my agnda {named}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-1",
+      "template": "Give me the {named} agenda, including things I need to do.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-2",
+      "template": "Can I get a quick {named} sched + to-do overview?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-3",
+      "template": "can u run thru my agenda {named}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-4",
+      "template": "need the {named} plan, calendar + reminders",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-5",
+      "template": "How is my agenda looking for {named}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-6",
+      "template": "show me whats lined up {named}: events and reminders",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-7",
+      "template": "gimme my agenda {named}",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-8",
+      "template": "quick peek at my agenda for {named}",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-9",
+      "template": "any appointments or reminder tasks {named}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-10",
+      "template": "Help me plan {named} using my calendar and reminders.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-11",
+      "template": "{named} to-dos and events?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-12",
+      "template": "im figuring out {named}; whats on the agenda",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-13",
+      "template": "pull up the calandar and reminder rundown {named}",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-14",
+      "template": "whats my schedule n reminder tasks for {named}",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/train/agenda_week/surface-15",
+      "template": "lets see the agenda {named}",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-0",
+      "template": "calendar for {day}, pls",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-1",
+      "template": "Show my appointments {day}.",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-2",
+      "template": "What does {day} look like on my calendar?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-3",
+      "template": "what did i put on the cal for {day}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-4",
+      "template": "any calendar stuff {day}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-5",
+      "template": "pull up the {day} calandar",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-6",
+      "template": "can u check what i have booked {day}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-7",
+      "template": "run thru my {day} calendar pls",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-8",
+      "template": "{day} appointments, quick look?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-9",
+      "template": "whats scheduled {day} on the cal?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-10",
+      "template": "need a rundown of {day} calendar events",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/train/calendar_day/surface-11",
+      "template": "peek at my schedule {day}",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-0",
+      "template": "Summarize my calendar in {monthword}.",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-1",
+      "template": "{monthword} calendar overview?",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-2",
+      "template": "What appointments do I have during {monthword}?",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-3",
+      "template": "how busy is my calendar in {monthword}?",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-4",
+      "template": "calendar stuff for {monthword}, quick rundown pls",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/train/calendar_month/surface-5",
+      "template": "can u list the appointments across {monthword}?",
+      "examples": 12
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/train/calendar_literal_date/surface-0",
+      "template": "Find calendar events matching {literal} on {date}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/train/calendar_literal_date/surface-1",
+      "template": "Search the calendar for {literal}, date {date}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/train/calendar_literal_date/surface-2",
+      "template": "Show the event named {literal} on {date}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/train/calendar_range/surface-0",
+      "template": "Calendar overview from {start} through {end}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/train/calendar_range/surface-1",
+      "template": "What is on my calendar between {start} and {end}, inclusive?",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/train/calendar_range/surface-2",
+      "template": "Show my calendar {start} to {end}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/train/email_overview/surface-0",
+      "template": "Summarize unread email {named}, limit {count}, account {account}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/train/email_overview/surface-1",
+      "template": "Catch me up on unread mail in {account} for {named}; show {count}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/train/email_overview/surface-2",
+      "template": "Give me {count} unread email highlights {named} from my {account} account.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/train/email_literal/surface-0",
+      "template": "Find emails about {literal} over the last {days} {day_unit}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/train/email_literal/surface-1",
+      "template": "Search my email for {literal}; last {days} {day_unit} only.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/train/email_literal/surface-2",
+      "template": "Read emails matching {literal} from the past {days} {day_unit}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/train/messages_overview/surface-0",
+      "template": "Catch me up on messages in {group} {named}, limit {count}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/train/messages_overview/surface-1",
+      "template": "Summarize {count} messages with {group} {named}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/train/messages_overview/surface-2",
+      "template": "What happened in {group} {named}? Message overview, {count} max.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/train/messages_search/surface-0",
+      "template": "Search messages for {literal} on {date}, limit {count}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/train/messages_search/surface-1",
+      "template": "Find {count} messages matching {literal}, dated {date}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/train/messages_search/surface-2",
+      "template": "Message lookup: {literal}, {date}, {count} results.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/train/notes_records/surface-0",
+      "template": "Find {count} notes about {literal} in {monthword}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/train/notes_records/surface-1",
+      "template": "Search notes for {literal}, month {monthword}, limit {count}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/train/notes_records/surface-2",
+      "template": "Show notes matching {literal} during {monthword}, {count} max.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/train/reminders_scope/surface-0",
+      "template": "Show {scope} reminders about {literal}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/train/reminders_scope/surface-1",
+      "template": "Find reminders matching {literal}; scope {scope}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/train/reminders_scope/surface-2",
+      "template": "Read my {scope} reminder items for {literal}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/train/calendar_free/surface-0",
+      "template": "Find a {minutes}-minute free slot {named} on my calendar.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/train/calendar_free/surface-1",
+      "template": "When am I free for {minutes} minutes {named}?",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/train/calendar_free/surface-2",
+      "template": "Calendar availability {named}, need {minutes} minutes.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/train/agenda_exclusion/surface-0",
+      "template": "Agenda {named}, but skip reminders.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/train/agenda_exclusion/surface-1",
+      "template": "Show my {named} agenda; no reminders.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/train/agenda_exclusion/surface-2",
+      "template": "Give me the {named} agenda without reminders.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/train/multi_source/surface-0",
+      "template": "Summarize calendar, email and messages {named}.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/train/multi_source/surface-1",
+      "template": "Catch me up {named} using calendar, messages, and email.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/train/multi_source/surface-2",
+      "template": "Give a {named} overview of my mail, calendar, and messages.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/train/same_email/surface-0",
+      "template": "Only {count} this time.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/train/same_email/surface-1",
+      "template": "Keep the same email filters but cap it at {count}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/train/same_email/surface-2",
+      "template": "Same mail request, {count} max now.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/train/switch_email_calendar/surface-0",
+      "template": "Actually, calendar instead.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/train/switch_email_calendar/surface-1",
+      "template": "No, show my calendar.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/train/switch_email_calendar/surface-2",
+      "template": "Switch that to a calendar overview.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/train/switch_calendar_messages/surface-0",
+      "template": "Actually, messages with {group}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/train/switch_calendar_messages/surface-1",
+      "template": "Make that a message overview in {group}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/train/switch_calendar_messages/surface-2",
+      "template": "No, catch me up on {group} messages.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/train/inline_draft/surface-0",
+      "template": "Draft an email saying {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/train/inline_draft/surface-1",
+      "template": "Write a message here that says {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/train/inline_draft/surface-2",
+      "template": "Help me word a calendar invitation about {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/train/effect/surface-0",
+      "template": "Send an email to {person} saying {literal}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/train/effect/surface-1",
+      "template": "Create a calendar event called {literal} on {date}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/train/effect/surface-2",
+      "template": "Delete the reminder named {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/train/prohibition/surface-0",
+      "template": "Do not read my email.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/train/prohibition/surface-1",
+      "template": "Leave my messages alone.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/train/prohibition/surface-2",
+      "template": "No calendar access, please.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/train/web_unsupported/surface-0",
+      "template": "Search the web for {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/train/web_unsupported/surface-1",
+      "template": "Look up {literal} online.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/train/web_unsupported/surface-2",
+      "template": "Give a web news digest about {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/train/calendar_location/surface-0",
+      "template": "Calendar {named}, only {constraint}.",
+      "examples": 14
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/train/calendar_location/surface-1",
+      "template": "Show appointments {named} with the filter {constraint}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/train/calendar_location/surface-2",
+      "template": "Summarize my calendar {named}; require {constraint}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/train/email_constraint/surface-0",
+      "template": "Email highlights {named}, {constraint}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/train/email_constraint/surface-1",
+      "template": "Summarize mail {named}; {constraint}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/train/email_constraint/surface-2",
+      "template": "Inbox overview for {named} with {constraint}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/train/reminder_time/surface-0",
+      "template": "Summarize reminders {named}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/train/reminder_time/surface-1",
+      "template": "What reminders do I have {named}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/train/reminder_time/surface-2",
+      "template": "Reminder overview for {named}, please.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/train/messages_unread/surface-0",
+      "template": "Summarize unread messages with {group}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/train/messages_unread/surface-1",
+      "template": "Catch me up on {group}, unread messages only.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/train/messages_unread/surface-2",
+      "template": "Show message highlights in {group}; unread only.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/train/mixed_effect/surface-0",
+      "template": "Read my email and send {person} a recap.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/train/mixed_effect/surface-1",
+      "template": "Check my calendar and create an event for {literal}.",
+      "examples": 10
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/train/mixed_effect/surface-2",
+      "template": "Look at messages then post {literal} to {group}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/train/pure_exclusions/surface-0",
+      "template": "No email or messages.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/train/pure_exclusions/surface-1",
+      "template": "Exclude calendar and reminders.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/train/pure_exclusions/surface-2",
+      "template": "Skip notes and web.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/train/same_messages/surface-0",
+      "template": "Make that {count} messages.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/train/same_messages/surface-1",
+      "template": "Same conversation, limit {count}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/train/same_messages/surface-2",
+      "template": "Continue with the same message filters, {count} max.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/train/same_calendar/surface-0",
+      "template": "Use {start} through {end} instead.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/train/same_calendar/surface-1",
+      "template": "Same calendar search, dates {start} to {end}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/train/same_calendar/surface-2",
+      "template": "Change just the calendar dates to {start}–{end}.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-0",
+      "template": "whats my agnda tmrw?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-1",
+      "template": "anythng on my agenda today?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-2",
+      "template": "agenda for tmr pls",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-3",
+      "template": "today agenda pls, cal and reminders",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-4",
+      "template": "any plans n reminder tasks today?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-5",
+      "template": "whats on todays agenda again?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-6",
+      "template": "show me tomorrow agenda cal n to dos",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-7",
+      "template": "can u check tomorrow agenda for me",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-8",
+      "template": "todays appts and reminders quick overview",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-9",
+      "template": "need my tomorrow rundown with calandar and reminders",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-10",
+      "template": "wats my agenda today?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/train/agenda_typos/surface-11",
+      "template": "tomorrow plans plus reminder tasks?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-0",
+      "template": "can i see my {agenda_day} agenda?",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-1",
+      "template": "whats my {agenda_day} plan, calendar n reminders?",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-2",
+      "template": "anything on the agenda {agenda_day}?",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-3",
+      "template": "gimme the {agenda_day} agenda real quick",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-4",
+      "template": "need {agenda_day} appointments and reminder tasks",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-5",
+      "template": "how is {agenda_day} looking on my agenda?",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-6",
+      "template": "run thru calendar + reminders for {agenda_day}",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/train/agenda_day/surface-7",
+      "template": "show the agenda for {agenda_day}, pls",
+      "examples": 2
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-0",
+      "template": "whats my agnda for {named}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-1",
+      "template": "can u do the agenda for {named} pls",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-2",
+      "template": "how my calndr n reminders look {named}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-3",
+      "template": "agenda {named}, quick look pls",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-4",
+      "template": "wats coming up on my agenda {named}",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-5",
+      "template": "i need the agenda for {named} rn",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-6",
+      "template": "run thru {named} agenda w calendar + reminders",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-7",
+      "template": "got stuff on my agnda {named}?",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-8",
+      "template": "hey check my agenda {named}",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/train/agenda_informal/surface-9",
+      "template": "whats lined up for {named} on the agenda",
+      "examples": 4
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/train/unfiltered_read/surface-0",
+      "template": "Summarize my {read_domain}.",
+      "examples": 5
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/train/unfiltered_read/surface-1",
+      "template": "Quick {read_domain} overview pls.",
+      "examples": 5
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/train/unfiltered_read/surface-2",
+      "template": "Catch me up using {read_domain}.",
+      "examples": 5
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/train/unfiltered_read/surface-3",
+      "template": "Show my {read_domain} highlights.",
+      "examples": 5
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/train/unfiltered_read/surface-4",
+      "template": "Read my {read_domain} and give an overview.",
+      "examples": 5
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/train/daily_read/surface-0",
+      "template": "Summarize my {read_domain} {agenda_day}.",
+      "examples": 7
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/train/daily_read/surface-1",
+      "template": "Quick {agenda_day} {read_domain} recap.",
+      "examples": 7
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/train/daily_read/surface-2",
+      "template": "Read {read_domain} for {agenda_day}, pls.",
+      "examples": 7
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/train/daily_read/surface-3",
+      "template": "Whats in my {read_domain} {agenda_day}?",
+      "examples": 7
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/train/email_read_false/surface-0",
+      "template": "Summarize already-read email {named}.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/train/email_read_false/surface-1",
+      "template": "Email digest {named}, marked read only.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/train/email_read_false/surface-2",
+      "template": "Show emails I have already read {named} as an overview.",
+      "examples": 6
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/train/calendar_rolling/surface-0",
+      "template": "Calendar overview for the next {rolling_days} days.",
+      "examples": 11
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/train/calendar_rolling/surface-1",
+      "template": "Show appointments over the coming {rolling_days} days.",
+      "examples": 11
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/train/calendar_rolling/surface-2",
+      "template": "What is on my calendar in the next {rolling_days} days?",
+      "examples": 11
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/train/email_person/surface-0",
+      "template": "Find emails from {person}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/train/email_person/surface-1",
+      "template": "Search email for {person}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/train/email_person/surface-2",
+      "template": "Show mail sent by {person}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/train/messages_person/surface-0",
+      "template": "Summarize messages with {person}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/train/messages_person/surface-1",
+      "template": "Catch me up on my conversation with {person}.",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/train/messages_person/surface-2",
+      "template": "What happened in my messages with {person}?",
+      "examples": 8
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/train/calendar_account/surface-0",
+      "template": "Calendar overview {named} from my {account} account.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/train/calendar_account/surface-1",
+      "template": "Show {named} appointments in the {account} account.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/train/calendar_account/surface-2",
+      "template": "Use my {account} calendar account for a {named} overview.",
+      "examples": 13
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-0",
+      "template": "Thanks!",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-1",
+      "template": "Hi Wisp.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-2",
+      "template": "That makes sense.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-3",
+      "template": "How are you?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-4",
+      "template": "Explain what a reminder is.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-5",
+      "template": "What does the word agenda mean?",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/train/ordinary_none/surface-6",
+      "template": "I will think about it.",
+      "examples": 1
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "calendar",
+      "family": "overview/train/calendar/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "calendar",
+      "family": "overview/train/calendar/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "agenda",
+      "family": "overview/train/agenda/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "agenda",
+      "family": "overview/train/agenda/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "email",
+      "family": "overview/train/email/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "email",
+      "family": "overview/train/email/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "messages",
+      "family": "overview/train/messages/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "messages",
+      "family": "overview/train/messages/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "multi",
+      "family": "overview/train/multi/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "multi",
+      "family": "overview/train/multi/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "reminders",
+      "family": "overview/train/reminders/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "reminders",
+      "family": "overview/train/reminders/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "notes",
+      "family": "overview/train/notes/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "notes",
+      "family": "overview/train/notes/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "empty",
+      "family": "overview/train/empty/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "empty",
+      "family": "overview/train/empty/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "denied",
+      "family": "overview/train/denied/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "denied",
+      "family": "overview/train/denied/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "timeout",
+      "family": "overview/train/timeout/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "timeout",
+      "family": "overview/train/timeout/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "partial",
+      "family": "overview/train/partial/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "partial",
+      "family": "overview/train/partial/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "truncated",
+      "family": "overview/train/truncated/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "truncated",
+      "family": "overview/train/truncated/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "missing",
+      "family": "overview/train/missing/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "missing",
+      "family": "overview/train/missing/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "proposal",
+      "family": "overview/train/proposal/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "proposal",
+      "family": "overview/train/proposal/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "overlap",
+      "family": "overview/train/overlap/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "overlap",
+      "family": "overview/train/overlap/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "zones",
+      "family": "overview/train/zones/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "zones",
+      "family": "overview/train/zones/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "mixed_status",
+      "family": "overview/train/mixed_status/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "mixed_status",
+      "family": "overview/train/mixed_status/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "no_deadline",
+      "family": "overview/train/no_deadline/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "no_deadline",
+      "family": "overview/train/no_deadline/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "weekly_agenda",
+      "family": "overview/train/weekly_agenda/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "weekly_agenda",
+      "family": "overview/train/weekly_agenda/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "draft_sent",
+      "family": "overview/train/draft_sent/composition-2/surface-0",
+      "template": "Give me a quick {topic} overview from these results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "train",
+      "task": "overview",
+      "category": "draft_sent",
+      "family": "overview/train/draft_sent/composition-2/surface-1",
+      "template": "Catch me up on {topic}; keep it brief and grounded in the supplied results.",
+      "composition_profile": "train:primary_items=2",
+      "examples": 15
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/dev/agenda_week/surface-0",
+      "template": "Help me orient to {named}: appointments and reminders together, please.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/dev/calendar_day/surface-0",
+      "template": "Take a look at the calendar covering {day} and give the outline.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/dev/calendar_month/surface-0",
+      "template": "Using {monthword} as the month, sketch my calendar commitments.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/dev/calendar_literal_date/surface-0",
+      "template": "Locate the calendar entry with this search text: {literal}; restrict it to {date}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/dev/calendar_range/surface-0",
+      "template": "Cover both endpoints in a calendar rundown: {start}–{end}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/dev/email_overview/surface-0",
+      "template": "Use {account} for a {named} inbox digest covering {count} unread emails.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/dev/email_literal/surface-0",
+      "template": "Retrieve mail with the exact search text {literal}, looking back {days} {day_unit}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/dev/messages_overview/surface-0",
+      "template": "Give a {named} conversation digest for {group} using at most {count} messages.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/dev/messages_search/surface-0",
+      "template": "Retrieve message records on {date} using {literal} as the search term; maximum {count}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/dev/notes_records/surface-0",
+      "template": "Look through {monthword} notes for the term {literal}; retrieve up to {count}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/dev/reminders_scope/surface-0",
+      "template": "Retrieve the reminders in scope {scope} using the literal search phrase {literal}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/dev/calendar_free/surface-0",
+      "template": "Inspect calendar availability during {named} for a gap lasting {minutes} minutes.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/dev/agenda_exclusion/surface-0",
+      "template": "Outline the agenda for {named}, excluding reminders from the sources.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/dev/multi_source/surface-0",
+      "template": "Combine the three requested sources—messages, email, calendar—into a {named} digest.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/dev/same_email/surface-0",
+      "template": "Continue that email overview with its existing filters and a {count}-item ceiling.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/dev/switch_email_calendar/surface-0",
+      "template": "Change the source to calendar and give its general overview.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/dev/switch_calendar_messages/surface-0",
+      "template": "Use messages as the corrected source, specifically the conversation {group}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/dev/inline_draft/surface-0",
+      "template": "Compose wording I could paste into an email: {literal}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/dev/effect/surface-0",
+      "template": "Save a new note containing {literal}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/dev/prohibition/surface-0",
+      "template": "Please refrain from looking through reminders.",
+      "examples": 1
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/dev/web_unsupported/surface-0",
+      "template": "Use an internet search to find information on {literal}.",
+      "examples": 4
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/dev/calendar_location/surface-0",
+      "template": "Apply the constraint {constraint} to the calendar overview for {named}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/dev/email_constraint/surface-0",
+      "template": "For the {named} email digest, impose {constraint}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/dev/reminder_time/surface-0",
+      "template": "Gather the reminder list covering {named}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/dev/messages_unread/surface-0",
+      "template": "Limit the conversation overview for {group} to unread messages.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/dev/mixed_effect/surface-0",
+      "template": "Summarize reminders, then delete the ones titled {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/dev/pure_exclusions/surface-0",
+      "template": "Please omit the email and calendar sources entirely.",
+      "examples": 1
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/dev/same_messages/surface-0",
+      "template": "For the conversation just requested, retain its scope and cap the digest at {count}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/dev/same_calendar/surface-0",
+      "template": "Retain that calendar search text and replace the time window with {start} through {end}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/dev/agenda_typos/surface-0",
+      "template": "pls lay out tomorrows agenda, calandar n reminders",
+      "examples": 1
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/dev/agenda_day/surface-0",
+      "template": "Lay out the agenda I have for {agenda_day}: events together with reminders.",
+      "examples": 2
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/dev/agenda_day/surface-1",
+      "template": "I am planning {agenda_day}; gather my calendar and reminder commitments.",
+      "examples": 2
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/dev/agenda_informal/surface-0",
+      "template": "Could u pull together my {named} agenda incl calendar and reminders?",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/dev/agenda_informal/surface-1",
+      "template": "For {named}, pls tell me what the personal agenda contains.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/dev/unfiltered_read/surface-0",
+      "template": "Use the {read_domain} source for a general digest.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/dev/unfiltered_read/surface-1",
+      "template": "Tell me the overall picture in {read_domain}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/dev/daily_read/surface-0",
+      "template": "Give an outline from {read_domain} covering {agenda_day}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/dev/email_read_false/surface-0",
+      "template": "Limit the {named} inbox overview to emails marked read.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/dev/calendar_rolling/surface-0",
+      "template": "Review the calendar using a rolling window of {rolling_days} days starting now.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/dev/email_person/surface-0",
+      "template": "Retrieve email records using the sender name {person}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/dev/messages_person/surface-0",
+      "template": "Give a message overview for the conversation with {person}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/dev/calendar_account/surface-0",
+      "template": "Restrict the {named} calendar digest to the account named {account}.",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/dev/ordinary_none/surface-0",
+      "template": "Understood, I appreciate the explanation.",
+      "examples": 1
+    },
+    {
+      "split": "dev",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/dev/ordinary_none/surface-1",
+      "template": "Define calendar without opening mine.",
+      "examples": 1
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "calendar",
+      "family": "overview/dev/calendar/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "agenda",
+      "family": "overview/dev/agenda/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "email",
+      "family": "overview/dev/email/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "messages",
+      "family": "overview/dev/messages/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "multi",
+      "family": "overview/dev/multi/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "reminders",
+      "family": "overview/dev/reminders/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "notes",
+      "family": "overview/dev/notes/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "empty",
+      "family": "overview/dev/empty/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "denied",
+      "family": "overview/dev/denied/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "timeout",
+      "family": "overview/dev/timeout/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "partial",
+      "family": "overview/dev/partial/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "truncated",
+      "family": "overview/dev/truncated/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "missing",
+      "family": "overview/dev/missing/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "proposal",
+      "family": "overview/dev/proposal/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "overlap",
+      "family": "overview/dev/overlap/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "zones",
+      "family": "overview/dev/zones/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "mixed_status",
+      "family": "overview/dev/mixed_status/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "no_deadline",
+      "family": "overview/dev/no_deadline/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "weekly_agenda",
+      "family": "overview/dev/weekly_agenda/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "dev",
+      "task": "overview",
+      "category": "draft_sent",
+      "family": "overview/dev/draft_sent/composition-3/surface-0",
+      "template": "Help me understand the {topic} picture represented by the source returns below.",
+      "composition_profile": "dev:primary_items=3",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/final/agenda_week/surface-0",
+      "template": "For {named}, lay out the commitments and reminder list I have.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_week",
+      "family": "routing/final/agenda_week/surface-1",
+      "template": "I need a sense of the agenda across my calendar and reminders for {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/final/calendar_day/surface-0",
+      "template": "Could you walk through the scheduled events for {day}?",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_day",
+      "family": "routing/final/calendar_day/surface-1",
+      "template": "Pull together a calendar recap for {day}, if you can.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/final/calendar_month/surface-0",
+      "template": "I want the big picture of events scheduled in {monthword}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_month",
+      "family": "routing/final/calendar_month/surface-1",
+      "template": "Gather the calendar highlights that fall within {monthword}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/final/calendar_literal_date/surface-0",
+      "template": "On {date}, retrieve calendar records for the literal phrase {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_literal_date",
+      "family": "routing/final/calendar_literal_date/surface-1",
+      "template": "The event I need is on {date}; look it up by {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/final/calendar_range/surface-0",
+      "template": "Review the scheduled calendar commitments spanning {start} through {end}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_range",
+      "family": "routing/final/calendar_range/surface-1",
+      "template": "Start at {start}, end at {end}, and outline all calendar events in that interval.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/final/email_overview/surface-0",
+      "template": "In account {account}, assemble an unread-mail overview for {named}, capped at {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_overview",
+      "family": "routing/final/email_overview/surface-1",
+      "template": "I want an inbox recap: {named}, unread only, {count} emails, using {account}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/final/email_literal/surface-0",
+      "template": "The mail lookup term is {literal}; include only the preceding {days} {day_unit}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_literal",
+      "family": "routing/final/email_literal/surface-1",
+      "template": "Over a {days}-day lookback, locate email records for {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/final/messages_overview/surface-0",
+      "template": "From the conversation named {group}, outline {named} in up to {count} messages.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_overview",
+      "family": "routing/final/messages_overview/surface-1",
+      "template": "For {group}, gather the message highlights covering {named}; cap them at {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/final/messages_search/surface-0",
+      "template": "Within {date}, locate messages containing the exact phrase {literal}, up to {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_search",
+      "family": "routing/final/messages_search/surface-1",
+      "template": "The message search should use {literal}, return {count} at most, and cover {date}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/final/notes_records/surface-0",
+      "template": "Pull note records for {literal}, restricted to {monthword} and capped at {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "notes_records",
+      "family": "routing/final/notes_records/surface-1",
+      "template": "Use {literal} to locate no more than {count} notes written in {monthword}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/final/reminders_scope/surface-0",
+      "template": "Within my {scope} reminders, locate entries that match {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "reminders_scope",
+      "family": "routing/final/reminders_scope/surface-1",
+      "template": "I need a reminder lookup for {literal}, limited to the {scope} list.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/final/calendar_free/surface-0",
+      "template": "Identify openings in the {named} calendar long enough for {minutes} minutes.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_free",
+      "family": "routing/final/calendar_free/surface-1",
+      "template": "A {minutes}-minute gap is what I need; check free time on the calendar for {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/final/agenda_exclusion/surface-0",
+      "template": "Keep reminders out when gathering my agenda covering {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_exclusion",
+      "family": "routing/final/agenda_exclusion/surface-1",
+      "template": "For the {named} agenda, leave the reminder source aside.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/final/multi_source/surface-0",
+      "template": "Prepare a {named} recap drawing from calendar plus email plus messages.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "multi_source",
+      "family": "routing/final/multi_source/surface-1",
+      "template": "Review my calendar and my email alongside my messages, all covering {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/final/same_email/surface-0",
+      "template": "For that inbox digest again, retain the criteria and return at most {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_email",
+      "family": "routing/final/same_email/surface-1",
+      "template": "Repeat the mail summary we were discussing, lowering the result limit to {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/final/switch_email_calendar/surface-0",
+      "template": "I meant my schedule; summarize the calendar source instead.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "switch_email_calendar",
+      "family": "routing/final/switch_email_calendar/surface-1",
+      "template": "Replace the email request with a calendar digest.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/final/switch_calendar_messages/surface-0",
+      "template": "Replace the calendar lookup with highlights from the {group} message thread.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "switch_calendar_messages",
+      "family": "routing/final/switch_calendar_messages/surface-1",
+      "template": "What I intended was a conversation recap for {group}; switch to messages.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/final/inline_draft/surface-0",
+      "template": "Suggest an unsent message draft with this point: {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "inline_draft",
+      "family": "routing/final/inline_draft/surface-1",
+      "template": "Put together text for a proposed invitation about {literal}, here in chat.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/final/effect/surface-0",
+      "template": "Post {literal} to the {group} message conversation.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "effect",
+      "family": "routing/final/effect/surface-1",
+      "template": "Move the calendar event {literal} to {date}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/final/prohibition/surface-0",
+      "template": "Keep all my notes unopened.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "prohibition",
+      "family": "routing/final/prohibition/surface-1",
+      "template": "I am prohibiting email and message reads.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/final/web_unsupported/surface-0",
+      "template": "Browse websites for a current overview of {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "web_unsupported",
+      "family": "routing/final/web_unsupported/surface-1",
+      "template": "Retrieve results from the public web matching {literal}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/final/calendar_location/surface-0",
+      "template": "The calendar digest for {named} should satisfy {constraint}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_location",
+      "family": "routing/final/calendar_location/surface-1",
+      "template": "For scheduled events covering {named}, include this restriction: {constraint}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/final/email_constraint/surface-0",
+      "template": "Gather a mail overview covering {named}, subject to {constraint}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_constraint",
+      "family": "routing/final/email_constraint/surface-1",
+      "template": "I need an email recap during {named} that applies {constraint}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/final/reminder_time/surface-0",
+      "template": "Tell me about reminder commitments falling in {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "reminder_time",
+      "family": "routing/final/reminder_time/surface-1",
+      "template": "Give a digest of my reminders within {named}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/final/messages_unread/surface-0",
+      "template": "In {group}, prepare a message recap with an unread-only filter.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_unread",
+      "family": "routing/final/messages_unread/surface-1",
+      "template": "Retrieve the unread portion of messages with {group} as an overview.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/final/mixed_effect/surface-0",
+      "template": "Read notes matching {literal} and save an edited copy.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "mixed_effect",
+      "family": "routing/final/mixed_effect/surface-1",
+      "template": "Review the inbox and forward the digest to {person}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/final/pure_exclusions/surface-0",
+      "template": "Leave messages and reminders out of any access.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "pure_exclusions",
+      "family": "routing/final/pure_exclusions/surface-1",
+      "template": "Keep web and notes excluded.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/final/same_messages/surface-0",
+      "template": "Repeat those message highlights using the existing conversation and time, limited to {count}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_messages",
+      "family": "routing/final/same_messages/surface-1",
+      "template": "Stay with that thread and period; return no more than {count} messages this time.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/final/same_calendar/surface-0",
+      "template": "For the existing calendar lookup, update its inclusive interval to {start}–{end}.",
+      "examples": 3
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "same_calendar",
+      "family": "routing/final/same_calendar/surface-1",
+      "template": "Keep the event search term while shifting the calendar range to {start} through {end}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/final/agenda_typos/surface-0",
+      "template": "could u give the agenda for tomorrow, appointments plus to dos",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_typos",
+      "family": "routing/final/agenda_typos/surface-1",
+      "template": "id like todays agnda with calendar and reminder stuff",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/final/agenda_day/surface-0",
+      "template": "For {agenda_day}, give an outline of the personal agenda from calendar and reminders.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/final/agenda_day/surface-1",
+      "template": "Walk me through the agenda covering {agenda_day}, with its reminder list.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_day",
+      "family": "routing/final/agenda_day/surface-2",
+      "template": "I would like an integrated {agenda_day} agenda using appointments and reminders.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/final/agenda_informal/surface-0",
+      "template": "Looking for an agenda recap covering {named}; calendar n reminders please.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/final/agenda_informal/surface-1",
+      "template": "I wanna understand the {named} agenda using scheduled stuff and reminder tasks.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "agenda_informal",
+      "family": "routing/final/agenda_informal/surface-2",
+      "template": "Would u outline my commitments from the agenda during {named}?",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/final/unfiltered_read/surface-0",
+      "template": "Gather a concise rundown from my {read_domain}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/final/unfiltered_read/surface-1",
+      "template": "I want the general overview available from {read_domain}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "unfiltered_read",
+      "family": "routing/final/unfiltered_read/surface-2",
+      "template": "Could you outline the contents of my {read_domain}?",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "daily_read",
+      "family": "routing/final/daily_read/surface-0",
+      "template": "For {agenda_day}, review the {read_domain} source and return its digest.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/final/email_read_false/surface-0",
+      "template": "Give a {named} mail recap with unread set to false.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_read_false",
+      "family": "routing/final/email_read_false/surface-1",
+      "template": "Only already-read emails belong in my {named} overview.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/final/calendar_rolling/surface-0",
+      "template": "Look ahead {rolling_days} days for a calendar recap.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_rolling",
+      "family": "routing/final/calendar_rolling/surface-1",
+      "template": "Outline events across the forthcoming {rolling_days} calendar days.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/final/email_person/surface-0",
+      "template": "Locate mail from the person named {person}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "email_person",
+      "family": "routing/final/email_person/surface-1",
+      "template": "Use {person} as the literal email lookup term.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/final/messages_person/surface-0",
+      "template": "Outline the message highlights exchanged with {person}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "messages_person",
+      "family": "routing/final/messages_person/surface-1",
+      "template": "I want a conversation digest from my messages with {person}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/final/calendar_account/surface-0",
+      "template": "In calendar account {account}, outline the events covering {named}.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "calendar_account",
+      "family": "routing/final/calendar_account/surface-1",
+      "template": "My {account} account is the one to use for the {named} calendar rundown.",
+      "examples": 2
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/final/ordinary_none/surface-0",
+      "template": "Good morning, Wisp.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/final/ordinary_none/surface-1",
+      "template": "That answered my question.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "routing",
+      "category": "ordinary_none",
+      "family": "routing/final/ordinary_none/surface-2",
+      "template": "Tell me what an inbox means.",
+      "examples": 1
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "calendar",
+      "family": "overview/final/calendar/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "agenda",
+      "family": "overview/final/agenda/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "email",
+      "family": "overview/final/email/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "messages",
+      "family": "overview/final/messages/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "multi",
+      "family": "overview/final/multi/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "reminders",
+      "family": "overview/final/reminders/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "notes",
+      "family": "overview/final/notes/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "empty",
+      "family": "overview/final/empty/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "denied",
+      "family": "overview/final/denied/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "timeout",
+      "family": "overview/final/timeout/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 5
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "partial",
+      "family": "overview/final/partial/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "truncated",
+      "family": "overview/final/truncated/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "missing",
+      "family": "overview/final/missing/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "proposal",
+      "family": "overview/final/proposal/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "overlap",
+      "family": "overview/final/overlap/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "zones",
+      "family": "overview/final/zones/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "mixed_status",
+      "family": "overview/final/mixed_status/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "no_deadline",
+      "family": "overview/final/no_deadline/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "weekly_agenda",
+      "family": "overview/final/weekly_agenda/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    },
+    {
+      "split": "final",
+      "task": "overview",
+      "category": "draft_sent",
+      "family": "overview/final/draft_sent/composition-4/surface-0",
+      "template": "Using the returned source data, outline what I should know about {topic}.",
+      "composition_profile": "final:primary_items=4",
+      "examples": 4
+    }
+  ]
+}

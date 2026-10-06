@@ -1,0 +1,53 @@
+{
+  "reviewer": "/root/ling_routing_review",
+  "scope_authority": "training.datasetReadOnlyReviewScopesACK20261006; parent release received",
+  "source": "/private/tmp/ling-dataset-review-routing-v1",
+  "base": "c1ef1be4c95f4806688484f8785e36c4b06138c0",
+  "read_files": [
+    "train.jsonl",
+    "dev.jsonl",
+    "train.provenance.jsonl",
+    "dev.provenance.jsonl",
+    "router-system.txt",
+    "intent.schema.v1.json",
+    "SNAPSHOT.json"
+  ],
+  "writes": [
+    "/private/tmp/ling-dataset-routing-review/report.json",
+    "/private/tmp/ling-dataset-routing-review/review-provenance.json",
+    "/private/tmp/ling-dataset-routing-review/confirmed-label-candidates.jsonl",
+    "/private/tmp/ling-dataset-routing-review/ambiguous-account-rows.jsonl"
+  ],
+  "end_integrity": {
+    "dev.provenance.jsonl": {
+      "expected_sha256": "0191398c61b23011dec97379db79fb4aacb86f6dc8b7f2954f5de7741369f67e",
+      "end_sha256": "0191398c61b23011dec97379db79fb4aacb86f6dc8b7f2954f5de7741369f67e",
+      "matches_manifest": true
+    },
+    "train.jsonl": {
+      "expected_sha256": "0579dce4fc83374d4bceb37347e70942e634ea8589d50622c51e166fb9fe5ae4",
+      "end_sha256": "0579dce4fc83374d4bceb37347e70942e634ea8589d50622c51e166fb9fe5ae4",
+      "matches_manifest": true
+    },
+    "intent.schema.v1.json": {
+      "expected_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "end_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "matches_manifest": true
+    },
+    "router-system.txt": {
+      "expected_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "end_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "matches_manifest": true
+    },
+    "dev.jsonl": {
+      "expected_sha256": "f92f31608bf527eaa2b5c1c16ed9cac087dc0aaef75a0968ef9eb1b1ebbd49da",
+      "end_sha256": "f92f31608bf527eaa2b5c1c16ed9cac087dc0aaef75a0968ef9eb1b1ebbd49da",
+      "matches_manifest": true
+    },
+    "train.provenance.jsonl": {
+      "expected_sha256": "845f1ea7769490be6968231afb2b4fc1bfa45feba5f82634f3b1063e85595ef5",
+      "end_sha256": "845f1ea7769490be6968231afb2b4fc1bfa45feba5f82634f3b1063e85595ef5",
+      "matches_manifest": true
+    }
+  }
+}

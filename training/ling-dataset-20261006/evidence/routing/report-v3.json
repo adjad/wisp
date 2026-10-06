@@ -1,0 +1,321 @@
+{
+  "review_type": "authorized focused two-row routing delta advisory; no formal production release approval",
+  "verdict": "PASS_WITH_NOTES",
+  "snapshot": "/private/tmp/ling-dataset-review-routing-v3",
+  "compared_snapshot": "/private/tmp/ling-dataset-review-routing-v2",
+  "base": "c1ef1be4c95f4806688484f8785e36c4b06138c0",
+  "source_hashes": {
+    "train.jsonl": "b4ea93caa2a82799c90621d77f126728f6be3b246d43cbb29200adb5fc520549",
+    "dev.jsonl": "a1128ba290a4f820acaf59f93df3ca9b1654102439c888c4968d35005e266ecd",
+    "train.provenance.jsonl": "ea725c84a0192a8a4ec58feee95074763eb3ffdbeb13dac56b9196bc033f0e7b",
+    "dev.provenance.jsonl": "6b7ab54d29ade88d927ee3f552bd955af7cdcc195149b99ba60d1bf0dbbae29d",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+  },
+  "errors": [],
+  "routing_payload_delta": {
+    "train": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        {
+          "id": "train-r-1397",
+          "before": [
+            {
+              "content": "Explain what a reminder is without accessing my data.",
+              "role": "user"
+            },
+            {
+              "content": "{\"excluded_sources\":[],\"kind\":\"none\",\"sources\":[],\"unsupported_constraints\":[],\"version\":1}",
+              "role": "assistant",
+              "training": true
+            }
+          ],
+          "after": [
+            {
+              "content": "Explain what a reminder is.",
+              "role": "user"
+            },
+            {
+              "content": "{\"excluded_sources\":[],\"kind\":\"none\",\"sources\":[],\"unsupported_constraints\":[],\"version\":1}",
+              "role": "assistant",
+              "training": true
+            }
+          ]
+        }
+      ],
+      "unchanged_rows": 1399,
+      "rows": 1400
+    },
+    "dev": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        {
+          "id": "dev-r-0139",
+          "before": [
+            {
+              "content": "Define calendar without opening mine.",
+              "role": "user"
+            },
+            {
+              "content": "{\"excluded_sources\":[],\"kind\":\"none\",\"sources\":[],\"unsupported_constraints\":[],\"version\":1}",
+              "role": "assistant",
+              "training": true
+            }
+          ],
+          "after": [
+            {
+              "content": "Define calendar without opening mine.",
+              "role": "user"
+            },
+            {
+              "content": "{\"excluded_sources\":[\"calendar\"],\"kind\":\"none\",\"sources\":[],\"unsupported_constraints\":[],\"version\":1}",
+              "role": "assistant",
+              "training": true
+            }
+          ]
+        }
+      ],
+      "unchanged_rows": 139,
+      "rows": 140
+    }
+  },
+  "provenance_delta": {
+    "train": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        {
+          "id": "train-r-1397",
+          "before": {
+            "category": "ordinary_none",
+            "family": "routing/train/ordinary_none/surface-4",
+            "id": "train-r-1397",
+            "provenance": "fresh specification plus deterministic split-owned surface expansion",
+            "semantic_spec": {
+              "action": "none",
+              "context_relation": "new_request",
+              "excluded": [],
+              "requests": [],
+              "unsupported": []
+            },
+            "split": "train",
+            "synthetic_slots": {
+              "account": "research",
+              "agenda_day": "tomorrow",
+              "constraint": "in the library",
+              "count": 5,
+              "date": "2027-12-02",
+              "day": "today",
+              "day_unit": "days",
+              "days": 7,
+              "end": "2027-12-28",
+              "group": "Theo project circle",
+              "literal": "design sync",
+              "minutes": 15,
+              "month": "2027-12",
+              "monthword": "December 2027",
+              "named": "next week",
+              "person": "Theo",
+              "read_domain": "notes",
+              "rolling_days": 60,
+              "scope": "today",
+              "start": "2027-12-06"
+            },
+            "task": "routing",
+            "template": "Explain what a reminder is without accessing my data."
+          },
+          "after": {
+            "category": "ordinary_none",
+            "family": "routing/train/ordinary_none/surface-4",
+            "id": "train-r-1397",
+            "provenance": "fresh specification plus deterministic split-owned surface expansion",
+            "semantic_spec": {
+              "action": "none",
+              "context_relation": "new_request",
+              "excluded": [],
+              "requests": [],
+              "unsupported": []
+            },
+            "split": "train",
+            "synthetic_slots": {
+              "account": "research",
+              "agenda_day": "tomorrow",
+              "constraint": "in the library",
+              "count": 5,
+              "date": "2027-12-02",
+              "day": "today",
+              "day_unit": "days",
+              "days": 7,
+              "end": "2027-12-28",
+              "group": "Theo project circle",
+              "literal": "design sync",
+              "minutes": 15,
+              "month": "2027-12",
+              "monthword": "December 2027",
+              "named": "next week",
+              "person": "Theo",
+              "read_domain": "notes",
+              "rolling_days": 60,
+              "scope": "today",
+              "start": "2027-12-06"
+            },
+            "task": "routing",
+            "template": "Explain what a reminder is."
+          }
+        }
+      ]
+    },
+    "dev": {
+      "added": [],
+      "removed": [],
+      "changed": [
+        {
+          "id": "dev-r-0139",
+          "before": {
+            "category": "ordinary_none",
+            "family": "routing/dev/ordinary_none/surface-1",
+            "id": "dev-r-0139",
+            "provenance": "fresh specification plus deterministic split-owned surface expansion",
+            "semantic_spec": {
+              "action": "none",
+              "context_relation": "new_request",
+              "excluded": [],
+              "requests": [],
+              "unsupported": []
+            },
+            "split": "dev",
+            "synthetic_slots": {
+              "account": "research",
+              "agenda_day": "tomorrow",
+              "constraint": "outside the office",
+              "count": 1,
+              "date": "2028-04-05",
+              "day": "today",
+              "day_unit": "days",
+              "days": 366,
+              "end": "2028-04-17",
+              "group": "Pavel project circle",
+              "literal": "Copper delivery",
+              "minutes": 15,
+              "month": "2028-04",
+              "monthword": "April 2028",
+              "named": "last month",
+              "person": "Pavel",
+              "read_domain": "email",
+              "rolling_days": 45,
+              "scope": "upcoming",
+              "start": "2028-04-03"
+            },
+            "task": "routing",
+            "template": "Define calendar without opening mine."
+          },
+          "after": {
+            "category": "ordinary_none",
+            "family": "routing/dev/ordinary_none/surface-1",
+            "id": "dev-r-0139",
+            "provenance": "fresh specification plus deterministic split-owned surface expansion",
+            "semantic_spec": {
+              "action": "none",
+              "context_relation": "new_request",
+              "excluded": [
+                "calendar"
+              ],
+              "requests": [],
+              "unsupported": []
+            },
+            "split": "dev",
+            "synthetic_slots": {
+              "account": "research",
+              "agenda_day": "tomorrow",
+              "constraint": "outside the office",
+              "count": 1,
+              "date": "2028-04-05",
+              "day": "today",
+              "day_unit": "days",
+              "days": 366,
+              "end": "2028-04-17",
+              "group": "Pavel project circle",
+              "literal": "Copper delivery",
+              "minutes": 15,
+              "month": "2028-04",
+              "monthword": "April 2028",
+              "named": "last month",
+              "person": "Pavel",
+              "read_domain": "email",
+              "rolling_days": 45,
+              "scope": "upcoming",
+              "start": "2028-04-03"
+            },
+            "task": "routing",
+            "template": "Define calendar without opening mine."
+          }
+        }
+      ]
+    }
+  },
+  "stable_files": [
+    "intent.schema.v1.json",
+    "router-system.txt"
+  ],
+  "changed_files": [
+    "dev.provenance.jsonl",
+    "train.jsonl",
+    "dev.jsonl",
+    "train.provenance.jsonl"
+  ],
+  "snapshot_integrity": {
+    "dev.provenance.jsonl": {
+      "v3_expected": "b458bcee4475fe74bd3af5f38eeaaa23c06fdf8d4ae739dd3f019e8c7b65b0d4",
+      "v3_end": "b458bcee4475fe74bd3af5f38eeaaa23c06fdf8d4ae739dd3f019e8c7b65b0d4",
+      "matches_manifest": true,
+      "v2_actual": "9d9bee633c793c3201314a88ae4895da7d2aa0d0d495f901fdb2cf62cecdcfa3",
+      "v2_matches_initial_manifest": true
+    },
+    "train.jsonl": {
+      "v3_expected": "75b4403ae9af1a8c44432337d48a61d153cf39a0793c0121c5d32a606da121d6",
+      "v3_end": "75b4403ae9af1a8c44432337d48a61d153cf39a0793c0121c5d32a606da121d6",
+      "matches_manifest": true,
+      "v2_actual": "3129a9cef88949b95f44abd4b469df453f67b3c4c120dbf24c3fe5dadb5c013e",
+      "v2_matches_initial_manifest": true
+    },
+    "intent.schema.v1.json": {
+      "v3_expected": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "v3_end": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "matches_manifest": true,
+      "v2_actual": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+      "v2_matches_initial_manifest": true
+    },
+    "router-system.txt": {
+      "v3_expected": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "v3_end": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "matches_manifest": true,
+      "v2_actual": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+      "v2_matches_initial_manifest": true
+    },
+    "dev.jsonl": {
+      "v3_expected": "44a3de133f2e5d3eb4153034e3ac27aed9cfb90cbf00239293d3fd315de1008a",
+      "v3_end": "44a3de133f2e5d3eb4153034e3ac27aed9cfb90cbf00239293d3fd315de1008a",
+      "matches_manifest": true,
+      "v2_actual": "5d7c4d4ab3a1ed8b631f007ffe3fcb3f6b452d13edeefdc84b2e574c4bbecae1",
+      "v2_matches_initial_manifest": true
+    },
+    "train.provenance.jsonl": {
+      "v3_expected": "ae7b39f4497e17088711e0f87fb57021ad871cce76f95b1c42793b281ca5cf6b",
+      "v3_end": "ae7b39f4497e17088711e0f87fb57021ad871cce76f95b1c42793b281ca5cf6b",
+      "matches_manifest": true,
+      "v2_actual": "e7d8fbcca5af826d6a75d42abcd7f140ca4250ee3fceff0797fed1f6b8e10740",
+      "v2_matches_initial_manifest": true
+    }
+  },
+  "unchanged_payload_rows": 1538,
+  "assessment": "D6 explicit calendar exclusion preserved in dev-r-0139 and ambiguous broad prohibition removed from train-r-1397. Other 1538 payloads and all other provenance rows match v2 exactly; v2 principal semantic findings remain valid.",
+  "nonblocking_notes": [
+    "Prior v2 minor capability-summary minutes omission and synthetic explicit future-history naturalness remain advisory; no further expansion is requested.",
+    "Verdict applies to immutable filtered routing snapshot only; no source/final dataset/runtime behavior was inspected."
+  ],
+  "quiescent": true,
+  "all_manifest_files_unchanged_at_end": true,
+  "snapshot_manifest_end_sha256": "c6c030ce064c689e25783ef2f9fdcc26a80a84a4de74653ab5fe69d9e9ceb8da"
+}
