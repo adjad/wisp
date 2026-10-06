@@ -964,6 +964,12 @@ EXEC_GRAMMAR: dict[str, tuple[str, ...]] = {
 }
 ALLOWED_EXEC = frozenset(EXEC_GRAMMAR)
 
+# subprocess.Popen wraps the pipes it creates for an allowed inspector with io.open(<int fd>, 'rb'|'wb'). Under
+# the filesystem guard that is an "untracked descriptor", so exactly those descriptors are recognised: created by
+# os.pipe() on this thread while one argv-checked Popen.__init__ is running, still a FIFO, opened rb/wb. Part of
+# the policy digest so a change to this allowance is a different containment identity.
+POPEN_PIPE_RULE = "os.pipe() fds of one argv-checked Popen.__init__ call, same thread, FIFO, io.open rb|wb"
+
 
 class FsPolicy:
     """Where the spawned backend may read and write.
@@ -1084,6 +1090,10 @@ class EffectGuard:
         self.engine_ops, self.fs = tuple(engine_ops), fs
         self._originals: list[tuple[Any, str, Any]] = []
         import contextvars
+        import threading
+        # The pipe descriptors one guard-allowed Popen call is creating RIGHT NOW, on this thread only
+        # (None outside such a call). See _install_fs: subprocess wraps its own pipes with io.open.
+        self._popen_local = threading.local()
         # Task-local and reset after each reviewed HTTP operation. This is a Python guard,
         # not protection against malicious code recovering the originals or native I/O.
         self._http_operation = contextvars.ContextVar("release_http_operation", default=None)
@@ -1091,7 +1101,7 @@ class EffectGuard:
     def policy_description(self) -> dict:
         return {"exec": {k: (list(v) if v is not None else None) for k, v in sorted(self.exec_grammar.items())},
                 "engine_ops": [list(op) for op in self.engine_ops], "ports": sorted(self.allowed_ports),
-                "fs": self.fs.portable() if self.fs else None}
+                "fs": ({**self.fs.portable(), "popen_pipe_descriptors": POPEN_PIPE_RULE} if self.fs else None)}
 
     def policy_sha256(self) -> str:
         return canonical_sha(self.policy_description())
@@ -1181,7 +1191,19 @@ class EffectGuard:
 
         original_open = builtins.open
 
+        def popen_pipe(file, mode) -> bool:
+            """True only for a pipe end the allowed Popen call in progress on this thread just created."""
+            pipes = getattr(guard._popen_local, "pipes", None)
+            if not pipes or type(file) is not int or mode not in ("rb", "wb") or file not in pipes:
+                return False
+            try:
+                return stat.S_ISFIFO(original_fstat(file).st_mode)
+            except OSError:
+                return False
+
         def guarded_open(file, mode="r", *a, **k):
+            if popen_pipe(file, mode):
+                return original_open(file, mode, *a, **k)
             check("write" if any(c in str(mode) for c in "wax+") else "read", file, file_object=True)
             return original_open(file, mode, *a, **k)
 
@@ -1214,8 +1236,18 @@ class EffectGuard:
             finally:
                 descriptors.pop(fd, None)
 
+        original_pipe = os.pipe
+
+        def guarded_pipe():
+            pair = original_pipe()
+            pipes = getattr(guard._popen_local, "pipes", None)
+            if pipes is not None:
+                pipes.update(pair)
+            return pair
+
         self._patch(os, "open", guarded_os_open)
         self._patch(os, "close", close)
+        self._patch(os, "pipe", guarded_pipe)
         for name in ("write", "pwrite", "writev", "ftruncate", "fchmod", "fchown"):
             if not hasattr(os, name):
                 continue
@@ -1262,7 +1294,14 @@ class EffectGuard:
                 elif kind is not inspect.Parameter.VAR_POSITIONAL:
                     bound[name] = value
             guard._check_exec(bound)
-            return original_init(self_, *args, **kwargs)
+            if guard.fs is None:
+                return original_init(self_, *args, **kwargs)
+            local = guard._popen_local
+            local.pipes = set()
+            try:
+                return original_init(self_, *args, **kwargs)
+            finally:
+                local.pipes = None
 
         original_connect, original_connect_ex = socket.socket.connect, socket.socket.connect_ex
 
@@ -1651,6 +1690,11 @@ RESIDENCY_PROBE_PATH = "/__release_probe/residency"
 def serve_main(args: argparse.Namespace) -> int:
     """Child entry point: run the candidate's own backend with the guard and instrumentation installed."""
     root = Path(args.root).resolve()
+    # `python scripts/release_performance.py serve` puts the harness's own directory first on sys.path. It is not
+    # part of the candidate, and importlib.metadata lists every sys.path entry, which the filesystem guard (rightly)
+    # refuses when that directory is under the real HOME. Nothing here imports from it, so it is dropped.
+    harness_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+    sys.path[:] = [entry for entry in sys.path if not entry or os.path.realpath(entry) != harness_dir]
     sys.path.insert(0, str(root))
     os.chdir(root)
     home = Path(args.home).resolve()

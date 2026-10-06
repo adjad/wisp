@@ -286,6 +286,17 @@ the package, and the independent audit and live QA remain the control.
     only the explicit child worktree and interpreter prefixes qualify. Under the real `HOME`, reads
     are limited to the engine settings files, the authorization record, the credential-generation record and
     the worktree and interpreter the child runs from. Everything else under the real `HOME` is refused.
+  * **Pipes of an allowed inspector:** `subprocess` wraps the pipes it creates with `io.open(<fd>, "rb"|"wb")`,
+    which the descriptor rule would otherwise refuse as untracked. Exactly those descriptors are recognised: made by
+    `os.pipe()` on the same thread while one argv-checked `Popen.__init__` is running, still a FIFO, and opened
+    `rb` or `wb`. The window closes when that call returns. A pipe made elsewhere, a regular-file or socket
+    descriptor, any other mode, or another thread's open is refused as before. The rule is part of the guard policy
+    digest (`popen_pipe_descriptors`), so changing it changes the containment identity. `Popen.communicate(input=...)`
+    still refuses (an `os.write` on an untracked descriptor); the product's `inspect_command` passes no input.
+  * **The harness's own directory is not on the child's `sys.path`.** `python scripts/release_performance.py serve`
+    puts that directory first on `sys.path`, and `importlib.metadata` lists every `sys.path` entry, which the guard
+    refuses when the directory is under the real `HOME` (it belongs to neither the worktree nor the interpreter).
+    `serve` drops that one entry before the candidate imports anything; no read allowance was added.
   * Every refusal is recorded in the log whatever the caller does with the exception. A refusal anywhere in
     the candidate's lifetime is a BLOCK.
 * **Approval boundary:** the real approver runs. The harness answers every `confirm` with a denial through
