@@ -5,7 +5,7 @@
   "approved_by": "adijain (project owner)",
   "approved_on": "2026-10-06",
   "scope": "ad_hoc_release_only",
-  "reason": "The release performance benchmark's live path was first exercised on 2026-10-06. The harness's own guard, combined with a memory-pressured host, caused intermittent engine health-check timeouts in the candidate run, which the strict candidate rule treats as BLOCK, so the benchmark could not produce a passing receipt for 1.2.0. The corrected harness, corpus v3 and policy v3 are deferred to Wisp 1.3.0. The equivalent evidence for 1.2.0 is the live diagnostic smoke comparisons and an end-to-end A/B comparison against v1.1.5, retained as release notes and CI artifacts. This waiver does not claim that the benchmark passed.",
+  "reason": "The release performance benchmark's live path was first exercised on 2026-10-06. The harness's own guard, combined with a memory-pressured host, caused intermittent engine health-check timeouts in the candidate run, which the strict candidate rule treats as BLOCK, so the benchmark could not produce a passing receipt for 1.2.0. The corrected harness, corpus v3 and policy v3 are deferred to Wisp 1.3.0. The equivalent evidence for 1.2.0 is the live diagnostic smoke comparisons and an end-to-end A/B comparison against v1.1.5, published in the GitHub release notes for 1.2.0. This waiver does not claim that the benchmark passed.",
   "evidence_ref": "docs/RELEASE_PERFORMANCE_BENCHMARK.md#waiver",
   "follow_up": "Wisp 1.3.0 must restore a passing release benchmark; this waiver does not apply to any other version"
 }

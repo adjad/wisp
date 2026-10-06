@@ -533,5 +533,5 @@ not a pass and it never produces a `PASS` verdict.
 Wisp 1.2.0 waiver: `docs/releases/1.2.0-performance-waiver.json` (the benchmark's live path was first
 exercised on 2026-10-06 and its harness guard plus a memory-pressured host produced intermittent engine
 health-check timeouts in the candidate, which the strict candidate rule treats as BLOCK). Equivalent 1.2.0
-evidence is the live diagnostic smoke comparisons and an end-to-end A/B against v1.1.5, retained as release notes
-and CI artifacts.
+evidence is the live diagnostic smoke comparisons and an end-to-end A/B against v1.1.5, published in the GitHub release notes
+for 1.2.0.
