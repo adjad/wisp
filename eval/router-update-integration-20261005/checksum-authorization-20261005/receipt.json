@@ -21,5 +21,8 @@
   "result": "1 passed",
   "log_sha256": "1afe14932cedd994f6556f1148de0994df4ad472612c826d0ab5fad8ae89ee00",
   "prior_rejection_preserved": true,
-  "heldout_prompt_execution_authorized": false
+  "heldout_prompt_execution_authorized": false,
+  "log_file": "checksum-test.log.gz",
+  "stored_log_sha256": "8cc2f96a2cd5c4cf0906763ccb53104ad12a84093d9ede9a8ae1a11f64e908e3",
+  "preservation": "Lossless gzip retains original bytes, including warning whitespace; initial staged diff check flagged raw-log trailing whitespace before compression."
 }
