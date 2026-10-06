@@ -13,7 +13,7 @@ from service.memory.store import SessionStore
 from service.router import router
 from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES, GOVERNED_TITLE_CASES, ACTION_TAIL_CASES, NEGATIVE_EFFECT_TAILS, LATER_EFFECT_CASES, READ_AFTER_NEGATIVE_JOINERS
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES, GOVERNED_TITLE_CASES, ACTION_TAIL_CASES, NEGATIVE_EFFECT_TAILS, LATER_EFFECT_CASES, READ_AFTER_NEGATIVE_JOINERS, SOURCE_APOSTROPHES, EXCLUSION_DOMAINS, source_exclusion_case
 
 
 @pytest.fixture
@@ -740,6 +740,56 @@ def test_actor_read_after_negation_preserves_requested_source_coverage(endpoint,
 def test_actor_quoted_preference_and_later_read_words_remain_literal_data(endpoint, query):
     request, client, calls, store, _ = endpoint
     sid = store.create_session()
+    client.outputs = [value(source("notes", "records", query=query))]
+    events = asyncio.run(request('Find notes about "' + query + '"', session_id=sid))
+    assert calls == [("search_notes", {"query": query})]
+    assert text(events) == "Synthetic note: " + query
+    assert store.latest_workflow(sid) is None
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+@pytest.mark.parametrize("domain", EXCLUSION_DOMAINS)
+@pytest.mark.parametrize("governor", ["read", "include", "check"])
+@pytest.mark.parametrize("wrong", [None, "omitted", "extra", "extra_and_omitted"])
+def test_actor_source_prohibition_cannot_be_reversed_by_scripted_intent(endpoint, apostrophe, domain, governor, wrong):
+    import copy
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    prompt, data, expected = source_exclusion_case(domain, apostrophe, governor)
+    if wrong in {"omitted", "extra_and_omitted"}:
+        data["excluded_sources"] = []
+    if wrong in {"extra", "extra_and_omitted"}:
+        data["sources"].append(source(domain))
+    client.outputs = [data, copy.deepcopy(data)]
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert store.latest_workflow(sid) is None
+    assert store.active_task(sid) is None
+    assert not any("workflow" in event["type"] for event in events)
+    if wrong:
+        assert calls == [] and "clarify" in [event.get("intent_disposition") for event in events]
+    else:
+        assert calls == [expected], text(events)
+        assert "compiled" in [event.get("intent_disposition") for event in events]
+        assert text(events) == ("Synthetic exact fixture records." if domain == "notes" else "Synthetic note: quartz birds")
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_actor_source_exclusion_list_and_later_read_have_exact_coverage(endpoint, apostrophe):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    prompt = "Find notes about quartz birds don" + apostrophe + "t read my email or messages and afterwards read my reminders"
+    client.outputs = [value(source("notes", "records", query="quartz birds"), source("reminders", "records"), excluded_sources=["email", "messages"])]
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert calls == [("search_notes", {"query": "quartz birds"}), ("search_reminders", {"query": "", "scope": "all"})]
+    assert "Synthetic note: quartz birds" in text(events) and "Synthetic exact fixture records." in text(events)
+    assert store.latest_workflow(sid) is None
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_actor_quoted_unicode_prohibition_is_exact_data(endpoint, apostrophe):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    query = "O’Neill: don" + apostrophe + "t read my email or messages"
     client.outputs = [value(source("notes", "records", query=query))]
     events = asyncio.run(request('Find notes about "' + query + '"', session_id=sid))
     assert calls == [("search_notes", {"query": query})]

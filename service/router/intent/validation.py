@@ -17,7 +17,8 @@ SOURCE_WORDS = {
     "messages": r"\b(?:messages?|texts?|imessage|sms)\b",
     "notes": r"\bnotes?\b",
 }
-_NEGATIVE = r"(?:without|excluding|exclude|except|skip|no|not|don't (?:include|check|read)|do not (?:include|check|read))"
+_NEGATIVE_READ = r"(?:don't|do not)\s+(?:include|check|read)"
+_NEGATIVE = r"(?:without|excluding|exclude|except|skip|no|not|" + _NEGATIVE_READ + ")"
 _ACTION = re.compile(r"\b(?:send|share|text\s+\S+\s+(?:that|saying)|email\s+\S+\s+(?:that|saying)|create|add|set|remind|delete|remove|cancel|update|save|remember|forward|reply|call|draft|compose|write|nuke|clear|wipe|purge|forget|erase|complete|finish|mark)\b", re.I)
 
 
@@ -35,7 +36,11 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     remain the existing action/web boundary's responsibility.
     """
     from service.utterance_shape import mask_quoted
-    text = mask_quoted(prompt)
+    from service.router.web_request import _normalize
+    # Normalize only the quote-masked grammatical view. Literal evidence and
+    # query slices keep the original bytes; one-codepoint substitutions keep
+    # source spans aligned with the separately masked instruction text.
+    text = _normalize(mask_quoted(prompt))
     try:
         instruction = _instruction_text(prompt, now=datetime.now().astimezone())
     except InvalidIntent:
@@ -60,21 +65,27 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     for domain, pattern in SOURCE_WORDS.items():
         matches = list(re.finditer(pattern, text, re.I))
         for match in matches:
-            if any(start <= match.start() < end for start, end in negative_effects):
-                continue
             prefix = text[max(0, match.start() - 65):match.start()]
-            if re.search(_NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?$", prefix, re.I):
+            negative = re.search("(?P<governor>" + _NEGATIVE + r")\s+(?:(?:my|the|any)\s+)?$", prefix, re.I)
+            negative_read = negative and re.fullmatch(_NEGATIVE_READ, negative["governor"], re.I)
+            # "Don't check my email" is an explicit source prohibition even
+            # though check also names a generic effect head. A negative
+            # delivery's channel/payload nouns still cannot create authority.
+            if any(start <= match.start() < end for start, end in negative_effects) and not negative_read:
+                continue
+            if negative:
                 excluded.add(domain)
             elif instruction[match.start():match.end()].strip():
                 required.add(domain)
     # A trailing coordinated exclusion such as "without email or texts".
-    for match in re.finditer(_NEGATIVE + r"\s+([^.;!?]+)", text, re.I):
-        if any(start <= match.start() < end for start, end in negative_effects):
+    for match in re.finditer("(?P<governor>" + _NEGATIVE + r")\s+(?P<tail>[^.;!?]+)", text, re.I):
+        negative_read = re.fullmatch(_NEGATIVE_READ, match["governor"], re.I)
+        if any(start <= match.start() < end for start, end in negative_effects) and not negative_read:
             continue
         head = _action_clause_head(match.group())
-        if head and head["negative"] and head["action"].lower() not in {"email", "e-mail", "text", "message"}:
+        if head and head["negative"] and head["action"].lower() not in {"email", "e-mail", "text", "message"} and not negative_read:
             continue
-        tail = _source_exclusion_prefix(match.group(1))
+        tail = _source_exclusion_prefix(match["tail"])
         for domain, pattern in SOURCE_WORDS.items():
             if re.search(pattern, tail, re.I):
                 excluded.add(domain)
@@ -322,7 +333,7 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
             # An unquoted source exclusion is instruction syntax, not part of
             # the lookup literal. Quoted occurrences remain literal data.
             source_union = "(?:" + "|".join(SOURCE_WORDS.values()) + ")"
-            for boundary in re.finditer(r"\b" + _NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?" + source_union, _mask_literals(candidate), re.I):
+            for boundary in re.finditer(r"\b" + _NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?" + source_union, _unquoted(_mask_literals(candidate)), re.I):
                 stops.append(boundary.start())
             end = min(stops) if stops else len(candidate)
             literal = candidate[:end].strip().rstrip(".,")
