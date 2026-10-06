@@ -1,6 +1,6 @@
 {
-  "status": "local_combined_candidate_waiting_checksum_authorization_and_final_gates",
-  "updated_at": "2026-10-06T02:52:16.217867+00:00",
+  "status": "checksum_only_authorized_passed_preparing_new_frozen_gates",
+  "updated_at": "2026-10-06T03:10:38.147301+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -138,7 +138,7 @@
   "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
   "production_changed": false,
   "pending": [
-    "Obtain explicit checksum-only permission; current async question pending. Keep full local gate and integration PR push/CI held without removing or weakening test.",
+    "Freeze and push new candidate; run full exact-SHA local regression, required CI, independent task-literal/auth-boundary audit, then distinct synthetic QA.",
     "Freeze and push new candidate when permitted; run full exact-SHA regression, required CI, independent R10/auth-boundary audit and distinct synthetic QA.",
     "Admit serialized actual resident-model development comparison only after exact runtime identity, resource scope and independent checks; heldout prompts stay sealed.",
     "Resolve retained-owner provider cancellation diagnosis; training compatibility/smoke remain separately unqualified.",
@@ -1339,11 +1339,11 @@
     "annotation_limit": "Eight honest source-failure replies still fail original success-literal requirements; original 72/80 retained. Answer-fact/query-scope metrics have zero applicable cases."
   },
   "checksum_approval_hold": {
-    "status": "PENDING_EXPLICIT_HUMAN_CHECKSUM_ONLY_ANSWER",
+    "status": "RESOLVED_DIRECT_HUMAN_CHECKSUM_ONLY_AUTHORIZATION",
     "blocked_test": "tests/test_router_update_eval.py::test_seal_metadata_family_splits_and_dev_integrity",
     "reason": "Automatic approval review treated even SHA256-only reading as conflicting with unopened-heldout scope; parent clarification insufficient; no workaround used",
-    "receipt": "eighth-candidate-gates/eval-bridge/IMPLEMENTATION_APPROVAL_REJECTION.json",
-    "no_push_or_full_gate": "Integration PR push would trigger the blocked check in CI. Keep local combined branch unpushed; no local full gate or alternative checksum reader until trusted authorization.",
+    "receipt": "checksum-authorization-20261005/receipt.json",
+    "no_push_or_full_gate": "Hold resolved by direct human authorization. Existing local full gate and PR-triggered CI may run the unchanged opaque checksum check; heldout prompt parsing/evaluation/tuning remains prohibited.",
     "unaffected": "Permitted offline checks, development replay, local integration and evidence commits only",
     "heldout_execution_authorized": false
   }

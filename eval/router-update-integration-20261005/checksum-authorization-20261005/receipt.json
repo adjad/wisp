@@ -1,0 +1,25 @@
+{
+  "recorded_at": "2026-10-06T03:10:38.147301+00:00",
+  "authority": "Direct human response in this source chat: ok go ahead, to the explicit checksum-only question and blocked-gate explanation.",
+  "scope": "Run the unchanged SHA256-only heldout corpus integrity check; no prompt parsing, display, evaluation, training or tuning. Full existing validation and PR-triggered CI may include this authorized check.",
+  "source_sha": "c456363569f3c97ae1d6795636b52a0b280693ed",
+  "command": [
+    "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+    "-m",
+    "pytest",
+    "--noconftest",
+    "-p",
+    "no:cacheprovider",
+    "tests/test_router_update_eval.py::test_seal_metadata_family_splits_and_dev_integrity",
+    "-q"
+  ],
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"
+  },
+  "exit_code": 0,
+  "result": "1 passed",
+  "log_sha256": "1afe14932cedd994f6556f1148de0994df4ad472612c826d0ab5fad8ae89ee00",
+  "prior_rejection_preserved": true,
+  "heldout_prompt_execution_authorized": false
+}
