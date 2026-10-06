@@ -17,7 +17,7 @@ from service.tasks.temporal import (
 
 
 _NEGATED = re.compile(
-    r"\b(?:do\s+not|don't|dont|never)\s+"
+    r"\b(?:do\s+not|don['’‘ʼ＇]t|dont|never)\s+"
     r"(?:set|add|create|make|schedule|send|give|remind|delete|remove|clear|"
     r"complete|finish|mark|check|cross|tick|cancel|update|change|rename|reschedule|move)\b",
     re.I)

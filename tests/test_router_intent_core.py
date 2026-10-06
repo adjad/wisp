@@ -1279,3 +1279,83 @@ def test_preference_governor_does_not_hide_a_later_positive_effect(joiner):
     assert outbound_verb(prompt) and not applicable_read(prompt)
     with pytest.raises(InvalidIntent):
         validate_intent(value(source("notes", "records", query="amber route")), prompt, now=NOW)
+
+
+SOURCE_APOSTROPHES = ["'", "’", "‘", "ʼ", "＇"]
+EXCLUSION_DOMAINS = ["calendar", "reminders", "email", "messages", "notes"]
+
+
+def source_exclusion_case(domain, apostrophe, governor="read"):
+    if domain == "notes":
+        prefix = "Read email from O’Neill"
+        allowed = source("email", "records", query="O’Neill")
+        expected = ("view_emails", {"query": "O’Neill", "strict_match": True})
+    else:
+        prefix = "Find notes about quartz birds"
+        allowed = source("notes", "records", query="quartz birds")
+        expected = ("search_notes", {"query": "quartz birds"})
+    prompt = prefix + " and don" + apostrophe + "t " + governor + " my " + domain
+    good = value(allowed, excluded_sources=[domain])
+    return prompt, good, expected
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+@pytest.mark.parametrize("domain", EXCLUSION_DOMAINS)
+@pytest.mark.parametrize("governor", ["read", "include", "check"])
+def test_source_exclusion_normalization_preserves_authority_and_literal_bytes(domain, apostrophe, governor):
+    from service.router.intent.validation import source_requirements
+    prompt, good, expected = source_exclusion_case(domain, apostrophe, governor)
+    allowed = good["sources"][0]["domain"]
+    assert source_requirements(prompt) == ({allowed}, {domain})
+    intent = validate_intent(good, prompt, now=NOW)
+    assert compile_intent(intent, now=NOW)[0] == [expected]
+    for omitted, added in [(True, False), (False, True), (True, True)]:
+        bad = copy.deepcopy(good)
+        if omitted:
+            bad["excluded_sources"] = []
+        if added:
+            bad["sources"].append(source(domain))
+        with pytest.raises(InvalidIntent):
+            validate_intent(bad, prompt, now=NOW)
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_negative_check_exclusion_beats_inherited_email_authority(apostrophe):
+    prompt = "don" + apostrophe + "t check my email"
+    with pytest.raises(InvalidIntent):
+        validate_intent(value(source("email")), prompt,
+                        context=[{"role": "user", "content": "Recap my email"}], prior_tools=["summarize_emails"], now=NOW)
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_source_exclusion_lists_keep_an_independent_later_read(apostrophe):
+    from service.router.intent.validation import source_requirements
+    prompt = "Find notes about quartz birds don" + apostrophe + "t read my email or messages and afterwards read my reminders"
+    assert source_requirements(prompt) == ({"notes", "reminders"}, {"email", "messages"})
+    good = value(source("notes", "records", query="quartz birds"), source("reminders", "records"), excluded_sources=["email", "messages"])
+    assert validate_intent(good, prompt, now=NOW)
+    assert compile_intent(validate_intent(good, prompt, now=NOW), now=NOW)[0] == [
+        ("search_notes", {"query": "quartz birds"}), ("search_reminders", {"query": "", "scope": "all"})]
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_quoted_unicode_exclusions_and_names_remain_exact_literal_data(apostrophe):
+    from service.router.intent.validation import source_requirements
+    query = "O’Neill: don" + apostrophe + "t read my email or messages"
+    prompt = 'Find notes about "' + query + '"'
+    good = value(source("notes", "records", query=query))
+    assert source_requirements(prompt) == ({"notes"}, set())
+    assert compile_intent(validate_intent(good, prompt, now=NOW), now=NOW)[0] == [("search_notes", {"query": query})]
+    bad = value(source("notes", "records", query=query.replace("O’Neill", "O'Neill")))
+    with pytest.raises(InvalidIntent):
+        validate_intent(bad, prompt, now=NOW)
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_typed_task_negation_uses_equivalent_spellings_without_rewriting_targets(apostrophe):
+    from service.tasks.compiler import compile_task
+    assert compile_task("don" + apostrophe + "t check my reminders", now=NOW) is None
+    name = "O" + apostrophe + "Neill"
+    plan = compile_task('Complete reminder called "' + name + '"', now=NOW)
+    assert plan is not None and plan.intent == "reminder.complete"
+    assert plan.target.value == name
