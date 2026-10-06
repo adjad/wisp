@@ -23,17 +23,17 @@ All notable changes to Wisp are documented here.
 - A native source (such as Reminders) that has been syncing for 90 seconds without progress is reported as unavailable with the exact next step instead of reading "syncing" forever.
 - Engine errors, memory limits and over-long conversations explain themselves in plain language, with the technical reason kept in the debug detail.
 - Tool routing is measured: a frozen 361-prompt corpus and a CI ratchet now guard routing quality, which rose from 64% to 82% on that corpus (see docs/ROUTING_DIAGNOSIS.md). Fallback menus no longer offer send, reply, call or bulk-delete tools unless the request asks for them.
-- Wisp starts inference with one bounded engine status read and reuses a recent proof of which model is resident across the steps of a turn, instead of asking the engine before every step. A simple greeting now makes 2 engine calls instead of 3. The proof is dropped whenever anything could have changed the resident model.
+- Wisp starts inference with one bounded engine status read and reuses a recent proof of which model is resident across the steps of a turn, instead of asking the engine before every step. A simple greeting now makes 2 engine calls instead of 3. The proof is dropped on any model change Wisp makes or observes, and is re-checked at least every 10 seconds, so a change made outside Wisp is noticed within that bound.
 
 ### Performance
 
-- Verifying the local oMLX engine before each request is about twice as fast, with identical checks and verdicts: the engine's Python tree is read with `scandir` (2.2x on the real 47,320-entry tree), the independent process inspections run concurrently, and executable paths use the native `proc_pidpath` call instead of spawning `lsof`. Measured per request at the component level: about 1,989 ms before, about 906 ms after.
+- Verifying the local oMLX engine before each request does the same checks with the same verdicts in less time: the engine's Python tree is read with `scandir` (2.2x faster on the real 47,320-entry tree), the independent process inspections run concurrently (about 1.4x on a request-shaped total), and executable paths use the native `proc_pidpath` call instead of spawning `lsof`.
 - Routing reuses each exact query's lexical ranking within a request (about 1.9x faster routing for ambiguous requests).
 
 ### Security
 
 - Fixed an unreliable "Local inference peer attribution unavailable" refusal on about half of live turns when other clients were connected to the engine.
-- Pasted API keys and similar secrets are redacted before they reach the turn store, the audit log or a model.
+- Pasted API keys and similar secrets in Agent chats are redacted before they reach the turn store, the audit log or a model. Keys already stored in older history are not rewritten and should be rotated.
 - Approvals are strict: only an exact `true`/`false` is accepted, and an answer can only resolve the request that raised the confirmation.
 - Launch no longer terminates unrelated programs on Wisp's ports, and the app verifies the backend's identity before trusting it.
 - The protected-path floor now checks every path argument (including lists, symlinks and `/private` aliases), and an MCP server can no longer mark its own tool read-only.
@@ -56,6 +56,7 @@ All notable changes to Wisp are documented here.
 - Fixed long-overdue Wisp-only records reading as current reminders (they are left out of search and counted, never deleted).
 
 ## [1.1.5] - 2026-09-30
+
 ### Added
 
 - Added a confirmation step for shell commands that delete irreversibly — recursive deletes, wildcard deletes, and their equivalents. These now always show the exact command for approval, in every access mode including full access, and cannot be pre-approved with "always allow". Deleting a single named file still runs without prompting.
