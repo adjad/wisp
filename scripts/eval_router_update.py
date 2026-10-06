@@ -339,6 +339,13 @@ class InferenceGrant:
             raise PermissionError('A complete, exact loopback resident-Ling grant is required')
 
 
+@dataclass
+class _RuntimePhase:
+    capability: object
+    name: str
+    alive: bool = True
+
+
 class RuntimeCapability:
     """Explicit future execution lease. Merely implementing this grants no runtime.
 
@@ -373,15 +380,17 @@ class RuntimeCapability:
     def _phase(self, phase):
         if phase != 'cleanup':
             self.check()
-        token = _RUNTIME_PHASE.set((self, phase))
+        lease = _RuntimePhase(self, phase)
+        token = _RUNTIME_PHASE.set(lease)
         try:
             yield
         finally:
+            lease.alive = False  # Copied contexts cannot outlive this owned phase.
             _RUNTIME_PHASE.reset(token)
 
     def _current_phase(self):
         active = _RUNTIME_PHASE.get()
-        return active[1] if active and active[0] is self else None
+        return active.name if active and active.capability is self and active.alive else None
 
     def _real_home(self):
         return self._current_phase() in {'configure', 'construct', 'peer', 'cleanup'}
@@ -531,22 +540,29 @@ class _ScopedResidentClient:
     def _credential_transport(self): return self._client._credential_transport
 
     @asynccontextmanager
-    async def _operation(self):
+    async def _request(self):
+        """Hold exclusivity without exposing I/O authority or a caller timeout."""
         cap = self._capability
         cap.check()
         if cap._busy:
             raise PermissionError('Evaluation permits only one owned runtime request')
         cap._busy = True
         try:
+            yield
+        finally:
+            cap._busy = False
+            with cap._phase('cleanup'):
+                cap._check_lock()
+
+    @asynccontextmanager
+    async def _operation(self):
+        async with self._request():
+            cap = self._capability
             with cap._phase('peer'):
                 cap._check_lock()
                 async with asyncio.timeout(cap.stop_monotonic - _REAL_MONOTONIC()):
                     yield
                 cap.check()
-        finally:
-            cap._busy = False
-            with cap._phase('cleanup'):
-                cap._check_lock()
 
     async def status(self):
         async with self._operation():
@@ -574,14 +590,27 @@ class _ScopedResidentClient:
                   'kwargs': copy.deepcopy(kwargs), 'outcome': 'pending', 'events': []}
         self._capability.raw.append(record)
         try:
-            async with self._operation():
+            async with self._request():
+                cap = self._capability
                 stream = self._client.stream_events(model, messages, **kwargs)
                 try:
-                    async for event in stream:
+                    while True:
+                        # __anext__ owns I/O. Restore/revoke its phase before
+                        # transferring the resulting event to consumer code.
+                        with cap._phase('peer'):
+                            cap._check_lock()
+                            try:
+                                async with asyncio.timeout(cap.stop_monotonic - _REAL_MONOTONIC()):
+                                    event = await anext(stream)
+                            except StopAsyncIteration:
+                                break
+                            cap.check()
                         record['events'].append(copy.deepcopy(event))
                         yield event
+                    cap.check()
                 finally:
-                    await stream.aclose()
+                    with cap._phase('cleanup'):
+                        await stream.aclose()
             record['outcome'] = 'completed'
         except BaseException as error:
             record['outcome'] = type(error).__name__

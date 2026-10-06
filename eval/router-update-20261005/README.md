@@ -243,8 +243,14 @@ Socket admission additionally requires the private live phase. Peer inspection
 is limited to exact existing TCP8000 lsof/positive-PID ps argv, scrubbed environment
 and trusted production call sites; shell/process control/native tools and generic
 process permission remain denied. Model text cannot select these capabilities.
-Only one owned request is allowed. The public wrapper exposes the six existing
-metadata references and status/chat/stream/close, with no model lifecycle methods.
+Only one owned request is allowed. Streaming holds that request slot across
+consumer yields, but private peer authority and its timeout cover only underlying
+stream advancement. The caller context is restored before each event transfer.
+Every private phase has a revocable lease, so a copied task/thread context loses
+its authority when the owned phase ends, even if later I/O opens a new phase.
+Normal owned transport thread propagation remains supported. The public wrapper
+exposes the six existing metadata references and status/chat/stream/close, with
+no model lifecycle methods.
 
 Retained real wall time and a separately derived monotonic deadline are checked
 for admission and after awaits. Scenario fixture clocks cannot extend expiry.
