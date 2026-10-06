@@ -1,6 +1,6 @@
 {
-  "status": "unicode_exclusion_repairs_integrated_preparing_frozen_gates",
-  "updated_at": "2026-10-06T01:27:22.861945+00:00",
+  "status": "local_combined_candidate_waiting_checksum_authorization_and_final_gates",
+  "updated_at": "2026-10-06T02:52:16.217867+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,8 +10,8 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "R9 four-file repair frozen clean pushed and integrated",
-      "commit": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+      "status": "R10 repair frozen clean pushed and locally integrated",
+      "commit": "27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55",
       "validation_reported": {
         "mechanical": {
           "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
@@ -82,8 +82,8 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-replay-eval/MOE_Project",
       "branch": "codex/router-replay-eval",
-      "status": "Manifest, P3 documentation and CI timezone repair frozen, pushed and integrated",
-      "commit": "e9e51cd2414113ae27a4af5badce1c22ee335db5",
+      "status": "Evaluation-only bridge frozen clean pushed and locally integrated; no runtime admission",
+      "commit": "3122ed220206519fe676cd9be76a16a7705966d6",
       "validation_reported": {
         "manifest_repair_revision": "06691d13bee31a95ae58ece59411478662f7b3ad",
         "passed": 279,
@@ -138,11 +138,11 @@
   "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
   "production_changed": false,
   "pending": [
-    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R9/source/task preflight and full-scope audit, then separate synthetic QA",
-    "Resolve retained-owner provider qualification cancellation CI failure; no separate provider diagnosis or edits authorized",
-    "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
-    "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
-    "Protected integration handoff; no deployment or feature activation"
+    "Obtain explicit checksum-only permission; current async question pending. Keep full local gate and integration PR push/CI held without removing or weakening test.",
+    "Freeze and push new candidate when permitted; run full exact-SHA regression, required CI, independent R10/auth-boundary audit and distinct synthetic QA.",
+    "Admit serialized actual resident-model development comparison only after exact runtime identity, resource scope and independent checks; heldout prompts stay sealed.",
+    "Resolve retained-owner provider cancellation diagnosis; training compatibility/smoke remain separately unqualified.",
+    "Protected integration handoff; no deployment or feature activation."
   ],
   "acceptance_contract": "eval/router-update-integration-20261005/acceptance.json",
   "corpus_seal": {
@@ -159,14 +159,17 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "91b7885fa5ec2551032e60319ff01881af21ef6d",
-    "passed": 1153,
+    "revision": "d8e34732f9d1b6641d4d4ff95d2989dc341f97a7",
+    "passed": 1310,
     "skipped": 1,
     "skip_reason": "Original-control-only absence check",
-    "seconds": 17.89,
-    "scope": "Nine integrated intent/workflow/eval/overview/manifest/unchanged tomorrow/fallback modules",
+    "deselected": 1,
+    "deselected_reason": "Automatic approval review blocked unchanged opaque heldout checksum integrity test; explicit human checksum-only question pending",
+    "seconds": 20.15,
+    "scope": "Nine integrated intent/workflow/eval/overview/manifest/tomorrow/fallback modules with only blocked checksum test excluded",
     "model_calls": false,
-    "heldout_opened": false
+    "heldout_prompts_accessed": false,
+    "full_release_gate": false
   },
   "scope_review_notes": [
     "Automatic approval review rejected diagnostic allowlist extension twice; no diagnostics edits executed. Existing route_source=model vocabulary retained in original-owned router serialization, with finite debug-only intent_disposition.",
@@ -1240,5 +1243,108 @@
     "not_model_accuracy": true,
     "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
     "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; original score retained."
+  },
+  "eighth_frozen_candidate_gates": {
+    "revision": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+    "artifact": "eighth-candidate-gates",
+    "local_regression": "179/179 PASS",
+    "required_ci": {
+      "python": "SUCCESS 179/179",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "independent_audit": {
+      "verdict": "BLOCK",
+      "finding": "R10 P2 quoted reminder title mistaken for grammatical negation",
+      "controls_passed": 622,
+      "controls_total": 630,
+      "R9_source_exclusions_passed": 395
+    },
+    "qa": "Held, not executed",
+    "scope": "Prior SHA evidence only; no pass transfers to new combined candidate"
+  },
+  "development_after_task_literal_and_runtime_bridge": {
+    "source_revision": "d8e34732f9d1b6641d4d4ff95d2989dc341f97a7",
+    "artifact": "development-after-task-literal-and-runtime-bridge",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "not_model_accuracy": true,
+    "unchanged_annotations": true,
+    "annotation_limit": "Eight honest source-failure replies still fail original success-literal requirements; original 72/80 retained. Answer-fact/query-scope metrics have zero applicable cases."
+  },
+  "checksum_approval_hold": {
+    "status": "PENDING_EXPLICIT_HUMAN_CHECKSUM_ONLY_ANSWER",
+    "blocked_test": "tests/test_router_update_eval.py::test_seal_metadata_family_splits_and_dev_integrity",
+    "reason": "Automatic approval review treated even SHA256-only reading as conflicting with unopened-heldout scope; parent clarification insufficient; no workaround used",
+    "receipt": "eighth-candidate-gates/eval-bridge/IMPLEMENTATION_APPROVAL_REJECTION.json",
+    "no_push_or_full_gate": "Integration PR push would trigger the blocked check in CI. Keep local combined branch unpushed; no local full gate or alternative checksum reader until trusted authorization.",
+    "unaffected": "Permitted offline checks, development replay, local integration and evidence commits only",
+    "heldout_execution_authorized": false
   }
 }

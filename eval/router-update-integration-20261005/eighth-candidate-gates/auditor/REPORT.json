@@ -1,0 +1,404 @@
+{
+  "verdict": "BLOCK",
+  "candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "base_sha": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "previous_candidate_sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "pr_url": "https://github.com/adjad/wisp/pull/160",
+  "branch": "codex/router-update-1-3",
+  "recorded_at": "2026-10-06T01:46:39.873857+00:00",
+  "findings": [
+    {
+      "id": "R10",
+      "priority": "P2",
+      "title": "Unicode negation inside a quoted reminder title suppresses a supported positive task",
+      "file": "service/tasks/compiler.py",
+      "lines": [
+        20,
+        409
+      ],
+      "introduced_by": "The sole task-compiler delta broadens _NEGATED to four Unicode apostrophes; compile_reminder_complete still applies it to raw text including quoted target data.",
+      "trigger": "Complete reminder called \"Archive: don’t check this item\"",
+      "expected": "Compile reminder.complete with target exactly Archive: don’t check this item; resolve the isolated matching reminder and issue one fake complete_reminder call with literal title and singular expected_id.",
+      "actual": "compile_task returns None. Actual main.agent executes zero calls, stores no task or workflow, and responds: I couldn't complete every requested step. Still missing one of: complete_reminder.",
+      "variants": "U+2019, U+2018, U+02BC, U+FF07, each with check and delete inside the quoted title: eight independent reproductions.",
+      "isolation": "On this same exact head, injecting only the previous ASCII _NEGATED regex in memory restores the exact literal target and expected fake completion call for all four Unicode forms. Four current-head ordinary Unicode names also complete the same fake call path. This is a one-line guard counterfactual, not execution or a pass claim at the old candidate.",
+      "impact": "Functional regression for the already-supported Complete reminder called grammar. No unauthorized effect or private read occurred in these controls.",
+      "recommendation": "Apply negation detection to quote-masked instruction text while retaining original quoted target bytes for parsing. Add positive quoted-negation target tests alongside real negative instruction and existing source-exclusion tests.",
+      "evidence": [
+        "boundary-results.json",
+        "supplemental-results.json"
+      ],
+      "ascii_limit": "The analogous ASCII quoted-negation limitation predates this repair; the four newly covered Unicode forms are the demonstrated regression. The separately disclosed Check off reminder called observation is unchanged and not relied on."
+    }
+  ],
+  "review": {
+    "method": "Retained full intended source/schema/harness/overview review from seven earlier candidate audits, verified unchanged production paths through Git delta and byte fingerprints; fully reviewed current four-file source/test delta and task guard/parser/planner/executor plus current intent source/exclusion/literal context. Fresh exact-head independent controls re-exercise contracts; no earlier gate pass transfers.",
+    "full_production_paths": [
+      "scripts/eval_router_update.py",
+      "scripts/run_simulation_qa.py",
+      "service/agent/loop.py",
+      "service/main.py",
+      "service/router/intent/README.md",
+      "service/router/intent/__init__.py",
+      "service/router/intent/compiler.py",
+      "service/router/intent/grammar.py",
+      "service/router/intent/intent.schema.v1.json",
+      "service/router/intent/planner.py",
+      "service/router/intent/schema.py",
+      "service/router/intent/validation.py",
+      "service/router/router.py",
+      "service/router/web_request.py",
+      "service/tasks/compiler.py",
+      "service/tools/assistant_tools.py",
+      "service/tools/email_tools.py",
+      "service/tools/imessage_tools.py",
+      "service/tools/message_digest.py",
+      "service/workflows/compiler.py",
+      "service/workflows/present.py",
+      "service/workflows/reads.py"
+    ],
+    "delta_source_test_paths": [
+      "service/router/intent/validation.py",
+      "service/tasks/compiler.py",
+      "tests/test_router_intent_core.py",
+      "tests/test_router_intent_main.py"
+    ],
+    "historical_findings": "R1–R8/F1–F4 contracts retained; R9 source leak reproduced at previous head is closed by current independent exclusion controls. P3 original int/float equality versus typed request metric caveat retained. New R10 remains open.",
+    "prior_failure_evidence": "All seven original candidate bundles and CI/worker additions were hash-verified without parsing payloads. Original reports, failed logs, corpus/gold/seals and original replay metrics are preserved."
+  },
+  "coverage": {
+    "application_core": {
+      "passed": 484,
+      "total": 484,
+      "actual_main": 373,
+      "initial": {
+        "passed": 473,
+        "total": 484
+      },
+      "corrected_auditor_fixtures": 11,
+      "corrections": "fixture-corrections.json"
+    },
+    "R9": {
+      "passed": 395,
+      "total": 395,
+      "description": "Five apostrophes × five source domains × read/include/check: correct intent plus omitted, added and added-without-exclusion replies; source lists/later reads, exact quoted data, negative and positive supported task controls."
+    },
+    "R7": {
+      "passed": 12,
+      "total": 12,
+      "description": "Negative delivery tails preserve exact independent Notes read and create neither workflow nor active task."
+    },
+    "R8": {
+      "passed": 60,
+      "total": 60,
+      "description": "Independent later reads/omissions and positive later effect guards; explicit later send workflow checked as authorized, not prohibited."
+    },
+    "R1_R2_R4": {
+      "passed": 17,
+      "total": 17,
+      "description": "Fresh tuple swaps/omission, inherited current-versus-stale query, governed title/action boundaries; exact fake read calls."
+    },
+    "public": {
+      "passed": 40,
+      "total": 40,
+      "actual_main": 4,
+      "description": "Public update phrases, six separator × three delivery verb literal-address matrix, source freezing/contact exclusion, inherited and leading payloads, lookup/delivery revocations."
+    },
+    "runtime_privacy_overview": {
+      "passed": 66,
+      "total": 66,
+      "description": "Identity-before-I/O, residency, default-off/kill, bounded repair/context, planner-only timeout/cancellation; schema, strict Messages/legacy miss behavior, overview coverage/counts/provenance/actors/privacy; G1 three clocks plus injected leak; manifest179/drift and DST23/25h/typed scorer; process/network/write guard."
+    },
+    "supplemental": {
+      "passed": 32,
+      "total": 32,
+      "description": "Actual main calendar-only/aliases and source authority, mixed source completeness, exact dates/unread/count/account/query/duration, unsupported requests, quoted normalization rejection/context exclusion, truthful source errors and eight R10 paired controls."
+    },
+    "R10": {
+      "passed": 0,
+      "total": 8,
+      "description": "New functional regression in supported positive tasks with negation data inside Unicode quoted titles."
+    },
+    "unique_contract_controls": {
+      "passed": 622,
+      "total": 630
+    },
+    "provenance": {
+      "passed": 774,
+      "total": 774,
+      "archive_manifests": 21,
+      "archive_entries": 450,
+      "replay_bundles": 12,
+      "full_paths": 363,
+      "delta_paths": 72,
+      "all_changed_file_bytes_unchanged": true
+    }
+  },
+  "parent_full_gate": {
+    "status": "PASS_PARENT_RECEIPT_VERIFIED",
+    "modules": 179,
+    "receipt": "parent-gate-receipt.json",
+    "metadata": {
+      "candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+      "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+      "command": [
+        "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+        "scripts/test_replay_failure_fixes.py"
+      ],
+      "started_at": "2026-10-06T01:27:56.736929+00:00",
+      "completed_at": "2026-10-06T01:37:36.695077+00:00",
+      "elapsed_seconds": 579.9565532091074,
+      "exit_code": 0,
+      "head_unchanged": true,
+      "status_porcelain": "",
+      "log": "/private/tmp/wisp-router-update-44babb7-regression.log",
+      "log_sha256": "5b09a3939d61d26350e86c71c87bad63309ab3122ab762051e54f3c8560b9305",
+      "model_inference": false,
+      "real_tool_execution": false,
+      "launcher": "Approved outer host launch; unchanged restrictive runner/native inner sandbox"
+    },
+    "not_rerun_by_auditor": true
+  },
+  "ci": [
+    {
+      "path": "/private/tmp/wisp-router-update-44babb7-python-ci-state.json",
+      "sha256": "4540b96b3b9718bc9eaf30e4dd6af2ab451cb4c3b1c43a04c44a7d372d4e0cb0",
+      "metadata": {
+        "conclusion": "",
+        "databaseId": 37399273554,
+        "headSha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+        "jobs": [
+          {
+            "completedAt": "0001-01-01T00:00:00Z",
+            "conclusion": "",
+            "databaseId": 112062543794,
+            "name": "python-regressions",
+            "startedAt": "2026-10-06T01:27:54Z",
+            "status": "in_progress",
+            "steps": [
+              {
+                "completedAt": "2026-10-06T01:27:56Z",
+                "conclusion": "success",
+                "name": "Set up job",
+                "number": 1,
+                "startedAt": "2026-10-06T01:27:55Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:03Z",
+                "conclusion": "success",
+                "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                "number": 2,
+                "startedAt": "2026-10-06T01:27:56Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:03Z",
+                "conclusion": "success",
+                "name": "Verify exact candidate checkout",
+                "number": 3,
+                "startedAt": "2026-10-06T01:28:03Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:05Z",
+                "conclusion": "success",
+                "name": "Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                "number": 4,
+                "startedAt": "2026-10-06T01:28:03Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:29Z",
+                "conclusion": "success",
+                "name": "Install test dependencies",
+                "number": 5,
+                "startedAt": "2026-10-06T01:28:05Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Run complete regression gate",
+                "number": 6,
+                "startedAt": "2026-10-06T01:28:29Z",
+                "status": "in_progress"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Post Run actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97",
+                "number": 11,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                "number": 12,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              }
+            ],
+            "url": "https://github.com/adjad/wisp/actions/runs/37399273554/job/112062543794"
+          }
+        ],
+        "name": "Regression gate",
+        "status": "in_progress",
+        "url": "https://github.com/adjad/wisp/actions/runs/37399273554"
+      }
+    },
+    {
+      "path": "/private/tmp/wisp-router-update-44babb7-artifact-ci-state.json",
+      "sha256": "446c3e33f6b3ea45413dbe004ca3aa928978c4f1e7d96da1dab9d3f930f7ac6f",
+      "metadata": {
+        "conclusion": "",
+        "databaseId": 37399273475,
+        "headSha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+        "jobs": [
+          {
+            "completedAt": "0001-01-01T00:00:00Z",
+            "conclusion": "",
+            "databaseId": 112062543801,
+            "name": "Verified macOS artifact",
+            "startedAt": "2026-10-06T01:27:51Z",
+            "status": "in_progress",
+            "steps": [
+              {
+                "completedAt": "2026-10-06T01:27:52Z",
+                "conclusion": "success",
+                "name": "Set up job",
+                "number": 1,
+                "startedAt": "2026-10-06T01:27:51Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:27:57Z",
+                "conclusion": "success",
+                "name": "Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                "number": 2,
+                "startedAt": "2026-10-06T01:27:52Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:27:58Z",
+                "conclusion": "success",
+                "name": "Validate committed dependency locks before bootstrap",
+                "number": 3,
+                "startedAt": "2026-10-06T01:27:57Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:00Z",
+                "conclusion": "success",
+                "name": "Run actions/cache@5a3ec84eff668545956fd18022155c47e93e2684",
+                "number": 4,
+                "startedAt": "2026-10-06T01:27:58Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:17Z",
+                "conclusion": "success",
+                "name": "Qualify isolated signed ACL replacement on disposable macOS",
+                "number": 5,
+                "startedAt": "2026-10-06T01:28:00Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "2026-10-06T01:28:18Z",
+                "conclusion": "success",
+                "name": "Upload isolated ACL qualification report",
+                "number": 6,
+                "startedAt": "2026-10-06T01:28:17Z",
+                "status": "completed"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Build and verify from source",
+                "number": 7,
+                "startedAt": "2026-10-06T01:28:18Z",
+                "status": "in_progress"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Verify synthetic publisher signatures and provisioning transactions",
+                "number": 8,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Build and verify exact-candidate offline mini artifact",
+                "number": 9,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Upload verified mini artifact",
+                "number": 10,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Upload verified candidate",
+                "number": 11,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Upload diagnostics",
+                "number": 12,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Post Run actions/cache@5a3ec84eff668545956fd18022155c47e93e2684",
+                "number": 23,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              },
+              {
+                "completedAt": "0001-01-01T00:00:00Z",
+                "conclusion": "",
+                "name": "Post Run actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683",
+                "number": 24,
+                "startedAt": "0001-01-01T00:00:00Z",
+                "status": "pending"
+              }
+            ],
+            "url": "https://github.com/adjad/wisp/actions/runs/37399273475/job/112062543801"
+          }
+        ],
+        "name": "Wisp build",
+        "status": "in_progress",
+        "url": "https://github.com/adjad/wisp/actions/runs/37399273475"
+      }
+    }
+  ],
+  "limits": [
+    "All inference/status/registered tool interfaces were synthetic. These results establish orchestration contracts, not resident Ling accuracy, hardware residency, performance, or installed-app behavior.",
+    "No heldout/corpus/author/archived payload was decoded; archived evidence, including decompressed original bytes, was only hashed. No archived script executed.",
+    "No real native source, user data, outbound communication, credentials, network or endpoint probe. No candidate file edits, full179 gate duplication, DEV replay, provider cancellation diagnosis or provider tests.",
+    "Positive task fixtures deliberately do not update reminder readback; exact fake tool arguments and the truthful unverified-change response/stored failed task are checked. No success assertion is fabricated.",
+    "Required Python and macOS CI receipts observed at this head remain in_progress, not terminal success. Saved receipts are parent-fetched metadata, not an auditor network check.",
+    "The prior6df provider-cancellation failure cause and retained owner ACK/relay remain unresolved. Later passing CI does not diagnose it.",
+    "Resident-Ling resource/training/activation, applicable Live QA, final-release performance, installed replacement and shipping remain separate holds. Structured planner remains default-disabled.",
+    "Distinct Simulation QA remains held: this audit is BLOCK and cannot satisfy a nonblocking same-SHA audit prerequisite."
+  ],
+  "candidate_clean": true,
+  "source_writers": "FROZEN",
+  "simulation_qa": "HELD",
+  "output": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor"
+}

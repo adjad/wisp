@@ -1,0 +1,638 @@
+{
+  "head": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "state": "/private/var/folders/z2/2kbfz1g91rl2n4wfnvt8r6dm0000gn/T/wisp-44babb7-runtime-is1_l3s3",
+  "passed": 66,
+  "total": 66,
+  "rows": [
+    {
+      "id": "test_one_repair_and_clean_role_context_metadata",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_one_repair_and_clean_role_context_metadata",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_invalid_intent_never_falls_back_to_broad_tools",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_invalid_intent_never_falls_back_to_broad_tools",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_unavailable_model_never_loads_or_generates",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_unavailable_model_never_loads_or_generates",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_remote_or_wrong_model_is_not_resource_eligible",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_remote_or_wrong_model_is_not_resource_eligible",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_deadline_cancels_generation_without_retry",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_deadline_cancels_generation_without_retry",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_outer_cancellation_is_not_reclassified_as_clarification",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_outer_cancellation_is_not_reclassified_as_clarification",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_schema_asset_matches_callable_contract",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_schema_asset_matches_callable_contract",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_loop_merge_keeps_scope_and_failure_evidence",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_loop_merge_keeps_scope_and_failure_evidence",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_registered_strict_message_capability_is_used_exactly",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_registered_strict_message_capability_is_used_exactly",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_missing_binding_or_resolution_failure_fails_closed",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_missing_binding_or_resolution_failure_fails_closed",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_configured_target_is_authoritative_over_model_argument_and_config",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_configured_target_is_authoritative_over_model_argument_and_config",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_scope_labels_escape_literal_markdown_and_preserve_failed_receipt",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_scope_labels_escape_literal_markdown_and_preserve_failed_receipt",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-None",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          null
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-{}",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          {}
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-{'enabled': False}",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          {
+            "enabled": false
+          }
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-{'enabled': True}",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          {
+            "enabled": true
+          }
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-{'enabled': True, 'domains': []}",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          {
+            "enabled": true,
+            "domains": []
+          }
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "defaultoff-{'enabled': True, 'domains': ['notes']}",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_defaultoff_and_domain_allowlist_do_not_generate",
+        "parameters": [
+          {
+            "enabled": true,
+            "domains": [
+              "notes"
+            ]
+          }
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "kill-switch",
+      "evidence": {
+        "function": "tests.test_router_intent_core.test_kill_switch_never_generates",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "identity-before-IO-19",
+      "evidence": {
+        "disposition": "clarify",
+        "calls": []
+      },
+      "pass": true
+    },
+    {
+      "id": "identity-before-IO-20",
+      "evidence": {
+        "disposition": "clarify",
+        "calls": []
+      },
+      "pass": true
+    },
+    {
+      "id": "identity-before-IO-21",
+      "evidence": {
+        "disposition": "clarify",
+        "calls": []
+      },
+      "pass": true
+    },
+    {
+      "id": "G1-three-clock-1791222000.0",
+      "evidence": {
+        "function": "tests.test_message_digest.test_distinct_redacted_requests_keep_both_source_occurrences",
+        "parameters": [
+          1791222000.0,
+          null
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "G1-three-clock-1791234567.0",
+      "evidence": {
+        "function": "tests.test_message_digest.test_distinct_redacted_requests_keep_both_source_occurrences",
+        "parameters": [
+          1791234567.0,
+          "1234"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "G1-three-clock-1791256782.0",
+      "evidence": {
+        "function": "tests.test_message_digest.test_distinct_redacted_requests_keep_both_source_occurrences",
+        "parameters": [
+          1791256782.0,
+          "5678"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "G1-injected-text-leak",
+      "evidence": {
+        "injected_text": "1234",
+        "oracle_rejected": true
+      },
+      "pass": true
+    },
+    {
+      "id": "test_complete_agenda_snapshot_has_exact_disjoint_counts_and_day_groups",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_complete_agenda_snapshot_has_exact_disjoint_counts_and_day_groups",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_merged_row_is_one_displayed_item_with_both_origins",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_merged_row_is_one_displayed_item_with_both_origins",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_schedule_display_collapse_preserves_calendar_and_reminder_provenance",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_schedule_display_collapse_preserves_calendar_and_reminder_provenance",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_agenda_source_title_cannot_inject_count_or_layout",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_agenda_source_title_cannot_inject_count_or_layout",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_and_permission_agendas_never_claim_complete_absence-ready",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_and_permission_agendas_never_claim_complete_absence",
+        "parameters": [
+          "ready"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_and_permission_agendas_never_claim_complete_absence-unavailable",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_and_permission_agendas_never_claim_complete_absence",
+        "parameters": [
+          "unavailable"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_and_permission_agendas_never_claim_complete_absence-syncing",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_and_permission_agendas_never_claim_complete_absence",
+        "parameters": [
+          "syncing"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_agenda_withholds_unverified_rows_and_counts_only_available_items",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_agenda_withholds_unverified_rows_and_counts_only_available_items",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_complete_email_overview_has_no_scan_bookkeeping",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_complete_email_overview_has_no_scan_bookkeeping",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_repeated_email_subjects_fold_but_messages_and_unread_stay_counted",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_repeated_email_subjects_fold_but_messages_and_unread_stay_counted",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_repeated_subjects_do_not_merge_unknown_senders_or_accounts",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_repeated_subjects_do_not_merge_unknown_senders_or_accounts",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_email_has_one_coverage_notice_and_never_invents_absence-0",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_email_has_one_coverage_notice_and_never_invents_absence",
+        "parameters": [
+          []
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "test_partial_email_has_one_coverage_notice_and_never_invents_absence-1",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_partial_email_has_one_coverage_notice_and_never_invents_absence",
+        "parameters": [
+          [
+            {
+              "ts": 1791212400.0,
+              "sender": "Alex",
+              "sender_address": "alex@example.test",
+              "account": "Personal",
+              "account_id": "Personal",
+              "message_id": "m-1",
+              "subject": "Independent source fact",
+              "unread": false
+            }
+          ]
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "test_empty_complete_email_is_distinct_from_partial",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_empty_complete_email_is_distinct_from_partial",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_email_requested_day_range_uses_inclusive_last_day",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_email_requested_day_range_uses_inclusive_last_day",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_email_legacy_undated_headers_never_render_order_indices_as_dates",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_email_legacy_undated_headers_never_render_order_indices_as_dates",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_quoted_subject_instructions_never_change_computed_summary",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_quoted_subject_instructions_never_change_computed_summary",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_message_actors_are_explicit_and_topics_are_compact",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_message_actors_are_explicit_and_topics_are_compact",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_message_partial_and_omission_notices_fit_character_budget",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_message_partial_and_omission_notices_fit_character_budget",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_current_workflow_calendar_presentation_preserves_counts_coverage_and_attribution",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_current_workflow_calendar_presentation_preserves_counts_coverage_and_attribution",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_unrecognised_workflow_calendar_remains_lossless_and_not_self_attributed",
+      "evidence": {
+        "function": "tests.test_router_overview_grounding.test_unrecognised_workflow_calendar_remains_lossless_and_not_self_attributed",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_strict_keyword_miss_never_returns_unrelated_rows",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_strict_keyword_miss_never_returns_unrelated_rows",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_legacy_default_retains_original_keyword_miss_behavior",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_legacy_default_retains_original_keyword_miss_behavior",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_strict_match_preserves_requested_count_and_excludes_other_conversations",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_strict_match_preserves_requested_count_and_excludes_other_conversations",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_strict_miss_is_scoped_to_the_requested_day",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_strict_miss_is_scoped_to_the_requested_day",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_strict_miss_keeps_period_precedence_and_does_not_read_a_different_day",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_strict_miss_keeps_period_precedence_and_does_not_read_a_different_day",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_strict_permission_failure_is_not_a_keyword_miss",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_strict_permission_failure_is_not_a_keyword_miss",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "test_registered_schema_and_callable_accept_opt_in_strict_match",
+      "evidence": {
+        "function": "tests.test_router_overview_message_scope.test_registered_schema_and_callable_accept_opt_in_strict_match",
+        "parameters": []
+      },
+      "pass": true
+    },
+    {
+      "id": "full-manifest-179",
+      "evidence": {
+        "count": 179,
+        "new": [
+          "tests/test_router_intent_core.py",
+          "tests/test_router_intent_main.py",
+          "tests/test_router_intent_workflow.py",
+          "tests/test_router_update_eval.py",
+          "tests/test_router_overview_grounding.py",
+          "tests/test_router_overview_message_scope.py"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "manifest-unknown",
+      "evidence": {
+        "kind": "unknown",
+        "error": "unsafe full-profile manifest drift; unclassified tests: ['tests/test_unknown_fixture.py']"
+      },
+      "pass": true
+    },
+    {
+      "id": "manifest-missing",
+      "evidence": {
+        "kind": "missing",
+        "error": "unsafe full-profile manifest drift; missing reviewed tests: ['tests/browser_actions/test_action_executor.py']"
+      },
+      "pass": true
+    },
+    {
+      "id": "DST-2026-03-08T12:00:00-07:00-UTC",
+      "evidence": {
+        "clock": "2026-03-08T12:00:00-07:00",
+        "host": "UTC",
+        "args": {
+          "_resolved_span": [
+            1772956800.0,
+            1773039600.0
+          ]
+        },
+        "duration_hours": 23
+      },
+      "pass": true
+    },
+    {
+      "id": "DST-2026-03-08T12:00:00-07:00-America/Los_Angeles",
+      "evidence": {
+        "clock": "2026-03-08T12:00:00-07:00",
+        "host": "America/Los_Angeles",
+        "args": {
+          "_resolved_span": [
+            1772956800.0,
+            1773039600.0
+          ]
+        },
+        "duration_hours": 23
+      },
+      "pass": true
+    },
+    {
+      "id": "DST-2026-11-01T12:00:00-08:00-UTC",
+      "evidence": {
+        "clock": "2026-11-01T12:00:00-08:00",
+        "host": "UTC",
+        "args": {
+          "_resolved_span": [
+            1793516400.0,
+            1793606400.0
+          ]
+        },
+        "duration_hours": 25
+      },
+      "pass": true
+    },
+    {
+      "id": "DST-2026-11-01T12:00:00-08:00-America/Los_Angeles",
+      "evidence": {
+        "clock": "2026-11-01T12:00:00-08:00",
+        "host": "America/Los_Angeles",
+        "args": {
+          "_resolved_span": [
+            1793516400.0,
+            1793606400.0
+          ]
+        },
+        "duration_hours": 25
+      },
+      "pass": true
+    },
+    {
+      "id": "P3-original-versus-typed-metric",
+      "evidence": {
+        "runtime_constraints": true,
+        "source": true,
+        "excluded_source": true,
+        "menu": null,
+        "first_call": true,
+        "exact_arguments": true,
+        "effects": true,
+        "literal_fidelity": null,
+        "answer_facts": null,
+        "failure_honesty": null,
+        "duplicate": true,
+        "completed": true,
+        "end_to_end": true,
+        "request_argument": false,
+        "query_scope_guard": null,
+        "guarded_end_to_end": false
+      },
+      "pass": true
+    },
+    {
+      "id": "actual-config-default-disabled",
+      "evidence": {
+        "intent_router": null
+      },
+      "pass": true
+    },
+    {
+      "id": "isolation-DNS",
+      "evidence": {
+        "denied": true,
+        "error": "evaluation denies socket.getaddrinfo"
+      },
+      "pass": true
+    },
+    {
+      "id": "isolation-process",
+      "evidence": {
+        "denied": true,
+        "error": "evaluation denies subprocess.Popen"
+      },
+      "pass": true
+    },
+    {
+      "id": "isolation-outside-write",
+      "evidence": {
+        "denied": true,
+        "error": "evaluation denies write outside synthetic/output state: /Users/adijain/.codex/worktrees/router-update-integration/MOE_Project/auditor-forbidden"
+      },
+      "pass": true
+    }
+  ]
+}

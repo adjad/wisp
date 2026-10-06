@@ -1,0 +1,27 @@
+{
+  "verdict": "BLOCK",
+  "candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "pr_url": "https://github.com/adjad/wisp/pull/160",
+  "finding_ids": [
+    "R10"
+  ],
+  "finding_priority": "P2",
+  "report": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/REPORT.md",
+  "report_sha256": "8bfa44f7a1982f29d06d4aa0faf14a7716edb0a737d3dd0eb7282b0783bcf063",
+  "report_json_sha256": "9961f984465f5d2c2e89c777a70332efaa44e444e495a30e786b2b6f15185fac",
+  "independent_contract_controls": {
+    "passed": 622,
+    "total": 630
+  },
+  "parent_full_gate_modules": 179,
+  "parent_full_gate": "PASS_VERIFIED_RECEIPT_NOT_RERUN",
+  "ci": "PENDING_IN_PROGRESS_SAVED_EXACT_HEAD_METADATA",
+  "simulation_qa": "HELD_NO_RELEASE",
+  "candidate_clean": true,
+  "source_writers": "FROZEN",
+  "no_source_edits": true,
+  "provider_diagnosis": "UNRESOLVED_EXCLUDED",
+  "resource_activation_shipping": "HELD",
+  "next_action": "Parent may triage R10; no repair authorization or gate relaxation is added. New edits require new frozen SHA and fresh assigned gates.",
+  "created_at": "2026-10-06T01:46:39.873857+00:00"
+}

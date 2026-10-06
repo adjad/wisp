@@ -1,0 +1,22 @@
+{
+  "manifest.json": {
+    "original_path": "/private/tmp/wisp-router-combined-r10-bridge-dev-20261005/manifest.json",
+    "original_sha256": "ac0156026680295a53f7cc9dbf57f9656eecdfe2e425c6de4673e2c18b4b4f38",
+    "stored_sha256": "ac0156026680295a53f7cc9dbf57f9656eecdfe2e425c6de4673e2c18b4b4f38"
+  },
+  "raw.jsonl.gz": {
+    "original_path": "/private/tmp/wisp-router-combined-r10-bridge-dev-20261005/raw.jsonl",
+    "original_sha256": "f101a8d727f00ea21b28749fa957f09721206367f487e8d0cf33166d6a4d053b",
+    "stored_sha256": "10349ca3be729c23c8d07cd758fa545d67e0920b7ad18f28dfcac26e4ae71bab"
+  },
+  "focused.log": {
+    "original_path": "/private/tmp/wisp-router-combined-r10-bridge-focused.log",
+    "original_sha256": "d65a0473388c4e0617e2c5b3d800495c31af505f31e3180a95a1e964c9c41bd2",
+    "stored_sha256": "d65a0473388c4e0617e2c5b3d800495c31af505f31e3180a95a1e964c9c41bd2"
+  },
+  "replay-command.log": {
+    "original_path": "/private/tmp/wisp-router-combined-r10-bridge-dev-command.log",
+    "original_sha256": "e5eb2e8e0ddda1a7eaead30dc4ce874b1f1bd3952b8269a0b1aff707c1727d9b",
+    "stored_sha256": "e5eb2e8e0ddda1a7eaead30dc4ce874b1f1bd3952b8269a0b1aff707c1727d9b"
+  }
+}

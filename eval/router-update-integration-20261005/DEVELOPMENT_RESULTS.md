@@ -46,3 +46,7 @@ At `cf6a0379761979e5a7445e911d74046797609967`, the unchanged enabled scripted re
 ## Unicode source-exclusion repair
 
 At `91b7885fa5ec2551032e60319ff01881af21ef6d`, unchanged enabled scripted production replay is preserved in `development-after-unicode-exclusion-repairs/`; original metrics are unchanged. Nine integrated modules passed 1153 with one original-control skip in 17.89s. Case totals cover80 correlated variants in10 families, not model generalization. Source-error annotation limitations and zero-applicable answer-fact/query-scope metrics remain disclosed. Worker failure transcripts and exact-head routing/typed-task receipts are retained in `seventh-candidate-gates/core-repair/`.
+
+## Quoted task literals and isolated runtime bridge
+
+At source revision `d8e34732f9d1b6641d4d4ff95d2989dc341f97a7`, nine combined modules passed1310, skipped one original-control-only check and deselected the single checksum check blocked by automatic approval review. This is an incomplete release gate. Enabled scripted DEV remained80/80 source/exact arguments,48/48 first calls,72/80 original end-to-end and16/16 applicable failure honesty. All original metrics and annotation limitations remain in the manifest. No real-model result or training uplift is claimed. Previous44babb7 gates/audit, complete worker failures and approval rejection are preserved in `eighth-candidate-gates/`.

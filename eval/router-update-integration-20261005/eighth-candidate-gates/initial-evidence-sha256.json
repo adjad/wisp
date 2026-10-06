@@ -1,0 +1,270 @@
+{
+  "candidate_sha": "44babb70ee2eea99897b9437b2f6d49b2d59adff",
+  "created_at": "2026-10-06T02:27:32.522229+00:00",
+  "files": {
+    "auditor/HANDOFF.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/HANDOFF.json",
+      "original_sha256": "ab0f27d26cda9151763ee1bb536e1e0fe48efc95373ec97b5d1b05ce206eb65c",
+      "stored_sha256": "ab0f27d26cda9151763ee1bb536e1e0fe48efc95373ec97b5d1b05ce206eb65c",
+      "original_bytes": 1108
+    },
+    "auditor/R10-proof.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/R10-proof.json",
+      "original_sha256": "7c6e5b3fe5d76cb438cc3986aedd85e34027a13f60fa6b6f35217a8c3b0f3132",
+      "stored_sha256": "8b824eed71535110c63ac9cafc3ff973751b8ebe4071dc47a07af6f4991cf4f0",
+      "original_bytes": 5889924
+    },
+    "auditor/REPORT.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/REPORT.json",
+      "original_sha256": "9961f984465f5d2c2e89c777a70332efaa44e444e495a30e786b2b6f15185fac",
+      "stored_sha256": "9961f984465f5d2c2e89c777a70332efaa44e444e495a30e786b2b6f15185fac",
+      "original_bytes": 18928
+    },
+    "auditor/REPORT.md": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/REPORT.md",
+      "original_sha256": "8bfa44f7a1982f29d06d4aa0faf14a7716edb0a737d3dd0eb7282b0783bcf063",
+      "stored_sha256": "8bfa44f7a1982f29d06d4aa0faf14a7716edb0a737d3dd0eb7282b0783bcf063",
+      "original_bytes": 5698
+    },
+    "auditor/application-command-initial.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-command-initial.log",
+      "original_sha256": "5ae97083759f57eff838e41e8c9a542662254c8a85687caef8f87f5b19792aac",
+      "stored_sha256": "3110dced455c7cd82893ff1690981a5c14e8c4dd4bc26f567e6b8c94b389e6ac",
+      "original_bytes": 15958
+    },
+    "auditor/application-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-command.log",
+      "original_sha256": "5ae97083759f57eff838e41e8c9a542662254c8a85687caef8f87f5b19792aac",
+      "stored_sha256": "3110dced455c7cd82893ff1690981a5c14e8c4dd4bc26f567e6b8c94b389e6ac",
+      "original_bytes": 15958
+    },
+    "auditor/application-correction-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-correction-command.log",
+      "original_sha256": "9dba4dc204603fd56c37e5cfd1e3576160a8b0f402b642959ba543c0703f2c4e",
+      "stored_sha256": "0eba5f518771a3a76ceeaa3bbfb1fd076189c32f30534ee4de4b656862499f71",
+      "original_bytes": 96
+    },
+    "auditor/application-correction-results.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-correction-results.json",
+      "original_sha256": "eac4e68d3a2ecba7585d72ce20b1ae9badc905abd25d81a6afd98b168dae1981",
+      "stored_sha256": "193ce4895d13f704c6151e3fe7914f59d18bc1c8e3ecea0341bfd3016e987a1e",
+      "original_bytes": 1194355
+    },
+    "auditor/application-results-initial.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-results-initial.json",
+      "original_sha256": "db5f7765550ba0f0017819c9c985c717acf6f42b2f43f9b7b4451053a7e5b51f",
+      "stored_sha256": "2ff482e106247e003f0b103309e361d55a746322a99b7f0966bf564532339e62",
+      "original_bytes": 48971600
+    },
+    "auditor/application-results.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application-results.json",
+      "original_sha256": "db5f7765550ba0f0017819c9c985c717acf6f42b2f43f9b7b4451053a7e5b51f",
+      "stored_sha256": "2ff482e106247e003f0b103309e361d55a746322a99b7f0966bf564532339e62",
+      "original_bytes": 48971600
+    },
+    "auditor/application_controls-initial.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application_controls-initial.py",
+      "original_sha256": "67c6775190619b69ba31252805addceca605a77b789b4656604b7bce252395c0",
+      "stored_sha256": "67c6775190619b69ba31252805addceca605a77b789b4656604b7bce252395c0",
+      "original_bytes": 11486
+    },
+    "auditor/application_controls.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/application_controls.py",
+      "original_sha256": "f3eee1fe313c519fa075bdc29d04c44ffbf0d48f1b386740a158136bc866216b",
+      "stored_sha256": "f3eee1fe313c519fa075bdc29d04c44ffbf0d48f1b386740a158136bc866216b",
+      "original_bytes": 12181
+    },
+    "auditor/assignment-registry-snapshot.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/assignment-registry-snapshot.json",
+      "original_sha256": "1ffd93b43a8f9542edeaf7ef1852d0d5609b94caf0226b2e4735153d4201684b",
+      "stored_sha256": "1ffd93b43a8f9542edeaf7ef1852d0d5609b94caf0226b2e4735153d4201684b",
+      "original_bytes": 72391
+    },
+    "auditor/assignment-snapshot.md": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/assignment-snapshot.md",
+      "original_sha256": "c8914446e7e87b4c7422e132c02971b309b8223d7abf1d81ce67f9135b48401f",
+      "stored_sha256": "c8914446e7e87b4c7422e132c02971b309b8223d7abf1d81ce67f9135b48401f",
+      "original_bytes": 6005
+    },
+    "auditor/boundary-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/boundary-command.log",
+      "original_sha256": "b9cffcb4f25f40f043cb404ca58b7b9caf7de2c795717b9f4928ed40e261c357",
+      "stored_sha256": "b96541f37ee6f308ca48efe7d72ec8a2685b119a7eeb06f6133d04a04f12bdb0",
+      "original_bytes": 2110
+    },
+    "auditor/boundary-results.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/boundary-results.json",
+      "original_sha256": "8fbf17001aac41f50876f28ee8a0198fc143d287d996e3ef1d5320eb2d285cb3",
+      "stored_sha256": "bc25b6d1efbbd4f0b26668a8feeb4489e3954f91c551e1135ddd9f040c0ebf58",
+      "original_bytes": 5613255
+    },
+    "auditor/boundary_controls.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/boundary_controls.py",
+      "original_sha256": "95aafb5598d7606f3fb4ba278d5bc725e50c8c57cffa677afd10d615fc255a1c",
+      "stored_sha256": "95aafb5598d7606f3fb4ba278d5bc725e50c8c57cffa677afd10d615fc255a1c",
+      "original_bytes": 8015
+    },
+    "auditor/finalize-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/finalize-command.log",
+      "original_sha256": "f17bd96db4ba03a224981f1ec4619f2d43094a47f87b63ea0b0d69c36627836b",
+      "stored_sha256": "cb8d81f4bf7d33b7b8d37de4bd14f9ba91776cfa9281a10036c92235adc11127",
+      "original_bytes": 272
+    },
+    "auditor/finalize_report.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/finalize_report.py",
+      "original_sha256": "f1eab044c8d51e96a1464d34a33383a5c033aaaafff882d6c2aa195cf19ee908",
+      "stored_sha256": "f1eab044c8d51e96a1464d34a33383a5c033aaaafff882d6c2aa195cf19ee908",
+      "original_bytes": 16487
+    },
+    "auditor/fixture-corrections.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/fixture-corrections.json",
+      "original_sha256": "47e6673a20b3aaac97b69bc4a0dd11f76392638e4b594afd447dda1f56678e29",
+      "stored_sha256": "47e6673a20b3aaac97b69bc4a0dd11f76392638e4b594afd447dda1f56678e29",
+      "original_bytes": 725
+    },
+    "auditor/parent-gate-receipt.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/parent-gate-receipt.json",
+      "original_sha256": "254ee6431117931fc14621d4fd0759403c5f1efe095e447edb825f7a237eb2cc",
+      "stored_sha256": "254ee6431117931fc14621d4fd0759403c5f1efe095e447edb825f7a237eb2cc",
+      "original_bytes": 764
+    },
+    "auditor/provenance-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/provenance-command.log",
+      "original_sha256": "f1e62c57ee8e0f040e879f28a380d245a6281342076dcd83e8f812722e082db4",
+      "stored_sha256": "0177fe559f414669ab182d97a782cccc44e889051ee58a6ebaee8799b4de17c9",
+      "original_bytes": 133
+    },
+    "auditor/provenance-final-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/provenance-final-command.log",
+      "original_sha256": "f1e62c57ee8e0f040e879f28a380d245a6281342076dcd83e8f812722e082db4",
+      "stored_sha256": "0177fe559f414669ab182d97a782cccc44e889051ee58a6ebaee8799b4de17c9",
+      "original_bytes": 133
+    },
+    "auditor/provenance-final.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/provenance-final.json",
+      "original_sha256": "a71a1eba130ff90ae1276bd7d2b9ba7130fa6c46f9fe64263465b4a67a185650",
+      "stored_sha256": "a71a1eba130ff90ae1276bd7d2b9ba7130fa6c46f9fe64263465b4a67a185650",
+      "original_bytes": 884142
+    },
+    "auditor/provenance.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/provenance.json",
+      "original_sha256": "a71a1eba130ff90ae1276bd7d2b9ba7130fa6c46f9fe64263465b4a67a185650",
+      "stored_sha256": "a71a1eba130ff90ae1276bd7d2b9ba7130fa6c46f9fe64263465b4a67a185650",
+      "original_bytes": 884142
+    },
+    "auditor/provenance_controls.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/provenance_controls.py",
+      "original_sha256": "6198c408dcc1b87eda2be16188b474a53877018121eb2edbd71f05107656bfef",
+      "stored_sha256": "6198c408dcc1b87eda2be16188b474a53877018121eb2edbd71f05107656bfef",
+      "original_bytes": 7665
+    },
+    "auditor/runtime-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/runtime-command.log",
+      "original_sha256": "f9717a9099be4883ae4ce849815f887f87724aab27fbd6063a72323ae80b5772",
+      "stored_sha256": "145ac1f86736b563e8f90484e161ea8219270fb9020026fb490ba72b0f263490",
+      "original_bytes": 44
+    },
+    "auditor/runtime-results.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/runtime-results.json",
+      "original_sha256": "f458a66da0391b453f22009b4f6e367bbcc8f8cdac7b04705d9b5c21772fce89",
+      "stored_sha256": "f458a66da0391b453f22009b4f6e367bbcc8f8cdac7b04705d9b5c21772fce89",
+      "original_bytes": 19177
+    },
+    "auditor/runtime_controls.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/runtime_controls.py",
+      "original_sha256": "ae6efe68e7bd0a53d0e30ba1c40c4132bd2d2d38d49a4497d11c1f48909e6ff8",
+      "stored_sha256": "ae6efe68e7bd0a53d0e30ba1c40c4132bd2d2d38d49a4497d11c1f48909e6ff8",
+      "original_bytes": 7697
+    },
+    "auditor/supplemental-command.log.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/supplemental-command.log",
+      "original_sha256": "d3f0448a09cf05b7fe7537c2e2c5314f3a03eaf63eb25746b3cabed5b2fb5787",
+      "stored_sha256": "13a8d1e96a64c03ab5a83125107edd99113e0bd97aa3983fd108b102a7d69fee",
+      "original_bytes": 44
+    },
+    "auditor/supplemental-results.json.gz": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/supplemental-results.json",
+      "original_sha256": "e07e52551a64a2629ef623b54031c3cf5efd82ff8e49e43787570d18334ed88e",
+      "stored_sha256": "caa7ae2b66fad7b4e8bf54910ed754371049a10db9a0b7edaa6289c76b0d0232",
+      "original_bytes": 3954498
+    },
+    "auditor/supplemental_controls.py": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/supplemental_controls.py",
+      "original_sha256": "1a1d1b4a2151aa5d8590d6578820cb15c975e86408cf321231ea6e9020f3d777",
+      "stored_sha256": "1a1d1b4a2151aa5d8590d6578820cb15c975e86408cf321231ea6e9020f3d777",
+      "original_bytes": 8506
+    },
+    "auditor/wisp-router-update-44babb7-artifact-ci-state.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/wisp-router-update-44babb7-artifact-ci-state.json",
+      "original_sha256": "446c3e33f6b3ea45413dbe004ca3aa928978c4f1e7d96da1dab9d3f930f7ac6f",
+      "stored_sha256": "446c3e33f6b3ea45413dbe004ca3aa928978c4f1e7d96da1dab9d3f930f7ac6f",
+      "original_bytes": 2986
+    },
+    "auditor/wisp-router-update-44babb7-python-ci-state.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/wisp-router-update-44babb7-python-ci-state.json",
+      "original_sha256": "4540b96b3b9718bc9eaf30e4dd6af2ab451cb4c3b1c43a04c44a7d372d4e0cb0",
+      "stored_sha256": "4540b96b3b9718bc9eaf30e4dd6af2ab451cb4c3b1c43a04c44a7d372d4e0cb0",
+      "original_bytes": 1920
+    },
+    "auditor/checksums.json": {
+      "original_path": "/private/tmp/wisp-router-44babb7-gates-20261005/auditor/checksums.json",
+      "original_sha256": "f83eb7ef0cc3c085001583df071d0aa048a3088b3609c16fc23b66afb8815e2e",
+      "stored_sha256": "f83eb7ef0cc3c085001583df071d0aa048a3088b3609c16fc23b66afb8815e2e",
+      "original_bytes": 3533
+    },
+    "gates/wisp-router-update-44babb7-freeze.json": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-freeze.json",
+      "original_sha256": "5cebe395b2ae84b8e84c45bcf5da5f3a6e9861c66d8e3e0ca50cd52285502916",
+      "stored_sha256": "5cebe395b2ae84b8e84c45bcf5da5f3a6e9861c66d8e3e0ca50cd52285502916",
+      "original_bytes": 35101
+    },
+    "gates/wisp-router-update-44babb7-gate-receipt.json": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-gate-receipt.json",
+      "original_sha256": "254ee6431117931fc14621d4fd0759403c5f1efe095e447edb825f7a237eb2cc",
+      "stored_sha256": "254ee6431117931fc14621d4fd0759403c5f1efe095e447edb825f7a237eb2cc",
+      "original_bytes": 764
+    },
+    "gates/wisp-router-update-44babb7-regression.log.gz": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-regression.log",
+      "original_sha256": "5b09a3939d61d26350e86c71c87bad63309ab3122ab762051e54f3c8560b9305",
+      "stored_sha256": "c69fbf005bf3e4e9f3351f8baf9bbd0dc24c4acb63ef352c92850b6d3e79371e",
+      "original_bytes": 148739
+    },
+    "gates/wisp-router-update-44babb7-python-ci.json": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-python-ci.json",
+      "original_sha256": "43c30468cf65fae6a2774b0ac4cf34408d865a3d789d5bcfcd61ca3c88188d0f",
+      "stored_sha256": "43c30468cf65fae6a2774b0ac4cf34408d865a3d789d5bcfcd61ca3c88188d0f",
+      "original_bytes": 2105
+    },
+    "gates/wisp-router-update-44babb7-python-ci.log.gz": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-python-ci.log",
+      "original_sha256": "9fc597696926ba3241cb87da48e59247e9bc769955fdf90793a7444d3ed40642",
+      "stored_sha256": "78fb36cfd38d13c9ca85caa034ca57d84559a88042d76d5e4e2ca1143b02786b",
+      "original_bytes": 284837
+    },
+    "gates/wisp-router-update-44babb7-artifact-ci-final.json": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-artifact-ci-final.json",
+      "original_sha256": "db7dfac67377c8b7275719bd2223a75cd054f9544c98287af383f59a0fd46ca7",
+      "stored_sha256": "db7dfac67377c8b7275719bd2223a75cd054f9544c98287af383f59a0fd46ca7",
+      "original_bytes": 3760
+    },
+    "gates/wisp-router-update-44babb7-artifact-ci.log.gz": {
+      "original_path": "/private/tmp/wisp-router-update-44babb7-artifact-ci.log",
+      "original_sha256": "1b7b961d6c402f0e7f9233a251c1b140856377bfeda8e8187748302103532029",
+      "stored_sha256": "84feec961b665188bd4a7eb47fb8891c3588f25009501296b94c9f66b994add1",
+      "original_bytes": 141418
+    },
+    "runtime-bridge-design/PROPOSAL.md": {
+      "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/PROPOSAL.md",
+      "original_sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373",
+      "stored_sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373",
+      "original_bytes": 12858
+    },
+    "runtime-bridge-design/HANDOFF.json": {
+      "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/HANDOFF.json",
+      "original_sha256": "eea5596e02285bc0ea1b8c9ced2c701604a03fba10543cbc4b343f1de6240b4d",
+      "stored_sha256": "eea5596e02285bc0ea1b8c9ced2c701604a03fba10543cbc4b343f1de6240b4d",
+      "original_bytes": 1972
+    }
+  }
+}

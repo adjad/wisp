@@ -1,0 +1,47 @@
+{
+  "HANDOFF.json": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/HANDOFF.json",
+    "original_sha256": "a7dda84ec50ebd04feafb46032bf0fe3460737acfb7cd6d8bf5922e5f24770f6",
+    "stored_sha256": "a7dda84ec50ebd04feafb46032bf0fe3460737acfb7cd6d8bf5922e5f24770f6"
+  },
+  "development-history/wisp-router-r10-focused-2.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/development-history/wisp-router-r10-focused-2.log",
+    "original_sha256": "edfef8086c94d5c29d19dcb9ba9e2bbc7ed9261409e8ebfe02606b4e0f7d229f",
+    "stored_sha256": "098725992d371c48365bfbf6beaae465a6c2806d1010c0c6d0e2147453a2bcd6"
+  },
+  "development-history/wisp-router-r10-focused-interruption.json": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/development-history/wisp-router-r10-focused-interruption.json",
+    "original_sha256": "7b5d5abe52dfeeff9cb1900ae6e3b44d7e5fb6c88bd1a91be81110a28efa2163",
+    "stored_sha256": "7b5d5abe52dfeeff9cb1900ae6e3b44d7e5fb6c88bd1a91be81110a28efa2163"
+  },
+  "development-history/wisp-router-r10-focused.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/development-history/wisp-router-r10-focused.log",
+    "original_sha256": "d996e539ae3c3362d5758ea4a5530bf2bda14e466c0612936f7cd29aef813200",
+    "stored_sha256": "52b3b4a370ecd1e0839130300e6422b9acbb55c35f1072f92f6e22e38aa36132"
+  },
+  "development-history/wisp-router-r10-initial.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/development-history/wisp-router-r10-initial.log",
+    "original_sha256": "62ebbae6ce1c927ad6d18e57ce9d6dca91484eb64e5b4594bd5a3da8f8dc9b2c",
+    "stored_sha256": "2db7a9c7f0736390c86c601fd4cf26e0267182befcd8b2843de484b6076f5db2"
+  },
+  "mechanical-receipt.json": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/mechanical-receipt.json",
+    "original_sha256": "f9348421edb19ff73c4fc18e26257ee739de4b3537b74f0af1f73dfb13765638",
+    "stored_sha256": "f9348421edb19ff73c4fc18e26257ee739de4b3537b74f0af1f73dfb13765638"
+  },
+  "mechanical.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/mechanical.log",
+    "original_sha256": "d8e587f950c180f896f5ea3dfb2d9ecfd929e2f7204f4cc81290416e73213837",
+    "stored_sha256": "b740b9c6dcc60cafb6c7abfb6887578a28156d519f674014f77b828cb42f4310"
+  },
+  "typed-mechanical-receipt.json": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/typed-mechanical-receipt.json",
+    "original_sha256": "37cd0d74222a839ce287f0b9afa290c4672007b5316b7f6c294671e8bf588d57",
+    "stored_sha256": "37cd0d74222a839ce287f0b9afa290c4672007b5316b7f6c294671e8bf588d57"
+  },
+  "typed-mechanical.log.gz": {
+    "original_path": "/private/tmp/wisp-router-core-27cca3f4b2f7e020f1d2bb627ab8e2511cefaf55/typed-mechanical.log",
+    "original_sha256": "29a83689ca84c75d737e95d607cd3aff9d8866ae3ebb98057d104ab0af6ed1a2",
+    "stored_sha256": "caa0ee28e73ede0950b1d6a5fa3a9210645a901758afd27e35b1b26eccfea358"
+  }
+}

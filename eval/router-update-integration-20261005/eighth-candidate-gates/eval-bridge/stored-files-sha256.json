@@ -1,0 +1,128 @@
+{
+  "HANDOFF.json": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/HANDOFF.json",
+    "original_sha256": "eea5596e02285bc0ea1b8c9ced2c701604a03fba10543cbc4b343f1de6240b4d",
+    "stored_sha256": "eea5596e02285bc0ea1b8c9ced2c701604a03fba10543cbc4b343f1de6240b4d",
+    "original_bytes": 1972
+  },
+  "IMPLEMENTATION_APPROVAL_REJECTION.json": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/IMPLEMENTATION_APPROVAL_REJECTION.json",
+    "original_sha256": "469dcd109b38c2319bd526b426919edae771f6f99edf4e2d3db8e4c16fe2c9e6",
+    "stored_sha256": "469dcd109b38c2319bd526b426919edae771f6f99edf4e2d3db8e4c16fe2c9e6",
+    "original_bytes": 1299
+  },
+  "PROPOSAL.md": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/PROPOSAL.md",
+    "original_sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373",
+    "stored_sha256": "e5791e26c8e188284bc3af367d7e0bc6f1a6bbca95af45cc2e11ef58ac7cf373",
+    "original_bytes": 12858
+  },
+  "cleanup-boundaries-1.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/cleanup-boundaries-1.log",
+    "original_sha256": "6ed9ebfd07e33b78e7eec8bc5e41dcd6b02ffca4babc417d7dd071fc478e5b01",
+    "stored_sha256": "72dbffcf0b5ef2ce88575a9b2c9f39e1957d344d00bf085342513387c3cde027",
+    "original_bytes": 113
+  },
+  "default-scripted-dev/manifest.json": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/default-scripted-dev/manifest.json",
+    "original_sha256": "d4932381a08aa8271dc2a283990beec452e672fb783e5eb8ba49898b1fd2845c",
+    "stored_sha256": "d4932381a08aa8271dc2a283990beec452e672fb783e5eb8ba49898b1fd2845c",
+    "original_bytes": 37129
+  },
+  "default-scripted-dev/raw.jsonl.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/default-scripted-dev/raw.jsonl",
+    "original_sha256": "179792b3db1de7bccaf2577a8bc28be0f9d8113a0f0d880ab7495cd699d49152",
+    "stored_sha256": "d13011085d23459c092e6dceb19cc6294fdfe63a5505013c0a36cf94f9e1fc80",
+    "original_bytes": 6840447
+  },
+  "default-scripted-dev.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/default-scripted-dev.log",
+    "original_sha256": "036998509c80465cfa1488f62f29e6429df4652f78f8196c456bbd2953df7ff4",
+    "stored_sha256": "a6590bfa9c36c88db28bf9f9157e7fd735810a427c4bab52d8ba7db9bc9c610a",
+    "original_bytes": 959
+  },
+  "eval-offline-1.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/eval-offline-1.log",
+    "original_sha256": "0efb90777c42a7af454ed667b19bf5dd4d96409d9c68d20859652799df809785",
+    "stored_sha256": "30d0fecf5b76ea71e055d89a1fea2ea699d0ea927ba48b9b5ab5174977504ba9",
+    "original_bytes": 383
+  },
+  "eval-offline-2.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/eval-offline-2.log",
+    "original_sha256": "04d0a52f80e77e8802de9a916372fa070dbe10841ce95b42751fb0f91f879d79",
+    "stored_sha256": "280ecc39612c3a87bac6c261ddc27e9d77c19095035cefe85b7f0bf758c7962c",
+    "original_bytes": 383
+  },
+  "exact-3122ed2-offline-subset.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/exact-3122ed2-offline-subset.log",
+    "original_sha256": "8598b7dc481458c61a08a46a260e3ceebfc3ebf76d09d505569e6359a5ecdcb7",
+    "stored_sha256": "98820b620e0a3a4ae817ba4b1318bcbec8f40214f6090073d42e5640363d56be",
+    "original_bytes": 463
+  },
+  "exact-3122ed2-scripted-dev/manifest.json": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/exact-3122ed2-scripted-dev/manifest.json",
+    "original_sha256": "0576c0158aec44287e525ac6b1d3ec19ca32d9b488169b6328f4f45248680454",
+    "stored_sha256": "0576c0158aec44287e525ac6b1d3ec19ca32d9b488169b6328f4f45248680454",
+    "original_bytes": 37129
+  },
+  "exact-3122ed2-scripted-dev/raw.jsonl.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/exact-3122ed2-scripted-dev/raw.jsonl",
+    "original_sha256": "935f8027a7878ee11da67592539d840550634a49a80da1ad17087714945f53a3",
+    "stored_sha256": "e6bb1bfd210143b5948c4e1c07ef38f897d02caefece4f1f44f531635fb94771",
+    "original_bytes": 6840450
+  },
+  "exact-3122ed2-scripted-dev.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/exact-3122ed2-scripted-dev.log",
+    "original_sha256": "036998509c80465cfa1488f62f29e6429df4652f78f8196c456bbd2953df7ff4",
+    "stored_sha256": "a6590bfa9c36c88db28bf9f9157e7fd735810a427c4bab52d8ba7db9bc9c610a",
+    "original_bytes": 959
+  },
+  "factory-check-1.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/factory-check-1.log",
+    "original_sha256": "97d1628d344a27c6de277a87b5fe6011ad4f7e59d727028d251d72bacc3bc60d",
+    "stored_sha256": "3677cedfcafed5a90e3a03ffb9e191947e8a049c683086f30bbb21678f71f375",
+    "original_bytes": 16402
+  },
+  "factory-check-2.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/factory-check-2.log",
+    "original_sha256": "446d796aead9625af354dad5c23e99d86a7ca86b41a2fa3e34ee55d497f08e3e",
+    "stored_sha256": "780764eee36974b9e3c8866ac3ffa556fd8301d3f35870a3f3890f2e23431b08",
+    "original_bytes": 113
+  },
+  "final-precommit-offline-subset-2.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/final-precommit-offline-subset-2.log",
+    "original_sha256": "a764501a6725831dcf3b0eae54ba5d3e1012878b2d523c08db939b9d927d62d9",
+    "stored_sha256": "52e8b5d7678240fff4a466285fefee7cf41ea933b5a7228c250e316f6d7af56b",
+    "original_bytes": 4305
+  },
+  "final-precommit-offline-subset-3.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/final-precommit-offline-subset-3.log",
+    "original_sha256": "603d9e2e1df8874974bbfbe3337bd6744f4c1dadbb18b18becdd2ff9895d33d6",
+    "stored_sha256": "955cf396d1837ef05d18de03c66065b60dd2eebd32d1210694b0c62f26c9b195",
+    "original_bytes": 463
+  },
+  "final-precommit-offline-subset.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/final-precommit-offline-subset.log",
+    "original_sha256": "ac4e2fbc937231fe71aeac70b9415244f16dfaaaa312ec8db94b307963064c35",
+    "stored_sha256": "ffacc1e026402cb374e2f96a742c18e7eced24974933ff5bc5f02a610e9b5944",
+    "original_bytes": 463
+  },
+  "recovery-boundaries-1.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/recovery-boundaries-1.log",
+    "original_sha256": "fde8f5c6e89833f680b27e24d8f3d2333adbf617b57a69837984fe7e0df5e095",
+    "stored_sha256": "71f5b4b6015e08948a3a19222db608a95f0da7a281def45514350cd5a51007ec",
+    "original_bytes": 5314
+  },
+  "simulation-manifest-1.log.gz": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/simulation-manifest-1.log",
+    "original_sha256": "ee38f45457931d40823f3595a78c891c4d37e14f36e9c4d009f1370ba6e2b587",
+    "stored_sha256": "9cd8416ad2717debc49163fe9204e51cfc4df8f51a87ddf2ec4c3c1089e51992",
+    "original_bytes": 99
+  },
+  "IMPLEMENTATION_HANDOFF.json": {
+    "original_path": "/private/tmp/wisp-router-runtime-bridge-design-20261005/IMPLEMENTATION_HANDOFF.json",
+    "original_sha256": "ef3137c01d4deffbca712f6a149596be114ebd65c81be063c2d2a687c36d045b",
+    "stored_sha256": "ef3137c01d4deffbca712f6a149596be114ebd65c81be063c2d2a687c36d045b",
+    "original_bytes": 8459
+  }
+}
