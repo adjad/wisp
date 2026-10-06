@@ -1,0 +1,60 @@
+{
+  "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+  "entries": [
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/HANDOFF.json",
+      "bytes": 39087,
+      "sha256": "69e1326e6e7d156b1cb89780c2fd07eb00932fbff3d17a1a6d9c2059fc639f17"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-focused-2.log",
+      "bytes": 6059,
+      "sha256": "d656a67dd6a30b39b4f0e4bc34759f31f37fbb855815e770bf2c6202f16431cf"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-focused-3.log",
+      "bytes": 1252,
+      "sha256": "0e7e17544f8671d855fbf179b2ad4eacc65b43ac353e8794b6de04f9000cb389"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-focused.log",
+      "bytes": 32801,
+      "sha256": "c828c1f7cd979e14eaf37cb90d2b72d343faeb7ef87e701e63ad94467ea02018"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-initial.log",
+      "bytes": 322311,
+      "sha256": "d60861ea9a5065700dfb993a6a0ca8f972b5879fd578bb8eb06d3f4ee263ab63"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-reminder-diagnosis-2.log",
+      "bytes": 8693,
+      "sha256": "b4761c80143471f422371fe14a2fcf95188984451d0de3e351fec38aa43cfac2"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/development-history/wisp-router-r9-reminder-diagnosis.log",
+      "bytes": 9493,
+      "sha256": "4602c7934bc749eb487456b4903ea56295f57fc1417dc680abe535b22ca91b3c"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical-receipt.json",
+      "bytes": 1495,
+      "sha256": "4d26465b5914af0462fd45a5c1a0dd6d492f3afe67259f51c9f777d5e7b5d32a"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical.log",
+      "bytes": 12000,
+      "sha256": "1a1152089b628067dd3b136ba1435edc59079da9509c163e631f6719833ab453"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical-receipt.json",
+      "bytes": 771,
+      "sha256": "baee96f2df4d91b84d75ca647025f4eb27123f8fb2f2716400b8f64bb8f9dea5"
+    },
+    {
+      "path": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical.log",
+      "bytes": 99,
+      "sha256": "b1dc31af212bc06d00793ccafff27831d3024629a15d2e8090daffec98048443"
+    }
+  ]
+}

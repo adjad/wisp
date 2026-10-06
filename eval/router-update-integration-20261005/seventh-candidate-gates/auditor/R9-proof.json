@@ -1,0 +1,2316 @@
+{
+  "sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "synthetic_only": true,
+  "proofs": [
+    {
+      "id": "exclusion-0",
+      "prompt": "Find notes about quartz birds and don't read my email",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          }
+        ],
+        "excluded_sources": [
+          "email"
+        ],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "notes"
+        ],
+        [
+          "email"
+        ]
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds"
+            }
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          }
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "5b33854effee",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds"
+              }
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don't read my email",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        },
+        {
+          "type": "text",
+          "text": "Distinct synthetic exclusion fixture.",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        },
+        {
+          "type": "done",
+          "trace_id": "eb1e95462fcf4e9c8cf4196d5453ddf5"
+        }
+      ],
+      "answer": "Distinct synthetic exclusion fixture."
+    },
+    {
+      "id": "exclusion-1",
+      "prompt": "Find notes about quartz birds and don't read my email",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          },
+          {
+            "domain": "email",
+            "operation": "overview"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "notes"
+        ],
+        [
+          "email"
+        ]
+      ],
+      "validator": {
+        "accepted": false,
+        "reason": "Missing explicit source exclusion"
+      },
+      "actual_calls": [],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "05d83b31d35d",
+          "trace_id": "de3b3bf615a44555b174343e284bf5fc"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "invalid intent after bounded repair",
+          "route_source": "model",
+          "intent_disposition": "clarify",
+          "direct_calls": [],
+          "required_tool_groups": [],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_notes",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don't read my email",
+          "verified_results_only": true,
+          "strict_read_limits": {},
+          "reminder_action": "",
+          "trace_id": "de3b3bf615a44555b174343e284bf5fc"
+        },
+        {
+          "type": "text",
+          "text": "I could not validate all sources and filters in that read. Please clarify the source, date range, and exact search text.",
+          "trace_id": "de3b3bf615a44555b174343e284bf5fc"
+        },
+        {
+          "type": "done",
+          "trace_id": "de3b3bf615a44555b174343e284bf5fc"
+        }
+      ],
+      "answer": "I could not validate all sources and filters in that read. Please clarify the source, date range, and exact search text."
+    },
+    {
+      "id": "exclusion-9",
+      "prompt": "Find notes about quartz birds and don\u2019t read my email",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          }
+        ],
+        "excluded_sources": [
+          "email"
+        ],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "email",
+          "notes"
+        ],
+        []
+      ],
+      "validator": {
+        "accepted": false,
+        "reason": "Missing requested source"
+      },
+      "actual_calls": [],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "6ee127a53b23",
+          "trace_id": "addf04ec709e4a7c8540c8258c8a8a3a"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "invalid intent after bounded repair",
+          "route_source": "model",
+          "intent_disposition": "clarify",
+          "direct_calls": [],
+          "required_tool_groups": [],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_notes",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don\u2019t read my email",
+          "verified_results_only": true,
+          "strict_read_limits": {},
+          "reminder_action": "",
+          "trace_id": "addf04ec709e4a7c8540c8258c8a8a3a"
+        },
+        {
+          "type": "text",
+          "text": "I could not validate all sources and filters in that read. Please clarify the source, date range, and exact search text.",
+          "trace_id": "addf04ec709e4a7c8540c8258c8a8a3a"
+        },
+        {
+          "type": "done",
+          "trace_id": "addf04ec709e4a7c8540c8258c8a8a3a"
+        }
+      ],
+      "answer": "I could not validate all sources and filters in that read. Please clarify the source, date range, and exact search text."
+    },
+    {
+      "id": "exclusion-10",
+      "prompt": "Find notes about quartz birds and don\u2019t read my email",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          },
+          {
+            "domain": "email",
+            "operation": "overview"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "email",
+          "notes"
+        ],
+        []
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds"
+            }
+          ],
+          [
+            "summarize_emails",
+            {}
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          }
+        },
+        {
+          "name": "summarize_emails",
+          "args": {}
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "64e03f7ba2b8",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds"
+              }
+            },
+            {
+              "tool": "summarize_emails",
+              "args": {}
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ],
+            [
+              "summarize_emails"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don\u2019t read my email",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "summarize_emails": 1,
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_1",
+          "name": "summarize_emails",
+          "args": {},
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_1",
+          "name": "summarize_emails",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "text",
+          "text": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Email:**\nDistinct synthetic exclusion fixture.",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        },
+        {
+          "type": "done",
+          "trace_id": "d9c37be9808a45c581c40d5d56432d5d"
+        }
+      ],
+      "answer": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Email:**\nDistinct synthetic exclusion fixture."
+    },
+    {
+      "id": "exclusion-13",
+      "prompt": "Find notes about quartz birds and don\u2019t read my messages",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          },
+          {
+            "domain": "messages",
+            "operation": "overview"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "messages",
+          "notes"
+        ],
+        []
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds"
+            }
+          ],
+          [
+            "summarize_messages",
+            {}
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          }
+        },
+        {
+          "name": "summarize_messages",
+          "args": {}
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "3a0afc42f16b",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds"
+              }
+            },
+            {
+              "tool": "summarize_messages",
+              "args": {}
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ],
+            [
+              "summarize_messages"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don\u2019t read my messages",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "summarize_messages": 1,
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_1",
+          "name": "summarize_messages",
+          "args": {},
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_1",
+          "name": "summarize_messages",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "text",
+          "text": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Messages:**\nDistinct synthetic exclusion fixture.",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        },
+        {
+          "type": "done",
+          "trace_id": "71829381a2c3459ca7ca7d09a63f511e"
+        }
+      ],
+      "answer": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Messages:**\nDistinct synthetic exclusion fixture."
+    },
+    {
+      "id": "exclusion-16",
+      "prompt": "Find notes about quartz birds and don\u2019t read my calendar",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          },
+          {
+            "domain": "calendar",
+            "operation": "overview"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "calendar",
+          "notes"
+        ],
+        []
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds"
+            }
+          ],
+          [
+            "get_upcoming",
+            {
+              "calendar_only": true
+            }
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          }
+        },
+        {
+          "name": "get_upcoming",
+          "args": {
+            "calendar_only": true
+          }
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "11546abfc152",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds"
+              }
+            },
+            {
+              "tool": "get_upcoming",
+              "args": {
+                "calendar_only": true
+              }
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ],
+            [
+              "get_upcoming"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and don\u2019t read my calendar",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "get_upcoming": 1,
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_1",
+          "name": "get_upcoming",
+          "args": {
+            "calendar_only": true
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_1",
+          "name": "get_upcoming",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "text",
+          "text": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Agenda:**\nDistinct synthetic exclusion fixture.",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        },
+        {
+          "type": "done",
+          "trace_id": "7b7d6b3048ff4dc0bde181a43c7d1985"
+        }
+      ],
+      "answer": "**Notes \u2014 \u201cquartz birds\u201d:**\nDistinct synthetic exclusion fixture.\n\n**Agenda:**\nDistinct synthetic exclusion fixture."
+    },
+    {
+      "id": "exclusion-38",
+      "prompt": "Find notes about quartz birds and excluding email",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds"
+          }
+        ],
+        "excluded_sources": [
+          "email"
+        ],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "notes"
+        ],
+        [
+          "email"
+        ]
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds"
+            }
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          }
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "be22b309f7e2",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds"
+              }
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about quartz birds and excluding email",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        },
+        {
+          "type": "text",
+          "text": "Distinct synthetic exclusion fixture.",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        },
+        {
+          "type": "done",
+          "trace_id": "c95895e1052a449ab5e8bffbf387f411"
+        }
+      ],
+      "answer": "Distinct synthetic exclusion fixture."
+    },
+    {
+      "id": "exclusion-40",
+      "prompt": "Find notes about \"quartz birds and don\u2019t read my email\"",
+      "supplied_intent": {
+        "version": 1,
+        "kind": "read",
+        "sources": [
+          {
+            "domain": "notes",
+            "operation": "records",
+            "query": "quartz birds and don\u2019t read my email"
+          }
+        ],
+        "excluded_sources": [],
+        "unsupported_constraints": []
+      },
+      "requirements": [
+        [
+          "notes"
+        ],
+        []
+      ],
+      "validator": {
+        "accepted": true,
+        "calls": [
+          [
+            "search_notes",
+            {
+              "query": "quartz birds and don\u2019t read my email"
+            }
+          ]
+        ]
+      },
+      "actual_calls": [
+        {
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds and don\u2019t read my email"
+          }
+        }
+      ],
+      "store": {
+        "workflow": null
+      },
+      "events": [
+        {
+          "type": "session",
+          "id": "3193a77ed6e7",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        },
+        {
+          "type": "routed",
+          "role": "agent",
+          "model": "Ling-3.0-tiny-oQ4e",
+          "needs_tools": true,
+          "needs_vision": false,
+          "source": "intent",
+          "reason": "validated read intent",
+          "route_source": "model",
+          "intent_disposition": "compiled",
+          "direct_calls": [
+            {
+              "tool": "search_notes",
+              "args": {
+                "query": "quartz birds and don\u2019t read my email"
+              }
+            }
+          ],
+          "required_tool_groups": [
+            [
+              "search_notes"
+            ]
+          ],
+          "forbidden_tools": [
+            "accessibility_toggle",
+            "add_calendar_event",
+            "add_reminder",
+            "air_quality",
+            "airdrop_file",
+            "append_note",
+            "archive_email",
+            "archive_files",
+            "astronomy",
+            "backup_folder",
+            "calculate",
+            "cancel_event",
+            "cancel_scheduled_send",
+            "clear_clipboard",
+            "clear_memory",
+            "clear_past_reminders",
+            "clear_reminders",
+            "clipboard_read",
+            "clipboard_write",
+            "complete_reminder",
+            "connect_wifi",
+            "contact_dates",
+            "convert_currency",
+            "convert_file",
+            "convert_units",
+            "country_info",
+            "create_folder",
+            "create_note",
+            "create_tool",
+            "daily_brief",
+            "define_word",
+            "delete_path",
+            "draft_email",
+            "draft_message",
+            "encrypt_file",
+            "find_files",
+            "find_free_time",
+            "find_local_events",
+            "find_my_device",
+            "find_place",
+            "flag_email",
+            "force_quit_app",
+            "forget",
+            "forward_email",
+            "generate_password",
+            "get_battery_status",
+            "get_codex_updates",
+            "get_directions",
+            "get_lyrics",
+            "get_past_events",
+            "get_recent_activity",
+            "get_sports_scores",
+            "get_stock_price",
+            "get_upcoming",
+            "get_volume",
+            "get_weather",
+            "health_summary",
+            "http_request",
+            "identify_song",
+            "install_shortcut",
+            "join_video_call",
+            "keychain_read",
+            "keychain_store",
+            "list_bluetooth_devices",
+            "list_contacts",
+            "list_dir",
+            "list_running_apps",
+            "list_scheduled_sends",
+            "list_shortcuts",
+            "live_captions",
+            "lock_screen",
+            "log_entry",
+            "lookup_contact",
+            "lookup_media_title",
+            "manage_contacts",
+            "manage_login_items",
+            "manage_spaces",
+            "manage_timers",
+            "mark_email_read",
+            "move_path",
+            "music",
+            "network_info",
+            "open_app",
+            "organize_files",
+            "place_call",
+            "play_ambient",
+            "play_audiobook",
+            "play_podcast",
+            "play_radio",
+            "play_streaming",
+            "power_control",
+            "print_document",
+            "quit_app",
+            "rain_radar",
+            "random_pick",
+            "read_file",
+            "read_log",
+            "recall",
+            "recipe_lookup",
+            "remember",
+            "reply_to_email",
+            "reveal_in_finder",
+            "run_applescript",
+            "run_shell",
+            "run_shortcut",
+            "run_speed_test",
+            "scan_subscriptions",
+            "scan_to_note",
+            "schedule_send",
+            "schedule_task",
+            "screen_capture",
+            "search_browser_history",
+            "search_conversations",
+            "search_coverage",
+            "search_reminders",
+            "send_email",
+            "send_message",
+            "set_alarm",
+            "set_appearance",
+            "set_display",
+            "set_fitness_goal",
+            "set_hotkey",
+            "set_keyboard_backlight",
+            "set_screen_lock_timeout",
+            "set_sleep_timer",
+            "set_timer",
+            "set_volume",
+            "set_wifi",
+            "software_update",
+            "spotify",
+            "spreadsheet_ops",
+            "stop_radio",
+            "stopwatch",
+            "summarize_emails",
+            "summarize_messages",
+            "summarize_thread",
+            "switch_app",
+            "system_status",
+            "tag_file",
+            "text_to_speech",
+            "toggle_setting",
+            "track_flight",
+            "track_package",
+            "transcribe_audio",
+            "transit_info",
+            "trash_file",
+            "travel_time",
+            "triage_inbox",
+            "uninstall_app",
+            "unsubscribe",
+            "update_event",
+            "update_reminder",
+            "view_emails",
+            "view_messages",
+            "weather_alerts",
+            "web_fetch",
+            "web_search",
+            "wikipedia_summary",
+            "window_control",
+            "wisp_capabilities",
+            "wisp_mcp",
+            "wisp_skills",
+            "wisp_status",
+            "wisp_sync",
+            "world_time",
+            "write_document",
+            "write_file"
+          ],
+          "conditional_tools": [],
+          "tool_argument_bindings": {},
+          "resolved_request": "Find notes about \"quartz birds and don\u2019t read my email\"",
+          "verified_results_only": true,
+          "strict_read_limits": {
+            "search_notes": 1
+          },
+          "reminder_action": "",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        },
+        {
+          "type": "tool_call",
+          "id": "read_0",
+          "name": "search_notes",
+          "args": {
+            "query": "quartz birds and don\u2019t read my email"
+          },
+          "decision": "allow",
+          "reason": "full-access mode",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        },
+        {
+          "type": "tool_result",
+          "id": "read_0",
+          "name": "search_notes",
+          "result": "Distinct synthetic exclusion fixture.",
+          "status": "succeeded",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        },
+        {
+          "type": "text",
+          "text": "Distinct synthetic exclusion fixture.",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        },
+        {
+          "type": "done",
+          "trace_id": "493f10c2fb884403870f012d3b48e08b"
+        }
+      ],
+      "answer": "Distinct synthetic exclusion fixture."
+    }
+  ]
+}

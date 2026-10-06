@@ -1,0 +1,119 @@
+{
+  "verdict": "BLOCK",
+  "sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "branch": "codex/router-update-1-3",
+  "pr": "https://github.com/adjad/wisp/pull/160",
+  "completed_at": "2026-10-06T01:03:04.720538+00:00",
+  "outcome": "Full exact-candidate read-only audit complete. R7-negative/R8 closure confirmed; R9 Unicode-apostrophe source exclusion remains blocking.",
+  "findings": [
+    {
+      "id": "R9-source-exclusion-normalization",
+      "priority": 1,
+      "title": "Unicode apostrophes turn explicit source prohibitions into positive read requirements"
+    }
+  ],
+  "candidate_files_changed": [],
+  "auditor_owned_directory": "/private/tmp/wisp-router-8dfd5c9-gates-20261005/auditor",
+  "reports": {
+    "REPORT.md": {
+      "path": "/private/tmp/wisp-router-8dfd5c9-gates-20261005/auditor/REPORT.md",
+      "sha256": "88613bd5c5984774fecad2bb3f6f692463212e1b707622febe6bd9335274376f"
+    },
+    "REPORT.json": {
+      "path": "/private/tmp/wisp-router-8dfd5c9-gates-20261005/auditor/REPORT.json",
+      "sha256": "a7735623bab2756322ce452bec9ccc248ae496873a0606f142298f8b76901df6"
+    }
+  },
+  "checks": {
+    "application": {
+      "cases": 140,
+      "expectations_met": 134,
+      "failed_ids": [
+        "excluded-good-104",
+        "excluded-extra-105",
+        "excluded-good-106",
+        "excluded-extra-107",
+        "excluded-good-108",
+        "excluded-extra-109"
+      ]
+    },
+    "exclusion": {
+      "cases": 43,
+      "expectations_met": 25,
+      "failed_ids": [
+        "exclusion-9",
+        "exclusion-10",
+        "exclusion-12",
+        "exclusion-13",
+        "exclusion-15",
+        "exclusion-16",
+        "exclusion-18",
+        "exclusion-19",
+        "exclusion-21",
+        "exclusion-22",
+        "exclusion-24",
+        "exclusion-25",
+        "exclusion-27",
+        "exclusion-28",
+        "exclusion-30",
+        "exclusion-31",
+        "exclusion-33",
+        "exclusion-34"
+      ]
+    },
+    "tuple": {
+      "cases": 20,
+      "expectations_met": 20,
+      "failed_ids": []
+    },
+    "public": {
+      "cases": 39,
+      "expectations_met": 39,
+      "failed_ids": []
+    },
+    "boundary": {
+      "cases": 60,
+      "expectations_met": 60,
+      "failed_ids": []
+    }
+  },
+  "incomplete_work": {
+    "parent_full_regression": {
+      "parent_reported_passed_modules": 179,
+      "parent_reported_total_modules": 179,
+      "receipt_verified": true,
+      "exit_code": 0,
+      "candidate_sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+      "head_unchanged": true,
+      "clean": true,
+      "completed_at": "2026-10-06T00:56:45.176603+00:00",
+      "elapsed_seconds": 600.8015423328616,
+      "receipt_sha256": "b05e48f5ff18ebc91474a6eb20f27a4abddd0dced3550f596eb58a0389df65f9",
+      "log_sha256": "33f7a42b797d273f910501823ad5e41395745f88e016c643cccf120ec06acf58",
+      "auditor_did_not_duplicate": true
+    },
+    "required_ci": "Both same-head required CI jobs last parent-reported running. No terminal current-head CI receipt available to Auditor at seal.",
+    "python_ci_run": 37395706278,
+    "python_ci_job": 112051025918,
+    "artifact_ci_run": 37395705962,
+    "artifact_ci_job": 112051025311,
+    "prior_provider_failure": "6df provider cancellation failure still needs retained Claude owner diagnosis/ACK; later local/CI passes do not diagnose or waive it. Auditor performed no provider-path diagnosis or tests.",
+    "simulation_qa": "HELD by this BLOCK; no execution release",
+    "resident_ling_training_activation": "Blocked/unreleased; planner stays disabled by default"
+  },
+  "known_risks": [
+    "Synthetic scripted model responses and replaced registered tools only; no actual-model quality, strict-schema support, latency, generalization, training or resident-resource claim",
+    "No real model/status/endpoint/network/native/user data/settings/credentials/outbound effects or provider diagnosis",
+    "No heldout/dev corpus/author/archive/replay payload parsing and no archived helper execution",
+    "No candidate/source edits, full gate duplication, old pass transfer, builder self-approval, new owners or other-chat messages",
+    "Distinct Simulation QA and applicable Live QA, final performance, activation and shipping remain separate; no merge/deploy/installed replacement/publication approval"
+  ],
+  "integration_dependencies": [
+    "Orchestrator-recorded sole repair ownership",
+    "New frozen exact SHA and renewed independent gates",
+    "Simulation QA remains held until nonblocking review and explicit parent release"
+  ],
+  "parent_reads_files": true,
+  "other_chat_message_sent": false
+}

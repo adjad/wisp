@@ -1,0 +1,16 @@
+{
+  "status": "dispatched_existing_core_exact_three_files",
+  "at_utc": "2026-10-06T01:07:36.962436+00:00",
+  "orchestrator_ack_turn": "01a10ebe-557d-7ff1-b295-7300e8ac09fd",
+  "candidate_sha": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+  "worker_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+  "owner": "/root/router_core",
+  "paths": [
+    "service/router/intent/validation.py",
+    "tests/test_router_intent_core.py",
+    "tests/test_router_intent_main.py"
+  ],
+  "preserved_bundle_sha256": "6f84898760fad82b96c4367593d86a6e43455d17e48623e2c814def6619e31c8",
+  "parent_frozen": true,
+  "qa_execution_held": true
+}

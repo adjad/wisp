@@ -42,3 +42,7 @@ Cumulative core repairs `f418233` and `aa607316` are integrated at `c63b2c1`. Go
 ## Negative-governor repair development check
 
 At `cf6a0379761979e5a7445e911d74046797609967`, the unchanged enabled scripted replay returned 80/80 source and exact arguments, 48/48 first calls, 72/80 original end-to-end and 16/16 failure honesty. There are 10 families with eight correlated variants each. Original annotation limitations and zero-applicability answer-facts/query-scope metrics are unchanged. Combined nine-module checks passed 748 with one original-control-only skip in 12.28s. Raw outcomes and checksums: `development-after-negative-governor-repairs/`. This is synthetic integration evidence, not actual-model accuracy or a final-head release gate.
+
+## Unicode source-exclusion repair
+
+At `91b7885fa5ec2551032e60319ff01881af21ef6d`, unchanged enabled scripted production replay is preserved in `development-after-unicode-exclusion-repairs/`; original metrics are unchanged. Nine integrated modules passed 1153 with one original-control skip in 17.89s. Case totals cover80 correlated variants in10 families, not model generalization. Source-error annotation limitations and zero-applicable answer-fact/query-scope metrics remain disclosed. Worker failure transcripts and exact-head routing/typed-task receipts are retained in `seventh-candidate-gates/core-repair/`.

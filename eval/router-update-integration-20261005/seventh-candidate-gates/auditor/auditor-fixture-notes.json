@@ -1,0 +1,14 @@
+{
+  "candidate_unchanged": true,
+  "raw_application_results_unchanged": true,
+  "items": [
+    {
+      "kind": "metadata receipt schema",
+      "detail": "Initial provenance helper assumed the previous parent receipt keys sha/head_after/status_after. The new receipt uses candidate_sha/head_unchanged/status_porcelain. The initial helper/log are retained; matching exact-head, clean and exit0 receipt fields now verify."
+    },
+    {
+      "kind": "metadata archive formats",
+      "detail": "First completed provenance result31/33 retained. Eight legacy sha256.json entries pin original uncompressed log hashes while storage is gzipped; several replay checksum keys are semantic names raw_sha256/raw_jsonl_sha256/gzip_sha256/manifest_sha256 rather than filenames. Correct opaque stored/restored-byte verification passes33/33. No archive payload parsed, no candidate or metadata changed, no failed application expectation rewritten."
+    }
+  ]
+}

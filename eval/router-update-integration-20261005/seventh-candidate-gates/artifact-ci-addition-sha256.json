@@ -1,0 +1,10 @@
+{
+  "wisp-router-update-8dfd5c9-artifact-ci-final.json": {
+    "original_sha256": "55709c0229a9b0d8e4d16ff5178fb3447eaf25ffe430e0f4dfad754a322c7726",
+    "stored_sha256": "55709c0229a9b0d8e4d16ff5178fb3447eaf25ffe430e0f4dfad754a322c7726"
+  },
+  "wisp-router-update-8dfd5c9-artifact-ci.log.gz": {
+    "original_sha256": "dadcb46f3cf1681966c541254bcd2bdbcf816cc06d1cf610c2b3fc1b0ee0bf03",
+    "stored_sha256": "190536f97267833456ba76f646c3573ec0051900d9a7f1d11307f89210967f2a"
+  }
+}

@@ -1,6 +1,6 @@
 {
-  "status": "negative_governor_repairs_integrated_preparing_frozen_gates",
-  "updated_at": "2026-10-06T00:45:46.737984+00:00",
+  "status": "unicode_exclusion_repairs_integrated_preparing_frozen_gates",
+  "updated_at": "2026-10-06T01:27:22.861945+00:00",
   "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
   "branch": "codex/router-update-1-3",
   "ownership_record": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ROUTER_1_3_IMPLEMENTATION_OWNERSHIP_2026-10-05.json",
@@ -10,14 +10,71 @@
       "reasoning": "high",
       "workspace": "/Users/adijain/.codex/worktrees/router-intent-core/MOE_Project",
       "branch": "codex/router-intent-core",
-      "status": "R7-negative/R8 five-file repair frozen clean pushed and integrated",
-      "commit": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+      "status": "R9 four-file repair frozen clean pushed and integrated",
+      "commit": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
       "validation_reported": {
-        "passed": 10300,
-        "subtests_passed": 4640,
-        "seconds": 100.62,
-        "suites": 18,
-        "scope": "Exact worker head; full transcript and six development histories retained in sixth-candidate-gates/core-repair"
+        "mechanical": {
+          "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+          "repair_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+          "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+          "command": [
+            "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--noconftest",
+            "tests/test_router_intent_core.py",
+            "tests/test_router_intent_main.py",
+            "tests/test_router_intent_workflow.py",
+            "tests/test_tomorrow_planning.py",
+            "tests/test_multi_source_fallback.py",
+            "tests/test_read_context_continuations.py",
+            "tests/test_routing_semantic_correctness.py",
+            "tests/test_routing_contract_regressions.py",
+            "tests/test_current_web_routing.py",
+            "tests/test_routing_quality_corpus.py",
+            "tests/test_routing_quality_fixes.py",
+            "tests/test_contextual_outbound_routing.py",
+            "tests/test_outbound_language_clarification.py",
+            "tests/test_outbound_payload_presentation.py",
+            "tests/test_outbound_content_provenance.py",
+            "tests/test_workflow_inline_delivery.py",
+            "tests/test_workflow_authored_message.py",
+            "tests/test_web_response_followup.py",
+            "-q"
+          ],
+          "environment": {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "WISP_HOME": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical-state"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 101.67,
+          "head_unchanged": true,
+          "status_porcelain": "",
+          "log": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/mechanical.log"
+        },
+        "typed-mechanical": {
+          "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+          "repair_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+          "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+          "command": [
+            "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+            "-m",
+            "pytest",
+            "--noconftest",
+            "tests/test_typed_task_engine.py",
+            "tests/test_typed_reminder_operations.py",
+            "-q"
+          ],
+          "environment": {
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "WISP_HOME": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical-state"
+          },
+          "exit_code": 0,
+          "elapsed_seconds": 1.41,
+          "head_unchanged": true,
+          "status_porcelain": "",
+          "log": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical.log"
+        }
       }
     },
     "router_eval": {
@@ -81,7 +138,7 @@
   "model_measurement_window": "Blocked: no explicit quiescence or start/end ACK; Claude retains active Wisp1.2 performance ownership. Single combined coordination relay delivery unconfirmed after noWindowsAvailable. Do not resend blindly or infer a resource window.",
   "production_changed": false,
   "pending": [
-    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R7-negative/R8 and full-scope audit, then separate synthetic QA",
+    "Freeze clean pushed integration candidate and renew exact-SHA full regression, required CI, independent R9/source/task preflight and full-scope audit, then separate synthetic QA",
     "Resolve retained-owner provider qualification cancellation CI failure; no separate provider diagnosis or edits authorized",
     "Actual resident-model full-path comparison in acknowledged resource window; heldout remains unopened",
     "Training compatibility qualification and bounded smoke/comparison under separate exact scope and resource window",
@@ -102,11 +159,11 @@
     "independence": "Parameterized variants are not independent linguistic samples; report unweighted family results alongside case totals."
   },
   "combined_development_checks": {
-    "revision": "cf6a0379761979e5a7445e911d74046797609967",
-    "passed": 748,
+    "revision": "91b7885fa5ec2551032e60319ff01881af21ef6d",
+    "passed": 1153,
     "skipped": 1,
     "skip_reason": "Original-control-only absence check",
-    "seconds": 12.28,
+    "seconds": 17.89,
     "scope": "Nine integrated intent/workflow/eval/overview/manifest/unchanged tomorrow/fallback modules",
     "model_calls": false,
     "heldout_opened": false
@@ -1078,5 +1135,110 @@
     "artifact": "sixth-candidate-gates/static-helper-summary.json",
     "scope": "Static read-only helper with before/after HEAD, dirty state, six file hashes and mtimes. Advisory only; no release approval.",
     "hypotheses": "Preference negation and afterwards-read coverage reproduced by sole core; final actual-main controls pass."
+  },
+  "seventh_frozen_candidate_gates": {
+    "revision": "8dfd5c9c19d8e31063a1f0d65c87d3d0d1938736",
+    "artifact": "seventh-candidate-gates",
+    "full_regression": {
+      "status": "PASS",
+      "passed_modules": 179,
+      "total_modules": 179,
+      "exit_code": 0
+    },
+    "ci": {
+      "python": "SUCCESS179/179; does not close retained prior provider cancellation failure",
+      "artifact": "SUCCESS; both publication jobs SKIPPED"
+    },
+    "audit": {
+      "verdict": "BLOCK",
+      "findings": [
+        "R9 P1 Unicode apostrophe source exclusions reverse source authority"
+      ],
+      "R7_negative_closed": 13,
+      "R8_later_effect_closed": 56,
+      "later_read_controls_passed": 14,
+      "tuple_controls_passed": 20,
+      "public_controls_passed": 39,
+      "runtime_privacy_overview_controls_passed": 60,
+      "heldout_opened": false
+    },
+    "qa": "Not executed; held pending nonblocking new exact-SHA independent audit"
+  },
+  "development_after_unicode_exclusion_repairs": {
+    "revision": "91b7885fa5ec2551032e60319ff01881af21ef6d",
+    "artifact": "development-after-unicode-exclusion-repairs",
+    "cases": 80,
+    "families": 10,
+    "mode": "scripted-production-path",
+    "metrics": {
+      "answer_facts": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "completed": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "duplicate": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "effects": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "exact_arguments": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "excluded_source": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "failure_honesty": {
+        "numerator": 16,
+        "denominator": 16
+      },
+      "first_call": {
+        "numerator": 48,
+        "denominator": 48
+      },
+      "guarded_end_to_end": {
+        "numerator": 72,
+        "denominator": 80
+      },
+      "literal_fidelity": {
+        "numerator": 40,
+        "denominator": 48
+      },
+      "menu": {
+        "numerator": 18,
+        "denominator": 18
+      },
+      "query_scope_guard": {
+        "numerator": 0,
+        "denominator": 0
+      },
+      "request_argument": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "runtime_constraints": {
+        "numerator": 80,
+        "denominator": 80
+      },
+      "source": {
+        "numerator": 80,
+        "denominator": 80
+      }
+    },
+    "original_metrics_preserved": true,
+    "not_model_accuracy": true,
+    "answer_facts_and_query_scope_guard": "Zero applicable cases; not validated by this replay",
+    "annotation_limit": "Eight honest source-failure answers fail unchanged success-literal requirements; original score retained."
   }
 }

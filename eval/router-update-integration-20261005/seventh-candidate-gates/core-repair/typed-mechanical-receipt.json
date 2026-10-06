@@ -1,0 +1,23 @@
+{
+  "head": "0b2ecd116fc7afecaae8369d2fe6df2284e9f14f",
+  "repair_base": "26ab4a20ce9599e63b486b2010edd30e90dbfa53",
+  "origin_main": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "command": [
+    "/Users/adijain/Desktop/MOE_Project/.venv/bin/python",
+    "-m",
+    "pytest",
+    "--noconftest",
+    "tests/test_typed_task_engine.py",
+    "tests/test_typed_reminder_operations.py",
+    "-q"
+  ],
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "WISP_HOME": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical-state"
+  },
+  "exit_code": 0,
+  "elapsed_seconds": 1.41,
+  "head_unchanged": true,
+  "status_porcelain": "",
+  "log": "/private/tmp/wisp-router-core-0b2ecd116fc7afecaae8369d2fe6df2284e9f14f/typed-mechanical.log"
+}
