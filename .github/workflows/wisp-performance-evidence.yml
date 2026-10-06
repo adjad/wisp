@@ -1,0 +1,97 @@
+name: Wisp performance evidence
+
+# Publishes already-measured Desktop performance evidence as the artifact that
+# the publication jobs in wisp-build.yml bind to. It measures nothing: the live
+# benchmark runs on the measurement owner's Mac. This job only refuses unless
+# the files it is handed hash to the digests the measurement owner recorded, and
+# then attaches them to a run whose head is the exact release commit.
+#
+# Run it from the release tag (workflow_dispatch, "Use workflow from" = the tag),
+# with the evidence pushed beforehand to the branch named below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      evidence_branch:
+        description: 'Branch holding receipt.json, approved-baseline.json and raw/ at its root'
+        type: string
+        required: true
+      receipt_sha256:
+        description: 'Receipt SHA-256 recorded by the measurement owner'
+        type: string
+        required: true
+      baseline_sha256:
+        description: 'Approved baseline SHA-256 recorded by the independent reviewer'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wisp-performance-evidence-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: Attach measured performance evidence
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fetch the evidence branch
+        env:
+          EVIDENCE_BRANCH: ${{ inputs.evidence_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B -c 'import os,re; assert re.fullmatch(r"perf-evidence/[A-Za-z0-9._-]+", os.environ["EVIDENCE_BRANCH"])'
+          git fetch --no-tags --depth=1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "refs/heads/${EVIDENCE_BRANCH}:refs/remotes/evidence/head"
+          mkdir -p .wisp-build/performance
+          git --work-tree=.wisp-build/performance checkout refs/remotes/evidence/head -- receipt.json approved-baseline.json raw
+      - name: Verify the evidence matches the recorded digests
+        env:
+          RECEIPT_SHA256: ${{ inputs.receipt_sha256 }}
+          BASELINE_SHA256: ${{ inputs.baseline_sha256 }}
+        run: |
+          python3 -B - <<'PY'
+          import hashlib, os, pathlib, re
+          root = pathlib.Path(".wisp-build/performance")
+          for name, key in (("receipt.json", "RECEIPT_SHA256"), ("approved-baseline.json", "BASELINE_SHA256")):
+              expected = os.environ[key]
+              assert re.fullmatch(r"[a-f0-9]{64}", expected), key
+              path = root / name
+              assert path.is_file() and not path.is_symlink(), name
+              assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name + " does not match the recorded digest"
+          for path in root.rglob("*"):
+              assert not path.is_symlink(), str(path)
+          PY
+      - name: Re-derive the verdict for this exact commit
+        env:
+          RECEIPT_SHA256: ${{ inputs.receipt_sha256 }}
+          BASELINE_SHA256: ${{ inputs.baseline_sha256 }}
+        run: |
+          set -euo pipefail
+          info="$(python3 -B scripts/release_performance.py info)"
+          field() { python3 -B -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$info" "$1"; }
+          python3 -B scripts/release_performance.py check \
+            --receipt .wisp-build/performance/receipt.json \
+            --expect-candidate-sha "$GITHUB_SHA" \
+            --expect-corpus-sha256 "$(field corpus_sha256)" \
+            --expect-policy-sha256 "$(field policy_sha256)" \
+            --expect-harness-sha256 "$(field harness_sha256)" \
+            --approved-baseline .wisp-build/performance/approved-baseline.json \
+            --approved-baseline-sha256 "$BASELINE_SHA256" \
+            --expect-receipt-sha256 "$RECEIPT_SHA256"
+      - name: Upload the evidence the publication jobs bind to
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: wisp-release-performance-${{ github.sha }}
+          path: .wisp-build/performance
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 90
