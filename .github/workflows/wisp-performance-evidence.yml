@@ -78,15 +78,7 @@ jobs:
           set -euo pipefail
           info="$(python3 -B scripts/release_performance.py info)"
           field() { python3 -B -c 'import json,sys; print(json.loads(sys.argv[1])[sys.argv[2]])' "$info" "$1"; }
-          python3 -B scripts/release_performance.py check \
-            --receipt .wisp-build/performance/receipt.json \
-            --expect-candidate-sha "$GITHUB_SHA" \
-            --expect-corpus-sha256 "$(field corpus_sha256)" \
-            --expect-policy-sha256 "$(field policy_sha256)" \
-            --expect-harness-sha256 "$(field harness_sha256)" \
-            --approved-baseline .wisp-build/performance/approved-baseline.json \
-            --approved-baseline-sha256 "$BASELINE_SHA256" \
-            --expect-receipt-sha256 "$RECEIPT_SHA256"
+          python3 -B scripts/release_performance.py check --receipt .wisp-build/performance/receipt.json --expect-candidate-sha "$GITHUB_SHA" --expect-corpus-sha256 "$(field corpus_sha256)" --expect-policy-sha256 "$(field policy_sha256)" --expect-harness-sha256 "$(field harness_sha256)" --approved-baseline .wisp-build/performance/approved-baseline.json --approved-baseline-sha256 "$BASELINE_SHA256" --expect-receipt-sha256 "$RECEIPT_SHA256"
       - name: Upload the evidence the publication jobs bind to
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
