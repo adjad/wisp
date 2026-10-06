@@ -1,0 +1,16 @@
+test_admission_template_cannot_launch (test_package.PackageTests.test_admission_template_cannot_launch) ... ok
+test_elapsed_cost_is_not_reset (test_package.PackageTests.test_elapsed_cost_is_not_reset) ... ok
+test_explicit_token_list_contract (test_package.PackageTests.test_explicit_token_list_contract) ... ok
+test_future_start_and_instance_swap_block (test_package.PackageTests.test_future_start_and_instance_swap_block) ... ok
+test_label_audit_invalidates_on_input_change (test_package.PackageTests.test_label_audit_invalidates_on_input_change) ... ok
+test_missing_safety_or_billing_facts_block (test_package.PackageTests.test_missing_safety_or_billing_facts_block) ... ok
+test_over_budget_expired_and_nonfinite_block (test_package.PackageTests.test_over_budget_expired_and_nonfinite_block) ... ok
+test_reload_records_detect_missing_changed_and_wrong_dtype (test_package.PackageTests.test_reload_records_detect_missing_changed_and_wrong_dtype) ... ok
+test_smoke_integrity_and_no_cross_split_families (test_package.PackageTests.test_smoke_integrity_and_no_cross_split_families) ... ok
+test_trainable_parameter_contract (test_package.PackageTests.test_trainable_parameter_contract) ... ok
+test_valid_cost_includes_reserves (test_package.PackageTests.test_valid_cost_includes_reserves) ... ok
+
+----------------------------------------------------------------------
+Ran 11 tests in 0.018s
+
+OK

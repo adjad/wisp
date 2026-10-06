@@ -1,0 +1,102 @@
+{
+  "status": "REPAIRS_REQUIRED_BEFORE_CLOUD_ADMISSION",
+  "role": "Bounded advisory static recipe/data reviewer; not formal release Auditor",
+  "actor": "/root/router_plan_review",
+  "thread_id": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+  "scope": "training.brevRecipeDataReviewScopeACK20261006; parent sole writer/operator",
+  "bundle": "/Users/adijain/.codex/worktrees/ling-brev-training/MOE_Project/training/ling-brev-20261006",
+  "provenance": {
+    "before_utc": "2026-10-06T04:51:19Z",
+    "after_utc": "2026-10-06T04:52:43Z",
+    "head_before": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "head_after": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "dirty_before": "?? training/",
+    "dirty_after": "?? training/",
+    "mutable_observation": true,
+    "hashes_identical_before_after": true,
+    "limitation": "Uncommitted parent-owned namespace. Findings bind observed hashes, not a frozen commit; later edits require targeted re-review. No paths outside scope read except permitted public source and Git state."
+  },
+  "findings": [
+    {
+      "id": "R1_TOKENIZER_RETURN_TYPE",
+      "priority": 1,
+      "file": "cloud_probe.py",
+      "functions": ["check_tokens", "evaluate"],
+      "defect": "All three apply_chat_template calls assume list[int] but pinned Transformers5.18 defaults return_dict=True. full/prefix become BatchEncoding: len counts fields and slicing fails; torch.tensor([ids]) cannot consume an encoding dictionary. Preparation/inference fails before intended checks.",
+      "repair": "Pass return_dict=False explicitly for full, prefix and evaluation calls, or consistently select input_ids. Assert list of integer IDs and no truncation. Add a lightweight contract regression that uses a dictionary-returning fake tokenizer without model loading.",
+      "evidence": "https://github.com/huggingface/transformers/blob/v5.18.0/src/transformers/tokenization_utils_base.py#L2990; Axolotl own prompter explicitly passes return_dict=False"
+    },
+    {
+      "id": "R2_BILLING_START_AND_INSTANCE_BINDING",
+      "priority": 1,
+      "file": "admission.py",
+      "lines": "27-43",
+      "defect": "Runtime gate allows billing_start_at_utc in the future, so a running VM can be admitted with an understated billed duration. An example receipt with fresh quote now, start tomorrow and stop two hours after that computes only two hours while leaving more than a day until termination. Provider/offer strings and nonempty termination receipt are not bound to the actual allocated instance.",
+      "repair": "Separate prelaunch quote admission from postallocation runtime receipt. Runtime must bind immutable instance ID/provider/offer and actual billing allocation start<=now; stop must be in the verified deadline window. Validate controller termination proof against that instance/deadline and remaining inclusive budget, with earlier spend not double-counted. Add future-start and mismatched-instance/deadline cases to parent tests.",
+      "limits": "Current template correctly fails closed. No resource exists; concrete external timer implementation is pending and must remain a no-launch prerequisite."
+    },
+    {
+      "id": "R3_STALE_LABEL_AUDIT",
+      "priority": 1,
+      "file": "run_cloud_smoke.sh",
+      "defect": "Train release checks label-audit.json booleans and preprocess.log SHA only. It does not bind smoke.yml, actual train/dev bytes, pins, template, runtime versions or prepared dataset artifacts. Those can change while the unchanged preprocessing log still satisfies the gate.",
+      "repair": "Freeze a bundle manifest before preparation. Bind label audit to config, source/model/tokenizer/template identities, raw data manifests and actual prepared dataset hashes plus runtime/package identity. Revalidate all hashes immediately before training; invalidate prepared cache and audit on any change. Record audit timestamp/operator and ensure the audited generation/template settings match the train phase."
+    },
+    {
+      "id": "R4_FROZEN_BASE_PROOF_MISSING",
+      "priority": 2,
+      "file": "cloud_probe.py",
+      "functions": ["inspect_adapter"],
+      "defect": "Saved LoRA-only keys and nonzero B prove a nonempty adapter update, but not that only adapters were trainable or that experts/router/embeddings/head remained unchanged. RUNBOOK currently claims that preservation without corresponding persisted evidence.",
+      "repair": "Persist an explicit attention-only trainable tensor inventory before optimizer steps, assert zero trainable base/expert/router parameters, and verify frozen weight fingerprints before/after the actual training process through a qualified callback or equivalent direct smoke path. Until then, label frozen-base preservation as expected from PEFT configuration rather than empirically verified."
+    },
+    {
+      "id": "R5_RELOAD_KEY_AND_EQUIVALENCE_EVIDENCE",
+      "priority": 2,
+      "file": "cloud_probe.py",
+      "functions": ["load_model", "evaluate"],
+      "defect": "Fresh reload is correctly a distinct process with direct Bailing classes/conversions, but base loading_info checks occur before PEFT adapter loading. PEFT from_pretrained can warn on missing adapter keys; exact>0 dev may be satisfied by the easy arithmetic base even if some adapter state was not loaded. No posttraining pre-exit output/state reference is compared with reload.",
+      "repair": "Verify loaded adapter key coverage and tensor values/dtypes against the saved checkpoint, active adapter and target inventory. Fail on missing/mismatched adapter keys. Persist a deterministic posttraining reference and compare fresh-process reload logits/output with defined tolerance, without using dev exact>0 as the only reload correctness criterion."
+    }
+  ],
+  "source_checks": {
+    "message_training_false": "Confirmed: get_conversation_thread reads message_field_training; false is retained because it checks is not None. _tokenize_single_prompt uses explicit train_turn false before role-based default. Existing history assistant training:false is correctly authored. Actual decoded label spans remain required.",
+    "sdpa_unpacked": "Supported by static Bailing model: _supports_sdpa true; MLA selects configured attention interface and create_causal_mask; KDA consumes raw padding masks/cu_seqlens. sample_packing:false avoids packed isolation complexity. This is not empirical forward/backward qualification.",
+    "revision_pin": "revision_of_model is the correct Axolotl field and is forwarded to both model and tokenizer loaders.",
+    "direct_reload": "Existing direct Bailing config/model and registered _weight_conversions implement the correct fresh-process source route. No missing/unexpected/mismatched base keys allowed.",
+    "adapter_dtype": "PEFT0.21.1 defaults autocast_adapter_dtype true, promoting BF16/FP16 adapter weights to FP32. Vanilla LoRA casts input to adapter dtype then output back to base result dtype. FP32 adapter storage is not inherently a defect; explicitly record and match training/reload dtype policy.",
+    "pins_vs_image": "Pinned Git installation has direct_url commit assertion. Modern FLA0.5.2 stack remains coherent in intent; no blind Triton downgrade. Exact image/A6000 kernel support still unverified; matmul probe is necessary but insufficient for KDA backward."
+  },
+  "data_review": {
+    "train_count": 20,
+    "dev_count": 6,
+    "purpose": "Disposable compatibility probes; no pilot or final-quality set exists",
+    "labels": "All supplied routing expected intents are consistent with the supplied static system contract by inspection. Exclusions, date/month/range, unread, literals, multi-source, draft/send distinction and source correction represented. Grounded examples preserve partial failure, denied versus empty, direction and exact values; general examples provide arithmetic/extraction/rewriting/Spanish.",
+    "metadata": "Train/dev family identifiers are disjoint and content SHA values match manifest. No nonempty reasoning content or structured tool calls needing mapping found. Prior assistant context is explicitly marked untrained.",
+    "limits": "Different family names alone do not establish independent semantic families for a real pilot; these simple probes are not quality evidence. No final payload or original sealed evaluation read. Full schema validation is parent-owned pending evidence; schema itself does not enforce every domain-specific capability or time-selector combination, so pilot needs independent semantic oracle as well.",
+    "gaps_not_blocking_small_smoke": "No full prompt-injection, unsupported-filter, DST, ambiguity or leakage battery expected from26 disposable probes; required before later pilot/quality claims."
+  },
+  "operational_gate": {
+    "backup_and_teardown": "RUNBOOK honestly marks provider-specific private backup and independent termination implementation pending. Do not launch until concrete verified control-plane termination is bound to the owned instance and artifacts can be privately backed up with checksums. Process timeout does not stop VM billing.",
+    "cap": "At $0.60/hour two hours cost $1.20 before verified noncompute/teardown reserves. <=$5 compatibility and <=$30 cumulative cap retained; no paid retries. Launch template remains unadmitted.",
+    "bootstrap": "pip source commit pinned but dependencies partly ranged. Record before/after package identity and dependency consistency; don't consume the full deadline rebuilding an unsuitable driver/image. Parent still must qualify Mac export before pilot."
+  },
+  "file_sha256": {
+    "admission.py": "0c7ad8d95b3ca828204569719838e0e0f46159eb781c73721b94a26aa57e85e7",
+    "build_smoke.py": "2206793600c150f9c4a97ed497bc923424731bcd0220e3747ede85741900a4f3",
+    "cloud_probe.py": "98cb71937cf97657727d896c582370a6632de9c0f30a5699e31117e445047732",
+    "test_package.py": "127a93dc901f58914cb8eeee8903a519e497ebd178d30aac24bd4d4e8c63ab22",
+    "bootstrap_cloud.sh": "51c3b3b81e76e4691cd517d085681224d7eca439da49eca6990b6e6b47279c46",
+    "run_cloud_smoke.sh": "c17028048417532aed94d85c58fd39dafa545d28bbc5e1cc10d04d24eeabb897",
+    "smoke.yml": "39bc1a27992da1005502c7b2c7d61e5b4e61ae7a1c769d3dadd707a705102a9f",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+    "launch-admission.template.json": "2ef7600209d422b8eb78f46fea771b84de2a0d78bdb8cfdba6461ece16baaa55",
+    "pins.json": "28873f22c766ba9511e35941472f333048ed692d67632fe47030b33219557024",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "RUNBOOK.md": "282e1a70c39ef9ae58a1077161d804745ba4aac482b09c79514c540b024b0593",
+    "data/manifest.json": "c0a3e5f6ca0d331d370aa70dc94fe8020092a5e4ad1e519361f779f897f0518b",
+    "data/dev.jsonl": "7369c9c8208ff726c7863204c1e20aa79cce7b7298112b0fad97fbf07c57d029",
+    "data/train.jsonl": "0f757db8bb78367bb6738a3c0f0cda98169f89a2e5fee820fd752bcefb865af7"
+  },
+  "actions": "Static reads only, jq JSON inspection, Git status/HEAD and hashing; JSON review write only. Did not execute bundle scripts, import code, run tests, read secrets/final payloads/old eval, load models, allocate cloud or spend. Parent-reported five CPU tests were not rerun or independently confirmed."
+}

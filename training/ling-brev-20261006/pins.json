@@ -1,0 +1,22 @@
+{
+  "created_at_utc": "2026-10-06T04:47:57.757905+00:00",
+  "repository_base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "router_contract_commit": "c313a459f6ab259e55981ffcb1bbe3df11fe9307",
+  "axolotl_revision": "4608acfd55d5cb202148cba38566480f1540e91e",
+  "model_id": "inclusionAI/Ling-3.0-tiny",
+  "model_revision": "9a98e35fe1c9ee255f78dd64771c7ae15a799481",
+  "model_license": "MIT",
+  "candidate_cloud_image": "axolotlai/axolotl-cloud-uv@sha256:ce0d2999de6a461c4c90d6f4269390ae7b9449afde68a76603dcfc45c9d5065d",
+  "candidate_image_qualified_for_A6000": false,
+  "router_system_sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+  "schema_sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+  "execution_allowed_without_admission": false,
+  "training_started": false,
+  "paid_resources": [],
+  "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
+  "tokenizer_revision": "9a98e35fe1c9ee255f78dd64771c7ae15a799481",
+  "source_urls": [
+    "https://github.com/axolotl-ai-cloud/axolotl/tree/4608acfd55d5cb202148cba38566480f1540e91e",
+    "https://huggingface.co/inclusionAI/Ling-3.0-tiny/tree/9a98e35fe1c9ee255f78dd64771c7ae15a799481"
+  ]
+}

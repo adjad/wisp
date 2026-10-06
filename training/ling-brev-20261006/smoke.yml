@@ -1,0 +1,66 @@
+base_model: inclusionAI/Ling-3.0-tiny
+revision_of_model: 9a98e35fe1c9ee255f78dd64771c7ae15a799481
+trust_remote_code: true
+plugins:
+  - training_guard.FrozenBaseGuard
+chat_template: tokenizer_default
+chat_template_kwargs:
+  enable_thinking: false
+datasets:
+  - path: data/train.jsonl
+    type: chat_template
+    field_messages: messages
+    roles_to_train: [assistant]
+    message_field_training: training
+test_datasets:
+  - path: data/dev.jsonl
+    type: chat_template
+    field_messages: messages
+    roles_to_train: [assistant]
+    message_field_training: training
+output_dir: artifacts/smoke-adapter
+dataset_prepared_path: artifacts/prepared
+sequence_len: 2048
+sample_packing: false
+eval_sample_packing: false
+pad_to_sequence_len: false
+adapter: lora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - q_a_proj
+  - q_b_proj
+  - kv_a_proj_with_mqa
+  - kv_b_proj
+  - dense
+micro_batch_size: 1
+gradient_accumulation_steps: 1
+max_steps: 4
+num_epochs: 1
+optimizer: adamw_torch
+lr_scheduler: linear
+learning_rate: 0.00001
+weight_decay: 0.001
+warmup_steps: 0
+train_on_inputs: false
+bf16: true
+fp16: false
+tf32: true
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+attn_implementation: sdpa
+logging_steps: 1
+save_steps: 2
+eval_steps: 2
+save_total_limit: 2
+save_safetensors: true
+seed: 62106
+wandb_project:
+hub_model_id:
+use_tensorboard: false

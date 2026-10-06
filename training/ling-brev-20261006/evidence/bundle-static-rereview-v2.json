@@ -1,0 +1,100 @@
+{
+  "status": "B1_B5_STATIC_REPAIRS_ACCEPTED_CLOUD_REMAINS_NOT_ADMITTED",
+  "role": "Bounded independent advisory recipe review; not formal Auditor or cloud operator",
+  "actor": "/root/router_plan_review",
+  "thread_id": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+  "bundle": "/Users/adijain/.codex/worktrees/ling-brev-training/MOE_Project/training/ling-brev-20261006",
+  "provenance": {
+    "before_utc": "2026-10-06T05:03:30Z",
+    "after_hash_check_utc": "2026-10-06T05:05:35Z",
+    "head_before_and_after": "4994caa15533c0cf84c07208c9097e4197f2815b",
+    "dirty_before_and_after": "?? training/",
+    "expected_before_manifest": "/private/tmp/wisp-ling-brev-execution-20261006/repaired-bundle-hashes.json",
+    "actual_after_hashes_match_all20_expected": true,
+    "independently_rehashed_before_each_read": false,
+    "limitation": "Before identity is parent-frozen supplied manifest; independent live hashes after inspection match all20 entries. Parent explicitly confirmed no edits since dispatch. Source is uncommitted; this is observed-hash review, not committed candidate evidence."
+  },
+  "resolutions": [
+    {
+      "id": "B1/R1",
+      "state": "CORRECTED_STATIC",
+      "evidence": "cloud_probe.py all full/prefix/evaluation apply_chat_template calls explicitly return_dict=False and validate flat integer token list; training_guard reference call does likewise. Template hash matches pinned separate jinja."
+    },
+    {
+      "id": "B2/R2",
+      "state": "CORRECTED_STATIC",
+      "evidence": "admission.py runtime-only phase, future start rejection, immutable instance/provider/offer matching in allocation and termination evidence, exact allocation start and scheduled stop binding, inclusive elapsed billing arithmetic. Template remains unadmitted."
+    },
+    {
+      "id": "B3/R3",
+      "state": "CORRECTED_STATIC",
+      "evidence": "bundle_identity fingerprints source/config/data/pins/template/runtime/tokenization/preprocess plus actual prepared artifacts. Audit equality checked before base evaluation and immediately before training. Symlinked listed files rejected. Manual audit is still required on actual decoded labels."
+    },
+    {
+      "id": "B4/R4",
+      "state": "CORRECTED_STATIC",
+      "evidence": "Axolotl plugin guard inventories actual trainables before training, requires attention LoRA only and explicitFP32 adapter policy, hashes all nonadapter state before/after, fails on any frozen identity/content change. Callback references and persisted step state required by inspect_adapter."
+    },
+    {
+      "id": "B5/R5",
+      "state": "CORRECTED_STATIC",
+      "evidence": "Posttraining adapter key/shape/dtype/exact-byte records compared with saved artifact and fresh-loaded adapter before scoring. Fresh process forward compares recorded input IDs and last-token logits with explicit tolerance; both reference/reload eval, use_cache:false and CUDA BF16 autocast. Easy dev exact>0 is no longer the only correctness check."
+    }
+  ],
+  "plugin_api": {
+    "source_pin": "4608acfd55d5cb202148cba38566480f1540e91e",
+    "method": "FrozenBaseGuard.add_callbacks_post_trainer(cfg,trainer) returns GuardCallback",
+    "wiring": "BasePlugin method exists; causal trainer builder adds returned callbacks to trainer before training. Config-selected plugins register(required=True), so import failure is not silently skipped. Transformers TrainerCallbackHandler supplies model=self.model at begin/end. Bundle PYTHONPATH includes plugin directory.",
+    "source_urls": [
+      "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/integrations/base.py",
+      "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/core/builders/base.py",
+      "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/core/builders/causal.py",
+      "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/utils/config/__init__.py",
+      "https://github.com/huggingface/transformers/blob/v5.18.0/src/transformers/trainer_callback.py"
+    ]
+  },
+  "comparison_limits": "One last-token-logit probe establishes bounded reload equivalence if it passes; it is not full behavior equality or quality uplift. Tolerance is explicit, finite checks retained, no runtime success claimed. Frozen hashes protect training updates; exact adapter records protect save/load.",
+  "pending_gates": [
+    "User sign-in and authenticated balance/credit eligibility/quote/billing quantum/tax/egress verified",
+    "Exact A6000 driver/image/package dependency and KDA backward/memory qualification",
+    "Actual full token lengths, generation-prefix identity and decoded Axolotl label audit",
+    "Actual callback frozen-state/update/save/fresh reload and numeric equivalence execution",
+    "Concrete provider-specific private backup and independent control-plane termination bound to owned instance, final billing verification",
+    "Published expert-layout merge/export/requantization and intended Mac oMLX/Wisp serving validation before any pilot",
+    "Pilot/final family-separated datasets and actual matched baseline/quality evidence; no quality final exists"
+  ],
+  "nonblocking_operational_notes": [
+    "Keep the prepared training environment immutable. Any live dependency change after preparation requires refresh runtime identity, invalidate audit and redo preparation; runtime.json is a snapshot, not an automatic live package monitor.",
+    "All hashing/reference-forward overhead counts toward<=5smoke and<=30total credits. Independent termination remains primary budget protection; local process timeout is secondary."
+  ],
+  "actionable_new_local_defects": [],
+  "parent_reported_not_independently_run": {
+    "cpu_tests": 11,
+    "routing_schema_valid_labels": 16,
+    "invalid_mutation_rejections": 28,
+    "YAML_shell_Python_AST": "parent reports pass"
+  },
+  "actual_file_sha256": {
+    ".gitignore": "54b3c65b8f396482a4a3ae205ae54ad3d245523b57303990d8db259a4364ad71",
+    "RUNBOOK.md": "b53eb6cd8045d426001b31c9996463c63f305a23cc54e0026ec32d499bc3bdf6",
+    "admission.py": "538623ff9fc910119eeb7d9f59c1a243a5b6159907b89c3560bf9873d5444df1",
+    "bootstrap_cloud.sh": "51c3b3b81e76e4691cd517d085681224d7eca439da49eca6990b6e6b47279c46",
+    "build_smoke.py": "2206793600c150f9c4a97ed497bc923424731bcd0220e3747ede85741900a4f3",
+    "bundle_identity.py": "416496e1f8d587c72240460d51174113e38ce42a559a0935d1366d3a0673bd86",
+    "cloud_probe.py": "ae12ee1c2eaba23be69a67a06465caf5bae7c9fb75d17c063b39d6750442cb07",
+    "data/dev.jsonl": "7369c9c8208ff726c7863204c1e20aa79cce7b7298112b0fad97fbf07c57d029",
+    "data/manifest.json": "c0a3e5f6ca0d331d370aa70dc94fe8020092a5e4ad1e519361f779f897f0518b",
+    "data/train.jsonl": "0f757db8bb78367bb6738a3c0f0cda98169f89a2e5fee820fd752bcefb865af7",
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+    "launch-admission.template.json": "970babe4d6d0e196b7f2f3488edc68c276ad0f743785740c9df9bff99453ef5e",
+    "ling-chat-template.jinja": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
+    "parameter_contract.py": "12b134e77f486cc11b050288d88f5074fce36ad1b6059e2b63c611cde87d8873",
+    "pins.json": "c6fffdb24a5f41dc9e1ac33f883b06a2646b1098686ec436794eaa0504112c89",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "run_cloud_smoke.sh": "3b0a870c9a99fdd0362ef140c0a53324e42dadee3628889081531790de7776a2",
+    "smoke.yml": "72993c61d9a2007e69a9793177abfd7af2cff4dba942d70db3232b28145dcdb0",
+    "test_package.py": "8ec49f4689f3051f632b2b61a9b8b79f7ca4d700a949879f947b31e7f26bf6da",
+    "training_guard.py": "a5f0b8540d2edc570e76f2c8d964dc9d5a358a9ecd3d7d28169c1314ba21b1fd"
+  },
+  "actions": "Static source/JSON reads, public source API checks, Git status/HEAD and20file hashing. No imports/tests/script execution, model load/call/download, credentials/account/cloud allocation/upload/spend/teardown. JSON evidence only written."
+}

@@ -1,0 +1,19 @@
+{
+  "status": "NOT_ADMITTED_SIGN_IN_AND_BILLING_PREFLIGHT_REQUIRED",
+  "phase": "running-instance", "instance_id": null,
+  "allocation_evidence": {}, "termination_evidence": {},
+  "gpu": "A6000", "gpu_count": 1, "vram_gb": 48,
+  "smoke_cap_usd": 5, "total_cap_usd": 30,
+  "credit_balance_usd": null, "hourly_usd": null,
+  "reserved_noncompute_usd": null, "reserved_teardown_usd": 0.5,
+  "earlier_spend_usd": 0, "billing_quantum_seconds": null,
+  "authenticated_balance_verified": false, "credits_eligible": false,
+  "all_charges_included": false, "auto_recharge_disabled": false,
+  "no_card_charges": false, "remote_access_verified": false,
+  "private_backup_destination_verified": false,
+  "independent_instance_termination_scheduled": false,
+  "runtime_recipe_qualified": false, "source_data_checks_passed": false,
+  "provider": null, "offer_id": null, "quote_verified_at_utc": null,
+  "billing_start_at_utc": null, "termination_at_utc": null,
+  "termination_receipt": null, "backup_destination": null
+}

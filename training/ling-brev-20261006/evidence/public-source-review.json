@@ -1,0 +1,86 @@
+{
+  "status": "PUBLIC_SOURCE_REVIEW_COMPLETE_LOCAL_BUNDLE_PENDING",
+  "checked_date": "2026-10-05 America/Los_Angeles",
+  "actor": "/root/router_plan_review",
+  "thread_id": "01a10d52-a863-7b20-8c43-54ef56592ab8",
+  "authority": "training.brevRecipeDataReviewScopeACK20261006; accepted, then explicitly released by sole parent dispatcher",
+  "requested_model": "gpt-6.1-sol",
+  "requested_reasoning": "high",
+  "actual_runtime_settings_independently_verified": false,
+  "review_role": "Read-only advisory helper, not formal Auditor or empirical compatibility certifier",
+  "pins": {
+    "axolotl": "4608acfd55d5cb202148cba38566480f1540e91e",
+    "model": "inclusionAI/Ling-3.0-tiny",
+    "model_revision": "9a98e35fe1c9ee255f78dd64771c7ae15a799481",
+    "model_license_evidence": "Pinned README frontmatter license: mit; no LICENSE file listed by pinned public model API",
+    "cloud_image_parent_report": "axolotlai/axolotl-cloud-uv@sha256:ce0d2999de6a461c4c90d6f4269390ae7b9449afde68a76603dcfc45c9d5065d",
+    "amd64_child_parent_report": "sha256:c7dafab577f1dc9194d668123bd821b46372f3aba38123a3a5be1f41fcd721fe",
+    "image_limits": "Parent-provided digests; image contents, installed packages and build commit not independently checked in this review. Source commit and image digest alone do not establish their equivalence."
+  },
+  "dependency_findings": {
+    "current_source": "Python>=3.12; Torch>=2.13.0,<=2.14.0; Transformers5.18.0; PEFT0.21.1; tokenizers0.23.1; FLA-core and flash-linear-attention0.5.2; Triton>=3.4.0 on non-Darwin",
+    "stale_warning": "README and modeling ImportError still mention FLA0.4.1; README reports its KDA backward illegal memory access with Triton3.6/3.7 and workaround3.5.1. Do not treat this as proof the same fault persists in0.5.2, or recommend incoherent downgrade of current Torch stack.",
+    "fla_source": "FLA0.5.2 CUDA extra allows Torch>=2.7 and Triton>=3.3; release includes Triton-main compatibility migrations. This does not prove Axolotl Ling backward on the selected A6000/image.",
+    "required_parent_gate": "Lock exact installed packages and dependencies, check dependency consistency, driver/runtime support and actual selected-device kernels during a separately admitted capped smoke. Record versions before any update. No unbounded upgrade/downgrade/rebuild loop.",
+    "image_ampere_risk": "Pinned Dockerfile-uv-base defaults CUDA13.0.3, Python3.14, Torch2.14 and TORCH_CUDA_ARCH_LIST9.0/10.0/10.3/12.0+PTX. A6000 is SM8.6. These defaults are not proof the published image lacks support, but require exact image build metadata and actual Torch compiled-architecture/kernel qualification before assuming fit."
+  },
+  "model_and_adapter": {
+    "architecture": "Pinned model config: bailing_hybrid/BailingMoeV3ForCausalLM,24 layers, layer_group_size4,128 experts,8 selected,1 shared; q_lora_rank256, kv_lora_rank512, no_kda_lora true; no MTP, no SwiGLU caps in tiny config.",
+    "load_route": "Axolotl hooks redirect published configuration/modeling dynamic modules to its own training-ready Bailing classes. Published remote code is inference-only and has causal/padding-mask limitations.",
+    "attention_targets": ["q_proj", "k_proj", "v_proj", "o_proj", "q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj", "dense"],
+    "target_guard": "Match explicit attention-qualified names where possible; enumerate every trainable tensor and assert only LoRA A/B adapters are trainable. Do not add expert lora_target_parameters, all_linear, router gates, conv layers, embeddings, lm_head or modules_to_save for this pilot.",
+    "frozen_validation": "Verify no base/expert/router parameters require grad and no frozen weights changed. Check no missing or unexpectedly initialized base weights on load.",
+    "fresh_reload": "Fresh process must import Axolotl Bailing config/model, register _weight_conversions entries through Transformers checkpoint conversion registration, then load the exact pinned base with direct BailingMoeV3ForCausalLM and attach adapter with PEFT. Alternatively qualify the exact equivalent Axolotl loader hook path. A plain AutoModel trust_remote_code reload can select published inference-only modeling code.",
+    "expert_conversion": "Bailing support registers DeepSeekV3 fused-expert conversions plus expert_bias -> e_score_correction_bias router renaming. Official tests explicitly register these conversions, test published expert-layout load and published-layout save. Direct fresh reload needs the same setup.",
+    "save_limits": "Existing tests are tiny synthetic models, not proof real-model PEFT save/reload or Mac export. Check adapter save/reload separately; after merge/full save verify published per-expert gate/up/down key layout and expert_bias naming before MLX conversion. Record before/after hashes and fresh-process output equivalence."
+  },
+  "template_and_labels": {
+    "template_location": "Pinned tokenizer_config has no inline chat_template; model includes separate chat_template.jinja. Preserve and hash this exact file with tokenizer artifacts.",
+    "thinking": "Pass chat_template_kwargs enable_thinking:false in training, development and reload. Template defaults thinking on, emits empty think markers when off, and preserves supplied reasoning_content. Omit reasoning_content and embedded nonempty think blocks for the nonthinking pilot.",
+    "response_contract": "Production structured JSON intent may be trained as assistant content; do not accidentally switch it to Ling XML tool calls. If native tool_calls are used, explicit message_property_mappings tool_calls:tool_calls is needed because default transform copies only role/content/reasoning_content; template expects arguments object rather than serialized JSON string.",
+    "masking": "train_on_inputs:false; roles_to_train:[assistant]. To train only the final target while preserving prior assistant context, configure message_field_training:training and mark prior context turns false/final target true. Inspect decoded label spans for every smoke row and representative pilot rows: system/user/tools/context masked, final target and intended EOT trained, nonempty labels, no truncation.",
+    "termination": "Model eos_token_id156895 corresponds role_end. Audit tokenizer EOS/EOT and label coverage; do not silently append a generic EOS or train observations.",
+    "packing": "Start unpacked for smallest compatibility isolation. Packing changes KDA recurrence and MLA masks via reset position_ids/cu_seqlens; before enabling it, require causal, padding and cross-document isolation checks for both branches. Existing source tests cover these paths but do not establish selected stack success.",
+    "context": "2048 only if complete schema/system/context/target fit; otherwise measure required length. Never truncate gold or production schema to make smoke pass."
+  },
+  "required_smoke_contract": [
+    "Pinned environment/code/base/template identities and selected-device architecture recorded",
+    "Actual finite forward/loss/backward and nonzero adapter update; frozen-base checks",
+    "Nonempty adapter config/checkpoint and tokenizer/template saved; output backup hashes",
+    "Terminate trainer and reload adapter in a fresh process using training-ready Bailing/conversion registration",
+    "Independent development check and output equivalence; no claim of training gain from30 steps",
+    "Qualified merge/export/requantization and intended Mac oMLX/Wisp reload before any pilot expansion",
+    "Private external backup verified before deleting non-stop/start instance; no secrets in logs",
+    "Total <=30 existing credits including <=5 smoke, downloads, setup, export/eval, storage and reserve; no automatic paid retries"
+  ],
+  "local_review_pending": {
+    "bundle": "Parent will provide registered training/ling-brev-20261006 paths",
+    "provenance": "Before and after static review record HEAD, dirty state, file hashes and UTC times; any mutable observation is provisional. Never execute bundle scripts, imports or tests.",
+    "data": "Train/dev payload allowed only in new namespace; final metadata/family hashes only. Validate independent oracle, family splits before paraphrases, negative controls, exclusions, dates/literals/error honesty, dedup and contamination defenses. No old sealed evaluation, personal logs or final prompt payload reads.",
+    "operator": "Parent alone edits recipes/data/code, handles credentials and operates cloud. Reviewer proposes changes only."
+  },
+  "source_hashes": {
+    "pyproject.toml": "e98d9c48d1e88592a41052922df6e2b0e86c858e8a070e799b693add314c7a63",
+    "examples/ling3/README.md": "20a805b1e0ab86e8d1a8bb551762b571bfb95cbc5fa0363faa589142cfe67fd8",
+    "examples/ling3/ling-3.0-tiny-lora.yaml": "e4d607706dd399defec1dc56180c21c632be0b39fec169a3b86e1d4123717830",
+    "src/axolotl/model_support/bailing_hybrid/__init__.py": "fa2f6203d41e2be6fc47fa76b169a12961aba5f98b33a7b1ba35b1e60e44c0d8",
+    "src/axolotl/model_support/bailing_hybrid/modeling_bailing_moe_v3.py": "18b0e093313985a0098187d03da0efd5376e93f41215c86e4107e20b021238b6",
+    "tests/test_bailing_hybrid_modeling.py": "4e347ca852114e2bdd09ad4c0f5804baec63a6942a7fa41dbfe753762ba51ddc",
+    "src/axolotl/prompt_strategies/chat_template.py": "6a14e9e92898974f02d40b7ad199ae94b3010609c0378adc0956a00a9d9057d5",
+    "docker/Dockerfile-uv-base": "fb71d9695aa3f5281130037be9b93985bcea256b8aa68ed192f25a3dfc49e93d",
+    "pinned_model_chat_template.jinja": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a"
+  },
+  "sources": [
+    "https://github.com/axolotl-ai-cloud/axolotl/tree/4608acfd55d5cb202148cba38566480f1540e91e/examples/ling3",
+    "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/pyproject.toml",
+    "https://github.com/axolotl-ai-cloud/axolotl/tree/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/model_support/bailing_hybrid",
+    "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/tests/test_bailing_hybrid_modeling.py",
+    "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/src/axolotl/prompt_strategies/chat_template.py",
+    "https://github.com/axolotl-ai-cloud/axolotl/blob/4608acfd55d5cb202148cba38566480f1540e91e/docker/Dockerfile-uv-base",
+    "https://huggingface.co/inclusionAI/Ling-3.0-tiny/blob/9a98e35fe1c9ee255f78dd64771c7ae15a799481/chat_template.jinja",
+    "https://huggingface.co/inclusionAI/Ling-3.0-tiny/blob/9a98e35fe1c9ee255f78dd64771c7ae15a799481/config.json",
+    "https://github.com/fla-org/flash-linear-attention/releases/tag/v0.5.2",
+    "https://github.com/fla-org/flash-linear-attention/blob/v0.5.2/pyproject.toml"
+  ],
+  "actions": "Only public source reads and allowed JSON evidence write. No code imports/execution, tests, model files downloaded, model calls, training, account inspection, credentials, allocation, uploads, spend or teardown."
+}

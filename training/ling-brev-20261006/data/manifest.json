@@ -1,0 +1,46 @@
+{
+  "purpose": "disposable compatibility probes, not evidence of routing quality",
+  "source": "new synthetic specifications; no personal data, old evals, or teacher model outputs",
+  "pilot_generated": false,
+  "final_quality_set_generated": false,
+  "files": {
+    "train.jsonl": {
+      "count": 20,
+      "families": [
+        "smoke_calendar_week",
+        "smoke_calendar_date",
+        "smoke_email_unread",
+        "smoke_email_literal",
+        "smoke_message_person",
+        "smoke_excluded_messages",
+        "smoke_two_sources",
+        "smoke_reminder_overdue",
+        "smoke_draft_inline",
+        "smoke_send_unsupported",
+        "smoke_prohibition",
+        "smoke_context_source_switch",
+        "smoke_ground_calendar",
+        "smoke_ground_partial",
+        "smoke_ground_empty",
+        "smoke_ground_direction",
+        "smoke_math",
+        "smoke_extract",
+        "smoke_rewrite",
+        "smoke_spanish"
+      ],
+      "sha256": "0f757db8bb78367bb6738a3c0f0cda98169f89a2e5fee820fd752bcefb865af7"
+    },
+    "dev.jsonl": {
+      "count": 6,
+      "families": [
+        "probe_calendar_month_exclusion",
+        "probe_notes_literal",
+        "probe_draft_new",
+        "probe_calendar_range",
+        "probe_ground_denied",
+        "probe_math_new"
+      ],
+      "sha256": "7369c9c8208ff726c7863204c1e20aa79cce7b7298112b0fad97fbf07c57d029"
+    }
+  }
+}

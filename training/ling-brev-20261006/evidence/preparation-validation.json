@@ -1,0 +1,44 @@
+{
+  "recorded_at_utc": "2026-10-06T05:05:49.494495+00:00",
+  "status": "PREPARATION_VALIDATED_CLOUD_NOT_STARTED",
+  "workspace": "/Users/adijain/.codex/worktrees/ling-brev-training/MOE_Project",
+  "branch": "codex/ling-brev-training",
+  "base": "4994caa15533c0cf84c07208c9097e4197f2815b",
+  "scope": "training/ling-brev-20261006/**",
+  "local_checks": {
+    "unit_tests_passed": 11,
+    "routing_gold_schema_valid": 16,
+    "invalid_schema_mutations_rejected": 28,
+    "yaml_parses": true,
+    "shell_syntax_passed": true,
+    "python_AST_passed": true,
+    "template_pin_verified": true
+  },
+  "cloud": {
+    "instances_launched": 0,
+    "training_started": false,
+    "spend_by_this_task_usd": 0,
+    "remaining_user_action": "Sign in to NVIDIA Brev in the provided browser tab",
+    "remaining_operator_work": [
+      "Verify authenticated credits/quote and no recharge/card billing",
+      "Qualify exact GPU runtime image and dependency resolution",
+      "Implement and verify private backup and independent provider termination",
+      "Run capped update/save/fresh-reload smoke",
+      "Separately admit and validate isolated Mac export/serving before pilot"
+    ]
+  },
+  "budget": {
+    "total_existing_credits_max_usd": 30,
+    "initial_smoke_included_max_usd": 5
+  },
+  "pilot_dataset_generated": false,
+  "existing_sealed_eval_read": false,
+  "production_modified": false,
+  "no_merge_hold": "Wisp1.3 remains held; this branch not merged",
+  "evidence": {
+    "worktree-registration.json": "6b4f34e9274b2cee3aca77b787f385f60a1ac43c58354b61a7033c2abc2ea4b7",
+    "repaired-bundle-hashes.json": "8dff366fcafb618eeb99ef9d1a6bf4409a3ca27efb76700dacf8b41622b27507",
+    "cpu-validation-final.log": "17e4a077afda6bd41443895de1e730a591cd4b0de3a4fc096a986684ba26bba6",
+    "schema-checks.json": "137571698145e5941bcacf0540457e86be5c679ca0d73f0cea216feaf67c2dc7"
+  }
+}
