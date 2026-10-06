@@ -1,0 +1,68 @@
+{
+  "recordedAtUTC": "2026-10-06T21:34:31.484572+00:00",
+  "status": "BOUNDED_G1_P1_REPAIR_ACK_PENDING_INITIAL_FINAL_REPORT_AND_CONFORMING_SAME_OWNER_REOPEN",
+  "accountableParent": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+  "sourceCheckout": "/Users/adijain/.codex/worktrees/ling-dataset-v2/MOE_Project",
+  "branch": "codex/ling-dataset-v2",
+  "baseSHA": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "scopeBrief": {
+    "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_LING_DATASET_V2_G1_P1_REPAIR_ACK_2026-10-06.md",
+    "sha256": "bba0071df33fcf8e90f95075c42d4968f19926cf2fbf0527eddb743fcf88b729",
+    "bytes": 3918
+  },
+  "snapshot1": {
+    "path": "/private/tmp/ling-dataset-v2-review-input-v1/snapshot-manifest.json",
+    "sha256": "3f7c3f7b84cf8c23fcaeb38322e72f41d460f76924ddb665258f43d1ec115ef0",
+    "bytes": 5828
+  },
+  "mixedSourceFindings": {
+    "path": "/private/tmp/ling-dataset-v2-review/mixed-source-findings.json",
+    "sha256": "c820de275fdb69c7b7b6cd00b824d84cc83a9b360996d8bd8f8b47cdc3b2ec94",
+    "bytes": 29098
+  },
+  "findingsParentReportedPendingFinalReviewerHandoff": true,
+  "initialReviewActor": "01a1131d-b79a-7743-a654-85376036a1d4",
+  "initialReviewWaitCursor": "c88f67f5-3b70-46f3-9910-e88f1d59caab:2",
+  "initialReviewActiveAtObservation": true,
+  "repairs": {
+    "G1": {
+      "soleOwner": "01a11311-c733-7e80-99f1-69dace797301",
+      "canonicalActor": "/root/dataset_v2_grounded",
+      "paths": [
+        "training/ling-dataset-v2-20261006/shards/grounded/**"
+      ],
+      "rowsParentReported": 98,
+      "surfacesParentReported": 17,
+      "familiesParentReported": 8,
+      "strongerAmbiguityCasesParentReported": 37,
+      "conservativeCompletenessCasesParentReported": 61,
+      "previousExplicitQuiescenceRecorded": true,
+      "exactRepairAcceptanceParentReleasePending": true,
+      "editingAllowedNow": false,
+      "editingAllowedAfterConditions": true,
+      "scope": "Source-identifiable mixed-source referencefacts; no inventedfact/action/status; counts/contract/splits unchanged"
+    },
+    "P1": {
+      "soleOwner": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+      "paths": [
+        "training/ling-dataset-v2-20261006/qa.py",
+        "training/ling-dataset-v2-20261006/validate.py",
+        "parent-owned non-shard docs/validation/packaging/review evidence in V2 namespace"
+      ],
+      "shardEditsAllowed": false,
+      "editingAllowedAfterInitialReportPreservedAndScopeAcceptance": true,
+      "scope": "Contextually unambiguous single-source and natural singular/plural mixed-source labels with per-source identifiablefacts; honest expanded_template_ids/authoredsurfaces; negative controls from independentlypassing baselines"
+    }
+  },
+  "beforeEdits": "Initial reviewer finalreport/handoff/hashcheck preserved and explicitquiescence; finalfindingsconform; samegroundedowner exactrepairacceptance plusparentrelease; parentacceptsP1",
+  "additionalRootACKForConformingReopen": false,
+  "newActorOrOwnershipTransfer": false,
+  "oldSnapshotRawGeneratorEvidencePreserved": true,
+  "nextGate": "Fresh immutable snapshot2 plus samefourthreviewer exactacceptance/release and independentaffected/unaffected checks",
+  "goldScorerWeakeningAllowed": false,
+  "productionDefectOrFormalSecurityFindingAsserted": false,
+  "countsContractSplitsMayChange": false,
+  "rootDatasetSemanticInspectionOrExecutionDispatch": false,
+  "modelNativeCloudRuntimeTrainingNetworkAllowed": false,
+  "mergeActivationReleaseAllowed": false
+}

@@ -1,0 +1,35 @@
+{
+  "contract_commit": "c313a459f6ab259e55981ffcb1bbe3df11fe9307",
+  "files": {
+    "dev.jsonl": {
+      "bytes": 1113035,
+      "rows": 400,
+      "sha256": "633a9c448e443a6f3d3b75f516189bd7e6532690c0d13ee2821976e68112455a"
+    },
+    "dev.provenance.jsonl": {
+      "bytes": 530030,
+      "rows": 400,
+      "sha256": "a46cc9a65a8c9318d88bc4b3cf14728e6c63d4a9aebdc5807207340435913483"
+    },
+    "pilot-train.jsonl": {
+      "bytes": 5495554,
+      "rows": 2000,
+      "sha256": "ab486297ecccf5df041caa1334cfec67a1570891c5b8b010dcbced1f49bc8d51"
+    },
+    "train.jsonl": {
+      "bytes": 10989227,
+      "rows": 4000,
+      "sha256": "f9830d01ac92d0e351077ec5fc7f53edb7c6c10d9070714bbded762aa934fa7d"
+    },
+    "train.provenance.jsonl": {
+      "bytes": 5077605,
+      "rows": 4000,
+      "sha256": "1cf399a65fe34eb64ad2f9f68b381dc0f3612c7d0e97682b5b03641a4efe1d2b"
+    }
+  },
+  "final_payloads_read_or_included": false,
+  "model_inference_or_training_run": false,
+  "repository_base": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "seed": 610220261006,
+  "version": "2.0.0"
+}

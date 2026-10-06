@@ -1,0 +1,26 @@
+{
+  "all_writes_under_advisory_output": true,
+  "byte_identical_files": {
+    "dev.jsonl": "633a9c448e443a6f3d3b75f516189bd7e6532690c0d13ee2821976e68112455a",
+    "dev.provenance.jsonl": "a46cc9a65a8c9318d88bc4b3cf14728e6c63d4a9aebdc5807207340435913483",
+    "manifest.json": "a6f874d32464fe24226bfaee1ec2b1819a2a1e55173c909b14a7466f4f0eae9a",
+    "pilot-train.jsonl": "ab486297ecccf5df041caa1334cfec67a1570891c5b8b010dcbced1f49bc8d51",
+    "train.jsonl": "f9830d01ac92d0e351077ec5fc7f53edb7c6c10d9070714bbded762aa934fa7d",
+    "train.provenance.jsonl": "1cf399a65fe34eb64ad2f9f68b381dc0f3612c7d0e97682b5b03641a4efe1d2b"
+  },
+  "extra_surface_selection_needed": [
+    [
+      "calendar_note_unlinked",
+      "calendar_note_unlinked-surface-2"
+    ],
+    [
+      "zone_handover_with_task",
+      "zone_handover_with_task-surface-2"
+    ]
+  ],
+  "families": 186,
+  "repaired_surfaces_in_supplied_samples": 15,
+  "repaired_surfaces_reviewed_from_fullrow_diff": 17,
+  "samples": 497,
+  "status": "PASS_FRESH_SAMPLES_AND_INDEPENDENT_REPRODUCTION"
+}

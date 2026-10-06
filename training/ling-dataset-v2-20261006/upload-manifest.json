@@ -1,0 +1,63 @@
+{
+  "allowlisted_members": {
+    "DATA_CARD.md": {
+      "bytes": 7731,
+      "sha256": "92243f8d1a7b4fb0260b2cac6abcd9d7023fc46d0055c1a17a76795ec4c9b958"
+    },
+    "README.md": {
+      "bytes": 2554,
+      "sha256": "e5359a8f6b8afce7c9ed22c9a91f26e2720e3490a88a0a298e1f610072c62acb"
+    },
+    "dev.jsonl": {
+      "bytes": 1113035,
+      "sha256": "633a9c448e443a6f3d3b75f516189bd7e6532690c0d13ee2821976e68112455a"
+    },
+    "dev.provenance.jsonl": {
+      "bytes": 530030,
+      "sha256": "a46cc9a65a8c9318d88bc4b3cf14728e6c63d4a9aebdc5807207340435913483"
+    },
+    "intent.schema.v1.json": {
+      "bytes": 3860,
+      "sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+    },
+    "manifest.json": {
+      "bytes": 1081,
+      "sha256": "a6f874d32464fe24226bfaee1ec2b1819a2a1e55173c909b14a7466f4f0eae9a"
+    },
+    "pilot-train.jsonl": {
+      "bytes": 5495554,
+      "sha256": "ab486297ecccf5df041caa1334cfec67a1570891c5b8b010dcbced1f49bc8d51"
+    },
+    "preflight.py": {
+      "bytes": 1928,
+      "sha256": "52d1502235a493005e89474d276265fa320966cb84f7ac30c5e9ee59698b722a"
+    },
+    "qa.py": {
+      "bytes": 14587,
+      "sha256": "41839385a023c010ffe226ee282fd88f484ae2db4b3dafd73c1b6fea5548e3ae"
+    },
+    "router-system.txt": {
+      "bytes": 2472,
+      "sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830"
+    },
+    "train.jsonl": {
+      "bytes": 10989227,
+      "sha256": "f9830d01ac92d0e351077ec5fc7f53edb7c6c10d9070714bbded762aa934fa7d"
+    },
+    "train.provenance.jsonl": {
+      "bytes": 5077605,
+      "sha256": "1cf399a65fe34eb64ad2f9f68b381dc0f3612c7d0e97682b5b03641a4efe1d2b"
+    },
+    "validate.py": {
+      "bytes": 6436,
+      "sha256": "dca23b6c576afbc0b0f8f689a99f5f6910ac04eb50d1efb064b4e978ae8d4da2"
+    },
+    "validation.json": {
+      "bytes": 13274,
+      "sha256": "cbe277933c6834af4b8ebe9cd0944345756a3a6ad0ebd05f2305df6696d1fe2e"
+    }
+  },
+  "artifact": "ling-train-dev-v2-20261006.zip",
+  "heldout_final_included": false,
+  "training_ready_without_tokenizer_and_prepared_label_checks": false
+}
