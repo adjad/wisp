@@ -193,6 +193,74 @@ I/O, unavailable-model rejection without loading, and identity changes during
 status rejected before generation. The strict-core integration check is skipped
 on the original baseline and must pass on the combined candidate.
 
+## Optional supported runtime bridge (disabled)
+
+`RuntimeCapability` and `supported_resident_client` prepare a future, separately
+admitted execution path. Neither the CLI nor scripted replay constructs them.
+Implementation verification uses an inert supported-client substitute, synthetic
+configuration/credentials and HTTP MockTransport; no live configuration,
+credential, native inspection, status, model or network operation was performed.
+Independent auth-boundary review and synthetic QA against the combined frozen
+SHA are still required before a new execution ACK.
+
+The dedicated process must capture the original home and create a complete
+unchanged `InferenceGrant` plus an explicitly enabled capability with an execution
+receipt and timezone-qualified `end_utc`. Install it with
+`install_guard(state, output, inference_grant=grant, runtime_capability=capability)`
+before importing any service module. Only then enter
+`async with supported_resident_client(capability) as client`, wrap that client in
+`ResidentInferenceAdapter`, and call the existing `run_case`. Resource admission,
+current attributed residency and independent revision/checkpoint evidence are
+prerequisites; neither a caller-supplied hash nor configured identity proves which
+weights are currently loaded. No readiness or measured-model claim is made here.
+
+Private context phases permit only exact original config/auth and recovery files.
+The factory uses existing configuration APIs to capture the configured Target,
+then writes a nonsecret identity/roster projection into temporary state and
+requires full isolated Target equality. All generation roles must already select
+the same target identity. Original constants and caches are restored on errors;
+temporary projection files are restored when the context exits. Only managed
+desktop `local` oMLX, `local_omlx`, `/v1`, and numeric
+`http://127.0.0.1:8000` qualify. A ManagedOmlx authorization manifest or another
+origin/provider/credential fails closed. Original home remains inaccessible
+outside private phases, and auth/recovery symlinks are denied.
+
+The factory calls the genuine supported `OMLXClient(target=target)` only after
+qualification, without startup, a new credential scheme, or an alternative
+transport. It retains normal credential resolution, RuntimeAuthority/peer checks
+and the genuine RecoveryGate captured by the client's normal send wrapper.
+Recovery generation changes, helper markers and lock contention deny dispatch.
+The already-existing qualified lock is pinned by inode/content; the normal lease
+receives a read-only, no-create descriptor verified again before handoff. The
+directory check never creates real state. This dependency is a normal shared
+lock acquisition/release, with no production settings or lock-content mutation.
+Missing, replaced or unqualified state fails closed. Real-lock access remains
+outside implementation admission.
+
+HTTP admission is exact GET `/v1/models/status` or POST `/v1/chat/completions` for
+the granted model. The existing client keeps proxies and redirects disabled.
+Socket admission additionally requires the private live phase. Peer inspection
+is limited to exact existing TCP8000 lsof/positive-PID ps argv, scrubbed environment
+and trusted production call sites; shell/process control/native tools and generic
+process permission remain denied. Model text cannot select these capabilities.
+Only one owned request is allowed. The public wrapper exposes the six existing
+metadata references and status/chat/stream/close, with no model lifecycle methods.
+
+Retained real wall time and a separately derived monotonic deadline are checked
+for admission and after awaits. Scenario fixture clocks cannot extend expiry.
+An owned request timeout reserves 60 seconds before `end_utc` for cleanup. Finally
+blocks close owned streams/client/transport and release leases, revoke capability
+and restore temporary state. Failure receipts retain synthetic inputs and error
+types without exception strings, credentials or headers. Local cancellation is
+not proof of remote generation quiescence; incomplete cleanup or uncertain loaded
+weight provenance must block future measured readiness.
+
+Offline tests cover scope/default denial, exact requests and argv, private-phase
+thread propagation, fixture auth delegation and Target projection, transactional
+restoration, generation/marker/lock barriers, descriptor replacement races,
+symlink escapes, no real-directory creation, expiry, cancellation and concurrency.
+They do not establish actual runtime peer attribution or resource readiness.
+
 ## Focused verification
 
 ```sh
