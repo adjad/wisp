@@ -2,7 +2,7 @@
 
 Every Wisp release is measured before it ships. This document says what is measured, how a result is
 turned into a verdict, and exactly what a coordinator runs and checks. The harness is
-`scripts/release_performance.py`; the corpus (`release_v2`) and policy (`release_policy_v2`) are one bundle,
+`scripts/release_performance.py`; the corpus (`release_v3`) and policy (`release_policy_v3`) are one bundle,
 `test_fixtures/performance/release_v1.json` (the file keeps its name; the versions inside it are what bind).
 
 **The rule that runs through all of it:** a sample that is empty, truncated, failed, refused, cancelled,
@@ -35,7 +35,7 @@ Only 0 may let a release proceed. BLOCK outranks INCONCLUSIVE. A fake-model or o
 never a PASS: `check` refuses it with exit 3, and a run that is not real caps its own verdict at
 INCONCLUSIVE.
 
-## Scenarios (corpus `release_v2`)
+## Scenarios (corpus `release_v3`)
 
 All data is fictional (reserved `+1555555xxxx` numbers, invented people and places). The corpus is
 posted to the isolated backend's real `/assistant/sync/*` endpoints, so the real tools read it.
@@ -52,10 +52,29 @@ posted to the isolated backend's real `/assistant/sync/*` endpoints, so the real
 Each scenario has several paraphrase variants that rotate across repetitions, so the prefix cache is
 exercised the way varied real prompts would, not by one repeated prompt.
 
-Version 2 supersedes version 1, which an independent audit blocked. It adds the engine completion-status
-gate and the complete denial lifecycle. It has not been exercised against a live attributed environment. The
-first real run is its qualification run: it has no approved baseline, so it cannot pass. A corrected
-expectation is a new corpus version, never an edit of v2.
+Version 3 supersedes version 2 (which superseded version 1, blocked by an independent audit; version 2 added the
+engine completion-status gate and the complete denial lifecycle). Version 3 changes two things and loosens
+no expectation:
+
+* The synthetic Messages rows are rendered in the wire format `MessagesReader.swift` sends today:
+  `V2 | <epoch> | U|R | chat:<rowid> | <context> | <who>: <text>`, with the read flag the native reader derives
+  (`U` for an incoming message that is not yet read). Version 2 sent the older three-field lines, which carry
+  no read state, so the product's message summary reported "Read status is unavailable for some synced
+  messages" and the `deterministic_read` answer check could never pass on any release. Only the `V2` block
+  is sent; the optional `V3` structured supplement is not read by the message summary.
+* The `bounded_reasoning` prompts state that no tool or calculator may be used. The no-tools expectation is
+  unchanged and the `calculate` tool is not allowed.
+
+**Known open item, `deterministic_read`:** it still demands exactly zero engine chat calls, because that is
+what version 2 declared. Live diagnostic smokes (candidate `62ba0a7`, baseline v1.1.5) show that, with read state
+present, both sides make one engine chat call from inside `summarize_messages` (the topic-selection call in
+`service/tools/imessage_tools.py::_summarize`), so every sample of that scenario fails on both sides on
+`model_calls:1!=exactly_0` and the answer content passes. Whether that call is the product's contract is a
+decision for the benchmark owner, and a corrected expectation would be a new corpus version.
+
+It has not been exercised against a live attributed environment as a full run. The first real run is its
+qualification run: it has no approved baseline, so it cannot pass. A corrected expectation is a new corpus
+version, never an edit of v3.
 
 ### Completion status
 
@@ -125,7 +144,7 @@ installed inside that backend. The numbers are therefore latency of the instrume
   disabling attribution: attribution is never disabled, and there is no option to disable it.
 * A synthetic fixture timing from the offline tests is not performance evidence of any kind.
 
-## Statistics and policy (`release_policy_v2`)
+## Statistics and policy (`release_policy_v3`)
 
 * At least **20 measured samples** per required scenario per side. The floor is a constant in the harness
   that a policy file cannot lower.
@@ -134,6 +153,10 @@ installed inside that backend. The numbers are therefore latency of the instrume
 * **p50 and p95 by nearest rank** on integers: p50 is the ceil(0.50 n)-th and p95 the ceil(0.95 n)-th value
   in order. With n = 20 that is the 10th and 19th. The result does not depend on input order.
 * Only correct measured samples contribute latencies. Failures are counted separately.
+* **Run with `--samples 30`** (the policy's advisory `recommended_measured_samples`). The floor of 20 applies to
+  the number of **correct baseline samples** per required metric, so a baseline that fails or refuses a few
+  samples needs more than 20 measured. `check` rebuilds the schedule for the sample count the receipt records,
+  and a count below the floor is refused.
 * **Regression:** a metric regresses at p50 or p95 only if the candidate is slower than the baseline by
   **both** more than 20% **and** more than 250 ms. Either alone is not a regression. The comparison uses exact
   fractions, not floating point. Faster is always acceptable.
@@ -141,16 +164,32 @@ installed inside that backend. The numbers are therefore latency of the instrume
   baseline's), a measured material regression, and any refused effect, engine model load or unload, or other
   engine mutation anywhere in the **candidate** backend's whole lifetime (startup, warmup, idle intervals,
   teardown), not only inside measured windows.
-* **INCONCLUSIVE** on: no approved baseline, a new cohort, baseline correctness failures, an expectation that
-  could not be verified, an `UNKNOWN` gating metric, a cohort identity containing `UNKNOWN`, a lane that is not
-  a release gate, a refused or state-changing effect on the **baseline** backend, an idle backend's engine
-  request during a sample, and every integrity finding below.
+* **INCONCLUSIVE** on: no approved baseline, a new cohort, **fewer than 20 correct baseline samples for any
+  required metric of any required scenario** (`baseline_insufficient_correct_samples`), baseline samples that
+  could not be checked and show no failure of their own (`baseline_unverifiable_sample`: missing
+  instrumentation, a contaminated window; a baseline sample that failed or was refused is a recorded failure
+  even if part of it was also unverifiable), an expectation that could not be verified on the candidate, an `UNKNOWN`
+  gating metric, a cohort identity containing `UNKNOWN`, a lane that is not a release gate, an engine state
+  change or other engine mutation on the **baseline** backend, an idle backend's engine request during a
+  sample, and every integrity finding below.
+* **Recorded, never decisive on their own** (`recorded` in the receipt and in `check`'s output, and
+  `failed`, `refused` and `failure_reasons` per baseline cell in `comparison`): baseline samples that failed or
+  were refused (an old release's own defects, such as a refused attribution, an HTTP 500 or a health-check
+  timeout), and a **refused** effect on the baseline backend (the guard held and nothing happened). `check`
+  re-derives this list and refuses a receipt whose `recorded` differs.
+
+Why this cannot let a slower candidate pass: the candidate is held to the old rule (every measured sample
+correct, no refused effect, state change or mutation, no refusal above the baseline's), a failed baseline
+sample never contributes a latency, and the p50/p95 regression test still runs on the baseline's correct
+samples, of which there must be at least 20. The relaxation is that a baseline's own failures no longer
+make the whole comparison unusable. It does mean the baseline percentile is taken over the samples that
+worked; the recorded counts show how many that excludes.
 * The thresholds above are a reviewable, versioned policy with their own hash. They are not harness
   constants, and changing any of them is a new policy version.
 
 The performance audit suggested 30 to 40 samples per gating scenario and bootstrap intervals to make p95
-steadier. They are recorded in the policy as **advisory and not applied**; adopting them is a deliberate new
-policy version.
+steadier. 30 is the recommended `--samples` (advisory, not enforced; the enforced floor stays 20); bootstrap
+intervals are **advisory and not applied**, and adopting them is a deliberate new policy version.
 
 ### Integrity (INCONCLUSIVE, never PASS)
 
@@ -348,7 +387,8 @@ python scripts/release_performance.py info
 
 # 2. Measure (a live step: it uses the resident engine and spawns two backends).
 #    Record the receipt_sha256 it prints: that digest is what authenticates this run.
-python scripts/release_performance.py run \
+#    --samples 30 is recommended: an older baseline may fail a few samples and still needs 20 correct ones.
+python scripts/release_performance.py run --samples 30 \
   --candidate-worktree <clean worktree> --candidate-sha <40-hex> \
   --baseline-worktree  <clean worktree> --baseline-sha  <40-hex> \
   --model-id <resident model id> --output-dir <new directory> \
@@ -382,7 +422,10 @@ one machine and engine configuration, so the approval carries to the rerun.
   full, non-diagnostic run has been made. Two behaviours seen only on the v1.1.5 baseline are product traits, not
   harness faults, and are reported as they happen: its peer attribution costs about 1.7 s per engine call, so its
   2 s startup health check sometimes times out and tries `omlx-cli start` (refused and recorded as a blocked
-  effect), and it sometimes refuses one attribution (outcome `refused`).
+  effect), and it sometimes refuses one attribution (outcome `refused`). Under `release_policy_v3` both are
+  recorded on the baseline and neither makes the comparison inconclusive. The same health-check timeout can
+  occur on the **candidate** side; there any refused effect still BLOCKs, and a run where it happens must be
+  repeated, not excused.
 * **Containment is Python-level, not an operating-system boundary.** The guard patches Python's file, process
   and network entry points. A C extension or native call that opens a file, process or socket itself is not
   covered, and reads of file metadata (`stat`) are not restricted. An OS-level sandbox around the child would be
@@ -393,7 +436,7 @@ one machine and engine configuration, so the approval carries to the rerun.
   product's own, empty, lock file, and refusing it would make real engine calls impossible.
 * The harness cannot prove a run happened; it proves the evidence is internally consistent, bound, and
   re-derivable, and (through the recorded digest) that it is the package the measurement owner recorded.
-* Corpus v2 expectations are untested against a live engine; a scenario whose route differs from its
+* Corpus v3 expectations are untested in a full live run; a scenario whose route differs from its
   expectation will fail its grade and block until a reviewed corpus version corrects it. The recipient check on
   the outbound scenario accepts the contact's name or number and may need a reviewed correction.
 * Engine throughput is not observable from the client. Instrumentation overhead is not characterized (see

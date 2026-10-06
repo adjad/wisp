@@ -55,6 +55,7 @@ OFFLINE_MODE = "offline_fixture"
 # The floor comes from the release scope and cannot be lowered by a policy file.
 ABSOLUTE_MIN_SAMPLES = 20
 UNKNOWN = "UNKNOWN"
+RECORDED_ONLY = "RECORDED_ONLY"   # reported in the receipt; never changes a verdict by itself
 
 EXIT_PASS, EXIT_BLOCK, EXIT_INCONCLUSIVE, EXIT_REFUSED, EXIT_USAGE = 0, 1, 2, 3, 4
 VERDICT_EXIT = {"PASS": EXIT_PASS, "BLOCK": EXIT_BLOCK, "INCONCLUSIVE": EXIT_INCONCLUSIVE}
@@ -196,10 +197,15 @@ def validate_bundle(bundle: dict) -> list[str]:
         if (policy.get("outcomes") or {}).get(key) != "BLOCK":
             problems.append(f"outcomes.{key} must be BLOCK")
     for key in ("missing_or_unapproved_baseline", "unverifiable_expectation",
-                "baseline_correctness_failure", "unknown_gating_metric", "baseline_lifecycle_effect",
-                "integrity_failure"):
+                "baseline_insufficient_correct_samples", "baseline_unverifiable_sample",
+                "unknown_gating_metric", "baseline_lifecycle_effect", "integrity_failure"):
         if (policy.get("outcomes") or {}).get(key) != "INCONCLUSIVE":
             problems.append(f"outcomes.{key} must be INCONCLUSIVE")
+    # A baseline's own failed or refused samples and a REFUSED baseline effect are recorded in the receipt and
+    # never change the verdict by themselves; every other baseline problem still stops the comparison.
+    for key in ("baseline_correctness_failure", "baseline_blocked_effect"):
+        if (policy.get("outcomes") or {}).get(key) != RECORDED_ONLY:
+            problems.append(f"outcomes.{key} must be {RECORDED_ONLY}")
     if (policy.get("outcomes") or {}).get("lifecycle_blocked_effect") != "BLOCK":
         problems.append("outcomes.lifecycle_blocked_effect must be BLOCK")
     environment = policy.get("environment") or {}
@@ -903,10 +909,28 @@ def thread_context(name: str | None, members: list[str], is_group: bool) -> str:
 
 
 def messages_lines(rows: list[dict]) -> str:
+    """Legacy `ts | context | who: text` lines. The native reader no longer sends this shape, and the backend
+    treats it as having NO read state; kept only so a test can pin that distinction."""
     lines = []
     for r in sorted(rows, key=lambda r: r["ts"], reverse=True):
         text = str(r["text"]).replace("\r", " ").replace("\n", " ")
         lines.append(f"{r['ts']} | {r['context']} | {r['who']}: {text}")
+    return "\n".join(lines)
+
+
+_LEGACY_SEPARATORS = "\n\r\x0b\x0c\x1c\x1d\x1e\x85\u2028\u2029"
+
+
+def messages_lines_v2(rows: list[dict]) -> str:
+    """The lines MessagesReader.swift sends today:
+    `V2 | <epoch seconds as a Double> | U|R | chat:<rowid> | <context> | <who>: <one-line text>`,
+    newest first. `U` is `!isFromMe && is_read == 0`. Only the V2 block is rendered; the V3 structured
+    supplement is a separate, optional feed that the message summary never reads."""
+    lines = []
+    for r in sorted(rows, key=lambda r: r["ts"], reverse=True):
+        text = "".join(" " if ch in _LEGACY_SEPARATORS else ch for ch in str(r["text"]))
+        lines.append(f"V2 | {float(r['ts'])} | {'U' if r['unread'] else 'R'} | {r['conversation']} | "
+                     f"{r['context']} | {r['who']}: {text}")
     return "\n".join(lines)
 
 
@@ -918,15 +942,18 @@ def notes_raw(rows: list[dict]) -> str:
 def render_leaf_payloads(corpus: dict, now_ts: float) -> list[dict]:
     """[{"path", "body"}] in the order they must be posted."""
     leaf = corpus["leaf_data"]
-    rows = []
+    rows, chats = [], {}
     for message in leaf["messages"]:
         group = message["kind"] == "group"
-        rows.append({"ts": int(now_ts - message["age_s"]),
+        mine = message["from"] == "me"
+        chat = chats.setdefault(message["thread"], len(chats) + 1)       # one chat.db chat rowid per thread
+        rows.append({"ts": int(now_ts - message["age_s"]), "conversation": f"chat:{chat}",
+                     "unread": bool(message.get("unread")) and not mine,
                      "context": thread_context(message["thread"] if group else None,
                                                message["participants"], group),
-                     "who": "Me" if message["from"] == "me" else message["from"],
+                     "who": "Me" if mine else message["from"],
                      "text": message["text"]})
-    lines = messages_lines(rows)
+    lines = messages_lines_v2(rows)
     notes = [{"ts": int(now_ts - n["age_s"]), "title": n["title"], "folder": n.get("folder", ""),
               "body": n["body"]} for n in leaf["notes"]]
     return [
@@ -2226,6 +2253,18 @@ def aggregate_cpu(values: list[Any]) -> dict:
     return {"n": len(values), "p50_s": nearest_rank(scaled, 50) / 1000, "p95_s": nearest_rank(scaled, 95) / 1000}
 
 
+def _reason_counts(measured: list[dict]) -> dict:
+    counts: dict[str, int] = {}
+    for sample in measured:
+        grade = sample["grade"]
+        if grade["correct"]:
+            continue
+        for reason in [*grade["reasons"], *(f"unverifiable:{u}" for u in grade["unverifiable"])]:
+            key = re.sub(r":.*", "", reason) if reason.startswith(("transport_error:", "http_status:")) else reason
+            counts[key] = counts.get(key, 0) + 1
+    return {k: counts[k] for k in sorted(counts)}
+
+
 def summarize(samples: list[dict], bundle: dict) -> dict:
     """Per scenario and side. Warmups are counted and labelled but never enter a percentile, and only
     correct measured samples contribute latencies."""
@@ -2244,8 +2283,15 @@ def summarize(samples: list[dict], bundle: dict) -> dict:
                 "hard_failed": sum(1 for s in measured if s["grade"]["reasons"]),
                 "refused": sum(1 for s in measured if s["grade"]["refusal"]),
                 "unverifiable": sum(1 for s in measured if s["grade"]["unverifiable"]),
+                # Unverifiable AND otherwise unfaulted: a sample that might have been correct but could not be
+                # checked. A sample that also failed or was refused is already a recorded failure.
+                "unverifiable_only": sum(1 for s in measured
+                                         if s["grade"]["unverifiable"] and not s["grade"]["reasons"]),
                 "outcomes": {o: sum(1 for s in measured if s["outcome"] == o)
                              for o in sorted({s["outcome"] for s in measured})},
+                # Why the incorrect samples were incorrect, so a failure is visible in the receipt and never
+                # silently absorbed. Counted per reason; a sample with two reasons counts under both.
+                "failure_reasons": _reason_counts(measured),
                 "metrics": {m: aggregate([s["metrics_ns"].get(m, UNKNOWN) for s in correct])
                             for m in spec.get("required_metrics") or []},
                 "diagnostics": {name: aggregate_counts([s["diagnostics"].get(name, UNKNOWN) for s in correct])
@@ -2295,14 +2341,22 @@ def decide(summary: dict, bundle: dict, baseline: dict, lifecycle: dict | None =
     block: list[dict] = []
     inconclusive: list[dict] = []
     comparison: dict[str, Any] = {}
+    recorded: list[dict] = []
+    floor = policy["min_measured_samples"]
     for side, row in (lifecycle or {}).items():
-        if row["blocked_effects"] or row["engine_state_changes"] or row["engine_mutating_calls"]:
-            detail = (f"{side} backend: {row['blocked_effects']} refused effects {row['blocked_targets']}, "
-                      f"{row['engine_state_changes']} engine state changes, {row['engine_mutating_calls']} mutating calls")
-            if side == "candidate":
+        detail = (f"{side} backend: {row['blocked_effects']} refused effects {row['blocked_targets']}, "
+                  f"{row['engine_state_changes']} engine state changes, {row['engine_mutating_calls']} mutating calls")
+        if side == "candidate":
+            if row["blocked_effects"] or row["engine_state_changes"] or row["engine_mutating_calls"]:
                 block.append({"code": "lifecycle_blocked_effect", "detail": detail})
-            else:
+        else:
+            # A REFUSED baseline effect means the guard held and nothing happened: it is recorded, not a
+            # verdict. A baseline engine state change or mutating call is a real side effect on the shared
+            # engine and still makes the comparison unusable.
+            if row["engine_state_changes"] or row["engine_mutating_calls"]:
                 inconclusive.append({"code": "baseline_lifecycle_effect", "detail": detail})
+            if row["blocked_effects"]:
+                recorded.append({"code": "baseline_blocked_effect", "detail": detail})
     for spec in required_scenarios(bundle):
         sid = spec["id"]
         cand, base = summary[sid]["candidate"], summary[sid]["baseline"]
@@ -2315,10 +2369,25 @@ def decide(summary: dict, bundle: dict, baseline: dict, lifecycle: dict | None =
         if cand["refused"] > base["refused"]:
             block.append({"code": "new_refusal", "scenario": sid,
                           "detail": f"candidate refused {cand['refused']}, baseline {base['refused']}"})
+        # Baseline samples that could not be CHECKED and show no fault of their own (missing instrumentation, a
+        # contaminated window) are a measurement defect, not an old-release defect, so they stay inconclusive.
+        # A baseline sample that failed or was refused is a recorded failure even when part of it was also
+        # unverifiable (a refused attribution leaves its engine call without a completion record).
+        if base["unverifiable_only"]:
+            inconclusive.append({"code": "baseline_unverifiable_sample", "scenario": sid,
+                                 "detail": f"{base['unverifiable_only']} baseline samples could not verify a required "
+                                           f"expectation and show no failure of their own"})
+        # Baseline samples that are plainly wrong or refused are old-release behaviour. They never contribute
+        # latency; they are recorded here and in the summary, and the comparison needs enough CORRECT ones.
         if base["failed"]:
-            inconclusive.append({"code": "baseline_correctness_failure", "scenario": sid,
-                                 "detail": f"{base['failed']} baseline samples failed"})
-        comparison[sid] = {"required_metrics": {}}
+            recorded.append({"code": "baseline_correctness_failure", "scenario": sid,
+                             "detail": f"{base['failed']} of {base['measured']} baseline samples failed "
+                                       f"({base['refused']} refused): {base['failure_reasons']}"})
+        comparison[sid] = {"baseline_samples": {k: base[k] for k in
+                                                ("measured", "correct", "failed", "refused", "unverifiable",
+                                                 "unverifiable_only", "failure_reasons")},
+                           "required_metrics": {}}
+        thin = []
         for metric in spec["required_metrics"]:
             row: dict[str, Any] = {"n_candidate": cand["metrics"][metric]["n"],
                                    "n_baseline": base["metrics"][metric]["n"]}
@@ -2335,11 +2404,17 @@ def decide(summary: dict, bundle: dict, baseline: dict, lifecycle: dict | None =
                     block.append({"code": "measured_material_regression", "scenario": sid,
                                   "detail": f"{metric} {pct}: {ms(b)} ms -> {ms(c)} ms"})
             comparison[sid]["required_metrics"][metric] = row
+            if base["metrics"][metric]["n_known"] < floor:
+                thin.append(f"{metric} n={row['n_baseline']}")
+        if thin:
+            inconclusive.append({"code": "baseline_insufficient_correct_samples", "scenario": sid,
+                                 "detail": f"fewer than {floor} correct baseline samples ({', '.join(thin)}; "
+                                           f"{base['failed']} of {base['measured']} failed)"})
     if not baseline.get("approved"):
         inconclusive.append({"code": "missing_or_unapproved_baseline",
                              "detail": baseline.get("problem") or "no approved baseline supplied"})
     verdict = "BLOCK" if block else "INCONCLUSIVE" if inconclusive else "PASS"
-    return {"verdict": verdict, "reasons": block + inconclusive, "comparison": comparison}
+    return {"verdict": verdict, "reasons": block + inconclusive, "comparison": comparison, "recorded": recorded}
 
 
 # --------------------------------------------------------------------------
@@ -2718,6 +2793,9 @@ def build_receipt(*, run_id: str, mode: str, fake_model: bool, lane: str, bundle
         "summary": summary,
         "comparison": decision["comparison"],
         "verdict": decision["verdict"], "reasons": decision["reasons"],
+        # Facts the policy records without letting them change the verdict (baseline failures, refused
+        # baseline effects). Never hidden, never a reason.
+        "recorded": decision.get("recorded", []),
         "baseline_binding": {"approved": bool(baseline_state.get("approved")),
                              "sha256": baseline_state.get("sha256")},
         "prerequisites_missing": missing, "aborted": aborted,
@@ -3384,8 +3462,11 @@ def _check_receipt(opts: argparse.Namespace, *, runner: Callable = run_cmd) -> t
                                    cohort_key(receipt), receipt["lane"], policy, findings)
     if decision["verdict"] != receipt.get("verdict"):
         refuse("receipt_verdict_mismatch", f"receipt says {receipt.get('verdict')!r}, evidence says {decision['verdict']!r}")
+    if decision.get("recorded", []) != receipt.get("recorded"):
+        refuse("receipt_recorded_mismatch", "the facts the policy records (baseline failures, refused baseline "
+                                            "effects) differ from what the evidence derives")
     result.update({"verdict": decision["verdict"], "reasons": decision["reasons"],
-                   "comparison": decision["comparison"]})
+                   "comparison": decision["comparison"], "recorded": decision.get("recorded", [])})
     return finish()
 
 
@@ -3492,6 +3573,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"harness_sha256": harness_sha256(), "bundle_file_sha256": bundle["file_sha256"],
                           "corpus_version": bundle["corpus"]["version"], "corpus_sha256": bundle["corpus_sha256"],
                           "policy_version": bundle["policy"]["version"], "policy_sha256": bundle["policy_sha256"],
+                          "recommended_measured_samples": (bundle["policy"].get("advisory") or {}).get("recommended_measured_samples"),
                           "required_scenarios": [s["id"] for s in required],
                           "min_measured_samples": bundle["policy"]["min_measured_samples"],
                           "warmup_samples": bundle["policy"]["warmup_samples"],
