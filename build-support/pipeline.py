@@ -1214,9 +1214,17 @@ def main():
     p.add_argument("--performance-receipt-sha256", help="Receipt digest independently recorded by the measurement owner")
     p.add_argument("--performance-baseline", type=Path, help="Reviewed baseline approval for the measured cohort")
     p.add_argument("--performance-baseline-sha256", help="Independently reviewed baseline-approval digest")
+    p.add_argument("--performance-waiver", type=Path,
+                   help="release-ad-hoc only: committed docs/releases/<version>-performance-waiver.json")
+    p.add_argument("--performance-waiver-sha256",
+                   help="release-ad-hoc only: independently recorded waiver digest")
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
+    if ((args.performance_waiver or args.performance_waiver_sha256)
+            and args.command != "release-ad-hoc"):
+        print("BUILD FAILED: a performance waiver is only accepted by release-ad-hoc", file=sys.stderr)
+        return 1
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
