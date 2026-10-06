@@ -374,9 +374,9 @@ def _operation_target(text: str, verbs: str) -> str:
 def compile_reminder_delete(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
     del now
-    if (_reminder_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(_unquoted(text))
             or _COMPOUND_EFFECT.search(text)
-            or not _DELETE_REMINDER.search(text)):
+            or not _DELETE_REMINDER.search(_unquoted(text))):
         return None
     lowered = text.casefold()
     if re.search(r"\b(?:all|every)\b", lowered):
@@ -406,9 +406,9 @@ def compile_reminder_delete(text: str, *, now: datetime | None = None,
 def compile_reminder_complete(text: str, *, now: datetime | None = None,
                               turn: int = 0) -> TaskPlan | None:
     del now
-    if (_reminder_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(_unquoted(text))
             or _COMPOUND_EFFECT.search(text)
-            or not _COMPLETE_REMINDER.search(text)):
+            or not _COMPLETE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(
         text, r"complete|finish|mark|check(?:\s+off)?|cross(?:\s+off)?|tick(?:\s+off)?")
@@ -427,9 +427,9 @@ def compile_reminder_complete(text: str, *, now: datetime | None = None,
 
 def compile_reminder_update(text: str, *, now: datetime | None = None,
                             turn: int = 0) -> TaskPlan | None:
-    if (_reminder_parts(text) or _NEGATED.search(text)
+    if (_reminder_parts(text) or _NEGATED.search(_unquoted(text))
             or _COMPOUND_EFFECT.search(text)
-            or not _UPDATE_REMINDER.search(text)):
+            or not _UPDATE_REMINDER.search(_unquoted(text))):
         return None
     target = _operation_target(text, "update|change|rename|reschedule|move")
     parameters: dict[str, SlotValue] = {}
@@ -544,7 +544,7 @@ def _outbound_plan(match: re.Match, text: str, *, channel: str,
 def compile_message_send(text: str, *, now: datetime | None = None,
                          turn: int = 0) -> TaskPlan | None:
     """Compile a literal-body iMessage send. Never a source-backed delivery."""
-    if _NEGATED.search(text):
+    if _NEGATED.search(_unquoted(text)):
         return None
     match = _MESSAGE_SEND_INTRO.search(text) or _MESSAGE_SEND_BARE.search(text)
     return _outbound_plan(match, text, channel="messages", now=now,
@@ -554,7 +554,7 @@ def compile_message_send(text: str, *, now: datetime | None = None,
 def compile_email_send(text: str, *, now: datetime | None = None,
                        turn: int = 0) -> TaskPlan | None:
     """Compile a literal-body email send. A missing subject is asked for."""
-    if _NEGATED.search(text) or _REPLY_INTENT.search(text):
+    if _NEGATED.search(_unquoted(text)) or _REPLY_INTENT.search(text):
         return None
     match = _EMAIL_SEND_INTRO.search(text)
     return _outbound_plan(match, text, channel="email", now=now,
@@ -626,7 +626,7 @@ def compile_email_reply(text: str, *, now: datetime | None = None,
             text, re.I | re.S,
         )
         scheduled_command = match is not None
-    if not match or _NEGATED.search(text):
+    if not match or _NEGATED.search(_unquoted(text)):
         return None
     from service.tasks.reply_parser import parse_reply_parts
     parts = parse_reply_parts(match.group("rest"))
@@ -768,7 +768,7 @@ def compile_reminder_create(text: str, *, now: datetime | None = None,
     parts = _reminder_parts(text)
     command = parts[0] if parts else text
     if (not parts or CAPABILITY_INVENTORY_RE.search(text)
-            or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(command)
+            or not REMINDER_CREATE_RE.search(text) or _NEGATED.search(_unquoted(command))
             or _OTHER_REMINDER_OPERATION.search(command)
             or len(reminder_request_clauses(text)) != 1):
         return None

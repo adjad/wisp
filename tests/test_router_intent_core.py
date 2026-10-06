@@ -1359,3 +1359,50 @@ def test_typed_task_negation_uses_equivalent_spellings_without_rewriting_targets
     plan = compile_task('Complete reminder called "' + name + '"', now=NOW)
     assert plan is not None and plan.intent == "reminder.complete"
     assert plan.target.value == name
+
+
+QUOTED_NEGATION_FORMS = ["do not", "dont", "never"] + ["don" + mark + "t" for mark in SOURCE_APOSTROPHES]
+
+
+@pytest.mark.parametrize("negative", QUOTED_NEGATION_FORMS)
+@pytest.mark.parametrize("verb", ["check", "delete"])
+def test_task_quoted_negative_title_is_literal_not_a_governor(negative, verb):
+    from service.tasks.compiler import compile_task, _unquoted
+    title = "Archive: " + negative + " " + verb + " this item"
+    prompt = 'Complete reminder called "' + title + '"'
+    masked = _unquoted(prompt)
+    assert len(masked) == len(prompt) and title not in masked
+    plan = compile_task(prompt, now=NOW)
+    assert plan is not None and plan.intent == "reminder.complete"
+    assert plan.target.value == title and plan.original_request == prompt
+    assert plan.target.original == title
+    assert compile_task(negative + ' complete reminder called "' + title + '"', now=NOW) is None
+
+
+@pytest.mark.parametrize("negative", QUOTED_NEGATION_FORMS)
+@pytest.mark.parametrize("verb", ["check", "delete", "complete"])
+def test_task_real_negative_governor_is_retained_with_a_quoted_name(negative, verb):
+    from service.tasks.compiler import compile_task
+    assert compile_task(negative + ' ' + verb + ' reminder called "O’Neill"', now=NOW) is None
+
+
+@pytest.mark.parametrize("negative", QUOTED_NEGATION_FORMS)
+@pytest.mark.parametrize("placement", ["before", "after", "unmatched"])
+def test_task_quote_mask_keeps_outside_and_unmatched_negative_instructions(negative, placement):
+    from service.tasks.compiler import compile_task, _unquoted, _NEGATED
+    if placement == "before":
+        prompt = negative + ' complete reminder called "O’Neill"'
+    elif placement == "after":
+        prompt = 'Complete reminder called "O’Neill" and ' + negative + ' delete my reminders'
+    else:
+        prompt = 'Complete reminder called "Archive: ' + negative + ' check this item'
+    masked = _unquoted(prompt)
+    assert len(masked) == len(prompt) and _NEGATED.search(masked)
+    assert compile_task(prompt, now=NOW) is None
+
+
+@pytest.mark.parametrize("apostrophe", SOURCE_APOSTROPHES)
+def test_task_quote_mask_does_not_consume_possessive_or_contraction_apostrophes(apostrophe):
+    from service.tasks.compiler import _unquoted
+    prompt = "O" + apostrophe + "Neill don" + apostrophe + "t check my reminders"
+    assert _unquoted(prompt) == prompt
