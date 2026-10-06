@@ -1144,3 +1144,111 @@ print('ACTUAL_CALLSITE_POLICY_ONLY')
     result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == 'ACTUAL_CALLSITE_POLICY_ONLY'
+
+
+def test_r11_copied_phase_is_revoked_on_exit_even_during_a_new_phase(runtime_capability):
+    from contextvars import copy_context
+    cap = runtime_capability
+    with cap._phase('peer'):
+        copied = copy_context()
+        assert copied.run(cap._current_phase) == 'peer'
+    assert copied.run(cap._current_phase) is None
+    assert not copied.run(cap._real_home)
+    with cap._phase('peer'):
+        assert cap._current_phase() == 'peer'
+        assert copied.run(cap._current_phase) is None
+
+
+@pytest.mark.parametrize('finish', ['exhaust', 'early_close', 'cancel', 'expiry', 'timeout'])
+def test_r11_supported_stream_consumer_and_inherited_task_have_no_io_authority(finish):
+    code = RUNTIME_FACTORY_FIXTURE + r'''
+import sys
+async def exercise():
+    async with e.supported_resident_client(cap) as supplied:
+        assert not cap.revoked
+        started=asyncio.Event(); closed=[]; children=[]; releases=[]; io=[]
+        def policy():
+            try: sys.audit('socket.connect',object(),('127.0.0.1',8000))
+            except PermissionError: allowed=False
+            else: allowed=True
+            return (cap._current_phase(),pathlib.Path.home(),allowed)
+        async def inherited(release):
+            await release.wait()
+            return policy()
+        async def events(name,messages,**kwargs):
+            try:
+                for number in range(2):
+                    assert cap._current_phase()=='peer'
+                    assert policy()==('peer',home,True)
+                    assert await asyncio.to_thread(policy)==('peer',home,True)
+                    release=asyncio.Event(); releases.append(release)
+                    children.append(asyncio.create_task(inherited(release)))
+                    io.append(number)
+                    await supplied._client._client.post('/v1/chat/completions',json={'model':name,'messages':messages})
+                    if FINISH in {'cancel','timeout'}:
+                        started.set()
+                        await asyncio.Event().wait()
+                    yield {'kind':'content','text':'synthetic '+str(number)}
+            finally:
+                closed.append(cap._current_phase())
+        supplied._client.stream_events=events
+        adapter=e.ResidentInferenceAdapter(supplied,grant)
+        stream=adapter.stream_events(model,[{'role':'user','content':'synthetic only'}])
+        if FINISH in {'expiry','timeout'}:
+            cap.stop_monotonic=e._REAL_MONOTONIC()+0.3
+        try:
+            if FINISH in {'cancel','timeout'}:
+                task=asyncio.create_task(anext(stream))
+                await started.wait()
+                if FINISH=='cancel': task.cancel()
+                try: await asyncio.wait_for(task,2)
+                except (asyncio.CancelledError if FINISH=='cancel' else TimeoutError): pass
+                else: raise AssertionError('owned I/O cancellation/timeout was swallowed')
+            else:
+                assert (await anext(stream))['text']=='synthetic 0'
+                assert policy()==(None,state,False), 'caller retained peer authority after yield'
+                with_guard=False
+                try: cap._request_allowed(httpx.Request('GET','http://127.0.0.1:8000/v1/models/status'))
+                except PermissionError: with_guard=True
+                assert with_guard and not cap._read_allowed(home / '.omlx/settings.json')
+                try: await supplied.status()
+                except PermissionError: pass
+                else: raise AssertionError('concurrent request admitted while stream open')
+                # Release a copied owned-I/O child while the stream remains suspended.
+                releases[0].set()
+                assert await children[0]==(None,state,False), 'copied phase outlived owned I/O'
+                consumer_release=asyncio.Event(); releases.append(consumer_release)
+                children.append(asyncio.create_task(inherited(consumer_release)))
+                if FINISH=='expiry':
+                    # A suspended consumer must not inherit the owned I/O timeout.
+                    await asyncio.sleep(0.4)
+                    assert policy()==(None,state,False)
+                    try: await anext(stream)
+                    except PermissionError: pass
+                    else: raise AssertionError('expired stream resumed I/O')
+                if FINISH=='exhaust':
+                    assert [event['text'] async for event in stream]==['synthetic 1']
+        finally:
+            await stream.aclose()
+            for release in releases: release.set()
+        assert all(result==(None,state,False) for result in await asyncio.gather(*children))
+        assert children and io==([0,1] if FINISH=='exhaust' else [0])
+        # EOF/cancellation finalize inside owned __anext__; early close uses cleanup.
+        assert closed==(['cleanup'] if FINISH in {'early_close','expiry'} else ['peer'])
+        assert policy()==(None,state,False) and not cap._busy and not cap.revoked
+        assert cap.raw[-1]['outcome']=={'exhaust':'completed','early_close':'GeneratorExit','cancel':'CancelledError','expiry':'PermissionError','timeout':'TimeoutError'}[FINISH]
+        # Fresh legitimate I/O remains admitted; no stale token is revived.
+        if FINISH in {'expiry','timeout'}:
+            try: await adapter.status()
+            except PermissionError: pass
+            else: raise AssertionError('expired capability dispatched new work')
+        else:
+            assert (await adapter.status())['models'][0]['loaded'] is True
+    assert cap.revoked and seen[-1]==('close','local')
+    assert e._RUNTIME_PHASE.get() is None
+asyncio.run(exercise())
+print('R11_STREAM_AUTHORITY_AND_CLEANUP_VERIFIED')
+'''.replace('FINISH', repr(finish))
+    result = subprocess.run([sys.executable, '-c', code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == 'R11_STREAM_AUTHORITY_AND_CLEANUP_VERIFIED'
