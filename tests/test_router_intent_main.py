@@ -13,7 +13,7 @@ from service.memory.store import SessionStore
 from service.router import router
 from service.router.intent import planner
 from service.tools.registry import REGISTRY
-from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES, GOVERNED_TITLE_CASES, ACTION_TAIL_CASES
+from tests.test_router_intent_core import FakeClient, CONFIG, MODEL, TARGET, source, value, REFERENCE_READ_CASES, LITERAL_SOURCE_CASES, PREPOSITION_READ_CASES, GOVERNED_TITLE_CASES, ACTION_TAIL_CASES, NEGATIVE_EFFECT_TAILS, LATER_EFFECT_CASES, READ_AFTER_NEGATIVE_JOINERS
 
 
 @pytest.fixture
@@ -616,18 +616,18 @@ def test_actor_quoted_share_is_data_and_later_explicit_share_remains_action(endp
     assert "compiled" in [e.get("intent_disposition") for e in events]
 
 
-@pytest.mark.parametrize("tail", ["do not share it with Mom", "without sharing it with Mom",
-                                  "please do not share it with Mom"])
-def test_actor_negative_effect_never_becomes_part_of_executed_query(endpoint, monkeypatch, tail):
-    request, client, calls, _, _ = endpoint
-    client.outputs = [value(source("notes", "records", query="cedar maps"))] * 2
-    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
-        await emit({"type": "text", "text": "Synthetic negative action path."})
-        return "Synthetic negative action path."
-    monkeypatch.setattr(main, "run_agent", fake_agent)
-    events = asyncio.run(request("Find notes about cedar maps and " + tail))
-    assert all(name == "search_notes" and args == {"query": "cedar maps"} for name, args in calls)
-    assert not [e for e in events if e.get("tool") in {"send_email", "send_message"}]
+@pytest.mark.parametrize("tail", NEGATIVE_EFFECT_TAILS)
+def test_actor_negative_effect_never_becomes_part_of_executed_query(endpoint, tail):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    client.outputs = [value(source("notes", "records", query="cedar maps"))]
+    events = asyncio.run(request("Find notes about cedar maps and " + tail, session_id=sid))
+    assert calls == [("search_notes", {"query": "cedar maps"})]
+    assert text(events) == "Synthetic note: cedar maps"
+    assert "compiled" in [event.get("intent_disposition") for event in events]
+    assert store.latest_workflow(sid) is None
+    assert not any("workflow" in event["type"] for event in events)
+    assert not [event for event in events if event.get("tool") in {"send_email", "send_message"}]
 
 
 def test_actor_unquoted_action_words_under_one_filter_remain_exact_data(endpoint):
@@ -675,3 +675,73 @@ def test_actor_quoted_polite_share_request_stays_literal(endpoint):
     events = asyncio.run(request('Find notes about "' + query + '"'))
     assert calls == [("search_notes", {"query": query})]
     assert "compiled" in [e.get("intent_disposition") for e in events]
+
+
+@pytest.mark.parametrize("joiner,tail", LATER_EFFECT_CASES)
+@pytest.mark.parametrize("negative", ["do not delete it", "please never share it with Mom"])
+def test_actor_later_effect_after_negation_never_succeeds_as_notes_only(endpoint, monkeypatch, joiner, tail, negative):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    prompt = "Find notes about amber route and " + negative + " " + joiner + " " + tail
+    client.outputs = [value(source("notes", "records", query="amber route"))] * 2
+    async def fake_agent(_client, _model, _messages, emit, _approver, **kwargs):
+        await emit({"type": "text", "text": "Synthetic guarded action needs its own handling."})
+        return "Synthetic guarded action needs its own handling."
+    monkeypatch.setattr(main, "run_agent", fake_agent)
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert not calls and not client.calls
+    assert "compiled" not in [event.get("intent_disposition") for event in events]
+    assert "Synthetic note: amber route" not in text(events)
+    if "reminders" in tail:
+        action = tail.removeprefix("please ").split()[0]
+        clarification = {
+            "update": "Which reminder should I update?",
+            "mark": "I couldn’t find an active reminder matching “reminders.” Which reminder should I mark done?",
+            "clear": "Which reminders should I delete: today, tomorrow, past due, upcoming, or all?",
+        }[action]
+        assert text(events) in {"Synthetic guarded action needs its own handling.", clarification}
+        workflow = store.latest_workflow(sid)
+        assert workflow is None or workflow.get("kind") != "deliver_summary"
+
+
+@pytest.mark.parametrize("joiner,tail", LATER_EFFECT_CASES)
+def test_actor_quoted_effect_sequence_has_exact_response_and_no_workflow(endpoint, joiner, tail):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    query = "amber route and do not delete it " + joiner + " " + tail
+    client.outputs = [value(source("notes", "records", query=query))]
+    events = asyncio.run(request('Find notes about "' + query + '"', session_id=sid))
+    assert calls == [("search_notes", {"query": query})]
+    assert text(events) == "Synthetic note: " + query
+    assert store.latest_workflow(sid) is None
+
+
+@pytest.mark.parametrize("joiner", READ_AFTER_NEGATIVE_JOINERS)
+@pytest.mark.parametrize("omitted", [False, True])
+def test_actor_read_after_negation_preserves_requested_source_coverage(endpoint, joiner, omitted):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    prompt = "Find notes about amber route and do not share it with Mom " + joiner + " read my reminders"
+    data = value(source("notes", "records", query="amber route"))
+    if not omitted:
+        data["sources"].append(source("reminders", "records"))
+    client.outputs = [data, data]
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert store.latest_workflow(sid) is None
+    if omitted:
+        assert not calls and "clarify" in [event.get("intent_disposition") for event in events]
+    else:
+        assert calls == [("search_notes", {"query": "amber route"}), ("search_reminders", {"query": "", "scope": "all"})]
+        assert "Synthetic note: amber route" in text(events) and "Synthetic exact fixture records." in text(events)
+        assert "compiled" in [event.get("intent_disposition") for event in events]
+
+
+@pytest.mark.parametrize("query", ["I would prefer not to send it to Mom", "amber route and do not share it with Mom and afterwards read my reminders"])
+def test_actor_quoted_preference_and_later_read_words_remain_literal_data(endpoint, query):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    client.outputs = [value(source("notes", "records", query=query))]
+    events = asyncio.run(request('Find notes about "' + query + '"', session_id=sid))
+    assert calls == [("search_notes", {"query": query})]
+    assert text(events) == "Synthetic note: " + query
+    assert store.latest_workflow(sid) is None
