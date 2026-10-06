@@ -219,6 +219,14 @@ to create a draft and upload the verified bytes. Only a complete upload is
 published. Existing releases (including failed drafts) are never overwritten;
 review a failed draft before any manual recovery.
 
+Both publishers require performance evidence (`performance_run_id`,
+`performance_receipt_sha256`, `performance_baseline_sha256`). The ad-hoc job
+alone also accepts one alternative, `performance_waiver_sha256`: the digest of
+the committed, reviewed `docs/releases/<version>-performance-waiver.json`. It is
+mutually exclusive with the three evidence inputs, applies to one version, records
+`WAIVED` (never `PASS`) in `release-performance-gate.json`, and is refused by the
+signed `publish` path. See `docs/RELEASE_PERFORMANCE_BENCHMARK.md#waiver`.
+
 Download the app ZIP from the first link on the release page and extract it
 with Finder or `ditto`. Maintainers can download the complete CI candidate and
 verify its internal files with `shasum -a 256 -c SHA256SUMS`. The public app ZIP
