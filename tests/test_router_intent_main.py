@@ -795,3 +795,44 @@ def test_actor_quoted_unicode_prohibition_is_exact_data(endpoint, apostrophe):
     assert calls == [("search_notes", {"query": query})]
     assert text(events) == "Synthetic note: " + query
     assert store.latest_workflow(sid) is None
+
+
+@pytest.mark.parametrize("negative", ["do not", "dont", "never"] + ["don" + mark + "t" for mark in SOURCE_APOSTROPHES])
+@pytest.mark.parametrize("verb", ["check", "delete"])
+def test_actor_quoted_negative_reminder_title_keeps_exact_fake_completion(endpoint, monkeypatch, tmp_path, negative, verb):
+    import time
+    from service.assistant.store import AssistantStore
+    request, client, calls, store, _ = endpoint
+    assistant = AssistantStore(tmp_path / "quoted-reminder.db")
+    title = "Archive: " + negative + " " + verb + " this item"
+    row = assistant.add_manual(title, time.time() + 3600)
+    monkeypatch.setattr(main, "assistant_store", assistant)
+    monkeypatch.setattr(main, "InteractiveApprover", lambda emit: type("SyntheticApprover", (), {"confirm": AsyncMock(return_value=True)})())
+    def completion(**args):
+        calls.append(("complete_reminder", args))
+        return "Synthetic completion receipt; readback remains unchanged."
+    monkeypatch.setitem(REGISTRY, "complete_reminder", replace(REGISTRY["complete_reminder"], func=completion))
+    sid = store.create_session()
+    try:
+        events = asyncio.run(request('Complete reminder called "' + title + '"', session_id=sid))
+        assert calls == [("complete_reminder", {"title": title, "expected_id": row["id"]})]
+        assert not client.calls
+        assert text(events) == "I couldn’t mark the reminder done. The requested change was not verified."
+        task = store.active_task(sid)
+        assert task is not None and task["status"] == "failed" and task["target"]["value"] == title
+        assert store.latest_workflow(sid) is None
+    finally:
+        assistant._db.close()
+
+
+@pytest.mark.parametrize("negative", ["do not", "dont", "never"] + ["don" + mark + "t" for mark in SOURCE_APOSTROPHES])
+def test_actor_quoted_negation_data_keeps_read_exclusion_and_no_task(endpoint, negative):
+    request, client, calls, store, _ = endpoint
+    sid = store.create_session()
+    query = "Archive: " + negative + " check this item"
+    prompt = 'Find notes about "' + query + '" and don’t check my reminders'
+    client.outputs = [value(source("notes", "records", query=query), excluded_sources=["reminders"])]
+    events = asyncio.run(request(prompt, session_id=sid))
+    assert calls == [("search_notes", {"query": query})]
+    assert text(events) == "Synthetic note: " + query
+    assert store.active_task(sid) is None and store.latest_workflow(sid) is None
