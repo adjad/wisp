@@ -14,7 +14,7 @@ All notable changes to Wisp are documented here.
 - Added undated Apple reminders to reminder search: incomplete reminders with no due date are now synced and listed.
 - Added an inbox digest sorted by what needs attention (people first, then automated senders), replacing the dense statistics paragraph and per-sender lists.
 - Added a local coworker mailbox for correlated agent messages with acknowledgments and duplicate-delivery protection.
-- Added a release performance gate: publication now requires attributable, live-measured performance evidence for the exact release commit.
+- Added a release performance gate and benchmark harness: publication requires attributable, live-measured performance evidence for the exact release commit. The harness's first live runs happened during this release and could not yet produce a passing receipt on the build host, so 1.2.0 is published under an explicit, committed waiver limited to this version (see docs/RELEASE_PERFORMANCE_BENCHMARK.md#waiver); a passing benchmark is a 1.3 requirement.
 
 ### Changed
 
