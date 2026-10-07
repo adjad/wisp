@@ -1,0 +1,103 @@
+{
+  "artifactType": "documentation_preparation_checksums",
+  "hashAlgorithm": "SHA256",
+  "branch": "codex/attestation-perf-1-3",
+  "status": "DOCS_PREPARED_PRODUCT_HELD",
+  "testStatus": "NOT_RUN",
+  "entries": [
+    {
+      "path": "HANDOFF.md",
+      "sha256": "3efaec7c20917afa78d3d4a32cd303d17618ce969845b11daa64c525cf5606b3",
+      "bytes": 4043
+    },
+    {
+      "path": "N1_CONTROL.json",
+      "sha256": "437117f17b5a599e8294cdf54b144e2dc9f3b92d2393f2e68cb71a516c05b442",
+      "bytes": 3492
+    },
+    {
+      "path": "PROVENANCE.json",
+      "sha256": "7f21c6cfec3da7b3d57c02aab6acb7af0c218b9802dd0d7fabbcb0119736ea2d",
+      "bytes": 10316
+    },
+    {
+      "path": "README.md",
+      "sha256": "82f1aa9bb9fe4f68a75ab86ba91f644a483864e29b9ef7f475b2836fcd72dc38",
+      "bytes": 6429
+    },
+    {
+      "path": "STAGING.md",
+      "sha256": "1aa2186b4d6519caef63229147cacbf3918111d32bbfcb6c8b98eef46ddae2aa",
+      "bytes": 11958
+    },
+    {
+      "path": "author/CHECKSUMS.json",
+      "sha256": "c55a9b85612f9b850675eb017c9de210ec408d0fe76667c756370763cbd6890e",
+      "bytes": 2481
+    },
+    {
+      "path": "author/DESIGN_PROPOSAL.md",
+      "sha256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+      "bytes": 33891
+    },
+    {
+      "path": "author/FINDING_RESPONSE.json",
+      "sha256": "4aa3f0631a6b1983c80b1f7ea1b1dc80dd39c52857503b69763bc9cfe80b69f8",
+      "bytes": 3977
+    },
+    {
+      "path": "author/HANDOFF.md",
+      "sha256": "552cc20c29138b87e08c64990a5868c5a1a3f64ff5830a5c64be2ce474efefc4",
+      "bytes": 3608
+    },
+    {
+      "path": "author/INPUT_HASHES.json",
+      "sha256": "b460669e1a111abadceb31fb4f0a1cc042028026ae1fbd4698ad3bf91abce276",
+      "bytes": 5479
+    },
+    {
+      "path": "author/SEAL.json",
+      "sha256": "20a2a6d6c735ae21c7fa4d10c1720e4a9265569ba85f9def9a228e803ed5c803",
+      "bytes": 534
+    },
+    {
+      "path": "author/TEST_MATRIX.json",
+      "sha256": "128143beca2c9e13bfaadd580b7b4f60f4894e7562de8cddc50650cd4e51db25",
+      "bytes": 14838
+    },
+    {
+      "path": "original-review/FINDINGS.json",
+      "sha256": "3a7cfe21e24c187717ea0bc23e18544308d6c77909481127f1c8c3be3c5ff8e5",
+      "bytes": 8082
+    },
+    {
+      "path": "original-review/HANDOFF.json",
+      "sha256": "d61be66cd000bf162cdcd88261f83a4fe28782587c56744d753c5d0479944f2d",
+      "bytes": 2791
+    },
+    {
+      "path": "revised-review/HANDOFF.json",
+      "sha256": "85a6c7115532e0503b01eb9206aef2ba7db17e0da2a3bf786793162781cd3d61",
+      "bytes": 3108
+    },
+    {
+      "path": "revised-review/REPORT.json",
+      "sha256": "7b93fdf4e445924a476f5a48265de8bb91b85dd079bac30d80b22e1cc7a45dde",
+      "bytes": 14051
+    },
+    {
+      "path": "revised-review/SEAL.json",
+      "sha256": "519e6de01130cad5a30a428d139606a454b1b1e8a3f83ed1f38c6a7696a4d6db",
+      "bytes": 910
+    }
+  ],
+  "excluded": [
+    "CHECKSUMS.json"
+  ],
+  "exclusionReason": "Avoid self-reference; delivery reply provides this manifest's SHA256",
+  "qualifiedPerformance": false,
+  "sourceBaseSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "independentProductApproval": false,
+  "staticDesignReview": "PASS_WITH_NOTES_DEFAULT_OFF_PREPARATION_ONLY",
+  "enablingVerdict": "BLOCKED"
+}

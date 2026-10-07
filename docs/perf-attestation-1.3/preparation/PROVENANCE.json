@@ -1,0 +1,242 @@
+{
+  "artifactType": "documentation_preparation_provenance",
+  "status": "DOCS_ONLY_PRODUCT_HELD",
+  "writerThread": "01a11333-ac03-7301-a6fe-6b21f0145c60",
+  "sourceParent": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+  "checkout": "/Users/adijain/.codex/worktrees/ed1a/MOE_Project",
+  "branch": "codex/attestation-perf-1-3",
+  "originalDesignCommit": "1449ab162c2f92e73162950240054964af636cdf",
+  "observedLocalOriginMain": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "mainReconciliationPerformed": false,
+  "branchRegistration": {
+    "headMatchedFrozenBase": true,
+    "cleanBeforeDocsWrites": true,
+    "branchUnclaimedLocalRemoteBeforeCreation": true,
+    "sharedGitMetadataSandboxRetryApproved": true,
+    "automaticApprovalRejected": false
+  },
+  "preparationRelease": {
+    "authority": "Explicit source-parent messages in this existing chat",
+    "scope": "Markdown/JSON only docs/perf-attestation-1.3/preparation/**",
+    "condition": "Successful unclaimed normal branch setup and conforming branch/HEAD/clean registration before docs writes",
+    "conditionMetAndReportedBeforeDocsWrites": true,
+    "productOrExecutionRelease": false
+  },
+  "receipts": [
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_BUILDER_IDENTITY_CORRECTION_AND_DOCS_ACK_2026-10-06.json",
+      "sha256": "2262546f69163f7a97e001f9d7745ffd4c3e5084945ce99adc4c4d421a4c850e"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_ACTUAL_BUILDER_DOCS_PREPARATION_REGISTRATION_2026-10-06.md",
+      "sha256": "cf53cab2f79e0113e0fce63f1f9bf5e5cd04b11ec045d907197b56da89941f01"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_MAILBOX_DELIVERY_AND_PREPARATION_ACK_2026-10-06.json",
+      "sha256": "8147c8fb851fc44d1ae61cad85f6c6279930cbddbc3b3b88a1f95d9316f97e80"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_ISOLATED_PREPARATION_SCOPE_2026-10-06.md",
+      "sha256": "72f3293c80e4a85ac45cabcd6b9875fe065d9ae0a68a2e4163787d9e5d02a644"
+    }
+  ],
+  "retainedArtifacts": [
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/DESIGN_PROPOSAL.md",
+      "retainedPath": "author/DESIGN_PROPOSAL.md",
+      "expectedSHA256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+      "expectedBytes": 33891,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/TEST_MATRIX.json",
+      "retainedPath": "author/TEST_MATRIX.json",
+      "expectedSHA256": "128143beca2c9e13bfaadd580b7b4f60f4894e7562de8cddc50650cd4e51db25",
+      "expectedBytes": 14838,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/FINDING_RESPONSE.json",
+      "retainedPath": "author/FINDING_RESPONSE.json",
+      "expectedSHA256": "4aa3f0631a6b1983c80b1f7ea1b1dc80dd39c52857503b69763bc9cfe80b69f8",
+      "expectedBytes": 3977,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/INPUT_HASHES.json",
+      "retainedPath": "author/INPUT_HASHES.json",
+      "expectedSHA256": "b460669e1a111abadceb31fb4f0a1cc042028026ae1fbd4698ad3bf91abce276",
+      "expectedBytes": 5479,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/CHECKSUMS.json",
+      "retainedPath": "author/CHECKSUMS.json",
+      "expectedSHA256": "c55a9b85612f9b850675eb017c9de210ec408d0fe76667c756370763cbd6890e",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/SEAL.json",
+      "retainedPath": "author/SEAL.json",
+      "expectedSHA256": "20a2a6d6c735ae21c7fa4d10c1720e4a9265569ba85f9def9a228e803ed5c803",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/HANDOFF.md",
+      "retainedPath": "author/HANDOFF.md",
+      "expectedSHA256": "552cc20c29138b87e08c64990a5868c5a1a3f64ff5830a5c64be2ce474efefc4",
+      "expectedBytes": 3608,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/FINDINGS.json",
+      "retainedPath": "original-review/FINDINGS.json",
+      "expectedSHA256": "3a7cfe21e24c187717ea0bc23e18544308d6c77909481127f1c8c3be3c5ff8e5",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/HANDOFF.json",
+      "retainedPath": "original-review/HANDOFF.json",
+      "expectedSHA256": "d61be66cd000bf162cdcd88261f83a4fe28782587c56744d753c5d0479944f2d",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/REPORT.json",
+      "retainedPath": "revised-review/REPORT.json",
+      "expectedSHA256": "7b93fdf4e445924a476f5a48265de8bb91b85dd079bac30d80b22e1cc7a45dde",
+      "expectedBytes": 14051,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/HANDOFF.json",
+      "retainedPath": "revised-review/HANDOFF.json",
+      "expectedSHA256": "85a6c7115532e0503b01eb9206aef2ba7db17e0da2a3bf786793162781cd3d61",
+      "expectedBytes": 3108,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/SEAL.json",
+      "retainedPath": "revised-review/SEAL.json",
+      "expectedSHA256": "519e6de01130cad5a30a428d139606a454b1b1e8a3f83ed1f38c6a7696a4d6db",
+      "expectedBytes": 910,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    }
+  ],
+  "originalIndependentEvidence": {
+    "verdict": "BLOCK",
+    "findings": [
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5"
+    ],
+    "reportPath": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REPORT.json",
+    "reportSHA256": "1d056b646f47a090dfd78373d8669a3868ecd5f1bab84f8b640d3b68c45e93b1",
+    "reviewPath": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REVIEW.md",
+    "reviewSHA256": "c20ebd46bde9f4a2679e7de22b97abc68bcad963c488043df4dfe6b163746756",
+    "findingsClosedByThisPacket": [],
+    "revisedDistinctReviewStatus": "PASS_WITH_NOTES_DESIGN_ONLY_ENABLEMENT_BLOCKED"
+  },
+  "caseSpecifications": {
+    "globalStatus": "NOT_RUN",
+    "uniqueRows": 45,
+    "groups": {
+      "L": 10,
+      "C": 16,
+      "N": 7,
+      "P": 5,
+      "E": 5,
+      "B": 2
+    },
+    "executedTests": 0,
+    "executedMutations": 0,
+    "executableDrafts": 0,
+    "supplementalControls": [
+      {
+        "id": "N1-LPR-LPW",
+        "path": "N1_CONTROL.json",
+        "status": "NOT_RUN",
+        "executedTests": 0,
+        "executedMutations": 0
+      }
+    ]
+  },
+  "pinnedValidationContext": [
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
+      "sha256": "cda740d2e115f17de7376fda9949ef205b6adccf38c528588965cbaabb11c826"
+    },
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": "scripts/test_replay_failure_fixes.py",
+      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced"
+    },
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": ".github/workflows/regression-gate.yml",
+      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684"
+    }
+  ],
+  "integrityLimits": [
+    "Retained author manifest/seal refer to source-directory artifacts; this packet copies a documented subset only",
+    "Hash equality preserves provenance; it does not prove security claims",
+    "Historical pending-builder setup text preserved unchanged and superseded only by corrected actual identity/branch registration",
+    "Root packet CHECKSUMS.json inventories prepared files except itself"
+  ],
+  "preservedHolds": {
+    "ClaudeProductTransferConfirmed": false,
+    "humanD1D4Acceptance": false,
+    "productWritesReleased": false,
+    "runtimeExecutionAdmitted": false,
+    "nativeOptimizationsOff": true,
+    "currentLegacyAuthoritative": true,
+    "qualifiedSpeedClaim": false,
+    "final12ReconciliationRequired": true,
+    "noMerge": true,
+    "noActivationDeployRelease": true
+  },
+  "prepOperations": {
+    "documentIntegrityChecksOnly": true,
+    "productionImports": 0,
+    "testsProbesBenchmarks": 0,
+    "nativeSocketModelCloudCalls": 0,
+    "children": 0,
+    "selfReview": false
+  },
+  "sourceBaseSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "revisedIndependentEvidence": {
+    "formalVerdict": "PASS_WITH_NOTES",
+    "scope": "Design consistency/default-off preparation only",
+    "enablement": "BLOCKED",
+    "reviewerThread": "01a08523-47c7-76e3-be42-aee801a314fd",
+    "proposalSHA256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+    "sourceMainSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+    "specificationDispositions": "F1-F5 adequately revised at specification level; no implementation/runtime closure",
+    "mandatorySupplement": {
+      "id": "N1",
+      "priority": "P2",
+      "specification": "N1_CONTROL.json",
+      "status": "NOT_RUN"
+    },
+    "productWriterReleased": false,
+    "performanceQualified": false
+  },
+  "humanContinuation": {
+    "date": "2026-10-07",
+    "instruction": "ok go ahead",
+    "precedingNextSteps": "Ownership handoff and explicit implementation/testing release",
+    "forwardedToSourceParent": true,
+    "authorityToAdvanceNextSteps": true,
+    "productOwnershipEvidence": false,
+    "D1D4Acceptance": false,
+    "noMergeHoldPreserved": true
+  },
+  "delivery": {
+    "intended": "Documentation-only commit and non-force branch push; exact commit provided in chat",
+    "sourceMainReconciliation": false,
+    "productCandidate": false,
+    "mergeAllowed": false
+  }
+}
