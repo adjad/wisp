@@ -19,6 +19,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
+    // The Chat window: long conversations, saved chats, and the same approvals
+    // as the notch, in a real window. Today, Research, Memory, Search and
+    // Settings open the app's existing windows from its sidebar.
+    private lazy var chatWindow = ChatWindowController(
+        backend: LiveChatBackend(client: client),
+        launchers: ChatLaunchers(
+            today: { TodayWindow.show() },
+            research: { [weak self] in self?.researchLibrary.show() },
+            memory: { MemoryWindow.shared.show() },
+            settings: { [weak self] in self?.openSettings() },
+            searchEverything: { [weak self] in self?.toggleSearch() }),
+        debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
     private var searchKeyMonitor: Any?
     private var presentation = OverlayTransition()
     private var searchCaptureID: UUID?
@@ -258,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the menu-bar menu focused on app configuration and diagnostics.
         // Primary workflows live in Wisp's panel, where they have context and
         // progress UI instead of duplicating five shortcuts here.
+        menu.addItem(withTitle: "Open Wisp Chat", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
@@ -549,6 +562,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sourceID: sourceID, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
         }
+        model.onOpenChat = { [weak self] sessionId in
+            self?.chatWindow.show(sessionId: sessionId)
+        }
         model.onStartResearch = { [weak self] prompt in
             self?.openResearch(prompt: prompt)
         }
@@ -672,6 +688,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openResearchLibrary() { researchLibrary.show() }
+    @objc private func openChat() { chatWindow.show() }
 
     private func openSavedResearch(_ id: String) {
         openAssistant()

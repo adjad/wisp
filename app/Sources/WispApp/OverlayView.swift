@@ -181,6 +181,7 @@ struct OverlayView: View {
             if !model.turns.isEmpty {
                 ctrl("square.and.pencil", "New chat", { model.newChat() })
             }
+            ctrl("bubble.left.and.bubble.right", "Open in Wisp Chat", { model.openInChat() })
             ctrl("chevron.up", "Collapse", { model.requestCollapse() })
             ctrl("xmark", "Close (stays in menu bar; frees memory)", onDismiss)
         }
