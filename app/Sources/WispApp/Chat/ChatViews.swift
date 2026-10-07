@@ -314,7 +314,7 @@ struct ChatWelcome: View {
     var body: some View {
         VStack(spacing: 0) {
             ChatEmptyState { store.newChat(); store.send($0) }
-            ChatComposer(store: store, busy: false, restoredInput: .constant(nil), stop: {})
+            ChatComposer(store: store, busy: false, loading: false, restoredInput: .constant(nil), stop: {})
         }
     }
 }
@@ -408,7 +408,7 @@ struct ChatConversationView: View {
             } else {
                 ChatThread(store: store, conversation: conversation)
             }
-            ChatComposer(store: store, busy: conversation.busy,
+            ChatComposer(store: store, busy: conversation.busy, loading: conversation.loading,
                          restoredInput: Binding(get: { conversation.restoredInput }, set: { conversation.restoredInput = $0 }),
                          stop: { store.stop(conversation) })
         }
@@ -760,6 +760,7 @@ struct ChatDraftCard: View {
 struct ChatComposer: View {
     @ObservedObject var store: ChatStore
     let busy: Bool
+    let loading: Bool
     @Binding var restoredInput: String?
     let stop: () -> Void
     @State private var text = ""
@@ -767,7 +768,7 @@ struct ChatComposer: View {
     @State private var attachNote = ""
     @FocusState private var focused: Bool
 
-    private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy }
+    private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy && !loading }
 
     var body: some View {
         VStack(spacing: 8) {
@@ -776,7 +777,7 @@ struct ChatComposer: View {
                     HStack(spacing: 8) {
                         Image(systemName: "photo").font(.system(size: 12))
                         Text(image.name).font(.system(size: 12, design: .monospaced)).lineLimit(1)
-                        Button { self.image = nil } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
+                        Button { self.image = nil; attachNote = "" } label: { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)) }
                             .buttonStyle(.plain).accessibilityLabel("Remove image")
                     }
                     .foregroundStyle(ChatTheme.text2)
@@ -849,6 +850,7 @@ struct ChatComposer: View {
         let attached = image
         text = ""
         image = nil
+        attachNote = ""
         store.send(prompt, attachmentName: attached?.name, image: attached?.dataURL)
     }
 

@@ -133,6 +133,7 @@ final class ChatStore: ObservableObject {
     /// Open a saved chat by its backend session id (the notch's hand-off).
     func open(sessionId: String) async {
         if sessionId.isEmpty { newChat(); return }
+        deletedSessionIds.remove(sessionId)   // the notch is still using it, so it is not gone
         if conversations.first(where: { $0.sessionId == sessionId }) == nil { await refresh() }
         if let found = conversations.first(where: { $0.sessionId == sessionId }) {
             select(found)
@@ -176,7 +177,10 @@ final class ChatStore: ObservableObject {
         }
         guard !id.isEmpty else { return }
         deletedSessionIds.insert(id)
-        Task { _ = await backend.deleteChat(id: id) }
+        Task {
+            // If the service could not delete it, the chat still exists and belongs in the list.
+            if await backend.deleteChat(id: id) == false { deletedSessionIds.remove(id) }
+        }
     }
 
     // MARK: - Sending
