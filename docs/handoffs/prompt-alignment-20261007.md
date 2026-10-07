@@ -53,8 +53,12 @@ strict expected failures**, 8.09 seconds, in the relevant seven-file CPU suite:
 Tests use disposable Wisp/credential state and mocked HTTP. Earlier targeted
 repair runs: 540 passed/one skipped/two failed, then 542 passed/one skipped,
 then 560 passed/one skipped. These are not real tool/model execution. The
-nonisolated benchmark guard and clock correction are included in this result. `git diff --check` and
-proposal `git apply --check` passed. Previous advisory review does not approve
+nonisolated benchmark guard and clock correction are included in this result. The unstaged source `git diff --check` and proposal `git apply --check` passed.
+Staging the previously untracked proposal then exposed one trailing-space blank
+context marker. The shell continued to commit/push ef3408c despite that check
+failure. A separate non-force follow-up removes only that marker and records the
+failure; applicability and staged whitespace checks must pass for its checkpoint.
+There was no product-source change in this follow-up. Previous advisory review does not approve
 these later edits; no formal current-candidate review or required CI is claimed.
 
 Offline latency scope was accepted before capture. The first CPU capture has

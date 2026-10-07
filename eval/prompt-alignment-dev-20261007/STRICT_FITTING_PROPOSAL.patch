@@ -18,7 +18,7 @@
          idle.begin(self.activity_key(model))
 @@ -827,7 +831,26 @@
          return model if self.managed else f"{self.endpoint_name}:{self.base_url}:{model}"
- 
+
      def _fit_request(self, model, messages, tools, max_tokens, *,
 -                     use_remaining_context: bool = False):
 +                     use_remaining_context: bool = False, preserve_request: bool = False,
