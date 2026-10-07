@@ -13,9 +13,13 @@ final class ScriptedBackend: ChatBackend {
     var deleted: [String] = []
     var runs: [(prompt: String, session: String)] = []
     var fullAccessValue = false
+    var loadDelayMs: UInt64 = 0
 
     func listChats() async -> [ChatSummary]? { chats }
-    func loadChat(id: String) async -> [ChatMessage]? { history[id] }
+    func loadChat(id: String) async -> [ChatMessage]? {
+        if loadDelayMs > 0 { try? await Task.sleep(nanoseconds: loadDelayMs * 1_000_000) }
+        return history[id]
+    }
     func deleteChat(id: String) async -> Bool { deleted.append(id); return true }
     func run(prompt: String, image: String?, sessionId: String, debug: Bool,
              onEvent: @escaping @Sendable (ChatEvent) -> Void) async {
@@ -143,6 +147,22 @@ struct ChatStoreChecks {
             store.stop(chat)
         }
 
+        // A card still open when the reply ends cannot be answered afterwards.
+        do {
+            let backend = ScriptedBackend()
+            backend.script = { _ in [ev("session", ["id": "s4"]), ev("confirm", ["id": "a2", "request_id": "r2", "tool": "t", "reason": "r"]),
+                                      ev("error", ["message": "The connection dropped.", "dropped": true])] }
+            let store = ChatStore(backend: backend)
+            store.send("something risky")
+            await settle()
+            let chat = store.selected!
+            check(!chat.busy, "the failed reply frees the chat")
+            check(chat.messages.last?.approval?.state == .timedOut, "an unanswered card closes when the reply ends")
+            store.resolve(chat, messageID: chat.messages.last!.id, approved: true, scope: "once")
+            await settle()
+            check(backend.approvals.isEmpty && chat.messages.last?.approval?.state == .timedOut, "a closed card cannot be allowed")
+        }
+
         // Stopping while a card is open denies it.
         do {
             let backend = ScriptedBackend()
@@ -199,6 +219,18 @@ struct ChatStoreChecks {
             store.select(alpha)
             await settle()
             check(alpha.loaded && alpha.messages.count == 2 && store.selected === alpha, "opening a chat loads its history")
+            // Sending into a chat that is still loading its history is ignored, and the history is not overwritten.
+            backend.history["b"] = [ChatMessage(role: .user, text: "Lease?"), ChatMessage(role: .assistant, text: "Sixty days.")]
+            backend.loadDelayMs = 200
+            let beta = store.conversations.first { $0.sessionId == "b" }!
+            store.select(beta)
+            await settle(40)
+            check(beta.loading, "history is loading")
+            store.send("too early")
+            check(beta.messages.isEmpty && !beta.busy, "sending while loading is ignored")
+            await settle(300)
+            check(beta.loaded && beta.messages.count == 2, "history arrives intact")
+            backend.loadDelayMs = 0
             // A chat open in the app but not yet in the list survives a refresh.
             let fresh = store.newChat()
             check(store.conversations.first === fresh && fresh.isEmpty, "new chat sits first and is empty")
@@ -216,9 +248,13 @@ struct ChatStoreChecks {
             await store.open(sessionId: "")
             check(store.selected?.sessionId == "" && store.selected?.isEmpty == true, "an empty session id opens a new chat")
             // Delete.
+            store.select(alpha)
             store.delete(alpha)
             await settle()
-            check(!store.conversations.contains { $0 === alpha } && backend.deleted == ["a"], "delete removes the chat and tells the service")
+            check(store.selected != nil && store.selected !== alpha, "deleting the open chat selects another")
+            await store.refresh()
+            check(!store.conversations.contains { $0.sessionId == "a" }, "a deleted chat is not brought back by a stale list")
+            check(backend.deleted == ["a"], "delete tells the service")
             // The service going away is reported, not hidden.
             backend.chats = nil
             await store.refresh()

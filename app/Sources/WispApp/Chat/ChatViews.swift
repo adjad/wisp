@@ -170,6 +170,7 @@ private struct ChatHistoryRow: View {
     let select: () -> Void
     let delete: () -> Void
     @State private var hovering = false
+    @State private var confirmDelete = false
 
     var body: some View {
         Button(action: select) {
@@ -183,7 +184,13 @@ private struct ChatHistoryRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .contextMenu { Button("Delete chat", role: .destructive, action: delete) }
+        .contextMenu { Button("Delete chat…", role: .destructive) { confirmDelete = true } }
+        .confirmationDialog("Delete this chat?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete chat", role: .destructive, action: delete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("\"\(conversation.title)\" and its history will be removed from this Mac.")
+        }
         .accessibilityLabel(conversation.title)
     }
 }
@@ -757,6 +764,7 @@ struct ChatComposer: View {
     let stop: () -> Void
     @State private var text = ""
     @State private var image: (name: String, dataURL: String)?
+    @State private var attachNote = ""
     @FocusState private var focused: Bool
 
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !busy }
@@ -817,18 +825,23 @@ struct ChatComposer: View {
             .background(RoundedRectangle(cornerRadius: 18).fill(ChatTheme.field))
             .overlay(RoundedRectangle(cornerRadius: 18).stroke(focused ? ChatTheme.tealLine : ChatTheme.line2, lineWidth: 1))
             .frame(maxWidth: 740)
-            Text("Wisp runs on this Mac and can be wrong. Check anything important.")
-                .font(.system(size: 11)).foregroundStyle(ChatTheme.text3)
+            Text(attachNote.isEmpty ? "Wisp runs on this Mac and can be wrong. Check anything important." : attachNote)
+                .font(.system(size: 11)).foregroundStyle(attachNote.isEmpty ? ChatTheme.text3 : ChatTheme.danger)
         }
         .padding(.horizontal, 24).padding(.bottom, 14).padding(.top, 4)
         .frame(maxWidth: .infinity)
-        .onAppear { focused = true }
+        .onAppear {
+            focused = true
+            if let restored = restoredInput { text = restored; restoredInput = nil }
+        }
         .onChange(of: restoredInput) { _, restored in
             guard let restored else { return }
             text = restored
             restoredInput = nil
         }
     }
+
+    private static let maxImageBytes = 10_000_000
 
     private func send() {
         guard canSend else { return }
@@ -843,10 +856,16 @@ struct ChatComposer: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.image]
         panel.allowsMultipleSelection = false
-        if panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url) {
-            let ext = url.pathExtension.lowercased()
-            image = (url.lastPathComponent, "data:image/\(ext);base64,\(data.base64EncodedString())")
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= Self.maxImageBytes else {
+            attachNote = "That image is over 10 MB. Choose a smaller one."
+            return
         }
+        guard let data = try? Data(contentsOf: url) else { return }
+        attachNote = ""
+        let ext = url.pathExtension.lowercased()
+        image = (url.lastPathComponent, "data:image/\(ext);base64,\(data.base64EncodedString())")
     }
 }
 

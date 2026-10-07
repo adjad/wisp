@@ -257,6 +257,7 @@ enum ChatTurnReducer {
             msg.phase = .streaming
         case "error":
             let gotNothing = msg.text.isEmpty && msg.tools.isEmpty && meta.model.isEmpty
+                && msg.approval == nil && msg.draft == nil
             if ev.bool("dropped") && gotNothing { return .droppedEmpty }
             msg.text = ev.str("message").isEmpty ? "Something went wrong." : ev.str("message")
             msg.errorDetail = ev.str("detail")

@@ -78,6 +78,9 @@ struct ChatChecks {
         var e2 = ChatMessage(role: .assistant, phase: .streaming); e2.text = "partial"
         check(ChatTurnReducer.apply(ev("error", ["message": "Out of memory", "detail": "OOM", "dropped": true]), to: &e2, now: t1) == .failed, "a dropped request with content is a failure")
         check(e2.isError && e2.text == "Out of memory" && e2.errorDetail == "OOM" && e2.phase == .failed, "error text replaces the partial answer")
+        var e4 = ChatMessage(role: .assistant, phase: .working)
+        _ = ChatTurnReducer.apply(ev("confirm", ["id": "a1", "request_id": "r1", "tool": "t", "reason": "r"]), to: &e4, now: t0)
+        check(ChatTurnReducer.apply(ev("error", ["message": "dropped", "dropped": true]), to: &e4, now: t1) == .failed, "a dropped request with an open card is a failure, not a silent retry")
         var e3 = ChatMessage(role: .assistant, phase: .working)
         _ = ChatTurnReducer.apply(ev("error", ["message": ""]), to: &e3, now: t1)
         check(e3.text == "Something went wrong.", "empty error text gets a default")

@@ -39,6 +39,9 @@ final class ChatConversation: ObservableObject, Identifiable {
     fileprivate var flushScheduled = false
     fileprivate var streamStart: Date?
     fileprivate var streamChars = 0
+    /// Identifies the reply being streamed, so late events from a stopped or
+    /// replaced run cannot touch the next one.
+    fileprivate var runID = UUID()
 
     init(sessionId: String = "", title: String = "New chat", preview: String = "",
          lastUsed: Date = Date(), loaded: Bool = true) {
@@ -63,6 +66,8 @@ final class ChatStore: ObservableObject {
 
     let backend: ChatBackend
     private let debug: () -> Bool
+    /// Chats deleted this session, so a list fetched before the delete finished cannot bring one back.
+    private var deletedSessionIds = Set<String>()
 
     init(backend: ChatBackend, debug: @escaping () -> Bool = { false }) {
         self.backend = backend
@@ -96,7 +101,7 @@ final class ChatStore: ObservableObject {
         if let a = await access { fullAccess = a }
         var byId = Dictionary(conversations.compactMap { c in c.sessionId.isEmpty ? nil : (c.sessionId, c) },
                               uniquingKeysWith: { first, _ in first })
-        for row in rows {
+        for row in rows where !deletedSessionIds.contains(row.id) {
             if let existing = byId[row.id] {
                 // A reply streaming right now owns its own title and preview.
                 if !existing.busy {
@@ -144,7 +149,8 @@ final class ChatStore: ObservableObject {
         let messages = await backend.loadChat(id: conversation.sessionId)
         conversation.loading = false
         guard let messages else { return }
-        conversation.messages = messages
+        // Never replace a conversation the user has already started typing into.
+        if !conversation.busy && conversation.messages.isEmpty { conversation.messages = messages }
         conversation.loaded = true
         if conversation.title == "Chat", let first = messages.first(where: { $0.role == .user }) {
             conversation.title = ChatTitle.make(from: first.text)
@@ -165,8 +171,11 @@ final class ChatStore: ObservableObject {
         stop(conversation)   // also denies a card that is still waiting for an answer
         let id = conversation.sessionId
         conversations.removeAll { $0 === conversation }
-        if selected === conversation { selected = conversations.sorted { $0.lastUsed > $1.lastUsed }.first }
+        if selected === conversation {
+            if let next = conversations.sorted(by: { $0.lastUsed > $1.lastUsed }).first { select(next) } else { selected = nil }
+        }
         guard !id.isEmpty else { return }
+        deletedSessionIds.insert(id)
         Task { _ = await backend.deleteChat(id: id) }
     }
 
@@ -176,7 +185,7 @@ final class ChatStore: ObservableObject {
         let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !prompt.isEmpty else { return }
         let conversation = selected ?? newChat()
-        guard !conversation.busy else { return }
+        guard !conversation.busy, !conversation.loading else { return }
         if conversation.messages.isEmpty { conversation.title = ChatTitle.make(from: prompt) }
         var user = ChatMessage(role: .user, text: prompt)
         user.attachmentName = attachmentName
@@ -188,6 +197,8 @@ final class ChatStore: ObservableObject {
         conversation.pendingDelta = ""; conversation.flushScheduled = false
         conversation.streamStart = nil; conversation.streamChars = 0
         let replyID = reply.id
+        let runID = UUID()
+        conversation.runID = runID
         let sid = conversation.sessionId
         let wantsDebug = debug()
         conversation.task = Task { [weak self, weak conversation] in
@@ -195,7 +206,7 @@ final class ChatStore: ObservableObject {
             await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug) { event in
                 Task { @MainActor in
                     guard let conversation else { return }
-                    self.handle(event, in: conversation, replyID: replyID)
+                    self.handle(event, in: conversation, replyID: replyID, runID: runID)
                 }
             }
         }
@@ -207,6 +218,7 @@ final class ChatStore: ObservableObject {
         conversation.task?.cancel()
         conversation.task = nil
         flush(conversation)
+        conversation.runID = UUID()
         if let i = conversation.messages.lastIndex(where: { $0.role == .assistant }) {
             if conversation.messages[i].approval?.state == .pending {
                 resolve(conversation, messageID: conversation.messages[i].id, approved: false, scope: "once")
@@ -217,9 +229,12 @@ final class ChatStore: ObservableObject {
         conversation.busy = false
     }
 
-    private func handle(_ event: ChatEvent, in conversation: ChatConversation, replyID: UUID) {
-        guard conversation.busy,
-              conversation.messages.contains(where: { $0.id == replyID }) else { return }
+    private func handle(_ event: ChatEvent, in conversation: ChatConversation, replyID: UUID, runID: UUID) {
+        guard conversation.busy, conversation.runID == runID else { return }
+        guard conversation.messages.contains(where: { $0.id == replyID }) else {
+            conversation.busy = false     // the reply is gone; do not leave the chat stuck
+            return
+        }
         if event.type == "delta" {
             if conversation.streamStart == nil { conversation.streamStart = Date() }
             conversation.pendingDelta += event.str("text")
@@ -241,6 +256,7 @@ final class ChatStore: ObservableObject {
         case .session(let id):
             if conversation.sessionId.isEmpty { conversation.sessionId = id }
         case .finished, .failed:
+            if message.approval?.state == .pending { message.approval?.state = .timedOut }
             conversation.messages[i] = message
             conversation.busy = false
             conversation.lastUsed = Date()
@@ -284,6 +300,7 @@ final class ChatStore: ObservableObject {
 
     func resolve(_ conversation: ChatConversation, messageID: UUID, approved: Bool, scope: String) {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
+              conversation.busy,
               var approval = conversation.messages[i].approval, approval.state == .pending else { return }
         approval.state = approved ? .allowed : .denied
         conversation.messages[i].approval = approval
@@ -311,7 +328,10 @@ final class ChatStore: ObservableObject {
         Task {
             let outcome = await backend.sendDraft(to: draft.to, text: draft.text)
             updateDraft(conversation, messageID: messageID) {
-                $0.isSending = false; $0.sent = outcome.ok; $0.status = outcome.ok ? "Sent" : outcome.result
+                $0.isSending = false; $0.sent = outcome.ok
+                $0.status = outcome.ok ? "Sent"
+                    : outcome.result.contains("could not reach") ? outcome.result + " It may have sent, so check Messages before trying again."
+                    : outcome.result
             }
         }
     }
