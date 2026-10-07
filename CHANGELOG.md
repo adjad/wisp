@@ -4,6 +4,10 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Fixed the sandboxed Today and Diagnostic Report contract gates (and the overlay motion check) under Xcode 27, where SwiftUI's `@State` is a compiler macro whose plugin server cannot start inside Simulation QA's sandbox. Those scripts now ask `swiftc` not to add a second, nested sandbox when it supports the flag; the outer sandbox is unchanged.
+
 ## [1.2.0] - 2026-10-06
 
 ### Added
