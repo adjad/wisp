@@ -20,8 +20,8 @@ The original P0–P4 shorthand is retained for history. The revised author’s S
 
 | Stage | Bounded future outcome | Required predecessor and stop gate |
 | --- | --- | --- |
-| Current docs preparation | Frozen proposal, NOT_RUN cases, provenance and gates only. | Narrow docs release and registered frozen-base branch; no code/tests/execution. |
-| Product admission | Register one writer, exact permitted paths and current compatible base. | Claude baton/disposition ACK, revised independent design result, parent release; reconcile final 1.2/current main only under later authority. No inferred transfer from this packet. |
+| Current documentation preflight | Existing 18-file packet; update only five wrappers/manifests, preserve 13 retained inputs. | Fresh acceptance and parent release; non-force merge of integration base 6ee9e8b into the existing branch, then document-integrity checks only. Original source base ebe8273 stays historical. |
+| Product admission | Register one writer, exact permitted paths and current compatible base. | Claude baton/disposition ACK, revised independent design result, parent release; product-candidate final 1.2/current-main reconciliation and validation still require later authority; the documentation merge is not that proof. No inferred transfer from this packet. |
 | S0 / original P0 | Meaningful synthetic legacy behavior pins and red tests on the newly admitted base. | Preserve current lifetime/blind-spot tests; categorize new behavior failures versus existing pins. No blanket red-test dependency on obsolete 4994caa. |
 | S1 default-off scaffolding | Pure lease/token/decoder models with unchanged legacy dispatch. | Design constraints and exact-path release. No production native calls or shadow traffic; fakes are not native qualification. |
 | S2 / part of P2 | Lease, revocation, publication and dispatch implementation, still disabled. | F1/F4 proof and lower-writer ownership. If the concrete dispatch seam requires files outside admitted paths, parent must obtain a separate reservation before edits. |
@@ -34,7 +34,7 @@ Revised static review is not an exact-head product audit. A satisfactory design 
 
 ## Future validation inventory
 
-Read at frozen base only; none of these commands/checks ran during preparation.
+The historical validation context was read at frozen source base ebe8273. Documentation preflight additionally reads context at actual integration base 6ee9e8b, recorded separately in PROVENANCE.json. None of the following product test, mutation, runtime or benchmark commands ran locally during either preparation stage. Remote configured CI is a separate execution path on the exact remote candidate.
 
 - Targeted pytest suites: `tests/test_runtime_attestation_t0.py`, `tests/test_runtime_proc_path.py`, `tests/test_runtime_peer.py`, `tests/test_web_response_followup.py`, and future `tests/test_runtime_attestation_t1t3.py` only after admitted creation. Later use the qualified interpreter with `-m pytest -q` for these modules, under isolated synthetic state.
 - Full repository regression: `python scripts/test_replay_failure_fixes.py`. Current runner discovers repository modules, uses pytest for modern modules and direct execution for named legacy modules, and rejects empty test execution. The original design's claim that bare pytest always runs zero tests is not a reliable description of this base.
@@ -59,10 +59,18 @@ Shared `scripts/run_simulation_qa.py` remains held; later specialists need their
 
 Parent must record which optimization stop threshold applies, its denominator, baseline, scenario/statistic, and how it relates to the versioned release policy before candidate freeze or measurement. This packet chooses neither 25% nor 50% and changes no policy. Passing a component target cannot waive end-to-end gates.
 
-The pinned release protocol requires exact clean candidate/baseline worktrees, Desktop lane, approved baseline and digest, qualified resident model, suitable quiet resources and a fresh output directory. Its live run is outside this scope; do not execute its info/run/client-status paths here. Source statements about historical qualification are retained context, not verified present runtime status.
+The historical pinned release protocol requires exact clean product candidate/baseline worktrees, Desktop lane, approved baseline and digest, qualified resident model, suitable quiet resources and a fresh output directory. Its live run is outside this scope; do not execute its info/run/client-status paths here. Source statements about historical qualification are retained context, not verified present runtime status.
 
 Full later costs must include complete server/parent signature/identifier/team/exec facts, synchronization, lower-write checks, background contention, cold/sleep/restart/refusal behavior and idle CPU. The historical 40–41 ms arithmetic cannot be carried forward while claiming full global legacy parity and eliminating its inventory cost.
 
 ## Mandatory supplemental N1 control
 
 The revised reviewer requires a deterministic LP-R versus final nonblocking submission control, beyond L04/L08/L09/L10. See N1_CONTROL.json: pause a writer after its sample but before submission, complete another client's revocation, then resume and observe no old-token emission. Reverse the order to document unretractable earlier submission and forbid later partial/resumed emissions. Mutants must remove the shared gate or release it between comparison and submission. Also prove that the short gate contains no await, blocking send or slow work and creates no deadlock. This supplemental specification remains NOT_RUN; it neither amends the frozen author matrix nor grants runtime authority.
+
+## Exact-head documentation gates after preflight
+
+Non-force documentation reconciliation against `6ee9e8b76990fb22dbbc46b0be583fa9481da713` completed without conflicts. The immutable proposal/review source base stays `ebe82735d699a88c05c94fa41fd0fee0e35fdd68`; existing upstream files entered through the merge, not independent edits by this writer. Only the five released wrapper/manifest files change after reconciliation.
+
+Freeze the new documentation head after integrity checks and non-force push. Require both configured remote checks, **python-regressions** and **Verified macOS artifact**, plus distinct exact-head document-consistency/provenance review. Raw commands, exit statuses, final SHA, remote equality and CI/review evidence live outside that frozen commit. No result on earlier head cfa6919 applies to the new head; no builder self-approval is allowed.
+
+The integrated release protocol hash differs from the historical source hash because main added the 1.2.0 ad-hoc-only per-version performance waiver. Keep both source identities. Its per-version waiver does not cover 1.3.0 and does not resolve the 25%/50% optimization criterion discrepancy. Documentation CI and Git integration supply no product/native/performance or final 1.2 compatibility proof. Publication and 1.3 merging/activation remain held; seq68 still has no recorded correlated reply/ACK, D1–D4 are unaccepted, and the 45-row matrix plus N1 remain NOT_RUN.

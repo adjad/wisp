@@ -7,7 +7,7 @@
   "branch": "codex/attestation-perf-1-3",
   "originalDesignCommit": "1449ab162c2f92e73162950240054964af636cdf",
   "observedLocalOriginMain": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
-  "mainReconciliationPerformed": false,
+  "mainReconciliationPerformed": true,
   "branchRegistration": {
     "headMatchedFrozenBase": true,
     "cleanBeforeDocsWrites": true,
@@ -183,7 +183,9 @@
     "Retained author manifest/seal refer to source-directory artifacts; this packet copies a documented subset only",
     "Hash equality preserves provenance; it does not prove security claims",
     "Historical pending-builder setup text preserved unchanged and superseded only by corrected actual identity/branch registration",
-    "Root packet CHECKSUMS.json inventories prepared files except itself"
+    "Root packet CHECKSUMS.json inventories prepared files except itself",
+    "Current documentation integration base is separate from original source/proposal/review identities; Git reconciliation does not requalify historical artifacts",
+    "Remote CI may execute production checks; local document checks supply no product/native/benchmark or exact-head review pass"
   ],
   "preservedHolds": {
     "ClaudeProductTransferConfirmed": false,
@@ -235,8 +237,81 @@
   },
   "delivery": {
     "intended": "Documentation-only commit and non-force branch push; exact commit provided in chat",
-    "sourceMainReconciliation": false,
+    "sourceMainReconciliation": true,
     "productCandidate": false,
-    "mergeAllowed": false
+    "mergeAllowed": false,
+    "reconciliationScope": "Explicit documentation-preflight release only"
+  },
+  "reconciliationScope": "Documentation integration only; no product/final-1.2 compatibility proof",
+  "preflight": {
+    "scopeReceipt": {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_PR170_PERSISTENT_GOAL_AND_DOCS_PREFLIGHT_SCOPE_2026-10-07.json",
+      "sha256": "d923d94435843f1ef6294d706bb2a69188e4f8ba2aefb4c089fe98ed3f919d3d"
+    },
+    "parentRelease": {
+      "path": "/private/tmp/wisp-pr170-docs-preflight-20261007/PARENT_RELEASE.json",
+      "sha256": "fca4ba9d82a0b750a5d16cec63616a7a5d3b33467812f57a9ae2c1b72fe70701"
+    },
+    "acceptedTurn": "01a11813-921f-7ec2-a383-ea6d369689e3",
+    "checkpointSHA": "cfa69196ac43e215f0374f16b76e63693f88edad",
+    "actualIntegrationBaseSHA": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+    "documentationMergeCommitSHA": "b8fbe73a827e847be629eca0863d9fed7086674f",
+    "reconciliationMethod": "git fetch origin main; git merge --no-ff --no-edit origin/main",
+    "conflicts": [],
+    "wrapperWritePaths": [
+      "README.md",
+      "HANDOFF.md",
+      "STAGING.md",
+      "PROVENANCE.json",
+      "CHECKSUMS.json"
+    ],
+    "immutableRetainedFileCount": 13,
+    "immutableVerificationAnchor": "Original cfa6919 packet CHECKSUMS.json; all 13 non-wrapper inputs byte-identical",
+    "entirePacketFileCount": 18,
+    "localChecks": "Metadata, JSON parsing, SHA256/byte sizes, manifest coverage, 45 unique NOT_RUN IDs, N1 NOT_RUN and whitespace only",
+    "localProductionTests": 0,
+    "localNativeModelSocketBenchmarkOperations": 0,
+    "rawCommandExitEvidence": "Reported outside the frozen candidate commit in writer handoff; no self-referential candidate SHA inside packet",
+    "freshExactHeadGates": {
+      "requiredCI": [
+        "python-regressions",
+        "Verified macOS artifact"
+      ],
+      "independentReview": "Distinct document consistency/provenance review after exact-head input registration, acceptance and parent release",
+      "status": "EVIDENCE_RECORDED_EXTERNALLY_AFTER_FREEZE",
+      "priorHeadEvidenceReusable": false
+    },
+    "claimedCIResult": null,
+    "claimedExactHeadDocumentReview": null,
+    "productCandidateQualified": false,
+    "final12CompatibilityProved": false,
+    "publicationAllowed": false
+  },
+  "integrationValidationContext": [
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
+      "sha256": "46939f9beff00c22c7ce04635962a93d18852ae6bdc951d41264ab8fd628dfdd",
+      "qualification": "Integration-context document only; includes 1.2.0 ad-hoc per-version waiver, not 1.3 approval"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "scripts/test_replay_failure_fixes.py",
+      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced",
+      "qualification": "Read/hashes only; not locally executed"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": ".github/workflows/regression-gate.yml",
+      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684",
+      "qualification": "Configured remote CI is separate from local document checks"
+    }
+  ],
+  "ownershipEvidence": {
+    "requestSequence": 68,
+    "correlatedRepliesRecorded": 0,
+    "correlatedAcknowledgmentsRecorded": 0,
+    "evidenceSource": "Source-parent release and registered d923d944 scope; no fresh mailbox execution by this documentation writer",
+    "productTransferConfirmed": false
   }
 }
