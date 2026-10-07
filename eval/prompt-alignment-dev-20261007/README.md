@@ -36,9 +36,19 @@ a wire request exists. Passing those checks does not qualify a future floor-only
 complete or merge-ready until they are repaired and pass without xfail. Ordinary
 assistant fitting policy is outside this bounded preparation scope.
 
-Semantic development checks also preserve five current validator rejections:
-PA003 (tomorrow follow-up), PA004 (weej typo), PA008 (sender/date query binding),
-PA009 (repeated texts/messages aliases) and PA010 (leave-messages-out exclusion).
-These are synthetic desired answers rejected by frozen application validation,
-not measurements of model output. The fixtures are unchanged. Validator source
-repair is outside this preparation scope and requires separate ownership.
+Five validator failures in these unchanged cases are now repaired: PA003
+(tomorrow follow-up), PA004 (weej typo), PA008 (sender/date query binding), PA009
+(repeated texts/messages aliases) and PA010 (leave-messages-out exclusion).
+Positive tests assert the exact compiled tools/arguments. Negative controls cover
+wrong dates, counts and senders, omitted exclusions, quoted literal data, public
+subjects, real send instructions and independent second reads. These are supplied
+synthetic intent checks, not model accuracy measurements. The previous checkpoint
+`bf4055bb980648368e2b3edba3a90d881654e71f` preserves the original failures.
+
+See `LATENCY_REPORT.md` for CPU measurements and separately attributed archived
+model timings. `cpu_latency.py` is restricted to the repository's isolated pytest
+state and a fresh admitted output directory; it executes no model or tool. The
+first capture is preserved but superseded because a legacy calendar clock was
+not controlled. The corrected harness freezes that clock outside timed calls.
+`STRICT_FITTING_PROPOSAL.patch` is reviewable, unapplied work for the held shared
+client; passing `git apply --check` does not qualify its behavior.

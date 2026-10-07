@@ -2,7 +2,7 @@
 from __future__ import annotations
 import re
 from datetime import date, datetime, timedelta
-from .grammar import personal_agenda_period, flexible_personal_agenda
+from .grammar import personal_agenda_period, flexible_personal_agenda, normalize_personal_agenda
 from .schema import DOMAINS, NAMED_PERIODS, SCHEMA, SOURCE_PROPERTIES, TIME_PROPERTIES, Intent, SourceIntent, TimeScope
 
 
@@ -28,6 +28,26 @@ def _source_exclusion_prefix(text: str) -> str:
     noun = r"(?:(?:my|the|any|our)\s+)?(?:" + "|".join(SOURCE_WORDS.values()) + ")"
     match = re.match(noun + r"(?:(?:\s*(?:,|&)\s*|\s+(?:and|or)\s+)" + noun + r")*", text, re.I)
     return match.group() if match else ""
+
+def _leave_out_spans(text: str) -> list[tuple[int, int]]:
+    """Bounds of complete source-list exclusions, outside quoted data."""
+    masked = _mask_literals(text)
+    spans = []
+    for match in re.finditer(r"(?:^|[;.!?\n])\s*leave\s+", masked, re.I):
+        tail = masked[match.end():]
+        nouns = _source_exclusion_prefix(tail)
+        ending = re.match(r"\s+out(?=\s*(?:$|[;.!?\n]))", tail[len(nouns):], re.I) if nouns else None
+        if ending:
+            spans.append((match.start(), match.end() + len(nouns) + ending.end()))
+    return spans
+
+
+def _leave_out_sources(text: str) -> set[str]:
+    """A complete source-list exclusion; never a title, recipient or action."""
+    return {domain for left, right in _leave_out_spans(text)
+            for domain, pattern in SOURCE_WORDS.items()
+            if re.search(pattern, text[left:right], re.I)}
+
 
 def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
     """Conservative source mentions, with nearby source-negation respected.
@@ -89,6 +109,7 @@ def source_requirements(prompt: str) -> tuple[set[str], set[str]]:
         for domain, pattern in SOURCE_WORDS.items():
             if re.search(pattern, tail, re.I):
                 excluded.add(domain)
+    excluded.update(_leave_out_sources(prompt))
     return required - excluded, excluded
 
 
@@ -106,6 +127,15 @@ def _positive_effect_instruction(text: str, *, now: datetime) -> bool:
     for index, raw_clause in enumerate(clauses):
         if index and _coordinated_read_noun(text, clauses, index):
             continue
+        if index and re.match(r"^\s*(?:recap|summarize|summary|overview|digest)\b", clauses[0].text, re.I):
+            # A coordinated bare source/date after a recap remains a read.
+            # Any recipient, payload or other tail prevents this exception.
+            named = _mask_literals(raw_clause.text).strip()
+            nouns = _source_exclusion_prefix(named)
+            tail = named[len(nouns):].strip() if nouns else named
+            times = _requested_times(tail, now=now) if tail else []
+            if nouns and (not tail or len(times) == 1 and times[0][:2] == (0, len(tail))):
+                continue
         clause = _instruction_text(raw_clause.text, now=now)
         head = _action_clause_head(clause)
         if head and head["negative"]:
@@ -225,6 +255,7 @@ def _requested_times(text: str, *, now: datetime) -> list[tuple[int, int, TimeSc
     """
     from service.workflows.reads import _MONTH_DAY, _DAY_MONTH, _MONTHS
     from service.tools.timeranges import resolve_when, BadWhen
+    text = normalize_personal_agenda(text)
     spans = []
     def add(start, end, scope):
         if not any(start < right and end > left for left, right, _ in spans):
@@ -336,6 +367,13 @@ def _unquoted_queries(text: str, *, now: datetime) -> list[tuple[str, str, int, 
             for boundary in re.finditer(r"\b" + _NEGATIVE + r"\s+(?:(?:my|the|any)\s+)?" + source_union, _unquoted(_mask_literals(candidate)), re.I):
                 stops.append(boundary.start())
             end = min(stops) if stops else len(candidate)
+            if domain in {"email", "messages"} and match["cue"].lower() in {"from", "with", "by"}:
+                # Separate a terminal unquoted date after other bounded suffixes
+                # (including result limits); quoted names remain exact above.
+                bounded = candidate[:end].rstrip(" .,")
+                for left, right, _ in _requested_times(bounded, now=now):
+                    if left > 0 and right == len(bounded):
+                        end = left
             literal = candidate[:end].strip().rstrip(".,")
             if literal:
                 found.append((domain, literal, start, start + end))
@@ -362,6 +400,8 @@ def _ambiguous_filter_destination(text: str, *, now: datetime) -> bool:
 def _instruction_text(text: str, *, now: datetime) -> str:
     masked = _mask_literals(text)
     for _, _, start, end in _unquoted_queries(text, now=now):
+        masked = masked[:start] + " " * (end - start) + masked[end:]
+    for start, end in _leave_out_spans(text):
         masked = masked[:start] + " " * (end - start) + masked[end:]
     return masked
 
@@ -494,7 +534,11 @@ def _occurrence_clauses(text: str, *, now: datetime) -> dict[str, list[str]]:
             compact[-1] = (compact[-1][0], anchor[1], anchor[2])
         else:
             compact.append(anchor)
-    anchors = compact
+    anchors = [anchor for anchor in compact if not (
+        any(previous[2] == anchor[2] for previous in compact if previous[0] < anchor[0])
+        and re.search(r"\b(?:limit(?: to)?|at most)\s+(?:\d{1,3}|" + "|".join(_NUMBERS) + r")\s*$",
+                      masked[:anchor[0]], re.I)
+        and not masked[anchor[1]:].strip(" .!?"))]
     repeated = {domain for _, _, domain in anchors
                 if sum(owner == domain for _, _, owner in anchors) > 1}
     if not repeated:
@@ -714,7 +758,8 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
     correction = bool(re.match(r"^\s*(?:and|actually|now|instead|no[, ]|only|just|make that|same|those)\b", prompt, re.I))
     inherit = bool(prior_user and (not required or correction and required <= prior_required))
     evidence = prompt + "\n" + prior_user if inherit else prompt
-    time_evidence = re.sub(r"\b(?:this|the) wk\b|\bthe week\b", "this week", evidence, flags=re.I)
+    time_evidence = normalize_personal_agenda(prompt) + ("\n" + prior_user if inherit else "")
+    time_evidence = re.sub(r"\b(?:this|the) wk\b|\bthe week\b", "this week", time_evidence, flags=re.I)
     time_evidence = re.sub(r"\bnext wk\b", "next week", time_evidence, flags=re.I)
     if flexible_personal_agenda(prompt) and not re.search(r"\b(?:this|next|last) (?:week|month)\b", time_evidence, re.I):
         if re.search(r"\b(?:my|our) (?:week|wk)\b|\bfor (?:the )?(?:week|wk)\b", prompt, re.I):
@@ -822,6 +867,12 @@ def validate_intent(value, prompt: str, *, context=(), prior_tools=(), now: date
         from service.utterance_shape import mask_quoted
         filter_requested = bool(re.search(
             r"\b(?:find|search|look up|lookup|locate|named|titled|called|contains|containing|about|code|password|receipt|invoice)\b", mask_quoted(prompt), re.I))
+        if inherit and not required:
+            # A whole temporal continuation is not an unbound "about" search.
+            fragment = re.sub(r"^\s*(?:(?:what|how)\s+about|and|also|then)\s+", "", prompt, flags=re.I).strip(" .!?")
+            times = _requested_times(fragment, now=now)
+            if len(times) == 1 and times[0][:2] == (0, len(fragment)):
+                filter_requested = False
         lookup_domains = _lookup_domains(filter_prompt, now=now) if filter_requested else set()
         if filter_requested and not unsupported and any(
                 source.domain in lookup_domains and source.domain not in occurrence_clauses

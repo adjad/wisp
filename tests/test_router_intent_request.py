@@ -105,35 +105,126 @@ _DEVELOPMENT_CASES = [json.loads(line) for line in
     (ROOT / "eval/prompt-alignment-dev-20261007/cases.jsonl").read_text().splitlines()]
 
 
-class KnownDevelopmentRejection(Exception):
-    """A recorded exact validator diagnostic; unrelated exceptions still fail."""
-
-
-_KNOWN_REJECTIONS = {
-    "PA003": "Cannot bind lookup requirement to a source clause",
-    "PA004": "Time was changed or invented",
-    "PA008": "Complete requested query was dropped or changed",
-    "PA009": "Cannot establish independent source clause bounds",
-    "PA010": "An effect instruction cannot be lowered to a read",
-}
-
-
-@pytest.mark.parametrize("case", [
-    pytest.param(case, id=case["id"], marks=pytest.mark.xfail(strict=True,
-        raises=KnownDevelopmentRejection, reason=case["id"] + ": " + _KNOWN_REJECTIONS[case["id"]]))
-    if case["id"] in _KNOWN_REJECTIONS else pytest.param(case, id=case["id"])
-    for case in _DEVELOPMENT_CASES])
+@pytest.mark.parametrize("case", _DEVELOPMENT_CASES, ids=lambda case: case["id"])
 def test_development_expected_intent_validates_and_read_compiles(case):
-    from service.router.intent.validation import InvalidIntent, validate_intent
+    from service.router.intent.validation import validate_intent
     from service.router.intent.compiler import compile_intent
     now = datetime.fromisoformat(case["now"])
-    try:
-        intent = validate_intent(case["expected"], case["prompt"],
-            context=natural_context(case["history"]), prior_tools=case["prior_tools"], now=now)
-    except InvalidIntent as exc:
-        if _KNOWN_REJECTIONS.get(case["id"]) == str(exc):
-            raise KnownDevelopmentRejection(str(exc)) from exc
-        raise
+    intent = validate_intent(case["expected"], case["prompt"],
+        context=natural_context(case["history"]), prior_tools=case["prior_tools"], now=now)
     if intent.kind == "read":
         calls, _ = compile_intent(intent, now=now)
         assert calls
+
+
+def test_cpu_capture_rejects_nonisolated_execution_before_creating_output(tmp_path, monkeypatch):
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    spec = importlib.util.spec_from_file_location("alignment_cpu_guard",
+        ROOT / "eval/prompt-alignment-dev-20261007/cpu_latency.py")
+    timing = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(timing)
+    with pytest.raises(RuntimeError, match="isolated pytest bootstrap"):
+        timing.capture(tmp_path / "forbidden")
+    assert not (tmp_path / "forbidden").exists()
+
+
+def test_registered_cpu_latency_capture(monkeypatch):
+    import os
+    output = os.environ.get("PROMPT_ALIGNMENT_CPU_OUTPUT")
+    if not output:
+        pytest.skip("CPU timing runs only in its explicitly registered measurement window")
+    from service.tools import registry
+    from service.workflows import reads
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("CPU timing must never execute tools")
+    monkeypatch.setattr(registry, "run_tool", forbidden)
+    monkeypatch.setattr(reads, "run_tool", forbidden)
+    spec = importlib.util.spec_from_file_location("alignment_cpu_latency",
+        ROOT / "eval/prompt-alignment-dev-20261007/cpu_latency.py")
+    timing = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(timing)
+    summary = timing.capture(output)
+    assert summary["cases"] == 16
+    assert summary["synthetic_clocks"] == {row["id"]: row["now"] for row in _DEVELOPMENT_CASES}
+    assert all(result["n"] == 800 for result in summary["paths"].values())
+    assert summary["model_inference"] is False and summary["tool_execution"] is False
+
+
+@pytest.mark.parametrize("case_id,expected_calls", [
+    ("PA003", [("get_upcoming", {"period": "tomorrow", "calendar_only": True})]),
+    ("PA004", [("get_upcoming", {"period": "this week", "calendar_only": False})]),
+    ("PA008", [("view_emails", {"query": "Mira", "unread": True,
+                                "strict_match": True, "period": "yesterday"})]),
+    ("PA009", [("summarize_messages", {"conversation": "Rowan", "count": 5, "period": "yesterday"})]),
+    ("PA010", [("get_upcoming", {"period": "this week", "calendar_only": True}),
+               ("summarize_emails", {"period": "this week"})]),
+])
+def test_repaired_cases_compile_exact_source_filters(case_id, expected_calls):
+    from service.router.intent.validation import applicable_read, validate_intent
+    from service.router.intent.compiler import compile_intent
+    case = next(c for c in _DEVELOPMENT_CASES if c["id"] == case_id)
+    now = datetime.fromisoformat(case["now"])
+    assert applicable_read(case["prompt"], case["history"], case["prior_tools"])
+    intent = validate_intent(case["expected"], case["prompt"], context=case["history"],
+                            prior_tools=case["prior_tools"], now=now)
+    calls, _ = compile_intent(intent, now=now)
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize("case_id,field,value", [
+    ("PA003", "time", {"named": "next week"}),
+    ("PA004", "time", {"named": "next week"}),
+    ("PA008", "query", "Mira Smith"),
+    ("PA008", "time", None),
+    ("PA009", "count", 6),
+    ("PA010", "excluded_sources", []),
+])
+def test_repaired_reads_still_reject_changed_or_dropped_constraints(case_id, field, value):
+    from service.router.intent.validation import InvalidIntent, validate_intent
+    case = next(c for c in _DEVELOPMENT_CASES if c["id"] == case_id)
+    answer = deepcopy(case["expected"])
+    if field == "excluded_sources":
+        answer[field] = value
+    elif value is None:
+        answer["sources"][0].pop(field)
+    else:
+        answer["sources"][0][field] = value
+    with pytest.raises(InvalidIntent):
+        validate_intent(answer, case["prompt"], context=case["history"],
+            prior_tools=case["prior_tools"], now=datetime.fromisoformat(case["now"]))
+
+
+@pytest.mark.parametrize("prompt", [
+    "What public events are in Berlin this weej?",
+    "whats up for this weef?",
+    "Recap my calendar and email Rowan saying I can attend",
+    "Recap my calendar this week; leave messages out; send email to Mira",
+])
+def test_scope_typo_repair_does_not_admit_public_unknown_or_effect_requests(prompt):
+    from service.router.intent.validation import applicable_read
+    assert not applicable_read(prompt)
+
+
+@pytest.mark.parametrize("domain,query,prompt", [
+    ("notes", "leave messages out this weej", 'Find notes named "leave messages out this weej"'),
+    ("email", "Mira yesterday", 'Find email from "Mira yesterday"'),
+])
+def test_quoted_exclusion_typo_and_sender_date_remain_literal(domain, query, prompt):
+    from service.router.intent.validation import InvalidIntent, validate_intent, source_requirements
+    answer = {"version": 1, "kind": "read", "sources": [
+        {"domain": domain, "operation": "records", "query": query}],
+        "excluded_sources": [], "unsupported_constraints": []}
+    assert source_requirements(prompt) == ({domain}, set())
+    intent = validate_intent(answer, prompt, now=NOW)
+    assert intent.sources[0].query == query and intent.sources[0].time is None
+    answer["sources"][0]["time"] = {"named": "yesterday" if domain == "email" else "this week"}
+    with pytest.raises(InvalidIntent):
+        validate_intent(answer, prompt, now=NOW)
+
+
+def test_terminal_count_fix_does_not_drop_an_independent_message_read():
+    from service.router.intent.validation import InvalidIntent, validate_intent
+    case = next(c for c in _DEVELOPMENT_CASES if c["id"] == "PA009")
+    with pytest.raises(InvalidIntent):
+        validate_intent(case["expected"], "Recap texts with Rowan yesterday; find messages from Mira today", now=NOW)

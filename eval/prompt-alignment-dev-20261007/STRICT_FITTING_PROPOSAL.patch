@@ -1,0 +1,58 @@
+--- a/service/inference/omlx_client.py
++++ b/service/inference/omlx_client.py
+@@ -633,10 +633,14 @@
+         tool_choice: str | dict | None = None,
+         temperature: float | None = None,
+         max_tokens: int = 2048,
++        preserve_request: bool = False,
++        request_context_window: int | None = None,
+         **extra: Any,
+     ) -> dict[str, Any]:
+         """Non-streaming chat completion. Returns the raw oMLX response dict."""
+-        model, messages, tools, max_tokens = self._fit_request(model, messages, tools, max_tokens)
++        model, messages, tools, max_tokens = self._fit_request(
++            model, messages, tools, max_tokens, preserve_request=preserve_request,
++            request_context_window=request_context_window, response_format=extra.get("response_format"))
+         payload = self._payload(model, messages, tools, tool_choice,
+                                 temperature, max_tokens, stream=False, **extra)
+         idle.begin(self.activity_key(model))
+@@ -827,7 +831,26 @@
+         return model if self.managed else f"{self.endpoint_name}:{self.base_url}:{model}"
+ 
+     def _fit_request(self, model, messages, tools, max_tokens, *,
+-                     use_remaining_context: bool = False):
++                     use_remaining_context: bool = False, preserve_request: bool = False,
++                     request_context_window: int | None = None, response_format=None):
++        if preserve_request:
++            if not self.managed or self.provider.name != "omlx":
++                raise EndpointConfigurationError("Preserved routing requests require local oMLX")
++            if self.target is not None and model != self.target.model:
++                raise EndpointConfigurationError("A bound inference client cannot change model identity")
++            window = self.target.context_window if self.target is not None else request_context_window
++            if (type(window) is not int or window <= 0 or type(max_tokens) is not int or max_tokens <= 0
++                    or request_context_window is not None and request_context_window != window):
++                raise EndpointConfigurationError("Preserved request has invalid or mismatched context metadata")
++            from service.agent.loop import _est_tokens
++            # Account for grammar and message framing in addition to content.
++            # This remains a conservative heuristic, not a tokenizer/server proof.
++            cost = (sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
++                        for m in messages) + _est_tokens(tools or [])
++                    + _est_tokens(response_format or {}) + 64 + 8 * len(messages))
++            if cost + max_tokens > window:
++                raise EndpointConfigurationError("Full preserved request cannot fit the target context window")
++            return model, messages, tools, max_tokens
+         if self.target is None:
+             return model, messages, tools, max_tokens
+         if model != self.target.model:
+--- a/service/router/intent/planner.py
++++ b/service/router/intent/planner.py
+@@ -105,7 +105,8 @@
+                 attempts += 1
+                 if on_generation is not None:
+                     on_generation(target)
+-                response = await client.chat(model, messages, **completion_options(SCHEMA))
++                response = await client.chat(model, messages, **completion_options(SCHEMA),
++                                             preserve_request=True, request_context_window=target.context_window)
+                 try:
+                     choice = response["choices"][0]
+                     if choice.get("finish_reason") != "stop" or choice["message"].get("tool_calls"):

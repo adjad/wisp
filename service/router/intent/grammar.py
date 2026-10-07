@@ -6,15 +6,25 @@ from datetime import datetime
 _SCOPE = r"(?:today|tomorrow|tonight|this week|next week|this weekend|next weekend|this month|next month)"
 _AGENDA = re.compile(
     r"^(?:please\s+|can you\s+|could you\s+)?(?:"
-    r"what(?:['’]s|\s+is|\s+are)\s+(?:up|on|happening|going on|planned|scheduled|coming up)"
+    r"what(?:['’]s|s|\s+is|\s+are)\s+(?:up|on|happening|going on|planned|scheduled|coming up)"
     r"|what do (?:i|we) have(?:\s+(?:on|planned|scheduled))?"
     r"|(?:show|check|list)\s+(?:me\s+)?(?:my\s+)?(?:agenda|schedule|calendar))"
     r"\s+(?:(?:for|on|in|during)\s+)?(?:the\s+)?(?P<scope>" + _SCOPE + r")[.!?]*$", re.I)
 
 
+def normalize_personal_agenda(text: str) -> str:
+    """Correct one known scope typo only in a complete subject-free agenda.
+
+    Equal-length replacement preserves offsets. Quoted queries, public subjects
+    and extra instructions do not match this grammar and keep their bytes.
+    """
+    candidate = re.sub(r"\bweej\b", "week", text, flags=re.I)
+    return candidate if _AGENDA.fullmatch(re.sub(r"\s+", " ", candidate.strip())) else text
+
+
 def personal_agenda_period(text: str) -> str | None:
     """Only complete questions with no public subject, location or extra clause."""
-    match = _AGENDA.fullmatch(re.sub(r"\s+", " ", text.strip()))
+    match = _AGENDA.fullmatch(re.sub(r"\s+", " ", normalize_personal_agenda(text).strip()))
     return match.group("scope").lower() if match else None
 
 
