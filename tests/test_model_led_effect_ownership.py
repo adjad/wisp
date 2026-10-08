@@ -121,6 +121,7 @@ def test_builtin_timer_receipt_is_not_mislabeled_as_uncertain(synthetic, owned_s
     async def timer(**args):
         effects.append(("set_timer", args))
         return "Timer set for 10 minutes."
+    timer.__module__ = tool.func.__module__
     from dataclasses import replace
     from service.tools import registry
     registry.REGISTRY["set_timer"] = replace(tool, func=timer)
