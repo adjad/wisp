@@ -2,7 +2,6 @@
 import hashlib
 import json
 import os
-import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -53,6 +52,8 @@ def describe(config):
                 "token_env": env, "simulation": False}
     folder = Path(config["probe_dir"]).expanduser().resolve(strict=True)
     probe = folder / "cloud_probe.py"
+    if not folder.is_dir() or probe.is_symlink() or not probe.is_file():
+        raise ValueError("probe requires a regular canonical cloud_probe.py")
     pins_file = folder / "pins.json"
     pins = json.loads(pins_file.read_text())
     required = ("model_id", "model_revision", "tokenizer_revision", "chat_template_sha256", "axolotl_revision")
@@ -74,10 +75,41 @@ def describe(config):
         inventory = {p.name: sha(p) for p in af.iterdir() if p.is_file() and
                      (p.name.startswith(("adapter_", "tokenizer", "special_tokens", "chat_template")) or p.name == "config.json")}
         adapter = str(af)
-    return {"backend": backend, "probe_dir": str(folder), "probe_files": {p.name: sha(p) for p in folder.glob("*.py")},
+    probe_files = {p.name: sha(p) for p in folder.glob("*.py")}
+    return {"backend": backend, "probe_dir": str(folder), "probe_files": probe_files,
+            "probe_entrypoint": {"path": str(probe), "sha256": probe_files[probe.name]},
             "pins_sha256": sha(pins_file), "identity": {k: pins[k] for k in required}, "adapter": adapter,
             "adapter_files": inventory, "adapter_metadata": adapter_metadata, "quantization": "unquantized bf16 base; actual tensor dtypes recorded at load",
             "binding": "pinned probe loader; template and local adapter hashes checked", "simulation": False}
+
+
+def load_probe_source(descriptor):
+    """Execute the selected, verified source bytes, never a cached/name-based import.
+
+    The probe remains explicitly supplied executable code, not sandboxed code.
+    Dependencies imported by that code are outside this entry-point binding.
+    """
+    import importlib.util
+    folder = Path(descriptor["probe_dir"]).resolve(strict=True)
+    path = folder / "cloud_probe.py"
+    expected = descriptor.get("probe_entrypoint", {})
+    if (not folder.is_dir() or path.is_symlink() or not path.is_file()
+            or expected.get("path") != str(path)
+            or expected.get("sha256") != descriptor["probe_files"].get(path.name)):
+        raise ValueError("probe entry-point origin does not match descriptor")
+    source = path.read_bytes()
+    digest = hashlib.sha256(source).hexdigest()
+    if digest != expected.get("sha256"):
+        raise ValueError("probe entry-point source changed after description")
+    name = "_wisp_hf_probe_" + digest
+    spec = importlib.util.spec_from_file_location(name, path)
+    probe = importlib.util.module_from_spec(spec)
+    # Compile the verified snapshot directly; a loader could otherwise use .pyc
+    # or reopen a changed source. Neither sys.path nor sys.modules is consulted.
+    exec(compile(source, str(path), "exec"), probe.__dict__)
+    if probe.__file__ != str(path) or probe.__spec__ is not spec or spec.origin != str(path):
+        raise ValueError("loaded probe origin differs from selected source")
+    return probe, {"path": str(path), "sha256": digest, "source_bytes": len(source)}
 
 
 class MockBackend:
@@ -131,11 +163,9 @@ class HTTPBackend:
 
 class HFProbeBackend:
     def __init__(self, descriptor):
-        import importlib
         import importlib.metadata
+        probe, actual_entrypoint = load_probe_source(descriptor)
         import torch
-        sys.path.insert(0, descriptor["probe_dir"])
-        probe = importlib.import_module("cloud_probe")
         self.torch = torch
         self.tok = probe.tokenizer()
         template = self.tok.chat_template
@@ -145,7 +175,8 @@ class HFProbeBackend:
         self.model = probe.load_model(descriptor["adapter"])
         from collections import Counter
         dtypes = Counter(str(p.dtype) for p in self.model.parameters())
-        self.runtime = {**descriptor, "actual_tensor_dtype_counts": dict(dtypes), "gpu": torch.cuda.get_device_name(0),
+        self.runtime = {**descriptor, "actual_probe_entrypoint": actual_entrypoint,
+                        "actual_tensor_dtype_counts": dict(dtypes), "gpu": torch.cuda.get_device_name(0),
                         "versions": {n: importlib.metadata.version(n) for n in ("torch", "transformers", "peft", "axolotl")},
                         "hf_base_cache_weights_sha256": "not independently hashed; loader resolves pinned revision",
                         "no_thinking": True}

@@ -2,6 +2,7 @@
 import copy
 import json
 import multiprocessing
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -79,6 +80,63 @@ class ScoreTests(unittest.TestCase):
 
 
 class ProvenanceTests(unittest.TestCase):
+    def probe_fixture(self, folder, source="VALUE = 'selected'\n"):
+        path = Path(folder)
+        pins = {k: 'test' for k in ("model_id", "model_revision", "tokenizer_revision", "chat_template_sha256", "axolotl_revision")}
+        (path / "pins.json").write_text(json.dumps(pins))
+        if source is not None:
+            (path / "cloud_probe.py").write_text(source)
+        return {"backend": "hf_probe", "probe_dir": folder}
+
+    def test_probe_requires_entrypoint_without_ambient_fallback(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = self.probe_fixture(folder, None)
+            with patch.dict(sys.modules, {"cloud_probe": object(), "torch": None}):
+                with self.assertRaisesRegex(ValueError, "canonical cloud_probe"):
+                    backends.describe(config)
+
+    def test_probe_loads_exact_inert_source_and_records_identity(self):
+        with tempfile.TemporaryDirectory() as folder:
+            descriptor = backends.describe(self.probe_fixture(folder))
+            with patch.dict(sys.modules, {"torch": None}):
+                probe, actual = backends.load_probe_source(descriptor)
+            path = str((Path(folder) / "cloud_probe.py").resolve())
+            self.assertEqual(probe.VALUE, 'selected')
+            self.assertEqual(probe.__file__, path)
+            self.assertEqual(actual["path"], path)
+            self.assertEqual(actual["sha256"], descriptor["probe_entrypoint"]["sha256"])
+            self.assertEqual(actual["source_bytes"], (Path(folder) / "cloud_probe.py").stat().st_size)
+
+    def test_probe_ignores_unrelated_search_path_and_cached_module(self):
+        with tempfile.TemporaryDirectory() as selected, tempfile.TemporaryDirectory() as ambient:
+            descriptor = backends.describe(self.probe_fixture(selected))
+            (Path(ambient) / "cloud_probe.py").write_text("raise AssertionError('ambient source executed')")
+            cached = object()
+            with patch.object(sys, 'path', [ambient, *sys.path]), patch.dict(sys.modules, {"cloud_probe": cached, "torch": None}):
+                before = list(sys.path)
+                probe, actual = backends.load_probe_source(descriptor)
+                self.assertIs(sys.modules['cloud_probe'], cached)
+                self.assertEqual(sys.path, before)
+            self.assertEqual(probe.VALUE, 'selected')
+            self.assertEqual(actual["path"], descriptor["probe_entrypoint"]["path"])
+
+    def test_probe_rejects_changed_source_and_mismatched_descriptor(self):
+        with tempfile.TemporaryDirectory() as folder:
+            descriptor = backends.describe(self.probe_fixture(folder))
+            altered = copy.deepcopy(descriptor)
+            altered['probe_entrypoint']['path'] = str(Path(folder) / 'other.py')
+            with self.assertRaisesRegex(ValueError, "origin"):
+                backends.load_probe_source(altered)
+            (Path(folder) / 'cloud_probe.py').write_text("raise AssertionError('changed source executed')")
+            with self.assertRaisesRegex(ValueError, "source changed"):
+                backends.load_probe_source(descriptor)
+
+    def test_probe_rejects_loaded_origin_reassignment(self):
+        with tempfile.TemporaryDirectory() as folder:
+            descriptor = backends.describe(self.probe_fixture(folder, "__file__ = 'unrelated.py'\n"))
+            with self.assertRaisesRegex(ValueError, "loaded probe origin"):
+                backends.load_probe_source(descriptor)
+
     def test_real_request_never_receives_gold_or_rubric(self):
         cases, schema = runner.load_cases(ROOT / "cases.jsonl")
         for row in cases:
