@@ -34,7 +34,8 @@ def _ready(monkeypatch, *, calendar_state: str = "ready"):
         assistant_tools, "time", SimpleNamespace(time=lambda: NOW.timestamp()))
     monkeypatch.setattr(
         assistant_tools, "assistant_store", SimpleNamespace(
-            upcoming=lambda **_kwargs: [], active_between=lambda *_args: []))
+            upcoming=lambda **_kwargs: [], active_between=lambda *_args: [],
+            calendar_events_overlapping=lambda *_args: []))
     monkeypatch.setattr(
         timeranges, "resolve_span",
         lambda period: timeranges.resolve_period(period, now=NOW))
@@ -77,19 +78,37 @@ def test_busy_month_is_a_clean_agenda_not_a_raw_storage_dump(monkeypatch):
 
 def test_today_and_tomorrow_respect_forward_day_boundaries(monkeypatch):
     _ready(monkeypatch)
+    day_start, day_end = assistant_tools._local_day_bounds(NOW.timestamp())
     rows = [
         _row("Past this morning", NOW - timedelta(minutes=1)),
+        _row("All-day event", datetime.fromtimestamp(day_start), all_day=True,
+             end_ts=day_end),
+        _row("Overnight event", NOW - timedelta(hours=11),
+             end_ts=day_start + 3600),
         _row("Later today", NOW + timedelta(hours=2)),
         _row("Tomorrow meeting", NOW + timedelta(days=1, hours=1)),
         _row("Day after tomorrow", NOW + timedelta(days=2)),
     ]
-    monkeypatch.setattr(assistant_tools.assistant_store, "active_between", lambda *_args: rows)
+    monkeypatch.setattr(
+        assistant_tools.assistant_store, "active_between",
+        lambda start, end: [row for row in rows
+                            if start <= row["when_ts"] < end])
+    monkeypatch.setattr(
+        assistant_tools.assistant_store, "calendar_events_overlapping",
+        lambda start, end: [row for row in rows
+                            if row["source"] == "calendar"
+                            and row["when_ts"] < end
+                            and (row["when_ts"] >= start
+                                 or row.get("end_ts", 0) > start)])
 
     today = asyncio.run(assistant_tools.get_upcoming(period="today"))
     tomorrow = asyncio.run(assistant_tools.get_upcoming(period="tomorrow"))
 
     assert "Later today" in today
-    assert "Past this morning" not in today and "Tomorrow meeting" not in today
+    assert "Past this morning" in today
+    assert "All-day event" in today and "All day" in today
+    assert "Overnight event" in today and "continued into today" in today
+    assert "Tomorrow meeting" not in today
     assert "Tomorrow meeting" in tomorrow
     assert "Later today" not in tomorrow and "Day after tomorrow" not in tomorrow
 

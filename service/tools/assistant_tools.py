@@ -85,17 +85,38 @@ def _day_tag(event_day: date, today: date) -> str:
     return event_day.strftime("%a %b %-d")        # far out — full date
 
 
-def _fmt(c: dict, now: float, *, show_account: bool = False) -> str:
+def _local_day_bounds(now: float) -> tuple[float, float]:
+    """Return the current local calendar day as a half-open epoch interval."""
+    today = datetime.fromtimestamp(now).date()
+    start = datetime.combine(today, datetime.min.time()).timestamp()
+    end = datetime.combine(today + timedelta(days=1), datetime.min.time()).timestamp()
+    return start, end
+
+
+def _fmt(c: dict, now: float, *, show_account: bool = False,
+         day_start: float | None = None) -> str:
     when = datetime.fromtimestamp(c["when_ts"])
     today = datetime.fromtimestamp(now).date()
+    started_before_day = day_start is not None and c["when_ts"] < day_start
     tag, absolute = _day_tag(when.date(), today), when.strftime('%a %b %-d')
+    if started_before_day:
+        tag = f"TODAY (started {when.strftime('%a %b %-d')})"
     # A week or more out `_day_tag` already IS the absolute date, and printing
     # it twice ("Thu Sep 17 (Thu Sep 17)") is what a delivered schedule read as
     # repeated events.
-    day = absolute if tag == absolute else f"{tag} ({absolute})"
-    clock = "all day" if c.get("all_day") else when.strftime("%-I:%M %p")
+    day = tag if started_before_day else (
+        absolute if tag == absolute else f"{tag} ({absolute})")
+    clock = ("all day" if c.get("all_day") else
+             f"started {when.strftime('%a %-I:%M %p')}" if started_before_day else
+             when.strftime("%-I:%M %p"))
     delta = c["when_ts"] - now
-    if delta < 0:
+    if started_before_day:
+        rel = "continued into today"
+    elif c.get("all_day"):
+        rel = ""
+    elif delta < -300:
+        rel = "earlier today"
+    elif delta < 300:
         rel = "now"
     elif delta < 3600:
         rel = f"in {int(delta // 60)} min"
@@ -116,7 +137,8 @@ def _fmt(c: dict, now: float, *, show_account: bool = False) -> str:
     # vs a work Google calendar) is only worth showing when more than one is
     # actually in play; with a single account it'd just be noise on every row.
     acct = f" ({c['account']})" if show_account and c.get("account") else ""
-    return f"- {day} {clock} ({rel}) {label}: {c['title']}{who}{loc}{acct}"
+    relative = f" ({rel})" if rel else ""
+    return f"- {day} {clock}{relative} {label}: {c['title']}{who}{loc}{acct}"
 
 
 def _rel_past(delta_s: float) -> str:
@@ -235,24 +257,35 @@ def _agenda_day_label(when: datetime, today: date) -> str:
     return when.strftime("%A · %b %-d")
 
 
-def _agenda_item(item: dict) -> str:
+def _agenda_item(item: dict, *, display_day_start: float | None = None) -> str:
     when = datetime.fromtimestamp(float(item["when_ts"]))
-    clock = "All day" if item.get("all_day") else when.strftime("%-I:%M %p")
+    started_before_day = (display_day_start is not None
+                          and float(item["when_ts"]) < display_day_start
+                          and float(item.get("end_ts") or 0) > display_day_start)
+    clock = ("All day" if item.get("all_day") else
+             f"Started {when.strftime('%a %-I:%M %p')}" if started_before_day else
+             when.strftime("%-I:%M %p"))
     location = str(item.get("location") or "").strip()
     suffix = f" @ {location}" if location else ""
     if _is_wisp_only(item):
         suffix += " [Wisp-only; Apple status unverified]"
-    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}"
+    continued = " (continued into today)" if started_before_day else ""
+    return f"- {clock} — {item.get('title') or 'Untitled'}{suffix}{continued}"
 
 
 def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
-                           apple_reminders_checked: bool = True) -> str:
+                           apple_reminders_checked: bool = True,
+                           display_day_start: float | None = None) -> str:
     """Render an agenda for a schedule question, not a storage/debug dump."""
     today = datetime.fromtimestamp(now).date()
     days: dict[date, dict[str, list[dict]]] = {}
     for item in items:
         when = datetime.fromtimestamp(float(item["when_ts"]))
-        bucket = days.setdefault(when.date(), {"events": [], "reminders": []})
+        day = when.date()
+        if (display_day_start is not None and item["when_ts"] < display_day_start
+                and float(item.get("end_ts") or 0) > display_day_start):
+            day = datetime.fromtimestamp(display_day_start).date()
+        bucket = days.setdefault(day, {"events": [], "reminders": []})
         # A merged row may carry both calendar and reminder provenance. Keep
         # it visible once; each Wisp-only item is clearly marked on its line.
         bucket["events" if "calendar" in _schedule_sources(item) else "reminders"].append(item)
@@ -263,10 +296,12 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
         lines = [heading]
         if bucket["events"]:
             lines.append("  Calendar events")
-            lines.extend("  " + _agenda_item(item) for item in bucket["events"])
+            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
+                         for item in bucket["events"])
         if bucket["reminders"]:
             lines.append("  Reminders")
-            lines.extend("  " + _agenda_item(item) for item in bucket["reminders"])
+            lines.extend("  " + _agenda_item(item, display_day_start=display_day_start)
+                         for item in bucket["reminders"])
         blocks.append("\n".join(lines))
     calendar_count = sum("calendar" in _schedule_sources(item) for item in items)
     reminder_count = sum(bool(_schedule_sources(item) & {"manual", "reminders"})
@@ -283,7 +318,8 @@ def _format_forward_agenda(items: list[dict], *, now: float, window_label: str,
     has_native = any("reminders" in _schedule_sources(item) for item in items)
     native_note = (" Apple Reminders deletion status is not independently verified."
                    if has_native else "")
-    return (f"Upcoming — {window_label} ({len(items)} item(s))\n"
+    title = "Schedule" if display_day_start is not None else "Upcoming"
+    return (f"{title} — {window_label} ({len(items)} item(s))\n"
             f"Calendar events: {calendar_count}; Wisp/Apple reminders: {reminder_count}. "
             "[Calendar event] and [Reminder] are shown in separate sections."
             + native_note + review_note + "\n\n" + "\n\n".join(blocks))
@@ -336,18 +372,31 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     # items as "today"). Each row is also tagged TODAY/TOMORROW/<weekday>.
     today_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
     window_label = f"next {days} day(s)"
+    today_start, today_end = _local_day_bounds(now)
+    today_period = False
     if period:
         from service.tools.timeranges import resolve_span, BadPeriod
         try:
             start, end, window_label = resolve_span(period)
         except BadPeriod as exc:
             return f"(error: {exc})"
+        today_period = start == today_start and end == today_end
         # A named period such as "this month" describes the forward agenda
         # from this moment, not a historical month-to-date dump. Preserve the
         # period's end/boundary semantics while removing elapsed entries.
         forward_start = max(start, now)
-        rows = [row for row in assistant_store.active_between(forward_start, end)
-                if forward_start <= float(row.get("when_ts") or 0) < end]
+        if today_period:
+            # A Today view is a day-overlap query: all-day and already-started
+            # Calendar events still belong to today. Other sources remain
+            # forward-only, matching the existing reminder semantics.
+            calendar_rows = assistant_store.calendar_events_overlapping(start, end)
+            rows = [row for row in assistant_store.active_between(forward_start, end)
+                    if row.get("source") != "calendar"
+                    and forward_start <= float(row.get("when_ts") or 0) < end]
+            rows = calendar_rows + rows
+        else:
+            rows = [row for row in assistant_store.active_between(forward_start, end)
+                    if forward_start <= float(row.get("when_ts") or 0) < end]
     else:
         rows = assistant_store.upcoming(now=now, days=days)
     items = _filter_account(rows, account)
@@ -374,7 +423,9 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     # `upcoming()` normally makes this redundant, but the tool must not
     # describe a just-elapsed entry as "upcoming" when a source returns one.
     items = _collapse_schedule_rows(
-        [item for item in items if float(item.get("when_ts") or 0) >= now])
+        [item for item in items
+         if float(item.get("when_ts") or 0) >= now
+         or (today_period and item.get("source") == "calendar")])
     if not items:
         if notice or reminder_note:
             return (notice + "No scheduled items were found in the sources that could be checked."
@@ -382,7 +433,8 @@ async def get_upcoming(days: int = 7, account: str | None = None,
         return f"Today is {today_str}. Nothing scheduled in {window_label}."
     return notice + _format_forward_agenda(
         items, now=now, window_label=window_label,
-        apple_reminders_checked="reminders" not in withheld) + reminder_note
+        apple_reminders_checked="reminders" not in withheld,
+        display_day_start=today_start if today_period else None) + reminder_note
 
 
 @register(

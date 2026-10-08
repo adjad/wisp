@@ -79,10 +79,15 @@ def _calendar_block(now: float) -> str:
                           "its missing items an empty schedule.") if unavailable else ""
     # _fmt renders the same TODAY-anchored row the chat tools use — one
     # rendering of a commitment across every surface.
-    from service.tools.assistant_tools import _fmt, _without_holiday_calendars
+    from service.tools.assistant_tools import (
+        _collapse_schedule_rows, _fmt, _local_day_bounds,
+        _without_holiday_calendars)
     day_str = datetime.fromtimestamp(now).strftime("%A, %B %-d, %Y")
-    events = [event for event in assistant_store.upcoming(now=now, days=7)
-              if event.get("source") not in unavailable_ids]
+    day_start, day_end = _local_day_bounds(now)
+    day_calendar = assistant_store.calendar_events_overlapping(day_start, day_end)
+    events = _collapse_schedule_rows(
+        day_calendar + assistant_store.upcoming(now=now, days=7))
+    events = [event for event in events if event.get("source") not in unavailable_ids]
     events = _without_holiday_calendars(events, include_holidays=False)
     if not events:
         if unavailable:
@@ -91,13 +96,15 @@ def _calendar_block(now: float) -> str:
         return (f"CALENDAR — TODAY IS {day_str}.{unavailable_note}\n"
                 "Nothing scheduled today or in the next 7 days. Say the day is "
                 "clear; do NOT invent an event.")
-    today = datetime.fromtimestamp(now).date()
     show_account = len({c.get("account") for c in events if c.get("account")}) > 1
     today_rows, later_rows = [], []
     for c in events:
-        bucket = today_rows if datetime.fromtimestamp(c["when_ts"]).date() == today \
-            else later_rows
-        bucket.append(_fmt(c, now, show_account=show_account))
+        when_ts = float(c["when_ts"])
+        is_today = (day_start <= when_ts < day_end or
+                    (when_ts < day_start and float(c.get("end_ts") or 0) > day_start))
+        bucket = today_rows if is_today else later_rows
+        bucket.append(_fmt(c, now, show_account=show_account,
+                           day_start=day_start if when_ts < day_start else None))
 
     blocks = [f"CALENDAR — TODAY IS {day_str}.{unavailable_note}"]
     if today_rows:
@@ -943,14 +950,20 @@ def _agenda(now: float) -> dict:
     so the two can never disagree about what is on today.
     """
     from service.assistant.sync_status import source_status
-    from service.tools.assistant_tools import _without_holiday_calendars
+    from service.tools.assistant_tools import (
+        _collapse_schedule_rows, _local_day_bounds, _without_holiday_calendars)
     states = {source: source_status(source) for source in ("calendar", "reminders")}
     skip = {source for source, state in states.items() if state["state"] == "unavailable"}
-    today = datetime.fromtimestamp(now).date()
-    items = []
-    for item in assistant_store.upcoming(now=now, days=7):
-        if (item.get("source") in skip or
-                datetime.fromtimestamp(item["when_ts"]).date() != today):
+    day_start, day_end = _local_day_bounds(now)
+    today_calendar = assistant_store.calendar_events_overlapping(day_start, day_end)
+    items = _collapse_schedule_rows(
+        today_calendar + assistant_store.upcoming(now=now, days=7))
+    today_items = []
+    for item in items:
+        when_ts = float(item["when_ts"])
+        is_today = (day_start <= when_ts < day_end or
+                    (when_ts < day_start and float(item.get("end_ts") or 0) > day_start))
+        if item.get("source") in skip or not is_today:
             continue
         if skip.intersection(item.get("duplicate_sources") or []):
             # A deduped Wisp winner must not inherit unavailable Apple
@@ -960,8 +973,8 @@ def _agenda(now: float) -> dict:
                                          item.get("duplicate_sources") or []
                                          if source not in skip]
             item.pop("duplicate_ids", None)
-        items.append(item)
-    items = _without_holiday_calendars(items, include_holidays=False)
+        today_items.append(item)
+    items = _without_holiday_calendars(today_items, include_holidays=False)
     items.sort(key=lambda item: item["when_ts"])
     return {
         "events": [item for item in items if not _is_reminder(item)],
