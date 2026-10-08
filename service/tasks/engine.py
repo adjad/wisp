@@ -497,7 +497,8 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
 
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
-                      contacts_resolver=None, mail_reader=None) -> TaskTurn | None:
+                      contacts_resolver=None, mail_reader=None,
+                      owner_only: bool = False) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
@@ -506,7 +507,14 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     contacts_resolver = contacts_resolver or _default_contacts_resolver
     active_raw = store.active_task(sid) if persist else None
     active = TaskPlan.from_dict(active_raw) if active_raw else None
-    new_plan = compile_task(prompt, now=now)
+    # Model-led turns may recover an existing owner, never create a new plan
+    # before the model interprets the current request.
+    if owner_only and active and _UNRELATED_SUBJECT_REPLY.search(prompt.strip()):
+        if not (_CANCEL.match(prompt) or _RETRY.match(prompt)
+                or _channel_correction(active, prompt)
+                or (_candidate_rows(active) and _pick_recipient(active, prompt.strip(" .")))):
+            return None
+    new_plan = None if owner_only else compile_task(prompt, now=now)
     if ((new_plan and new_plan.intent == "email.reply")
             or (new_plan is None and active and active.intent == "email.reply")):
         from service.tasks.reply_engine import prepare_reply_turn
@@ -564,7 +572,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             and not answers_open_slot):
         return None
 
-    if new_plan is None and active is None:
+    if new_plan is None and active is None and not owner_only:
         new_plan = _contextual_update(
             store, sid, prompt, now=now, persist=persist)
 
@@ -618,7 +626,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             return _turn(plan, f"Okay, I cancelled that {noun}.", "cancelled",
                          started=started)
         if plan.status == "running":
-            if _RETRY.match(prompt) or compile_task(prompt, now=now):
+            if _RETRY.match(prompt) or (not owner_only and compile_task(prompt, now=now)):
                 return _turn(
                     plan,
                     ("That send is already running. I won’t send it twice."

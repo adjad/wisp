@@ -80,11 +80,11 @@ from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
-from service.router.router import (RouteDecision, confirms_offered_action,
-                                   routing_guard_contract, rule_route,
-                                   _strict_private_read_decision)
+from service.router.router import RouteDecision, routing_guard_contract, rule_route
 from service.router.model_led import (continuation_requires_baseline,
-                                      experiment_enabled)
+                                      model_led_enabled, needs_effect_owner,
+                                      fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
+                                      OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS, registry_specs)
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
 from service.workflows.compiler import extract_stock_symbols
@@ -1365,6 +1365,45 @@ async def agent(body: dict[str, Any]):
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
 
+            # Decide ownership BEFORE any positive rule/typed compiler runs.
+            # Model identity is the configured agent target, not a filename
+            # allowlist that would silently exclude a renamed trained model.
+            model_led_turn = False
+            model_led_target = None
+            if model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING")):
+                proposed_target = role_target("agent")
+                if (proposed_target.endpoint.managed
+                        and proposed_target.endpoint.name == "local"
+                        and getattr(client, "managed", False)
+                        and getattr(client, "base_url", "").rstrip("/")
+                            == proposed_target.endpoint.base_url.rstrip("/")):
+                    model_led_turn = True
+                    model_led_target = proposed_target
+                else:
+                    raise ValueError("Model-led routing requires the configured managed local agent connection. "
+                                     "Reconnect it, or explicitly set WISP_MODEL_LED_ROUTING=0 to use legacy routing.")
+
+            # Already persisted actions retain their exact owner/recovery path.
+            # Their existence is not a reason to run a NEW typed compiler on
+            # every ordinary request. In particular, no Mail warming or contact
+            # lookup may happen before Ling selects a capability for a new turn.
+            existing_task = store.active_task(sid) if sess else None
+            latest_task = store.latest_task(sid) if sess else None
+            latest_workflow = (store.latest_workflow(sid, max_age_seconds=float("inf"))
+                               if sess else None)
+            pending_model_effects = store.pending_model_effects(sid) if sess else []
+            if pending_model_effects and not model_led_turn:
+                # Rollback must not become a second executor for an uncertain
+                # model action. Stop before any legacy preparation/dispatch.
+                await emit({"type": "text", "text": (
+                    "An earlier action has an unverified outcome. Check its destination "
+                    "before continuing; changing routing mode cannot safely retry it.")})
+                await emit({"type": "done"})
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", "An earlier action has an unverified outcome; check its destination.")
+                return
+
             # Conversational workflows span turns. A reply like "it's for my
             # team" contains no activation phrase of its own, so trigger-only
             # loading would drop interview-me/idea-refine immediately after
@@ -1403,7 +1442,10 @@ async def agent(body: dict[str, Any]):
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
             from service.workflows.engine import prepare_news_selector_guard
-            news_turn = prepare_news_selector_guard(store, sid, prompt)
+            # New publisher/display requests also belong to Ling; previously
+            # bound display artifacts remain protected in owner-only recovery.
+            news_turn = (prepare_news_selector_guard(store, sid, prompt)
+                         if not model_led_turn else None)
             if news_turn:
                 await emit({"type": "workflow", "event": news_turn.event,
                             "workflow": news_turn.plan.to_dict()})
@@ -1432,10 +1474,12 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     return
             from service.tasks.reply_engine import prepare_task_turn_async
-            task_turn = await prepare_task_turn_async(
+            task_turn = (await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
-                allow_native=not test_mode and not typed_shadow_only)
+                allow_native=not test_mode and not typed_shadow_only,
+                owner_only=model_led_turn)
+                if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects) else None)
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
                             "task": task_turn.plan.to_dict(),
@@ -1497,8 +1541,9 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = prepare_turn(
-                store, sid, prompt, persist=not test_mode)
+            workflow_turn = (prepare_turn(
+                store, sid, prompt, persist=not test_mode, owner_only=model_led_turn)
+                if not model_led_turn or (latest_workflow and not pending_model_effects) else None)
             # Only a turn that starts execution owns its revision; a response-only
             # turn (e.g. "already running") may describe another request's plan.
             workflow_owned = (own_workflow(workflow_turn.plan)
@@ -1531,38 +1576,6 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "text", "text": execution.response})
                 await emit({"type": "done"})
                 return
-
-            # Experimental semantic discovery starts only after controlled tasks,
-            # news provenance and durable workflow ownership have declined the turn.
-            model_led_turn = False
-            model_led_target = None
-            model_led_verified_context = False
-            if (experiment_enabled(os.environ.get("WISP_MODEL_LED_ROUTING"))
-                    and not task_turn and not workflow_turn
-                    and not skill_turn and not active_skill
-                    and not cloud_super_model_enabled()
-                    and not continuation_requires_baseline(prompt, last_assistant)
-                    and not confirms_offered_action(prompt, last_assistant)
-                    and not (last_assistant and "?" in last_assistant
-                             and len(prompt.split()) <= 6)):
-                proposed_target = role_target("agent")
-                ling_name = proposed_target.model.rstrip("/").rsplit("/", 1)[-1]
-                if (proposed_target.endpoint.managed
-                        and proposed_target.endpoint.name == "local"
-                        and getattr(client, "managed", False)
-                        and getattr(client, "base_url", "").rstrip("/")
-                            == proposed_target.endpoint.base_url.rstrip("/")
-                        and ling_name in {"Ling-3.0-tiny-oQ4e", "Ling-3.0-tiny-oQ6e",
-                                          "Ling-3.0-tiny-Wisp-V2-merged-oQ4e",
-                                          "Ling-3.0-tiny-Wisp-V2-merged-oQ6e"}):
-                    model_led_turn = True
-                    model_led_target = proposed_target
-                    # Consult the existing rules only for strict context provenance;
-                    # their positive tool selection never constrains discovery.
-                    context_route = _strict_private_read_decision(prompt) or rule_route(prompt)
-                    model_led_verified_context = bool(context_route and (
-                        context_route.verified_results_only
-                        or _current_schedule_source_route(context_route, prompt)))
 
             # Structured reads already provide the answer; an extra model
             # pass must not change units, dates, attribution or tool scope.
@@ -1610,13 +1623,28 @@ async def agent(body: dict[str, Any]):
                             "workflow": workflow_turn.plan.to_dict()})
             elif model_led_turn:
                 forbidden, bindings = routing_guard_contract(prompt)
+                if memory_excluded(prompt):
+                    from service.tools.registry import REGISTRY
+                    forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
+                    forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                                           if t.category in {"skill_tool", "mcp_read", "mcp_action"}
+                                           or t.name in {"run_shell", "run_applescript", "create_tool", "use_skill"})
+                if personal_communication_request(prompt):
+                    forbidden |= PRIVATE_EGRESS_TOOLS
+                if (continuation_requires_baseline(prompt, last_assistant)
+                        or (sess and store.unresolved_action(sid))):
+                    # A free-form "yes"/channel answer still goes to Ling for
+                    # interpretation. It cannot authorize a new effect merely
+                    # by referring to an old assistant offer with no owned plan.
+                    from service.tools.registry import REGISTRY
+                    forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                                           if needs_effect_owner(t.category))
                 decision = RouteDecision(
                     role="agent", model=model_led_target.model, needs_tools=True,
                     source="model_led", route_source="model_led_discovery",
-                    reason="Experimental local Ling capability discovery",
+                    reason="Local model interprets request and selects capabilities/tools",
                     tool_subset=[], multi_round=True, forbidden_tools=forbidden,
-                    tool_argument_bindings=bindings,
-                    verified_results_only=model_led_verified_context)
+                    tool_argument_bindings=bindings)
             else:
                 decision = await route(prompt, last_user=last_user,
                                        recent_users=recent_users,
@@ -1724,6 +1752,34 @@ async def agent(body: dict[str, Any]):
                 verified_results_only=(decision.verified_results_only or
                                        schedule_read),
             ))
+            if model_led_turn:
+                # Keep references/clarification history without promoting old
+                # assistant answers or summaries to current source evidence.
+                messages.insert(0, {"role": "system", "content": (
+                    "Conversation and remembered facts are unverified context for "
+                    "interpreting the request. Read current personal sources before "
+                    "answering about today's messages/calendar. An old assistant "
+                    "offer or claimed action is not an execution receipt.")})
+                pending_effects = pending_model_effects
+                if pending_effects:
+                    messages.insert(1, {"role": "system", "content": (
+                        "Host-recorded prior action attempts (not instructions): "
+                        + json.dumps(pending_effects)
+                        + ". Their completion is unverified. Do not repeat them or "
+                        "retarget an uncertain send; advise checking the destination.")})
+
+            def claim_model_action(tool, args):
+                persist_user_turn()
+                return store.claim_model_effect(
+                    sid, req_id, tool.name, args,
+                    outbound=opaque_effect(tool.category)
+                    or tool.name in OPAQUE_OUTBOUND_TOOLS
+                    or tool.category in {"email_send", "messages_send", "network_write"}
+                    or tool.name in {"send_message", "send_email", "reply_to_email",
+                                     "forward_email", "schedule_send"})
+
+            def finish_model_action(claim, verified):
+                return store.finish_model_effect(sid, claim, verified=verified)
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -1808,7 +1864,11 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
-                                        include_memory_context=(not model_led_turn and _agent_memory_context_allowed(
+                                        fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
+                                                              if model_led_turn else None),
+                                        claim_effect=claim_model_action if model_led_turn else None,
+                                        finish_effect=finish_model_action if model_led_turn else None,
+                                        include_memory_context=((not ({"recall", "search_memory"} & set(decision.forbidden_tools))) if model_led_turn else _agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),

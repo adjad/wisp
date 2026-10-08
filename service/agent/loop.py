@@ -1182,6 +1182,10 @@ async def run_agent(
     # stream, no separate return path needed.
     test_mode: bool = False,
     model_led_discovery: bool = False,
+    claim_effect: Callable[[object, dict], dict] | None = None,
+    finish_effect: Callable[[dict, bool], bool] | None = None,
+    require_fresh_personal: bool = False,
+    fresh_personal_scope: dict | None = None,
     # Whether to emit raw_model_io events (see _run_step) — the full request
     # (messages + every offered tool schema) and response, on every attempt of
     # every step. Real cost: measured up to ~1.6MB for a single session. The
@@ -1262,7 +1266,43 @@ async def run_agent(
         await downstream_emit(event)
 
     async def execute_tool(tool, args):
-        result = await run_tool(tool, args)
+        claim = None
+        if model_led_discovery:
+            from service.router.model_led import effectful_call, has_effect_contract
+            if effectful_call(tool, args):
+                if not has_effect_contract(tool, classify_tool_outcome(tool.name, "")):
+                    return "(error: This action has no supported completion contract. It was NOT run.)"
+                # This point is reached only AFTER argument validation, policy
+                # and exact confirmation. No metadata request can claim/run an
+                # effect. Durable ownership is mandatory, not an optional hint.
+                if claim_effect is None or finish_effect is None:
+                    return "(error: No durable action owner is available. The action was NOT run.)"
+                claim = claim_effect(tool, args)
+                if not claim.get("admitted"):
+                    return ("(error: An earlier action with this scope is already owned or "
+                            "has an uncertain outcome. The action was NOT run again; "
+                            "check the earlier result/destination before retrying.)")
+        try:
+            result = await run_tool(tool, args)
+        except BaseException:
+            if claim is not None:
+                # A failed settlement leaves the persisted running claim in
+                # place. Cancellation cannot turn it into a retryable effect.
+                try:
+                    finish_effect(claim, False)
+                except Exception:
+                    pass
+            raise
+        if claim is not None:
+            outcome = classify_tool_outcome(tool.name, str(result))
+            # Unknown extension actions default to 'read' in the legacy outcome
+            # classifier. That default is not a verified mutation receipt.
+            from service.router.model_led import trusted_effect_receipt
+            verified = trusted_effect_receipt(tool, outcome)
+            if not finish_effect(claim, verified):
+                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            if not verified:
+                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
         if public_web_synthesis and tool.name not in _CLOUD_PUBLIC_READ_TOOLS:
             return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
@@ -1535,6 +1575,7 @@ async def run_agent(
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
+    fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
     contact_receipts: dict[str, str] = {}
@@ -1546,7 +1587,23 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
+        nonlocal fresh_personal_evidence
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if model_led_discovery and str(result).startswith((
+                "(error: Action was attempted but", "(error: Action did not return a verified")):
+            from dataclasses import replace
+            outcome = replace(outcome, facts={**outcome.facts, "completion_uncertain": True})
+        from service.router.model_led import personal_evidence_matches
+        if (not planned and not denied and outcome.status in {"succeeded", "no_match"}
+                and (registered := get_tool(name))
+                and personal_evidence_matches(fresh_personal_scope or {}, registered, args or {}, contact_receipts, str(result))):
+            fresh_personal_evidence = True
+        if model_led_discovery and (registered := get_tool(name)):
+            from service.router.model_led import needs_effect_owner
+            from service.router.model_led import effectful_call
+            if effectful_call(registered, args or {}) and outcome.effect == "read":
+                from dataclasses import replace
+                outcome = replace(outcome, effect="changed")
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if name == "lookup_contact" and args is not None:
@@ -1592,6 +1649,11 @@ async def run_agent(
     def _verified_final(text: str) -> str:
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
+        if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
+            # Preserve reference history, but refuse to promote an old answer,
+            # memory or unrelated public search into a current personal fact.
+            if not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
+                return "I haven't checked a current personal source for that yet. Which source should I check?"
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
         if test_mode and actions:
@@ -1602,6 +1664,8 @@ async def run_agent(
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
+            if outcome.facts.get("completion_uncertain"):
+                return f"I attempted {name}, but couldn't verify completion. Check the destination before retrying."
             return f"The requested action was not completed ({name}): {outcome.text}"
         if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
             receipts = [outcome.text for _, outcome in actions

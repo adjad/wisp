@@ -292,13 +292,13 @@ def prepare_reply_turn(store, sid: str, prompt: str, new: TaskPlan | None,
 async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_store,
                                   persist: bool = True, now: datetime | None = None,
                                   mail_reader=None, reply_preparer=None, allow_native: bool = True,
-                                  contacts_resolver=None):
+                                  contacts_resolver=None, owner_only: bool = False):
     from service.tasks.compiler import compile_task
     from service.tasks.engine import prepare_task_turn
     from service.tasks.planner import plan_task
     from service.tools.action_tools import prepare_reply_args
     now = now or datetime.now()
-    compiled = compile_task(prompt, now=now)
+    compiled = None if owner_only else compile_task(prompt, now=now)
     active = store.active_task(sid) if persist else None
     needs_mail = ((compiled and compiled.intent == "email.reply") or
                   (compiled is None and active and active.get("intent") == "email.reply"))
@@ -312,7 +312,7 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
         await ensure_reply_source()
     turn = prepare_task_turn(store, sid, prompt, assistant_store=assistant_store,
                              now=now, persist=persist, contacts_resolver=contacts_resolver,
-                             mail_reader=mail_reader)
+                             mail_reader=mail_reader, owner_only=owner_only)
     if not turn or turn.event != "reply_prepare":
         return turn
     plan = turn.plan

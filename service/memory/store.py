@@ -47,6 +47,7 @@ import threading
 import time
 import uuid
 import json
+import hashlib
 from pathlib import Path
 
 from service.paths import MOE_DIR
@@ -408,6 +409,10 @@ class SessionStore:
                 # save of the caller's snapshot can resurrect a cancelled task
                 # or overwrite a newer revision in another process.
                 self._db.execute("BEGIN IMMEDIATE")
+                owner = self._db.execute("SELECT session_id FROM workflows WHERE id=?", (plan_id,)).fetchone()
+                if owner and self._unresolved_action_locked(owner["session_id"], exclude=plan_id):
+                    self._db.commit()
+                    return False
                 if revision is None:
                     changed = self._db.execute(
                         "INSERT OR IGNORE INTO task_effect_claims "
@@ -437,6 +442,9 @@ class SessionStore:
         with self._lock:
             try:
                 self._db.execute("BEGIN IMMEDIATE")
+                if self._unresolved_action_locked(sid, exclude=plan_id):
+                    self._db.commit()
+                    return False
                 changed = self._db.execute(
                     "INSERT OR IGNORE INTO task_effect_claims (call_id, plan_id, created_at) "
                     "SELECT ?,?,? WHERE EXISTS (SELECT 1 FROM workflows WHERE id=? "
@@ -448,6 +456,120 @@ class SessionStore:
                 self._db.rollback()
                 raise
         return bool(changed)
+
+    def claim_model_effect(self, sid: str, request_id: str, tool: str,
+                           args: dict, *, outbound: bool = False) -> dict:
+        """Claim an approved model-proposed effect before calling its function.
+
+        Uses the existing workflow/claim tables. The exact argument fingerprint
+        survives restarts without storing another copy of private arguments.
+        A concurrent or uncertain outbound attempt blocks retargeting too.
+        Successful actions may be explicitly requested again in a later turn;
+        a repeated call inside the same request never gets a second claim.
+        """
+        encoded = json.dumps({"tool": tool, "args": args}, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False)
+        fingerprint = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+        effect_id = "model_effect:" + hashlib.sha256(
+            (sid + ":" + fingerprint).encode("utf-8")).hexdigest()
+        with self._lock:
+            try:
+                self._db.execute("BEGIN IMMEDIATE")
+                if not self._db.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
+                    raise ValueError("Effect owner requires an existing session")
+                pending = self._unresolved_action_locked(sid, tool=tool, outbound=outbound)
+                if pending:
+                    self._db.commit()
+                    return {"admitted": False, "effect_id": pending["id"],
+                            "status": pending["status"]}
+                row = self._db.execute(
+                    "SELECT state_json, status, created_at FROM workflows WHERE id=?",
+                    (effect_id,)).fetchone()
+                prior = json.loads(row["state_json"]) if row else {}
+                if row and (row["status"] in {"running", "uncertain"}
+                            or prior.get("request_id") == request_id):
+                    self._db.commit()
+                    return {"admitted": False, "effect_id": effect_id, "status": row["status"]}
+                revision = int(prior.get("revision", 0)) + 1
+                now = time.time()
+                state = {"id": effect_id, "kind": "model_led_effect", "status": "running",
+                         "request_id": request_id, "revision": revision, "tool": tool,
+                         "fingerprint": fingerprint, "outbound": bool(outbound)}
+                call_id = f"{effect_id}:{revision}"
+                self._db.execute(
+                    "INSERT INTO task_effect_claims (call_id,plan_id,created_at) VALUES (?,?,?)",
+                    (call_id, effect_id, now))
+                self._db.execute(
+                    "INSERT INTO workflows (id,session_id,kind,status,state_json,created_at,updated_at) "
+                    "VALUES (?,?,'model_led_effect','running',?,?,?) "
+                    "ON CONFLICT(id) DO UPDATE SET status=excluded.status, "
+                    "state_json=excluded.state_json, updated_at=excluded.updated_at",
+                    (effect_id, sid, json.dumps(state), row["created_at"] if row else now, now))
+                self._db.commit()
+                return {"admitted": True, "effect_id": effect_id, "revision": revision,
+                        "request_id": request_id, "status": "running"}
+            except BaseException:
+                self._db.rollback()
+                raise
+
+    def finish_model_effect(self, sid: str, claim: dict, *, verified: bool) -> bool:
+        """Settle only the exact owner/revision; a crash leaves its claim consumed."""
+        status = "completed" if verified else "uncertain"
+        with self._lock:
+            try:
+                changed = self._db.execute(
+                    "UPDATE workflows SET status=?, state_json=json_set(state_json,'$.status',?), "
+                    "updated_at=? WHERE id=? AND session_id=? AND kind='model_led_effect' "
+                    "AND status='running' AND json_extract(state_json,'$.request_id')=? "
+                    "AND json_extract(state_json,'$.revision')=?",
+                    (status, status, time.time(), claim["effect_id"], sid,
+                     claim["request_id"], claim["revision"])).rowcount
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return bool(changed)
+
+    def pending_model_effects(self, sid: str) -> list[dict]:
+        """Bounded factual recovery context, never replay instructions/arguments."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT state_json FROM workflows WHERE session_id=? AND kind='model_led_effect' "
+                "AND status IN ('running','uncertain') ORDER BY updated_at DESC LIMIT 16",
+                (sid,)).fetchall()
+        return [{"tool": (state := json.loads(row["state_json"]))["tool"],
+                 "status": state["status"], "outbound": state["outbound"]} for row in rows]
+
+    def _unresolved_action_locked(self, sid: str, *, tool: str | None = None,
+                                  outbound: bool = True, exclude: str | None = None) -> dict | None:
+        """One unresolved-action barrier shared by model and legacy owners.
+
+        Caller holds the connection lock/transaction. Unknown external effects
+        block retargeting; uncertain same-tool mutations block argument changes.
+        Legacy owners with consumed claims remain blocking until a verified
+        terminal result, independent of routing mode or age.
+        """
+        rows = self._db.execute(
+            "SELECT id,kind,status,state_json FROM workflows WHERE session_id=? "
+            "AND status IN ('running','ready','failed','uncertain')", (sid,)).fetchall()
+        for row in rows:
+            if row["id"] == exclude:
+                continue
+            state = json.loads(row["state_json"])
+            if row["kind"] == "model_led_effect":
+                if (row["status"] in {"running", "uncertain"} and
+                        (tool is None or state.get("tool") == tool or
+                         (outbound and state.get("outbound")))):
+                    return dict(row)
+            elif self._db.execute(
+                    "SELECT 1 FROM task_effect_claims WHERE plan_id=? LIMIT 1", (row["id"],)).fetchone():
+                return dict(row)
+        return None
+
+    def unresolved_action(self, sid: str) -> dict | None:
+        with self._lock:
+            row = self._unresolved_action_locked(sid)
+        return {"id": row["id"], "status": row["status"]} if row else None
 
     def add_workflow_event(self, workflow_id: str, event: str,
                            payload: dict | None = None) -> int:

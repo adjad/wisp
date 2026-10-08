@@ -69,6 +69,7 @@ def endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "role_target", lambda role: state.target)
     monkeypatch.setattr(main, "cloud_super_model_enabled", lambda: False)
     monkeypatch.setattr(main, "models_config", lambda: {"tool_retrieval": {"provider": "lexical"}})
+    monkeypatch.setattr("service.memory.prompt_blocks.memory_block", lambda **kwargs: "")
     monkeypatch.setattr(main.skills, "select_for_turn", lambda *args: state.active_skill)
     monkeypatch.setattr(main.skills, "turn_skill_names", lambda *args: [])
     monkeypatch.setattr(main.skills, "digest_used_skill", lambda *args: False)
@@ -146,8 +147,8 @@ def endpoint(monkeypatch, tmp_path):
         assert all(client.closed for client in state.owned), "Owned transport leaked"
 
 
-def test_default_off_keeps_baseline_and_never_allocates_owned_client(endpoint, monkeypatch):
-    monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+def test_explicit_rollback_keeps_baseline_and_never_allocates_owned_client(endpoint, monkeypatch):
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
     endpoint.request("hello", test_mode=True)
     assert len(endpoint.baseline_calls) == 1
     assert not endpoint.agent_calls and not endpoint.owned
@@ -183,14 +184,15 @@ def test_tomorrow_followup_retains_conversation_even_with_coding_pin(endpoint):
     assert call["model"] == endpoint.target.model and call["model_led_discovery"]
 
 
-def test_current_calendar_request_does_not_inherit_old_answer(endpoint):
+def test_current_calendar_keeps_references_but_labels_old_answer_unverified(endpoint):
     sid = endpoint.store.create_session()
     endpoint.store.add_turn(sid, "user", "What is on my calendar?")
     endpoint.store.add_turn(sid, "assistant", "Old stale event.", tool_digest="get_upcoming")
     endpoint.request("what is on my calendar this week", sid)
     call = endpoint.agent_calls[0]
-    assert not any("Old stale event" in str(m.get("content", "")) for m in call["messages"])
-    assert call["include_memory_context"] is False
+    assert any("Old stale event" in str(m.get("content", "")) for m in call["messages"])
+    assert "unverified context" in call["messages"][0]["content"]
+    assert call["include_memory_context"] is True
 
 
 def test_read_exclusions_and_calendar_binding_reach_existing_executor(endpoint):
@@ -200,46 +202,43 @@ def test_read_exclusions_and_calendar_binding_reach_existing_executor(endpoint):
     assert call["tool_argument_bindings"]["get_upcoming"]["calendar_only"] is True
 
 
-@pytest.mark.parametrize("kind", ["different_model", "unmanaged", "different_origin"])
+@pytest.mark.parametrize("kind", ["unmanaged", "different_origin"])
 def test_unadmitted_inference_target_keeps_baseline(endpoint, kind):
-    if kind == "different_model":
-        endpoint.target = Target("agent", endpoint.target.endpoint, "unqualified-model")
-    elif kind == "unmanaged":
+    if kind == "unmanaged":
         endpoint.shared.managed = False
     else:
         endpoint.shared.base_url = "http://127.0.0.1:9999"
-    endpoint.request("hello", test_mode=True)
-    assert len(endpoint.baseline_calls) == 1
+    events = endpoint.request("hello", test_mode=True, allow_errors=True)
+    assert any(e["type"] == "error" for e in events)
+    assert not endpoint.baseline_calls
     assert not endpoint.agent_calls and not endpoint.owned
 
 
 @pytest.mark.parametrize("prompt,question", [
     ("yes", "Shall I send it?"), ("Messages", "Messages or email?"),
     ("never mind", "What would you like to change?")])
-def test_pending_confirmation_and_short_clarification_remain_baseline(endpoint, prompt, question):
+def test_pending_confirmation_and_short_clarification_reach_model(endpoint, prompt, question):
     sid = endpoint.store.create_session()
     endpoint.store.add_turn(sid, "user", "Help with this request")
     endpoint.store.add_turn(sid, "assistant", question)
     endpoint.request(prompt, sid)
-    assert len(endpoint.baseline_calls) == 1
-    assert not endpoint.agent_calls and not endpoint.owned
+    assert not endpoint.baseline_calls
+    assert endpoint.agent_calls[0]["messages"][-1]["content"] == prompt
 
 
-def test_active_skill_retains_baseline(endpoint):
+def test_active_skill_retains_model_ownership(endpoint):
     endpoint.active_skill = "fixture-skill"
     endpoint.request("help me plan", test_mode=True)
-    assert len(endpoint.baseline_calls) == 1
-    assert not endpoint.agent_calls and not endpoint.owned
+    assert not endpoint.baseline_calls
+    assert endpoint.agent_calls[0]["model_led_discovery"]
 
 
-def test_typed_response_finishes_before_discovery(endpoint, monkeypatch):
+def test_new_typed_compiler_never_runs_before_discovery(endpoint, monkeypatch):
     async def task(*args, **kwargs):
-        return SimpleNamespace(response="Synthetic typed clarification.", event="clarify", trace={},
-                               plan=SimpleNamespace(to_dict=lambda: {"status": "clarify"}))
+        raise AssertionError("New positive compiler bypassed model ownership")
     monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", task)
     events = endpoint.request("which recipient", test_mode=True)
-    assert any(e.get("text") == "Synthetic typed clarification." for e in events)
-    assert not endpoint.agent_calls and not endpoint.baseline_calls and not endpoint.owned
+    assert endpoint.agent_calls and not endpoint.baseline_calls
 
 
 def test_actual_entrypoint_discovers_then_executes_only_synthetic_calendar(endpoint, monkeypatch):
@@ -274,7 +273,8 @@ def test_admitted_test_mode_discards_session_history_and_does_not_persist(endpoi
     before = endpoint.store.turns_range(sid, 0, 100)
     sessions = endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
     events = endpoint.request("what is up this weej", sid, test_mode=True)
-    assert endpoint.agent_calls[0]["messages"] == [{"role": "user", "content": "what is up this weej"}]
+    assert endpoint.agent_calls[0]["messages"][-1] == {"role": "user", "content": "what is up this weej"}
+    assert not any("Earlier private" in str(m) for m in endpoint.agent_calls[0]["messages"])
     assert endpoint.agent_calls[0]["test_mode"] is True
     assert endpoint.store.turns_range(sid, 0, 100) == before
     assert endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == sessions
@@ -333,7 +333,7 @@ def test_default_off_preserves_direct_calendar_read(endpoint, monkeypatch):
     from service.workflows import reads
     # Fixture normally suppresses direct reads so semantic gating can be isolated.
     # Restore the real compiler/executor with the entirely synthetic registry.
-    monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "0")
     # The function imported by reads was monkeypatched on the module; recover its
     # exact original code via the fixture's saved callable, not a second import.
     monkeypatch.setattr(reads, "compile_read", endpoint.original_compile_read)
