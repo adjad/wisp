@@ -219,3 +219,16 @@ def test_genuine_current_empty_messages_scope_is_distinct_from_sync_failure():
     assert personal_evidence_matches({"scope": "messages", "day": "today"},
         SimpleNamespace(name="view_messages", category="messages_read"), {"day": "today"}, {},
         "No messages found for today.")
+
+
+@pytest.mark.parametrize("prompt", ["and tommrow?", "what about tomorrow?", "for today", "yesterday instead"])
+def test_short_date_followup_retains_personal_evidence_obligation(prompt):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt, "get_upcoming")["scope"] == "calendar"
+
+
+@pytest.mark.parametrize("prompt", ["what is the weather tomorrow?", "tell me tomorrow's news",
+                                   "calculate tomorrow's sales projection", "what did Einstein say yesterday?"])
+def test_new_topic_does_not_inherit_prior_calendar_date_obligation(prompt):
+    from service.router.model_led import fresh_personal_obligation
+    assert fresh_personal_obligation(prompt, "get_upcoming") == {}

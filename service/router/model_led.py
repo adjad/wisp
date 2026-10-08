@@ -180,7 +180,10 @@ def fresh_personal_obligation(prompt: str, last_tools: str = "") -> dict:
                 break
     day_match = re.search(r"\b(today|tomorrow|tommrow|yesterday)\b", prompt, re.I)
     day = (day_match.group(1).lower().replace("tommrow", "tomorrow") if day_match else "")
-    if not scope and day:
+    short_date_continuation = bool(re.fullmatch(
+        r"\s*(?:(?:and|what about|how about|for|from|on)\s+)?(?:today|tomorrow|tommrow|yesterday)(?:\s+instead)?\s*[?.!]*\s*",
+        prompt, re.I))
+    if not scope and day and short_date_continuation:
         if "get_upcoming" in last_tools:
             scope = "calendar"
         elif any(n in last_tools for n in ("view_messages", "summarize_messages", "search_conversations")):
