@@ -6,6 +6,7 @@ No app lifespan, live provider, native tool, credential or background job runs.
 import asyncio
 import copy
 import json
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -77,7 +78,9 @@ def endpoint(monkeypatch, tmp_path):
     async def no_task(*args, **kwargs):
         return None
     monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", no_task)
-    monkeypatch.setattr("service.workflows.reads.compile_read", lambda *args, **kwargs: None)
+    from service.workflows import reads
+    state.original_compile_read = reads.compile_read
+    monkeypatch.setattr(reads, "compile_read", lambda *args, **kwargs: None)
 
     async def baseline(prompt, **kwargs):
         state.baseline_calls.append((prompt, kwargs))
@@ -119,7 +122,7 @@ def endpoint(monkeypatch, tmp_path):
          "calendar_only": {"type": "boolean"}}, "additionalProperties": False},
         "assistant_read", upcoming)
 
-    async def request(prompt, sid=None, **kwargs):
+    async def request(prompt, sid=None, *, allow_errors=False, **kwargs):
         response = await main.agent({"prompt": prompt, "session_id": sid, "debug": False, **kwargs})
         events = []
         async for chunk in response.body_iterator:
@@ -127,11 +130,19 @@ def endpoint(monkeypatch, tmp_path):
                 chunk = chunk.decode()
             events.append(json.loads(chunk.removeprefix("data: ").strip()))
         errors = [event for event in events if event["type"] == "error"]
-        assert not errors, errors
+        if not allow_errors:
+            assert not errors, errors
         return events
     state.request = lambda prompt, sid=None, **kwargs: asyncio.run(request(prompt, sid, **kwargs))
     state.store = store
-    return state
+    try:
+        yield state
+    finally:
+        store._db.close()
+        with pytest.raises(sqlite3.ProgrammingError):
+            store._db.execute("SELECT 1")
+        assert not main.SESSIONS, "Request registry leaked"
+        assert all(client.closed for client in state.owned), "Owned transport leaked"
 
 
 def test_default_off_keeps_baseline_and_never_allocates_owned_client(endpoint, monkeypatch):
@@ -253,3 +264,95 @@ def test_actual_entrypoint_discovers_then_executes_only_synthetic_calendar(endpo
     assert any(e["type"] == "tool_result" for e in events)
     assert any(e.get("text") == "Calendar: Workshop tomorrow at 14:00." for e in events)
     assert not main.SESSIONS
+
+
+def test_admitted_test_mode_discards_session_history_and_does_not_persist(endpoint):
+    sid = endpoint.store.create_session()
+    endpoint.store.add_turn(sid, "user", "Earlier private question")
+    endpoint.store.add_turn(sid, "assistant", "Earlier private answer")
+    before = endpoint.store.turns_range(sid, 0, 100)
+    sessions = endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+    events = endpoint.request("what is up this weej", sid, test_mode=True)
+    assert endpoint.agent_calls[0]["messages"] == [{"role": "user", "content": "what is up this weej"}]
+    assert endpoint.agent_calls[0]["test_mode"] is True
+    assert endpoint.store.turns_range(sid, 0, 100) == before
+    assert endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == sessions
+    assert next(e for e in events if e["type"] == "session")["id"] != sid
+    assert endpoint.summaries == 0
+
+
+def test_turn_target_stays_captured_when_role_binding_changes(endpoint, monkeypatch):
+    original = endpoint.target
+    changed = Target("agent", original.endpoint, "a-different-model", context_window=8000)
+    def own(*, target):
+        endpoint.target = changed
+        client = FakeClient(target)
+        endpoint.owned.append(client)
+        return client
+    monkeypatch.setattr(main, "OMLXClient", own)
+    endpoint.request("what did Mom say")
+    assert endpoint.owned[0].target is original
+    assert endpoint.agent_calls[0]["model"] == original.model
+    assert endpoint.owned[0].closed
+
+
+def test_failed_turn_closes_owned_client_and_persists_failure(endpoint, monkeypatch):
+    async def fail(*args, **kwargs):
+        raise RuntimeError("Synthetic inference failure")
+    monkeypatch.setattr(main, "run_agent", fail)
+    events = endpoint.request("what is up this weej", allow_errors=True)
+    assert any(e["type"] == "error" for e in events)
+    assert endpoint.owned[0].closed and not main.SESSIONS
+    sid = next(e for e in events if e["type"] == "session")["id"]
+    assert endpoint.store.last_user_turn(sid) == "what is up this weej"
+    assert "could not be completed" in endpoint.store.last_assistant_turn(sid)
+
+
+def test_disconnect_cancels_active_turn_and_closes_owned_client(endpoint, monkeypatch):
+    async def scenario():
+        entered = asyncio.Event()
+        async def pending(*args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+        monkeypatch.setattr(main, "run_agent", pending)
+        response = await main.agent({"prompt": "what is up this weej", "debug": False})
+        iterator = response.body_iterator
+        first = await anext(iterator)
+        sid = json.loads(first.removeprefix("data: ").strip())["id"]
+        await asyncio.wait_for(entered.wait(), 1)
+        await iterator.aclose()
+        assert endpoint.owned[0].closed and not main.SESSIONS
+        assert endpoint.store.last_user_turn(sid) == "what is up this weej"
+        assert "disconnected" in endpoint.store.last_assistant_turn(sid)
+        assert not endpoint.effects
+    asyncio.run(scenario())
+
+
+def test_default_off_preserves_direct_calendar_read(endpoint, monkeypatch):
+    from service.workflows import reads
+    # Fixture normally suppresses direct reads so semantic gating can be isolated.
+    # Restore the real compiler/executor with the entirely synthetic registry.
+    monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    # The function imported by reads was monkeypatched on the module; recover its
+    # exact original code via the fixture's saved callable, not a second import.
+    monkeypatch.setattr(reads, "compile_read", endpoint.original_compile_read)
+    events = endpoint.request("what is on my calendar this week")
+    assert endpoint.effects and endpoint.effects[0][0] == "get_upcoming"
+    assert not endpoint.owned and not endpoint.agent_calls and not endpoint.baseline_calls
+    assert endpoint.starts == 0
+    assert any(e["type"] == "done" for e in events)
+
+
+def test_actual_loop_dry_run_keeps_discovery_but_never_executes_tool(endpoint, monkeypatch):
+    monkeypatch.setattr(main, "run_agent", loop.run_agent)
+    monkeypatch.setattr(loop, "_BLOCKS_CACHE", None)
+    monkeypatch.setattr(loop, "narration_mode", lambda: "off")
+    monkeypatch.setattr(loop, "no_thinking_kwargs", lambda *args, **kwargs: {})
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda **kwargs: "")
+    monkeypatch.setattr("service.skills.skills_context_block", lambda *args: "")
+    endpoint.script = [[tool_call("get_tool_schemas", families=["calendar"], tools=["get_upcoming"])],
+                       [tool_call("get_upcoming", days=1, calendar_only=True)], "Synthetic dry-run plan."]
+    events = endpoint.request("what is up tommrow", test_mode=True)
+    assert not endpoint.effects and endpoint.owned[0].closed
+    assert any(e["type"] == "tool_call" and e.get("name") == "get_upcoming" for e in events)
+    assert endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
