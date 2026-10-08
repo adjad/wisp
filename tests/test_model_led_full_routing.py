@@ -8,6 +8,116 @@ from service.router.model_led import model_led_enabled, personal_communication_r
 from service.tools import registry
 from tests.test_model_led_entrypoint import endpoint, tool_call
 from tests.test_model_led_integration import synthetic, run, call, discover
+from service.tasks.reply_engine import prepare_task_turn_async as real_task_recovery
+from service.workflows.engine import prepare_turn as real_workflow_recovery
+
+
+def waiting_title(endpoint):
+    from datetime import datetime, timedelta
+    from service.tasks.models import TaskPlan, TemporalValue
+    sid = endpoint.store.create_session()
+    plan = TaskPlan(temporal=TemporalValue(absolute_iso=(datetime.now() + timedelta(days=2)).isoformat(timespec="minutes")))
+    plan.recompute_status()
+    endpoint.store.save_workflow(sid, plan.to_dict())
+    return sid, plan
+
+
+def waiting_reply(endpoint):
+    from service.tasks.models import TaskPlan, SlotValue
+    sid = endpoint.store.create_session()
+    plan = TaskPlan(kind="task.email.reply", intent="email.reply", channel=SlotValue("email", "explicit"),
+                    parameters={"reply_all": SlotValue(False)},
+                    resolved_references={"reply.target": {"fields": {"message_id": "fixture-message", "account": "Fixture"}}})
+    plan.recompute_status()
+    endpoint.store.save_workflow(sid, plan.to_dict())
+    return sid, plan
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+@pytest.mark.parametrize("prompt", ["summarize my messages", "read my messages", "list my calendar",
+                                   "please sumarize my messages", "could you please read my messages", "reed my messages"])
+def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch, mode, prompt):
+    from service.tasks import engine
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    def no_native(*args, **kwargs):
+        raise AssertionError("Unrelated turn touched an old owner's native capability")
+    async def no_execution(*args, **kwargs):
+        no_native()
+    monkeypatch.setattr(engine, "_default_contacts_resolver", no_native)
+    monkeypatch.setattr(main, "execute_task", no_execution)
+    sid, _ = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    events = endpoint.request(prompt, sid)
+    assert endpoint.store.active_task(sid) == before
+    assert not endpoint.effects and not endpoint.baseline_calls
+    assert endpoint.agent_calls[0]["messages"][-1]["content"] == prompt
+    assert any(e.get("route_source") == "model_led_discovery" for e in events)
+
+
+def test_literal_title_still_finishes_exact_waiting_owner(endpoint, monkeypatch):
+    from service.tasks import engine
+    sid, plan = waiting_title(endpoint)
+    def no_contact(*args):
+        raise AssertionError("A literal local reminder title triggered a contact read")
+    turn = engine.prepare_task_turn(endpoint.store, sid, "Pick up groceries", assistant_store=None,
+                                    owner_only=True, contacts_resolver=no_contact)
+    assert turn.executable and turn.plan.id == plan.id
+    assert turn.plan.steps[0].args["title"] == "Pick up groceries"
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+@pytest.mark.parametrize("prompt", ["do not read Mail; explain quantum mechanics",
+                                   "do not read email; summarize my messages", "please read my messages"])
+def test_pending_reply_never_warms_excluded_or_unrelated_mail(endpoint, monkeypatch, mode, prompt):
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Excluded/unrelated reply recovery source was touched")
+    async def forbidden_async(*args, **kwargs):
+        forbidden()
+    monkeypatch.setattr("service.tools.email_tools.ensure_reply_source", forbidden_async)
+    monkeypatch.setattr("service.tasks.source_readers.current_mail_reader", forbidden)
+    monkeypatch.setattr("service.tools.action_tools.prepare_reply_args", forbidden_async)
+    monkeypatch.setattr(main, "execute_task", forbidden_async)
+    sid, _ = waiting_reply(endpoint)
+    before = endpoint.store.active_task(sid)
+    endpoint.request(prompt, sid)
+    assert endpoint.store.active_task(sid) == before and not endpoint.effects
+    assert endpoint.agent_calls and not endpoint.baseline_calls
+    if "do not read" in prompt:
+        assert "view_emails" in endpoint.agent_calls[0]["forbidden_tools"]
+
+
+def test_allowed_literal_reply_body_preserves_bound_source_without_native_effect(endpoint):
+    import asyncio
+    sid, plan = waiting_reply(endpoint)
+    turn = asyncio.run(real_task_recovery(endpoint.store, sid, "Thanks for the update.",
+        assistant_store=None, owner_only=True, mail_reader=object(), allow_native=False))
+    assert turn.plan.id == plan.id and turn.plan.subject.value == "Thanks for the update."
+    assert turn.plan.resolved_references == plan.resolved_references
+    assert turn.event == "reply_prepare" and not turn.executable
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_cancelled_uncertain_legacy_owner_keeps_model_action_envelope_closed(endpoint, monkeypatch, mode):
+    from service.workflows.models import WorkflowPlan
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    sid = endpoint.store.create_session()
+    plan = WorkflowPlan(status="running", sources=["messages"], recipient="Fixture", channel="messages", revision=1)
+    endpoint.store.save_workflow(sid, plan.to_dict())
+    assert endpoint.store.claim_workflow_effect(sid, plan.id, f"workflow_effect:{plan.id}", revision=1)
+    assert real_workflow_recovery(endpoint.store, sid, "cancel", owner_only=True).plan.status == "cancelled"
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    endpoint.request("send a new message to another person", sid)
+    assert endpoint.store.unresolved_action(sid)
+    assert "run_shell" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert not endpoint.effects
 
 
 def test_default_routes_through_configured_model_even_after_rename(endpoint, monkeypatch):

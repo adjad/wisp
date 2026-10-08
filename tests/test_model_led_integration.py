@@ -100,14 +100,15 @@ def synthetic(monkeypatch):
     return effects, register
 
 
-def run(script, *, prompt="what is up this weej?", history=(), approval=None, before_step=None, **kwargs):
+def run(script, *, prompt="what is up this weej?", history=(), approval=None, before_step=None,
+        model_led_discovery=True, tools=(), **kwargs):
     events = []
     client = ScriptedClient(script, before_step)
     async def emit(event):
         events.append(copy.deepcopy(event))
     async def execute():
         return await loop.run_agent(client, "synthetic-agent", [*history, {"role": "user", "content": prompt}],
-            emit, approval or Approval(), tools=[], model_led_discovery=True,
+            emit, approval or Approval(), tools=list(tools), model_led_discovery=model_led_discovery,
             multi_round=True, include_memory_context=False, debug=True, **kwargs)
     answer = asyncio.run(execute())
     return client, events, answer

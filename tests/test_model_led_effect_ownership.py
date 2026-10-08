@@ -4,6 +4,214 @@ import pytest
 from service.memory.store import SessionStore
 from service.router.model_led import needs_effect_owner
 from tests.test_model_led_integration import synthetic, run, call, discover, Approval
+from service import main as _registered_main
+from service.tools import registry
+from service.router.model_led import BuiltinCompletion, builtin_completion_verified, family_for, registry_specs
+
+BUILTIN_ARGS = {
+    "run_shell": {"cmd": "touch fixture.txt"},
+    "run_applescript": {"script": "return 1"},
+    "software_update": {"action": "install", "confirm": True},
+    "uninstall_app": {"name": "FixtureApp"},
+    "http_request": {"url": "https://fixture.example.invalid", "method": "POST", "body": "{}"},
+    "manage_contacts": {"action": "create", "name": "Fixture"},
+}
+AUTHORITATIVE_BUILTINS = {name: registry.get_tool(name) for name in BUILTIN_ARGS}
+
+
+def fake_builtin(name, effects, result, monkeypatch, *, sync=False):
+    from dataclasses import replace
+    authoritative = AUTHORITATIVE_BUILTINS[name]
+    assert authoritative is not None and not authoritative.unavailable_reason
+    def invoke(**args):
+        effects.append((name, args))
+        return result
+    async def async_invoke(**args):
+        return invoke(**args)
+    func = invoke if sync else async_invoke
+    func.__module__ = authoritative.func.__module__
+    monkeypatch.setattr(__import__("sys").modules[func.__module__], name, func)
+    tool = replace(authoritative, func=func)
+    registry.REGISTRY[name] = tool
+    family = family_for(registry_specs({name: tool})[0])
+    return tool, family
+
+
+@pytest.mark.parametrize("name", list(BUILTIN_ARGS))
+@pytest.mark.parametrize("model_led", [True, False])
+def test_working_builtin_mutation_parity_dispatches_once_with_explicit_receipt(synthetic, owned_store, monkeypatch, name, model_led):
+    effects, _ = synthetic
+    receipt = BuiltinCompletion("Unchanged synthetic completion text.", tool_name=name,
+                                completion_code=204 if name == "http_request" else 0)
+    _, family = fake_builtin(name, effects, receipt, monkeypatch)
+    store, sid = owned_store
+    script = [[discover(family, name)], [call(name, **BUILTIN_ARGS[name])], "Completed."] if model_led else [[call(name, **BUILTIN_ARGS[name])], "Completed."]
+    run(script, prompt="Perform the explicit synthetic fixture action", approval=Approval(True),
+        model_led_discovery=model_led, tools=[] if model_led else [name],
+        claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
+        finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
+    assert effects == [(name, BUILTIN_ARGS[name])]
+    assert not store.pending_model_effects(sid)
+    assert store._db.execute("SELECT count(*) FROM task_effect_claims").fetchone()[0] == int(model_led)
+
+
+@pytest.mark.parametrize("name", list(BUILTIN_ARGS))
+@pytest.mark.parametrize("kind", ["failed", "missing", "malformed", "wrong_phase"])
+def test_unverified_builtin_attempt_is_consumed_and_cannot_retry(synthetic, owned_store, monkeypatch, name, kind):
+    effects, _ = synthetic
+    code = 503 if name == "http_request" else 17
+    if kind == "malformed":
+        code = "0"
+    if kind == "wrong_phase":
+        code = 204 if name == "http_request" else 0
+    receipt = ("Arbitrary nonempty stdout: SUCCESS" if kind == "missing" else
+               BuiltinCompletion("Arbitrary body: SUCCESS", tool_name=name, completion_code=code,
+                                 phase="read" if kind == "wrong_phase" else "mutation"))
+    _, family = fake_builtin(name, effects, receipt, monkeypatch)
+    store, sid = owned_store
+    run([[discover(family, name)], [call(name, **BUILTIN_ARGS[name])],
+         [call(name, **BUILTIN_ARGS[name])], "Attempted."], prompt="Perform the synthetic fixture action",
+        approval=Approval(True),
+        claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
+        finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
+    assert effects == [(name, BUILTIN_ARGS[name])]
+    assert store.pending_model_effects(sid)[0]["status"] == "uncertain"
+    assert store._db.execute("SELECT count(*) FROM task_effect_claims").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("name", list(BUILTIN_ARGS))
+def test_denied_builtin_never_claims_or_dispatches(synthetic, owned_store, name, monkeypatch):
+    from service.agent import loop as agent_loop
+    from service.safety.policy import Decision, Tier
+    effects, _ = synthetic
+    _, family = fake_builtin(name, effects, "unused", monkeypatch)
+    store, sid = owned_store
+    monkeypatch.setattr(agent_loop, "decide",
+                        lambda *a, **k: Decision(Tier.DENY, "Synthetic explicit denial"))
+    run([[discover(family, name)], [call(name, **BUILTIN_ARGS[name])]],
+        approval=Approval(False),
+        claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
+        finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
+    assert not effects and not store.pending_model_effects(sid)
+
+
+@pytest.mark.parametrize("sync", [True, False])
+def test_actual_registry_preserves_host_carrier_but_not_extension_attributes(synthetic, monkeypatch, sync):
+    import asyncio
+    effects, _ = synthetic
+    receipt = BuiltinCompletion("Exact display text", tool_name="run_applescript", completion_code=0)
+    tool, _ = fake_builtin("run_applescript", effects, receipt, monkeypatch, sync=sync)
+    async def fake_worker(func, **args):
+        return func(**args)  # Synthetic scheduling seam: no worker thread.
+    monkeypatch.setattr(registry.asyncio, "to_thread", fake_worker)
+    result = asyncio.run(registry.run_tool(tool, BUILTIN_ARGS["run_applescript"]))
+    assert result is receipt and str(result) == "Exact display text" and builtin_completion_verified(tool, result)
+    from dataclasses import replace
+    async def extension(**args):
+        return receipt
+    extension.__module__ = "service.extension.untrusted"
+    ordinary = asyncio.run(registry.run_tool(replace(tool, func=extension), BUILTIN_ARGS["run_applescript"]))
+    assert type(ordinary) is str and not builtin_completion_verified(tool, ordinary)
+    extension.__module__ = tool.func.__module__  # Attributes alone cannot impersonate the host function.
+    forged = asyncio.run(registry.run_tool(replace(tool, func=extension), BUILTIN_ARGS["run_applescript"]))
+    assert type(forged) is str and not builtin_completion_verified(tool, forged)
+    with pytest.raises(AttributeError):
+        receipt.completion_code = 1
+
+
+@pytest.mark.parametrize("name", ["run_shell", "software_update"])
+def test_supported_builtin_read_phases_dispatch_without_action_claim(synthetic, owned_store, monkeypatch, name):
+    effects, _ = synthetic
+    args = {"cmd": "pwd"} if name == "run_shell" else {"action": "check"}
+    _, family = fake_builtin(name, effects, "Synthetic read result.", monkeypatch)
+    store, sid = owned_store
+    run([[discover(family, name)], [call(name, **args)], "Read result."], approval=Approval(True),
+        claim_effect=lambda *a: (_ for _ in ()).throw(AssertionError("Read acquired an action claim")))
+    assert effects == [(name, args)] and not store.pending_model_effects(sid)
+
+
+@pytest.mark.parametrize("name", list(BUILTIN_ARGS))
+def test_actual_builtin_emitter_uses_host_status_not_stdout_or_body(monkeypatch, name):
+    import asyncio, sys
+    from pathlib import Path
+    from types import SimpleNamespace
+    from service.safety.policy import Decision, Tier
+    tool = AUTHORITATIVE_BUILTINS[name]
+    module = sys.modules[tool.func.__module__]
+    native = SimpleNamespace(returncode=0, stdout="Untrusted arbitrary output", stderr="")
+    if name == "run_shell":
+        monkeypatch.setattr("service.safety.policy.decide", lambda *a, **k: Decision(Tier.ALLOW, "synthetic"))
+        monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: native)
+    elif name == "run_applescript":
+        monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: native)
+    elif name == "software_update":
+        monkeypatch.setattr(module, "_run", lambda *a, **k: native)
+    elif name == "uninstall_app":
+        monkeypatch.setattr(Path, "exists", lambda p: str(p) == "/Applications/FixtureApp.app")
+        monkeypatch.setattr(module, "_osa", lambda *a, **k: native)
+    elif name == "manage_contacts":
+        monkeypatch.setattr(module, "_osa", lambda *a, **k: native)
+    else:
+        class FakeHTTP:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *args): pass
+            async def request(self, *args, **kwargs):
+                return SimpleNamespace(status_code=native.returncode, text=native.stdout)
+        native.returncode = 204
+        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: FakeHTTP())
+    result = (asyncio.run(tool.func(**BUILTIN_ARGS[name])) if name == "http_request"
+              else tool.func(**BUILTIN_ARGS[name]))
+    assert builtin_completion_verified(tool, result)
+    displayed = str(result)
+    native.returncode = 503 if name == "http_request" else 17
+    failed = (asyncio.run(tool.func(**BUILTIN_ARGS[name])) if name == "http_request"
+              else tool.func(**BUILTIN_ARGS[name]))
+    assert not builtin_completion_verified(tool, failed)
+    assert displayed  # Existing UI output remains a regular nonempty string.
+
+
+@pytest.mark.parametrize("mode", [None, "1", "0"])
+def test_consumed_cancelled_legacy_attempt_survives_reopen_and_mode_switch(owned_store, monkeypatch, mode):
+    from pathlib import Path
+    from service.workflows.engine import prepare_turn
+    from service.workflows.models import WorkflowPlan
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING", raising=False)
+    else:
+        monkeypatch.setenv("WISP_MODEL_LED_ROUTING", mode)
+    store, sid = owned_store
+    plan = WorkflowPlan(status="running", sources=["messages"], recipient="Fixture", channel="messages", revision=1)
+    store.save_workflow(sid, plan.to_dict())
+    assert store.claim_workflow_effect(sid, plan.id, f"workflow_effect:{plan.id}", revision=1)
+    closed = prepare_turn(store, sid, "cancel", owner_only=True)
+    assert closed.plan.status == "cancelled"
+    other = SessionStore(Path(store._db.execute("PRAGMA database_list").fetchone()[2]))
+    try:
+        assert other.unresolved_action(sid)
+        for tool, args in [("send_message", {"to": "Fixture"}), ("send_message", {"to": "Changed"}),
+                           ("send_email", {"to": "changed@example.invalid"})]:
+            assert not other.claim_model_effect(sid, "new", tool, args, outbound=True)["admitted"]
+        fresh = WorkflowPlan(status="running", channel="email", recipient="Changed", revision=1)
+        other.save_workflow(sid, fresh.to_dict())
+        assert not other.claim_workflow_effect(sid, fresh.id, "fresh-outbound", revision=1)
+        assert not other.claim_effect_call(fresh.id, "fresh-task-call", revision=1)
+        assert other._db.execute("SELECT count(*) FROM task_effect_claims").fetchone()[0] == 1
+    finally:
+        other._db.close()
+
+
+@pytest.mark.parametrize("status,claimed", [("cancelled", False), ("denied", False), ("completed", True)])
+def test_no_attempt_cancellation_or_verified_completion_does_not_create_false_barrier(owned_store, status, claimed):
+    from service.workflows.models import WorkflowPlan
+    store, sid = owned_store
+    plan = WorkflowPlan(status="running", channel="messages", recipient="Fixture", revision=1)
+    store.save_workflow(sid, plan.to_dict())
+    if claimed:
+        assert store.claim_workflow_effect(sid, plan.id, f"workflow_effect:{plan.id}", revision=1)
+    plan.status = status
+    store.save_workflow(sid, plan.to_dict())
+    assert not store.unresolved_action(sid)
+    assert store.claim_model_effect(sid, "new", "send_message", {"to": "Changed"}, outbound=True)["admitted"]
 
 
 @pytest.fixture

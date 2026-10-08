@@ -361,6 +361,18 @@ async def run_tool(tool: Tool, args: dict) -> str:
     the model can read and correct on its next step, the same way a wrong
     file path or an ambiguous title already does.
     """
+    def normalize_result(res):
+        # Preserve the existing display-only/public-source separation first.
+        if isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult)):
+            return res
+        from service.router.model_led import BuiltinCompletion, authoritative_builtin, effectful_call
+        if (type(res) is BuiltinCompletion and res.tool_name == tool.name
+                and authoritative_builtin(tool)
+                and type(res.completion_code) is int
+                and res.phase == ("mutation" if effectful_call(tool, args) else "read")):
+            return res
+        return str(res)
+
     if tool.unavailable_reason:
         return tool.unavailable_reason
     # Drop junk empty-name keys before dispatch. Small models emit `{"": ""}`
@@ -391,13 +403,13 @@ async def run_tool(tool: Tool, args: dict) -> str:
         # tool at a time, and nothing here touches oMLX.
         if inspect.iscoroutinefunction(tool.func):
             res = await tool.func(**args)
-            return res if isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult)) else str(res)
+            return normalize_result(res)
         res = await asyncio.to_thread(tool.func, **args)
         # A sync function can still RETURN an awaitable (a plain `def` that
         # hands back a coroutine); to_thread only resolves the call itself.
         if inspect.isawaitable(res):
             res = await res
-        return res if isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult)) else str(res)
+        return normalize_result(res)
     except TypeError as e:
         return (f"(error calling {tool.name}({args!r}): {e}. "
                 f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")

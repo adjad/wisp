@@ -12,6 +12,7 @@ LEGACY_ROUTER_SUITES = frozenset({
     "test_typed_task_engine.py", "test_typed_reminder_operations.py",
     "test_workflow_engine.py", "test_web_response_followup.py",
     "test_replay_failure_fixes.py",
+    "test_fast_path_intent.py", "test_router_everyday_prompts.py",
 })
 
 

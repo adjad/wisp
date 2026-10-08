@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import sys
 from typing import Mapping, Sequence
 
 DISCOVERY_TOOL = "get_tool_schemas"
@@ -29,6 +30,61 @@ PRIVATE_EGRESS_TOOLS = frozenset({
 })
 OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript",
                                     "create_tool", "http_request", "place_call"})
+BUILTIN_COMPLETION_MODULES = {
+    "run_shell": "service.tools.builtin", "run_applescript": "service.tools.automation_tools",
+    "software_update": "service.tools.system_extras2", "uninstall_app": "service.tools.system_extras2",
+    "http_request": "service.tools.action_tools", "manage_contacts": "service.tools.contacts_tools",
+}
+
+
+class BuiltinCompletion(str):
+    """Unchanged display text plus a host-produced completion boundary.
+
+    Process exit status / HTTP status is evidence of that boundary only, not
+    proof of every real-world consequence. No arguments or response body are
+    copied into the metadata. Unknown extension attributes are not receipts.
+    """
+    __slots__ = ("tool_name", "completion_code", "phase")
+
+    def __new__(cls, text, *, tool_name, completion_code, phase="mutation"):
+        value = super().__new__(cls, text)
+        object.__setattr__(value, "tool_name", tool_name)
+        object.__setattr__(value, "completion_code", completion_code)
+        object.__setattr__(value, "phase", phase)
+        return value
+
+    def __setattr__(self, name, value):
+        raise AttributeError("Completion metadata is immutable")
+
+    def __copy__(self):
+        return self
+
+    def __deepcopy__(self, memo):
+        return self
+
+
+def authoritative_builtin(tool) -> bool:
+    module_name = BUILTIN_COMPLETION_MODULES.get(tool.name)
+    module = sys.modules.get(module_name or "")
+    return bool(module_name and getattr(tool.func, "__module__", "") == module_name
+                and getattr(module, tool.name, None) is tool.func)
+
+
+def builtin_completion_verified(tool, result) -> bool:
+    if (type(result) is not BuiltinCompletion or result.tool_name != tool.name
+            or result.phase != "mutation" or type(result.completion_code) is not int
+            or not authoritative_builtin(tool)):
+        return False
+    return (200 <= result.completion_code < 300 if tool.name == "http_request"
+            else result.completion_code == 0)
+
+
+def builtin_completion_outcome(tool, result, outcome):
+    if tool.name not in BUILTIN_COMPLETION_MODULES:
+        return outcome
+    from dataclasses import replace
+    return replace(outcome, status="succeeded" if builtin_completion_verified(tool, result) else "failed",
+                   effect="executed" if tool.name in {"run_shell", "run_applescript", "software_update"} else "changed")
 
 # Exact successful prefixes emitted by built-ins whose legacy classifier has
 # no effect entry. Unknown/extension strings are never completion contracts.
@@ -113,12 +169,14 @@ def opaque_effect(category: str) -> bool:
         })
 
 
-def trusted_effect_receipt(tool, outcome) -> bool:
+def trusted_effect_receipt(tool, outcome, result=None) -> bool:
     """Reuse built-in result contracts, never extension prose as a receipt.
 
     Existing built-ins retain their typed/string success contracts. This is a
     tool completion receipt, not an independent physical-world readback.
     """
+    if tool.name in BUILTIN_COMPLETION_MODULES:
+        return builtin_completion_verified(tool, result)
     if tool.name == "manage_timers" and outcome.status in {"succeeded", "no_match"}:
         low = outcome.text.strip().lower()
         return bool(re.fullmatch(r"cancelled \d+ timers?\.", low) or low == "nothing to cancel."
@@ -129,7 +187,8 @@ def trusted_effect_receipt(tool, outcome) -> bool:
 
 
 def has_effect_contract(tool, outcome) -> bool:
-    return outcome.effect != "read" or tool.name in EFFECT_RECEIPTS
+    return (outcome.effect != "read" or tool.name in EFFECT_RECEIPTS
+            or authoritative_builtin(tool))
 
 
 def effectful_call(tool, args: dict) -> bool:
@@ -137,6 +196,8 @@ def effectful_call(tool, args: dict) -> bool:
         return False
     if tool.name in {"organize_files", "clear_memory"} and not args.get("confirm", False):
         return False  # Authoritative preview phase; commit gets its own claim.
+    if tool.name == "software_update" and args.get("action", "check") == "install" and not args.get("confirm", False):
+        return False  # The built-in refuses this phase before starting updates.
     if tool.name in {"list_shortcuts", "list_running_apps", "wisp_status", "wisp_capabilities",
                      "wisp_skills", "wisp_mcp", "wisp_sync", "unsubscribe", "run_speed_test"}:
         return False

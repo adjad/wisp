@@ -34,6 +34,46 @@ _UNRELATED_SUBJECT_REPLY = re.compile(
     r"(?:what|when|where|who|why|how|show|check|search|find|open|play|set|create|add|send|email|text)\b|"
     r"\b(?:weather|inbox)\b",
     re.I)
+_OWNER_CHANNEL_REPLY = re.compile(
+    r"\s*(?:(?:actually\s+)?(?:use|via|through|send\s+it\s+(?:via|by))\s+)?"
+    r"(?:messages?|texts?|imessage|e-?mail)(?:\s+instead)?\s*[.!]?\s*", re.I)
+
+
+def owner_only_new_request(prompt: str) -> bool:
+    """Decline clear new turns; never select a positive route for them.
+
+    Free-form titles/bodies still require an existing missing slot. A request
+    verb, question, source prohibition or compound turn is not such a reply.
+    Accept only bounded channel/assent/cancel fragments as exceptions. The
+    one-edit tolerance prevents a typo from granting an old action ownership.
+    """
+    if _CANCEL.fullmatch(prompt) or _RETRY.fullmatch(prompt) or _OWNER_CHANNEL_REPLY.fullmatch(prompt):
+        return False
+    text = prompt.strip()
+    if not text or len(text.split()) > 30 or text.endswith("?") or ";" in text:
+        return True
+    text = re.sub(r"^(?:(?:hey(?:\s+wisp)?|hi|please)[,\s]+|(?:can|could|would)\s+you\s+)+", "", text, flags=re.I)
+    first = re.match(r"[a-z]+", text, re.I)
+    if not first:
+        return False  # A quoted literal is not a routing instruction.
+    word = first[0].casefold()
+    verbs = {"what", "when", "where", "who", "why", "how", "show", "check", "search",
+             "find", "open", "play", "set", "create", "add", "send", "email", "text",
+             "read", "list", "summarize", "summarise", "explain", "compare", "do", "dont", "never"}
+    def one_edit(a, b):
+        if a == b:
+            return True
+        if len(a) == len(b):
+            differences = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+            return (len(differences) == 1 or len(differences) == 2
+                    and differences[1] == differences[0] + 1
+                    and a[differences[0]] == b[differences[1]]
+                    and a[differences[1]] == b[differences[0]])
+        if abs(len(a) - len(b)) != 1:
+            return False
+        shorter, longer = (a, b) if len(a) < len(b) else (b, a)
+        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
+    return any(one_edit(word, verb) for verb in verbs)
 _CONTEXT_DAY_CORRECTION = re.compile(
     r"^\s*(?:(?:i\s+mean|actually|make\s+(?:it|that)(?:\s+reminder)?)\s+)?"
     r"(?P<day>today|tomorrow)(?:\s+(?:please|sorry|instead))?\s*[.!]?\s*$", re.I)
@@ -509,6 +549,8 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     active = TaskPlan.from_dict(active_raw) if active_raw else None
     # Model-led turns may recover an existing owner, never create a new plan
     # before the model interprets the current request.
+    if owner_only and active and owner_only_new_request(prompt):
+        return None
     if owner_only and active and _UNRELATED_SUBJECT_REPLY.search(prompt.strip()):
         if not (_CANCEL.match(prompt) or _RETRY.match(prompt)
                 or _channel_correction(active, prompt)

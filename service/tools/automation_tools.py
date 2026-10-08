@@ -46,6 +46,7 @@ _TIMEOUT = 30
              "automate this in applescript"],
 )
 def run_applescript(script: str) -> str:
+    from service.router.model_led import BuiltinCompletion
     src = (script or "").strip()
     if not src:
         return "(error: run_applescript needs a `script`.)"
@@ -53,7 +54,8 @@ def run_applescript(script: str) -> str:
                        text=True, timeout=_TIMEOUT)
     if p.returncode != 0:
         return f"(script error: {(p.stderr or '').strip()})"
-    return p.stdout.strip() or "(ran with no output)"
+    return BuiltinCompletion(p.stdout.strip() or "(ran with no output)",
+                             tool_name="run_applescript", completion_code=p.returncode)
 
 
 @register(

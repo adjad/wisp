@@ -1298,7 +1298,7 @@ async def run_agent(
             # Unknown extension actions default to 'read' in the legacy outcome
             # classifier. That default is not a verified mutation receipt.
             from service.router.model_led import trusted_effect_receipt
-            verified = trusted_effect_receipt(tool, outcome)
+            verified = trusted_effect_receipt(tool, outcome, result)
             if not finish_effect(claim, verified):
                 return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
             if not verified:
@@ -1604,6 +1604,9 @@ async def run_agent(
             if effectful_call(registered, args or {}) and outcome.effect == "read":
                 from dataclasses import replace
                 outcome = replace(outcome, effect="changed")
+            if effectful_call(registered, args or {}) and not planned and not denied:
+                from service.router.model_led import builtin_completion_outcome
+                outcome = builtin_completion_outcome(registered, result, outcome)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if name == "lookup_contact" and args is not None:

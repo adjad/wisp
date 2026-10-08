@@ -551,13 +551,13 @@ class SessionStore:
         """
         rows = self._db.execute(
             "SELECT id,kind,status,state_json FROM workflows WHERE session_id=? "
-            "AND status IN ('running','ready','failed','uncertain')", (sid,)).fetchall()
+            "AND status != 'completed'", (sid,)).fetchall()
         for row in rows:
             if row["id"] == exclude:
                 continue
             state = json.loads(row["state_json"])
             if row["kind"] == "model_led_effect":
-                if (row["status"] in {"running", "uncertain"} and
+                if (self._db.execute("SELECT 1 FROM task_effect_claims WHERE plan_id=? LIMIT 1", (row["id"],)).fetchone() and
                         (tool is None or state.get("tool") == tool or
                          (outbound and state.get("outbound")))):
                     return dict(row)

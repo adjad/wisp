@@ -45,6 +45,13 @@ compile a fresh request or replacement payload. Ordinary requests declined by
 that owner proceed to model discovery. This is an execution/recovery exception
 for pre-existing owners, not a new rule-based routing shortcut.
 
+Clear new requests, including read/list/summary verbs with a bounded typo
+tolerance, cannot become an old reminder title or reply body. The current
+negative envelope is computed before recovery starts; a turn with excluded
+capabilities proceeds to the model without recovery readers, contact resolution
+or Mail warm-up. Literal replies to an admitted existing missing slot remain
+supported. This does not claim universal semantic disambiguation of free prose.
+
 ## Durable model actions
 
 Approved mutations claim an exact session/request/revision and canonical
@@ -67,6 +74,22 @@ organization previews do not acquire commit claims.
 Those receipts are not independent proof of physical-world state. Pure reads
 and computation do not acquire action claims. Pending records give the model
 bounded factual status, never instructions or replay arguments.
+
+The six working built-ins `run_shell`, `run_applescript`, `software_update`,
+`uninstall_app`, `http_request` and `manage_contacts` now produce unchanged
+display text with immutable host completion metadata. The registry preserves
+that carrier only for the exact loaded built-in function, name, code and phase;
+copied extension attributes, generic module prefixes and arbitrary stdout/body
+are insufficient. Process exit zero proves process completion, and HTTP 2xx
+proves the request's successful response boundary, not all external consequences.
+Missing/malformed/failed receipts keep attempted mutations uncertain. Read-only
+shell, update checks and update-install refusal before confirm remain claim-free.
+The five previously unavailable compatibility tools remain excluded.
+
+User-facing cancellation or supersession cannot clear a legacy consumed attempt
+whose result remains unverified. Its barrier survives restart and routing-mode
+changes. Cancellation without a consumed attempt and verified completed owners
+remain nonblocking.
 
 ## Validation and limits
 
@@ -102,15 +125,30 @@ claim merely because time passed or the user changed the recipient.
 Owned source: `service/main.py`, `service/router/model_led.py`,
 `service/agent/loop.py`, `service/memory/store.py`, `service/tasks/engine.py`,
 `service/tasks/reply_engine.py`, `service/workflows/engine.py`.
+The parity repair also owns the six named emitters across
+`service/tools/builtin.py`, `automation_tools.py`, `system_extras2.py`,
+`action_tools.py`, `contacts_tools.py`, and `registry.py` result normalization.
 Focused tests: the five `tests/test_model_led*.py` modules. The simulation
 manifest adds the two new suites. `tests/conftest.py` explicitly selects rollback
-for 14 named legacy-router contract suites; the default-on suites remain outside
+for 16 named legacy-router contract suites; the default-on suites remain outside
 that fixture and test the unset override through the actual SSE entrypoint.
+Historical CI failures are preserved: two established legacy endpoint suites
+needed explicit rollback classification; the missing-model test's zero-delay
+poll created a race between two real deadlines. Its existing timeout/no-chat
+assertions remain, using the real poll sleep. Production readiness is unchanged.
+Fresh CI must verify these changes.
 
 Draft repairs cover durable shared claims, rollback/owner-only isolation, opaque
 retargeting, read/compute/preview phases, exact timer/memory/window receipts and
 fixture provenance, full memory exclusions, native sender/body attribution, safe
 no-proof clarifications, source readiness and short date-followup obligations.
+The exact `e93deed` candidate subsequently received independent `BLOCK` findings
+MLR-OWNER-01, MLR-UNCERTAINTY-02, MLR-PARITY-03 and MLR-SOURCE-04. The same source
+owner repaired those scopes with separate recorded tool-emitter/registry
+amendments and new controls. That review and its mechanical pass remain historical;
+the repaired candidate requires fresh mechanical, CI, independent review and
+distinct simulation QA. No earlier passing run or pending QA preparation counts
+as qualification for it.
 The first controller run was unqualified because subtests were incorrectly
 counted as collected top-level cases. The second run had one fake timer module
 metadata failure (119 of 120 top-level cases passed and 15 subtests passed). Both

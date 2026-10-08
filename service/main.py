@@ -1383,6 +1383,22 @@ async def agent(body: dict[str, Any]):
                     raise ValueError("Model-led routing requires the configured managed local agent connection. "
                                      "Reconnect it, or explicitly set WISP_MODEL_LED_ROUTING=0 to use legacy routing.")
 
+            # The current source/authority envelope precedes every recovery
+            # reader, contact resolver and native warm-up. An old owner cannot
+            # grant permission for a source this new turn explicitly excludes.
+            model_led_forbidden, model_led_bindings = frozenset(), {}
+            if model_led_turn:
+                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt)
+                if memory_excluded(prompt):
+                    from service.tools.registry import REGISTRY
+                    model_led_forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
+                    model_led_forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                                                     if t.category in {"skill_tool", "mcp_read", "mcp_action"}
+                                                     or t.name in {"run_shell", "run_applescript", "create_tool", "use_skill"})
+                if personal_communication_request(prompt):
+                    model_led_forbidden |= PRIVATE_EGRESS_TOOLS
+            recovery_excluded = model_led_turn and bool(model_led_forbidden)
+
             # Already persisted actions retain their exact owner/recovery path.
             # Their existence is not a reason to run a NEW typed compiler on
             # every ordinary request. In particular, no Mail warming or contact
@@ -1479,7 +1495,7 @@ async def agent(body: dict[str, Any]):
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only,
                 owner_only=model_led_turn)
-                if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects) else None)
+                if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects and not recovery_excluded) else None)
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
                             "task": task_turn.plan.to_dict(),
@@ -1543,7 +1559,7 @@ async def agent(body: dict[str, Any]):
             # instead of being classified as a new isolated request.
             workflow_turn = (prepare_turn(
                 store, sid, prompt, persist=not test_mode, owner_only=model_led_turn)
-                if not model_led_turn or (latest_workflow and not pending_model_effects) else None)
+                if not model_led_turn or (latest_workflow and not pending_model_effects and not recovery_excluded) else None)
             # Only a turn that starts execution owns its revision; a response-only
             # turn (e.g. "already running") may describe another request's plan.
             workflow_owned = (own_workflow(workflow_turn.plan)
@@ -1622,15 +1638,7 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
             elif model_led_turn:
-                forbidden, bindings = routing_guard_contract(prompt)
-                if memory_excluded(prompt):
-                    from service.tools.registry import REGISTRY
-                    forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
-                    forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
-                                           if t.category in {"skill_tool", "mcp_read", "mcp_action"}
-                                           or t.name in {"run_shell", "run_applescript", "create_tool", "use_skill"})
-                if personal_communication_request(prompt):
-                    forbidden |= PRIVATE_EGRESS_TOOLS
+                forbidden, bindings = model_led_forbidden, model_led_bindings
                 if (continuation_requires_baseline(prompt, last_assistant)
                         or (sess and store.unresolved_action(sid))):
                     # A free-form "yes"/channel answer still goes to Ling for

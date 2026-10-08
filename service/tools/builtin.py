@@ -160,6 +160,7 @@ def _wrong_account_path(path: str) -> str | None:
     category="shell",
 )
 def run_shell(cmd: str) -> str:
+    from service.router.model_led import BuiltinCompletion
     try:
         from service.safety.policy import Tier, decide
 
@@ -178,7 +179,9 @@ def run_shell(cmd: str) -> str:
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                timeout=120, cwd=str(Path.home()))
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
-        return _clip(out.strip() or f"(exit {p.returncode}, no output)")
+        return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
+                                 tool_name="run_shell", completion_code=p.returncode,
+                                 phase="read" if decision.shell_argv is not None else "mutation")
     except subprocess.TimeoutExpired:
         return "(command timed out after 120s)"
     except Exception as e:  # noqa: BLE001

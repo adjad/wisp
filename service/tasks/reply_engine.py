@@ -300,6 +300,10 @@ async def prepare_task_turn_async(store, sid: str, prompt: str, *, assistant_sto
     now = now or datetime.now()
     compiled = None if owner_only else compile_task(prompt, now=now)
     active = store.active_task(sid) if persist else None
+    if owner_only and active:
+        from service.tasks.engine import owner_only_new_request
+        if owner_only_new_request(prompt):
+            return None  # Before reader construction, source warm-up or slots.
     needs_mail = ((compiled and compiled.intent == "email.reply") or
                   (compiled is None and active and active.get("intent") == "email.reply"))
     from service.tasks.engine import _CANCEL, _UNRELATED_SUBJECT_REPLY

@@ -106,6 +106,7 @@ def contact_dates(days: int = 30) -> str:
              "save this number to Dan's contact card"],
 )
 def manage_contacts(action: str, name: str, value: str = "") -> str:
+    from service.router.model_led import BuiltinCompletion
     a = (action or "").strip().lower()
     who = (name or "").strip()
     if not who:
@@ -122,7 +123,7 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
         p = _osa(script)
         if p.returncode != 0:
             return f"(could not create contact: {(p.stderr or '').strip()})"
-        return f"Created contact {who}."
+        return BuiltinCompletion(f"Created contact {who}.", tool_name="manage_contacts", completion_code=p.returncode)
 
     if a in ("add_phone", "add_email"):
         if not value.strip():
@@ -152,6 +153,8 @@ def manage_contacts(action: str, name: str, value: str = "") -> str:
         if out.startswith("MANY:"):
             names = [n for n in out[5:].splitlines() if n.strip()]
             return f"Several contacts match {who!r} — which one?\n" + "\n".join(f"  - {n}" for n in names[:8])
-        return f"Added {label} to {out[3:] if out.startswith('OK:') else who}."
+        text = f"Added {label} to {out[3:] if out.startswith('OK:') else who}."
+        return (BuiltinCompletion(text, tool_name="manage_contacts", completion_code=p.returncode)
+                if out.startswith("OK:") and out[3:].strip() else text)
 
     return f"(error: unknown action {a!r}. Use create, add_phone, or add_email.)"
