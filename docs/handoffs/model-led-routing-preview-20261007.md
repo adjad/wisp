@@ -36,8 +36,12 @@ scripted inference, not Ling, and ran before the entrypoint connection. They
 are not proof of model accuracy or entrypoint correctness. Twenty-one actual-entrypoint
 regressions passed in the first run, with no audit violations and verified owned
 SQLite/client/request cleanup. That attempt was rejected by a count guard whose
-metadata incorrectly expected twenty-two. It is preserved as failed qualification;
-the corrected count requires a fresh reviewed run. The original fifteen cases are
+metadata incorrectly expected twenty-two. It is preserved as failed qualification.
+The fresh reviewed run passes all twenty-one cases, with twenty-one unique actual
+test identities exactly matching the frozen inventory, no audit violations and
+verified cleanup. That run tested commit
+`f8d9797d250237294ec2c8d62b8c4e859a30a8fd`; this later documentation-only update
+does not change the tested product or test code. The original fifteen cases are
 retained; six additions cover stateless mode, target changes, inference failure,
 disconnection, baseline direct reads and dry-run discovery. Fixture teardown
 closes each owned SQLite connection; the closed runner also accounts for the
@@ -50,7 +54,7 @@ run completed all twenty-two loop tests with zero audit violations. Its trusted
 native dependency imports are not hostile-native containment or live-tool QA.
 
 **There is no verified runnable preview artifact yet.** Connected entrypoint
-validation, actual Ling synthetic inference, latency/memory measurements,
+validation has passed with scripted inference. Actual Ling synthetic inference, latency/memory measurements,
 packaging and app QA remain incomplete. No installed app replacement, production
 settings change, real-user tool execution, merge or deployment occurred.
 
