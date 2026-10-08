@@ -49,9 +49,9 @@ class FakeClient:
         yield {"kind": "final", "message": message}
 
 
-def tool_call(name, **args):
-    return {"id": "fixture-" + name, "function": {
-        "name": name, "arguments": json.dumps(args)}}
+def tool_call(tool_name, **args):
+    return {"id": "fixture-" + tool_name, "function": {
+        "name": tool_name, "arguments": json.dumps(args)}}
 
 
 @pytest.fixture
@@ -145,6 +145,8 @@ def endpoint(monkeypatch, tmp_path):
             store._db.execute("SELECT 1")
         assert not main.SESSIONS, "Request registry leaked"
         assert all(client.closed for client in state.owned), "Owned transport leaked"
+        for path in tmp_path.glob("sessions.db*"):
+            path.unlink(missing_ok=True)
 
 
 def test_explicit_rollback_keeps_baseline_and_never_allocates_owned_client(endpoint, monkeypatch):

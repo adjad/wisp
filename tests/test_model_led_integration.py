@@ -15,9 +15,9 @@ from service.router.router import routing_guard_contract
 from service.tools import registry
 
 
-def call(name, **args):
-    return {"id": f"synthetic-{name}", "function": {
-        "name": name, "arguments": json.dumps(args)}}
+def call(tool_name, **args):
+    return {"id": f"synthetic-{tool_name}", "function": {
+        "name": tool_name, "arguments": json.dumps(args)}}
 
 
 def discover(family, *names):

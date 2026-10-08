@@ -16,6 +16,14 @@ BUILTIN_ARGS = {
     "http_request": {"url": "https://fixture.example.invalid", "method": "POST", "body": "{}"},
     "manage_contacts": {"action": "create", "name": "Fixture"},
 }
+BUILTIN_PROMPTS = {
+    "run_shell": "Run this exact shell command: touch fixture.txt",
+    "run_applescript": "Run this exact AppleScript: return 1",
+    "software_update": "Install the pending macOS updates",
+    "uninstall_app": "Uninstall FixtureApp",
+    "http_request": "POST {} to https://fixture.example.invalid",
+    "manage_contacts": "Create a contact named Fixture",
+}
 AUTHORITATIVE_BUILTINS = {name: registry.get_tool(name) for name in BUILTIN_ARGS}
 
 
@@ -46,7 +54,7 @@ def test_working_builtin_mutation_parity_dispatches_once_with_explicit_receipt(s
     _, family = fake_builtin(name, effects, receipt, monkeypatch)
     store, sid = owned_store
     script = [[discover(family, name)], [call(name, **BUILTIN_ARGS[name])], "Completed."] if model_led else [[call(name, **BUILTIN_ARGS[name])], "Completed."]
-    run(script, prompt="Perform the explicit synthetic fixture action", approval=Approval(True),
+    run(script, prompt=BUILTIN_PROMPTS[name], approval=Approval(True),
         model_led_discovery=model_led, tools=[] if model_led else [name],
         claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
         finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
@@ -70,7 +78,7 @@ def test_unverified_builtin_attempt_is_consumed_and_cannot_retry(synthetic, owne
     _, family = fake_builtin(name, effects, receipt, monkeypatch)
     store, sid = owned_store
     run([[discover(family, name)], [call(name, **BUILTIN_ARGS[name])],
-         [call(name, **BUILTIN_ARGS[name])], "Attempted."], prompt="Perform the synthetic fixture action",
+         [call(name, **BUILTIN_ARGS[name])], "Attempted."], prompt=BUILTIN_PROMPTS[name],
         approval=Approval(True),
         claim_effect=lambda t, a: store.claim_model_effect(sid, "one", t.name, a, outbound=True),
         finish_effect=lambda c, ok: store.finish_model_effect(sid, c, verified=ok))
@@ -221,6 +229,9 @@ def owned_store(tmp_path):
         yield store, store.create_session()
     finally:
         store._db.close()
+        # Each case owns this database; bound the expanded suite's temp state.
+        for path in tmp_path.glob("effects.db*"):
+            path.unlink(missing_ok=True)
 
 
 def test_claim_is_atomic_across_connections_and_restart(owned_store):

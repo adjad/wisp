@@ -108,6 +108,12 @@ def test_cancelled_uncertain_legacy_owner_keeps_model_action_envelope_closed(end
     from service.workflows.models import WorkflowPlan
     if mode is None:
         monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    async def forbidden_shell(**args):
+        raise AssertionError("An unresolved effect admitted another mutation")
+    forbidden_shell.__module__ = "service.tools.builtin"
+    registry.REGISTRY["run_shell"] = registry.Tool("run_shell", "Synthetic mutation",
+        {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]},
+        "shell", forbidden_shell)
     sid = endpoint.store.create_session()
     plan = WorkflowPlan(status="running", sources=["messages"], recipient="Fixture", channel="messages", revision=1)
     endpoint.store.save_workflow(sid, plan.to_dict())
