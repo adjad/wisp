@@ -1551,6 +1551,27 @@ class AssistantStore:
             " ORDER BY when_ts ASC", (now - 300, now + days * 86400)).fetchall()
         return self._collapse([dict(r) for r in rows])
 
+    def calendar_events_overlapping(self, start_ts: float, end_ts: float) -> list[dict]:
+        """Active Calendar events that overlap a half-open local-day interval.
+
+        A start-time-only upcoming query loses all-day events after midnight
+        and timed events once they have started. For a day view, include events
+        that start inside the day plus earlier starts whose recorded end crosses
+        into it. ``end_ts == start_ts`` events inside the day are kept by the
+        start-in-range arm; an event ending exactly at day start is excluded.
+        """
+        start, end = float(start_ts), float(end_ts)
+        if not math.isfinite(start) or not math.isfinite(end) or end <= start:
+            raise ValueError("Calendar day bounds must be finite and increasing")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT c.*, e.end_ts FROM commitments c "
+                "LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
+                "WHERE c.status='active' AND c.source='calendar' AND c.when_ts < ? "
+                "AND (c.when_ts >= ? OR e.end_ts > ?)" + _seed_clause() +
+                " ORDER BY c.when_ts ASC", (end, start, start)).fetchall()
+        return [dict(row) for row in rows]
+
     def recently_added(self, since_ts: float, limit: int = 20) -> list[dict]:
         """Commitments Wisp FIRST SAW after `since_ts`, newest-first.
 

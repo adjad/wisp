@@ -27,6 +27,9 @@ on:
       performance_baseline_sha256:
         description: 'Independently reviewed baseline approval SHA-256'
         type: string
+      performance_waiver_sha256:
+        description: 'Digest of the committed waiver record docs/releases/<version>-performance-waiver.json; mutually exclusive with the three performance_* evidence inputs'
+        type: string
 
 permissions:
   contents: read
@@ -128,6 +131,12 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      # Waivers are an ad-hoc-only, per-version exception; the signed path always needs full evidence.
+      - name: Refuse performance waiver on the signed release
+        if: inputs.performance_waiver_sha256 != ''
+        run: |
+          echo "The signed release never accepts a performance waiver" >&2
+          exit 1
       # Rebuild without an untrusted artifact handoff or restored dependency cache.
       # Credentials are exposed only to the explicit external release step.
       - name: Rebuild approved source with strict validation
@@ -205,6 +214,7 @@ jobs:
       - name: Rebuild ad-hoc source with strict validation
         run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
       - name: Require reviewed performance artifact bindings
+        if: inputs.performance_waiver_sha256 == ''
         env:
           GH_TOKEN: ${{ github.token }}
           PERFORMANCE_RUN_ID: ${{ inputs.performance_run_id }}
@@ -217,6 +227,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PERFORMANCE_RUN_ID" > .wisp-build/performance-intake/run.json
           python3 -B -c 'import json,os; d=json.load(open(".wisp-build/performance-intake/run.json")); assert d["status"] == "completed" and d["conclusion"] == "success"; assert d["head_sha"] == os.environ["PERFORMANCE_CANDIDATE_SHA"]; assert d["repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"] and d["head_repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"]'
       - name: Download selected Desktop performance evidence
+        if: inputs.performance_waiver_sha256 == ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: wisp-release-performance-${{ github.sha }}
@@ -224,6 +235,7 @@ jobs:
           run-id: ${{ inputs.performance_run_id }}
           github-token: ${{ github.token }}
       - name: Publish bound verified ad-hoc assets
+        if: inputs.performance_waiver_sha256 == ''
         env:
           WISP_AD_HOC_RELEASE_APPROVED: 'true'
           GH_TOKEN: ${{ github.token }}
@@ -231,6 +243,20 @@ jobs:
           PERFORMANCE_BASELINE_SHA256: ${{ inputs.performance_baseline_sha256 }}
         run: |
           ./scripts/wisp-build release-ad-hoc --output dist/candidate  --performance-receipt .wisp-build/performance/receipt.json  --performance-baseline .wisp-build/performance/approved-baseline.json  --performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"  --performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"
+      # The waiver record is per version: this constant must equal the configured
+      # version, and the gate refuses any other path, so a stale value fails closed.
+      - name: Publish waived ad-hoc assets
+        if: inputs.performance_waiver_sha256 != ''
+        env:
+          WISP_AD_HOC_RELEASE_APPROVED: 'true'
+          GH_TOKEN: ${{ github.token }}
+          PERFORMANCE_RUN_ID: ${{ inputs.performance_run_id }}
+          PERFORMANCE_RECEIPT_SHA256: ${{ inputs.performance_receipt_sha256 }}
+          PERFORMANCE_BASELINE_SHA256: ${{ inputs.performance_baseline_sha256 }}
+          PERFORMANCE_WAIVER_SHA256: ${{ inputs.performance_waiver_sha256 }}
+        run: |
+          python3 -B -c 'import os,re; assert not any(os.environ[k] for k in ("PERFORMANCE_RUN_ID", "PERFORMANCE_RECEIPT_SHA256", "PERFORMANCE_BASELINE_SHA256")); assert re.fullmatch(r"[a-f0-9]{64}", os.environ["PERFORMANCE_WAIVER_SHA256"])'
+          ./scripts/wisp-build release-ad-hoc --output dist/candidate --performance-waiver docs/releases/1.2.0-performance-waiver.json --performance-waiver-sha256 "$PERFORMANCE_WAIVER_SHA256"
       - name: Upload ad-hoc publication diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
