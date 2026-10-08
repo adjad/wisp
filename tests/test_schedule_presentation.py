@@ -202,6 +202,30 @@ def test_daily_schedule_labels_overnight_and_multiday_start_dates(store, monkeyp
         assert "earlier today" not in rows[title]
 
 
+def test_daily_context_and_agenda_preserve_today_count_and_titles(store, monkeypatch):
+    now = datetime(2026, 10, 8, 10).timestamp()
+    day_start, day_end = assistant_tools._local_day_bounds(now)
+    store.sync_source("calendar", [
+        {"source_id": "all-day", "kind": "event", "title": "All-day event",
+         "when_ts": day_start, "end_ts": day_end, "all_day": True},
+        {"source_id": "started", "kind": "meeting", "title": "Started meeting",
+         "when_ts": now - 1800, "end_ts": now + 1800, "all_day": False},
+    ])
+    monkeypatch.setattr(brief, "assistant_store", store)
+    monkeypatch.setattr(
+        "service.assistant.sync_status.source_status",
+        lambda source: {"id": source, "label": source.title(), "state": "ready"})
+
+    block = brief._calendar_block(now)
+    agenda = brief._agenda(now)
+
+    assert "ON THE CALENDAR TODAY (2 item(s))" in block
+    assert "All-day event" in block and "Started meeting" in block
+    assert len(agenda["events"]) == 2
+    assert {item["title"] for item in agenda["events"]} == {
+        "All-day event", "Started meeting"}
+
+
 def test_month_range_keeps_future_month_items_and_separates_sources(monkeypatch):
     _ready(monkeypatch)
     rows = [
