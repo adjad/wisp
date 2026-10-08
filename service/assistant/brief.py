@@ -985,22 +985,36 @@ def _agenda(now: float) -> dict:
     }
 
 
-def _agenda_row(item: dict, now: float, *, show_account: bool) -> str:
+def _agenda_row(item: dict, now: float, *, show_account: bool,
+                day_start: float | None = None) -> str:
     when = datetime.fromtimestamp(item["when_ts"])
     delta = item["when_ts"] - now
+    continued_from_prior_day = (
+        day_start is not None
+        and float(item["when_ts"]) < day_start
+        and float(item.get("end_ts") or 0) > day_start
+        and "calendar" in _kinds(item))
     if item.get("all_day"):
         clock, rel = "All day", ""
+        if continued_from_prior_day:
+            rel = "continued into today"
     else:
-        clock = when.strftime("%-I:%M %p")
-        if delta < -300:
+        if continued_from_prior_day:
+            clock = f"Started {when.strftime('%a %-I:%M %p')}"
+            rel = "continued into today"
+        elif delta < -300:
+            clock = when.strftime("%-I:%M %p")
             # "(now)" for something that was due two hours ago is what the old
             # rows said, and it read as "happening right now".
             rel = "overdue" if _is_reminder(item) else "earlier today"
         elif delta < 300:
+            clock = when.strftime("%-I:%M %p")
             rel = "now"
         elif delta < 3600:
+            clock = when.strftime("%-I:%M %p")
             rel = f"in {int(delta // 60)} min"
         else:
+            clock = when.strftime("%-I:%M %p")
             hours = delta / 3600
             rel = f"in {hours:.0f} h" if hours >= 2 else f"in {hours:.1f} h"
     extras = []
@@ -1026,11 +1040,14 @@ def _schedule_section(now: float) -> str:
     and appending "A calendar event alone is not a reminder." — the distinction
     the tool output was spending a sentence on is a heading here.
     """
+    from service.tools.assistant_tools import _local_day_bounds
+    day_start, _ = _local_day_bounds(now)
     agenda = _agenda(now)
     states, show_account = agenda["states"], agenda["show_account"]
     lines = ["**📅 Today**"]
     if agenda["events"]:
-        lines += [_agenda_row(item, now, show_account=show_account)
+        lines += [_agenda_row(item, now, show_account=show_account,
+                              day_start=day_start)
                   for item in agenda["events"]]
     elif states["calendar"]["state"] == "syncing":
         lines.append("- Calendar is still syncing.")
@@ -1041,7 +1058,8 @@ def _schedule_section(now: float) -> str:
     blocks = ["\n".join(lines)]
     if agenda["reminders"]:
         blocks.append("**✅ Reminders due today**\n"
-                      + "\n".join(_agenda_row(item, now, show_account=show_account)
+                      + "\n".join(_agenda_row(item, now, show_account=show_account,
+                                               day_start=day_start)
                                   for item in agenda["reminders"]))
     if states["reminders"]["state"] == "unavailable":
         blocks.append("**✅ Reminders source**\n- Reminders couldn't be read — check "
