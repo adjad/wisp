@@ -106,6 +106,17 @@ Focused tests: the five `tests/test_model_led*.py` modules. The simulation
 manifest adds the two new suites. `tests/conftest.py` explicitly selects rollback
 for 14 named legacy-router contract suites; the default-on suites remain outside
 that fixture and test the unset override through the actual SSE entrypoint.
+
+Draft repairs cover durable shared claims, rollback/owner-only isolation, opaque
+retargeting, read/compute/preview phases, exact timer/memory/window receipts and
+fixture provenance, full memory exclusions, native sender/body attribution, safe
+no-proof clarifications, source readiness and short date-followup obligations.
+The first controller run was unqualified because subtests were incorrectly
+counted as collected top-level cases. The second run had one fake timer module
+metadata failure (119 of 120 top-level cases passed and 15 subtests passed). Both
+failures are retained in the private controller artifacts. Final qualification
+uses a fresh reconciled candidate and verifies top-level identities and subtest
+outcomes separately; those earlier runs are not final pass evidence.
 Delivery must reconcile current `main`, freeze and push one candidate, then bind
 mechanical validation, configured CI and independent risk review to that exact
 SHA. The original preview's passing evidence does not qualify this successor.
