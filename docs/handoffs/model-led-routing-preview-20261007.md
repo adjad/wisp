@@ -33,8 +33,11 @@ path. No Swift, configuration or release version changes are included.
 Sixteen pure discovery tests passed and twenty-two synthetic actual-loop,
 validation, permission and fake-executor tests passed. The loop tests used
 scripted inference, not Ling, and ran before the entrypoint connection. They
-are not proof of model accuracy or entrypoint correctness. Twenty-two actual-entrypoint
-regressions are prepared but have not run yet. The original sixteen cases are
+are not proof of model accuracy or entrypoint correctness. Twenty-one actual-entrypoint
+regressions passed in the first run, with no audit violations and verified owned
+SQLite/client/request cleanup. That attempt was rejected by a count guard whose
+metadata incorrectly expected twenty-two. It is preserved as failed qualification;
+the corrected count requires a fresh reviewed run. The original fifteen cases are
 retained; six additions cover stateless mode, target changes, inference failure,
 disconnection, baseline direct reads and dry-run discovery. Fixture teardown
 closes each owned SQLite connection; the closed runner also accounts for the
