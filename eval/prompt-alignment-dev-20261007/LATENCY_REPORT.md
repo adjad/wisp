@@ -1,6 +1,6 @@
 # Routing latency — October 7, 2026
 
-Keep deterministic complete-read shortcuts. Flexible reads require one model interpretation; the new validation/compiler work itself adds less than a millisecond in this development measurement. **V2 latency on the Mac is unmeasured.** The original source and oQ4e/oQ6e Ling models are installed, but no verified merged V2 MLX serving artifact was found. No model or production setting was changed for this report.
+Keep deterministic complete-read shortcuts. Flexible reads require one model interpretation; the new validation/compiler work itself adds less than a millisecond in the CPU development measurement. A separate, completed actual-oMLX comparison now measures the existing V2 merged oQ4e export on this Mac. It does not measure this branch’s shared request through the Wisp client or qualify end-to-end Wisp latency. The earlier statement that no verified V2 Mac export existed was true when this report was first written; it is superseded by the separately recorded comparison below.
 
 ## New CPU measurement
 
@@ -47,3 +47,23 @@ Historical evidence: [October 5 report](/Users/adijain/.codex/worktrees/routing-
 **Recommendation:** retain deterministic shortcuts; finish strict request-budget/history/schema handling and validate a merged/quantized V2 export on the actual Mac before enabling it for Wisp 1.3.0, after 1.2.0. These changes remain isolated and unmerged; they do not alter 1.2.0 release settings. Compare identical synthetic cases through the real client, record effective wire payload, output tokens, repairs, p50/p95, timeouts and contention, then include source/result presentation costs in a separate full-turn benchmark. Do not promise a V2 latency hit of half a second from base-model evidence.
 
 The five parser failures are repaired and their original failures retained in the handoff. The shared-client fix is an **unapplied proposal** in `STRICT_FITTING_PROPOSAL.patch`; it awaits the actual retained file-owner release. Three strict transport expected failures remain. This report and branch do not qualify activation, merging or Wisp release performance.
+
+
+## Completed actual-oMLX export diagnostic, added October 7
+
+The user separately requested loading both exports through installed oMLX 0.7.0. The completed diagnostic generated 120 requests/model, sequentially, using the frozen real-life validation bundle; no real tools or user data were accessed. All 120 paired messages/request hashes and served prompt-token counts matched. Its scored routing denominator is 80; the 16 ambiguous requests and 24 grounded answers are separate. No extra run occurred to update this document.
+
+| Existing export | Exact routing | Schema valid | Warm routing p50 / p95 | Server TTFT p50 / p95 |
+| --- | --- | --- | --- | --- |
+| Base Ling oQ4e | 0/80 | 12/80 | 0.583 / 0.935 s | 0.220 / 0.240 s |
+| Wisp V2 merged oQ4e | 13/80 | 49/80 | 0.519 / 0.840 s | 0.220 / 0.230 s |
+
+Warm timing is 79 scored routing requests/model, one observation/case, first request excluded, no prompt cache hits reported, base first and OS caches not flushed. Explicit load API times were 1.620/1.936 s and first-request times 1.330/0.803 s (base/V2). Service model-memory estimate was 4.535 GiB for each; it is not total process RAM or allocator peak. No controlled cold-start measurement was made.
+
+The diagnostic includes the intent schema as literal prompt text, synthetic clock and selected context, greedy/no-thinking decoding and a 512-token routing cap. This branch instead declares a 900-token cap, sends schema in response_format, and adds prior-tool source metadata through the shared request builder. The actual comparison bypasses the Wisp OMLXClient fitting path. Therefore **0.519 s is V2 serving latency for that frozen diagnostic, not an aligned-planner latency or a measured hit versus deterministic routing**. No API schema enforcement was requested or qualified in the completed diagnostic.
+
+Both oQ4e exports have different per-layer mixed-bit allocations/calibration, so results do not isolate fine-tuning alone or quantify its quantization loss relative to BF16. Source/argument diagnostics in the unchanged scorer require schema validity. The 0/80 base exact score does not imply zero language understanding.
+
+V2 has real routing improvements but still fails follow-ups, requested source coverage and arguments. Qualitative answer review found stale/denied-source handling failures and regressions in timezone conversion and calendar availability. Neither unrestricted Ling routing nor a general assistant improvement is qualified.
+
+Full report: [actual-oMLX diagnostic report](/Users/adijain/.codex/visualizations/2026/10/05/01a10aef-17bd-7f80-b5c8-f5cc08fe2506/ling-v2-oq4e-comparison-20261007/captureomlx/REPORT.md). Report SHA256 `25686e5d871be3c64c551ce81bbd03d4c678be77b2a595b87a0fffa3baed59bc`; machine summary SHA256 `d8323f70b3faa89887b0bdd266d5be475f472d390a9ff65d7ddd15d70e3baee2`; execution SHA256 `5ab926c0db1a608c304050d7820847a9968dccc08cf74c89e2ceb3cc34877030`. Both evaluator models were unloaded and the reservation released. That past cleanup is not present availability or authority for a new run.
