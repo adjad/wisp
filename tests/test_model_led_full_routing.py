@@ -198,3 +198,24 @@ def test_question_with_unverified_factual_premise_is_replaced(synthetic):
     _, _, answer = run(["What time was the six o'clock meeting Mom mentioned?"],
                        require_fresh_personal=True)
     assert "six o'clock" not in answer and "haven't checked" in answer
+
+
+@pytest.mark.parametrize("name,category,text", [
+    ("view_messages", "messages_read", "Wisp is still syncing your messages after launch, so I’m holding off."),
+    ("view_messages", "messages_read", "(Can't read Messages: fixture permission unavailable.)"),
+    ("view_emails", "email_read", "(No raw email content cached right now — either Mail.app hasn't synced yet.)"),
+    ("view_emails", "email_read", "(Read/unread status isn't in the raw email cache yet — arrives after sync.)")])
+def test_source_readiness_failure_does_not_establish_freshness(name, category, text):
+    from types import SimpleNamespace
+    from service.router.model_led import personal_evidence_matches
+    scope = "messages" if category == "messages_read" else "mail"
+    assert not personal_evidence_matches({"scope": scope, "day": "today"},
+        SimpleNamespace(name=name, category=category), {"day": "today"}, {}, text)
+
+
+def test_genuine_current_empty_messages_scope_is_distinct_from_sync_failure():
+    from types import SimpleNamespace
+    from service.router.model_led import personal_evidence_matches
+    assert personal_evidence_matches({"scope": "messages", "day": "today"},
+        SimpleNamespace(name="view_messages", category="messages_read"), {"day": "today"}, {},
+        "No messages found for today.")

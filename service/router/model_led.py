@@ -192,6 +192,10 @@ def fresh_personal_obligation(prompt: str, last_tools: str = "") -> dict:
 
 def personal_evidence_matches(obligation: dict, tool, args: dict,
                               contact_receipts: Mapping[str, str], result: str = "") -> bool:
+    if str(result).strip().lower().startswith(("(error", "wisp is still syncing", "wisp could not check",
+            "(can't read messages:", "(no message data yet", "(no raw email content cached",
+            "(read/unread status isn't in the raw email cache yet")):
+        return False
     if tool.name in {"lookup_contact", "find_contacts", "resolve_contact"}:
         return False
     scope = obligation.get("scope", "")
