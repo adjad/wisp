@@ -119,6 +119,7 @@ def endpoint(monkeypatch, tmp_path):
     upcoming.__module__ = "service.tools.assistant_tools"
     fake_registry["get_upcoming"] = registry.Tool("get_upcoming", "Synthetic calendar read",
         {"type": "object", "properties": {"days": {"type": "integer"},
+         "period": {"type": "string"},
          "calendar_only": {"type": "boolean"}}, "additionalProperties": False},
         "assistant_read", upcoming)
 
@@ -337,7 +338,7 @@ def test_default_off_preserves_direct_calendar_read(endpoint, monkeypatch):
     # exact original code via the fixture's saved callable, not a second import.
     monkeypatch.setattr(reads, "compile_read", endpoint.original_compile_read)
     events = endpoint.request("what is on my calendar this week")
-    assert endpoint.effects and endpoint.effects[0][0] == "get_upcoming"
+    assert endpoint.effects == [("get_upcoming", {"period": "this week"})]
     assert not endpoint.owned and not endpoint.agent_calls and not endpoint.baseline_calls
     assert endpoint.starts == 0
     assert any(e["type"] == "done" for e in events)
