@@ -80,7 +80,11 @@ from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
-from service.router.router import rule_route
+from service.router.router import (RouteDecision, confirms_offered_action,
+                                   routing_guard_contract, rule_route,
+                                   _strict_private_read_decision)
+from service.router.model_led import (continuation_requires_baseline,
+                                      experiment_enabled)
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
 from service.workflows.compiler import extract_stock_symbols
@@ -1528,24 +1532,57 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 return
 
+            # Experimental semantic discovery starts only after controlled tasks,
+            # news provenance and durable workflow ownership have declined the turn.
+            model_led_turn = False
+            model_led_target = None
+            model_led_verified_context = False
+            if (experiment_enabled(os.environ.get("WISP_MODEL_LED_ROUTING"))
+                    and not task_turn and not workflow_turn
+                    and not skill_turn and not active_skill
+                    and not cloud_super_model_enabled()
+                    and not continuation_requires_baseline(prompt, last_assistant)
+                    and not confirms_offered_action(prompt, last_assistant)
+                    and not (last_assistant and "?" in last_assistant
+                             and len(prompt.split()) <= 6)):
+                proposed_target = role_target("agent")
+                ling_name = proposed_target.model.rstrip("/").rsplit("/", 1)[-1]
+                if (proposed_target.endpoint.managed
+                        and proposed_target.endpoint.name == "local"
+                        and getattr(client, "managed", False)
+                        and getattr(client, "base_url", "").rstrip("/")
+                            == proposed_target.endpoint.base_url.rstrip("/")
+                        and ling_name in {"Ling-3.0-tiny-oQ4e", "Ling-3.0-tiny-oQ6e",
+                                          "Ling-3.0-tiny-Wisp-V2-merged-oQ4e",
+                                          "Ling-3.0-tiny-Wisp-V2-merged-oQ6e"}):
+                    model_led_turn = True
+                    model_led_target = proposed_target
+                    # Consult the existing rules only for strict context provenance;
+                    # their positive tool selection never constrains discovery.
+                    context_route = _strict_private_read_decision(prompt) or rule_route(prompt)
+                    model_led_verified_context = bool(context_route and (
+                        context_route.verified_results_only
+                        or _current_schedule_source_route(context_route, prompt)))
+
             # Structured reads already provide the answer; an extra model
             # pass must not change units, dates, attribution or tool scope.
             from service.workflows.reads import (
                 adjacent_stock_response, compile_read, execute_read,
             )
-            read_plan = compile_read(
-                prompt, last_user=last_user or "", last_tools=last_tools or "",
-                last_stock_response=adjacent_stock_response(
-                    last_assistant or "", last_tools or ""))
-            if read_plan is not None:
-                read_result = await execute_read(read_plan, emit, test_mode=test_mode)
-                if not test_mode:
-                    persist_user_turn()
-                    store.add_turn(sid, "assistant", read_result.response,
-                                   tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
-                await emit({"type": "text", "text": read_result.response})
-                await emit({"type": "done"})
-                return
+            if not model_led_turn:
+                read_plan = compile_read(
+                    prompt, last_user=last_user or "", last_tools=last_tools or "",
+                    last_stock_response=adjacent_stock_response(
+                        last_assistant or "", last_tools or ""))
+                if read_plan is not None:
+                    read_result = await execute_read(read_plan, emit, test_mode=test_mode)
+                    if not test_mode:
+                        persist_user_turn()
+                        store.add_turn(sid, "assistant", read_result.response,
+                                       tool_digest=", ".join(c["name"] for c in read_result.tool_calls) or None)
+                    await emit({"type": "text", "text": read_result.response})
+                    await emit({"type": "done"})
+                    return
 
             turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
             # Optional embedding/reranker routing needs the engine before it
@@ -1553,7 +1590,7 @@ async def agent(body: dict[str, Any]):
             # leave it cold until a real generation is needed.
             retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
                 "provider", "embedding")).lower()
-            if retrieval_provider != "lexical":
+            if not model_led_turn and retrieval_provider != "lexical":
                 retrieval_role = "reranker" if retrieval_provider == "reranker" else "embedding"
                 try:
                     if role_target(retrieval_role).endpoint.managed:
@@ -1571,6 +1608,15 @@ async def agent(body: dict[str, Any]):
                 decision = workflow_turn.decision
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
+            elif model_led_turn:
+                forbidden, bindings = routing_guard_contract(prompt)
+                decision = RouteDecision(
+                    role="agent", model=model_led_target.model, needs_tools=True,
+                    source="model_led", route_source="model_led_discovery",
+                    reason="Experimental local Ling capability discovery",
+                    tool_subset=[], multi_round=True, forbidden_tools=forbidden,
+                    tool_argument_bindings=bindings,
+                    verified_results_only=model_led_verified_context)
             else:
                 decision = await route(prompt, last_user=last_user,
                                        recent_users=recent_users,
@@ -1587,9 +1633,10 @@ async def agent(body: dict[str, Any]):
 
             # Context/task/assent routing has already run. Preserve scoped tools
             # and keep complete greetings/thanks on the tool-free fast path.
-            decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
+            if not model_led_turn:
+                decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
             super_model_cloud = False
-            if cloud_super_model_enabled():
+            if not model_led_turn and cloud_super_model_enabled():
                 if active_skill:
                     super_reason = "an active local skill must remain on this Mac"
                 else:
@@ -1620,7 +1667,7 @@ async def agent(body: dict[str, Any]):
                                          else "super_model_local")
                 decision.reason = f"{decision.reason}; Super Model: {super_reason}"
             else:
-                target = role_target(decision.role)
+                target = model_led_target if model_led_turn else role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
             if not skill_turn:
@@ -1641,6 +1688,11 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
+            if model_led_turn:
+                # Capture the admitted local target for every step/context budget.
+                # Existing owned-client cleanup closes this per-turn transport.
+                owned_inference_client = OMLXClient(target=target)
+                turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -1660,9 +1712,9 @@ async def agent(body: dict[str, Any]):
 
             user_msg: dict[str, Any] = {
                 "role": "user",
-                "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
+                "content": prompt if (super_model_cloud or model_led_turn) else (decision.resolved_request or prompt),
             }
-            schedule_read = (not (workflow_turn and workflow_turn.decision)
+            schedule_read = (not model_led_turn and not (workflow_turn and workflow_turn.decision)
                              and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
@@ -1755,11 +1807,12 @@ async def agent(body: dict[str, Any]):
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
-                                        include_memory_context=_agent_memory_context_allowed(
+                                        model_led_discovery=model_led_turn,
+                                        include_memory_context=(not model_led_turn and _agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),
-                                            schedule_read=schedule_read),
+                                            schedule_read=schedule_read)),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,

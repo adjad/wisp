@@ -1181,6 +1181,7 @@ async def run_agent(
     # below — so callers get the plan for free from the existing event
     # stream, no separate return path needed.
     test_mode: bool = False,
+    model_led_discovery: bool = False,
     # Whether to emit raw_model_io events (see _run_step) — the full request
     # (messages + every offered tool schema) and response, on every attempt of
     # every step. Real cost: measured up to ~1.6MB for a single session. The
@@ -1315,7 +1316,7 @@ async def run_agent(
     # trigger these rules, so paying for them on every step of e.g. "open
     # Safari" or "set the volume" was pure waste. `tools is None` is the
     # unscoped route (the whole registry, messages included).
-    offers_messages = tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
+    offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
     if not public_web_synthesis:
         try:
@@ -1399,8 +1400,33 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    schemas = [s for s in _admit(tool_schemas(tools))
-               if s["function"]["name"] not in forbidden_tools]
+    discovery = None
+    capability_catalog = None
+    if model_led_discovery:
+        # Capability metadata does not authorize execution or new disclosure.
+        if not getattr(client, "managed", True) or public_web_synthesis:
+            raise ValueError("Model-led discovery requires managed local inference")
+        if force_first_tool or direct_calls or required_tool_groups:
+            raise ValueError("An owned execution plan must retain its controlled route")
+        from service.router.model_led import (
+            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
+            SelectionError, discovery_schema, registry_specs,
+        )
+        from service.tools.registry import REGISTRY
+
+        def fresh_capability_catalog():
+            return CapabilityCatalog.build(
+                registry_specs(REGISTRY),
+                blocked=frozenset(forbidden_tools) | _skill_boundary_names())
+
+        discovery = DiscoveryState()
+        capability_catalog = fresh_capability_catalog()
+        tools = []
+        schemas = ([discovery_schema(capability_catalog)]
+                   if capability_catalog.families else [])
+    else:
+        schemas = [s for s in _admit(tool_schemas(tools))
+                   if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
     # this set is premature, not impossible — see the rejection below.
@@ -1413,6 +1439,7 @@ async def run_agent(
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
+                       + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
                        + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
@@ -1980,6 +2007,7 @@ async def run_agent(
         mode = narration_mode()
         narrating = (
             mode != "off"
+            and not model_led_discovery
             and tools is not None
             and not (forcing_first_step or expecting_tool)
             and (not multi_round or _unmet_group() is None
@@ -2089,6 +2117,8 @@ async def run_agent(
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
             allowed_names = {s["function"]["name"] for s in step_schemas}
+            if model_led_discovery and step_schemas != offered_schemas:
+                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
@@ -2366,6 +2396,32 @@ async def run_agent(
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
+            if discovery is not None and name == DISCOVERY_TOOL:
+                # Do not widen this step's allowed_names. A sibling real call
+                # must not gain authority from a schema request in this batch.
+                # Metadata never enters source/effect receipts or tool_digest.
+                try:
+                    capability_catalog = fresh_capability_catalog()
+                    expansion = discovery.expand(
+                        args, capability_catalog, step_offered=frozenset(allowed_names))
+                    tools = list(expansion.names)
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
+                    if discovery.attempts < MAX_DISCOVERIES:
+                        schemas.append(discovery_schema(capability_catalog))
+                    turn_tool_names = {s["function"]["name"] for s in schemas}
+                    msgs[0] = {"role": "system", "content": (
+                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    result = expansion.receipt()
+                    await emit({"type": "routing_discovery", "families": list(expansion.families),
+                                "tools": tools, "status": "ready_next_step"})
+                except SelectionError as error:
+                    result = f"Schema selection rejected: {error}. No source was read or action performed."
+                    if discovery.attempts >= MAX_DISCOVERIES:
+                        schemas = [s for s in schemas if s["function"]["name"] != DISCOVERY_TOOL]
+                    await emit({"type": "routing_discovery", "status": "rejected"})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
             # fixed values before grounding, confirmation previews and tool
@@ -2822,7 +2878,10 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = _admit(tool_schemas(tools))
+                schemas = [s for s in _admit(tool_schemas(tools))
+                           if s["function"]["name"] not in forbidden_tools]
+                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
+                    schemas.append(discovery_schema(fresh_capability_catalog()))
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound
