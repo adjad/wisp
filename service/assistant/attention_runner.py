@@ -42,6 +42,8 @@ def get_ledger() -> Ledger:
 def reset() -> None:
     """For tests: forget the cached ledger and fingerprint."""
     global _ledger, _last_fingerprint, _last_run, _task
+    if _task is not None and not _task.done():
+        _task.cancel()
     _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
 
 
@@ -61,7 +63,9 @@ async def create_reminder(plan: Plan) -> dict:
     is prose, so it is classified conservatively: only "Reminder set:" is success.
     """
     from service.tools.assistant_tools import add_reminder
-    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).strftime("%Y-%m-%dT%H:%M")
+    # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
+    # and a time in a repeated DST hour keeps its meaning.
+    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
     text = await add_reminder(plan.title, when_iso, "reminder")
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
@@ -102,6 +106,7 @@ async def run_tick(now: float | None = None) -> list:
     _last_run = now
     settings = load_settings(settings_path(MOE_DIR))
     if settings.mode == "off":
+        get_ledger().set_meta("last_mode", "off")     # so resuming live re-baselines
         return []
     from service.tools import imessage_tools
     feed = imessage_tools.structured_messages_snapshot()
@@ -117,7 +122,8 @@ async def run_tick(now: float | None = None) -> list:
         records=records, commitments=_commitments(now), now=now, tz=local_timezone(),
         settings=settings, ledger=get_ledger(), create=create_reminder, publish=_publish,
         fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for)
-    _last_fingerprint = fingerprint
+    if not getattr(outcomes, "limited", False):
+        _last_fingerprint = fingerprint               # a limited pass has work left: look again soon
     return outcomes
 
 

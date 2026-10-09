@@ -40,6 +40,12 @@ from pathlib import Path
 MAX_EFFECTS_PER_PASS = 1
 CAP_STATES = ("created", "unknown", "claimed")        # an unknown write may exist: it counts
 
+class Outcomes(list):
+    """The outcomes of one pass. `limited` is True when it stopped at the per-pass effect limit
+    with eligible messages still waiting, so the caller should look again soon."""
+    limited: bool = False
+
+
 Create = Callable[[Plan], Awaitable[dict]]            # -> {"ok": bool, "status": str, "error": str}
 Publish = Callable[[dict], Awaitable[None]]
 Commitments = Callable[[], list[dict]]
@@ -56,9 +62,13 @@ class Outcome:
 
 async def process(*, records: list[dict], commitments: list[dict], now: float, tz: str,
                   settings: Settings, ledger: Ledger, create: Create, publish: Publish,
-                  fresh_commitments: Commitments, name_for: NameFor | None = None) -> list[Outcome]:
+                  fresh_commitments: Commitments, name_for: NameFor | None = None) -> Outcomes:
+    outcomes: Outcomes = Outcomes()
     if settings.mode == "off":
-        return []
+        # Remember that it was off. Resuming live afterwards must re-baseline, or the messages
+        # that arrived during the pause would be swept up. (Unreadable settings count as off.)
+        ledger.set_meta("last_mode", "off")
+        return outcomes
     ledger.recover(now)
     if ledger.meta("enabled_at") is None or (settings.mode == "live"
                                              and ledger.meta("last_mode") != "live"):
@@ -70,11 +80,10 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
     fresh = [i for i in items if i.direction == "incoming" and floor <= i.ts <= now]
     unseen_ids = {i.id for i in fresh} - ledger.known([i.id for i in fresh])
     if not unseen_ids:
-        return []
+        return outcomes
 
     snapshot = Snapshot(Path("."), {}, sorted(items, key=lambda i: i.ts), list(commitments))
     detector = UncapturedCommitment(snapshot, tz=tz)
-    outcomes: list[Outcome] = []
     effects = 0
 
     for item in sorted((i for i in fresh if i.id in unseen_ids), key=lambda i: i.ts):
@@ -91,6 +100,7 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         if plan is None:                                  # too late to be useful; not recorded
             continue
         if settings.mode == "live" and effects >= MAX_EFFECTS_PER_PASS:
+            outcomes.limited = True
             break                                         # the rest wait for the next pass, unclaimed
         if not ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts,
                             event_ts=plan.event_ts, now=now):

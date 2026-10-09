@@ -201,7 +201,7 @@ async def test_off_does_nothing_at_all(ledger):
     f = Fakes()
     assert await run(mom_thread(), MON_9AM + 60, ledger, f, mode="off") == []
     assert f.created == [] and ledger.recent() == []
-    assert ledger.meta("last_mode") == "live"                 # untouched: off returns before any bookkeeping
+    assert ledger.meta("last_mode") == "off"                  # the only bookkeeping: it WAS off
 
 
 async def test_shadow_records_what_it_would_do_and_does_nothing(ledger):
@@ -449,3 +449,26 @@ def test_messages_without_a_guid_get_distinct_ids_from_the_feed_identity():
 def test_a_bare_number_is_masked_not_called_plain_text():
     assert live.who_label("+16505550123") == "Text from …0123"
     assert live.who_label("Mom") == "Mom" and live.who_label("") == "Text"
+
+
+async def test_pausing_with_off_and_resuming_live_re_baselines(tmp_path):
+    led = ledger_mod.Ledger(tmp_path / "pause.db")
+    f = Fakes()
+    base = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing")]
+    await run(base, MON_9AM + 60, led, f, mode="live")                           # live, baseline at 9:01
+    during_pause = base + [rec("w", "Mom", "Dinner Friday at 7pm", MON_9AM + 7200)]
+    await run(during_pause, MON_9AM + 7300, led, f, mode="off")                  # paused
+    thursday = datetime(2026, 9, 24, 9, 0, tzinfo=ZONE).timestamp()
+    assert await run(during_pause, thursday, led, f, mode="live") == []          # nothing swept up
+    assert f.created == []
+    fresh = during_pause + [rec("n", "Mom", "Lunch today at 12pm", thursday + 60)]
+    assert [o.state for o in await run(fresh, thursday + 120, led, f, mode="live")] == ["created"]
+
+
+async def test_a_pass_that_stops_at_the_effect_limit_says_so(ledger):
+    f = Fakes()
+    first = await run(burst(3), MON_9AM + 600, ledger, f, daily_cap=10)
+    assert first.limited is True
+    await run(burst(3), MON_9AM + 600, ledger, f, daily_cap=10)
+    last = await run(burst(3), MON_9AM + 600, ledger, f, daily_cap=10)
+    assert last.limited is False and len(f.created) == 3

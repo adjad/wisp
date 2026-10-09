@@ -12,6 +12,7 @@ claim about truth; they only decide "must not interrupt".
 from __future__ import annotations
 
 import re
+from urllib.parse import urlsplit
 
 from service.attention.corpus import Item
 
@@ -41,12 +42,45 @@ _SHORTCODE = re.compile(r"^\+?\d{4,6}$")
 # A phone number or an email address in the text. Plans between friends do not usually carry
 # one, and a lure ("call 800-... at 3pm") does. Together with links this closes the cheapest
 # way for a stranger in a group chat to put their words in the user's Reminders.
-_PHONE = re.compile(r"(?<![\d/:-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\d/:-])")
+# Ten or more digits, however they are spaced or bracketed, with no "/" or ":" inside (so dates
+# and clock times are not numbers): (800)555-0100, 800-5550100, 8005550100, +44 20 7946 0958.
+_DIGIT_RUN = re.compile(r"\+?\d[\d\s().-]{8,}\d")
 _EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
 # Links to map pins and meeting rooms are ordinary in real plans ("meet at the park <pin>").
-_SAFE_LINK = re.compile(
-    r"https?://(?:maps\.apple\.com|maps\.app\.goo\.gl|(?:www\.)?google\.com/maps|(?:[\w-]+\.)?zoom\.us|"
-    r"meet\.google\.com|teams\.microsoft\.com|facetime\.apple\.com)\S*", re.I)
+# They are judged by their parsed HOST, never by a regex over the whole URL: a lookalike such as
+# maps.apple.com.evil.com or maps.apple.com@evil.com must not pass because it starts right.
+_SCHEMED = re.compile(r"https?://[^\s<>\"']+", re.I)
+_BARE = re.compile(r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|edu|gov|us|co|io|ai|app|dev|me|xyz|top|info|"
+                   r"club|online|site|link|ly)\b(?:/\S*)?", re.I)
+_SAFE_HOSTS = frozenset({"maps.apple.com", "maps.app.goo.gl", "meet.google.com",
+                         "teams.microsoft.com", "facetime.apple.com"})
+_SAFE_SUFFIXES = ("zoom.us",)                      # the domain itself and any subdomain
+
+
+def _safe_url(url: str) -> bool:
+    try:
+        parts = urlsplit(url if "://" in url else "https://" + url)
+        host = (parts.hostname or "").lower()
+        if "@" in parts.netloc or parts.username or parts.password or not host:
+            return False
+    except ValueError:
+        return False
+    if host in _SAFE_HOSTS or any(host == s or host.endswith("." + s) for s in _SAFE_SUFFIXES):
+        return True
+    return host in ("www.google.com", "google.com") and parts.path.lower().startswith("/maps")
+
+
+def contact_vector(text: str) -> bool:
+    """True when the text carries a phone number, an email address or a link that is not a
+    plain map pin or meeting room: a way for a stranger to point the user somewhere."""
+    if _EMAIL.search(text) or _SHORTENER.search(text):
+        return True
+    if any(not _safe_url(m.group()) for m in _SCHEMED.finditer(text)):
+        return True
+    rest = _SCHEMED.sub(" ", text)
+    if any(not _safe_url(m.group()) for m in _BARE.finditer(rest)):
+        return True
+    return any(len(re.sub(r"\D", "", m.group())) >= 10 for m in _DIGIT_RUN.finditer(text))
 
 
 def screen(item: Item) -> str | None:
@@ -60,8 +94,7 @@ def screen(item: Item) -> str | None:
         return "scam"
     if _PROMO.search(text):
         return "promo"
-    cleaned = _SAFE_LINK.sub(" ", text)
-    if _LINK.search(cleaned) or _SHORTENER.search(cleaned) or _PHONE.search(cleaned) or _EMAIL.search(cleaned):
+    if contact_vector(text):
         return "contact_vector"
     if item.source == "messages" and _SHORTCODE.match(re.sub(r"[\s()-]", "", item.sender or "")):
         return "automated"

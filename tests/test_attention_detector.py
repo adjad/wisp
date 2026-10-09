@@ -401,6 +401,39 @@ def test_a_lure_with_a_number_link_or_address_never_reaches_the_effect(text):
     assert not d.alert and d.blocked_by in ("contact_vector", "scam")
 
 
-def test_dates_and_times_are_not_mistaken_for_phone_numbers():
+def test_dates_and_times_are_not_mistaken_for_phone_numbers_old():
     for text in ("Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet at 6:30 on 9/21"):
         assert exclusions.screen(msg("m", "Mom", text, T)) is None
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com@evil.com/x",                 # userinfo trick
+    "meet at 6 https://maps.apple.com.evil.com/x",                 # lookalike suffix
+    "zoom at 6 https://ucsc.zoom.us.evil.io/j/1",
+    "meet at 6 https://google.com@evil.com/maps",
+    "meet at 6 https://evil.com/?u=maps.apple.com",
+    "ring me at 6: 8005550100",
+    "ring me at 6: (800)555-0100",
+    "ring me at 6: 800-5550100",
+    "ring me at 6: +44 20 7946 0958",
+    "ring me at 6: +1 (650) 555 0123",
+    "ring me at 6: 650.555.0123",
+    "meet at 6 and check chase-help.com/login",
+    "meet at 6 and check bit.ly/3xYz",
+    "meet at 6 and read goo.gl/abc",
+])
+def test_the_contact_screen_cannot_be_bypassed_by_lookalike_hosts_or_number_formats(text):
+    assert exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com/?q=Quad",
+    "meet at 6 https://www.google.com/maps/place/Quad",
+    "zoom at 3 https://ucsc.zoom.us/j/123456789?pwd=abc",
+    "call at 3 meet.google.com/abc-defg-hij",
+    "call at 3 https://teams.microsoft.com/l/meetup-join/xyz",
+    "Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "class 7-9pm", "meet 3.30pm", "room 2-180 at 4",
+    "1200 Main St at 6", "10:40-11:45 lab", "countdown 3-2-1 at 8", "gate code 1234 at 7",
+])
+def test_ordinary_plans_are_not_mistaken_for_lures(text):
+    assert not exclusions.contact_vector(text), text

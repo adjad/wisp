@@ -303,3 +303,56 @@ async def test_the_real_add_reminder_prose_is_classified_as_success_when_wisp_on
     assert got == {"ok": True, "status": "succeeded", "where": "wisp_only"}
     rows = [c for c in wiring.assistant_store.upcoming(due - 600, days=1) if c["title"] == title]
     assert len(rows) == 1 and rows[0]["source"] == "manual"
+
+
+@pytest.mark.parametrize("tz", ["UTC", "America/New_York", "Asia/Kolkata", "America/Los_Angeles"])
+async def test_the_reminder_time_is_exact_whatever_timezone_the_process_runs_in(isolated, monkeypatch, tz):
+    """The planner works in the Mac's zone; add_reminder parses in the process's zone. An explicit
+    offset makes them agree, so a differing TZ cannot move or refuse the reminder."""
+    import time
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        monkeypatch.setattr(wiring.hub, "_subs", set())
+        due = time.time() + 7200
+        title = f"Mom: Meet me in the Quad ({tz})"
+        got = await wiring.create_reminder(live.Plan(title, due, None, "today", "q"))
+        assert got["ok"] is True, got
+        rows = [c for c in wiring.assistant_store.upcoming(due - 3600, days=1) if c["title"] == title]
+        assert len(rows) == 1 and abs(rows[0]["when_ts"] - due) < 60
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+
+async def test_a_limited_pass_is_followed_up_at_the_next_interval_not_the_next_quarter_hour(isolated, feed, effects):
+    go_live(isolated)
+    feed["value"] = {**FEED, "records": FEED["records"] + [rec("n", "Mom", "Lunch today at 12pm", NOW),
+                                                           rec("o", "Mom", "Dinner today at 7pm", NOW + 1)]}
+    first = await wiring.run_tick(NOW + 2)
+    assert [o.state for o in first] == ["created"] and first.limited is True
+    second = await wiring.run_tick(NOW + 2 + wiring.MIN_INTERVAL_S + 1)      # same feed, next interval
+    assert [o.state for o in second] == ["created"]
+
+
+async def test_resuming_live_after_a_corrupt_settings_file_re_baselines(isolated, feed, effects):
+    go_live(isolated)
+    assert [o.state for o in await wiring.run_tick(NOW)] == ["created"]
+    live.settings_path(isolated).write_text("garbage")                      # reads as off
+    assert await wiring.run_tick(NOW + 200) == []
+    wiring.get_ledger().claim("msg:marker", now=NOW)                       # (keeps the ledger non-empty)
+    feed["value"] = {**FEED, "records": FEED["records"] + [rec("w", "Mom", "Lunch today at 12pm", NOW + 250)]}
+    go_live(isolated)
+    assert await wiring.run_tick(NOW + 400) == []                          # arrived during the pause
+
+
+def test_switching_to_live_through_the_api_re_baselines_at_that_instant(client, isolated):
+    led = wiring.get_ledger()
+    led.set_meta("enabled_at", "1.0")
+    assert client.put("/assistant/attention/settings", json={"daily_cap": 2}).status_code == 200
+    assert led.meta("enabled_at") == "1.0"                                  # not entering live: untouched
+    assert client.put("/assistant/attention/settings", json={"mode": "live"}).status_code == 200
+    assert float(led.meta("enabled_at")) > 1e9                              # stamped now
+    stamped = led.meta("enabled_at")
+    assert client.put("/assistant/attention/settings", json={"daily_cap": 3}).status_code == 200
+    assert led.meta("enabled_at") == stamped                                # already live: untouched

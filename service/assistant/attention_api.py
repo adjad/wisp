@@ -47,11 +47,16 @@ def status():
 @router.put("/settings")
 def put_settings(body: SettingsPatch):
     changes = {k: v for k, v in body.model_dump().items() if v is not None}
+    old = load_settings(settings_path(MOE_DIR))
     try:
-        new = updated(load_settings(settings_path(MOE_DIR)), **changes)
+        new = updated(old, **changes)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     save_settings(settings_path(MOE_DIR), new)
+    if new.mode == "live" and old.mode != "live":
+        # Re-baseline at the moment of the switch, not at the next pass: nothing that arrived
+        # before this instant is ever acted on.
+        runner.get_ledger().set_meta("enabled_at", repr(time.time()))
     return asdict(new)
 
 
