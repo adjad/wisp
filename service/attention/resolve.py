@@ -46,6 +46,14 @@ _CANCEL = re.compile(r"\b(?:cancel(?:l?ed)?|can'?t|cannot|won'?t|no\s+longer|pos
 _TENTATIVE = re.compile(r"\?|\b(?:maybe|might|possibly|perhaps|tentative|how\s+about|what\s+about|"
                         r"should\s+we|could\s+we|can\s+we|wanna|want\s+to|lmk|let\s+me\s+know\s+if|"
                         r"if\s+you(?:'re|\s+are|\s+can|\s+want|\s+could))\b", re.I)
+# Zone abbreviations and offsets a sender might write after a clock. Deliberately a list: the
+# extractor reports every following word as a "timezone", so matching the shape would decline
+# "at 11:30 lmk". Omits "AT"/"HT", which are ordinary words.
+_ZONE_ABBREVIATION = re.compile(
+    r"^(?:[ECMP][SD]T|[ECMP]T|AK[SD]T|H[SD]T|GMT|UTC|BST|CE?S?T|EE?S?T|WE?S?T|MSK|IST|JST|KST|SGT|HKT|"
+    r"PKT|SAST|AE[SD]T|AC[SD]T|AWST|NZ[SD]T|Pacific(?:\s+time)?|Eastern(?:\s+time)?|"
+    r"Central(?:\s+time)?|Mountain(?:\s+time)?)?(?:\s*[+-]\d{1,2}(?::?\d{2})?)?$", re.I)
+
 # A zone named in words right after a clock ("3pm Eastern"), which the extractor ignores. A
 # capitalised word after it ("Central Park") makes it a place, not a zone.
 _ZONE_WORD = re.compile(
@@ -82,11 +90,14 @@ def _source_zone(fact, tz: str) -> ZoneInfo | None | bool:
     the caller declines rather than guessing, because the guess moves the reminder by hours."""
     named = fact.start.timezone
     if named and named != tz:
-        if "ambiguous_timezone" in fact.uncertainties or not (named in ("UTC", "Z") or "/" in named):
-            return False
-        try:
-            return ZoneInfo("UTC" if named == "Z" else named)
-        except (KeyError, ValueError, OSError):
+        if named in ("UTC", "Z") or "/" in named:
+            try:
+                return ZoneInfo("UTC" if named == "Z" else named)
+            except (KeyError, ValueError, OSError):
+                return False
+        # The extractor files ANY word after a clock ("lmk", "ok", "gym") under timezone, so only
+        # a real abbreviation or offset counts; every other word is just a word.
+        if _ZONE_ABBREVIATION.match(named):
             return False
     if _ZONE_WORD.search(fact.context_span.quote):
         return False                          # the extractor dropped a zone word it did not parse

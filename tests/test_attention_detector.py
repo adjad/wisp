@@ -391,3 +391,15 @@ def test_ordinary_unzoned_times_and_place_names_still_resolve():
     assert r("meet tomorrow at 3pm Pacific Heights").start == at(22, 15)        # a place
     assert r("meet at 3pm Central Park tomorrow").start == at(22, 15)
     assert r("dinner tomorrow at 7pm America/Los_Angeles").start == at(22, 19)  # the user's own zone
+
+
+@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "ASAP", "tmrw", "gym", "sharp", "ur place"])
+def test_an_ordinary_word_after_a_clock_is_not_mistaken_for_a_timezone(word):
+    """The extractor files any word after a clock under "timezone"; only real zones may decline."""
+    got = r(f"lunch at 11:30am {word}")
+    assert got.blocked is None and got.start == at(21, 11, 30), word
+
+
+@pytest.mark.parametrize("zone", ["EST", "pst", "IST", "HST", "BST", "UTC+2", "GMT+2", "+02:00", "CEST", "AEDT"])
+def test_real_zone_abbreviations_and_offsets_are_declined(zone):
+    assert r(f"lunch tomorrow at 3pm {zone}").blocked == "other_timezone", zone
