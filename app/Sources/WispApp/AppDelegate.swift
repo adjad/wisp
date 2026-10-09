@@ -19,6 +19,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var researchLibrary = ResearchLibraryWindowController(client: client,
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
+    // The Chat window: long conversations, saved chats, and the same approvals
+    // as the notch, in a real window. Today, Research, Memory, Search and
+    // Settings open the app's existing windows from its sidebar.
+    private lazy var chatWindow = ChatWindowController(
+        backend: LiveChatBackend(client: client),
+        launchers: ChatLaunchers(
+            today: { TodayWindow.show() },
+            research: { [weak self] in self?.researchLibrary.show() },
+            memory: { MemoryWindow.shared.show() },
+            settings: { [weak self] in self?.openSettings() },
+            searchEverything: { [weak self] in self?.toggleSearch() }),
+        debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })
     private var searchKeyMonitor: Any?
     private var presentation = OverlayTransition()
     private var searchCaptureID: UUID?
@@ -61,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
                 .first { $0.processIdentifier != selfPID }?
                 .activate(options: [])
-            NSApp.terminate(nil)
+            terminateWithoutShutdown()
             return
         }
         // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
@@ -237,8 +249,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // An accessory app has no menu bar, so the standard edit shortcuts don't route
     // to the focused field. A hidden main menu with an Edit submenu fixes that.
+    // While the chat window is open the app is regular and shows this menu, so it
+    // also carries the application menu's Hide, Close and Quit items.
     private func installEditMenu() {
         let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let app = NSMenu(title: "Wisp")
+        appItem.submenu = app
+        app.addItem(withTitle: "Hide Wisp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        app.addItem(.separator())
+        app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let quitItem = app.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
         let editItem = NSMenuItem()
         main.addItem(editItem)
         let edit = NSMenu(title: "Edit")
@@ -258,6 +281,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Keep the menu-bar menu focused on app configuration and diagnostics.
         // Primary workflows live in Wisp's panel, where they have context and
         // progress UI instead of duplicating five shortcuts here.
+        menu.addItem(withTitle: "Open Wisp Chat", action: #selector(openChat), keyEquivalent: "")
         menu.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         menu.addItem(withTitle: "Set Up Inference…", action: #selector(openSetupGuide), keyEquivalent: "")
         menu.addItem(.separator())
@@ -549,6 +573,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 sourceID: sourceID, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
         }
+        model.onOpenChat = { [weak self] sessionId in
+            self?.chatWindow.show(sessionId: sessionId)
+        }
         model.onStartResearch = { [weak self] prompt in
             self?.openResearch(prompt: prompt)
         }
@@ -672,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openResearchLibrary() { researchLibrary.show() }
+    @objc private func openChat() { chatWindow.show() }
 
     private func openSavedResearch(_ id: String) {
         openAssistant()
@@ -706,7 +734,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Quit Wisp after the engine and its helpers have stopped. Every quit request
+    /// goes through here (see applicationShouldTerminate), so the Dock, the
+    /// application menu and the menu bar all shut down the same way.
     @objc private func quit() {
+        // A second Quit while the first is still stopping the engine means "now".
+        if shutdownStarted { finishShutdown(); return }
+        beginShutdown()
+    }
+
+    private var shutdownStarted = false
+    private var shutdownFinished = false
+    /// True when the system (logout, restart) asked to quit and is waiting for a reply.
+    private var systemAwaitingReply = false
+
+    private func beginShutdown() {
+        shutdownStarted = true
+        // Quitting must never hang: exit after a bound even if a stop step stalls.
+        // The bound is longer than the stop steps' own limits added together.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+            MainActor.assumeIsolated { self.finishShutdown() }
+        }
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
             // Let any just-fired Settings change (role/model) finish
@@ -717,8 +765,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
             await backend.stopAndWait()
-            await MainActor.run { NSApp.terminate(nil) }
+            await MainActor.run { self.finishShutdown() }
         }
+    }
+
+    private func finishShutdown() {
+        guard !shutdownFinished else { return }
+        shutdownFinished = true
+        // Signals the backend if the stop steps did not get to it. After a clean
+        // stop the backend is already detached, so this does nothing.
+        backend.stop()
+        exitNow()
+    }
+
+    /// Exit without stopping the engine. Used when this launch only hands over to a
+    /// copy that is already running, and when an alert quits Wisp without a service.
+    private func terminateWithoutShutdown() {
+        shutdownFinished = true
+        exitNow()
+    }
+
+    /// Ends the app, answering a system logout or restart that is waiting for it.
+    private func exitNow() {
+        if systemAwaitingReply {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        } else {
+            NSApp.terminate(nil)
+        }
+    }
+
+    // A quit from the Dock, the application menu or the system does not call quit().
+    // Run the same shutdown and reply once it finishes, so a logout is not cancelled.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if shutdownFinished { return .terminateNow }
+        systemAwaitingReply = true
+        if !shutdownStarted { beginShutdown() }
+        return .terminateLater
     }
 
     @objc private func openSettings() {
@@ -750,7 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Quit Wisp")
-        if alert.runModal() == .alertSecondButtonReturn { NSApp.terminate(nil) }
+        if alert.runModal() == .alertSecondButtonReturn { terminateWithoutShutdown() }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop
@@ -762,7 +844,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "Quit Wisp")
         alert.addButton(withTitle: "Keep Wisp Open")
-        if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
+        if alert.runModal() == .alertFirstButtonReturn { terminateWithoutShutdown() }
     }
 
     @objc private func openSetupGuide() {
