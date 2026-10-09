@@ -209,6 +209,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_actions/test_action_executor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
+    # Proactive-attention Slice 0: synthetic fixtures and temp directories only; no
+    # subprocess, network, model, or access to the real caches or assistant.db.
+    "tests/test_attention_slice0.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",

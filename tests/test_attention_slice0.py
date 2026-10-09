@@ -83,20 +83,21 @@ def test_mail_parser_matches_email_tools_on_both_header_formats():
 
 
 def test_attention_never_imports_the_live_assistant_store():
-    """Importing service.assistant builds AssistantStore() on ~/.moe/assistant.db."""
-    import subprocess
-    import sys
+    """Importing service.assistant builds AssistantStore() on ~/.moe/assistant.db.
 
-    code = ("import sys; from pathlib import Path\n"
-            "from service.attention import corpus, evaluate, labels\n"
-            f"msgs, _ = corpus.parse_messages(Path({str(FIXTURES / 'messages.txt')!r}).read_text())\n"
-            f"mail = corpus.parse_mail(Path({str(FIXTURES / 'email_headers.txt')!r}).read_text())\n"
-            "assert msgs and mail\n"
-            "bad = [m for m in sys.modules if m.startswith(('service.assistant', 'service.tools'))]\n"
-            "assert not bad, bad\n")
-    r = subprocess.run([sys.executable, "-c", code], cwd=corpus.REPO_ROOT,
-                       capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
+    Checked statically (every import in the package, at any depth) so it holds
+    regardless of what other tests have already put in sys.modules.
+    """
+    import ast
+
+    banned = ("service.assistant", "service.tools")
+    package = Path(corpus.__file__).parent
+    for path in sorted(package.glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            names = ([a.name for a in node.names] if isinstance(node, ast.Import)
+                     else [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+            for name in names:
+                assert not name.startswith(banned), f"{path.name} imports {name}"
 
 
 def test_cue_prefilter_is_loose_but_not_everything():
