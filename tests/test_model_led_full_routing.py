@@ -53,16 +53,22 @@ def interpreted_continuation(endpoint, plan, prompt):
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
-@pytest.mark.parametrize("prompt", ["summarize my messages", "read my messages", "list my calendar",
-                                   "please sumarize my messages", "could you please read my messages", "reed my messages",
-                                   "Give me an overview of my calendar", "Walk me through my schedule tomorrow",
-                                   "Bring me up to date on my messages", "I'd like to know what's on this weej",
-                                   "My calendar needs a quick overview", "Let me see tomorrow's events"])
-def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch, mode, prompt):
+@pytest.mark.parametrize("prompt,recovery_admitted", [
+    ("summarize my messages", False), ("read my messages", False), ("list my calendar", False),
+    ("please sumarize my messages", False), ("could you please read my messages", False),
+    ("reed my messages", False), ("Give me an overview of my calendar", False),
+    ("Walk me through my schedule tomorrow", False), ("Bring me up to date on my messages", False),
+    ("I'd like to know what's on this weej", False), ("My calendar needs a quick overview", False),
+    ("Let me see tomorrow's events", True),
+])
+def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch, mode, prompt, recovery_admitted):
     from service.tasks import engine
     if mode is None:
         monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
-    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    async def recovery(*args, **kwargs):
+        assert recovery_admitted, "Private-source turn entered old task recovery"
+        return await real_task_recovery(*args, **kwargs)
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", recovery)
     monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
     def no_native(*args, **kwargs):
         raise AssertionError("Unrelated turn touched an old owner's native capability")
@@ -77,8 +83,14 @@ def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch
     assert endpoint.store.active_task(sid) == before
     assert not endpoint.effects and not endpoint.baseline_calls
     assert endpoint.agent_calls[0]["messages"][-1]["content"] == prompt
-    interpretation = endpoint.owned[0].requests[0]
-    assert interpretation["tools"] == [] and interpretation["messages"][-1]["content"] == prompt
+    if recovery_admitted:
+        assert len(endpoint.owned[0].requests) == 1
+        interpretation = endpoint.owned[0].requests[0]
+        assert interpretation["tools"] == [] and interpretation["messages"][-1]["content"] == prompt
+    else:
+        assert endpoint.owned[0].requests == []
+        assert {"web_search", "web_fetch", "http_request", "run_shell"} <= set(
+            endpoint.agent_calls[0]["forbidden_tools"])
     assert any(e.get("route_source") == "model_led_discovery" for e in events)
 
 
@@ -204,6 +216,73 @@ def test_unclear_model_continuation_keeps_owner_and_mutations_closed(endpoint, m
     assert not endpoint.effects and endpoint.agent_calls and not endpoint.baseline_calls
     assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
     assert any("Ask whether" in message.get("content", "") for message in endpoint.agent_calls[0]["messages"])
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+@pytest.mark.parametrize("member,order", [
+    ("decision", "invalid_first"), ("decision", "invalid_last"),
+    ("owner_id", "invalid_first"), ("owner_id", "invalid_last"),
+    ("revision", "invalid_first"), ("revision", "invalid_last"),
+    ("decision", "same_value"), ("owner_id", "same_value"), ("revision", "same_value"),
+])
+def test_duplicate_continuation_json_never_advances_owner(endpoint, monkeypatch, mode, member, order):
+    from service.tasks import engine
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    async def no_execution(*args, **kwargs):
+        raise AssertionError("Contradictory JSON reached legacy execution or native preparation")
+    monkeypatch.setattr(main, "execute_task", no_execution)
+    monkeypatch.setattr("service.tools.email_tools.ensure_reply_source", no_execution)
+    def no_contact(*args, **kwargs):
+        raise AssertionError("Contradictory JSON reached native contact lookup")
+    monkeypatch.setattr(engine, "_default_contacts_resolver", no_contact)
+    async def no_mutation(**args):
+        raise AssertionError("Contradictory JSON admitted a fallback mutation")
+    no_mutation.__module__ = "service.tools.assistant_tools"
+    registry.REGISTRY["add_reminder"] = registry.Tool("add_reminder", "Synthetic mutation", {"type": "object"},
+                                                   "assistant_write", no_mutation)
+    sid, plan = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    unique = {"decision": "continue", "owner_id": plan.id, "revision": plan.revision}
+    invalid = {"decision": "ambiguous", "owner_id": "different-owner", "revision": plan.revision + 1}
+    pairs = []
+    for key, value in unique.items():
+        if key != member:
+            pairs.append((key, value))
+        elif order == "invalid_first":
+            pairs.extend([(key, invalid[key]), (key, value)])
+        elif order == "invalid_last":
+            pairs.extend([(key, value), (key, invalid[key])])
+        else:
+            pairs.extend([(key, value), (key, value)])
+    endpoint.script = ["{" + ",".join(json.dumps(key) + ":" + json.dumps(value) for key, value in pairs) + "}"]
+    events = endpoint.request("Pick up groceries", sid)
+    assert endpoint.store.active_task(sid) == before
+    assert not endpoint.effects and not endpoint.baseline_calls
+    assert len(endpoint.owned[0].requests) == 1 and endpoint.owned[0].requests[0]["tools"] == []
+    assert endpoint.agent_calls[0]["messages"][-1]["content"] == "Pick up groceries"
+    assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert any("Ask whether" in message.get("content", "") for message in endpoint.agent_calls[0]["messages"])
+    assert any(event.get("route_source") == "model_led_discovery" for event in events)
+
+
+@pytest.mark.parametrize("decision", ["continue", "new_request", "ambiguous"])
+def test_unique_continuation_decision_retains_strict_contract(endpoint, decision):
+    from service.tasks.reply_engine import interpret_owner_continuation
+    _, plan = waiting_title(endpoint)
+    client = FakeClient(endpoint.target, [continuation_response(plan, decision)])
+    admission, verdict = asyncio.run(interpret_owner_continuation(
+        client, endpoint.target.model, plan.to_dict(), "Pick up groceries"))
+    assert verdict == decision
+    if decision == "continue":
+        assert admission.owner_id == plan.id and admission.revision == plan.revision
+        assert admission.prompt == "Pick up groceries" and admission.missing_slots == ("subject",)
+    else:
+        assert admission is None
+    assert client.requests[0]["tools"] == []
+    asyncio.run(client.aclose())
 
 
 @pytest.mark.parametrize("control", ["cancel", "retry"])

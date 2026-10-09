@@ -64,6 +64,11 @@ free-form reply. It reuses the same owned local transport and closes the stream
 and client even on refusal, error or cancellation. Scripted tests establish
 host behavior, not actual Ling disambiguation accuracy or latency. Those remain
 model qualification work; a wrong model interpretation is still possible.
+The interpretation decoder rejects duplicate JSON member names before any
+dictionary normalization, including contradictory and repeated identical
+values. A unique response must still have exactly the three decision/owner/
+revision fields, the current owner and integer revision, one final message and
+no tool calls. Contradictory responses cannot become last-member-wins approval.
 
 ## Durable model actions
 
@@ -168,6 +173,20 @@ same-owner successor replaces lexical continuation inference with the bound
 model interpretation described above. The earlier 213 top-level/15 subtest pass
 and both CI successes are historical once source changes. This successor needs
 fresh exact-head mechanical validation, CI, independent review and distinct QA.
+The first residual-owner attempt at `602edf7` actually collected 245 top-level
+cases: 223 passed, 22 failed and all 15 subtests passed, with zero denied effects
+and verified teardown. The failures were added assertions expecting recovery
+interpretation even where the earlier private-source envelope correctly skipped
+recovery. Owner equality, no-effect/no-baseline and raw-input checks preceding
+that failure passed; the discovery-event assertion following it was not reached
+in those 22 cases and must not be reported as passed. The correction explicitly
+distinguishes the 22 skipped private cases (zero interpretation/recovery and
+four named egress exclusions) from the two admitted event requests (exactly one
+tool-free interpretation). All original ownership and discovery assertions
+remain. Independent disposition also found MLR-CONTINUATION-JSON-05, repaired
+by duplicate-member rejection plus conflicting/both-order/same-value controls.
+The failed run and all prior proposals are preserved; the remaining bounded
+attempt requires a fresh committed candidate, assessment and exact admission.
 The first controller run was unqualified because subtests were incorrectly
 counted as collected top-level cases. The second run had one fake timer module
 metadata failure (119 of 120 top-level cases passed and 15 subtests passed). Both

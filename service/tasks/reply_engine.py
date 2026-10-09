@@ -56,7 +56,14 @@ async def interpret_owner_continuation(client, model: str, active: dict, prompt:
             await stream.aclose()
         if not isinstance(final, dict) or final.get("tool_calls"):
             return None, "ambiguous"
-        result = json.loads(final.get("content", ""))
+        def unique_members(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("Duplicate continuation JSON member")
+                result[key] = value
+            return result
+        result = json.loads(final.get("content", ""), object_pairs_hook=unique_members)
         if (not isinstance(result, dict) or set(result) != {"decision", "owner_id", "revision"}
                 or result["owner_id"] != plan.id or type(result["revision"]) is not int
                 or result["revision"] != plan.revision
