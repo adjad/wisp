@@ -1385,6 +1385,25 @@ def _conversation_aliases(label: str) -> set[str]:
     return {value for value in aliases if value}
 
 
+def _fuzzy_conversations(candidates, needle: str):
+    """Conversations whose name is a near-miss for `needle` — "trishe" for a
+    contact saved as "Trisha". People type names the way they say them, and the
+    exact-substring match above answered "No conversation matched" for any
+    spelling the contact card didn't use, which read as "no messages from her".
+    Compares against the whole alias and each word of it, so a first name alone
+    finds "Trisha Jain". Callers still require exactly one hit."""
+    import difflib
+    best: dict = {}
+    for candidate in candidates:
+        for alias in _conversation_aliases(candidate[1]):
+            for part in (alias, *alias.split()):
+                ratio = difflib.SequenceMatcher(None, needle, part).ratio()
+                if ratio >= 0.8:
+                    best[candidate] = max(best.get(candidate, 0.0), ratio)
+    return [candidate for candidate, _ratio in
+            sorted(best.items(), key=lambda item: item[1], reverse=True)]
+
+
 def _match_conversation(records, query: str):
     needle = " ".join(re.findall(r"[\w@+.-]+", (query or "").casefold()))
     candidates = list(dict.fromkeys((conversation_id, context)
@@ -1396,6 +1415,8 @@ def _match_conversation(records, query: str):
                                for alias in _conversation_aliases(candidate[1]))]
     if matches and any(conversation_id is None for conversation_id, _label in matches):
         return None, "Messages are refreshing conversation identities. Please try again in a moment."
+    if not matches and needle:
+        matches = _fuzzy_conversations(candidates, needle)
     if len(matches) == 1:
         return matches[0], None
     if not matches:
