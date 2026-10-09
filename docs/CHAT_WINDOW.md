@@ -52,7 +52,7 @@ notch's monochrome look, so the notch is unchanged.
   shown because the service does not report them per answer.
 - Today, Research, Memory and Settings are launchers into the existing
   windows, not embedded pages.
-- The app shows a Dock icon only while the chat window is open. Closing the window returns Wisp to the menu bar alone.
+- Wisp is a regular app: it has a Dock icon, and opening it (from the Dock, Finder or Spotlight) shows this window. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q (or Quit from the Dock) stops it, running the same shutdown as the menu-bar Quit. Opening Wisp from the Dock again brings the window back.
 
 ## Testing
 
