@@ -578,3 +578,36 @@ def test_short_date_followup_retains_personal_evidence_obligation(prompt):
 def test_new_topic_does_not_inherit_prior_calendar_date_obligation(prompt):
     from service.router.model_led import fresh_personal_obligation
     assert fresh_personal_obligation(prompt, "get_upcoming") == {}
+
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_private_read_with_pending_owner_keeps_shell_unavailable_at_actual_executor(endpoint, monkeypatch, mode):
+    from tests.test_model_led_entrypoint import _private_shell_endpoint
+    io, invocations = _private_shell_endpoint(endpoint, monkeypatch)
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    sid, plan = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    endpoint.script = [
+        [tool_call("get_tool_schemas", families=["calendar"], tools=["get_upcoming"])],
+        [tool_call("get_upcoming", days=1, calendar_only=True)],
+        [tool_call("get_tool_schemas", families=["automation"], tools=["run_shell"])],
+        [tool_call("run_shell", cmd="pwd")],
+        "Synthetic current calendar reply.",
+    ]
+    events = endpoint.request("list my calendar", sid)
+    assert endpoint.store.active_task(sid) == before
+    assert endpoint.effects == [("get_upcoming", {"days": 1, "calendar_only": True})]
+    assert invocations[-1]["has_owner"], "Real main claim/finish hooks must be present"
+    assert not io, "Even original safe pwd must stay unavailable with this pending owner"
+    requests = endpoint.owned[0].requests
+    assert any(any(c.get("name") == "get_upcoming" for c in [t.get("function", {}) for t in r.get("tools") or []]) for r in requests)
+    assert all("run_shell" not in {t["function"]["name"] for t in r.get("tools") or []} for r in requests)
+    # Attempted discovery AND an actual scripted direct call must be refused,
+    # rather than the test passing because the model did not select the tool.
+    assert len(requests) >= 4
+    assert any(e.get("type") == "tool_result" and "run_shell is explicitly forbidden" in str(e.get("result", "")).lower() for e in events)
+    assert not any(e.get("type") == "tool_call" and e.get("name") == "run_shell" for e in events)
+    assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
+                   endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))

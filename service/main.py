@@ -1412,6 +1412,11 @@ async def agent(body: dict[str, Any]):
             # every ordinary request. In particular, no Mail warming or contact
             # lookup may happen before Ling selects a capability for a new turn.
             existing_task = store.active_task(sid) if sess else None
+            if model_led_turn and recovery_excluded and existing_task:
+                # A new source-scoped read leaves the persisted task untouched.
+                # Preserve its stronger negative shell exclusion; the ordinary
+                # private-read exception must not reopen an old owner's escape.
+                model_led_forbidden |= frozenset({"run_shell"})
             latest_task = store.latest_task(sid) if sess else None
             latest_workflow = (store.latest_workflow(sid, max_age_seconds=float("inf"))
                                if sess else None)
