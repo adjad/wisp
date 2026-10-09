@@ -257,11 +257,16 @@ changed the rules for stated reasons rather than for single items:
 | An obligation with no time at all ("package is ready at the mailroom", "get stuff from Trader Joe's today") | 2 | Task/obligation detection; likely model-assisted, Slice 3 |
 | Mail ("final reminder" about a form; no time in the subject) | 1 | Mail has no two-way signal and is subject-only; open question 4 |
 
+**Stated timezones (repaired after the independent review).** A time that names a zone is converted, not relabelled: "tomorrow at 15:00 UTC" is 08:00 Pacific, not 15:00. Only an unambiguous named zone (`UTC`, an IANA name such as `America/New_York`) with a stated date and am/pm is converted; abbreviations (`EST`, `PT`, `IST`), offsets (`+02:00`, `UTC+2`), zone words ("3pm Eastern"), a time in a stated zone that the sender left without a date or am/pm, and a time that falls in a DST gap or fold in that zone are declined (`other_timezone`). Two zones at the same hour are a conflict. An ordinary word after a clock ("lmk", "ok") is not a zone. **Known limitation, not part of that finding:** a stray word right after a clock can make the extractor lose a "tomorrow" earlier in the sentence ("tomorrow at 11:30am lol" reads as today).
+
 **Times inherited from the thread (built).** A short acceptance ("yea sure i'll meet u there",
 "sure") takes its time from the USER's own proposal earlier in the same thread, within six
 hours, only when that time has a clock and is still ahead of the reply. It does not fire for a
 decline, for an echo of the other person's own message, for a stale proposal, or for a time
-already past. A bare clock more than 12 hours out is now marked tentative (said at 11pm,
+already past. The newest message in the window that speaks to the plan governs: a later
+cancellation or withdrawal ("is cancelled", "nvm", "scratch that") from either side, a replacement
+time, an ambiguous or already-past replacement, all end the search instead of reviving the older
+proposal. A bare clock more than 12 hours out is now marked tentative (said at 11pm,
 "at 10am" could be a guess). The full-corpus run then produced 5 alerts in 26.5 days; the one
 outside the labelled sample was reviewed by hand and is correct (a friend's "sure" accepting the
 user's "3:30?", 65 minutes ahead, not on the calendar). It was outside the sample because "sure"
@@ -360,13 +365,14 @@ record; `service/assistant/attention_runner.py` is the only code that touches li
 | Never retries an uncertain write | A crash after the claim leaves `claimed`, promoted to `unknown`; `unknown` and `failed` are final. |
 | Uses the existing verified path | The reminder is created by `add_reminder` (deterministic action id, no twin on an unknown outcome, Wisp-only fallback). Only a result starting "Reminder set:" counts as success. |
 | Fresh check before writing | "Is it on the calendar now?" is re-read from the store immediately before the effect. |
-| Bounded | `daily_cap` (default 3) counts every attempt that is not a verified failure (created, **unknown**, in flight) per local day, because an unanswered write may exist; excess is recorded as `capped`. At most **one reminder is written per pass**. |
+| Bounded | `daily_cap` (default 3) counts every attempt that is not a verified failure (created, **unknown**, in flight, and **undone**: undoing a reminder does not free a slot) per local day, because an unanswered write may exist; excess is recorded as `capped`. At most **one reminder is written per pass**. |
 | Never blocks the scheduler | The pass runs as a background task, single-flight (`schedule_tick`); the scheduler loop never awaits a reminder write, which can take 45 seconds to time out. |
 | Cheap lures are refused, but this is a screen, not a guarantee | Messages containing a phone number (10 or more digits, separated by spaces, dots, brackets, hyphens, en dashes, underscores or commas), an email address, an IP address, a defanged dot (`evil[.]com`) or any dotted name that ends in letters (`.ru`, `.biz`, `chase.de`) are refused. The only links allowed are map pins, meeting rooms and the user's university, judged by the PARSED host (Apple/Google Maps, Zoom and subdomains, Meet, Teams, FaceTime, `ucsc.edu` and subdomains); any URL containing a backslash, whitespace or control character, non-ASCII, or `%` in the host is refused, because a browser would read it as a different host than the parser. **Still not caught:** spelled-out numbers ("eight hundred..."), a letter O written for zero, and text a sender writes without any link or number. A sender in a shared conversation can still place up to `daily_cap` attacker-worded reminders a day; the worst outcome is that, with no sends, deletes or injection. **Known false positives (they cost a reminder, nothing else):** ten-digit order or confirmation numbers, space-separated timestamps (`2026 09 25 19 30`), file names (`notes.pdf`), `dr.smith`, a sentence run together (`ok.thanks`). |
 | No message text piles up in `assistant.db` | The `attention_added` event is transient (`durable=False`) until the app can acknowledge it. |
 | Quiet hours (default 22:00 to 08:00) | The reminder is still created; the immediate "I added this" alert is not sent. |
 | Only live Messages | The feed must be `ready` for this launch; restored rows are not "new". |
-| Undo removes only its own | Requires a ledger row in `created`, a single reminder matching its exact title and time, and goes through the existing verified delete. |
+| Undo removes only its own | Bound to the identity recorded at creation: the verified native `source_id` (read from the action receipt written during that call) or, for a Wisp-only reminder, the one new local row. It requires a ledger row in `created`, that exact object still present with its recorded title and time, and goes through the existing verified delete with no collapsed siblings. A look-alike with the same title and time is a different reminder and is refused; so is a reminder whose identity could not be established (an identical older reminder's receipt was reused, or none was readable). Two simultaneous requests delete once. |
+| The enable stamp survives the first pass | The API records the switch into live and its mode in one transaction, so the first live pass keeps that instant instead of moving it to its own clock. A change made outside the endpoint (a hand-edited settings file) still re-baselines at the next pass. |
 
 "Soon" is judged from now on the live path, so a message about Friday sent on Monday is
 reconsidered on Thursday morning (it was 58 hours out on Wednesday). The reminder fires 30
@@ -380,6 +386,8 @@ curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: app
 ```
 
 **Independent audit (2026-10-09): BLOCK, repaired.** One blocker (unknown outcomes did not count toward the cap and each could stall the scheduler for 45 seconds) and several should-fix items (durable event, baseline after `off`, stranger lures, unreadable settings, GUID-less messages, an all-day-event blind spot in the on-file check) were fixed with a test each. One finding was wrong on the facts: the wiring tests *are* isolated, by the repository-root `conftest.py`; a fail-fast guard now asserts it. A re-review of that repair returned a narrower BLOCK (reminder time wrong when the process `TZ` differs from the system zone; `off` then `live` still swept up the paused period; the link allowlist and phone screen were bypassable), which was repaired in turn with a test for each, plus a limited pass now being retried at the next interval instead of the next quarter hour. The second repair needs its own sign-off before merge.
+
+**Designated independent review of the frozen stack (2026-10-09): BLOCK, five findings, repaired.** Stated timezone lost (#179), a cancelled proposal revived by a later "okay" (#181), Undo bound to title and time rather than the created object, undone creations not charged to the daily cap, and the API's enable timestamp overwritten by the first live pass (#182). Each has a regression test that fails on the previous source. The repaired heads need their own re-review.
 
 Known and accepted: `capped` is final (a message capped today is not reconsidered tomorrow); a create that succeeded but crashed before the ledger recorded it ends as `unknown` and cannot be undone through the endpoint; contact names match on the last 10 digits; the endpoints, like the rest of the backend, have no authentication beyond loopback.
 

@@ -472,3 +472,37 @@ async def test_a_pass_that_stops_at_the_effect_limit_says_so(ledger):
     await run(burst(3), MON_9AM + 600, ledger, f, daily_cap=10)
     last = await run(burst(3), MON_9AM + 600, ledger, f, daily_cap=10)
     assert last.limited is False and len(f.created) == 3
+
+
+# ---------------------------------------- an undone creation still counts (review ATT182-02)
+
+async def test_undoing_a_reminder_does_not_free_a_slot_in_the_daily_cap(ledger):
+    f = Fakes()
+    recs = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing"),
+            rec("a", "Mom", "Lunch today at 12pm", MON_9AM),
+            rec("b", "Mom", "Dinner today at 7pm", MON_9AM + 60)]
+    first = await run(recs, MON_9AM + 300, ledger, f, daily_cap=1)
+    assert [o.state for o in first] == ["created"]
+    ledger.finish(first[0].source_id, "undone", {"undone": True}, MON_9AM + 310)   # the user undoes it
+    second = await drain(recs, MON_9AM + 400, ledger, f, daily_cap=1)
+    assert [o.state for o in second] == ["capped"] and len(f.created) == 1         # B is NOT created
+
+
+async def test_the_cap_resets_the_next_local_day_and_verified_failures_do_not_count(ledger):
+    f = Fakes()
+    recs = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing"), rec("a", "Mom", "Lunch today at 12pm", MON_9AM)]
+    out = await run(recs, MON_9AM + 300, ledger, f, daily_cap=1)
+    ledger.finish(out[0].source_id, "undone", {}, MON_9AM + 310)
+    tue = MON_9AM + 86400
+    more = recs + [rec("c", "Mom", "Dinner today at 7pm", tue)]
+    assert [o.state for o in await run(more, tue + 60, ledger, f, daily_cap=1)] == ["created"]   # new day
+    ledger.claim("msg:failed", now=tue + 100)
+    ledger.finish("msg:failed", "failed", {}, tue + 100)                                         # verified failure
+    assert ledger.count_since(tue - 3600, runner.CAP_STATES) == 1
+
+
+async def test_the_creation_identity_is_kept_in_the_ledger_detail(ledger):
+    created = {"source": "reminders", "source_id": "native-A"}
+    f = Fakes(result={"ok": True, "status": "succeeded", "where": "apple_and_wisp", "created": created})
+    out = await run(mom_thread(), MON_9AM + 60, ledger, f)
+    assert ledger.get(out[0].source_id)["detail"]["result"]["created"] == created

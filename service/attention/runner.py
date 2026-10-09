@@ -38,7 +38,9 @@ from service.attention.matching import find_on_file
 from pathlib import Path
 
 MAX_EFFECTS_PER_PASS = 1
-CAP_STATES = ("created", "unknown", "claimed")        # an unknown write may exist: it counts
+# Every attempt that is not a verified failure counts: an unknown write may exist, and an undone
+# creation still happened. The cap bounds what can be created in a day, not what is still active.
+CAP_STATES = ("created", "unknown", "claimed", "undone")
 
 class Outcomes(list):
     """The outcomes of one pass. `limited` is True when it stopped at the per-pass effect limit
@@ -135,7 +137,8 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
             state = "unknown"
         else:
             state = "failed"
-        detail = {**detail, "result": {k: result.get(k) for k in ("ok", "status", "error", "where")}}
+        detail = {**detail, "result": {k: result.get(k)
+                                       for k in ("ok", "status", "error", "where", "created")}}
         ledger.finish(item.id, state, detail, now)
         outcomes.append(Outcome(item.id, state, plan.title, detail))
 

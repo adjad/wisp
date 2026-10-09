@@ -54,6 +54,43 @@ def _commitments(now: float) -> list[dict]:
     return assistant_store.upcoming(local_midnight(now, local_timezone()), days=ON_FILE_DAYS + 1)
 
 
+def _rows_near(due: float) -> dict[str, dict]:
+    """Every commitment row near `due`, collapsed siblings included, keyed by its own id."""
+    rows: dict[str, dict] = {}
+    for head in assistant_store.upcoming(due - 120, days=2):
+        for row in [head] + [assistant_store.get(i) for i in head.get("duplicate_ids") or []]:
+            if row:
+                rows[str(row["id"])] = row
+    return rows
+
+
+def _created_identity(plan: Plan, when_iso: str, started: float, before: set[str], where: str) -> dict | None:
+    """The exact object this call created, or None when that cannot be established.
+
+    Apple Reminders: the verified native receipt's `source_id`, read from the action store, and
+    only a receipt written DURING this call (an identical earlier reminder reuses its old receipt,
+    and that object is not ours). Wisp only: the one new local row with this title and time.
+    A reminder whose identity is not recorded cannot be undone through the endpoint."""
+    try:
+        if where == "apple_and_wisp":
+            from service.assistant.outbox import _reminder_base_action_id
+            payload = {"title": plan.title.strip(), "due_ts": datetime.fromisoformat(when_iso).timestamp(),
+                       "commitment_kind": "reminder"}
+            base = _reminder_base_action_id("create_reminder", payload)
+            fresh = [a for a in hub.store.reminder_actions_by_prefix(base)
+                     if (a.get("created_at") or 0) >= started - 1
+                     and isinstance(a.get("result"), dict) and a["result"].get("ok") is True
+                     and a["result"].get("source_id")]
+            ids = {str(a["result"]["source_id"]) for a in fresh}
+            return {"source": "reminders", "source_id": ids.pop()} if len(ids) == 1 else None
+        new = [r for rid, r in _rows_near(plan.due_ts).items()
+               if rid not in before and r.get("source") == "manual" and r.get("title") == plan.title.strip()
+               and r.get("when_ts") is not None and abs(float(r["when_ts"]) - plan.due_ts) <= 90]
+        return {"source": "manual", "id": str(new[0]["id"])} if len(new) == 1 else None
+    except Exception:  # noqa: BLE001 — no identity just means no Undo; the reminder itself stands
+        return None
+
+
 async def create_reminder(plan: Plan) -> dict:
     """Create the reminder through the existing verified path (`add_reminder`).
 
@@ -61,15 +98,24 @@ async def create_reminder(plan: Plan) -> dict:
     reminder cannot be created twice), a refusal to fall back when an earlier attempt's
     outcome is unknown, and a Wisp-only fallback when Apple Reminders declines. Its result
     is prose, so it is classified conservatively: only "Reminder set:" is success.
+
+    On success the result also carries `created`: the identity of the object made, which is
+    what Undo is bound to.
     """
     from service.tools.assistant_tools import add_reminder
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
     # and a time in a repeated DST hour keeps its meaning.
     when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
+    started = time.time()
+    try:
+        before = set(_rows_near(plan.due_ts))
+    except Exception:  # noqa: BLE001
+        before = set()
     text = await add_reminder(plan.title, when_iso, "reminder")
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
-        return {"ok": True, "status": "succeeded", "where": where}
+        return {"ok": True, "status": "succeeded", "where": where,
+                "created": _created_identity(plan, when_iso, started, before, where)}
     lowered = text.lower()
     unknown = any(k in lowered for k in ("unconfirmed", "not verified", "nothing was confirmed"))
     return {"ok": False, "status": "unknown" if unknown else "failed", "error": text[:300]}
@@ -147,29 +193,55 @@ def schedule_tick() -> None:
     _task = asyncio.get_running_loop().create_task(_run())
 
 
+_undoing: set[str] = set()
+
+
+def _recorded_target(row: dict) -> tuple[dict | None, str | None]:
+    """The one current row that IS the object recorded at creation, or why there is none."""
+    created = (row["detail"].get("result") or {}).get("created")
+    if not isinstance(created, dict) or created.get("source") not in ("reminders", "manual"):
+        return None, "That reminder's identity was not recorded, so it cannot be removed from here."
+    due = float(row["due_ts"])
+    found = [r for r in _rows_near(due).values()
+             if r.get("status") == "active" and r.get("source") == created["source"]
+             and ((created["source"] == "reminders" and str(r.get("source_id")) == str(created.get("source_id")))
+                  or (created["source"] == "manual" and str(r.get("id")) == str(created.get("id"))))]
+    if not found:
+        return None, "The reminder was not found. It may already be gone."
+    target = found[0]
+    if target.get("title") != row["title"] or target.get("when_ts") is None \
+            or abs(float(target["when_ts"]) - due) > 90:
+        return None, "That reminder was changed after Wisp created it; nothing was removed."
+    return target, None
+
+
 async def undo(source_id: str) -> dict:
     """Remove exactly the reminder this runner created for `source_id`, and nothing else.
 
-    Only a ledger row in state `created` qualifies, and the reminder must match its recorded
-    title and time. The deletion itself is the existing verified path (`_retire`).
+    Only a ledger row in state `created` qualifies, and only the object whose identity was
+    recorded when it was made (the native `source_id`, or the local row id). A look-alike with
+    the same title and time is a different reminder and is never touched, and siblings that the
+    list view collapses into the same row are not passed to the deletion. The deletion itself is
+    the existing verified path (`_retire`), which reads the native item back.
     """
     ledger = get_ledger()
     row = ledger.get(source_id)
     if not row or row["state"] != "created":
         return {"ok": False, "error": "Wisp did not create a reminder for that message."}
-    due = float(row["due_ts"])
-    matches = [c for c in assistant_store.upcoming(due - 120, days=2)
-               if c.get("title") == row["title"] and c.get("when_ts") is not None
-               and abs(float(c["when_ts"]) - due) <= 90 and c.get("source") in ("reminders", "manual")]
-    if not matches:
-        return {"ok": False, "error": "The reminder was not found. It may already be gone."}
-    if len(matches) > 1:
-        return {"ok": False, "error": "More than one reminder matches; nothing was removed."}
-    from service.tools.assistant_tools import _retire
-    error = await _retire(matches[0])
-    if error:
-        return {"ok": False, "error": error}
-    ledger.finish(source_id, "undone", {**row["detail"], "undone": True})
+    if source_id in _undoing:
+        return {"ok": False, "error": "An undo for that reminder is already in progress."}
+    _undoing.add(source_id)
+    try:
+        target, why = _recorded_target(row)
+        if target is None:
+            return {"ok": False, "error": why}
+        from service.tools.assistant_tools import _retire
+        error = await _retire({**target, "duplicate_ids": []})
+        if error:
+            return {"ok": False, "error": error}
+        ledger.finish(source_id, "undone", {**row["detail"], "undone": True})
+    finally:
+        _undoing.discard(source_id)
     try:
         await hub.publish({"type": "changed"})
     except Exception:  # noqa: BLE001

@@ -56,7 +56,7 @@ def put_settings(body: SettingsPatch):
     if new.mode == "live" and old.mode != "live":
         # Re-baseline at the moment of the switch, not at the next pass: nothing that arrived
         # before this instant is ever acted on.
-        runner.get_ledger().set_meta("enabled_at", repr(time.time()))
+        runner.get_ledger().mark_live(time.time())
     return asdict(new)
 
 

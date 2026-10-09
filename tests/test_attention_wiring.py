@@ -148,49 +148,150 @@ async def test_everything_else_is_a_failure_and_unconfirmed_is_unknown(monkeypat
 
 # ------------------------------------------------------------------------ undo
 
-def created_row(title="Mom: Meet me in the Quad at 6PM (6:00 PM)", due=NOW + 3600):
+TITLE = "Mom: Meet me in the Quad at 6PM (6:00 PM)"
+OWN = {"source": "reminders", "source_id": "native-A"}
+
+
+def created_row(title=TITLE, due=NOW + 3600, created=OWN):
+    """A ledger row for a reminder the runner made, with the identity recorded at creation."""
     led = wiring.get_ledger()
     led.claim("msg:m", title=title, due_ts=due, event_ts=due + 1800, now=NOW)
-    led.finish("msg:m", "created", {"quote": "q"}, NOW)
-    return {"title": title, "when_ts": due, "source": "reminders", "id": "c1", "source_id": "x"}
+    detail = {"quote": "q", "result": {"ok": True, "created": created}} if created else {"quote": "q"}
+    led.finish("msg:m", "created", detail, NOW)
 
 
-async def test_undo_removes_exactly_the_reminder_it_created(monkeypatch):
+def native(source_id="native-A", **kw):
+    """A current commitment row as the store returns it."""
+    return {"id": "c-" + source_id, "title": TITLE, "when_ts": NOW + 3600, "source": "reminders",
+            "source_id": source_id, "status": "active", **kw}
+
+
+@pytest.fixture
+def store(monkeypatch):
+    """The commitments store as a dict of rows: `upcoming` returns the heads, `get` the rows."""
     from service.tools import assistant_tools
-    row = created_row()
-    retired = []
+    box = {"heads": [], "rows": {}, "retired": [], "error": None}
 
-    async def fake_retire(c):
-        retired.append(c)
-    monkeypatch.setattr(wiring.assistant_store, "upcoming", lambda *a, **k: [row])
-    monkeypatch.setattr(assistant_tools, "_retire", fake_retire)
-    assert await wiring.undo("msg:m") == {"ok": True}
-    assert retired == [row] and wiring.get_ledger().get("msg:m")["state"] == "undone"
-    assert (await wiring.undo("msg:m"))["ok"] is False             # already undone: nothing to do
+    def upcoming(*a, **k):
+        return box["heads"]
+
+    async def retire(c):
+        box["retired"].append(c)
+        return box["error"]
+    monkeypatch.setattr(wiring.assistant_store, "upcoming", upcoming)
+    monkeypatch.setattr(wiring.assistant_store, "get", lambda cid: box["rows"].get(cid))
+    monkeypatch.setattr(assistant_tools, "_retire", retire)
+    return box
 
 
-@pytest.mark.parametrize("candidates", [
-    [],                                                                         # gone already
-    [{"title": "Something else", "when_ts": NOW + 3600, "source": "reminders"}],  # different reminder
-    [{"title": "Mom: Meet me in the Quad at 6PM (6:00 PM)", "when_ts": NOW + 9000, "source": "reminders"}],
-    [{"title": "Mom: Meet me in the Quad at 6PM (6:00 PM)", "when_ts": NOW + 3600, "source": "calendar"}],
-])
-async def test_undo_never_touches_anything_that_is_not_its_own(monkeypatch, candidates):
-    from service.tools import assistant_tools
+async def test_undo_removes_exactly_the_object_it_created(store):
     created_row()
-    monkeypatch.setattr(wiring.assistant_store, "upcoming", lambda *a, **k: candidates)
+    store["heads"] = [native()]
+    assert await wiring.undo("msg:m") == {"ok": True}
+    assert store["retired"] == [{**native(), "duplicate_ids": []}]
+    assert wiring.get_ledger().get("msg:m")["state"] == "undone"
+    assert (await wiring.undo("msg:m"))["ok"] is False             # already undone: nothing to do
+    assert len(store["retired"]) == 1
 
-    async def boom(c):
-        raise AssertionError("must not delete")
-    monkeypatch.setattr(assistant_tools, "_retire", boom)
-    assert (await wiring.undo("msg:m"))["ok"] is False
+
+async def test_a_lookalike_made_after_the_original_is_gone_is_never_deleted(store):
+    """Review ATT182-01: A is removed elsewhere, the user makes B with the same title and time."""
+    created_row()
+    store["heads"] = [native("native-B")]                              # same title, same time, other object
+    got = await wiring.undo("msg:m")
+    assert got["ok"] is False and store["retired"] == []
     assert wiring.get_ledger().get("msg:m")["state"] == "created"
 
 
-async def test_undo_refuses_when_two_reminders_match(monkeypatch):
-    row = created_row()
-    monkeypatch.setattr(wiring.assistant_store, "upcoming", lambda *a, **k: [row, dict(row, id="c2")])
-    assert "More than one" in (await wiring.undo("msg:m"))["error"]
+async def test_an_unowned_sibling_collapsed_into_the_same_row_is_not_passed_to_the_deletion(store):
+    created_row()
+    own = native()
+    head = {"id": "m1", "title": TITLE, "when_ts": NOW + 3600, "source": "manual", "source_id": "m1",
+            "status": "active", "duplicate_ids": [own["id"]]}          # the user's own manual twin is the head
+    store["heads"], store["rows"] = [head], {own["id"]: own, "m1": head}
+    assert (await wiring.undo("msg:m"))["ok"] is True
+    assert store["retired"] == [{**own, "duplicate_ids": []}]            # only the recorded object
+
+
+async def test_an_owned_row_hiding_unowned_duplicates_does_not_take_them_along(store):
+    created_row()
+    store["heads"] = [native(duplicate_ids=["u1", "u2"])]
+    store["rows"] = {"u1": native("native-U", id="u1"), "u2": {**native(), "id": "u2", "source": "manual"}}
+    assert (await wiring.undo("msg:m"))["ok"] is True
+    assert store["retired"][0]["duplicate_ids"] == [] and store["retired"][0]["source_id"] == "native-A"
+
+
+async def test_a_group_that_does_not_contain_the_recorded_object_is_refused(store):
+    created_row()
+    other = native("native-B")
+    head = {"id": "m1", "title": TITLE, "when_ts": NOW + 3600, "source": "manual", "source_id": "m1",
+            "status": "active", "duplicate_ids": [other["id"]]}
+    store["heads"], store["rows"] = [head], {other["id"]: other}
+    assert (await wiring.undo("msg:m"))["ok"] is False and store["retired"] == []
+
+
+async def test_a_reminder_with_no_recorded_identity_cannot_be_undone(store):
+    created_row(created=None)
+    store["heads"] = [native()]
+    got = await wiring.undo("msg:m")
+    assert got["ok"] is False and "identity" in got["error"] and store["retired"] == []
+    for bad in ({"source": "calendar", "source_id": "native-A"}, {"source": "reminders"}, "native-A", []):
+        wiring.get_ledger().finish("msg:m", "created", {"result": {"created": bad}}, NOW)
+        assert (await wiring.undo("msg:m"))["ok"] is False and store["retired"] == [], bad
+
+
+@pytest.mark.parametrize("change", [
+    {"title": "Renamed"},                       # renamed since
+    {"when_ts": NOW + 9000},                    # rescheduled since
+    {"status": "dismissed"},                    # already dismissed
+    {"source": "calendar"},                     # not a reminder at all
+])
+async def test_a_changed_or_gone_object_is_refused(store, change):
+    created_row()
+    store["heads"] = [native(**change)]
+    assert (await wiring.undo("msg:m"))["ok"] is False and store["retired"] == []
+    assert wiring.get_ledger().get("msg:m")["state"] == "created"
+
+
+async def test_a_wisp_only_reminder_is_found_by_its_local_row_id(store):
+    created_row(created={"source": "manual", "id": "local-1"})
+    mine = {"id": "local-1", "title": TITLE, "when_ts": NOW + 3600, "source": "manual", "source_id": "local-1",
+            "status": "active"}
+    twin = {**mine, "id": "local-2", "source_id": "local-2"}             # identical, but not made by Wisp
+    store["heads"] = [twin]
+    assert (await wiring.undo("msg:m"))["ok"] is False and store["retired"] == []
+    store["heads"] = [twin, mine]
+    assert (await wiring.undo("msg:m"))["ok"] is True
+    assert [r["id"] for r in store["retired"]] == ["local-1"]
+
+
+@pytest.mark.parametrize("error", ["Reminders cancellation was not confirmed", "native timeout"])
+async def test_a_failed_or_unconfirmed_delete_leaves_the_reminder_undoable(store, error):
+    created_row()
+    store["heads"], store["error"] = [native()], error
+    got = await wiring.undo("msg:m")
+    assert got == {"ok": False, "error": error}
+    assert wiring.get_ledger().get("msg:m")["state"] == "created"
+    store["error"] = None
+    assert (await wiring.undo("msg:m"))["ok"] is True                    # a retry can still succeed
+
+
+async def test_two_simultaneous_undo_requests_delete_once(store, monkeypatch):
+    from service.tools import assistant_tools
+    created_row()
+    store["heads"] = [native()]
+    gate, calls = asyncio.Event(), []
+
+    async def slow(c):
+        calls.append(c)
+        await gate.wait()
+    monkeypatch.setattr(assistant_tools, "_retire", slow)
+    first = asyncio.create_task(wiring.undo("msg:m"))
+    await asyncio.sleep(0)
+    second = await wiring.undo("msg:m")
+    gate.set()
+    assert (await first) == {"ok": True} and second["ok"] is False and "in progress" in second["error"]
+    assert len(calls) == 1
 
 
 async def test_undo_only_applies_to_created_reminders():
@@ -300,9 +401,10 @@ async def test_the_real_add_reminder_prose_is_classified_as_success_when_wisp_on
     due = datetime.now().replace(microsecond=0).timestamp() + 7200
     title = "Mom: Meet me in the Quad (6:00 PM)"
     got = await wiring.create_reminder(live.Plan(title, due, None, "today", "q"))
-    assert got == {"ok": True, "status": "succeeded", "where": "wisp_only"}
     rows = [c for c in wiring.assistant_store.upcoming(due - 600, days=1) if c["title"] == title]
     assert len(rows) == 1 and rows[0]["source"] == "manual"
+    assert got == {"ok": True, "status": "succeeded", "where": "wisp_only",
+                   "created": {"source": "manual", "id": rows[0]["id"]}}
 
 
 @pytest.mark.parametrize("tz", ["UTC", "America/New_York", "Asia/Kolkata", "America/Los_Angeles"])
@@ -356,3 +458,117 @@ def test_switching_to_live_through_the_api_re_baselines_at_that_instant(client, 
     stamped = led.meta("enabled_at")
     assert client.put("/assistant/attention/settings", json={"daily_cap": 3}).status_code == 200
     assert led.meta("enabled_at") == stamped                                # already live: untouched
+
+
+# ------------------------------------------- the identity recorded at creation (review ATT182-01)
+
+APPLE = "Reminder set: “t” — Mon at 5:30 PM in Apple Reminders and Wisp."
+
+
+def fake_receipts(monkeypatch, rows_for):
+    """Fake add_reminder (returning the Apple success prose) and the action store behind it."""
+    import time as clock
+    from types import SimpleNamespace
+    from service.assistant.outbox import _reminder_base_action_id
+    from service.tools import assistant_tools
+    seen = {}
+
+    async def add(title, when_iso, kind="reminder"):
+        seen["when_iso"], seen["title"] = when_iso, title
+        return APPLE
+
+    def by_prefix(prefix):
+        payload = {"title": seen["title"].strip(), "commitment_kind": "reminder",
+                   "due_ts": datetime.fromisoformat(seen["when_iso"]).timestamp()}
+        assert prefix == _reminder_base_action_id("create_reminder", payload)      # bound to THIS payload
+        return rows_for(clock.time())
+    monkeypatch.setattr(assistant_tools, "add_reminder", add)
+    fake_store = SimpleNamespace(reminder_actions_by_prefix=by_prefix)
+    monkeypatch.setattr(type(wiring.hub), "store", property(lambda self: fake_store))
+
+
+def receipt(created_at, source_id="native-A", ok=True):
+    return {"created_at": created_at, "result": {"ok": ok, "status": "succeeded", "source_id": source_id}}
+
+
+async def test_the_native_receipt_written_during_the_call_is_the_recorded_identity(monkeypatch):
+    fake_receipts(monkeypatch, lambda now: [receipt(now + 1)])
+    got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert got["created"] == {"source": "reminders", "source_id": "native-A"}
+
+
+@pytest.mark.parametrize("rows", [
+    lambda now: [receipt(now - 600)],                                  # an older reminder's receipt was reused
+    lambda now: [],                                                    # no receipt at all
+    lambda now: [receipt(now + 1, ok=False)],                          # not a verified success
+    lambda now: [receipt(now + 1, "native-A"), receipt(now + 2, "native-B")],   # ambiguous
+])
+async def test_without_one_fresh_unambiguous_receipt_no_identity_is_recorded(monkeypatch, rows):
+    fake_receipts(monkeypatch, rows)
+    got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert got["ok"] is True and got["created"] is None                # still created; just not undoable
+
+
+async def test_a_wisp_only_identity_is_the_one_new_local_row_not_an_identical_older_one(monkeypatch):
+    from service.tools import assistant_tools
+    due = datetime.now().replace(microsecond=0).timestamp() + 7200
+    older = wiring.assistant_store.add_manual("same", due)              # made by the user earlier
+    made = []
+
+    async def add(title, when_iso, kind="reminder"):
+        made.append(wiring.assistant_store.add_manual(title, due))
+        return "Reminder set: “same” — Mon in Wisp only; Apple Reminders was not changed (x)."
+    monkeypatch.setattr(assistant_tools, "add_reminder", add)
+    got = await wiring.create_reminder(live.Plan("same", due, None, "today", "q"))
+    assert got["created"] == {"source": "manual", "id": made[0]["id"]} and made[0]["id"] != older["id"]
+
+
+async def test_the_identity_is_persisted_in_the_ledger_through_a_live_pass(isolated, feed, monkeypatch):
+    go_live(isolated)
+    fake_receipts(monkeypatch, lambda now: [receipt(now + 1, "native-Z")])
+
+    async def quiet(event):
+        pass
+    monkeypatch.setattr(wiring, "_publish", quiet)
+    monkeypatch.setattr(wiring.assistant_store, "get", lambda cid: None)
+    monkeypatch.setattr(wiring.assistant_store, "upcoming", lambda *a, **k: [])
+    out = await wiring.run_tick(NOW)
+    assert [o.state for o in out] == ["created"]
+    row = wiring.get_ledger().get(out[0].source_id)
+    assert row["detail"]["result"]["created"] == {"source": "reminders", "source_id": "native-Z"}
+
+
+# ----------------------------- the API's enable stamp survives the first live pass (review ATT182-03)
+
+def api_switch(client, monkeypatch, at):
+    from types import SimpleNamespace
+    monkeypatch.setattr(attention_api, "time", SimpleNamespace(time=lambda: at))
+    assert client.put("/assistant/attention/settings", json={"mode": "live"}).status_code == 200
+
+
+@pytest.mark.parametrize("before", ["shadow", "off"])
+@pytest.mark.parametrize("restart", [False, True])
+async def test_a_message_between_the_switch_and_the_first_live_pass_is_still_acted_on(
+        client, isolated, feed, effects, monkeypatch, before, restart):
+    led = wiring.get_ledger()
+    led.set_meta("last_mode", before)                                  # the previous pass ran in `before`
+    live.save_settings(live.settings_path(isolated), Settings(mode=before))
+    api_switch(client, monkeypatch, NOW + 10)
+    feed["value"] = {**FEED, "records": FEED["records"] + [
+        rec("pre", "Mom", "Lunch today at 12pm", NOW + 5),             # arrived before the switch
+        rec("post", "Mom", "Dinner today at 7pm", NOW + 20)]}          # after it, before the first pass
+    if restart:
+        wiring.reset()                                                 # app relaunched; the ledger file persists
+    out = await wiring.run_tick(NOW + 300)                             # throttled / not ready until now
+    titles = [o.title or "" for o in out]
+    assert any("Dinner" in x for x in titles), out                     # the post-switch message is acted on
+    assert not any("Lunch" in x for x in titles), out                  # the pre-switch one stays excluded
+    assert float(wiring.get_ledger().meta("enabled_at")) == NOW + 10   # not moved forward to the pass
+
+
+async def test_a_change_made_outside_the_endpoint_still_re_baselines(isolated, feed, effects):
+    wiring.get_ledger().set_meta("last_mode", "shadow")
+    go_live(isolated)                                                  # settings file edited by hand
+    feed["value"] = {**FEED, "records": FEED["records"] + [rec("x", "Mom", "Lunch today at 12pm", NOW + 5)]}
+    assert await wiring.run_tick(NOW + 300) == []                      # conservative fallback
+    assert float(wiring.get_ledger().meta("enabled_at")) == NOW + 300

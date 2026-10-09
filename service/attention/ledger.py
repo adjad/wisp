@@ -110,6 +110,22 @@ class Ledger:
         row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
+    def mark_live(self, at: float) -> None:
+        """Record the switch into live mode as ONE step: the baseline and the mode it belongs to.
+
+        If the baseline were stamped alone, the first pass would see a mode change and move the
+        baseline forward to its own clock, dropping every message that arrived in between."""
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                for key, value in (("enabled_at", repr(at)), ("last_mode", "live")):
+                    self._db.execute("INSERT INTO meta(key,value) VALUES (?,?) "
+                                     "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, value))
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
+
     def set_meta(self, key: str, value: str) -> None:
         with self._lock:
             self._db.execute("INSERT INTO meta(key,value) VALUES (?,?) "
