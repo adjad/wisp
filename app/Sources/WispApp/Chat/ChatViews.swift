@@ -802,7 +802,7 @@ struct ChatComposer: View {
                         ChatPill(text: store.fullAccess ? "Full access" : "Ask before acting")
                     }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .help("Whether Wisp asks before it acts. Sending and deleting always ask.")
+                    .help("Whether Wisp asks before it acts. Sending and bulk deletes always ask.")
                     Spacer()
                     if busy {
                         Button(action: stop) {

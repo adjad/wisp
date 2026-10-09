@@ -169,6 +169,7 @@ final class ChatStore: ObservableObject {
     }
 
     func delete(_ conversation: ChatConversation) {
+        let wasBusy = conversation.busy
         stop(conversation)   // also denies a card that is still waiting for an answer
         let id = conversation.sessionId
         conversations.removeAll { $0 === conversation }
@@ -178,8 +179,15 @@ final class ChatStore: ObservableObject {
         guard !id.isEmpty else { return }
         deletedSessionIds.insert(id)
         Task {
-            // If the service could not delete it, the chat still exists and belongs in the list.
-            if await backend.deleteChat(id: id) == false { deletedSessionIds.remove(id) }
+            // A reply that was streaming is still being wound down by the service,
+            // which saves its last turns on the way out. Wait for that to finish, so
+            // the delete does not race it and leave the prompt behind as orphaned rows.
+            if wasBusy { try? await Task.sleep(nanoseconds: 3_500_000_000) }
+            if await backend.deleteChat(id: id) == false {
+                // The chat still exists on the service, so it goes back in the list.
+                deletedSessionIds.remove(id)
+                await refresh()
+            }
         }
     }
 
@@ -204,7 +212,9 @@ final class ChatStore: ObservableObject {
         let runID = UUID()
         conversation.runID = runID
         let sid = conversation.sessionId
-        let wantsDebug = debug()
+        // The Chat window never shows debug records, and the service streams them
+        // in full (about 1.6 MB a turn), so ask for none.
+        let wantsDebug = false
         conversation.task = Task { [weak self, weak conversation] in
             guard let self else { return }
             await self.backend.run(prompt: prompt, image: image, sessionId: sid, debug: wantsDebug) { event in
@@ -323,7 +333,7 @@ final class ChatStore: ObservableObject {
 
     func sendDraft(_ conversation: ChatConversation, messageID: UUID) {
         guard let i = conversation.messages.firstIndex(where: { $0.id == messageID }),
-              let draft = conversation.messages[i].draft, !draft.isSending, !draft.sent else { return }
+              let draft = conversation.messages[i].draft, !draft.isSending, !draft.sent, !draft.discarded else { return }
         guard !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             updateDraft(conversation, messageID: messageID) { $0.status = "The message is empty." }
             return

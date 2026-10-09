@@ -16,7 +16,7 @@ the quick ask; both surfaces talk to the same service and the same saved chats.
 - Details (⌘I): route, model, routed-by, speed, time, why that route, tools used.
 - Composer: Return sends, Option-Return adds a line, paperclip attaches an image,
   the pill shows and toggles "Ask before acting" / "Full access" (the same
-  service setting as Settings; sending and deleting always ask).
+  service setting as Settings; sending and bulk deletes always ask).
 - Hand-off: the notch header's "Open in Wisp Chat" opens this window on the
   notch's current conversation (by service session id).
 - Appearance: follows the Mac. Dark is the aurora; light is a pale daylight blue.
