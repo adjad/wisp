@@ -7,8 +7,8 @@
   "entries": [
     {
       "path": "HANDOFF.md",
-      "sha256": "f92eb16589b8df1000ee3d9b88eaca896660796591a5657cdb215b950710cdf3",
-      "bytes": 5446
+      "sha256": "7fd1ed7ad2b186bcd1fd615dc6456ffb30efa4cc4cc91243b8369e1dd00e343d",
+      "bytes": 6237
     },
     {
       "path": "N1_CONTROL.json",
@@ -17,18 +17,18 @@
     },
     {
       "path": "PROVENANCE.json",
-      "sha256": "90d5250ea1059c07da1ba4a3ad5254fc0a70e444181e8c803a326c0da5678634",
-      "bytes": 14164
+      "sha256": "40d3a4739cb4453c0a747c6e3f432b0258026a5cf6efcb449241eb39fc6f6eb6",
+      "bytes": 17735
     },
     {
       "path": "README.md",
-      "sha256": "b025404bbd118e1f07d637852462824881bb317117f40cb1028ff7e2a940f32b",
-      "bytes": 8792
+      "sha256": "e0d240392c090e76188037b802dd43b38adccae181724f654db521cfdb6ee2c3",
+      "bytes": 9379
     },
     {
       "path": "STAGING.md",
-      "sha256": "15fd1a830ffd37be987ec760bf7bbf460a739f415c512a9d0342502827a1bbd9",
-      "bytes": 13980
+      "sha256": "9bd480b50b1aa5422612d910b0f72f00ac5fedad7f9f511693b29ccbdd79ca56",
+      "bytes": 14961
     },
     {
       "path": "author/CHECKSUMS.json",
@@ -100,7 +100,7 @@
   "independentProductApproval": false,
   "staticDesignReview": "PASS_WITH_NOTES_DEFAULT_OFF_PREPARATION_ONLY",
   "enablingVerdict": "BLOCKED",
-  "documentationIntegrationBaseSHA": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "documentationIntegrationBaseSHA": "cbf6bd7a5c0c879e473956c2f365c99043f19ac0",
   "preflightCheckpointSHA": "cfa69196ac43e215f0374f16b76e63693f88edad",
   "immutableRetainedFiles": 13,
   "freshExactHeadGateEvidence": "Recorded outside this commit after freeze",
@@ -109,5 +109,8 @@
     "Verified macOS artifact"
   ],
   "localProductTests": 0,
-  "exactHeadDocumentReviewClaim": null
+  "exactHeadDocumentReviewClaim": null,
+  "historicalDocumentationIntegrationBaseSHA": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "currentDocumentationMergeCheckpointSHA": "e7612c19792603a201a63ee17651e2817f6de89d",
+  "wrapperCorrectionScope": "Current status/seq72 attribution and gated merge authority only;13 original input bytes unchanged"
 }

@@ -6,7 +6,7 @@
   "checkout": "/Users/adijain/.codex/worktrees/ed1a/MOE_Project",
   "branch": "codex/attestation-perf-1-3",
   "originalDesignCommit": "1449ab162c2f92e73162950240054964af636cdf",
-  "observedLocalOriginMain": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "observedLocalOriginMain": "cbf6bd7a5c0c879e473956c2f365c99043f19ac0",
   "mainReconciliationPerformed": true,
   "branchRegistration": {
     "headMatchedFrozenBase": true,
@@ -188,7 +188,6 @@
     "Remote CI may execute production checks; local document checks supply no product/native/benchmark or exact-head review pass"
   ],
   "preservedHolds": {
-    "ClaudeProductTransferConfirmed": false,
     "humanD1D4Acceptance": false,
     "productWritesReleased": false,
     "runtimeExecutionAdmitted": false,
@@ -196,8 +195,11 @@
     "currentLegacyAuthoritative": true,
     "qualifiedSpeedClaim": false,
     "final12ReconciliationRequired": true,
-    "noMerge": true,
-    "noActivationDeployRelease": true
+    "noActivationDeployRelease": true,
+    "completedClaudeTransferAsserted": false,
+    "standingGatedMergeAuthorization": true,
+    "builderMayMerge": false,
+    "mergeClearedNow": false
   },
   "prepOperations": {
     "documentIntegrityChecksOnly": true,
@@ -233,17 +235,65 @@
     "authorityToAdvanceNextSteps": true,
     "productOwnershipEvidence": false,
     "D1D4Acceptance": false,
-    "noMergeHoldPreserved": true
+    "noMergeHoldPreserved": true,
+    "scope": "Historical 2026-10-07 instruction/interpretation; current authority is recorded separately below"
   },
   "delivery": {
     "intended": "Documentation-only commit and non-force branch push; exact commit provided in chat",
     "sourceMainReconciliation": true,
     "productCandidate": false,
     "mergeAllowed": false,
-    "reconciliationScope": "Explicit documentation-preflight release only"
+    "reconciliationScope": "Current documentation-only Root release and five-wrapper correction amendment",
+    "mergeAuthorityQualification": "No builder merge or present merge clearance; designated integrator only after fresh same-head gates"
   },
   "reconciliationScope": "Documentation integration only; no product/final-1.2 compatibility proof",
-  "preflight": {
+  "integrationValidationContext": [
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
+      "sha256": "46939f9beff00c22c7ce04635962a93d18852ae6bdc951d41264ab8fd628dfdd",
+      "qualification": "Integration-context document only; includes 1.2.0 ad-hoc per-version waiver, not 1.3 approval"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "scripts/test_replay_failure_fixes.py",
+      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced",
+      "qualification": "Read/hashes only; not locally executed"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": ".github/workflows/regression-gate.yml",
+      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684",
+      "qualification": "Configured remote CI is separate from local document checks"
+    }
+  ],
+  "ownershipEvidence": {
+    "requestSequence": 68,
+    "correlatedReplySequence": 72,
+    "attributedAuthor": "Claude",
+    "artifact": {
+      "path": "/private/tmp/wisp-pr165-mailbox71-preflight-intake-20261009/MAILBOX72_BODY.json",
+      "sha256": "c766ea070d2a8422b392c7d06b57bdec4f2a5c80b330c2a71dda3f15c35e50a0",
+      "bytes": 3373
+    },
+    "reportedQuiescence": true,
+    "reportedUnpublishedWork": "None on six listed paths; Claude's reported inspection, not re-executed by this documentation writer",
+    "conditionalRecipient": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+    "paths": [
+      "service/inference/attributed_transport.py",
+      "service/inference/local_peer.py",
+      "tests/test_runtime_attestation_t0.py",
+      "tests/test_runtime_proc_path.py",
+      "tests/test_runtime_peer.py",
+      "tests/test_web_response_followup.py"
+    ],
+    "condition": "Effective only when Root records return/accept; delivery alone is not transfer",
+    "completedTransferAssertedByThisPacket": false,
+    "productRuntimeReleaseInferred": false,
+    "humanD1D4AcceptanceInferred": false
+  },
+  "historicalObservedLocalOriginMain": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "historicalPreflight20261007": {
     "scopeReceipt": {
       "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_PR170_PERSISTENT_GOAL_AND_DOCS_PREFLIGHT_SCOPE_2026-10-07.json",
       "sha256": "d923d94435843f1ef6294d706bb2a69188e4f8ba2aefb4c089fe98ed3f919d3d"
@@ -287,31 +337,49 @@
     "final12CompatibilityProved": false,
     "publicationAllowed": false
   },
-  "integrationValidationContext": [
-    {
-      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
-      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
-      "sha256": "46939f9beff00c22c7ce04635962a93d18852ae6bdc951d41264ab8fd628dfdd",
-      "qualification": "Integration-context document only; includes 1.2.0 ad-hoc per-version waiver, not 1.3 approval"
-    },
-    {
-      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
-      "path": "scripts/test_replay_failure_fixes.py",
-      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced",
-      "qualification": "Read/hashes only; not locally executed"
-    },
-    {
-      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
-      "path": ".github/workflows/regression-gate.yml",
-      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684",
-      "qualification": "Configured remote CI is separate from local document checks"
-    }
-  ],
-  "ownershipEvidence": {
+  "historicalOwnershipEvidence20261007": {
     "requestSequence": 68,
     "correlatedRepliesRecorded": 0,
     "correlatedAcknowledgmentsRecorded": 0,
     "evidenceSource": "Source-parent release and registered d923d944 scope; no fresh mailbox execution by this documentation writer",
     "productTransferConfirmed": false
+  },
+  "documentationQualification20261009": {
+    "rootRelease": {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_PR170_INDEPENDENT_DOCUMENT_QUALIFICATION_RELEASE_20261009.json",
+      "sha256": "2aad95c9909a458e3b4eaabb191fa82df265f4bb52238e521ffaa3b761bfbee7",
+      "wrapperAmendmentRecordedAtUTC": "2026-10-09T20:01:26.036002+00:00",
+      "snapshotPath": "/private/tmp/wisp-pr170-wrapper-correction-20261009/ROOT_RELEASE_SNAPSHOT.json"
+    },
+    "builderAccept": "/private/tmp/wisp-pr170-wrapper-correction-20261009/ACCEPT.json",
+    "actualIntegrationBaseSHA": "cbf6bd7a5c0c879e473956c2f365c99043f19ac0",
+    "ordinaryMergeCheckpointSHA": "e7612c19792603a201a63ee17651e2817f6de89d",
+    "preCorrectionHistoricalHeadSHA": "b9283fbac826c8f26a2284a32068c8a47dd5a7df",
+    "wrapperWritePaths": [
+      "README.md",
+      "HANDOFF.md",
+      "STAGING.md",
+      "PROVENANCE.json",
+      "CHECKSUMS.json"
+    ],
+    "immutableInputCount": 13,
+    "packetFileCount": 18,
+    "post174DependencyRemovedForPR170Only": true,
+    "historicalProposalReviewIdentityPreserved": true,
+    "earlierE761PushEvidencePreserved": "/private/tmp/wisp-pr170-independent-docs-qualification-20261009/",
+    "localValidation": "Document JSON/hash/byte-size/reference/whitespace only; no target imports/tests/runtime/native/model/benchmark/fullQA",
+    "originalMatrixAndN1": "NOT_RUN",
+    "D1D4Accepted": false,
+    "optimizationOff": true,
+    "pureS1": "PR173 inert foundation merged separately, unused by production; no original45/N1 proof",
+    "requiredCI": [
+      "python-regressions",
+      "Verified macOS artifact"
+    ],
+    "independentReview": "Fresh exact final candidate document/provenance review via Root",
+    "finalCandidateAndGates": "Recorded externally after freeze; no earlier candidate review/CI promoted",
+    "merger": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "builderSelfApproval": false,
+    "installActivationDeployPublicationAllowed": false
   }
 }
