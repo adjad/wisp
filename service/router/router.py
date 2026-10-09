@@ -1655,6 +1655,53 @@ _INBOUND_RE = re.compile(
     r"\bhear(?:d)? back from\b|"
     r"\bdid\b[^?]{0,25}\b(?:e-?mail|message|text|write to|contact)\s+me\b|"
     r"\bany(?:thing)?\s+(?:new\s+)?(?:e-?mails?|messages?|texts?)\s+from\b", re.I)
+# "what did trishe say" / "what did my mom say" / "what has Dan sent" — a
+# named PERSON as the subject of a communication verb, no channel named.
+# VERIFIED FAILURE 2026-10-08: with none of the message words above, this
+# fell to the embedding-retrieved "ambiguous" route, whose 22 tools held
+# view_messages but NOT summarize_messages, so the model concluded it had no
+# way to search by sender and answered "couldn't produce a reliable answer".
+# The subject is a name or "my <relation>"; pronouns, determiners and
+# "you/I" are excluded so "what did you say", "what did the report say" and
+# "what did I tell you" keep their existing routes.
+_PERSON_SAID_RE = re.compile(
+    r"\bwh?at\s+(?:did|has|had|does|was)\s+"
+    r"(?!(?:i|you|we|u|it|its|that|this|these|those|he|she|they|the|a|an|your|our|his|her|their|"
+    r"anyone|anybody|someone|somebody|everyone|everybody|nobody|who|which|what)\b)"
+    r"(?P<who>my\s+(?!(?:notes?|calendar|reminders?|files?|docs?|documents?|code|app|phone|"
+    r"computer|mac|laptop|schedule|list|inbox|email|emails|mail|messages?|texts?|"
+    r"watch|alarm|timer)\b)[a-z][\w'’-]*|(?!my\b)[a-z][\w'’-]*(?:\s+[a-z][\w'’-]*)?)\s+"
+    r"(?:say|said|saying|write|wrote|send|sent|text(?:ed)?|tell|told|reply|replied|"
+    r"respond(?:ed)?|message[ds]?|ask(?:ed)?)\b"
+    # Ends there: no "about <topic>" tail. "what did Trump say about tariffs"
+    # is a public-figure web question, and a topic clause is exactly what
+    # separates it from asking what a contact wrote.
+    r"(?=(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|"
+    r"just\s+now|again|recently|lately|last))*\W*$)", re.I)
+
+
+def _said_by_known_person(text: str) -> bool:
+    """True for "what did <someone in the user's life> say".
+
+    The web classifier reads "what did Dan say yesterday" as a public-news
+    question (it cannot tell Dan from a senator), so a time word sent a contact's
+    texts to web_search. A saved contact (or "my <relation>") is the evidence
+    that settles it; an unknown name keeps the web reading.
+    """
+    m = _PERSON_SAID_RE.search(text)
+    if not m:
+        return False
+    who = m.group("who").casefold().strip()
+    if who.startswith("my "):
+        return True
+    import difflib
+    from service.tools.imessage_tools import contact_names
+    for name in contact_names():
+        full = name.casefold()
+        for part in (full, *full.split()):
+            if who == part or difflib.SequenceMatcher(None, who, part).ratio() >= 0.8:
+                return True
+    return False
 # A bare calendar noun, for COMPOUND read requests where "calendar" isn't
 # preceded by "my/the" — e.g. "what's on my messages and calendar". Only used
 # inside _domain_subset, which now offers write tools alongside reads, so a
@@ -4216,7 +4263,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
     # question out of the inbox. Same in reverse for "any emails from mom".
     named_messages = "messages" in domains
     named_email = "email" in domains
-    if _INBOUND_RE.search(t) and not (named_messages ^ named_email):
+    if (_INBOUND_RE.search(t) or _PERSON_SAID_RE.search(t)) and not (named_messages ^ named_email):
         for tool in ("view_emails", "summarize_emails", "view_messages", "summarize_messages"):
             if tool not in subset:
                 subset.append(tool)
@@ -7005,6 +7052,12 @@ async def route(text: str, *,
             return _interpretation_only(_finalize(decision, text, web_request=request))
     if (draft := _standalone_authored_draft_decision(text)) is not None:
         return draft
+    if _said_by_known_person(text) and (said := rule_route(text)) is not None:
+        # A contact's words are private data even when a time word makes the
+        # sentence look like a news lookup — see _said_by_known_person.
+        return _finalize(said, text, web_request=replace(
+            request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
+            public_reference=False, inherited=False, clarification=None))
     if (private_read := _strict_private_read_decision(
             text, last_user=last_user, recent_users=recent_users)) is not None:
         private_request = replace(
