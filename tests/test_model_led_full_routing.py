@@ -220,6 +220,41 @@ def test_exact_existing_owner_controls_need_no_model_guess(endpoint, control):
 
 
 @pytest.mark.parametrize("mode", [None, "1"])
+def test_revision_changed_during_interpretation_keeps_fallback_mutations_closed(endpoint, monkeypatch, mode):
+    from service.tasks import reply_engine
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    original_interpretation = reply_engine.interpret_owner_continuation
+    monkeypatch.setattr(reply_engine, "prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    sid, plan = waiting_title(endpoint)
+    endpoint.script = [continuation_response(plan)]
+    changed = []
+    async def revise_while_waiting(*args, **kwargs):
+        result = await original_interpretation(*args, **kwargs)
+        newer = endpoint.store.active_task(sid)
+        newer["revision"] += 1
+        endpoint.store.save_workflow(sid, newer)
+        changed.append(endpoint.store.active_task(sid))
+        return result
+    monkeypatch.setattr(reply_engine, "interpret_owner_continuation", revise_while_waiting)
+    async def no_execution(*args, **kwargs):
+        raise AssertionError("Stale continuation triggered execution")
+    monkeypatch.setattr(main, "execute_task", no_execution)
+    async def no_mutation(**args):
+        raise AssertionError("Stale continuation admitted a new effect")
+    no_mutation.__module__ = "service.tools.assistant_tools"
+    registry.REGISTRY["add_reminder"] = registry.Tool("add_reminder", "Synthetic mutation", {"type": "object"},
+                                                   "assistant_write", no_mutation)
+    endpoint.request("Pick up groceries", sid)
+    assert changed and endpoint.store.active_task(sid) == changed[0]
+    assert endpoint.store.active_task(sid)["subject"]["value"] is None
+    assert endpoint.agent_calls[0]["messages"][-1]["content"] == "Pick up groceries"
+    assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert not endpoint.effects and not endpoint.baseline_calls
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
 def test_cancelled_uncertain_legacy_owner_keeps_model_action_envelope_closed(endpoint, monkeypatch, mode):
     from service.workflows.models import WorkflowPlan
     if mode is None:

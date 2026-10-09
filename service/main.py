@@ -1515,6 +1515,11 @@ async def agent(body: dict[str, Any]):
                 allow_native=not test_mode and not typed_shadow_only,
                 owner_only=model_led_turn, owner_admission=task_owner_admission)
                 if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects and not recovery_excluded) else None)
+            if task_owner_verdict == "continue" and task_turn is None:
+                # Recovery can reject a once-valid decision after an async
+                # task revision change. It grants no authority to the fallback
+                # model either; retain ambiguity's mutation closure.
+                task_owner_verdict = "ambiguous"
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
                             "task": task_turn.plan.to_dict(),
