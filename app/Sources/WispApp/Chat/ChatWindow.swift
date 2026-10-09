@@ -20,7 +20,7 @@ final class ChatWindowController {
     func show() {
         present()
         if store.selected == nil { store.newChat() }
-        Task { await store.refresh() }
+        Task { await store.refreshWhenReady() }
     }
 
     /// Open the window onto an existing chat by its service session id: the
@@ -47,6 +47,7 @@ final class ChatWindowController {
             window = win
         }
         NSApp.activate(ignoringOtherApps: true)
+        if window?.isMiniaturized == true { window?.deminiaturize(nil) }
         window?.makeKeyAndOrderFront(nil)
     }
 }

@@ -39,7 +39,7 @@ struct ChatRootView: View {
         .animation(.easeOut(duration: 0.22), value: sidebarVisible)
         .animation(.easeOut(duration: 0.22), value: store.showInspector)
         .background(shortcuts)
-        .task { await store.refresh() }
+        .task { await store.refreshWhenReady() }
     }
 
     /// Window-wide shortcuts, as invisible buttons so they work wherever focus is.
