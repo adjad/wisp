@@ -51,7 +51,8 @@ final class ChatWindowController {
             closeObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.willCloseNotification, object: win, queue: .main
             ) { _ in
-                MainActor.assumeIsolated { NSApp.setActivationPolicy(.accessory) }
+                // setActivationPolicy returns a Bool; discard it so the closure is Void.
+                MainActor.assumeIsolated { _ = NSApp.setActivationPolicy(.accessory) }
             }
         }
         NSApp.setActivationPolicy(.regular)
