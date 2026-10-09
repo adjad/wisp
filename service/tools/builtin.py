@@ -160,6 +160,7 @@ def _wrong_account_path(path: str) -> str | None:
     category="shell",
 )
 def run_shell(cmd: str) -> str:
+    from service.router.model_led import BuiltinCompletion
     try:
         from service.safety.policy import Tier, decide
 
@@ -178,11 +179,45 @@ def run_shell(cmd: str) -> str:
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
                                timeout=120, cwd=str(Path.home()))
         out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
-        return _clip(out.strip() or f"(exit {p.returncode}, no output)")
+        return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
+                                 tool_name="run_shell", completion_code=p.returncode,
+                                 phase="read" if decision.shell_argv is not None else "mutation")
     except subprocess.TimeoutExpired:
         return "(command timed out after 120s)"
     except Exception as e:  # noqa: BLE001
         return f"(error running command: {e})"
+
+
+def _run_private_shell_read(cmd: str) -> str:
+    """Host-only dispatch: validated fixed argv even under full access/grants."""
+    from service.router.model_led import BuiltinCompletion
+    from service.safety.policy import Tier, decide, read_only_shell_argv
+    # Revalidate in the worker, immediately before dispatch. A grant may
+    # narrow or deny a read, but cannot turn this path into a general shell.
+    argv = read_only_shell_argv(cmd)
+    if argv is None:
+        return "(error: private context permits only validated local shell reads.)"
+    decision = decide("shell", {"cmd": cmd}, tool="run_shell")
+    if decision.tier is Tier.DENY:
+        return f"(error: blocked by safety policy: {decision.reason})"
+    try:
+        p = subprocess.run(argv, shell=False, capture_output=True, text=True,
+                           timeout=120, cwd=str(Path.home()), stdin=subprocess.DEVNULL,
+                           env={"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"})
+        out = (p.stdout or "") + (("\n[stderr]\n" + p.stderr) if p.stderr else "")
+        return BuiltinCompletion(_clip(out.strip() or f"(exit {p.returncode}, no output)"),
+                                 tool_name="run_shell", completion_code=p.returncode, phase="read")
+    except subprocess.TimeoutExpired:
+        return "(command timed out after 120s)"
+    except Exception as e:
+        return f"(error running command: {e})"
+
+
+# Capture callable and code identities at trusted module initialization.
+# Registry metadata, names, attributes and copied function bodies cannot grant
+# the private read exception. This is host integrity, not hostile-Python isolation.
+_PRIVATE_SHELL_DISPATCH = (run_shell, run_shell.__code__,
+                           _run_private_shell_read, _run_private_shell_read.__code__)
 
 
 def _read_pdf(p: Path) -> str:

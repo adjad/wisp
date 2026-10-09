@@ -1,6 +1,7 @@
 """Persistent coordinator for typed reminder tasks."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
 import time
@@ -34,6 +35,41 @@ _UNRELATED_SUBJECT_REPLY = re.compile(
     r"(?:what|when|where|who|why|how|show|check|search|find|open|play|set|create|add|send|email|text)\b|"
     r"\b(?:weather|inbox)\b",
     re.I)
+_OWNER_CHANNEL_REPLY = re.compile(
+    r"\s*(?:(?:actually\s+)?(?:use|via|through|send\s+it\s+(?:via|by))\s+)?"
+    r"(?:messages?|texts?|imessage|e-?mail)(?:\s+instead)?\s*[.!]?\s*", re.I)
+
+
+@dataclass(frozen=True)
+class OwnerContinuation:
+    """Host binding of a tool-free model interpretation, not an effect grant."""
+    owner_id: str
+    revision: int
+    missing_slots: tuple[str, ...]
+    prompt: str
+
+
+def owner_only_new_request(prompt: str, active: TaskPlan | None = None,
+                           admission: OwnerContinuation | None = None) -> bool:
+    """Require affirmative continuation evidence instead of guessing from prose.
+
+    Exact controls act only on an existing owner. All other text, including a
+    literal title/body, requires the model's host-bound interpretation. An
+    absent, stale or mismatched binding leaves the owner untouched. This does
+    not classify a new topic or select any tool for it.
+    """
+    if _CANCEL.fullmatch(prompt) or _RETRY.fullmatch(prompt):
+        return False
+    if (active and active.intent in {"email.send", "message.send"}
+            and _OWNER_CHANNEL_REPLY.fullmatch(prompt)):
+        return False
+    return not (active and type(admission) is OwnerContinuation
+                and admission.owner_id == active.id
+                and admission.revision == active.revision
+                and admission.missing_slots == tuple(active.missing_slots)
+                and admission.prompt == prompt
+                and active.status in {"waiting_for_input", "failed"}
+                and bool(active.missing_slots))
 _CONTEXT_DAY_CORRECTION = re.compile(
     r"^\s*(?:(?:i\s+mean|actually|make\s+(?:it|that)(?:\s+reminder)?)\s+)?"
     r"(?P<day>today|tomorrow)(?:\s+(?:please|sorry|instead))?\s*[.!]?\s*$", re.I)
@@ -497,7 +533,9 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
 
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
-                      contacts_resolver=None, mail_reader=None) -> TaskTurn | None:
+                      contacts_resolver=None, mail_reader=None,
+                      owner_only: bool = False,
+                      owner_admission: OwnerContinuation | None = None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
@@ -506,7 +544,19 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     contacts_resolver = contacts_resolver or _default_contacts_resolver
     active_raw = store.active_task(sid) if persist else None
     active = TaskPlan.from_dict(active_raw) if active_raw else None
-    new_plan = compile_task(prompt, now=now)
+    # Model-led turns may recover an existing owner, never create a new plan
+    # before the model interprets the current request.
+    if owner_only and active and owner_only_new_request(prompt, active, owner_admission):
+        return None
+    if owner_only and active and _RETRY.fullmatch(prompt) and active.missing_slots:
+        # Assent/retry is a control, never the missing title or reply body.
+        return _turn(active, _question(active), "clarification_repeated", started=started)
+    if owner_only and active and _UNRELATED_SUBJECT_REPLY.search(prompt.strip()):
+        if not (_CANCEL.match(prompt) or _RETRY.match(prompt)
+                or _channel_correction(active, prompt)
+                or (_candidate_rows(active) and _pick_recipient(active, prompt.strip(" .")))):
+            return None
+    new_plan = None if owner_only else compile_task(prompt, now=now)
     if ((new_plan and new_plan.intent == "email.reply")
             or (new_plan is None and active and active.intent == "email.reply")):
         from service.tasks.reply_engine import prepare_reply_turn
@@ -564,7 +614,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             and not answers_open_slot):
         return None
 
-    if new_plan is None and active is None:
+    if new_plan is None and active is None and not owner_only:
         new_plan = _contextual_update(
             store, sid, prompt, now=now, persist=persist)
 
@@ -618,7 +668,7 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
             return _turn(plan, f"Okay, I cancelled that {noun}.", "cancelled",
                          started=started)
         if plan.status == "running":
-            if _RETRY.match(prompt) or compile_task(prompt, now=now):
+            if _RETRY.match(prompt) or (not owner_only and compile_task(prompt, now=now)):
                 return _turn(
                     plan,
                     ("That send is already running. I won’t send it twice."

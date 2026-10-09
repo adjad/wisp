@@ -6291,6 +6291,78 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         decision.expect_tool_first = bool(decision.direct_calls or decision.required_tool_groups)
 
 
+
+def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
+    """Negative-only envelope for discovery, never a positive heuristic menu.
+
+    Typed tasks still own trusted identity/time and durable effects in main.
+    """
+    from service.tools.registry import REGISTRY
+    from service.router.model_led import family_for, registry_specs
+
+    # Authored/quoted text is data, never fresh authority or prohibitions.
+    t = _normalize_source_apostrophes(_routing_quote_mask(_without_message_body(text)))
+    _, policy_forbidden = _private_read_policy(t)
+    forbidden = set(policy_forbidden)
+    bindings: dict[str, dict] = {}
+    if re.search(r"\bwithout\s+(?:opening|checking|reading)\s+(?:my\s+|the\s+)?inbox\b", t, re.I):
+        forbidden.update(_INBOX_READ_TOOLS)
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:send|email|e-mail|text|message|forward)\b", t, re.I):
+        forbidden.update(_SEND_TOOLS)
+    if re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:reply|respond|write\s+back)\b", t, re.I):
+        forbidden.add("reply_to_email")
+    if _DRAFT_INTENT_RE.search(t):
+        forbidden.update(_SEND_TOOLS)
+    positive = _positive_clause_remainder(t)
+    if (re.search(r"\b(?:do\s+not|don'?t|never)\s+(?:add|set|create|change|modify)\b|\bread\s+only\b", t, re.I)
+            and not has_write_intent(positive)):
+        forbidden.update(_ALL_MUTATING_TOOLS)
+        forbidden.update(name for name, tool in REGISTRY.items()
+                         if not tool.category.endswith("read"))
+    web = _classify_web_request(t)
+    if web.opted_out or web.private:
+        forbidden.update({"web_search", "web_fetch", "http_request"})
+        # Ordinary private local reads retain the builtin shell capability;
+        # the managed executor imposes a host-owned read-only boundary for
+        # private conversation context. Explicit source/egress exclusions win.
+        if (web.opted_out or web.explicit or web.current
+                or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
+            forbidden.add("run_shell")
+    if _calendar_is_excluded(t):
+        forbidden.update(_CALENDAR_ROUTE_TOOLS)
+    if _reminder_is_excluded(t):
+        forbidden.update(_REMINDER_ROUTE_TOOLS)
+        bindings["get_upcoming"] = {"calendar_only": True}
+    if _notes_todo_destination_is_excluded(t):
+        forbidden.update({"search_notes", "create_note", "append_note", "scan_to_note"})
+    if re.search(r"\bdo\s+not\b[^.?!]{0,80}\bopen\s+(?:a\s+)?different\s+app\b", t, re.I):
+        forbidden.update({"open_app", "switch_app"})
+    if re.search(r"\bnot\s+(?:the\s+)?calendar\s+event\b", t, re.I):
+        forbidden.update({"cancel_event", "update_event"})
+
+    # A source prohibition must also cover aggregate and opaque escape paths.
+    # Keeping only compatible built-in reads is an authority restriction,
+    # never positive selection of a tool, source, order or obligation.
+    source_families = set()
+    if forbidden & set(_INBOX_READ_TOOLS):
+        source_families.add("mail")
+    if forbidden & {"view_messages", "summarize_messages", "search_conversations"}:
+        source_families.add("messages_contacts")
+    if "search_notes" in forbidden:
+        source_families.add("notes")
+    if "get_upcoming" in forbidden:
+        source_families.add("calendar")
+    if source_families or bindings:
+        forbidden.update({"daily_brief", "get_recent_activity", "search_browser_history",
+                          "run_shell", "run_applescript", "http_request", "create_tool", "use_skill"})
+        for tool in registry_specs(REGISTRY):
+            family = family_for(tool)
+            if (family in {"skills", "connected", "other", "files", "memory"}
+                    or (family in source_families and tool.category.endswith("read"))):
+                forbidden.add(tool.name)
+    return frozenset(forbidden), bindings
+
+
 def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | None = None) -> RouteDecision:
     """Apply model/tool invariants after any classifier source picks a role."""
     # Agentic work must run on the tool-capable agent model (the agent model). The

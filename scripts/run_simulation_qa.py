@@ -276,6 +276,13 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
+    # Pure capability metadata, scripted inference/fake tool registry, and
+    # in-process /agent with disposable SQLite; no lifespan, model or native tools.
+    "tests/test_model_led_routing.py",
+    "tests/test_model_led_integration.py",
+    "tests/test_model_led_entrypoint.py",
+    "tests/test_model_led_full_routing.py",
+    "tests/test_model_led_effect_ownership.py",
     # Synthetic MIME fixtures only; offline parser tests never access real Mail.
     "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",

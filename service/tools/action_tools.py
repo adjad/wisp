@@ -1073,6 +1073,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
 )
 async def http_request(url: str, method: str = "POST", body: str = "",
                        headers: str = "") -> str:
+    from service.router.model_led import BuiltinCompletion
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return f"(refusing to call {url!r} — only http:// and https:// URLs are allowed)"
@@ -1114,4 +1115,5 @@ async def http_request(url: str, method: str = "POST", body: str = "",
     status = f"HTTP {r.status_code}"
     if r.status_code >= 400:
         return f"(request failed: {method} {url} returned {status}. Response: {text or '(empty)'})"
-    return f"{method} {url} -> {status}. Response: {text or '(empty)'}"
+    return BuiltinCompletion(f"{method} {url} -> {status}. Response: {text or '(empty)'}",
+                             tool_name="http_request", completion_code=r.status_code)

@@ -1185,6 +1185,14 @@ async def run_agent(
     # below — so callers get the plan for free from the existing event
     # stream, no separate return path needed.
     test_mode: bool = False,
+    model_led_discovery: bool = False,
+    # Host-only negative provenance, computed before session history is trimmed.
+    # HTTP body/model arguments never set this; False cannot clear other inputs.
+    private_shell_history: bool | None = None,
+    claim_effect: Callable[[object, dict], dict] | None = None,
+    finish_effect: Callable[[dict, bool], bool] | None = None,
+    require_fresh_personal: bool = False,
+    fresh_personal_scope: dict | None = None,
     # Whether to emit raw_model_io events (see _run_step) — the full request
     # (messages + every offered tool schema) and response, on every attempt of
     # every step. Real cost: measured up to ~1.6MB for a single session. The
@@ -1264,8 +1272,77 @@ async def run_agent(
                 else "mixed")}
         await downstream_emit(event)
 
+    # Monotonic negative authority. main supplies actual pre-trimming session
+    # provenance; other callers conservatively retain assistant/tool/system
+    # context. A new invocation in an existing conversation is not a reset.
+    private_shell_read_only = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_shell_context
+        private_shell_read_only = (private_shell_history is not None and private_shell_history is not False
+            or any(
+                not isinstance(m, dict)
+                or m.get("role") in {"assistant", "tool"}
+                or m.get("role") not in {"user", "system"}
+                or (m.get("role") == "system" and private_shell_history is not False)
+                or (m.get("role") == "user" and (
+                    not isinstance(m.get("content"), str)
+                    or classify_shell_context(m["content"]).private))
+                for m in messages))
+
+    def tool_policy(tool, args):
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                from service.safety.policy import Decision
+                return Decision(Tier.DENY, problem)
+        return decide(tool.category, args, tool=tool.name)
+
     async def execute_tool(tool, args):
-        result = await run_tool(tool, args)
+        # Recheck after any approval/await or registry mutation, before claims.
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                return f"(error: {problem} The tool was NOT run.)"
+        claim = None
+        if model_led_discovery:
+            from service.router.model_led import effectful_call, has_effect_contract
+            if effectful_call(tool, args):
+                if not has_effect_contract(tool, classify_tool_outcome(tool.name, "")):
+                    return "(error: This action has no supported completion contract. It was NOT run.)"
+                # This point is reached only AFTER argument validation, policy
+                # and exact confirmation. No metadata request can claim/run an
+                # effect. Durable ownership is mandatory, not an optional hint.
+                if claim_effect is None or finish_effect is None:
+                    return "(error: No durable action owner is available. The action was NOT run.)"
+                claim = claim_effect(tool, args)
+                if not claim.get("admitted"):
+                    return ("(error: An earlier action with this scope is already owned or "
+                            "has an uncertain outcome. The action was NOT run again; "
+                            "check the earlier result/destination before retrying.)")
+        try:
+            if private_shell_read_only:
+                result = await run_tool(tool, args, private_shell_read_only=True)
+            else:
+                result = await run_tool(tool, args)
+        except BaseException:
+            if claim is not None:
+                # A failed settlement leaves the persisted running claim in
+                # place. Cancellation cannot turn it into a retryable effect.
+                try:
+                    finish_effect(claim, False)
+                except Exception:
+                    pass
+            raise
+        if claim is not None:
+            outcome = classify_tool_outcome(tool.name, str(result))
+            # Unknown extension actions default to 'read' in the legacy outcome
+            # classifier. That default is not a verified mutation receipt.
+            from service.router.model_led import trusted_effect_receipt
+            verified = trusted_effect_receipt(tool, outcome, result)
+            if not finish_effect(claim, verified):
+                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            if not verified:
+                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
         if public_web_synthesis and tool.name not in _CLOUD_PUBLIC_READ_TOOLS:
             return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
@@ -1319,7 +1396,7 @@ async def run_agent(
     # trigger these rules, so paying for them on every step of e.g. "open
     # Safari" or "set the volume" was pure waste. `tools is None` is the
     # unscoped route (the whole registry, messages included).
-    offers_messages = tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
+    offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
     if not public_web_synthesis:
         try:
@@ -1331,6 +1408,12 @@ async def run_agent(
                                                   messages=offers_messages)
         except Exception:  # noqa: BLE001
             identity_hint = ""
+
+    if model_led_discovery and identity_hint:
+        # Conservatively includes static attribution guidance: the combined
+        # identity builder has no separate provenance result. Never inspect
+        # its prose to decide whether actual personal facts are present.
+        private_shell_read_only = True
 
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
@@ -1358,6 +1441,9 @@ async def run_agent(
         return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
+
+    if model_led_discovery and memory_hint:
+        private_shell_read_only = True
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
@@ -1403,8 +1489,39 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    schemas = [s for s in _admit(tool_schemas(tools))
-               if s["function"]["name"] not in forbidden_tools]
+    discovery = None
+    capability_catalog = None
+    if model_led_discovery:
+        # Capability metadata does not authorize execution or new disclosure.
+        if not getattr(client, "managed", True) or public_web_synthesis:
+            raise ValueError("Model-led discovery requires managed local inference")
+        if force_first_tool or direct_calls or required_tool_groups:
+            raise ValueError("An owned execution plan must retain its controlled route")
+        from service.router.model_led import (
+            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
+            SelectionError, discovery_schema, registry_specs,
+        )
+        from service.tools.registry import REGISTRY
+
+        def fresh_capability_catalog():
+            shell_blocked = set()
+            if private_shell_read_only:
+                from service.tools.registry import private_shell_target, private_shell_implementation
+                shell_blocked = {t.name for t in REGISTRY.values()
+                                 if private_shell_target(t)
+                                 and not private_shell_implementation(t)}
+            return CapabilityCatalog.build(
+                registry_specs(REGISTRY),
+                blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
+
+        discovery = DiscoveryState()
+        capability_catalog = fresh_capability_catalog()
+        tools = []
+        schemas = ([discovery_schema(capability_catalog)]
+                   if capability_catalog.families else [])
+    else:
+        schemas = [s for s in _admit(tool_schemas(tools))
+                   if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
     # this set is premature, not impossible — see the rejection below.
@@ -1417,6 +1534,7 @@ async def run_agent(
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
+                       + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
                        + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
@@ -1512,6 +1630,7 @@ async def run_agent(
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
+    fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
     contact_receipts: dict[str, str] = {}
@@ -1523,7 +1642,41 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
+        nonlocal fresh_personal_evidence, private_shell_read_only
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if model_led_discovery and str(result).startswith((
+                "(error: Action was attempted but", "(error: Action did not return a verified")):
+            from dataclasses import replace
+            outcome = replace(outcome, facts={**outcome.facts, "completion_uncertain": True})
+        from service.router.model_led import personal_evidence_matches
+        if (not planned and not denied and outcome.status in {"succeeded", "no_match"}
+                and (registered := get_tool(name))
+                and personal_evidence_matches(fresh_personal_scope or {}, registered, args or {}, contact_receipts, str(result))):
+            fresh_personal_evidence = True
+        if model_led_discovery and (registered := get_tool(name)):
+            # Known local/private reads restrict every subsequent dispatch,
+            # including siblings from this model response. Shell reads retain
+            # category='shell'; recognize the original host builtin and actual
+            # read phase separately from arbitrary model/tool prose.
+            from service.tools.registry import private_shell_implementation
+            # Any returned original shell output can contain local facts,
+            # including a read-phase receipt or an error/path after a failed
+            # command. Phase/prose is not permission to clear the restriction.
+            shell_read = (private_shell_implementation(registered)
+                          and not planned and not denied)
+            if (registered.category.endswith("read")
+                    and registered.category != "web_read"
+                    or registered.category == "screen" or shell_read
+                    or name in {"recall", "search_memory", "search_conversations"}):
+                private_shell_read_only = True
+            from service.router.model_led import needs_effect_owner
+            from service.router.model_led import effectful_call
+            if effectful_call(registered, args or {}) and outcome.effect == "read":
+                from dataclasses import replace
+                outcome = replace(outcome, effect="changed")
+            if effectful_call(registered, args or {}) and not planned and not denied:
+                from service.router.model_led import builtin_completion_outcome
+                outcome = builtin_completion_outcome(registered, result, outcome)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if name == "lookup_contact" and args is not None:
@@ -1569,6 +1722,11 @@ async def run_agent(
     def _verified_final(text: str) -> str:
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
+        if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
+            # Preserve reference history, but refuse to promote an old answer,
+            # memory or unrelated public search into a current personal fact.
+            if not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
+                return "I haven't checked a current personal source for that yet. Which source should I check?"
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
         if test_mode and actions:
@@ -1579,6 +1737,8 @@ async def run_agent(
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
+            if outcome.facts.get("completion_uncertain"):
+                return f"I attempted {name}, but couldn't verify completion. Check the destination before retrying."
             return f"The requested action was not completed ({name}): {outcome.text}"
         if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
             receipts = [outcome.text for _, outcome in actions
@@ -1703,7 +1863,7 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
-        _dec = decide(_tool.category, _args, tool=_name)
+        _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
@@ -1984,6 +2144,7 @@ async def run_agent(
         mode = narration_mode()
         narrating = (
             mode != "off"
+            and not model_led_discovery
             and tools is not None
             and not (forcing_first_step or expecting_tool)
             and (not multi_round or _unmet_group() is None
@@ -2093,6 +2254,8 @@ async def run_agent(
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
             allowed_names = {s["function"]["name"] for s in step_schemas}
+            if model_led_discovery and step_schemas != offered_schemas:
+                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
@@ -2370,6 +2533,32 @@ async def run_agent(
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
+            if discovery is not None and name == DISCOVERY_TOOL:
+                # Do not widen this step's allowed_names. A sibling real call
+                # must not gain authority from a schema request in this batch.
+                # Metadata never enters source/effect receipts or tool_digest.
+                try:
+                    capability_catalog = fresh_capability_catalog()
+                    expansion = discovery.expand(
+                        args, capability_catalog, step_offered=frozenset(allowed_names))
+                    tools = list(expansion.names)
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
+                    if discovery.attempts < MAX_DISCOVERIES:
+                        schemas.append(discovery_schema(capability_catalog))
+                    turn_tool_names = {s["function"]["name"] for s in schemas}
+                    msgs[0] = {"role": "system", "content": (
+                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    result = expansion.receipt()
+                    await emit({"type": "routing_discovery", "families": list(expansion.families),
+                                "tools": tools, "status": "ready_next_step"})
+                except SelectionError as error:
+                    result = f"Schema selection rejected: {error}. No source was read or action performed."
+                    if discovery.attempts >= MAX_DISCOVERIES:
+                        schemas = [s for s in schemas if s["function"]["name"] != DISCOVERY_TOOL]
+                    await emit({"type": "routing_discovery", "status": "rejected"})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
             # fixed values before grounding, confirmation previews and tool
@@ -2525,7 +2714,7 @@ async def run_agent(
             # complete every requested step" — a real-execution failure message
             # for a turn in which, by construction, nothing was ever attempted.
             if test_mode:
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 result = _TEST_MODE_STUB
                 await emit({"type": "tool_call", "id": cid, "name": name, "args": args,
                             "decision": dec.tier.value, "reason": dec.reason,
@@ -2613,7 +2802,7 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 
@@ -2826,7 +3015,10 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = _admit(tool_schemas(tools))
+                schemas = [s for s in _admit(tool_schemas(tools))
+                           if s["function"]["name"] not in forbidden_tools]
+                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
+                    schemas.append(discovery_schema(fresh_capability_catalog()))
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound
