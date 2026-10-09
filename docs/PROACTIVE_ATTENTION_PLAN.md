@@ -346,6 +346,42 @@ English only. The past-tense and decline word lists are short and untuned. "Soon
   effort estimate; `replan` places it. A morning proposal: "here's the plan; 3 things I caught."
 - This is where A17 (multi-day Today) pays off; do a single-day version first.
 
+**Built (backend, shadow by default).** `service/attention/{live,ledger,runner}.py` decide and
+record; `service/assistant/attention_runner.py` is the only code that touches live state, and
+`service/assistant/attention_api.py` exposes `GET /assistant/attention`, `PUT
+/assistant/attention/settings` and `POST /assistant/attention/undo`. The scheduler calls
+`run_tick()` every 30 seconds. No model is involved.
+
+| Safety property | How it is enforced |
+| --- | --- |
+| Does nothing until the user opts in | Mode defaults to `shadow`: decisions are recorded in the ledger and nothing else happens. A missing settings file means shadow; a corrupt or out-of-range one means `off`. |
+| No flood on enabling | The first pass stamps `enabled_at`; nothing older is ever acted on. |
+| Once per message | The ledger's primary key is the message id; `claim()` succeeds exactly once, before the effect. |
+| Never retries an uncertain write | A crash after the claim leaves `claimed`, promoted to `unknown`; `unknown` and `failed` are final. |
+| Uses the existing verified path | The reminder is created by `add_reminder` (deterministic action id, no twin on an unknown outcome, Wisp-only fallback). Only a result starting "Reminder set:" counts as success. |
+| Fresh check before writing | "Is it on the calendar now?" is re-read from the store immediately before the effect. |
+| Bounded | `daily_cap` (default 3) counts created reminders per local day; excess is recorded as `capped`. |
+| Quiet hours (default 22:00 to 08:00) | The reminder is still created; the immediate "I added this" alert is not sent. |
+| Only live Messages | The feed must be `ready` for this launch; restored rows are not "new". |
+| Undo removes only its own | Requires a ledger row in `created`, a single reminder matching its exact title and time, and goes through the existing verified delete. |
+
+"Soon" is judged from now on the live path, so a message about Friday sent on Monday is
+reconsidered on Thursday morning (it was 58 hours out on Wednesday). The reminder fires 30
+minutes before a timed event (never in the past), at 9:00 for a date with no clock.
+
+**Turning it on** (shadow first, then live):
+
+```bash
+curl -s localhost:8765/assistant/attention                       # see recent decisions
+curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: application/json' -d '{"mode":"live"}'
+```
+
+**Not built.** The in-app alert and its Undo button: the backend publishes an
+`attention_added` event, which the app currently ignores (it falls to the `default:` case).
+Until the Swift side lands, the user is alerted by the reminder itself at its due time, and
+Undo is the endpoint above or deleting the reminder. Mail is not read on this path.
+Auditor review is required before merge (outbound action and persisted data).
+
 ### Slice 7 — Shadow run, then graduate (S + calendar time)
 
 - Run in shadow mode for ~2 weeks. Each day the user marks hits and misses from the shadow log.

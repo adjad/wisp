@@ -123,6 +123,14 @@ async def run() -> None:
                 await hub.publish(event)
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
+        # Proactive attention: notice a commitment in a text that is not on the calendar.
+        # Mode defaults to "shadow" (records, does nothing); "live" is the user's choice.
+        # No model is involved, so it needs no foreground gate.
+        try:
+            from service.assistant.attention_runner import run_tick
+            await run_tick()
+        except Exception:  # noqa: BLE001 — must never break the scheduler loop
+            pass
         await asyncio.sleep(TICK_S)
 
 

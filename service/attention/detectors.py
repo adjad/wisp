@@ -72,6 +72,8 @@ class Decision:
     resolved: Resolved | None = None
     importance: float = 0.0
     why: tuple[str, ...] = ()
+    source: Item | None = None      # the message whose words state the plan (the user's own
+                                    # proposal, when the time was inherited from the thread)
 
 
 class UncapturedCommitment:
@@ -110,10 +112,14 @@ class UncapturedCommitment:
             if got.blocked or not got.has_clock or got.start is None or got.start <= arrival:
                 continue
             return Resolved(got.start, got.day, True, got.quote, got.inferred + ("time:from_thread",),
-                            tentative=False), prev
+                            tentative=False, at=got.at), prev
         return None
 
-    def decide(self, item: Item) -> Decision:
+    def decide(self, item: Item, as_of: datetime | None = None) -> Decision:
+        """Decide one message. `as_of` is "now" for the live path: the time is read relative
+        to when the message ARRIVED, but whether it is SOON is judged from `as_of`, so a
+        message about Friday sent on Monday is reconsidered on Wednesday. Replay leaves it
+        unset and judges soon from arrival."""
         if item.direction != "incoming":
             return Decision(False, "not_incoming")
         verdict = screen(item)
@@ -124,7 +130,7 @@ class UncapturedCommitment:
             return Decision(False, imp.reason, importance=imp.score)
         arrival = datetime.fromtimestamp(item.ts, timezone.utc)
         r = resolve(item.text, arrival, self.tz, item.id)
-        context = item.text
+        context, source = item.text, item
         if r.blocked in ("no_time_stated", "no_usable_time"):
             inherited = self._inherit(item, arrival)
             if inherited:
@@ -136,10 +142,11 @@ class UncapturedCommitment:
         if not r.has_clock and not _OBLIGATION.search(context):
             return Decision(False, "date_only_no_obligation", r, imp.score)
 
+        anchor = as_of or arrival
         if r.has_clock and r.start is not None:
-            soon = arrival <= r.start <= arrival + self.soon
+            soon = anchor <= r.start <= anchor + self.soon
         else:   # date-only: soon if the day falls inside the window, counted in calendar days
-            local_day = arrival.astimezone(ZoneInfo(self.tz)).date()
+            local_day = anchor.astimezone(ZoneInfo(self.tz)).date()
             soon = 0 <= (r.day - local_day).days <= int(self.soon.total_seconds() // 86400)
         if not soon:
             return Decision(False, "not_soon", r, imp.score)
@@ -152,7 +159,7 @@ class UncapturedCommitment:
             return Decision(False, "already_on_file", r, imp.score,
                             (f"{match.basis}: {match.title}",))
         why = (f"stated: {r.quote}", f"contact: {imp.reason}") + tuple(f"inferred {x}" for x in r.inferred)
-        return Decision(True, None, r, imp.score, why)
+        return Decision(True, None, r, imp.score, why, source)
 
     def __call__(self, item: Item, snapshot: Snapshot) -> Prediction:
         d = self.decide(item)
