@@ -94,12 +94,19 @@ final class ChatStore: ObservableObject {
     /// usually fails; this retries until the service is reachable or the attempts
     /// run out (about a minute by default). A later `refresh()` still works.
     func refreshWhenReady(maxAttempts: Int = 40, retryDelay: Duration = .milliseconds(1500)) async {
+        // One retry loop at a time: the window and the view both ask for one.
+        guard !retrying else { return }
+        retrying = true
+        defer { retrying = false }
         for _ in 0..<maxAttempts {
+            // A cancelled request returns nothing, which must not read as "service down".
+            if Task.isCancelled { return }
             await refresh()
-            if reachable || Task.isCancelled { return }
-            try? await Task.sleep(for: retryDelay)
+            if reachable { return }
+            do { try await Task.sleep(for: retryDelay) } catch { return }
         }
     }
+    private var retrying = false
 
     func refresh() async {
         loadingList = true
