@@ -342,3 +342,52 @@ def test_got_is_not_past_tense():
 def test_a_half_hour_drift_still_counts_as_on_file():
     assert found("meet at 1PM", [commit("Zzz", at(21, 13, 30))]).basis == "time"
     assert found("meet at 1PM", [commit("Zzz", at(21, 14, 0))]) is None
+
+
+# ------------------------------------------------ an explicitly stated timezone (review ATT179-01)
+
+def test_an_explicit_utc_time_is_converted_not_relabelled():
+    """Monday 09:00 Pacific, "tomorrow at 15:00 UTC" is Tuesday 08:00 Pacific, not 15:00."""
+    got = r("Meeting tomorrow at 15:00 UTC")
+    assert got.start == at(22, 8) and got.start.utcoffset() == at(22, 8).utcoffset()
+    assert got.start.astimezone(ZoneInfo("UTC")) == datetime(2026, 9, 22, 15, 0, tzinfo=ZoneInfo("UTC"))
+
+
+def test_an_explicit_iana_zone_is_converted_across_local_midnight():
+    got = r("dinner tomorrow at 9pm Asia/Kolkata")
+    assert got.start.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) == datetime(2026, 9, 22, 21, 0)
+    assert got.start.astimezone(ZoneInfo(TZ)) == got.start and got.day == got.start.date()
+    late = r("call tomorrow at 23:30 Europe/London")
+    assert late.start == at(22, 15, 30)
+
+
+@pytest.mark.parametrize("text", [
+    "Meeting tomorrow at 3pm EST", "call tomorrow at 3pm PT", "tomorrow 3pm ET", "tomorrow at 3pm CET",
+    "tomorrow at 3pm Eastern", "tomorrow at 3pm Pacific time", "at 15:00 +02:00 tomorrow",
+])
+def test_a_zone_that_cannot_be_read_safely_is_declined(text):
+    got = r(text)
+    assert got.start is None and got.blocked == "other_timezone", text
+
+
+def test_a_named_zone_with_a_guessed_date_or_meridiem_is_declined():
+    assert r("call at 15:00 UTC").blocked == "other_timezone"             # which UTC day?
+    assert r("call tomorrow at 3 UTC").blocked == "other_timezone"        # am or pm?
+
+
+def test_conflicting_zones_at_the_same_hour_are_not_merged():
+    assert r("tomorrow 15:00 UTC or 15:00 Europe/London").blocked == "conflicting_times"
+
+
+def test_dst_gap_and_fold_in_the_stated_zone_are_declined():
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    gap = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)     # skipped hour
+    fold = resolve.resolve("meet 2026-11-01 at 01:30 America/New_York", arrival, TZ)    # happens twice
+    assert gap.blocked == fold.blocked == "other_timezone"
+
+
+def test_ordinary_unzoned_times_and_place_names_still_resolve():
+    assert r("meet tomorrow at 3pm").start == at(22, 15)
+    assert r("meet tomorrow at 3pm Pacific Heights").start == at(22, 15)        # a place
+    assert r("meet at 3pm Central Park tomorrow").start == at(22, 15)
+    assert r("dinner tomorrow at 7pm America/Los_Angeles").start == at(22, 19)  # the user's own zone
