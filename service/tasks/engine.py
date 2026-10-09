@@ -1,6 +1,7 @@
 """Persistent coordinator for typed reminder tasks."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 import re
 import time
@@ -39,41 +40,36 @@ _OWNER_CHANNEL_REPLY = re.compile(
     r"(?:messages?|texts?|imessage|e-?mail)(?:\s+instead)?\s*[.!]?\s*", re.I)
 
 
-def owner_only_new_request(prompt: str) -> bool:
-    """Decline clear new turns; never select a positive route for them.
+@dataclass(frozen=True)
+class OwnerContinuation:
+    """Host binding of a tool-free model interpretation, not an effect grant."""
+    owner_id: str
+    revision: int
+    missing_slots: tuple[str, ...]
+    prompt: str
 
-    Free-form titles/bodies still require an existing missing slot. A request
-    verb, question, source prohibition or compound turn is not such a reply.
-    Accept only bounded channel/assent/cancel fragments as exceptions. The
-    one-edit tolerance prevents a typo from granting an old action ownership.
+
+def owner_only_new_request(prompt: str, active: TaskPlan | None = None,
+                           admission: OwnerContinuation | None = None) -> bool:
+    """Require affirmative continuation evidence instead of guessing from prose.
+
+    Exact controls act only on an existing owner. All other text, including a
+    literal title/body, requires the model's host-bound interpretation. An
+    absent, stale or mismatched binding leaves the owner untouched. This does
+    not classify a new topic or select any tool for it.
     """
-    if _CANCEL.fullmatch(prompt) or _RETRY.fullmatch(prompt) or _OWNER_CHANNEL_REPLY.fullmatch(prompt):
+    if _CANCEL.fullmatch(prompt) or _RETRY.fullmatch(prompt):
         return False
-    text = prompt.strip()
-    if not text or len(text.split()) > 30 or text.endswith("?") or ";" in text:
-        return True
-    text = re.sub(r"^(?:(?:hey(?:\s+wisp)?|hi|please)[,\s]+|(?:can|could|would)\s+you\s+)+", "", text, flags=re.I)
-    first = re.match(r"[a-z]+", text, re.I)
-    if not first:
-        return False  # A quoted literal is not a routing instruction.
-    word = first[0].casefold()
-    verbs = {"what", "when", "where", "who", "why", "how", "show", "check", "search",
-             "find", "open", "play", "set", "create", "add", "send", "email", "text",
-             "read", "list", "summarize", "summarise", "explain", "compare", "do", "dont", "never"}
-    def one_edit(a, b):
-        if a == b:
-            return True
-        if len(a) == len(b):
-            differences = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
-            return (len(differences) == 1 or len(differences) == 2
-                    and differences[1] == differences[0] + 1
-                    and a[differences[0]] == b[differences[1]]
-                    and a[differences[1]] == b[differences[0]])
-        if abs(len(a) - len(b)) != 1:
-            return False
-        shorter, longer = (a, b) if len(a) < len(b) else (b, a)
-        return any(longer[:i] + longer[i + 1:] == shorter for i in range(len(longer)))
-    return any(one_edit(word, verb) for verb in verbs)
+    if (active and active.intent in {"email.send", "message.send"}
+            and _OWNER_CHANNEL_REPLY.fullmatch(prompt)):
+        return False
+    return not (active and type(admission) is OwnerContinuation
+                and admission.owner_id == active.id
+                and admission.revision == active.revision
+                and admission.missing_slots == tuple(active.missing_slots)
+                and admission.prompt == prompt
+                and active.status in {"waiting_for_input", "failed"}
+                and bool(active.missing_slots))
 _CONTEXT_DAY_CORRECTION = re.compile(
     r"^\s*(?:(?:i\s+mean|actually|make\s+(?:it|that)(?:\s+reminder)?)\s+)?"
     r"(?P<day>today|tomorrow)(?:\s+(?:please|sorry|instead))?\s*[.!]?\s*$", re.I)
@@ -538,7 +534,8 @@ def _resolve_reference_time(plan: TaskPlan, assistant_store, *, now: datetime) -
 def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
                       persist: bool = True, now: datetime | None = None,
                       contacts_resolver=None, mail_reader=None,
-                      owner_only: bool = False) -> TaskTurn | None:
+                      owner_only: bool = False,
+                      owner_admission: OwnerContinuation | None = None) -> TaskTurn | None:
     """Create or advance one typed task without consulting a model."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
@@ -549,8 +546,11 @@ def prepare_task_turn(store, sid: str, prompt: str, *, assistant_store,
     active = TaskPlan.from_dict(active_raw) if active_raw else None
     # Model-led turns may recover an existing owner, never create a new plan
     # before the model interprets the current request.
-    if owner_only and active and owner_only_new_request(prompt):
+    if owner_only and active and owner_only_new_request(prompt, active, owner_admission):
         return None
+    if owner_only and active and _RETRY.fullmatch(prompt) and active.missing_slots:
+        # Assent/retry is a control, never the missing title or reply body.
+        return _turn(active, _question(active), "clarification_repeated", started=started)
     if owner_only and active and _UNRELATED_SUBJECT_REPLY.search(prompt.strip()):
         if not (_CANCEL.match(prompt) or _RETRY.match(prompt)
                 or _channel_correction(active, prompt)

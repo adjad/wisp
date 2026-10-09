@@ -1,4 +1,6 @@
 """Full request ownership; model output is scripted, never an accuracy score."""
+import asyncio
+import json
 import pytest
 
 from service import main
@@ -6,7 +8,7 @@ from service.agent import loop
 from service.config.endpoints import Target
 from service.router.model_led import model_led_enabled, personal_communication_request
 from service.tools import registry
-from tests.test_model_led_entrypoint import endpoint, tool_call
+from tests.test_model_led_entrypoint import FakeClient, endpoint, tool_call
 from tests.test_model_led_integration import synthetic, run, call, discover
 from service.tasks.reply_engine import prepare_task_turn_async as real_task_recovery
 from service.workflows.engine import prepare_turn as real_workflow_recovery
@@ -33,9 +35,29 @@ def waiting_reply(endpoint):
     return sid, plan
 
 
+def continuation_response(plan, decision="continue", **changes):
+    return json.dumps({"decision": decision, "owner_id": plan.id,
+                       "revision": plan.revision, **changes})
+
+
+def interpreted_continuation(endpoint, plan, prompt):
+    from service.tasks.reply_engine import interpret_owner_continuation
+    client = FakeClient(endpoint.target, [continuation_response(plan)])
+    admission, verdict = asyncio.run(interpret_owner_continuation(
+        client, endpoint.target.model, plan.to_dict(), prompt))
+    assert verdict == "continue" and admission is not None
+    assert client.requests[0]["messages"][-1]["content"] == prompt
+    assert client.requests[0]["tools"] == []
+    asyncio.run(client.aclose())
+    return admission
+
+
 @pytest.mark.parametrize("mode", [None, "1"])
 @pytest.mark.parametrize("prompt", ["summarize my messages", "read my messages", "list my calendar",
-                                   "please sumarize my messages", "could you please read my messages", "reed my messages"])
+                                   "please sumarize my messages", "could you please read my messages", "reed my messages",
+                                   "Give me an overview of my calendar", "Walk me through my schedule tomorrow",
+                                   "Bring me up to date on my messages", "I'd like to know what's on this weej",
+                                   "My calendar needs a quick overview", "Let me see tomorrow's events"])
 def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch, mode, prompt):
     from service.tasks import engine
     if mode is None:
@@ -48,12 +70,15 @@ def test_new_reads_do_not_fill_or_execute_waiting_reminder(endpoint, monkeypatch
         no_native()
     monkeypatch.setattr(engine, "_default_contacts_resolver", no_native)
     monkeypatch.setattr(main, "execute_task", no_execution)
-    sid, _ = waiting_title(endpoint)
+    sid, plan = waiting_title(endpoint)
+    endpoint.script = [continuation_response(plan, "new_request")]
     before = endpoint.store.active_task(sid)
     events = endpoint.request(prompt, sid)
     assert endpoint.store.active_task(sid) == before
     assert not endpoint.effects and not endpoint.baseline_calls
     assert endpoint.agent_calls[0]["messages"][-1]["content"] == prompt
+    interpretation = endpoint.owned[0].requests[0]
+    assert interpretation["tools"] == [] and interpretation["messages"][-1]["content"] == prompt
     assert any(e.get("route_source") == "model_led_discovery" for e in events)
 
 
@@ -63,7 +88,8 @@ def test_literal_title_still_finishes_exact_waiting_owner(endpoint, monkeypatch)
     def no_contact(*args):
         raise AssertionError("A literal local reminder title triggered a contact read")
     turn = engine.prepare_task_turn(endpoint.store, sid, "Pick up groceries", assistant_store=None,
-                                    owner_only=True, contacts_resolver=no_contact)
+                                    owner_only=True, contacts_resolver=no_contact,
+                                    owner_admission=interpreted_continuation(endpoint, plan, "Pick up groceries"))
     assert turn.executable and turn.plan.id == plan.id
     assert turn.plan.steps[0].args["title"] == "Pick up groceries"
 
@@ -97,10 +123,100 @@ def test_allowed_literal_reply_body_preserves_bound_source_without_native_effect
     import asyncio
     sid, plan = waiting_reply(endpoint)
     turn = asyncio.run(real_task_recovery(endpoint.store, sid, "Thanks for the update.",
-        assistant_store=None, owner_only=True, mail_reader=object(), allow_native=False))
+        assistant_store=None, owner_only=True, mail_reader=object(), allow_native=False,
+        owner_admission=interpreted_continuation(endpoint, plan, "Thanks for the update.")))
     assert turn.plan.id == plan.id and turn.plan.subject.value == "Thanks for the update."
     assert turn.plan.resolved_references == plan.resolved_references
     assert turn.event == "reply_prepare" and not turn.executable
+
+
+@pytest.mark.parametrize("mode", [None, "1"])
+def test_literal_title_is_model_interpreted_before_exact_owner_execution(endpoint, monkeypatch, mode):
+    from types import SimpleNamespace
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING")
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    sid, plan = waiting_title(endpoint)
+    endpoint.script = [continuation_response(plan)]
+    async def execute(task, *args, **kwargs):
+        assert task.id == plan.id
+        assert task.steps[0].tool == "add_reminder"
+        assert task.steps[0].args["title"] == "Pick up groceries"
+        endpoint.effects.append((task.id, task.steps[0].args.copy()))
+        return SimpleNamespace(finalize=True, status="completed", response="Synthetic reminder completed.", tool_calls=[])
+    monkeypatch.setattr(main, "execute_task", execute)
+    events = endpoint.request("Pick up groceries", sid)
+    assert len(endpoint.effects) == 1 and not endpoint.agent_calls and not endpoint.baseline_calls
+    assert len(endpoint.owned) == 1 and endpoint.owned[0].closed
+    assert endpoint.owned[0].requests[0]["messages"][-1]["content"] == "Pick up groceries"
+    assert any(event.get("event") == "execution_started" for event in events)
+
+
+@pytest.mark.parametrize("prompt", ["Pick up groceries", '"Buy milk"', "Give me an overview of my calendar"])
+def test_direct_owner_recovery_requires_model_binding_for_free_form_text(endpoint, prompt):
+    from service.tasks import engine
+    sid, _ = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    assert engine.prepare_task_turn(endpoint.store, sid, prompt, assistant_store=None, owner_only=True) is None
+    assert asyncio.run(real_task_recovery(endpoint.store, sid, prompt, assistant_store=None,
+                                         owner_only=True, allow_native=False)) is None
+    assert endpoint.store.active_task(sid) == before
+
+
+@pytest.mark.parametrize("defect", ["owner", "revision", "slots", "prompt"])
+def test_stale_or_retargeted_continuation_binding_does_not_advance_owner(endpoint, defect):
+    from dataclasses import replace
+    from service.tasks import engine
+    sid, plan = waiting_title(endpoint)
+    admission = interpreted_continuation(endpoint, plan, "Pick up groceries")
+    changes = {"owner": {"owner_id": "another-owner"}, "revision": {"revision": plan.revision + 1},
+               "slots": {"missing_slots": ("recipient",)}, "prompt": {"prompt": "Buy milk"}}
+    before = endpoint.store.active_task(sid)
+    assert engine.prepare_task_turn(endpoint.store, sid, "Pick up groceries", assistant_store=None,
+        owner_only=True, owner_admission=replace(admission, **changes[defect])) is None
+    assert endpoint.store.active_task(sid) == before
+
+
+@pytest.mark.parametrize("reply", ["not JSON", "{}", '```json\n{}\n```', "tool_call", "wrong_owner", "boolean_revision", "ambiguous"])
+def test_unclear_model_continuation_keeps_owner_and_mutations_closed(endpoint, monkeypatch, reply):
+    from service.tasks import engine
+    monkeypatch.setattr("service.tasks.reply_engine.prepare_task_turn_async", real_task_recovery)
+    monkeypatch.setattr(main, "prepare_turn", real_workflow_recovery)
+    async def no_execution(*args, **kwargs):
+        raise AssertionError("Unclear model decision constructed an old effect")
+    monkeypatch.setattr(main, "execute_task", no_execution)
+    monkeypatch.setattr(engine, "_default_contacts_resolver", lambda *a: (_ for _ in ()).throw(AssertionError("Native lookup")))
+    async def fake_mutation(**args):
+        raise AssertionError("Unclear continuation admitted a mutation")
+    fake_mutation.__module__ = "service.tools.assistant_tools"
+    registry.REGISTRY["add_reminder"] = registry.Tool("add_reminder", "Synthetic mutation", {"type": "object"},
+                                                   "assistant_write", fake_mutation)
+    sid, plan = waiting_title(endpoint)
+    before = endpoint.store.active_task(sid)
+    answers = {"tool_call": [tool_call("add_reminder", title="Wrong")],
+               "wrong_owner": continuation_response(plan, owner_id="different"),
+               "boolean_revision": continuation_response(plan, revision=True),
+               "ambiguous": continuation_response(plan, "ambiguous")}
+    endpoint.script = [answers.get(reply, reply)]
+    endpoint.request("Pick up groceries", sid)
+    assert endpoint.store.active_task(sid) == before
+    assert not endpoint.effects and endpoint.agent_calls and not endpoint.baseline_calls
+    assert "add_reminder" in endpoint.agent_calls[0]["forbidden_tools"]
+    assert any("Ask whether" in message.get("content", "") for message in endpoint.agent_calls[0]["messages"])
+
+
+@pytest.mark.parametrize("control", ["cancel", "retry"])
+def test_exact_existing_owner_controls_need_no_model_guess(endpoint, control):
+    from service.tasks import engine
+    sid, plan = waiting_title(endpoint)
+    turn = engine.prepare_task_turn(endpoint.store, sid, control, assistant_store=None, owner_only=True)
+    if control == "cancel":
+        assert turn and turn.plan.id == plan.id and turn.plan.status == "cancelled"
+    else:
+        assert turn and not turn.executable and turn.plan.id == plan.id
+        assert turn.plan.subject.value is None and turn.plan.missing_slots == ["subject"]
+        assert endpoint.store.active_task(sid)["id"] == plan.id
 
 
 @pytest.mark.parametrize("mode", [None, "1"])

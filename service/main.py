@@ -1490,11 +1490,30 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     return
             from service.tasks.reply_engine import prepare_task_turn_async
+            task_owner_admission = None
+            task_owner_verdict = "none"
+            if (model_led_turn and existing_task and not pending_model_effects
+                    and not recovery_excluded):
+                from service.tasks.engine import owner_only_new_request
+                from service.tasks.models import TaskPlan
+                from service.tasks.reply_engine import interpret_owner_continuation
+                owner_plan = TaskPlan.from_dict(existing_task)
+                if (owner_plan.status in {"waiting_for_input", "failed"}
+                        and owner_only_new_request(prompt, owner_plan)):
+                    # Free-form recovery belongs to Ling too. Interpret before
+                    # an old task can warm Mail, resolve a contact or fill a
+                    # slot. Bind the interpretation to the exact stored owner;
+                    # the engine rechecks it against its current snapshot.
+                    owned_inference_client = OMLXClient(target=model_led_target)
+                    turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
+                    task_owner_admission, task_owner_verdict = await interpret_owner_continuation(
+                        turn_client, model_led_target.model, existing_task, prompt,
+                        last_assistant or "", **no_thinking_kwargs(model_led_target.model))
             task_turn = (await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only,
-                owner_only=model_led_turn)
+                owner_only=model_led_turn, owner_admission=task_owner_admission)
                 if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects and not recovery_excluded) else None)
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
@@ -1613,7 +1632,8 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     return
 
-            turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
+            if owned_inference_client is None:
+                turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
             # Optional embedding/reranker routing needs the engine before it
             # can retrieve a menu. The default lexical provider uses no model;
             # leave it cold until a real generation is needed.
@@ -1639,7 +1659,8 @@ async def agent(body: dict[str, Any]):
                             "workflow": workflow_turn.plan.to_dict()})
             elif model_led_turn:
                 forbidden, bindings = model_led_forbidden, model_led_bindings
-                if (continuation_requires_baseline(prompt, last_assistant)
+                if (task_owner_verdict == "ambiguous"
+                        or continuation_requires_baseline(prompt, last_assistant)
                         or (sess and store.unresolved_action(sid))):
                     # A free-form "yes"/channel answer still goes to Ling for
                     # interpretation. It cannot authorize a new effect merely
@@ -1727,8 +1748,9 @@ async def agent(body: dict[str, Any]):
             if model_led_turn:
                 # Capture the admitted local target for every step/context budget.
                 # Existing owned-client cleanup closes this per-turn transport.
-                owned_inference_client = OMLXClient(target=target)
-                turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
+                if owned_inference_client is None:
+                    owned_inference_client = OMLXClient(target=target)
+                    turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
@@ -1768,6 +1790,14 @@ async def agent(body: dict[str, Any]):
                     "interpreting the request. Read current personal sources before "
                     "answering about today's messages/calendar. An old assistant "
                     "offer or claimed action is not an execution receipt.")})
+                if task_owner_verdict != "none":
+                    messages.insert(1, {"role": "system", "content": (
+                        "An older task is still pending; this turn did not advance it. "
+                        "Do not treat its existence as permission to resume or duplicate it. "
+                        + ("Ask whether the user is answering that task or starting a new request; "
+                           "actions are unavailable until that is clear."
+                           if task_owner_verdict == "ambiguous" else
+                           "Interpret the original current request independently."))})
                 pending_effects = pending_model_effects
                 if pending_effects:
                     messages.insert(1, {"role": "system", "content": (

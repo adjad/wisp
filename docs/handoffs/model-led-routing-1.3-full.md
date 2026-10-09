@@ -45,12 +45,25 @@ compile a fresh request or replacement payload. Ordinary requests declined by
 that owner proceed to model discovery. This is an execution/recovery exception
 for pre-existing owners, not a new rule-based routing shortcut.
 
-Clear new requests, including read/list/summary verbs with a bounded typo
-tolerance, cannot become an old reminder title or reply body. The current
-negative envelope is computed before recovery starts; a turn with excluded
-capabilities proceeds to the model without recovery readers, contact resolution
-or Mail warm-up. Literal replies to an admitted existing missing slot remain
-supported. This does not claim universal semantic disambiguation of free prose.
+Free-form recovery now requires a tool-free local-model interpretation of
+whether the original input answers the old task. The host binds a valid
+continuation decision to that exact task ID, revision, missing slots and input;
+the task engine rechecks the current snapshot before any filling or execution.
+There is no request-verb blacklist granting ownership to all other prose.
+Literal title/body answers still use the old exact task and its existing
+argument/approval/claim checks after model admission. Exact cancel/retry and
+bound outbound-channel controls do not need this extra interpretation.
+An independent new request proceeds unchanged to model discovery. An absent,
+malformed, stale or ambiguous decision leaves the owner unchanged, blocks
+mutations for that turn and asks the model to clarify. The current negative
+source envelope still precedes every recovery reader, contact resolution or
+Mail warm-up, and excluded turns skip recovery entirely.
+
+This adds one bounded, tool-free generation only when an old task awaits a
+free-form reply. It reuses the same owned local transport and closes the stream
+and client even on refusal, error or cancellation. Scripted tests establish
+host behavior, not actual Ling disambiguation accuracy or latency. Those remain
+model qualification work; a wrong model interpretation is still possible.
 
 ## Durable model actions
 
@@ -149,6 +162,12 @@ amendments and new controls. That review and its mechanical pass remain historic
 the repaired candidate requires fresh mechanical, CI, independent review and
 distinct simulation QA. No earlier passing run or pending QA preparation counts
 as qualification for it.
+The completed independent review of `7e93669` closed three findings but kept
+MLR-OWNER-01 blocked on an alternative calendar-overview request. The focused
+same-owner successor replaces lexical continuation inference with the bound
+model interpretation described above. The earlier 213 top-level/15 subtest pass
+and both CI successes are historical once source changes. This successor needs
+fresh exact-head mechanical validation, CI, independent review and distinct QA.
 The first controller run was unqualified because subtests were incorrectly
 counted as collected top-level cases. The second run had one fake timer module
 metadata failure (119 of 120 top-level cases passed and 15 subtests passed). Both
