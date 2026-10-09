@@ -172,7 +172,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
+        // Wisp is a regular app: opening it shows the Chat window.
+        chatWindow.show()
     }
+
+    // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
+    // is running, brings the Chat window back. Closing the window does not quit Wisp.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        chatWindow.show()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     // MARK: - Smart Search (⌘⇧F)
 
@@ -247,16 +258,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // An accessory app has no menu bar, so the standard edit shortcuts don't route
-    // to the focused field. A hidden main menu with an Edit submenu fixes that.
-    // While the chat window is open the app is regular and shows this menu, so it
-    // also carries the application menu's Hide, Close and Quit items.
+    // The app's main menu: Wisp (Settings, Hide, Quit), Edit (so the standard edit
+    // shortcuts route to the focused field), and Window.
     private func installEditMenu() {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let app = NSMenu(title: "Wisp")
         appItem.submenu = app
+        let settingsItem = app.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        app.addItem(.separator())
         app.addItem(withTitle: "Hide Wisp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(.separator())
         app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -273,6 +285,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let windowItem = NSMenuItem()
+        main.addItem(windowItem)
+        let window = NSMenu(title: "Window")
+        windowItem.submenu = window
+        window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        window.addItem(.separator())
+        let chatItem = window.addItem(withTitle: "Wisp Chat", action: #selector(openChat), keyEquivalent: "1")
+        chatItem.target = self
+        NSApp.windowsMenu = window
         NSApp.mainMenu = main
     }
 
