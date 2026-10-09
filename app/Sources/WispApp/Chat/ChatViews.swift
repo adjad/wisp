@@ -418,6 +418,9 @@ struct ChatConversationView: View {
 struct ChatThread: View {
     @ObservedObject var store: ChatStore
     @ObservedObject var conversation: ChatConversation
+    /// Whether the reader is at the bottom of the thread. The thread follows a growing
+    /// answer only while this is true, so scrolling up to read is never pulled back down.
+    @State private var followsBottom = true
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -433,12 +436,49 @@ struct ChatThread: View {
                 .padding(.horizontal, 24).padding(.top, 26).padding(.bottom, 12)
                 .frame(maxWidth: .infinity)
             }
-            .defaultScrollAnchor(.bottom)
+            .modifier(ChatScrollBehavior(followsBottom: $followsBottom))
             .onChange(of: conversation.messages.count) { _, _ in
+                // A new exchange (the reader sent something, or a chat just loaded) shows the bottom.
+                followsBottom = true
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
-            .onChange(of: conversation.messages.last?.text) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: conversation.messages.last?.tools.count) { _, _ in proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: conversation.messages.last?.text) { _, _ in follow(proxy) }
+            .onChange(of: conversation.messages.last?.tools.count) { _, _ in follow(proxy) }
+            .onChange(of: conversation.messages.last?.phase) { _, _ in follow(proxy) }
+            .onChange(of: conversation.messages.last?.approval) { _, _ in follow(proxy) }
+            .onChange(of: conversation.messages.last?.draft) { _, _ in follow(proxy) }
+        }
+    }
+
+    private func follow(_ proxy: ScrollViewProxy) {
+        if followsBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+    }
+}
+
+/// Starts the thread at the bottom and tracks whether the reader is still there.
+/// Content growth alone never moves a reader who has scrolled up: from macOS 15 the
+/// size-change anchoring is off and the thread follows only while `followsBottom`.
+/// On macOS 14 the thread keeps the system's bottom anchoring and follows always.
+private struct ChatScrollBehavior: ViewModifier {
+    @Binding var followsBottom: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content
+                .defaultScrollAnchor(.bottom, for: .initialOffset)
+                .onScrollPhaseChange { _, newPhase, context in
+                    switch newPhase {
+                    case .tracking, .interacting, .decelerating:
+                        followsBottom = false      // the reader is scrolling: stop following
+                    case .idle:
+                        let g = context.geometry   // settled: follow again only if back at the bottom
+                        followsBottom = g.visibleRect.maxY >= g.contentSize.height - 48
+                    default:
+                        break                      // our own animated scroll
+                    }
+                }
+        } else {
+            content.defaultScrollAnchor(.bottom)
         }
     }
 }
