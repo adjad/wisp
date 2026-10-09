@@ -57,7 +57,7 @@ def load_settings(path: Path) -> Settings:
         raw = Path(path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return Settings()
-    except OSError:
+    except Exception:                    # noqa: BLE001 — unreadable, undecodable: the user's choice is unknown
         return Settings(mode="off")
     try:
         data = json.loads(raw)
@@ -65,7 +65,7 @@ def load_settings(path: Path) -> Settings:
             raise ValueError
         known = {k: v for k, v in data.items() if k in Settings.__dataclass_fields__}
         return Settings(**known).validate()
-    except (ValueError, TypeError):
+    except Exception:                    # noqa: BLE001 — includes RecursionError from hostile nesting
         return Settings(mode="off")
 
 
@@ -91,9 +91,13 @@ def items_from_records(records: list[dict]) -> list[Item]:
     items: list[Item] = []
     for r in records:
         try:
-            text, direction, guid = r["text"], r["direction"], str(r["guid"])
+            # `identity` is the feed's stable key; `guid` can be absent (content fingerprint).
+            text, direction = r["text"], r["direction"]
+            guid = str(r.get("identity") or r["guid"])
             ts = float(r["timestamp"])
         except (KeyError, TypeError, ValueError):
+            continue
+        if guid in ("None", ""):
             continue
         if direction not in ("incoming", "outgoing") or not isinstance(text, str) or not text.strip():
             continue
@@ -125,7 +129,12 @@ class Plan:
 
 
 def who_label(sender: str) -> str:
-    return sender if re.search(r"[A-Za-z]", sender or "") else "Text"
+    """A name, or for a bare number a masked handle, so a reminder never looks like it came
+    from the user themselves when it came from an unknown number."""
+    if re.search(r"[A-Za-z]", sender or ""):
+        return sender
+    digits = re.sub(r"\D", "", sender or "")
+    return f"Text from …{digits[-4:]}" if len(digits) >= 4 else "Text"
 
 
 def _clip(text: str, n: int) -> str:

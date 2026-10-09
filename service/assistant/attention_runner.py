@@ -9,14 +9,16 @@ The default is "shadow": decisions are recorded in the ledger and nothing else h
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from service.assistant.hub import hub
 from service.assistant.store import assistant_store
 from service.attention.detectors import local_timezone
 from service.attention.ledger import Ledger
-from service.attention.live import Plan, load_settings, settings_path
+from service.attention.live import Plan, load_settings, local_midnight, settings_path
 from service.attention.runner import process
 from service.paths import MOE_DIR
 
@@ -27,6 +29,7 @@ ON_FILE_DAYS = 4                    # how far ahead the "already on the calendar
 _ledger: Ledger | None = None
 _last_fingerprint: tuple | None = None
 _last_run: float = 0.0
+_task: "asyncio.Task | None" = None
 
 
 def get_ledger() -> Ledger:
@@ -38,12 +41,15 @@ def get_ledger() -> Ledger:
 
 def reset() -> None:
     """For tests: forget the cached ledger and fingerprint."""
-    global _ledger, _last_fingerprint, _last_run
-    _ledger, _last_fingerprint, _last_run = None, None, 0.0
+    global _ledger, _last_fingerprint, _last_run, _task
+    _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
 
 
 def _commitments(now: float) -> list[dict]:
-    return assistant_store.upcoming(now, days=ON_FILE_DAYS)
+    # From local midnight, not from now: `upcoming` drops anything that started more than
+    # five minutes ago, which would hide today's all-day events and make a message about
+    # an exam that is already on the calendar look uncaptured.
+    return assistant_store.upcoming(local_midnight(now, local_timezone()), days=ON_FILE_DAYS + 1)
 
 
 async def create_reminder(plan: Plan) -> dict:
@@ -55,7 +61,7 @@ async def create_reminder(plan: Plan) -> dict:
     is prose, so it is classified conservatively: only "Reminder set:" is success.
     """
     from service.tools.assistant_tools import add_reminder
-    when_iso = datetime.fromtimestamp(plan.due_ts).strftime("%Y-%m-%dT%H:%M")
+    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).strftime("%Y-%m-%dT%H:%M")
     text = await add_reminder(plan.title, when_iso, "reminder")
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
@@ -81,7 +87,10 @@ def _name_for(handle: str) -> str | None:
 
 
 async def _publish(event: dict) -> None:
-    await hub.publish(event, dedupe_key="attention:" + str(event.get("source_id")))
+    # Transient on purpose. A durable event is stored (with the quote and the sender) and
+    # replayed to the app until it acknowledges it, and the app does not yet know this
+    # type, so it never would: the rows would pile up in assistant.db without expiry.
+    await hub.publish(event, durable=False)
 
 
 async def run_tick(now: float | None = None) -> list:
@@ -110,6 +119,26 @@ async def run_tick(now: float | None = None) -> list:
         fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for)
     _last_fingerprint = fingerprint
     return outcomes
+
+
+def schedule_tick() -> None:
+    """Start a pass in the background, at most one at a time.
+
+    The scheduler loop also delivers the user's scheduled sends and reminders, so it must
+    never wait on a reminder write (which can take 45 seconds to time out). A pass that is
+    still running when the next tick arrives simply means this tick is skipped.
+    """
+    global _task
+    if _task is not None and not _task.done():
+        return
+
+    async def _run() -> None:
+        try:
+            await run_tick()
+        except Exception:  # noqa: BLE001 — a failed pass must never surface in the scheduler
+            pass
+
+    _task = asyncio.get_running_loop().create_task(_run())
 
 
 async def undo(source_id: str) -> dict:

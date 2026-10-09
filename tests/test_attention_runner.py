@@ -53,7 +53,8 @@ class Fakes:
 @pytest.fixture
 def ledger(tmp_path):
     led = ledger_mod.Ledger(tmp_path / "attention" / "ledger.db")
-    led.set_meta("enabled_at", repr(MON_9AM - 86400))        # enabled yesterday
+    led.set_meta("enabled_at", repr(MON_9AM - 86400))        # enabled yesterday...
+    led.set_meta("last_mode", "live")                        # ...and already live, so no re-baseline
     return led
 
 
@@ -62,6 +63,17 @@ async def run(records, now, ledger, fakes, commitments=(), **settings):
     return await runner.process(records=records, commitments=list(commitments), now=now, tz=TZ,
                                 settings=s, ledger=ledger, create=fakes.create, publish=fakes.publish,
                                 fresh_commitments=fakes.fresh_commitments)
+
+
+async def drain(records, now, ledger, fakes, passes=8, **settings):
+    """Run passes at the same instant until one does nothing; returns every outcome."""
+    out = []
+    for _ in range(passes):
+        got = await run(records, now, ledger, fakes, **settings)
+        if not got:
+            break
+        out += got
+    return out
 
 
 def mom_thread(text="Meet me in the Quad at 6PM", at=MON_9AM):
@@ -145,7 +157,7 @@ def test_a_date_without_a_clock_is_reminded_in_the_morning():
 
 def test_phone_numbers_are_not_used_as_names_and_long_titles_are_clipped():
     assert live.plan_reminder(item(sender="+16505550123"), timed(18), MON_9AM, Settings(), TZ) \
-        .title.startswith("Text: ")
+        .title.startswith("Text from …0123: ")
     long = live.plan_reminder(item(text="x " * 200), timed(18), MON_9AM, Settings(), TZ)
     assert len(long.title) <= live.TITLE_MAX and "…" in long.title
 
@@ -188,7 +200,8 @@ def test_the_ledger_file_is_private(tmp_path):
 async def test_off_does_nothing_at_all(ledger):
     f = Fakes()
     assert await run(mom_thread(), MON_9AM + 60, ledger, f, mode="off") == []
-    assert f.created == [] and ledger.recent() == [] and ledger.meta("enabled_at") is not None
+    assert f.created == [] and ledger.recent() == []
+    assert ledger.meta("last_mode") == "live"                 # untouched: off returns before any bookkeeping
 
 
 async def test_shadow_records_what_it_would_do_and_does_nothing(ledger):
@@ -232,7 +245,7 @@ async def test_the_daily_cap_stops_the_third_reminder(ledger):
             rec("a", "Mom", "Lunch today at 12pm", MON_9AM),
             rec("b", "Mom", "Dinner today at 7pm", MON_9AM + 60),
             rec("c", "Mom", "Movie today at 9pm", MON_9AM + 120)]
-    out = await run(recs, MON_9AM + 300, ledger, f, daily_cap=2)
+    out = await drain(recs, MON_9AM + 300, ledger, f, daily_cap=2)
     assert [o.state for o in out] == ["created", "created", "capped"]
     assert len(f.created) == 2
     assert await run(recs, MON_9AM + 400, ledger, f, daily_cap=2) == []     # capped stays capped
@@ -311,7 +324,7 @@ async def test_one_message_that_breaks_the_detector_does_not_stop_the_others(led
             rec("bad", "Mom", "Lunch today at 12pm", MON_9AM),
             rec("ok", "Mom", "Dinner today at 7pm", MON_9AM + 60)]
     f = Fakes()
-    out = await run(recs, MON_9AM + 120, ledger, f)
+    out = await drain(recs, MON_9AM + 120, ledger, f)
     assert [o.source_id for o in out] == ["msg:ok"] and ledger.get("msg:bad") is None
 
 
@@ -354,4 +367,85 @@ async def test_a_phone_number_without_a_contact_name_is_just_text(ledger):
             rec("m", "+16505550123", "Dinner today at 7pm", MON_9AM)]
     f = Fakes()
     await run(recs, MON_9AM + 60, ledger, f)
-    assert f.created[0].title.startswith("Text: Dinner today at 7pm")
+    assert f.created[0].title.startswith("Text from …0123: Dinner today at 7pm")
+
+
+# ------------------------------------------------ repairs from the independent audit
+
+def burst(n, at=MON_9AM):
+    return ([rec("h", "Mom", "hi", at - 3600, "outgoing")]
+            + [rec(f"m{i}", "Mom", f"Errand number {i} today at {i + 1}pm", at + i) for i in range(n)])
+
+
+async def test_an_unanswered_write_counts_toward_the_cap_so_a_stuck_app_cannot_be_hammered(ledger):
+    """Every create times out as unknown; the cap must still stop the third attempt."""
+    f = Fakes(result={"ok": False, "status": "unknown", "error": "no receipt in time"})
+    out = await drain(burst(8), MON_9AM + 600, ledger, f, daily_cap=3)
+    assert len(f.created) == 3
+    assert [o.state for o in out].count("unknown") == 3 and [o.state for o in out].count("capped") >= 1
+    assert f.published == []
+
+
+async def test_at_most_one_reminder_is_written_per_pass(ledger):
+    f = Fakes()
+    first = await run(burst(4), MON_9AM + 600, ledger, f, daily_cap=10)
+    assert [o.state for o in first] == ["created"] and len(f.created) == 1
+    second = await run(burst(4), MON_9AM + 600, ledger, f, daily_cap=10)
+    assert [o.state for o in second] == ["created"] and len(f.created) == 2     # the next one, not a repeat
+
+
+async def test_a_claim_in_flight_counts_toward_the_cap(ledger):
+    for i in range(3):
+        ledger.claim(f"msg:other{i}", now=MON_9AM + i)                          # three writes in flight
+    f = Fakes()
+    out = await run(mom_thread(), MON_9AM + 60, ledger, f, daily_cap=3)
+    assert [o.state for o in out] == ["capped"] and f.created == []
+
+
+async def test_switching_into_live_never_acts_on_messages_that_arrived_while_it_was_off(tmp_path):
+    led = ledger_mod.Ledger(tmp_path / "toggle.db")
+    f = Fakes()
+    msg_during_shadow = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing"),
+                         rec("w", "Mom", "Dinner Friday at 7pm", MON_9AM)]
+    await run(msg_during_shadow, MON_9AM + 60, led, f, mode="shadow")           # baseline set in shadow
+    await run(msg_during_shadow, MON_9AM + 3 * 86400, led, f, mode="off")       # off for days
+    thursday = datetime(2026, 9, 24, 9, 0, tzinfo=ZONE).timestamp()
+    assert await run(msg_during_shadow, thursday, led, f, mode="live") == []     # re-baselined at the switch
+    assert f.created == []
+    later = msg_during_shadow + [rec("n", "Mom", "Lunch today at 12pm", thursday + 60)]
+    assert [o.state for o in await run(later, thursday + 120, led, f, mode="live")] == ["created"]
+
+
+async def test_the_fresh_check_sees_the_whole_context_of_an_accepted_plan(ledger):
+    p = rec("p", "Sam", "lunch at 11:30 at Slice lmk if ur coming", MON_9AM, "outgoing")
+    r_ = rec("r", "Sam", "sure", MON_9AM + 120)
+    onfile = commit("Lunch at Slice", datetime(2026, 9, 21, 12, 0, tzinfo=ZONE).timestamp())
+    f = Fakes(fresh=[onfile])        # 30 min off and only the PROPOSAL shares a word with the entry
+    out = await run([rec("h", "Sam", "hey", MON_9AM - 86400, "outgoing"), p, r_], MON_9AM + 180, ledger, f)
+    assert [o.state for o in out] == ["already_on_file"] and f.created == []
+
+
+def test_hostile_settings_files_mean_off_not_a_crash(tmp_path):
+    path = live.settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"\xff\xfe\x00garbage")
+    assert live.load_settings(path).mode == "off"
+    path.write_text("[" * 100000)                                   # RecursionError territory
+    assert live.load_settings(path).mode == "off"
+    path.write_text("[]")
+    assert live.load_settings(path).mode == "off"
+
+
+def test_messages_without_a_guid_get_distinct_ids_from_the_feed_identity():
+    base = {"direction": "incoming", "timestamp": 1.0, "sender": "Mom", "conversation": "Mom"}
+    items = live.items_from_records([
+        {**base, "guid": None, "identity": "fp:aaa", "text": "one"},
+        {**base, "guid": None, "identity": "fp:bbb", "text": "two"},
+        {**base, "guid": None, "text": "no identity at all"},
+    ])
+    assert [i.id for i in items] == ["msg:fp:aaa", "msg:fp:bbb"]
+
+
+def test_a_bare_number_is_masked_not_called_plain_text():
+    assert live.who_label("+16505550123") == "Text from …0123"
+    assert live.who_label("Mom") == "Mom" and live.who_label("") == "Text"

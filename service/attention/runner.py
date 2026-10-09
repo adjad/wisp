@@ -7,13 +7,17 @@ supplies the real ones is `service/assistant/attention_runner.py`.
 The order of operations is the safety argument:
 
   1. Mode "off" does nothing. Mode "shadow" decides and records, and does nothing else.
-  2. The first live pass sets a baseline. Nothing older than that moment, and nothing
-     older than the lookback, is ever acted on, so turning this on cannot flood the user
-     with reminders for last week's messages.
+  2. A baseline is set on the first pass and again every time the mode is switched INTO
+     live. Nothing older than the latest baseline, and nothing older than the lookback, is
+     ever acted on, so turning this on (or back on) cannot flood the user with reminders
+     for messages that arrived while it was off.
   3. A message is CLAIMED in the ledger before anything happens. A claim succeeds once, so
      a restart or a re-sync cannot produce a second action for the same message.
   4. The daily cap and a fresh "is it on the calendar now?" check run immediately before
-     the effect, not at decision time.
+     the effect, not at decision time. The cap counts every attempt whose outcome is not a
+     verified failure (created, unknown, in flight): an uncertain write may well exist.
+     At most one reminder is written per pass, so a slow or stuck app cannot be hit with a
+     burst of writes.
   5. The effect's outcome is recorded whatever it is. Unknown and failed outcomes are
      final: nothing retries, because the reminder may exist.
 """
@@ -32,6 +36,9 @@ from service.attention.live import (LOOKBACK_S, Plan, Settings, in_quiet_hours, 
                                     local_midnight, plan_reminder, who_label)
 from service.attention.matching import find_on_file
 from pathlib import Path
+
+MAX_EFFECTS_PER_PASS = 1
+CAP_STATES = ("created", "unknown", "claimed")        # an unknown write may exist: it counts
 
 Create = Callable[[Plan], Awaitable[dict]]            # -> {"ok": bool, "status": str, "error": str}
 Publish = Callable[[dict], Awaitable[None]]
@@ -53,8 +60,10 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
     if settings.mode == "off":
         return []
     ledger.recover(now)
-    if ledger.meta("enabled_at") is None:
+    if ledger.meta("enabled_at") is None or (settings.mode == "live"
+                                             and ledger.meta("last_mode") != "live"):
         ledger.set_meta("enabled_at", repr(now))          # baseline: never act on older messages
+    ledger.set_meta("last_mode", settings.mode)
     floor = max(now - LOOKBACK_S, float(ledger.meta("enabled_at")))
 
     items = items_from_records(records)
@@ -66,6 +75,7 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
     snapshot = Snapshot(Path("."), {}, sorted(items, key=lambda i: i.ts), list(commitments))
     detector = UncapturedCommitment(snapshot, tz=tz)
     outcomes: list[Outcome] = []
+    effects = 0
 
     for item in sorted((i for i in fresh if i.id in unseen_ids), key=lambda i: i.ts):
         try:
@@ -80,6 +90,8 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         plan = plan_reminder(decision.source or item, decision.resolved, now, settings, tz, who=who)
         if plan is None:                                  # too late to be useful; not recorded
             continue
+        if settings.mode == "live" and effects >= MAX_EFFECTS_PER_PASS:
+            break                                         # the rest wait for the next pass, unclaimed
         if not ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts,
                             event_ts=plan.event_ts, now=now):
             continue
@@ -90,17 +102,19 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
             outcomes.append(Outcome(item.id, "shadow", plan.title, detail))
             continue
 
-        if ledger.count_since(local_midnight(now, tz)) >= settings.daily_cap:
+        if ledger.count_since(local_midnight(now, tz), CAP_STATES, exclude=item.id) >= settings.daily_cap:
             ledger.finish(item.id, "capped", detail, now)
             outcomes.append(Outcome(item.id, "capped", plan.title, detail))
             continue
 
         # The calendar may have changed since the tick began (the user may have just added it).
-        if find_on_file(decision.resolved, item.text, fresh_commitments(), tz):
+        context = f"{decision.source.text} {item.text}" if decision.source else item.text
+        if find_on_file(decision.resolved, context, fresh_commitments(), tz):
             ledger.finish(item.id, "already_on_file", detail, now)
             outcomes.append(Outcome(item.id, "already_on_file", plan.title, detail))
             continue
 
+        effects += 1
         try:
             result = await create(plan)
         except Exception as exc:                          # noqa: BLE001 — outcome unknowable

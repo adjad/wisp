@@ -127,8 +127,8 @@ async def run() -> None:
         # Mode defaults to "shadow" (records, does nothing); "live" is the user's choice.
         # No model is involved, so it needs no foreground gate.
         try:
-            from service.assistant.attention_runner import run_tick
-            await run_tick()
+            from service.assistant.attention_runner import schedule_tick
+            schedule_tick()                  # background, single-flight: never awaited here
         except Exception:  # noqa: BLE001 — must never break the scheduler loop
             pass
         await asyncio.sleep(TICK_S)

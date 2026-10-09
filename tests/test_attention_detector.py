@@ -116,7 +116,8 @@ def test_screen_excludes_promo_scam_and_automated_senders():
 
 def test_screen_leaves_ordinary_messages_alone():
     for text in ("Meet me in the Quad at 6PM",
-                 "dinner at 7, here's the map https://maps.example/quad",
+                 "dinner at 7, here's the map https://maps.apple.com/?q=Quad",
+                 "zoom at 3 https://ucsc.zoom.us/j/123456789",
                  "lol did you see the game"):
         assert exclusions.screen(msg("1", "Mom", text, T)) is None
 
@@ -386,3 +387,20 @@ def test_a_bare_clock_twelve_hours_out_is_a_guess():
     evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
     assert resolve.resolve("meet at 10am", evening, TZ).tentative            # 13h away
     assert not resolve.resolve("meet at 10am", ARRIVAL, TZ).tentative        # 1h away
+
+
+@pytest.mark.parametrize("text", [
+    "Call 800-555-0100 re your Chase card at 3pm or pay at chase-help.com/x",
+    "Be at the bank at 3pm, ask for sara@bank-help.example",
+    "pick up at 5, details at tinyurl.com/abc123",
+    "Meet me at 6, text me at (650) 555-0123",
+])
+def test_a_lure_with_a_number_link_or_address_never_reaches_the_effect(text):
+    m = msg("m", "Group", text, T)
+    d = detector([msg("h", "Group", "hey", T - 3600, "outgoing"), m]).decide(m)
+    assert not d.alert and d.blocked_by in ("contact_vector", "scam")
+
+
+def test_dates_and_times_are_not_mistaken_for_phone_numbers():
+    for text in ("Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet at 6:30 on 9/21"):
+        assert exclusions.screen(msg("m", "Mom", text, T)) is None

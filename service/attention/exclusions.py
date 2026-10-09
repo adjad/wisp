@@ -38,6 +38,15 @@ _AUTOMATED_ADDRESS = re.compile(
     r"(?:^|[._-])(?:no[-_.]?reply|do[-_.]?not[-_.]?reply|newsletter|news|promo|promotions?|"
     r"deals?|offers?|marketing|notifications?|alerts?|updates?|mailer|digest|billing|receipts?)(?:[._-]|@)", re.I)
 _SHORTCODE = re.compile(r"^\+?\d{4,6}$")
+# A phone number or an email address in the text. Plans between friends do not usually carry
+# one, and a lure ("call 800-... at 3pm") does. Together with links this closes the cheapest
+# way for a stranger in a group chat to put their words in the user's Reminders.
+_PHONE = re.compile(r"(?<![\d/:-])(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}(?![\d/:-])")
+_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+# Links to map pins and meeting rooms are ordinary in real plans ("meet at the park <pin>").
+_SAFE_LINK = re.compile(
+    r"https?://(?:maps\.apple\.com|maps\.app\.goo\.gl|(?:www\.)?google\.com/maps|(?:[\w-]+\.)?zoom\.us|"
+    r"meet\.google\.com|teams\.microsoft\.com|facetime\.apple\.com)\S*", re.I)
 
 
 def screen(item: Item) -> str | None:
@@ -51,6 +60,9 @@ def screen(item: Item) -> str | None:
         return "scam"
     if _PROMO.search(text):
         return "promo"
+    cleaned = _SAFE_LINK.sub(" ", text)
+    if _LINK.search(cleaned) or _SHORTENER.search(cleaned) or _PHONE.search(cleaned) or _EMAIL.search(cleaned):
+        return "contact_vector"
     if item.source == "messages" and _SHORTCODE.match(re.sub(r"[\s()-]", "", item.sender or "")):
         return "automated"
     if item.source == "mail" and _AUTOMATED_ADDRESS.search(item.conversation or ""):

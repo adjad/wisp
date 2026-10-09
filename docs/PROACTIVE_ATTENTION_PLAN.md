@@ -355,12 +355,15 @@ record; `service/assistant/attention_runner.py` is the only code that touches li
 | Safety property | How it is enforced |
 | --- | --- |
 | Does nothing until the user opts in | Mode defaults to `shadow`: decisions are recorded in the ledger and nothing else happens. A missing settings file means shadow; a corrupt or out-of-range one means `off`. |
-| No flood on enabling | The first pass stamps `enabled_at`; nothing older is ever acted on. |
+| No flood on enabling | A baseline is stamped on the first pass **and every time the mode is switched into live**; nothing older than the latest baseline is ever acted on, so messages that arrived while it was off or in shadow are never swept up. |
 | Once per message | The ledger's primary key is the message id; `claim()` succeeds exactly once, before the effect. |
 | Never retries an uncertain write | A crash after the claim leaves `claimed`, promoted to `unknown`; `unknown` and `failed` are final. |
 | Uses the existing verified path | The reminder is created by `add_reminder` (deterministic action id, no twin on an unknown outcome, Wisp-only fallback). Only a result starting "Reminder set:" counts as success. |
 | Fresh check before writing | "Is it on the calendar now?" is re-read from the store immediately before the effect. |
-| Bounded | `daily_cap` (default 3) counts created reminders per local day; excess is recorded as `capped`. |
+| Bounded | `daily_cap` (default 3) counts every attempt that is not a verified failure (created, **unknown**, in flight) per local day, because an unanswered write may exist; excess is recorded as `capped`. At most **one reminder is written per pass**. |
+| Never blocks the scheduler | The pass runs as a background task, single-flight (`schedule_tick`); the scheduler loop never awaits a reminder write, which can take 45 seconds to time out. |
+| Strangers cannot borrow the user's Reminders | Messages containing a phone number, an email address or a link are refused, except links to map pins and meeting rooms (Apple/Google Maps, Zoom, Meet, Teams, FaceTime). A bare number is labelled `Text from …1234`, never plain `Text`. |
+| No message text piles up in `assistant.db` | The `attention_added` event is transient (`durable=False`) until the app can acknowledge it. |
 | Quiet hours (default 22:00 to 08:00) | The reminder is still created; the immediate "I added this" alert is not sent. |
 | Only live Messages | The feed must be `ready` for this launch; restored rows are not "new". |
 | Undo removes only its own | Requires a ledger row in `created`, a single reminder matching its exact title and time, and goes through the existing verified delete. |
@@ -375,6 +378,10 @@ minutes before a timed event (never in the past), at 9:00 for a date with no clo
 curl -s localhost:8765/assistant/attention                       # see recent decisions
 curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: application/json' -d '{"mode":"live"}'
 ```
+
+**Independent audit (2026-10-09): BLOCK, repaired.** One blocker (unknown outcomes did not count toward the cap and each could stall the scheduler for 45 seconds) and several should-fix items (durable event, baseline after `off`, stranger lures, unreadable settings, GUID-less messages, an all-day-event blind spot in the on-file check) were fixed with a test each. One finding was wrong on the facts: the wiring tests *are* isolated, by the repository-root `conftest.py`; a fail-fast guard now asserts it. The repair needs its own independent review before merge.
+
+Known and accepted: `capped` is final (a message capped today is not reconsidered tomorrow); a create that succeeded but crashed before the ledger recorded it ends as `unknown` and cannot be undone through the endpoint; contact names match on the last 10 digits; the endpoints, like the rest of the backend, have no authentication beyond loopback.
 
 **Not built.** The in-app alert and its Undo button: the backend publishes an
 `attention_added` event, which the app currently ignores (it falls to the `default:` case).

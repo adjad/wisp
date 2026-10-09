@@ -1,10 +1,18 @@
 """The live wiring and endpoints around the attention runner, with every source and effect faked.
 
-`conftest.py` points WISP_HOME at a temp dir, and these tests also redirect MOE_DIR, so the
-real ~/.moe, Reminders and the hub are never touched.
+The repository-root `conftest.py` points WISP_HOME at a temp dir before anything is imported,
+and these tests also redirect MOE_DIR, so the real ~/.moe, Reminders and the hub are never
+touched. The guard below makes that assumption fail loudly instead of silently.
 """
+import asyncio
+import os
 from datetime import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
+
+assert os.environ.get("WISP_HOME") and \
+    Path(os.environ["WISP_HOME"]).resolve() != (Path.home() / ".moe").resolve(), \
+    "attention wiring tests must run with an isolated WISP_HOME"
 
 import pytest
 from fastapi import FastAPI
@@ -38,6 +46,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(wiring, "_commitments", lambda now: [])
     wiring.reset()
     wiring.get_ledger().set_meta("enabled_at", repr(NOW - 86400))
+    wiring.get_ledger().set_meta("last_mode", "live")        # already live: no re-baseline
     yield tmp_path
     wiring.reset()
 
@@ -229,3 +238,68 @@ async def test_ticks_closer_together_than_the_minimum_interval_are_skipped(isola
     feed["value"] = {**FEED, "records": FEED["records"] + [rec("n", "Mom", "Lunch today at 12pm", NOW)]}
     assert await wiring.run_tick(NOW + wiring.MIN_INTERVAL_S - 1) == []
     assert [o.state for o in await wiring.run_tick(NOW + wiring.MIN_INTERVAL_S + 1)] == ["created"]
+
+
+# ------------------------------------------------ repairs from the independent audit
+
+async def test_the_alert_event_is_transient_so_it_never_piles_up_in_the_database(monkeypatch):
+    seen = {}
+
+    async def fake_publish(event, **kw):
+        seen.update(kw, event=event)
+    monkeypatch.setattr(wiring.hub, "publish", fake_publish)
+    await wiring._publish({"type": "attention_added", "source_id": "msg:x", "quote": "q", "sender": "s"})
+    assert seen["durable"] is False and seen["event"]["type"] == "attention_added"
+
+
+async def test_schedule_tick_is_single_flight_and_never_raises(monkeypatch):
+    started, release = [], asyncio.Event()
+
+    async def slow_tick(now=None):
+        started.append(1)
+        await release.wait()
+        raise RuntimeError("boom after the wait")
+    monkeypatch.setattr(wiring, "run_tick", slow_tick)
+    wiring.schedule_tick()
+    wiring.schedule_tick()                                   # a pass is running: skipped
+    await asyncio.sleep(0)
+    assert started == [1]
+    release.set()
+    await asyncio.sleep(0.01)                                # the failure stays inside the task
+    assert wiring._task.done() and wiring._task.exception() is None
+    release.clear()
+    wiring.schedule_tick()                                   # free again
+    await asyncio.sleep(0)
+    assert len(started) == 2
+    release.set()
+    await asyncio.sleep(0.01)
+
+
+def test_the_scheduler_does_not_wait_for_the_pass():
+    import inspect
+    from service.assistant import scheduler
+    source = inspect.getsource(scheduler.run)
+    assert "schedule_tick()" in source and "await run_tick" not in source
+
+
+def test_all_day_events_earlier_today_are_visible_to_the_on_file_check(monkeypatch):
+    seen = {}
+    monkeypatch.undo()                                       # use the real _commitments for this one
+    monkeypatch.setattr(wiring, "local_timezone", lambda: TZ)
+    monkeypatch.setattr(wiring.assistant_store, "upcoming",
+                        lambda now, days=7: seen.update(now=now, days=days) or [])
+    wiring._commitments(NOW)
+    midnight = datetime(2026, 9, 21, 0, 0, tzinfo=ZoneInfo(TZ)).timestamp()
+    assert seen["now"] == midnight and seen["days"] >= 5
+
+
+async def test_the_real_add_reminder_prose_is_classified_as_success_when_wisp_only(isolated, monkeypatch):
+    """No fake of add_reminder: run the real tool with the app 'not connected' so it takes its
+    Wisp-only path against the (temp) store, and check the wiring reads its real wording."""
+    monkeypatch.setattr(wiring.hub, "_subs", set())
+    due = datetime.now().replace(microsecond=0).timestamp() + 7200
+    title = "Mom: Meet me in the Quad (6:00 PM)"
+    got = await wiring.create_reminder(live.Plan(title, due, None, "today", "q"))
+    assert got == {"ok": True, "status": "succeeded", "where": "wisp_only"}
+    rows = [c for c in wiring.assistant_store.upcoming(due - 600, days=1) if c["title"] == title]
+    assert len(rows) == 1 and rows[0]["source"] == "manual"

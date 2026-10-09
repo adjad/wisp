@@ -93,11 +93,14 @@ class Ledger:
                 f"SELECT source_id FROM actions WHERE source_id IN ({marks})", chunk))
         return found
 
-    def count_since(self, since_ts: float, states: tuple[str, ...] = ("created",)) -> int:
+    def count_since(self, since_ts: float, states: tuple[str, ...] = ("created",),
+                    exclude: str | None = None) -> int:
+        """Rows decided since `since_ts` in any of `states`. `exclude` leaves one message out,
+        so a cap check does not count the claim the message under decision has just made."""
         marks = ",".join("?" * len(states))
         return self._db.execute(
-            f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks})",
-            (since_ts, *states)).fetchone()[0]
+            f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
+            "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
 
     def recent(self, limit: int = 20) -> list[dict]:
         return [_row(r) for r in self._db.execute(
