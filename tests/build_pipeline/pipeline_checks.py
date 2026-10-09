@@ -1704,6 +1704,419 @@ print('external venv readable; private home and writes denied')
         self.assertEqual(workflow.count('--performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"'), 2)
         self.assertEqual(workflow.count('--performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"'), 2)
 
+    # ---- Performance waiver (ad-hoc only, per version, committed, digest-bound) ----
+    def waiver_record(self, **overrides):
+        record = {"schema": "wisp.release_performance.waiver/1", "version": p.CONFIG["version"],
+                  "decision": "waived", "approved_by": "owner (project owner)",
+                  "approved_on": "2026-10-06", "scope": "ad_hoc_release_only",
+                  "reason": "A fixture reason that is comfortably longer than the eighty character minimum for a waiver.",
+                  "evidence_ref": "docs/RELEASE_PERFORMANCE_BENCHMARK.md#waiver",
+                  "follow_up": "A later version must restore a passing release benchmark."}
+        record.update(overrides)
+        return {key: value for key, value in record.items() if value is not None}
+
+    def waiver_repo(self, record=None, *, raw=None, commit=True, relative=None, name="repo"):
+        """A real throwaway Git checkout holding one committed waiver record."""
+        checkout = self.root / name
+        relative = relative or f"docs/releases/{p.CONFIG['version']}-performance-waiver.json"
+        data = raw if raw is not None else (json.dumps(self.waiver_record() if record is None else record, indent=2) + "\n").encode()
+        environment = dict(os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+                           GIT_AUTHOR_NAME="fixture", GIT_AUTHOR_EMAIL="fixture@example.invalid",
+                           GIT_COMMITTER_NAME="fixture", GIT_COMMITTER_EMAIL="fixture@example.invalid")
+        def git(*arguments):
+            subprocess.run(["git", "-C", str(checkout), "-c", "commit.gpgsign=false", *arguments],
+                           check=True, capture_output=True, env=environment)
+        checkout.mkdir(parents=True)
+        git("init", "-q")
+        (checkout / "README").write_text("fixture")
+        git("add", "README")
+        (checkout / relative).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / relative).write_bytes(data)
+        if commit:
+            git("add", "--", relative)
+        git("commit", "-q", "-m", "fixture")
+        return checkout, relative, hashlib.sha256(data).hexdigest(), git
+
+    def waiver_gate(self, checkout, relative, digest, *, ref="default", waiver="default"):
+        logs = self.root / "waiver-logs"
+        logs.mkdir(exist_ok=True)
+        args = Namespace(logs=logs, performance_waiver=Path(relative if waiver == "default" else waiver) if waiver else None,
+                         performance_waiver_sha256=digest)
+        environment = {"GITHUB_REF": "refs/tags/v" + p.CONFIG["version"] if ref == "default" else ref,
+                       "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+        with patch.object(release, "ROOT", checkout), patch.dict(os.environ, environment):
+            return release.require_performance_waiver(Namespace(logs=logs), args)
+
+    def assert_waiver_refused(self, checkout, relative, digest, message=None, **kwargs):
+        with self.assertRaises(p.BuildError) as context:
+            self.waiver_gate(checkout, relative, digest, **kwargs)
+        if message:
+            self.assertRegex(str(context.exception), message)
+        self.assertFalse((self.root / "waiver-logs/release-performance-gate.json").exists())
+        return str(context.exception)
+
+    def test_waiver_valid_record_is_waived_never_pass_and_is_recorded(self):
+        checkout, relative, digest, _ = self.waiver_repo()
+        result = self.waiver_gate(checkout, relative, digest)
+        head = subprocess.check_output(["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True).strip()
+        self.assertEqual(result, {"verdict": "WAIVED", "waived": True, "authorizes_release": True,
+                                  "waiver_sha256": digest, "version": p.CONFIG["version"],
+                                  "candidate_sha": head, "approved_by": "owner (project owner)",
+                                  "approved_on": "2026-10-06"})
+        self.assertNotEqual(result["verdict"], "PASS")
+        self.assertEqual(json.loads((self.root / "waiver-logs/release-performance-gate.json").read_text()), result)
+
+    def test_committed_real_waiver_record_passes_its_own_gate(self):
+        relative = f"docs/releases/{p.CONFIG['version']}-performance-waiver.json"
+        source = ROOT / relative
+        if not source.is_file():
+            self.skipTest("this version has no performance waiver")
+        data = source.read_bytes()
+        checkout, relative, digest, _ = self.waiver_repo(raw=data)
+        result = self.waiver_gate(checkout, relative, digest)
+        self.assertEqual(result["verdict"], "WAIVED")
+        self.assertEqual(json.loads(data)["scope"], "ad_hoc_release_only")
+
+    def test_waiver_refuses_wrong_or_malformed_digest(self):
+        checkout, relative, digest, _ = self.waiver_repo()
+        mutated = bytearray(bytes.fromhex(digest))
+        mutated[0] ^= 1
+        for label, value in (("wrong", "0" * 64), ("one-bit", bytes(mutated).hex()), ("missing", None),
+                             ("empty", ""), ("upper", digest.upper()), ("short", digest[:63]),
+                             ("newline", digest + "\n"), ("long", digest + "0")):
+            with self.subTest(label=label):
+                self.assert_waiver_refused(checkout, relative, value, "does not match" if label in ("wrong", "one-bit") else "^Performance waiver requires")
+
+    def test_waiver_digest_must_match_file_bytes_by_one_byte(self):
+        record = json.dumps(self.waiver_record(), indent=2) + "\n"
+        checkout, relative, _, _ = self.waiver_repo(raw=record.encode())
+        changed = record.replace("owner", "0wner").encode()
+        self.assertEqual(len(changed), len(record.encode()))
+        self.assert_waiver_refused(checkout, relative, hashlib.sha256(changed).hexdigest(), "does not match")
+        self.assert_waiver_refused(checkout, relative, None, "^Performance waiver requires")
+
+    def test_waiver_refuses_missing_path_argument(self):
+        checkout, relative, digest, _ = self.waiver_repo()
+        self.assert_waiver_refused(checkout, relative, digest, "committed record", waiver=None)
+
+    def test_waiver_refuses_wrong_scope_version_decision_schema_and_fields(self):
+        base = self.waiver_record()
+        cases = {"version": self.waiver_record(version="9.9.9"), "scope-signed": self.waiver_record(scope="signed_release"),
+                 "scope-all": self.waiver_record(scope="all"), "decision-pass": self.waiver_record(decision="pass"),
+                 "decision-case": self.waiver_record(decision="Waived"), "schema": self.waiver_record(schema="wisp.release_performance.waiver/2"),
+                 "approved_by-empty": self.waiver_record(approved_by="  "), "approved_on-empty": self.waiver_record(approved_on=""),
+                 "approved_on-format": self.waiver_record(approved_on="2026-1-6"), "approved_on-invalid": self.waiver_record(approved_on="2026-13-01"),
+                 "approved_on-unicode": self.waiver_record(approved_on="２０２６-10-06"), "approved_on-time": self.waiver_record(approved_on="2026-10-06T00:00:00"),
+                 "reason-short": self.waiver_record(reason="x" * 79), "reason-padding": self.waiver_record(reason=" " * 100 + "short"),
+                 "evidence-empty": self.waiver_record(evidence_ref=""), "follow-empty": self.waiver_record(follow_up=""),
+                 "extra-key": dict(base, extra="x"), "missing-reason": self.waiver_record(reason=None),
+                 "missing-schema": self.waiver_record(schema=None), "non-string": self.waiver_record(approved_by=7),
+                 "bool-version": self.waiver_record(version=True), "empty-object": {}}
+        for label, record in cases.items():
+            with self.subTest(label=label):
+                checkout, relative, digest, _ = self.waiver_repo(record, name="repo-" + label)
+                self.assert_waiver_refused(checkout, relative, digest, "waiver")
+        checkout, relative, digest, _ = self.waiver_repo(self.waiver_record(reason="x" * 80), name="repo-boundary")
+        self.assertEqual(self.waiver_gate(checkout, relative, digest)["verdict"], "WAIVED")
+
+    def test_waiver_refuses_non_json_non_object_duplicate_and_oversized_records(self):
+        valid = json.dumps(self.waiver_record())
+        oversized = json.dumps(self.waiver_record(reason="r" * 17000)).encode()
+        cases = {"text": b"not json", "empty": b"", "array": b"[]", "null": b"null", "scalar": b"7",
+                 "bad-utf8": b"\xff\xfe{}", "nan": valid.replace('"waived"', "NaN").encode(),
+                 "duplicate": valid.replace('"decision": "waived"', '"decision": "pass", "decision": "waived"').encode(),
+                 "trailing": (valid + " garbage").encode(), "oversized": oversized}
+        self.assertGreater(len(oversized), 16 * 1024)
+        for label, raw in cases.items():
+            with self.subTest(label=label):
+                checkout, relative, digest, _ = self.waiver_repo(raw=raw, name="repo-" + label)
+                self.assert_waiver_refused(checkout, relative, digest)
+
+    def test_waiver_size_bound_holds_even_if_the_file_grows_after_stat(self):
+        raw = json.dumps(self.waiver_record(reason="r" * 17000)).encode()
+        checkout, relative, digest, _ = self.waiver_repo(raw=raw)
+        real = os.fstat
+        def small(descriptor):
+            info = real(descriptor)
+            return os.stat_result((info.st_mode, *info[1:6], 10, *info[7:]))
+        with patch.object(release.os, "fstat", side_effect=small):
+            self.assert_waiver_refused(checkout, relative, digest, "small regular file")
+
+    def test_waiver_refuses_an_invalid_candidate_sha(self):
+        checkout, relative, digest, _ = self.waiver_repo()
+        real = release._waiver_git
+        def git(*arguments):
+            return b"not-a-sha\n" if arguments == ("rev-parse", "HEAD") else real(*arguments)
+        with patch.object(release, "_waiver_git", side_effect=git):
+            self.assert_waiver_refused(checkout, relative, digest, "candidate SHA")
+
+    def test_waiver_error_text_never_carries_file_content(self):
+        secret = "SECRET-CANARY-CONTENT"
+        for label, raw in (("json", json.dumps(self.waiver_record(reason=secret, scope="other")).encode()),
+                           ("text", secret.encode()), ("decision", json.dumps(self.waiver_record(approved_by=secret, decision="no")).encode())):
+            with self.subTest(label=label):
+                checkout, relative, digest, _ = self.waiver_repo(raw=raw, name="repo-" + label)
+                self.assertNotIn(secret, self.assert_waiver_refused(checkout, relative, digest))
+                self.assertNotIn(secret, str(self.assert_waiver_refused(checkout, relative, "1" * 64)))
+
+    def test_waiver_refuses_symlinks_and_non_regular_files(self):
+        checkout, relative, digest, git = self.waiver_repo(name="repo-final")
+        target = checkout / relative
+        real = checkout / "real.json"
+        real.write_bytes(target.read_bytes())
+        git("add", "real.json")
+        target.unlink()
+        target.symlink_to("../../real.json")
+        git("add", "--", relative)
+        git("commit", "-q", "-m", "symlink")
+        self.assert_waiver_refused(checkout, relative, digest, "symbolic links")
+        # Even if a race hides the link from lstat, the descriptor is opened without following it.
+        with patch.object(release.os, "lstat", side_effect=os.stat):
+            self.assert_waiver_refused(checkout, relative, digest, "could not be opened")
+        # A symbolic-link directory component is refused as well.
+        checkout, relative, digest, git = self.waiver_repo(name="repo-dir")
+        (checkout / "docs/releases").rename(checkout / "docs/real-releases")
+        (checkout / "docs/releases").symlink_to("real-releases")
+        self.assert_waiver_refused(checkout, relative, digest, "symbolic links")
+        # A directory or FIFO in place of the record.
+        checkout, relative, digest, git = self.waiver_repo(name="repo-fifo")
+        (checkout / relative).unlink()
+        os.mkfifo(checkout / relative)
+        self.assert_waiver_refused(checkout, relative, digest, "small regular file")
+
+    def test_waiver_refuses_untracked_modified_staged_deleted_and_uncommitted_records(self):
+        checkout, relative, digest, git = self.waiver_repo(commit=False, name="repo-uncommitted")
+        self.assert_waiver_refused(checkout, relative, digest, "tracked")
+        checkout, relative, digest, git = self.waiver_repo(name="repo-modified")
+        (checkout / relative).write_bytes((checkout / relative).read_bytes() + b" ")
+        self.assert_waiver_refused(checkout, relative, digest)
+        self.assert_waiver_refused(checkout, relative, hashlib.sha256((checkout / relative).read_bytes()).hexdigest())
+        checkout, relative, digest, git = self.waiver_repo(name="repo-staged")
+        changed = (checkout / relative).read_bytes() + b" "
+        (checkout / relative).write_bytes(changed)
+        git("add", "--", relative)
+        self.assert_waiver_refused(checkout, relative, hashlib.sha256(changed).hexdigest())
+        checkout, relative, digest, git = self.waiver_repo(name="repo-hidden")
+        git("update-index", "--assume-unchanged", "--", relative)
+        (checkout / relative).write_bytes((checkout / relative).read_bytes() + b" ")
+        self.assert_waiver_refused(checkout, relative, hashlib.sha256((checkout / relative).read_bytes()).hexdigest(), "unmodified at HEAD")
+        # Identical bytes with a changed mode, or a staged change reverted in the tree, is still not HEAD.
+        checkout, relative, digest, git = self.waiver_repo(name="repo-mode")
+        (checkout / relative).chmod(0o755)
+        self.assert_waiver_refused(checkout, relative, digest, "unmodified at HEAD")
+        checkout, relative, digest, git = self.waiver_repo(name="repo-revert")
+        original = (checkout / relative).read_bytes()
+        (checkout / relative).write_bytes(original + b" ")
+        git("add", "--", relative)
+        (checkout / relative).write_bytes(original)
+        self.assert_waiver_refused(checkout, relative, digest, "unmodified at HEAD")
+        checkout, relative, digest, git = self.waiver_repo(name="repo-deleted")
+        (checkout / relative).unlink()
+        self.assert_waiver_refused(checkout, relative, digest)
+        # Newly added to the index but never committed.
+        checkout, relative, digest, git = self.waiver_repo(commit=False, name="repo-indexed")
+        git("add", "--", relative)
+        self.assert_waiver_refused(checkout, relative, digest, "tracked")
+
+    def test_waiver_must_be_this_versions_record_inside_docs_releases(self):
+        checkout, relative, digest, git = self.waiver_repo(name="repo-path")
+        data = (checkout / relative).read_bytes()
+        for other in ("docs/releases/1.1.5-performance-waiver.json", "docs/elsewhere/waiver.json",
+                      "waiver.json", f"docs/releases/{p.CONFIG['version']}-performance-waiver.json.bak",
+                      f"docs/releases/x/../{p.CONFIG['version']}-performance-waiver-x.json"):
+            (checkout / other).parent.mkdir(parents=True, exist_ok=True)
+            (checkout / other).write_bytes(data)
+            git("add", "-f", "--", other)
+            with self.subTest(other=other):
+                self.assert_waiver_refused(checkout, relative, digest, "committed record", waiver=other)
+        git("commit", "-q", "-m", "others")
+        for other in ("docs/releases/1.1.5-performance-waiver.json", "../outside.json", str(self.root / "outside.json"), "docs/releases", "."):
+            with self.subTest(committed=other):
+                self.assert_waiver_refused(checkout, relative, digest, "committed record", waiver=other)
+
+    def test_waiver_requires_the_exact_version_tag_ref(self):
+        checkout, relative, digest, _ = self.waiver_repo()
+        for ref in ("refs/heads/main", "refs/tags/v9.9.9", "", "refs/tags/" + p.CONFIG["version"]):
+            with self.subTest(ref=ref):
+                self.assert_waiver_refused(checkout, relative, digest, "version tag", ref=ref)
+
+    def test_waiver_and_evidence_are_mutually_exclusive_and_default_is_unchanged(self):
+        runner = Namespace(logs=self.root)
+        base = {"performance_waiver": Path("w.json"), "performance_waiver_sha256": "a" * 64}
+        for name, value in (("performance_receipt", self.root / "r"), ("performance_baseline", self.root / "b"),
+                            ("performance_receipt_sha256", "a" * 64), ("performance_baseline_sha256", "b" * 64)):
+            with self.subTest(argument=name), patch.object(release, "require_performance_waiver") as waiver, \
+                    patch.object(release, "require_release_performance") as evidence:
+                with self.assertRaisesRegex(p.BuildError, "mutually exclusive"):
+                    release.require_ad_hoc_performance_authority(runner, Namespace(**base, **{name: value}))
+                waiver.assert_not_called()
+                evidence.assert_not_called()
+        for partial in ({"performance_waiver": Path("w.json")}, {"performance_waiver_sha256": "a" * 64}):
+            with self.subTest(partial=partial), patch.object(release, "require_release_performance") as evidence:
+                with self.assertRaisesRegex(p.BuildError, "Performance waiver requires"):
+                    release.require_ad_hoc_performance_authority(runner, Namespace(**partial))
+                evidence.assert_not_called()
+        with patch.object(release, "require_performance_waiver") as waiver, \
+                patch.object(release, "require_release_performance", return_value="evidence") as evidence:
+            self.assertEqual(release.require_ad_hoc_performance_authority(runner, Namespace()), "evidence")
+            self.assertEqual(release.require_ad_hoc_performance_authority(runner, self.performance_args()), "evidence")
+            waiver.assert_not_called()
+            self.assertEqual(evidence.call_count, 2)
+            release.require_ad_hoc_performance_authority(runner, Namespace(**base))
+            waiver.assert_called_once()
+
+    def test_ad_hoc_publisher_checks_the_waiver_before_any_publication_step(self):
+        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root,
+                         performance_waiver=Path("docs/releases/missing.json"), performance_waiver_sha256="a" * 64)
+        with patch.object(release, "ad_hoc_preflight"), patch.object(release, "verify_artifacts") as artifacts, \
+                patch.object(release, "secret_run") as secrets, patch.object(release, "create_public_draft") as publish, \
+                patch.object(release, "require_release_performance") as evidence, \
+                patch.dict(os.environ, {"GITHUB_REF": "refs/tags/v" + p.CONFIG["version"]}):
+            with self.assertRaisesRegex(p.BuildError, "committed record"):
+                release.release_ad_hoc(Namespace(logs=self.root), args)
+        for call in (artifacts, secrets, publish, evidence):
+            call.assert_not_called()
+
+    def test_ad_hoc_preflight_conditions_are_unchanged_by_a_waiver(self):
+        waiver = {"performance_waiver": Path("w.json"), "performance_waiver_sha256": "a" * 64}
+        environment = {"GITHUB_ACTIONS": "true", "WISP_AD_HOC_RELEASE_APPROVED": "true", "GITHUB_EVENT_NAME": "workflow_dispatch",
+                       "GITHUB_REF": "refs/tags/v" + p.CONFIG["version"], "GH_TOKEN": "t", "GITHUB_REPOSITORY": "o/r"}
+        good = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root, **waiver)
+        release.ad_hoc_preflight(good, environment)
+        for label, args, env, message in (
+                ("local", good, {}, "explicit CI workflow dispatch"),
+                ("branch", good, dict(environment, GITHUB_REF="refs/heads/main"), "exact version tag"),
+                ("event", good, dict(environment, GITHUB_EVENT_NAME="push"), "explicit CI workflow dispatch"),
+                ("approval", good, dict(environment, WISP_AD_HOC_RELEASE_APPROVED="false"), "explicit CI workflow dispatch"),
+                ("token", good, {k: v for k, v in environment.items() if k != "GH_TOKEN"}, "credentials"),
+                ("dirty", Namespace(**dict(vars(good), allow_dirty=True)), environment, "preview"),
+                ("offline", Namespace(**dict(vars(good), offline=True)), environment, "offline")):
+            with self.subTest(label=label), self.assertRaisesRegex(p.BuildError, message):
+                release.ad_hoc_preflight(args, env)
+
+    def test_signed_release_refuses_any_waiver_argument_before_the_evidence_gate(self):
+        for arguments in ({"performance_waiver": Path("w.json")}, {"performance_waiver_sha256": "a" * 64},
+                          {"performance_waiver": Path("w.json"), "performance_waiver_sha256": "a" * 64},
+                          dict(vars(self.performance_args()), performance_waiver=Path("w.json"))):
+            with self.subTest(arguments=sorted(arguments)), patch.object(release, "preflight"), \
+                    patch.object(release, "require_release_performance") as evidence, \
+                    patch.object(release, "require_performance_waiver") as waiver, \
+                    patch.object(release, "verify_artifacts") as artifacts, patch.object(release, "secret_run") as secrets:
+                with self.assertRaisesRegex(p.BuildError, "never accepts a performance waiver"):
+                    release.release(Namespace(logs=self.root), Namespace(
+                        allow_dirty=False, test_python=None, offline=False, output=self.root, **arguments))
+                for call in (evidence, waiver, artifacts, secrets):
+                    call.assert_not_called()
+
+    def test_waiver_option_is_accepted_only_by_release_ad_hoc(self):
+        env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "TMPDIR")}
+        for command in ("release", "all", "verify", "doctor", "test", "qa-assemble"):
+            for option in (("--performance-waiver", "x.json"), ("--performance-waiver-sha256", "a" * 64)):
+                with self.subTest(command=command, option=option[0]):
+                    result = subprocess.run([sys.executable, "-B", str(p.SUPPORT / "pipeline.py"), command, *option],
+                                            capture_output=True, text=True, env=env)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("only accepted by release-ad-hoc", result.stderr)
+                    self.assertNotIn("→", result.stdout)
+        result = subprocess.run([sys.executable, "-B", str(p.SUPPORT / "pipeline.py"), "release-ad-hoc",
+                                 "--output", str(self.root), "--performance-waiver", "x.json"],
+                                capture_output=True, text=True, env=env)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn("only accepted", result.stderr)
+
+    def workflow_jobs(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        signed = workflow.index("\n  release:\n")
+        adhoc = workflow.index("\n  publish-ad-hoc-release:\n")
+        self.assertLess(signed, adhoc)
+        return workflow, workflow[signed:adhoc], workflow[adhoc:]
+
+    def workflow_step(self, section, name):
+        marker = f"      - name: {name}\n"
+        self.assertEqual(section.count(marker), 1, name)
+        start = section.index(marker)
+        following = section.find("\n      - ", start + 1)
+        comment = section.find("\n      # ", start + 1)
+        end = min(value for value in (following, comment, len(section)) if value > 0)
+        return section[start:end]
+
+    def test_workflow_waiver_input_and_ad_hoc_step_conditions(self):
+        workflow, signed, adhoc = self.workflow_jobs()
+        self.assertEqual(workflow.count("      performance_waiver_sha256:\n"), 1)
+        declaration = workflow[workflow.index("      performance_waiver_sha256:\n"):]
+        declaration = declaration[:declaration.index("\npermissions:")]
+        self.assertIn("mutually exclusive with the three performance_* evidence inputs", declaration)
+        self.assertIn("docs/releases/<version>-performance-waiver.json", declaration)
+        self.assertIn("type: string", declaration)
+        for name in ("Require reviewed performance artifact bindings", "Download selected Desktop performance evidence",
+                     "Publish bound verified ad-hoc assets"):
+            with self.subTest(name=name):
+                step = self.workflow_step(adhoc, name)
+                self.assertEqual(step.count("if: "), 1)
+                self.assertIn("\n        if: inputs.performance_waiver_sha256 == ''\n", step)
+        publish = self.workflow_step(adhoc, "Publish bound verified ad-hoc assets")
+        self.assertIn('--performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"', publish)
+        self.assertNotIn("--performance-waiver", publish)
+        self.assertNotIn("PERFORMANCE_WAIVER", publish)
+        waived = self.workflow_step(adhoc, "Publish waived ad-hoc assets")
+        self.assertIn("\n        if: inputs.performance_waiver_sha256 != ''\n", waived)
+        self.assertEqual(waived.count("if: "), 1)
+        for name in ("WISP_AD_HOC_RELEASE_APPROVED: 'true'", "GH_TOKEN: ${{ github.token }}",
+                     "PERFORMANCE_WAIVER_SHA256: ${{ inputs.performance_waiver_sha256 }}"):
+            self.assertIn(name, waived)
+        self.assertNotIn("secrets.", waived)
+        lines = [line.strip() for line in waived[waived.index("run: |\n") + 7:].splitlines() if line.strip()]
+        self.assertEqual(len(lines), 2)
+        guard, command = lines
+        for name in ("PERFORMANCE_RUN_ID", "PERFORMANCE_RECEIPT_SHA256", "PERFORMANCE_BASELINE_SHA256"):
+            self.assertIn(f'{name}: ${{{{ inputs.{name.lower()} }}}}', waived)
+            self.assertIn(f'"{name}"', guard)
+        self.assertIn('assert not any(os.environ[k] for k in', guard)
+        self.assertIn('re.fullmatch(r"[a-f0-9]{64}", os.environ["PERFORMANCE_WAIVER_SHA256"])', guard)
+        import shlex
+        tokens = shlex.split(command)
+        self.assertEqual(tokens, ["./scripts/wisp-build", "release-ad-hoc", "--output", "dist/candidate",
+                                  "--performance-waiver", f"docs/releases/{p.CONFIG['version']}-performance-waiver.json",
+                                  "--performance-waiver-sha256", "$PERFORMANCE_WAIVER_SHA256"])
+        self.assertIn('--performance-waiver-sha256 "$PERFORMANCE_WAIVER_SHA256"', command)
+        self.assertNotIn("--performance-receipt", command)
+        self.assertLess(adhoc.index("Publish bound verified ad-hoc assets"), adhoc.index("Publish waived ad-hoc assets"))
+        self.assertEqual(shlex.split(guard)[:3], ["python3", "-B", "-c"])
+        # Exactly one waived command exists, and the evidence strings are unchanged.
+        self.assertEqual(workflow.count("--performance-waiver "), 1)
+        self.assertEqual(workflow.count("--performance-waiver-sha256"), 1)
+        self.assertEqual(workflow.count("--performance-receipt .wisp-build/performance/receipt.json"), 2)
+
+    def test_workflow_signed_job_rejects_the_waiver_input(self):
+        workflow, signed, adhoc = self.workflow_jobs()
+        step = self.workflow_step(signed, "Refuse performance waiver on the signed release")
+        self.assertIn("\n        if: inputs.performance_waiver_sha256 != ''\n", step)
+        self.assertIn("exit 1", step)
+        self.assertLess(signed.index("Refuse performance waiver on the signed release"), signed.index("Rebuild without an untrusted"))
+        self.assertLess(signed.index("Refuse performance waiver on the signed release"), signed.index("Sign, notarize, verify and publish"))
+        self.assertEqual(signed.count("performance_waiver_sha256"), 1)
+        self.assertNotIn("--performance-waiver", signed)
+        self.assertNotIn("PERFORMANCE_WAIVER", signed)
+        # The signed job still demands every evidence step unconditionally.
+        for name in ("Require reviewed performance artifact bindings", "Download selected Desktop performance evidence"):
+            self.assertNotIn("if: ", self.workflow_step(signed, name))
+        self.assertNotIn("if: ", self.workflow_step(signed, "Sign, notarize, verify and publish"))
+
+    def test_workflow_waiver_change_keeps_pins_permissions_and_diagnostics(self):
+        workflow, signed, adhoc = self.workflow_jobs()
+        for line in workflow.splitlines():
+            if line.strip().startswith(("- uses:", "uses:")):
+                self.assertRegex(line, r"uses: [\w./-]+@[0-9a-f]{40}(\s+#.*)?$")
+        self.assertIn("    permissions:\n      contents: write\n      actions: read\n", adhoc)
+        self.assertIn("    permissions:\n      contents: write\n      actions: read\n", signed)
+        self.assertIn("permissions:\n  contents: read\n\nconcurrency:\n  group: wisp-build-${{ github.ref }}-${{ github.event_name }}\n", workflow)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.publish_ad_hoc && !inputs.publish && startsWith(github.ref, 'refs/tags/v')", adhoc)
+        diagnostics = self.workflow_step(adhoc, "Upload ad-hoc publication diagnostics")
+        self.assertIn("if: always()", diagnostics)
+        self.assertIn(".wisp-build/run-*/*.json", diagnostics)
+        self.assertEqual(workflow.count("environment: release"), 1)
+        self.assertNotIn("environment:", adhoc)
+
     def adhoc_fixture(self):
         checkout = self.root
         self.root = checkout / "dist/candidate"
