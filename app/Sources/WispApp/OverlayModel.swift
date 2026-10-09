@@ -1028,6 +1028,10 @@ final class OverlayModel: ObservableObject {
                                      _ title: String, _ dueTs: Double,
                                      _ commitmentKind: String) async -> [String: Any])?
     var onStartResearch: ((_ prompt: String) -> Void)?
+    /// Opens this conversation in the Chat window. Called with the service
+    /// session id, which is empty until the first reply of a new chat.
+    var onOpenChat: ((_ sessionId: String) -> Void)?
+    func openInChat() { onOpenChat?(sessionId) }
     // Backend asks (via the assistant event stream) for an immediate Mail
     // re-sync when an email query hits a cold cache — beats waiting on the
     // MailReader's 5-min timer so the FIRST "check my emails" works.

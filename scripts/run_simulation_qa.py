@@ -250,6 +250,8 @@ ADDITIONAL_FULL_TESTS = {
     # Environment-variable echo only; no server, socket or process.
     "tests/test_identity_launch_nonce.py",
     "tests/test_backend_ownership_no_disk_receipt.py",
+    # A temporary session database only; lists saved chats for the Chat window. No model, socket or real data.
+    "tests/test_chat_list.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
@@ -341,6 +343,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/chat-logic-contract": "native/chat-logic-compile",
+    "native/chat-store-contract": "native/chat-store-compile",
 }
 
 
@@ -612,6 +616,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    chat_logic = str(build_dir / "chat-logic")
+    chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
@@ -686,6 +692,27 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/chat-logic-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "tests/ChatChecks.swift", "-o", chat_logic,
+            ],
+        ),
+        ("native/chat-logic-contract", [chat_logic]),
+        (
+            "native/chat-store-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "app/Sources/WispApp/Chat/ChatStore.swift",
+                "tests/ChatStoreChecks.swift", "-o", chat_store,
+            ],
+        ),
+        ("native/chat-store-contract", [chat_store]),
         (
             "native/port-guard-compile",
             [
