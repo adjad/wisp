@@ -197,7 +197,39 @@ failure in Slice 0's report.
 | `schedule_change` | Text references an existing commitment with a *different* date (uses A09) |
 | `unanswered_ask` | Inbound request with no reply after N hours (Messages only; Sent mail isn't cached, P5) |
 
-*Owns:* `service/attention/detectors.py`. Detectors must not import the model client.
+**Built (core, offline).** `uncaptured_commitment` exists as a pure function over a frozen
+snapshot, scored by the Slice 0 harness (`replay_attention.py report --predictor
+uncaptured_commitment`). It is a fixed sequence of gates; the first "no" is recorded as
+`blocked_by`, and the report shows `missed_by_gate` so every labelled miss names the gate that
+caused it:
+
+| Gate | Module | Rule |
+| --- | --- | --- |
+| direction | `detectors` | Incoming only |
+| screen | `exclusions` | Promo, scam, automated senders never alert (P3) |
+| contact | `contacts` | Recent two-way contact, computed as of arrival, never from later messages (P4) |
+| resolve | `resolve` | A concrete time read the way a person reads a chat; every default it applies is recorded in `inferred` |
+| soon | `detectors` | Starts within 48h of arrival (date-only: within 2 calendar days) |
+| confirmed | `detectors` | A question or guessed meridiem alerts only if the user replied in-thread within 6h without declining |
+| on_file | `matching` | Not already in Calendar or Reminders; errs toward "known" |
+
+Things the resolver deliberately refuses: picking between competing times, treating "in 20
+minutes" as a plan, resolving a cancelled or past-tense clause. It also corrects one
+shortcoming of the shared parser for chat: "7:30" with no am/pm is read as 07:30 with no
+ambiguity flag, which would turn "dinner tomorrow at 7:30" into breakfast.
+
+**Volume check on real data (pre-label, counts only).** Over 26.5 days the detector fires 15
+times (0.57/day, all from texts), well under a cap of 3. Mail fires zero times: 169 of 400
+headers are blocked at `unknown_mail_sender` (the name-match rule almost never links a mail
+sender to someone you text) and 263 as automated. Mail therefore contributes nothing in v1
+unless that rule changes; see open question 4. Precision is unknown until the labels exist.
+
+**Known limits.** Undated Reminders are not in the commitments table, so they cannot match.
+English only. The past-tense and decline word lists are short and untuned. "Soon" is a fixed
+48h placeholder. Not wired to any live source and creates nothing.
+
+*Owns:* `service/attention/{detectors,resolve,exclusions,contacts,matching,prediction}.py`,
+`tests/test_attention_detector.py`. Detectors must not import the model client.
 
 ### Slice 3 — Model extraction for the remainder (M)
 
