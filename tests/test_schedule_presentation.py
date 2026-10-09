@@ -9,7 +9,12 @@ import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
+import pytest
+
+from service.assistant import brief
+from service.assistant.store import AssistantStore
 from service.tools import assistant_tools, timeranges
 
 
@@ -34,7 +39,8 @@ def _ready(monkeypatch, *, calendar_state: str = "ready"):
         assistant_tools, "time", SimpleNamespace(time=lambda: NOW.timestamp()))
     monkeypatch.setattr(
         assistant_tools, "assistant_store", SimpleNamespace(
-            upcoming=lambda **_kwargs: [], active_between=lambda *_args: []))
+            upcoming=lambda **_kwargs: [], active_between=lambda *_args: [],
+            calendar_events_overlapping=lambda *_args: []))
     monkeypatch.setattr(
         timeranges, "resolve_span",
         lambda period: timeranges.resolve_period(period, now=NOW))
@@ -44,6 +50,13 @@ def _ready(monkeypatch, *, calendar_state: str = "ready"):
             {"id": "calendar", "label": "Calendar", "state": calendar_state},
             {"id": "reminders", "label": "Reminders", "state": "ready"},
         ]}))
+
+
+@pytest.fixture
+def store(tmp_path):
+    instance = AssistantStore(tmp_path / "assistant.db")
+    yield instance
+    instance._db.close()
 
 
 def test_busy_month_is_a_clean_agenda_not_a_raw_storage_dump(monkeypatch):
@@ -77,21 +90,140 @@ def test_busy_month_is_a_clean_agenda_not_a_raw_storage_dump(monkeypatch):
 
 def test_today_and_tomorrow_respect_forward_day_boundaries(monkeypatch):
     _ready(monkeypatch)
+    day_start, day_end = assistant_tools._local_day_bounds(NOW.timestamp())
     rows = [
         _row("Past this morning", NOW - timedelta(minutes=1)),
+        _row("All-day event", datetime.fromtimestamp(day_start), all_day=True,
+             end_ts=day_end),
+        _row("Overnight event", NOW - timedelta(hours=11),
+             end_ts=day_start + 3600),
         _row("Later today", NOW + timedelta(hours=2)),
         _row("Tomorrow meeting", NOW + timedelta(days=1, hours=1)),
         _row("Day after tomorrow", NOW + timedelta(days=2)),
     ]
-    monkeypatch.setattr(assistant_tools.assistant_store, "active_between", lambda *_args: rows)
+    monkeypatch.setattr(
+        assistant_tools.assistant_store, "active_between",
+        lambda start, end: [row for row in rows
+                            if start <= row["when_ts"] < end])
+    monkeypatch.setattr(
+        assistant_tools.assistant_store, "calendar_events_overlapping",
+        lambda start, end: [row for row in rows
+                            if row["source"] == "calendar"
+                            and row["when_ts"] < end
+                            and (row["when_ts"] >= start
+                                 or row.get("end_ts", 0) > start)])
 
     today = asyncio.run(assistant_tools.get_upcoming(period="today"))
     tomorrow = asyncio.run(assistant_tools.get_upcoming(period="tomorrow"))
 
     assert "Later today" in today
-    assert "Past this morning" not in today and "Tomorrow meeting" not in today
+    assert "Past this morning" in today
+    assert "All-day event" in today and "All day" in today
+    assert "Overnight event" in today and "continued into today" in today
+    assert "Tomorrow meeting" not in today
     assert "Tomorrow meeting" in tomorrow
     assert "Later today" not in tomorrow and "Day after tomorrow" not in tomorrow
+
+
+def test_calendar_day_overlap_keeps_started_and_all_day_events(store):
+    zone = ZoneInfo("America/Los_Angeles")
+    day = datetime(2026, 10, 8, tzinfo=zone)
+    day_start = day.timestamp()
+    day_end = (day + timedelta(days=1)).timestamp()
+    yesterday_start = (day - timedelta(days=1)).replace(hour=23).timestamp()
+    yesterday_end = day_start + 3600
+    today_started = datetime(2026, 10, 8, 9, 30, tzinfo=zone).timestamp()
+    today_ended = datetime(2026, 10, 8, 10, 30, tzinfo=zone).timestamp()
+    zero_duration = datetime(2026, 10, 8, 11, 0, tzinfo=zone).timestamp()
+    day_end_event = day_end + 3600
+
+    def event(source_id, when_ts, end_ts, *, all_day=False):
+        return {"source_id": source_id, "kind": "event", "title": source_id,
+                "when_ts": when_ts, "end_ts": end_ts, "all_day": all_day}
+
+    store.sync_source("calendar", [
+        event("overnight", yesterday_start, yesterday_end),
+        event("all-day", day_start, day_end, all_day=True),
+        event("started-today", today_started, today_ended),
+        event("zero-duration", zero_duration, zero_duration),
+        event("unknown-end-yesterday", yesterday_start, None),
+        event("ended-at-midnight", yesterday_start, day_start),
+        event("starts-tomorrow", day_end, day_end_event),
+    ])
+
+    results = store.calendar_events_overlapping(day_start, day_end)
+
+    assert [row["title"] for row in results] == [
+        "overnight", "all-day", "started-today", "zero-duration"]
+
+
+def test_daily_schedule_labels_overnight_and_multiday_start_dates(store, monkeypatch):
+    now = datetime(2026, 10, 8, 10).timestamp()
+    today = datetime.fromtimestamp(now).date()
+    day_start, day_end = assistant_tools._local_day_bounds(now)
+    overnight_start = datetime.combine(today - timedelta(days=1), datetime.min.time()) \
+        .replace(hour=23).timestamp()
+    overnight_end = datetime.combine(today, datetime.min.time()).replace(hour=1).timestamp()
+    multiday_start = datetime.combine(today - timedelta(days=2), datetime.min.time()) \
+        .replace(hour=22).timestamp()
+    multiday_end = now + 3600
+    started_today = now - 1800
+
+    def event(source_id, title, when_ts, end_ts, *, all_day=False, kind="event"):
+        return {"source_id": source_id, "kind": kind, "title": title,
+                "when_ts": when_ts, "end_ts": end_ts, "all_day": all_day}
+
+    store.sync_source("calendar", [
+        event("all-day", "All-day event", day_start, day_end, all_day=True),
+        event("started-today", "Started today", started_today, now + 1800,
+              kind="meeting"),
+        event("overnight", "Overnight event", overnight_start, overnight_end,
+              kind="meeting"),
+        event("multi-day", "Multi-day event", multiday_start, multiday_end,
+              kind="meeting"),
+    ])
+    monkeypatch.setattr(brief, "assistant_store", store)
+    monkeypatch.setattr(
+        "service.assistant.sync_status.source_status",
+        lambda source: {"id": source, "label": source.title(), "state": "ready"})
+
+    section = brief._schedule_section(now)
+
+    rows = {title: next(line for line in section.splitlines() if title in line)
+            for title in ("All-day event", "Started today", "Overnight event",
+                          "Multi-day event")}
+    assert "All day" in rows["All-day event"]
+    assert "earlier today" in rows["Started today"]
+    for title, start in (("Overnight event", overnight_start),
+                         ("Multi-day event", multiday_start)):
+        expected_start = datetime.fromtimestamp(start).strftime("%a %-I:%M %p")
+        assert f"Started {expected_start}" in rows[title]
+        assert "continued into today" in rows[title]
+        assert "earlier today" not in rows[title]
+
+
+def test_daily_context_and_agenda_preserve_today_count_and_titles(store, monkeypatch):
+    now = datetime(2026, 10, 8, 10).timestamp()
+    day_start, day_end = assistant_tools._local_day_bounds(now)
+    store.sync_source("calendar", [
+        {"source_id": "all-day", "kind": "event", "title": "All-day event",
+         "when_ts": day_start, "end_ts": day_end, "all_day": True},
+        {"source_id": "started", "kind": "meeting", "title": "Started meeting",
+         "when_ts": now - 1800, "end_ts": now + 1800, "all_day": False},
+    ])
+    monkeypatch.setattr(brief, "assistant_store", store)
+    monkeypatch.setattr(
+        "service.assistant.sync_status.source_status",
+        lambda source: {"id": source, "label": source.title(), "state": "ready"})
+
+    block = brief._calendar_block(now)
+    agenda = brief._agenda(now)
+
+    assert "ON THE CALENDAR TODAY (2 item(s))" in block
+    assert "All-day event" in block and "Started meeting" in block
+    assert len(agenda["events"]) == 2
+    assert {item["title"] for item in agenda["events"]} == {
+        "All-day event", "Started meeting"}
 
 
 def test_month_range_keeps_future_month_items_and_separates_sources(monkeypatch):
