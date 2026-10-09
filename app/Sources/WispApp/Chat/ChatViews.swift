@@ -421,6 +421,9 @@ struct ChatThread: View {
     /// Whether the reader is at the bottom of the thread. The thread follows a growing
     /// answer only while this is true, so scrolling up to read is never pulled back down.
     @State private var followsBottom = true
+    /// Until this time a settling scroll is our own (the animated jump to the bottom),
+    /// so the reader has not moved away and following must not be switched off.
+    @State private var ownScrollUntil = Date.distantPast
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -436,10 +439,11 @@ struct ChatThread: View {
                 .padding(.horizontal, 24).padding(.top, 26).padding(.bottom, 12)
                 .frame(maxWidth: .infinity)
             }
-            .modifier(ChatScrollBehavior(followsBottom: $followsBottom))
+            .modifier(ChatScrollBehavior(followsBottom: $followsBottom, ownScrollUntil: ownScrollUntil))
             .onChange(of: conversation.messages.count) { _, _ in
                 // A new exchange (the reader sent something, or a chat just loaded) shows the bottom.
                 followsBottom = true
+                ownScrollUntil = Date().addingTimeInterval(0.6)
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("bottom", anchor: .bottom) }
             }
             .onChange(of: conversation.messages.last?.text) { _, _ in follow(proxy) }
@@ -461,6 +465,7 @@ struct ChatThread: View {
 /// On macOS 14 the thread keeps the system's bottom anchoring and follows always.
 private struct ChatScrollBehavior: ViewModifier {
     @Binding var followsBottom: Bool
+    let ownScrollUntil: Date
 
     func body(content: Content) -> some View {
         if #available(macOS 15.0, *) {
@@ -471,7 +476,9 @@ private struct ChatScrollBehavior: ViewModifier {
                     case .tracking, .interacting, .decelerating:
                         followsBottom = false      // the reader is scrolling: stop following
                     case .idle:
-                        let g = context.geometry   // settled: follow again only if back at the bottom
+                        // Settled after our own jump to the bottom: keep following.
+                        if Date() < ownScrollUntil { followsBottom = true; break }
+                        let g = context.geometry   // otherwise follow again only if back at the bottom
                         followsBottom = g.visibleRect.maxY >= g.contentSize.height - 48
                     default:
                         break                      // our own animated scroll
