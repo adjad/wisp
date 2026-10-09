@@ -14,9 +14,35 @@ final class ScriptedBackend: ChatBackend {
     var runs: [(prompt: String, session: String)] = []
     var fullAccessValue = false
     var loadDelayMs: UInt64 = 0
+    var holdNextHistoryLoad = false
+    private var heldHistoryRelease: CheckedContinuation<Void, Never>?
+    private var historyEntryWaiter: CheckedContinuation<Void, Never>?
+
+    func waitForHeldHistoryLoad() async {
+        if heldHistoryRelease != nil { return }
+        await withCheckedContinuation { historyEntryWaiter = $0 }
+    }
+
+    func releaseHeldHistoryLoad() {
+        guard let release = heldHistoryRelease else {
+            preconditionFailure("Expected a held history load")
+        }
+        heldHistoryRelease = nil
+        release.resume()
+    }
 
     func listChats() async -> [ChatSummary]? { chats }
     func loadChat(id: String) async -> [ChatMessage]? {
+        if holdNextHistoryLoad {
+            holdNextHistoryLoad = false
+            await withCheckedContinuation { release in
+                precondition(heldHistoryRelease == nil, "Only one held history load")
+                heldHistoryRelease = release
+                let entered = historyEntryWaiter
+                historyEntryWaiter = nil
+                entered?.resume()
+            }
+        }
         if loadDelayMs > 0 { try? await Task.sleep(nanoseconds: loadDelayMs * 1_000_000) }
         return history[id]
     }
@@ -221,13 +247,14 @@ struct ChatStoreChecks {
             check(alpha.loaded && alpha.messages.count == 2 && store.selected === alpha, "opening a chat loads its history")
             // Sending into a chat that is still loading its history is ignored, and the history is not overwritten.
             backend.history["b"] = [ChatMessage(role: .user, text: "Lease?"), ChatMessage(role: .assistant, text: "Sixty days.")]
-            backend.loadDelayMs = 200
+            backend.holdNextHistoryLoad = true
             let beta = store.conversations.first { $0.sessionId == "b" }!
             store.select(beta)
-            await settle(40)
+            await backend.waitForHeldHistoryLoad()
             check(beta.loading, "history is loading")
             store.send("too early")
             check(beta.messages.isEmpty && !beta.busy, "sending while loading is ignored")
+            backend.releaseHeldHistoryLoad()
             await settle(300)
             check(beta.loaded && beta.messages.count == 2, "history arrives intact")
             backend.loadDelayMs = 0
