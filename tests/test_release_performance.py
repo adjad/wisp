@@ -484,15 +484,195 @@ def test_new_refusals_block_even_when_total_failures_match():
     assert decision["verdict"] == "BLOCK" and {"new_refusal", "candidate_correctness_failure"} <= codes
 
 
-def test_baseline_failures_make_the_cohort_inconclusive_not_a_candidate_block():
-    samples = world()
+def baseline_world(*, n_cand=30, n_base=30, base_fail=(), scenario="greeting_warm", cand_ms=1000.0, base_ms=1000.0,
+                   failed_ms=99_999.0, refusal=False, reasons=None, unverifiable=None):
+    """Both sides measured, with the named baseline repetitions of one scenario failing. A failed sample keeps a
+    wildly different latency so that any leak of it into a percentile changes the answer."""
+    samples = []
+    for sid in REQUIRED:
+        for rep in range(1, n_cand + 1):
+            samples.append(make_sample("candidate", sid, "measured", rep, metrics_for(sid, cand_ms)))
+        for rep in range(1, n_base + 1):
+            if sid == scenario and rep in base_fail:
+                sample = make_sample(
+                    "baseline", sid, "measured", rep, metrics_for(sid, failed_ms), correct=False, refusal=refusal,
+                    reasons=reasons if reasons is not None else (["refused"] if refusal else ["empty_answer"]),
+                    unverifiable=unverifiable, outcome="refused" if refusal else None)
+                sample["grade"]["reasons"] = list(reasons if reasons is not None else sample["grade"]["reasons"])
+                samples.append(sample)
+            else:
+                samples.append(make_sample("baseline", sid, "measured", rep, metrics_for(sid, base_ms)))
+    return samples
+
+
+def decide_for(samples, lifecycle=None, baseline=APPROVED):
+    return rp.decide(rp.summarize(samples, BUNDLE), BUNDLE, baseline, lifecycle)
+
+
+def reason_codes(decision):
+    return [r["code"] for r in decision["reasons"]]
+
+
+def test_baseline_failures_no_longer_decide_the_verdict_when_enough_correct_baseline_samples_remain():
+    """The v1.1.5-style baseline: some samples are wrong or refused. With >= 20 correct ones left on every metric
+    the comparison is still valid, and the failures are recorded, never hidden."""
+    decision = decide_for(baseline_world(base_fail={3, 9, 14}))
+    assert decision["verdict"] == "PASS" and decision["reasons"] == []
+    note = [r for r in decision["recorded"] if r["code"] == "baseline_correctness_failure"]
+    assert len(note) == 1 and note[0]["scenario"] == "greeting_warm" and "3 of 30" in note[0]["detail"]
+    assert "empty_answer" in note[0]["detail"]
+    samples = decision["comparison"]["greeting_warm"]["baseline_samples"]
+    assert samples == {"measured": 30, "correct": 27, "failed": 3, "refused": 0, "unverifiable": 0,
+                       "unverifiable_only": 0, "failure_reasons": {"empty_answer": 3}}
+    row = decision["comparison"]["greeting_warm"]["required_metrics"]["total_completion_s"]
+    assert row["n_baseline"] == 27 and row["n_candidate"] == 30
+    assert row["p95"]["baseline_ms"] == 1000.0                     # the failed samples' 99,999 ms never entered a percentile
+
+
+def test_refused_baseline_samples_are_recorded_with_their_count_and_are_not_a_candidate_problem():
+    decision = decide_for(baseline_world(base_fail={1, 2}, refusal=True))
+    assert decision["verdict"] == "PASS"
+    cell = decision["comparison"]["greeting_warm"]["baseline_samples"]
+    assert cell["refused"] == 2 and cell["failed"] == 2 and cell["failure_reasons"] == {"refused": 2}
+    assert [r["code"] for r in decision["recorded"]] == ["baseline_correctness_failure"]
+
+
+def test_exactly_the_floor_of_correct_baseline_samples_is_enough_and_one_fewer_is_inconclusive():
+    floor = POLICY["min_measured_samples"]
+    assert floor == 20
+    ok = decide_for(baseline_world(n_base=22, base_fail={1, 2}))                  # 20 correct
+    assert ok["verdict"] == "PASS"
+    thin = decide_for(baseline_world(n_base=22, base_fail={1, 2, 3}))             # 19 correct
+    assert thin["verdict"] == "INCONCLUSIVE" and reason_codes(thin) == ["baseline_insufficient_correct_samples"]
+    reason = thin["reasons"][0]
+    assert reason["scenario"] == "greeting_warm" and "n=19" in reason["detail"] and "fewer than 20" in reason["detail"]
+    for metric, row in thin["comparison"]["greeting_warm"]["required_metrics"].items():
+        assert row["n_baseline"] == 19, metric                                     # per metric, as the policy says
+
+
+def test_a_v2_style_failing_baseline_cannot_pass_a_run_that_only_kept_the_old_sample_count():
+    """With 20 measured samples and even one baseline failure the old floor leaves 19 correct: not a verdict."""
+    decision = decide_for(baseline_world(n_cand=20, n_base=20, base_fail={7}))
+    assert decision["verdict"] == "INCONCLUSIVE" and reason_codes(decision) == ["baseline_insufficient_correct_samples"]
+
+
+def test_a_baseline_with_no_correct_samples_is_inconclusive_for_both_the_count_and_the_unknown_metric():
+    decision = decide_for(baseline_world(base_fail=set(range(1, 31))))
+    assert decision["verdict"] == "INCONCLUSIVE"
+    assert set(reason_codes(decision)) == {"baseline_insufficient_correct_samples", "unknown_gating_metric"}
+
+
+def test_baseline_samples_that_could_not_be_checked_stay_inconclusive_unlike_baseline_failures():
+    decision = decide_for(baseline_world(base_fail={5}, reasons=[], unverifiable=["shared_engine_interference"]))
+    assert decision["verdict"] == "INCONCLUSIVE" and reason_codes(decision) == ["baseline_unverifiable_sample"]
+    assert decision["comparison"]["greeting_warm"]["baseline_samples"]["unverifiable_only"] == 1
+
+
+def test_a_refused_baseline_sample_that_is_also_unverifiable_is_a_recorded_failure_not_an_inconclusive_one():
+    """Seen live on v1.1.5: a refused attribution leaves the engine call without a completion record, so the
+    sample is `refused` AND `completion_status_incomplete`. It is the old release's failure, not a measurement defect."""
+    decision = decide_for(baseline_world(base_fail={2, 7}, refusal=True, reasons=["error_event", "refused"],
+                                         unverifiable=["completion_status_incomplete"]))
+    assert decision["verdict"] == "PASS" and decision["reasons"] == []
+    cell = decision["comparison"]["greeting_warm"]["baseline_samples"]
+    assert cell["refused"] == 2 and cell["unverifiable"] == 2 and cell["unverifiable_only"] == 0
+    assert cell["failure_reasons"] == {"error_event": 2, "refused": 2, "unverifiable:completion_status_incomplete": 2}
+
+
+def test_a_slower_candidate_still_blocks_against_a_baseline_that_has_failures():
+    decision = decide_for(baseline_world(base_fail={3, 9, 14}, cand_ms=1300.0, base_ms=1000.0))
+    assert decision["verdict"] == "BLOCK" and set(reason_codes(decision)) == {"measured_material_regression"}
+    fast_failures = decide_for(baseline_world(base_fail={3, 9, 14}, cand_ms=1300.0, failed_ms=1.0))
+    assert fast_failures["verdict"] == "BLOCK"                                    # fast failures cannot hide a regression
+    slow_failures = decide_for(baseline_world(base_fail=set(range(1, 11)), cand_ms=1300.0, failed_ms=500_000.0))
+    assert slow_failures["verdict"] == "BLOCK"                                    # slow failures cannot inflate the baseline
+
+
+def test_candidate_failures_and_new_refusals_block_even_when_the_baseline_fails_more():
+    samples = baseline_world(base_fail={1, 2, 3, 4, 5})
     for s in samples:
-        if s["side"] == "baseline" and s["scenario"] == "greeting_warm" and s["rep"] == 3:
+        if s["side"] == "candidate" and s["scenario"] == "greeting_warm" and s["rep"] == 6:
             s.update(outcome="failed")
             s["grade"].update(correct=False, reasons=["empty_answer"])
-    decision = rp.decide(rp.summarize(samples, BUNDLE), BUNDLE, APPROVED)
-    assert decision["verdict"] == "INCONCLUSIVE"
-    assert [r["code"] for r in decision["reasons"]] == ["baseline_correctness_failure"]
+    decision = decide_for(samples)
+    assert decision["verdict"] == "BLOCK" and reason_codes(decision) == ["candidate_correctness_failure"]
+    samples = baseline_world(base_fail={1})
+    for s in samples:
+        if s["side"] == "candidate" and s["scenario"] == "health_status_overhead" and s["rep"] == 2:
+            s.update(outcome="refused")
+            s["grade"].update(correct=False, refusal=True, reasons=["refused"])
+    assert {"new_refusal", "candidate_correctness_failure"} <= set(reason_codes(decide_for(samples)))
+
+
+def test_baseline_lifecycle_rows_refused_effects_are_recorded_but_state_changes_and_mutations_stay_inconclusive():
+    clean = {"records": 3, "blocked_effects": 0, "blocked_targets": [], "engine_state_changes": 0,
+             "engine_mutating_calls": 0}
+    samples = baseline_world()
+    refused = {**clean, "blocked_effects": 2, "blocked_targets": ["exec:omlx-cli"]}
+    decision = decide_for(samples, {"candidate": clean, "baseline": refused})
+    assert decision["verdict"] == "PASS" and decision["reasons"] == []
+    assert [(r["code"]) for r in decision["recorded"]] == ["baseline_blocked_effect"]
+    assert "exec:omlx-cli" in decision["recorded"][0]["detail"]
+    for field in ("engine_state_changes", "engine_mutating_calls"):
+        bad = decide_for(samples, {"candidate": clean, "baseline": {**refused, field: 1}})
+        assert bad["verdict"] == "INCONCLUSIVE" and reason_codes(bad) == ["baseline_lifecycle_effect"], field
+        assert [r["code"] for r in bad["recorded"]] == ["baseline_blocked_effect"]
+        alone = decide_for(samples, {"candidate": clean, "baseline": {**clean, field: 1}})
+        assert alone["verdict"] == "INCONCLUSIVE" and reason_codes(alone) == ["baseline_lifecycle_effect"], field
+
+
+def test_the_candidate_side_of_the_lifecycle_is_unchanged_any_refused_effect_state_change_or_mutation_blocks():
+    clean = {"records": 3, "blocked_effects": 0, "blocked_targets": [], "engine_state_changes": 0,
+             "engine_mutating_calls": 0}
+    samples = baseline_world()
+    for field in ("blocked_effects", "engine_state_changes", "engine_mutating_calls"):
+        decision = decide_for(samples, {"candidate": {**clean, field: 1}, "baseline": clean})
+        assert decision["verdict"] == "BLOCK" and reason_codes(decision) == ["lifecycle_blocked_effect"], field
+    both = decide_for(samples, {"candidate": {**clean, "blocked_effects": 1}, "baseline": {**clean, "blocked_effects": 1}})
+    assert both["verdict"] == "BLOCK"                                              # a refused baseline effect never excuses the candidate
+
+
+def test_every_other_outcome_row_is_unchanged():
+    samples = baseline_world()
+    assert decide_for(samples)["verdict"] == "PASS"
+    missing = decide_for(samples, baseline={"approved": False, "problem": "no approved baseline"})
+    assert missing["verdict"] == "INCONCLUSIVE" and reason_codes(missing) == ["missing_or_unapproved_baseline"]
+    unknown = baseline_world()
+    for s in unknown:
+        if s["side"] == "candidate" and s["scenario"] == "greeting_warm" and s["rep"] == 2:
+            s["metrics_ns"]["first_model_delta_s"] = UNKNOWN
+    assert reason_codes(decide_for(unknown)) == ["unknown_gating_metric"] * 2
+    unverifiable = baseline_world()
+    for s in unverifiable:
+        if s["side"] == "candidate" and s["scenario"] == "deterministic_read" and s["rep"] == 4:
+            s["grade"].update(correct=False, reasons=[], unverifiable=["model_calls"])
+    assert reason_codes(decide_for(unverifiable)) == ["unverifiable_expectation"]
+
+
+def test_the_policy_is_a_new_version_with_a_new_hash_and_the_changed_rows_are_what_the_bundle_declares():
+    assert POLICY["version"] == "release_policy_v3" and CORPUS["version"] == "release_v3"
+    assert BUNDLE["policy_sha256"] != "729b14ccdef74d3885177a8fe3fdd24fdeb89d670947a5c65f8f68cbbc25eb07"   # v2
+    assert BUNDLE["corpus_sha256"] != "517541e018e9df8ae6986eacdb58aa5c8c56c71e76169227dbd8338ca1a8ebcf"   # v2
+    out = POLICY["outcomes"]
+    assert out["baseline_correctness_failure"] == "RECORDED_ONLY" and out["baseline_blocked_effect"] == "RECORDED_ONLY"
+    assert out["baseline_insufficient_correct_samples"] == "INCONCLUSIVE" and out["baseline_lifecycle_effect"] == "INCONCLUSIVE"
+    assert out["candidate_correctness_failure"] == out["new_refusal"] == out["measured_material_regression"] == "BLOCK"
+    assert out["lifecycle_blocked_effect"] == "BLOCK" and POLICY["min_measured_samples"] == 20
+    assert POLICY["regression"] == {"relative_increase": "0.20", "absolute_increase_ms": 250, "rule": "both_exceed"}
+    assert POLICY["advisory"]["recommended_measured_samples"] == 30
+
+
+@pytest.mark.parametrize("edit,needle", [
+    (lambda b: b["policy"]["outcomes"].__setitem__("baseline_correctness_failure", "INCONCLUSIVE"), "baseline_correctness_failure"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("baseline_blocked_effect", "BLOCK"), "baseline_blocked_effect"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("baseline_insufficient_correct_samples", "RECORDED_ONLY"),
+     "baseline_insufficient_correct_samples"),
+    (lambda b: b["policy"]["outcomes"].__setitem__("baseline_unverifiable_sample", "RECORDED_ONLY"), "baseline_unverifiable_sample"),
+    (lambda b: b["policy"]["outcomes"].pop("baseline_insufficient_correct_samples"), "baseline_insufficient_correct_samples")])
+def test_the_relaxed_baseline_rows_cannot_be_relaxed_further_by_editing_the_bundle(edit, needle):
+    bundle = copy.deepcopy(BUNDLE)
+    edit(bundle)
+    assert any(needle in problem for problem in rp.validate_bundle(bundle))
 
 
 def test_unverifiable_expectations_and_unknown_metrics_are_inconclusive_never_pass():
@@ -1538,12 +1718,52 @@ def test_leaf_renderers_match_the_repositorys_own_wire_formats():
     from tests.fixtures import wire
     rows = [{"ts": 100, "context": 'Group "Crew"', "who": "Alex", "text": "hi\nthere | ok"},
             {"ts": 300, "context": "Alex", "who": "Me", "text": "later"}]
-    assert rp.messages_lines(rows) == wire.messages_lines(rows)
+    assert rp.messages_lines(rows) == wire.messages_lines(rows)                  # the legacy shape, kept for the pin below
     for args in (("Crew", ["A", "B"], True), (None, ["A", "B", "C", "D", "E"], True), (None, ["Al"], False),
                  ("Al", ["Al"], False), (None, [], False)):
         assert rp.thread_context(*args) == wire.thread_context(*args)
     notes = [{"ts": 5, "title": "T", "folder": "F", "body": "B"}, {"ts": 6, "title": "U", "body": "C"}]
     assert rp.notes_raw(notes) == wire.notes_raw(notes)
+
+
+def v2_rows():
+    return [{"ts": 1_800_000_000 - 2400, "conversation": "chat:1", "unread": True, "context": 'Group "Studio crew"',
+             "who": "Alex Rivera", "text": "Workshop moved\nto Room 204 | please confirm"},
+            {"ts": 1_800_000_000 - 900, "conversation": "chat:2", "unread": False, "context": "Alex Rivera",
+             "who": "Me", "text": "On my way"}]
+
+
+def test_v2_message_lines_are_exactly_the_native_readers_shape_and_the_product_parses_their_read_state(monkeypatch):
+    """MessagesReader.swift: `V2 | epochSecs | U/R | conversationId | context | who: oneLine`, newest first."""
+    from service.tools import imessage_tools as im
+    lines = rp.messages_lines_v2(v2_rows())
+    assert lines.splitlines() == [
+        'V2 | 1799999100.0 | R | chat:2 | Alex Rivera | Me: On my way',
+        'V2 | 1799997600.0 | U | chat:1 | Group "Studio crew" | Alex Rivera: Workshop moved to Room 204 | please confirm']
+    monkeypatch.setattr(im, "_lines", lines)
+    parsed = im._parse_records()
+    assert [(r[1], r[2], r[4]) for r in parsed] == [("chat:2", "Alex Rivera", False), ("chat:1", 'Group "Studio crew"', True)]
+    assert parsed[1][3] == "Alex Rivera: Workshop moved to Room 204 | please confirm"
+
+
+def test_the_legacy_line_shape_carries_no_read_state_which_is_why_corpus_v2_could_not_work(monkeypatch):
+    from service.tools import imessage_tools as im
+    monkeypatch.setattr(im, "_lines", rp.messages_lines(
+        [{"ts": r["ts"], "context": r["context"], "who": r["who"], "text": r["text"]} for r in v2_rows()]))
+    assert [r[4] for r in im._parse_records()] == [None, None]
+    monkeypatch.setattr(im, "_lines", rp.messages_lines_v2(v2_rows()))
+    assert all(r[4] is not None for r in im._parse_records())
+
+
+def test_the_corpus_messages_arrive_with_read_state_so_the_summary_does_not_skip_them(monkeypatch):
+    """summary_message_rows(require_read_state=True) drops every row whose read state is None: corpus v2's failure."""
+    from service.tools import imessage_tools as im
+    body = rp.render_leaf_payloads(CORPUS, 1_800_000_000.0)[1]["body"]
+    monkeypatch.setattr(im, "_lines", body["lines"])
+    records = im._parse_records()
+    assert len(records) == 3 and all(r[4] is True for r in records)               # all incoming, all unread
+    assert len({r[1] for r in records}) == 2                                      # two chats: the group and the direct one
+    assert any("budget" in r[3] for r in records) and any("Room 204" in r[3] for r in records)
 
 
 def test_rendered_payloads_use_the_real_sync_endpoints_with_fictional_data():
@@ -1554,11 +1774,28 @@ def test_rendered_payloads_use_the_real_sync_endpoints_with_fictional_data():
     body = payloads[1]["body"]
     lines = body["lines"].splitlines()
     assert body["diagnostics"] == {"available": True, "reason": "", "count": len(lines)} and len(lines) == 3
-    stamps = [int(l.split(" | ")[0]) for l in lines]
+    stamps = [float(l.split(" | ")[1]) for l in lines]
     assert stamps == sorted(stamps, reverse=True)                      # newest first, as the native reader sends
-    assert all(len(l.split(" | ", 2)) == 3 for l in lines)
+    assert all(l.startswith("V2 | ") and len(l.split(" | ", 5)) == 6 and l.split(" | ")[2] in ("U", "R") for l in lines)
     assert "Orchard Lane workshop" in payloads[2]["body"]["raw"] and "\x02" in payloads[2]["body"]["raw"]
     assert rp.render_leaf_payloads(CORPUS, 1_800_000_000.0) == payloads        # deterministic for a given clock
+
+
+def test_outgoing_messages_are_never_unread_even_if_the_corpus_says_so():
+    corpus = copy.deepcopy(CORPUS)
+    corpus["leaf_data"]["messages"].append({"thread": "Alex Rivera", "kind": "direct", "participants": ["Alex Rivera"],
+                                            "age_s": 100, "from": "me", "unread": True, "text": "ok"})
+    line = rp.render_leaf_payloads(corpus, 1_800_000_000.0)[1]["body"]["lines"].splitlines()[0]
+    assert line == "V2 | 1799999900.0 | R | chat:2 | Alex Rivera | Me: ok"
+
+
+def test_bounded_reasoning_prompts_forbid_tools_and_the_no_tools_check_is_untouched():
+    spec = SPECS["bounded_reasoning"]
+    for prompt in spec["variants"]:
+        lowered = prompt.lower()
+        assert "tool" in lowered and ("without" in lowered or "no tool" in lowered or "not use" in lowered), prompt
+    assert spec["expect"]["tool_calls"] == "none" and spec["expect"]["model_calls"] == {"min": 1}
+    assert "calculate" not in json.dumps(CORPUS["effect_tools"]) and "calculate" not in json.dumps(spec["expect"])
 
 
 def test_role_config_points_every_text_role_at_the_resident_model_only():
@@ -3119,12 +3356,115 @@ def test_f05_an_engine_state_change_during_startup_blocks_even_if_it_was_not_blo
     assert run_check(evd, ctx)[0] == rp.EXIT_BLOCK
 
 
-def test_f05_a_baseline_side_effect_makes_the_comparison_inconclusive_not_a_candidate_block(tmp_path, ctx):
+def test_f05_a_refused_baseline_effect_is_recorded_in_the_receipt_but_does_not_decide_the_verdict(tmp_path, ctx):
     startup = {"baseline": [{"kind": "effect_blocked", "what": "fs_write", "target": "/Users/x/Documents/new.txt"}]}
     evd = pass_evidence(tmp_path, ctx, "baseline_effect", startup_events=startup)
-    assert evd.receipt["verdict"] == "INCONCLUSIVE"
+    assert evd.receipt["verdict"] == "PASS" and evd.code == rp.EXIT_PASS
+    assert evd.receipt["lifecycle"]["baseline"]["blocked_effects"] == 1
+    assert [r["code"] for r in evd.receipt["recorded"]] == ["baseline_blocked_effect"]
+    assert "fs_write:/Users/x/Documents/new.txt" in evd.receipt["recorded"][0]["detail"]
     code, result = run_check(evd, ctx)
-    assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "baseline_lifecycle_effect" for r in result["reasons"])
+    assert code == rp.EXIT_PASS and result["verdict"] == "PASS" and result["refusals"] == []
+    assert result["recorded"] == evd.receipt["recorded"]
+
+
+def test_f05_a_baseline_engine_state_change_or_mutating_call_makes_the_comparison_inconclusive(tmp_path, ctx):
+    for name, record in (("load", {"kind": "engine_http", "method": "POST", "path": "/v1/models/Other-Model/load", "status": 200}),
+                         ("mutate", {"kind": "engine_http", "method": "PUT", "path": "/admin/api/settings", "status": 200})):
+        evd = pass_evidence(tmp_path, ctx, "baseline_" + name, startup_events={"baseline": [record]})
+        assert evd.receipt["verdict"] == "INCONCLUSIVE" and evd.code == rp.EXIT_INCONCLUSIVE, name
+        code, result = run_check(evd, ctx)
+        assert code == rp.EXIT_INCONCLUSIVE and any(r["code"] == "baseline_lifecycle_effect" for r in result["reasons"]), name
+
+
+def failing_baseline(scenario, reps, kind="empty"):
+    """Behavior plan: the baseline's measured repetitions `reps` fail (the first two calls are warmups)."""
+    return {("baseline", scenario): lambda n, reps=frozenset(r + 2 for r in reps), kind=kind: kind if n in reps else "ok"}
+
+
+def test_a_run_with_thirty_samples_and_a_failing_baseline_passes_and_check_rederives_the_schedule(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "thirty", samples=30,
+                        behaviors=failing_baseline("greeting_warm", range(1, 6)))          # 25 of 30 baseline samples correct
+    receipt = evd.receipt
+    assert receipt["protocol"]["measured"] == 30 and receipt["protocol"]["partial"] is False
+    assert receipt["verdict"] == "PASS" and evd.code == rp.EXIT_PASS
+    cell = receipt["summary"]["greeting_warm"]["baseline"]
+    assert (cell["measured"], cell["correct"], cell["failed"]) == (30, 25, 5)
+    assert cell["failure_reasons"] and all(count == 5 for count in cell["failure_reasons"].values())
+    assert receipt["summary"]["greeting_warm"]["candidate"]["correct"] == 30
+    assert receipt["comparison"]["greeting_warm"]["baseline_samples"]["failed"] == 5
+    assert [r["code"] for r in receipt["recorded"]] == ["baseline_correctness_failure"]
+    code, result = run_check(evd, ctx)
+    assert (code, result["verdict"], result["refusals"]) == (rp.EXIT_PASS, "PASS", [])
+    assert result["recorded"] == receipt["recorded"]
+    # the checker rebuilds the schedule for the RECORDED sample count, so a receipt claiming another count is refused
+    tampered = clone(evd, tmp_path, "thirty_tampered")
+    doc = json.loads(Path(tampered.receipt_path).read_text())
+    doc["protocol"]["measured"] = 20
+    Path(tampered.receipt_path).write_text(json.dumps(doc, indent=2, sort_keys=True))
+    assert "schedule_digest_mismatch" in refusal_codes(run_check(tampered, ctx)[1])
+
+
+def test_a_baseline_with_too_few_correct_samples_is_inconclusive_end_to_end_and_in_the_checker(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "thin", samples=30, behaviors=failing_baseline("greeting_warm", range(1, 12)))
+    assert evd.receipt["verdict"] == "INCONCLUSIVE" and evd.code == rp.EXIT_INCONCLUSIVE
+    assert [r["code"] for r in evd.receipt["reasons"]] == ["baseline_insufficient_correct_samples"]
+    code, result = run_check(evd, ctx)
+    assert code == rp.EXIT_INCONCLUSIVE and result["authorizes_release"] is False
+    assert result["reasons"][0]["code"] == "baseline_insufficient_correct_samples" and "n=19" in result["reasons"][0]["detail"]
+
+
+def test_a_refused_baseline_is_recorded_and_a_candidate_failure_still_blocks_end_to_end(tmp_path, ctx):
+    refused = pass_evidence(tmp_path, ctx, "refused_base", samples=30,
+                            behaviors=failing_baseline("health_status_overhead", (2, 7), kind="refusal"))
+    assert refused.receipt["verdict"] == "PASS"
+    assert refused.receipt["summary"]["health_status_overhead"]["baseline"]["refused"] == 2
+    assert run_check(refused, ctx)[0] == rp.EXIT_PASS
+    behaviors = {**failing_baseline("greeting_warm", (1, 2, 3)),
+                 ("candidate", "bounded_reasoning"): lambda n: "refusal" if n == 5 else "ok"}
+    broken = pass_evidence(tmp_path, ctx, "cand_fail", samples=30, behaviors=behaviors)
+    assert broken.receipt["verdict"] == "BLOCK" and broken.code == rp.EXIT_BLOCK
+    assert {"candidate_correctness_failure", "new_refusal"} <= {r["code"] for r in broken.receipt["reasons"]}
+    code, result = run_check(broken, ctx)
+    assert code == rp.EXIT_BLOCK and result["authorizes_release"] is False
+
+
+def test_a_slower_candidate_blocks_end_to_end_against_a_failing_baseline(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "slow_cand", samples=30, cand_mult=3.0, cand_add_ms=400.0,
+                        behaviors=failing_baseline("greeting_warm", range(1, 4)))
+    assert evd.receipt["verdict"] == "BLOCK"
+    assert any(r["code"] == "measured_material_regression" for r in evd.receipt["reasons"])
+
+
+def test_a_receipt_recorded_list_that_differs_from_the_evidence_is_refused(tmp_path, ctx):
+    evd = pass_evidence(tmp_path, ctx, "recorded_forged", samples=30, behaviors=failing_baseline("greeting_warm", (1, 2)))
+    doc = json.loads(Path(evd.receipt_path).read_text())
+    doc["recorded"] = []
+    Path(evd.receipt_path).write_text(json.dumps(doc, indent=2, sort_keys=True))
+    assert "receipt_recorded_mismatch" in refusal_codes(run_check(evd, ctx)[1])
+
+
+def test_check_refuses_a_receipt_made_under_a_different_policy_hash(good, ctx, tmp_path):
+    other = copy.deepcopy(json.loads(Path(rp.DEFAULT_BUNDLE).read_text()))
+    other["policy"]["max_receipt_age_s"] += 1                                       # any policy value: a new policy hash
+    path = tmp_path / "other_policy_bundle.json"
+    path.write_text(json.dumps(other))
+    changed = rp.load_bundle(path)
+    assert changed["policy_sha256"] != BUNDLE["policy_sha256"] and changed["corpus_sha256"] == BUNDLE["corpus_sha256"]
+    code, result = rp.check_receipt(check_opts(good, ctx, bundle=path, expect_policy_sha256=changed["policy_sha256"]))
+    assert code == rp.EXIT_REFUSED and "policy_hash_mismatch" in refusal_codes(result)
+    code, result = rp.check_receipt(check_opts(good, ctx, bundle=path))              # the receipt's own (v3) hash expected
+    assert code == rp.EXIT_REFUSED and "policy_hash_mismatch" in refusal_codes(result)
+    assert good.receipt["policy"] == {"version": "release_policy_v3", "sha256": BUNDLE["policy_sha256"]}
+
+
+def test_the_baseline_approval_is_bound_to_the_policy_hash_so_a_v2_approval_cannot_carry_over(tmp_path, ctx):
+    first = run_evidence(tmp_path, ctx, "approval_first")
+    stale_key = {**rp.cohort_key(first.receipt), "policy_sha256": "729b14ccdef74d3885177a8fe3fdd24fdeb89d670947a5c65f8f68cbbc25eb07"}
+    approval = write_approval(tmp_path, first.receipt, cohort_key=stale_key)
+    second = run_evidence(tmp_path, ctx, "approval_second", approved=approval)
+    assert second.receipt["verdict"] == "INCONCLUSIVE"
+    assert any(r["code"] == "missing_or_unapproved_baseline" and "new cohort" in r["detail"] for r in second.receipt["reasons"])
 
 
 def test_f05_the_idle_backends_engine_traffic_during_a_sample_contaminates_it(tmp_path, ctx):
@@ -3610,8 +3950,8 @@ def test_f02_denied_engine_requests_never_reach_an_owned_receiver_and_permitted_
     clean = rp.lifecycle_summary({"candidate": [{"kind": "header"}], "baseline": []})
     assert rp.decide(summary, BUNDLE, APPROVED, clean)["verdict"] == "PASS"
     baseline_side = rp.decide(summary, BUNDLE, APPROVED, {"candidate": clean["candidate"], "baseline": life["candidate"]})
-    assert baseline_side["verdict"] == "INCONCLUSIVE"
-    assert any(r["code"] == "baseline_lifecycle_effect" for r in baseline_side["reasons"])
+    assert baseline_side["verdict"] == "PASS"                                       # twelve REFUSED effects: recorded, not a verdict
+    assert [r["code"] for r in baseline_side["recorded"]] == ["baseline_blocked_effect"]
 
 
 def test_f10_a_child_that_does_not_lead_its_own_group_is_signalled_alone_never_its_group(tmp_path):
