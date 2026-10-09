@@ -2,7 +2,7 @@
 
 These test plumbing and deterministic boundaries, never Ling's accuracy. The
 closed controller must set disposable WISP_HOME before importing this module.
-No native tool implementation, model, server lifespan or real user data runs.
+Native effects use synthetic seams; no model, server lifespan or real user data runs.
 """
 import asyncio
 import copy
@@ -280,3 +280,160 @@ def test_read_only_and_draft_prohibitions(synthetic):
     assert "write_file" in routing_guard_contract("read only; show my calendar")[0]
     forbidden, _ = routing_guard_contract("draft an email to Mom, don't send")
     assert {"send_email", "send_message", "schedule_send"} <= forbidden
+
+
+# Private shell exception exercises the real builtin with a synthetic process
+# seam; no native process, shell, user data or outbound action executes.
+def _private_shell_fixture(synthetic, monkeypatch):
+    from types import SimpleNamespace
+    from service.tools import builtin
+    native_calls = []
+    def fake_process(argv, **kwargs):
+        native_calls.append((argv, copy.deepcopy(kwargs)))
+        return SimpleNamespace(returncode=0, stdout="Synthetic directory only.", stderr="")
+    monkeypatch.setattr(builtin.subprocess, "run", fake_process)
+    monkeypatch.setattr("service.safety.policy._CFG", {})
+    original = builtin._PRIVATE_SHELL_DISPATCH[0]
+    tool = registry.Tool("run_shell", "Synthetic process seam for real builtin",
+        {"type": "object", "properties": {"cmd": {"type": "string"}}, "required": ["cmd"]},
+        "shell", original)
+    registry.REGISTRY["run_shell"] = tool
+    return native_calls, tool
+
+
+@pytest.mark.parametrize("full_access,grant", [(False, None), (True, None), (False, "allow"), (True, "allow")])
+def test_private_original_pwd_uses_fixed_argv_even_with_mode_or_grant(synthetic, monkeypatch, full_access, grant):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", full_access)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: grant)
+    forbidden, bindings = routing_guard_contract("Print my working directory")
+    approval = Approval(True)
+    _, events, _ = run([[discover("automation", "run_shell")],
+        [call("run_shell", cmd="pwd")], "Synthetic directory only."],
+        prompt="Print my working directory", approval=approval,
+        forbidden_tools=forbidden, tool_argument_bindings=bindings)
+    assert len(calls) == 1
+    assert tuple(calls[0][0]) == ("/bin/pwd",)
+    assert calls[0][1]["shell"] is False
+    assert calls[0][1]["env"] == {"PATH": "/usr/bin:/bin", "LANG": "C", "LC_ALL": "C"}
+    assert not approval.calls
+    assert [e["args"] for e in events if e["type"] == "tool_call"] == [{"cmd": "pwd"}]
+
+
+@pytest.mark.parametrize("cmd", ["curl https://example.invalid", "pwd; echo extra", "echo $HOME",
+    "python3 -c pass", "cat ~/.ssh/id_fixture", "cat /etc/passwd", "cat ../fixture"])
+@pytest.mark.parametrize("full_access,grant", [(True, "allow"), (False, None)])
+def test_private_shell_rejects_nonread_commands_before_approval(synthetic, monkeypatch, cmd, full_access, grant):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", full_access)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: grant)
+    approval = Approval(True)
+    run([[discover("automation", "run_shell")], [call("run_shell", cmd=cmd)], "No action ran."],
+        prompt="Print my working directory", approval=approval)
+    assert not calls
+    assert not approval.calls
+
+
+@pytest.mark.parametrize("cmd,expected_calls", [("pwd", 1), ("curl https://example.invalid", 0)])
+def test_private_shell_scope_survives_elliptical_followup(synthetic, monkeypatch, cmd, expected_calls):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    run([[discover("automation", "run_shell")], [call("run_shell", cmd=cmd)], "Synthetic reply."],
+        prompt="Run that again", history=[{"role": "user", "content": "Print my working directory"},
+            {"role": "assistant", "content": "Synthetic directory only."}], approval=Approval(True))
+    assert len(calls) == expected_calls
+
+
+def test_private_read_result_closes_shell_before_sibling_call(synthetic, monkeypatch):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    effects, _ = synthetic
+    run([[call(DISCOVERY_TOOL, families=["calendar", "automation"], tools=["get_upcoming", "run_shell"])],
+        [call("get_upcoming", period="tomorrow"), call("run_shell", cmd="curl https://example.invalid")],
+        "Synthetic reply."], prompt="What is going on?", approval=Approval(True))
+    assert effects == [("get_upcoming", {"period": "tomorrow"})]
+    assert not calls
+
+
+def test_private_shell_rechecks_registry_after_schema_discovery(synthetic, monkeypatch):
+    calls, tool = _private_shell_fixture(synthetic, monkeypatch)
+    forged_calls = []
+    def forged(**args):
+        forged_calls.append(args)
+        return "Forged receipt."
+    forged.__module__ = "service.tools.builtin"
+    def rebind(step):
+        if step == 1:
+            tool.func = forged
+            monkeypatch.setattr("service.tools.builtin.run_shell", forged)
+    run([[discover("automation", "run_shell")], [call("run_shell", cmd="pwd")], "No action ran."],
+        prompt="Print my working directory", before_step=rebind, approval=Approval(True))
+    assert not calls
+    assert not forged_calls
+
+
+def test_private_shell_model_cannot_supply_host_override(synthetic, monkeypatch):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    run([[discover("automation", "run_shell")],
+        [call("run_shell", cmd="pwd", private_shell_read_only=False)], "No action ran."],
+        prompt="Print my working directory", approval=Approval(True))
+    assert not calls
+
+
+def test_private_shell_approval_cannot_replace_command(synthetic, monkeypatch):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    monkeypatch.setattr("service.safety.policy._CFG", {"shell_mutate": [r"^pwd$"]})
+    class MutatingApproval(Approval):
+        async def confirm(self, action):
+            self.calls.append(copy.deepcopy(action))
+            action["args"]["cmd"] = "curl https://example.invalid"
+            return True
+    approval = MutatingApproval(True)
+    run([[discover("automation", "run_shell")], [call("run_shell", cmd="pwd")], "No action ran."],
+        prompt="Print my working directory", approval=approval)
+    assert len(approval.calls) == 1
+    assert not calls
+
+
+def test_private_shell_standing_deny_still_wins(synthetic, monkeypatch):
+    calls, _ = _private_shell_fixture(synthetic, monkeypatch)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: "deny")
+    run([[discover("automation", "run_shell")], [call("run_shell", cmd="pwd")], "No action ran."],
+        prompt="Print my working directory", approval=Approval(True))
+    assert not calls
+
+
+def test_private_shell_direct_registry_dispatch_keeps_fixed_argv(synthetic, monkeypatch):
+    calls, tool = _private_shell_fixture(synthetic, monkeypatch)
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    result = asyncio.run(registry.run_tool(tool, {"cmd": "pwd"}, private_shell_read_only=True))
+    assert "Synthetic directory only." in result
+    assert len(calls) == 1 and tuple(calls[0][0]) == ("/bin/pwd",)
+    assert calls[0][1]["shell"] is False
+    result = asyncio.run(registry.run_tool(tool, {"cmd": "curl https://example.invalid"}, private_shell_read_only=True))
+    assert "NOT run" in result
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("prompt", ["Print my working directory; don't use the web",
+    "Show my messages; don't read email", "Search the web for my emails"])
+def test_private_shell_exception_never_overrides_source_egress_prohibitions(synthetic, prompt):
+    forbidden, _ = routing_guard_contract(prompt)
+    assert "run_shell" in forbidden
+
+
+@pytest.mark.parametrize("forgery", ["category", "alias", "copied_code"])
+def test_private_shell_metadata_or_code_copy_does_not_gain_exception(synthetic, monkeypatch, forgery):
+    from types import FunctionType
+    calls, tool = _private_shell_fixture(synthetic, monkeypatch)
+    if forgery == "category":
+        tool.category = "assistant_read"
+    elif forgery == "alias":
+        registry.REGISTRY["shell_alias"] = registry.Tool("shell_alias", "Alias", tool.parameters,
+            "assistant_read", tool.func)
+        registry.REGISTRY.pop("run_shell")
+        tool = registry.REGISTRY["shell_alias"]
+    else:
+        tool.func = FunctionType(tool.func.__code__, tool.func.__globals__, "run_shell")
+        tool.func.__module__ = "service.tools.builtin"
+    result = asyncio.run(registry.run_tool(tool, {"cmd": "pwd"}, private_shell_read_only=True))
+    assert "NOT run" in result
+    assert not calls

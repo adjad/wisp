@@ -359,3 +359,142 @@ def test_actual_loop_dry_run_keeps_discovery_but_never_executes_tool(endpoint, m
     assert not endpoint.effects and endpoint.owned[0].closed
     assert any(e["type"] == "tool_call" and e.get("name") == "get_upcoming" for e in events)
     assert endpoint.store._db.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+# Real main/session/effect ownership and original builtin; only subprocess and
+# inference are synthetic. These assertions must reach privacy denial, rather
+# than pass because an effect owner is missing.
+def _private_shell_endpoint(endpoint, monkeypatch, *, full_access=True, grant="allow"):
+    from service.tools import builtin
+    from service.safety import policy
+    io, invocations = [], []
+    original = builtin._PRIVATE_SHELL_DISPATCH[0]
+    def process(argv, **options):
+        io.append((copy.deepcopy(argv), copy.deepcopy(options)))
+        return SimpleNamespace(returncode=0, stdout="Synthetic local directory.", stderr="")
+    monkeypatch.setattr(builtin.subprocess, "run", process)
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access)
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(policy, "_CFG", {})
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: grant)
+    monkeypatch.setattr(loop, "_BLOCKS_CACHE", None)
+    monkeypatch.setattr(loop, "narration_mode", lambda: "off")
+    monkeypatch.setattr(loop, "no_thinking_kwargs", lambda *args, **kwargs: {})
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda **kwargs: "")
+    monkeypatch.setattr("service.skills.skills_context_block", lambda *args: "")
+    registry.REGISTRY["run_shell"] = registry.Tool("run_shell", "Synthetic seam for original shell",
+        {"type": "object", "properties": {"cmd": {"type": "string"}},
+         "required": ["cmd"], "additionalProperties": False}, "shell", original)
+    async def actual_loop(*args, **kwargs):
+        invocations.append(copy.deepcopy({"history_private": kwargs.get("private_shell_history"),
+                                         "messages": args[2],
+                                         "has_owner": callable(kwargs.get("claim_effect"))
+                                                      and callable(kwargs.get("finish_effect"))}))
+        return await loop.run_agent(*args, **kwargs)
+    monkeypatch.setattr(main, "run_agent", actual_loop)
+    return io, invocations
+
+
+def _shell_attempt_script(cmd="curl https://example.invalid"):
+    return [[tool_call("get_tool_schemas", families=["automation"], tools=["run_shell"])],
+            [tool_call("run_shell", cmd=cmd)], "Synthetic end."]
+
+
+def _assert_private_denial(events):
+    attempted = [e for e in events if e.get("type") == "tool_call" and e.get("name") == "run_shell"]
+    assert attempted, "Synthetic model must actually attempt the offered shell"
+    assert attempted[-1]["decision"] == "deny"
+    assert "Private context permits only" in attempted[-1]["reason"]
+
+
+@pytest.mark.parametrize("history_mode", ["retained", "summary", "trimmed"])
+def test_actual_session_private_result_provenance_survives_followup(endpoint, monkeypatch, history_mode):
+    io, invocations = _private_shell_endpoint(endpoint, monkeypatch)
+    endpoint.script = [[tool_call("get_tool_schemas", families=["calendar"], tools=["get_upcoming"])],
+                       [tool_call("get_upcoming", days=1)], "Synthetic private calendar reply."]
+    first = endpoint.request("Help")
+    sid = next(e for e in first if e["type"] == "session")["id"]
+    assert endpoint.effects == [("get_upcoming", {"days": 1})]
+    assert endpoint.store.last_assistant_turn(sid) == "Synthetic private calendar reply."
+    assert endpoint.store.last_assistant_tools(sid) == "get_upcoming"
+    if history_mode == "summary":
+        endpoint.store.set_summary(sid, "Synthetic private calendar summary.", 2)
+    elif history_mode == "trimmed":
+        # Actual history builder drops the older private reply under its budget.
+        endpoint.store.add_turn(sid, "user", "Neutral context " * 40)
+        monkeypatch.setattr(main, "build_messages", lambda sid, **kw: context.build_messages(sid, max_tokens=1))
+    endpoint.script = _shell_attempt_script()
+    events = endpoint.request("Continue", sid, private_shell_history=False)
+    assert invocations[-1]["history_private"] is True
+    assert invocations[-1]["has_owner"] is True
+    if history_mode == "trimmed":
+        assert not any(m.get("content") == "Synthetic private calendar reply." for m in invocations[-1]["messages"])
+    _assert_private_denial(events)
+    assert not io
+    assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
+                   endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))
+
+
+@pytest.mark.parametrize("full_access,grant", [(False, None), (True, "allow")])
+@pytest.mark.parametrize("next_call", ["sibling", "next_step", "next_turn"])
+def test_actual_original_shell_result_latches_before_next_dispatch(endpoint, monkeypatch, full_access, grant, next_call):
+    io, invocations = _private_shell_endpoint(endpoint, monkeypatch, full_access=full_access, grant=grant)
+    discovery = [tool_call("get_tool_schemas", families=["automation"], tools=["run_shell"])]
+    read = tool_call("run_shell", cmd="pwd")
+    unsafe = tool_call("run_shell", cmd="curl https://example.invalid")
+    endpoint.script = [discovery, [read, unsafe], "Synthetic end."] if next_call == "sibling" else [discovery, [read], [unsafe], "Synthetic end."]
+    if next_call == "next_turn":
+        endpoint.script = [discovery, [read], "Synthetic local reply."]
+    events = endpoint.request("Help")
+    assert invocations[0]["history_private"] is False and invocations[0]["has_owner"]
+    assert len(io) == 1
+    if not full_access:
+        assert tuple(io[0][0]) == ("/bin/pwd",) and io[0][1]["shell"] is False
+    if next_call == "next_turn":
+        sid = next(e for e in events if e["type"] == "session")["id"]
+        endpoint.script = _shell_attempt_script()
+        events = endpoint.request("Continue", sid)
+        assert invocations[-1]["history_private"] is True
+    _assert_private_denial(events)
+    assert len(io) == 1
+
+
+@pytest.mark.parametrize("injection", ["identity", "memory", "static_identity_guidance"])
+def test_actual_injected_private_context_restricts_before_generation(endpoint, monkeypatch, injection):
+    io, invocations = _private_shell_endpoint(endpoint, monkeypatch)
+    if injection == "memory":
+        text = "Synthetic saved private fact."
+        monkeypatch.setattr("service.memory.prompt_blocks.memory_block", lambda **kw: text)
+    else:
+        text = "Synthetic personal name and own account." if injection == "identity" else "Static synthetic attribution guidance."
+        monkeypatch.setattr("service.memory.identity.identity_prompt_block", lambda **kw: text)
+    endpoint.script = _shell_attempt_script()
+    events = endpoint.request("Help")
+    assert invocations[0]["history_private"] is False and invocations[0]["has_owner"]
+    assert any(text in str(m.get("content")) for m in endpoint.owned[0].requests[0]["messages"])
+    _assert_private_denial(events)
+    assert not io
+
+
+
+def test_actual_concurrent_summary_added_during_provider_setup_remains_private(endpoint, monkeypatch):
+    io, invocations = _private_shell_endpoint(endpoint, monkeypatch)
+    sid = endpoint.store.create_session()
+    assert endpoint.store.turn_count(sid) == 0
+    own = main.OMLXClient
+    def racing_provider(*, target):
+        # Deterministic seam for another same-session request completing while
+        # provider setup runs after the endpoint's initial empty snapshot.
+        endpoint.store.set_summary(sid, "Synthetic private concurrent summary.", 2)
+        return own(target=target)
+    monkeypatch.setattr(main, "OMLXClient", racing_provider)
+    endpoint.script = _shell_attempt_script()
+    events = endpoint.request("Help", sid, private_shell_history=False)
+    assert invocations[-1]["history_private"] is True
+    assert invocations[-1]["has_owner"]
+    assert any("Synthetic private concurrent summary." in str(m.get("content"))
+               for m in invocations[-1]["messages"])
+    _assert_private_denial(events)
+    assert not io
+    assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
+                   endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))

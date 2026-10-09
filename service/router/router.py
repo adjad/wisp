@@ -6274,7 +6274,13 @@ def routing_guard_contract(text: str) -> tuple[frozenset[str], dict[str, dict]]:
                          if not tool.category.endswith("read"))
     web = _classify_web_request(t)
     if web.opted_out or web.private:
-        forbidden.update({"web_search", "web_fetch", "http_request", "run_shell"})
+        forbidden.update({"web_search", "web_fetch", "http_request"})
+        # Ordinary private local reads retain the builtin shell capability;
+        # the managed executor imposes a host-owned read-only boundary for
+        # private conversation context. Explicit source/egress exclusions win.
+        if (web.opted_out or web.explicit or web.current
+                or re.search(r"\b(?:news|headlines?)\b", t, re.I)):
+            forbidden.add("run_shell")
     if _calendar_is_excluded(t):
         forbidden.update(_CALENDAR_ROUTE_TOOLS)
     if _reminder_is_excluded(t):

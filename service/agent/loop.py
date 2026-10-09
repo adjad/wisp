@@ -1182,6 +1182,9 @@ async def run_agent(
     # stream, no separate return path needed.
     test_mode: bool = False,
     model_led_discovery: bool = False,
+    # Host-only negative provenance, computed before session history is trimmed.
+    # HTTP body/model arguments never set this; False cannot clear other inputs.
+    private_shell_history: bool | None = None,
     claim_effect: Callable[[object, dict], dict] | None = None,
     finish_effect: Callable[[dict, bool], bool] | None = None,
     require_fresh_personal: bool = False,
@@ -1265,7 +1268,37 @@ async def run_agent(
                 else "mixed")}
         await downstream_emit(event)
 
+    # Monotonic negative authority. main supplies actual pre-trimming session
+    # provenance; other callers conservatively retain assistant/tool/system
+    # context. A new invocation in an existing conversation is not a reset.
+    private_shell_read_only = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_shell_context
+        private_shell_read_only = (private_shell_history is not None and private_shell_history is not False
+            or any(
+                not isinstance(m, dict)
+                or m.get("role") in {"assistant", "tool"}
+                or m.get("role") not in {"user", "system"}
+                or (m.get("role") == "system" and private_shell_history is not False)
+                or (m.get("role") == "user" and (
+                    not isinstance(m.get("content"), str)
+                    or classify_shell_context(m["content"]).private))
+                for m in messages))
+
+    def tool_policy(tool, args):
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                from service.safety.policy import Decision
+                return Decision(Tier.DENY, problem)
+        return decide(tool.category, args, tool=tool.name)
+
     async def execute_tool(tool, args):
+        # Recheck after any approval/await or registry mutation, before claims.
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                return f"(error: {problem} The tool was NOT run.)"
         claim = None
         if model_led_discovery:
             from service.router.model_led import effectful_call, has_effect_contract
@@ -1283,7 +1316,10 @@ async def run_agent(
                             "has an uncertain outcome. The action was NOT run again; "
                             "check the earlier result/destination before retrying.)")
         try:
-            result = await run_tool(tool, args)
+            if private_shell_read_only:
+                result = await run_tool(tool, args, private_shell_read_only=True)
+            else:
+                result = await run_tool(tool, args)
         except BaseException:
             if claim is not None:
                 # A failed settlement leaves the persisted running claim in
@@ -1369,6 +1405,12 @@ async def run_agent(
         except Exception:  # noqa: BLE001
             identity_hint = ""
 
+    if model_led_discovery and identity_hint:
+        # Conservatively includes static attribution guidance: the combined
+        # identity builder has no separate provenance result. Never inspect
+        # its prose to decide whether actual personal facts are present.
+        private_shell_read_only = True
+
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
     # it below — so any precedence claim rests on the blocks' own wording, not
@@ -1395,6 +1437,9 @@ async def run_agent(
         return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
+
+    if model_led_discovery and memory_hint:
+        private_shell_read_only = True
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
@@ -1455,9 +1500,15 @@ async def run_agent(
         from service.tools.registry import REGISTRY
 
         def fresh_capability_catalog():
+            shell_blocked = set()
+            if private_shell_read_only:
+                from service.tools.registry import private_shell_target, private_shell_implementation
+                shell_blocked = {t.name for t in REGISTRY.values()
+                                 if private_shell_target(t)
+                                 and not private_shell_implementation(t)}
             return CapabilityCatalog.build(
                 registry_specs(REGISTRY),
-                blocked=frozenset(forbidden_tools) | _skill_boundary_names())
+                blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
 
         discovery = DiscoveryState()
         capability_catalog = fresh_capability_catalog()
@@ -1587,7 +1638,7 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
-        nonlocal fresh_personal_evidence
+        nonlocal fresh_personal_evidence, private_shell_read_only
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         if model_led_discovery and str(result).startswith((
                 "(error: Action was attempted but", "(error: Action did not return a verified")):
@@ -1599,6 +1650,21 @@ async def run_agent(
                 and personal_evidence_matches(fresh_personal_scope or {}, registered, args or {}, contact_receipts, str(result))):
             fresh_personal_evidence = True
         if model_led_discovery and (registered := get_tool(name)):
+            # Known local/private reads restrict every subsequent dispatch,
+            # including siblings from this model response. Shell reads retain
+            # category='shell'; recognize the original host builtin and actual
+            # read phase separately from arbitrary model/tool prose.
+            from service.tools.registry import private_shell_implementation
+            # Any returned original shell output can contain local facts,
+            # including a read-phase receipt or an error/path after a failed
+            # command. Phase/prose is not permission to clear the restriction.
+            shell_read = (private_shell_implementation(registered)
+                          and not planned and not denied)
+            if (registered.category.endswith("read")
+                    and registered.category != "web_read"
+                    or registered.category == "screen" or shell_read
+                    or name in {"recall", "search_memory", "search_conversations"}):
+                private_shell_read_only = True
             from service.router.model_led import needs_effect_owner
             from service.router.model_led import effectful_call
             if effectful_call(registered, args or {}) and outcome.effect == "read":
@@ -1793,7 +1859,7 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
-        _dec = decide(_tool.category, _args, tool=_name)
+        _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
@@ -2644,7 +2710,7 @@ async def run_agent(
             # complete every requested step" — a real-execution failure message
             # for a turn in which, by construction, nothing was ever attempted.
             if test_mode:
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 result = _TEST_MODE_STUB
                 await emit({"type": "tool_call", "id": cid, "name": name, "args": args,
                             "decision": dec.tier.value, "reason": dec.reason,
@@ -2732,7 +2798,7 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 

@@ -1169,6 +1169,14 @@ async def agent(body: dict[str, Any]):
             sid = store.create_session()
         sess = store.get_session(sid)
 
+    # Capture before persist_user_turn/history rendering/budget trimming.
+    # All prior conversation is conservatively unproven, even if its current
+    # rendered window omits a private result or its tool digest. No schema or
+    # mutable model owner flag supplies this authority; a new empty session
+    # starts clean. Summaries/index remain restrictive when turns are trimmed.
+    private_shell_history = bool(not test_mode and sess and (
+        store.turn_count(sid) or sess.get("summary") or sess.get("summarized_idx")))
+
     queue: asyncio.Queue = asyncio.Queue()
     req_id = uuid.uuid4().hex
     from service import diagnostics
@@ -1781,6 +1789,14 @@ async def agent(body: dict[str, Any]):
                              and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
+            # A concurrent same-session turn may have added/ summarized
+            # context while provider/owner setup awaited. OR the actual store
+            # provenance again immediately before synchronous history rendering.
+            # Never clear the earlier snapshot, including an old summarized index.
+            current_shell_session = store.get_session(sid) if not test_mode else None
+            turn_private_shell_history = private_shell_history or bool(current_shell_session and (
+                store.turn_count(sid) or current_shell_session.get("summary")
+                or current_shell_session.get("summarized_idx")))
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
                 test_mode=test_mode,
@@ -1907,6 +1923,7 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
+                                        private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),
                                         claim_effect=claim_model_action if model_led_turn else None,
