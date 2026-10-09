@@ -614,6 +614,36 @@ def test_conversation_match_tolerates_name_spelling() -> None:
     check("an unrelated name still reports no match", match is None and "No conversation" in (error or ""))
 
 
+
+def test_conversation_match_requires_resolved_identity_after_fuzzy_selection() -> None:
+    print("\nexact, substring and fuzzy matches require resolved conversation identities")
+    from service.tools.imessage_tools import _match_conversation
+    refresh = "Messages are refreshing conversation identities. Please try again in a moment."
+    unresolved = [(1.0, None, "Trisha Jain", "Trisha Jain: hi", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(unresolved, query)
+        check(f"unresolved {query!r} requests an identity refresh",
+              match is None and error == refresh, f"-> {match} {error}")
+
+    mixed = unresolved + [(2.0, "chat1", "Trisha Jain", "Trisha Jain: hello", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(mixed, query)
+        check(f"mixed unresolved/resolved {query!r} cannot select a conversation",
+              match is None and error == refresh, f"-> {match} {error}")
+
+    resolved = [(1.0, "chat1", "Trisha Jain", "Trisha Jain: hi", False)]
+    match, error = _match_conversation(resolved, "trishe")
+    check("a unique resolved fuzzy match retains its exact identity",
+          match == ("chat1", "Trisha Jain") and error is None, f"-> {match} {error}")
+
+    ambiguous = resolved + [(2.0, "chat2", "Trisha Jain", "Trisha Jain: hello", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(ambiguous, query)
+        check(f"multiple resolved {query!r} require disambiguation",
+              match is None and "More than one conversation matched" in (error or ""),
+              f"-> {match} {error}")
+
+
 if __name__ == "__main__":
     test_every_tool_has_a_scoped_home()
     test_device_apps_and_web_are_scoped()
@@ -632,5 +662,6 @@ if __name__ == "__main__":
     test_topic_lookup_forces_get_upcoming_before_a_compose_guesses()
     test_person_said_routes_to_message_and_mail_reads()
     test_conversation_match_tolerates_name_spelling()
+    test_conversation_match_requires_resolved_identity_after_fuzzy_selection()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
