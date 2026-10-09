@@ -89,6 +89,18 @@ final class ChatStore: ObservableObject {
         }
     }
 
+    /// Load the list, and keep trying while the service is not answering. The Chat
+    /// window opens as Wisp launches, before its backend is up, so the first load
+    /// usually fails; this retries until the service is reachable or the attempts
+    /// run out (about a minute by default). A later `refresh()` still works.
+    func refreshWhenReady(maxAttempts: Int = 40, retryDelay: Duration = .milliseconds(1500)) async {
+        for _ in 0..<maxAttempts {
+            await refresh()
+            if reachable || Task.isCancelled { return }
+            try? await Task.sleep(for: retryDelay)
+        }
+    }
+
     func refresh() async {
         loadingList = true
         defer { loadingList = false }
