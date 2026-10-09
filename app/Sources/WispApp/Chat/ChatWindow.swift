@@ -8,6 +8,7 @@ import SwiftUI
 @MainActor
 final class ChatWindowController {
     private var window: NSWindow?
+    private var closeObserver: NSObjectProtocol?
     let store: ChatStore
     private let launchers: ChatLaunchers
 
@@ -45,7 +46,15 @@ final class ChatWindowController {
             win.isReleasedWhenClosed = false
             win.setFrameAutosaveName("WispChatWindow")
             window = win
+            // Wisp is a menu-bar app. The chat window is the one place that wants
+            // a Dock icon, so the app takes one only while this window is open.
+            closeObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: win, queue: .main
+            ) { _ in
+                MainActor.assumeIsolated { NSApp.setActivationPolicy(.accessory) }
+            }
         }
+        NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
     }

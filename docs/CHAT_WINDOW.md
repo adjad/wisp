@@ -52,7 +52,7 @@ notch's monochrome look, so the notch is unchanged.
   shown because the service does not report them per answer.
 - Today, Research, Memory and Settings are launchers into the existing
   windows, not embedded pages.
-- The app stays menu-bar only (no Dock icon) while the window is open.
+- The app shows a Dock icon only while the chat window is open. Closing the window returns Wisp to the menu bar alone.
 
 ## Testing
 
