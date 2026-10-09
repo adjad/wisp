@@ -46,6 +46,19 @@ _CANCEL = re.compile(r"\b(?:cancel(?:l?ed)?|can'?t|cannot|won'?t|no\s+longer|pos
 _TENTATIVE = re.compile(r"\?|\b(?:maybe|might|possibly|perhaps|tentative|how\s+about|what\s+about|"
                         r"should\s+we|could\s+we|can\s+we|wanna|want\s+to|lmk|let\s+me\s+know\s+if|"
                         r"if\s+you(?:'re|\s+are|\s+can|\s+want|\s+could))\b", re.I)
+# Zone abbreviations and offsets a sender might write after a clock. Deliberately a list: the
+# extractor reports every following word as a "timezone", so matching the shape would decline
+# "at 11:30 lmk". Omits "AT"/"HT", which are ordinary words.
+_ZONE_ABBREVIATION = re.compile(
+    r"^(?:[ECMP][SD]T|[ECMP]T|AK[SD]T|H[SD]T|GMT|UTC|BST|CE?S?T|EE?S?T|WE?S?T|MSK|IST|JST|KST|SGT|HKT|"
+    r"PKT|SAST|AE[SD]T|AC[SD]T|AWST|NZ[SD]T|Pacific(?:\s+time)?|Eastern(?:\s+time)?|"
+    r"Central(?:\s+time)?|Mountain(?:\s+time)?)?(?:\s*[+-]\d{1,2}(?::?\d{2})?)?$", re.I)
+
+# A zone named in words right after a clock ("3pm Eastern"), which the extractor ignores. A
+# capitalised word after it ("Central Park") makes it a place, not a zone.
+_ZONE_WORD = re.compile(
+    r"\d\s*(?i:am|pm)?\s*(?i:eastern|central|mountain|pacific|atlantic|hawaii|alaska)"
+    r"\b(?!\s+[A-Z])")
 
 
 @dataclass(frozen=True)
@@ -72,6 +85,48 @@ def _far(start: datetime, arrival: datetime) -> bool:
     """A bare clock with no day ("at 6") means "soon". Read as 12+ hours away it is a
     guess (said at 11pm, did they mean tomorrow evening or tomorrow morning?)."""
     return start - arrival > timedelta(hours=12)
+
+
+def _source_zone(fact, tz: str) -> ZoneInfo | None | bool:
+    """The zone the sender stated, if it differs from the user's.
+
+    None: no zone was stated (or it is the user's own), so the conversational defaults apply.
+    A ZoneInfo: an unambiguous named zone ("UTC", "America/New_York").
+    False: a zone was stated that is not safe to read ("EST", "PT", "+02:00", "3pm Eastern");
+    the caller declines rather than guessing, because the guess moves the reminder by hours."""
+    named = fact.start.timezone
+    if named and named != tz:
+        if named in ("UTC", "Z") or "/" in named:
+            try:
+                return ZoneInfo("UTC" if named == "Z" else named)
+            except (KeyError, ValueError, OSError):
+                return False
+        # The extractor files ANY word after a clock ("lmk", "ok", "gym") under timezone, so only
+        # a real abbreviation or offset counts; every other word is just a word.
+        if _ZONE_ABBREVIATION.match(named):
+            return False
+    if _ZONE_WORD.search(fact.context_span.quote):
+        return False                          # the extractor dropped a zone word it did not parse
+    return None
+
+
+def _in_source_zone(f, source: ZoneInfo, zone: ZoneInfo, quote: str, inferred: list,
+                    tentative: bool) -> Resolved:
+    s = f.start
+    ambiguous_clock = (1 <= s.hour <= 12 and not _EXPLICIT_MERIDIEM.search(f.span.quote)
+                       and not _TWENTY_FOUR_HOUR.search(f.span.quote))
+    if not (s.year and s.month and s.day) or ambiguous_clock:
+        # A date or am/pm we would have to guess, in a zone that is not ours: refuse.
+        return Resolved(None, None, False, quote, tentative=tentative, blocked="other_timezone")
+    wall = datetime(s.year, s.month, s.day, s.hour, s.minute or 0)
+    first, second = wall.replace(tzinfo=source, fold=0), wall.replace(tzinfo=source, fold=1)
+    if first.utcoffset() != second.utcoffset():
+        return Resolved(None, None, False, quote, tentative=tentative, blocked="other_timezone")
+    if first.astimezone(ZoneInfo("UTC")).astimezone(source).replace(tzinfo=None) != wall:
+        return Resolved(None, None, False, quote, tentative=tentative, blocked="other_timezone")
+    start = first.astimezone(zone)
+    return Resolved(start, start.date(), True, quote, tuple(inferred + ["timezone:converted"]),
+                    tentative)
 
 
 def _weekday_date(arrival: datetime, quote: str) -> date | None:
@@ -117,8 +172,11 @@ def resolve(text: str, arrival: datetime, tz: str, source_id: str = "x") -> Reso
 
     tentative = any(_TENTATIVE.search(f.context_span.quote) for f in facts)
     clocks = [f for f in facts if f.start.hour is not None]
-    if len({(f.start.hour, f.start.minute) for f in clocks}) > 1:
+    if len({(f.start.hour, f.start.minute, f.start.timezone) for f in clocks}) > 1:
         return Resolved(None, None, False, quote, tentative=tentative, blocked="conflicting_times")
+    source = _source_zone(clocks[0], tz) if clocks else None
+    if source is False:                       # a zone was named that cannot be read safely
+        return Resolved(None, None, False, quote, tentative=tentative, blocked="other_timezone")
 
     first = min(f.span.start for f in facts)
     clause = text[max((text.rfind(c, 0, first) for c in ".!?\n"), default=-1) + 1:first]
@@ -155,6 +213,8 @@ def resolve(text: str, arrival: datetime, tz: str, source_id: str = "x") -> Reso
 
     f = clocks[0]
     hour, minute = f.start.hour, f.start.minute or 0
+    if source is not None:                    # the sender named a zone: keep that instant
+        return _in_source_zone(f, source, zone, quote, inferred, tentative)
     ambiguous = (1 <= hour <= 12 and not _EXPLICIT_MERIDIEM.search(f.span.quote)
                  and not _TWENTY_FOUR_HOUR.search(f.span.quote))
     if ambiguous:
