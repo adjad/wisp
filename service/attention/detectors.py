@@ -32,7 +32,7 @@ from service.attention.corpus import Item, Snapshot
 from service.attention.prediction import Prediction
 from service.attention.exclusions import screen
 from service.attention.matching import find_on_file
-from service.attention.resolve import Resolved, resolve
+from service.attention.resolve import _CANCEL, Resolved, resolve
 
 CODE = "uncaptured_commitment"
 SOON_HOURS = 48.0
@@ -50,6 +50,9 @@ _AFFIRM = re.compile(
     r"perfect|bet|down|deal|i'?ll\s+be\s+there|see\s+you(?:\s+there)?|can\s+do|count\s+me\s+in|"
     r"will\s+do)\b", re.I)
 PROPOSAL_WINDOW_S = 6 * 3600
+# The plan was taken back in words `resolve` does not treat as a cancellation.
+_WITHDRAW = re.compile(r"\b(?:nvm|never\s*mind|scratch\s+that|forget\s+(?:it|that)|call\s+it\s+off|"
+                       r"off\s+the\s+table|skip\s+(?:it|that|lunch|dinner|the))\b", re.I)
 _DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unable|rain\s*check|"
                       r"pass|busy)\b", re.I)
 
@@ -105,12 +108,21 @@ class UncapturedCommitment:
         if item.source != "messages" or len(words) > 12 or not _AFFIRM.search(item.text) \
                 or _DECLINE.search(item.text):
             return None
+        # Newest first, and the FIRST message that says anything about the plan governs: a later
+        # cancellation, withdrawal, replacement or unreadable time ends the search. Skipping it
+        # would revive an older proposal the user had already taken back.
         for prev in reversed(self.snapshot.thread_before(item, 8)):
-            if prev.direction != "outgoing" or item.ts - prev.ts > PROPOSAL_WINDOW_S:
+            if item.ts - prev.ts > PROPOSAL_WINDOW_S:
+                break
+            if _CANCEL.search(prev.text) or _WITHDRAW.search(prev.text):
+                return None                       # from either side: the plan is off
+            if prev.direction != "outgoing":
                 continue
             got = resolve(prev.text, datetime.fromtimestamp(prev.ts, timezone.utc), self.tz, prev.id)
+            if got.blocked in ("no_time_stated", "no_usable_time"):
+                continue                          # ordinary chatter, not about the plan
             if got.blocked or not got.has_clock or got.start is None or got.start <= arrival:
-                continue
+                return None
             return Resolved(got.start, got.day, True, got.quote, got.inferred + ("time:from_thread",),
                             tentative=False, at=got.at), prev
         return None
