@@ -1,0 +1,43 @@
+{
+  "arguments_generator_sha256": "98891f67995a6a95bfd0633455c6d5ea159f3ea99baa3ac79260d2c9620caa8d",
+  "changed_existing_files": [
+    "shards/arguments/generate.py"
+  ],
+  "compiled_code_sha256": "19ccea0e0a001795a4a4074c430080edda67c6ecd05a922e9b78726028f22b7e",
+  "compiled_marshaled_code_equal": true,
+  "evidence_sha256": {
+    "hashes-after.json": "0de97f35abb98b1e3b0ede5bd849161093eb868ab0e175a5be4e37dd89d0c204",
+    "hashes-before.json": "1db763f9978bfb9484c639905a7628b95967d686e36a5e73ffedbd8d898e04c7",
+    "mechanical-check.json": "0ae609f8c13902432a73f4747c59d44f624c772083f01ebacec68d5705f0ed98",
+    "verify_binding.py": "e3bd46039fed30ce419944a982d7bb87be0f73692a4a39e4c564af04d66e795e"
+  },
+  "formal_release_auditor_credit": false,
+  "initial_snapshot1_BLOCK_preserved": true,
+  "integration_base": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "no_snapshot_candidate_writes": true,
+  "pending_tokenizer_trainer_and_model_quality_limits_retained": true,
+  "prior_snapshot2_PASS_WITH_NOTES_preserved": true,
+  "quiescent": true,
+  "removed_bytes": 2,
+  "removed_trailing_space_lines": [
+    156,
+    160
+  ],
+  "report_sha256": "bd8f86c11d0b738729ee21be504c7fdf33d10447e0a377e0b39ac2f742683f6e",
+  "required_repairs": [],
+  "scope": "Mechanical binding update only; previous snapshot2 semantic/QA/runtime verdict retained for unchanged inputs",
+  "semantic_qa_runtime_gates_repeated": false,
+  "snapshot2_file_count": 40,
+  "snapshot2_manifest_sha256": "4fe27d9ec60788a234f857437af244c3c6ed2c935a5080049a126a7e39c2e391",
+  "snapshot3_file_count": 43,
+  "snapshot3_manifest_sha256": "402e67d52f0547551d4f1b2f246ca80c296cc98dc592f71c1f6c58efa8b76383",
+  "source_ast_with_locations_equal": true,
+  "source_base": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "start_end_hashes_unchanged": true,
+  "unchanged_prior_files": 39,
+  "verdict": "PASS_WITH_NOTES",
+  "zip_bytes": 1316226,
+  "zip_members": 15,
+  "zip_receipt_and_member_hashes_verified": true,
+  "zip_sha256": "3c2a45238f8cc4669b440e24fa9a18c49990d284eaa005ed238da5db65cb3ded"
+}

@@ -1,0 +1,10 @@
+{
+  "initial_review_verdict": "BLOCK",
+  "initial_reviewer_quiescent": true,
+  "initial_report_sha256": "f211888fdab70fccbe13dc6e2385de3241eb324db39a58b2c40527d8b5f9cf0a",
+  "initial_snapshot_sha256": "3f7c3f7b84cf8c23fcaeb38322e72f41d460f76924ddb665258f43d1ec115ef0",
+  "findings_conform_to_ack": true,
+  "parent_accepts_P1_scope": true,
+  "parent_shard_writes_allowed": false,
+  "repairs_pending": true
+}
