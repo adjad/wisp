@@ -1,0 +1,80 @@
+{
+  "recordedAtUTC": "2026-10-06T21:50:49.017934+00:00",
+  "status": "DATASET_SNAPSHOT2_ADVISORY_PASS_WITH_NOTES_SAME_AUTHOR_TWO_SPACE_REPAIR_PENDING",
+  "sourceParent": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+  "reviewerThread": "01a1131d-b79a-7743-a654-85376036a1d4",
+  "reviewerTurn": "01a11328-a3ab-7403-b1fd-467680d8060a",
+  "cursor": "c88f67f5-3b70-46f3-9910-e88f1d59caab:6",
+  "finalMessage": "msg_0daa9790cad0afc9016ac56babeb5087d096a58f04835e2bfa",
+  "directFinalAndExplicitQuiescenceVerified": true,
+  "verdict": "PASS_WITH_NOTES",
+  "snapshotManifestSHA256": "4fe27d9ec60788a234f857437af244c3c6ed2c935a5080049a126a7e39c2e391",
+  "reviewEvidence": {
+    "receipt.json": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/receipt.json",
+      "sha256": "bebd0b94508a9c0be6e8e957ae3421549fcfd6e65a8aeff62cd87ece780ad6ca",
+      "bytes": 9579
+    },
+    "REVIEW.md": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/REVIEW.md",
+      "sha256": "3df9bd06a4527ee977b1625c2a5a2bf7403fb6f3f73cde4c2fceac8e537302db",
+      "bytes": 7055
+    },
+    "hashes-before.json": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/hashes-before.json",
+      "sha256": "1edb372b65b4f900d1db0068e4373c41140ea65ad008f96cf29743ebbfbbc5f6",
+      "bytes": 4013
+    },
+    "hashes-after.json": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/hashes-after.json",
+      "sha256": "040bd712f66e2279f33fb3e565474177ee37516fd39427491fe3527f5bdb4079",
+      "bytes": 8125
+    },
+    "reproduction-receipt.json": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/reproduction-receipt.json",
+      "sha256": "867b2e8c0f02a4d91b4faa52bab697db3078a2f742ff77bc926f95721363517d",
+      "bytes": 1044
+    },
+    "runtime-receipt.json": {
+      "path": "/private/tmp/ling-dataset-v2-review/v2/runtime-receipt.json",
+      "sha256": "5853e064a3a06fbf0281ce5f705cf0fbacbcd003c7ea61d11b4630c1bf0e9924",
+      "bytes": 802
+    }
+  },
+  "uploadArchive": {
+    "path": "/Users/adijain/.codex/worktrees/ling-dataset-v2/MOE_Project/training/ling-dataset-v2-20261006/ling-train-dev-v2-20261006.zip",
+    "sha256": "3c2a45238f8cc4669b440e24fa9a18c49990d284eaa005ed238da5db65cb3ded",
+    "bytes": 1316226
+  },
+  "countsReviewerReported": {
+    "staticRows": 4400,
+    "historyReplays": 880,
+    "changedAnswers": 98,
+    "negativeControls": 19,
+    "positiveControls": 2,
+    "reproducedFiles": 6
+  },
+  "rootSemanticAuditOrDatasetRowRead": false,
+  "formalReleaseCredit": false,
+  "tokenizerTrainerModelQualityQualified": false,
+  "boundedRepair": {
+    "owner": "/root/dataset_v2_arguments",
+    "thread": "01a11311-5fbd-76d1-9438-258bc449fc6b",
+    "solePath": "training/ling-dataset-v2-20261006/shards/arguments/generate.py",
+    "beforeIdentity": {
+      "path": "/Users/adijain/.codex/worktrees/ling-dataset-v2/MOE_Project/training/ling-dataset-v2-20261006/shards/arguments/generate.py",
+      "sha256": "1b55bdfcd56d6bb04dd2a742b726630d9f51e1210e51bc532201a9f5e0922bdc",
+      "bytes": 37330
+    },
+    "allowedChange": "Remove exactly two line-end spaces at lines156 and160 only. No data, gold, prompts, fixtures, provenance, QA, contracts or ZIP change.",
+    "beforeWrites": "Same author exact acceptance and parent explicit release recorded. Existing retained exclusive reservation; parent cannot edit shard. No additional root ACK for conforming reuse.",
+    "afterChange": "Author explicit quiescence; parent new source hash/snapshot binding; same fourth reviewer verifies exactly whitespace-only diff and unaffected dataset/ZIP/QA hashes. Preserve old snapshots and verdict binding; no automatic exact-new-source pass."
+  },
+  "remaining": [
+    "Two-space source repair and bounded independent verification",
+    "Exact commit/nonforce push/draft PR and repository handoff",
+    "User-run tokenizer and actual trainer loss-mask preflight before training"
+  ],
+  "ownershipTransfer": false,
+  "rootDispatchOrExecution": false
+}
