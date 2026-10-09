@@ -209,6 +209,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_actions/test_action_executor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
+    # Proactive-attention Slice 0: synthetic fixtures and temp directories only; no
+    # subprocess, network, model, or access to the real caches or assistant.db.
+    "tests/test_attention_slice0.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
@@ -231,6 +234,7 @@ ADDITIONAL_FULL_TESTS = {
     # Characterization of the desktop oMLX attestation walker and _listener call shape
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
+    "tests/test_runtime_attestation_t1t3.py",
     # Differential of the libproc executable-path lookup against the old lsof one, on disposable
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
@@ -249,6 +253,8 @@ ADDITIONAL_FULL_TESTS = {
     # Environment-variable echo only; no server, socket or process.
     "tests/test_identity_launch_nonce.py",
     "tests/test_backend_ownership_no_disk_receipt.py",
+    # A temporary session database only; lists saved chats for the Chat window. No model, socket or real data.
+    "tests/test_chat_list.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
@@ -333,6 +339,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/chat-logic-contract": "native/chat-logic-compile",
+    "native/chat-store-contract": "native/chat-store-compile",
 }
 
 
@@ -604,6 +612,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    chat_logic = str(build_dir / "chat-logic")
+    chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
@@ -678,6 +688,27 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
             ],
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
+        (
+            "native/chat-logic-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "tests/ChatChecks.swift", "-o", chat_logic,
+            ],
+        ),
+        ("native/chat-logic-contract", [chat_logic]),
+        (
+            "native/chat-store-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "app/Sources/WispApp/Chat/ChatStore.swift",
+                "tests/ChatStoreChecks.swift", "-o", chat_store,
+            ],
+        ),
+        ("native/chat-store-contract", [chat_store]),
         (
             "native/port-guard-compile",
             [

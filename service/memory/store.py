@@ -179,6 +179,37 @@ class SessionStore:
                 "ORDER BY last_used DESC LIMIT ?", (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    def list_chats(self, limit: int = 100) -> list[dict]:
+        """Sessions with at least one user turn, newest first, for a chat sidebar.
+
+        title is the first user turn (whitespace-collapsed, at most 60 chars
+        including a trailing ellipsis when cut); preview is the latest
+        assistant turn (collapsed, at most 120 chars, empty when none). Turn
+        content is read from `content`, which add_turn has already credential-
+        scrubbed, never from display_content.
+        """
+        def tidy(text, cap: int, ellipsis: bool) -> str:
+            text = " ".join(str(text or "").split())
+            if len(text) <= cap:
+                return text
+            return text[:cap - 1].rstrip() + "\u2026" if ellipsis else text[:cap]
+
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT s.id AS id, s.created_at AS created_at, s.last_used AS last_used, "
+                "(SELECT t.content FROM turns t WHERE t.session_id=s.id AND t.role='user' "
+                " ORDER BY t.idx ASC LIMIT 1) AS title, "
+                "(SELECT t.content FROM turns t WHERE t.session_id=s.id AND t.role='assistant' "
+                " ORDER BY t.idx DESC LIMIT 1) AS preview, "
+                "(SELECT COUNT(*) FROM turns t WHERE t.session_id=s.id) AS turn_count "
+                "FROM sessions s WHERE EXISTS "
+                "(SELECT 1 FROM turns t WHERE t.session_id=s.id AND t.role='user') "
+                "ORDER BY s.last_used DESC LIMIT ?", (int(limit),)).fetchall()
+        return [{"id": r["id"], "title": tidy(r["title"], 60, True),
+                 "preview": tidy(r["preview"], 120, False),
+                 "created_at": r["created_at"], "last_used": r["last_used"],
+                 "turn_count": int(r["turn_count"])} for r in rows]
+
     def delete_session(self, sid: str) -> None:
         with self._lock:
             workflow_ids = [row["id"] for row in self._db.execute(

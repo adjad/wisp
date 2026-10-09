@@ -2103,6 +2103,11 @@ async def list_sessions() -> dict[str, Any]:
     return {"sessions": store.list_sessions()}
 
 
+@app.get("/chats")
+async def list_chats(limit: int = 100) -> dict[str, Any]:
+    return {"chats": store.list_chats(max(1, min(limit, 200)))}
+
+
 @app.get("/sessions/{sid}")
 async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)

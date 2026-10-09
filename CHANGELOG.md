@@ -4,6 +4,15 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added the Wisp Chat window: a real, resizable window for long conversations, opened from the menu-bar menu ("Open Wisp Chat") or from the notch panel's new "Open in Wisp Chat" button, which continues the current conversation there. A sidebar lists every saved chat by day with search and delete; the thread shows which tools Wisp used above each answer; confirmation cards and message drafts work as they do in the notch, in the thread; and a details panel (⌘I) shows the route, model, speed, and tools for any answer. It follows the Mac's light or dark appearance. Today, Research, Memory, Search, and Settings open from its sidebar. See docs/CHAT_WINDOW.md.
+- Added `GET /chats`, a conversation list with a title (the first prompt) and a one-line preview for each saved chat.
+
+### Fixed
+
+- Fixed the sandboxed Today and Diagnostic Report contract gates under Xcode 27, where SwiftUI's `@State` is a compiler macro whose plugin server cannot start inside Simulation QA's sandbox. Those scripts now ask `swiftc` not to add a second, nested sandbox when it supports the flag; the outer sandbox is unchanged.
+
 ## [1.2.0] - 2026-10-06
 
 ### Added

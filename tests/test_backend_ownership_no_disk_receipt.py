@@ -118,8 +118,11 @@ def test_startup_conflict_is_retried_only_with_no_receipt_and_never_acted_on():
         assert forbidden not in body, forbidden
     app = _code(_read("AppDelegate.swift"))
     assert re.search(r"settledStartupVerdict\(\s*check:\s*\{\s*PortGuard\.check\(\s*port:\s*8765\s*,\s*receipt:\s*\.none\s*\)", app)
-    # Quit waits for the child it spawned before the app terminates.
-    assert re.search(r"await backend\.stopAndWait\(\)\s*await MainActor\.run \{ NSApp\.terminate", app)
+    # Quit waits for the child it spawned to stop before the app is released to exit.
+    assert re.search(r"await backend\.stopAndWait\(\)\s*await MainActor\.run \{ self\.finishShutdown\(\) \}", app)
+    finish = re.search(r"private func finishShutdown\(\) \{.*?\n    \}\n", app, re.DOTALL)
+    assert finish, "finishShutdown is missing"
+    assert "backend.stop()" in finish.group(0) and "exitNow()" in finish.group(0), finish.group(0)
 
 
 def test_backend_trust_uses_only_the_in_memory_ownership_policy():

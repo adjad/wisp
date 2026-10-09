@@ -24,6 +24,13 @@ MainActor.assumeIsolated {
     }
     app.run()
 }
+#elseif WISP_CHAT_QA
+
+// Renders the Chat window against a scripted fixture and writes screenshots.
+// Installs no AppDelegate and never contacts the Wisp service.
+MainActor.assumeIsolated {
+    ChatQADriver.run()
+}
 #else
 
 // Program starts on the main thread; enter the main actor to build the app.
