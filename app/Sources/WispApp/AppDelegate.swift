@@ -73,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSRunningApplication.runningApplications(withBundleIdentifier: Bundle.main.bundleIdentifier ?? "")
                 .first { $0.processIdentifier != selfPID }?
                 .activate(options: [])
-            NSApp.terminate(nil)
+            terminateWithoutShutdown()
             return
         }
         // Port 8000 belongs to oMLX and is deliberately NOT policed here: it used to be
@@ -734,12 +734,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
-    /// Quit Wisp after the engine and its helpers have stopped. Every quit
-    /// request goes through here (see applicationShouldTerminate), so the Dock,
-    /// the application menu, and the menu bar all shut down the same way.
+    /// Quit Wisp after the engine and its helpers have stopped. Every quit request
+    /// goes through here (see applicationShouldTerminate), so the Dock, the
+    /// application menu and the menu bar all shut down the same way.
     @objc private func quit() {
-        guard !quitStarted else { return }
-        quitStarted = true
+        // A second Quit while the first is still stopping the engine means "now".
+        if shutdownStarted { finishShutdown(); return }
+        beginShutdown()
+    }
+
+    private var shutdownStarted = false
+    private var shutdownFinished = false
+    /// True when the system (logout, restart) asked to quit and is waiting for a reply.
+    private var systemAwaitingReply = false
+
+    private func beginShutdown() {
+        shutdownStarted = true
+        // Quitting must never hang: exit after a bound even if a stop step stalls.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+            MainActor.assumeIsolated { self.finishShutdown() }
+        }
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
             // Let any just-fired Settings change (role/model) finish
@@ -750,23 +764,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
             await backend.stopAndWait()
-            await MainActor.run {
-                terminationReady = true
-                NSApp.terminate(nil)
-            }
+            await MainActor.run { self.finishShutdown() }
         }
     }
 
-    // A quit request from the Dock, the application menu or the system does not
-    // pass through quit(). Cancel it, run the shutdown in quit(), and let that
-    // terminate the app once the backend has stopped.
-    private var quitStarted = false
-    private var terminationReady = false
+    private func finishShutdown() {
+        guard !shutdownFinished else { return }
+        shutdownFinished = true
+        if systemAwaitingReply {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        } else {
+            NSApp.terminate(nil)
+        }
+    }
 
+    /// Exit without stopping the engine. Used when this launch only hands over to a
+    /// copy that is already running, and when an alert quits Wisp without a service.
+    private func terminateWithoutShutdown() {
+        shutdownFinished = true
+        NSApp.terminate(nil)
+    }
+
+    // A quit from the Dock, the application menu or the system does not call quit().
+    // Run the same shutdown and reply once it finishes, so a logout is not cancelled.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if terminationReady { return .terminateNow }
-        quit()
-        return .terminateCancel
+        if shutdownFinished { return .terminateNow }
+        systemAwaitingReply = true
+        if !shutdownStarted { beginShutdown() }
+        return .terminateLater
     }
 
     @objc private func openSettings() {
@@ -798,7 +823,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.addButton(withTitle: "Quit Wisp")
-        if alert.runModal() == .alertSecondButtonReturn { NSApp.terminate(nil) }
+        if alert.runModal() == .alertSecondButtonReturn { terminateWithoutShutdown() }
     }
 
     /// A program that is not Wisp's own holds the backend port. Wisp does not stop
@@ -810,7 +835,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "Quit Wisp")
         alert.addButton(withTitle: "Keep Wisp Open")
-        if alert.runModal() == .alertFirstButtonReturn { NSApp.terminate(nil) }
+        if alert.runModal() == .alertFirstButtonReturn { terminateWithoutShutdown() }
     }
 
     @objc private func openSetupGuide() {
