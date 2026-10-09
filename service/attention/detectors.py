@@ -37,6 +37,13 @@ from service.attention.resolve import Resolved, resolve
 CODE = "uncaptured_commitment"
 SOON_HOURS = 48.0
 REPLY_WINDOW_S = 6 * 3600
+# A date with no clock time ("tomorrow", "Friday") alerts only when the sentence also states
+# something the user must do or attend. Without this, "your order arrives tomorrow" and
+# "check your stocks today" were 11 of the first 13 false alerts on real data.
+_OBLIGATION = re.compile(
+    r"(?<!nothing )(?<!no )\b(?:due|deadline|submit|turn\s+in|hand\s+in|don'?t\s+forget|"
+    r"remember\s+to|reminder|need\s+to|have\s+to|must|pick\s+up|appointment|exam|quiz|"
+    r"midterm|final|interview|meeting|rsvp|sign\s+up|register|expires?|closes?)\b", re.I)
 _DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unable|rain\s*check|"
                       r"pass|busy)\b", re.I)
 
@@ -90,6 +97,9 @@ class UncapturedCommitment:
         r = resolve(item.text, arrival, self.tz, item.id)
         if r.blocked or r.day is None:
             return Decision(False, r.blocked or "no_usable_time", r, imp.score)
+
+        if not r.has_clock and not _OBLIGATION.search(item.text):
+            return Decision(False, "date_only_no_obligation", r, imp.score)
 
         if r.has_clock and r.start is not None:
             soon = arrival <= r.start <= arrival + self.soon

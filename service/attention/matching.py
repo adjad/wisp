@@ -18,7 +18,7 @@ from zoneinfo import ZoneInfo
 
 from service.attention.resolve import Resolved
 
-CLOCK_EXACT_S = 15 * 60         # this close in time: known even with no words in common
+CLOCK_EXACT_S = 30 * 60         # this close in time: known even with no words in common
 CLOCK_NEAR_S = 120 * 60         # this close, plus a shared word: known
 
 _STOP = frozenset("""

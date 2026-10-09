@@ -139,9 +139,11 @@ def test_strangers_with_no_history_are_not_eligible():
     assert not got.eligible and got.reason == "no_recent_two_way_contact"
 
 
-def test_frequent_incoming_without_a_reply_still_counts():
-    items = [msg(str(n), "Team", "practice?", T - n * 86400) for n in range(1, 5)]
-    assert contacts.Contacts(items).importance(msg("n", "Team", "x", T)).reason == "frequent_incoming"
+def test_one_sided_traffic_is_not_contact_however_frequent():
+    """A group blast with many messages and no reply from the user must not qualify."""
+    items = [msg(str(n), "Team", "practice?", T - n * 3600) for n in range(1, 20)]
+    got = contacts.Contacts(items).importance(msg("n", "Team", "x", T))
+    assert not got.eligible and got.reason == "no_recent_two_way_contact"
 
 
 def test_importance_never_uses_the_future():
@@ -275,3 +277,68 @@ def test_registry_and_missed_by_gate_attribution():
     assert (out["tp"], out["fn"]) == (1, 1)
     assert out["missed_by_gate"] == {"promo": 1}
     assert out["by_reason"]["uncaptured_commitment"] == {"alerts": 1, "correct": 1}
+
+
+# ------------------------------------------- regressions from the real-data review
+# Each case below has the structure of a real false alert or miss found when the
+# detector was first scored against labelled data. The sentences are synthetic.
+
+SUNDAY = datetime(2026, 10, 4, 9, 31, tzinfo=ZONE)
+
+
+@pytest.mark.parametrize("text", [
+    "Your order should arrive tomorrow",
+    "Check your stocks today",
+    "Is he going to the party on sunday",
+    "Let me know what your plans are for Friday",
+    "Your list is actually empty - nothing due today.",
+])
+def test_a_bare_day_without_an_obligation_does_not_alert(text):
+    m = msg("m", "Mom", text, T)
+    d = detector(history() + [m]).decide(m)
+    assert not d.alert and d.blocked_by == "date_only_no_obligation"
+
+
+@pytest.mark.parametrize("text", [
+    "Quick Sunday heads-up. SlugsCARE is due Monday (10/5), if it's not already done. Not sure if you finished it, so ignore if so.",
+    "Don't forget to pick up the package Monday",
+])
+def test_a_bare_day_with_an_obligation_alerts(text):
+    m = Item("msg:s", "messages", SUNDAY.timestamp(), "incoming", "Asst", "Asst", text)
+    h = Item("msg:h", "messages", SUNDAY.timestamp() - 3600, "outgoing", "me", "Asst", "ok")
+    d = detectors.UncapturedCommitment(snap([h, m]), tz=TZ).decide(m)
+    assert d.alert and d.resolved.day == date(2026, 10, 5) and not d.resolved.has_clock
+
+
+def test_agreeing_day_mentions_are_one_day_and_the_arrival_day_is_context():
+    got = resolve.resolve("Quick Sunday heads-up. It is due Monday (10/5).", SUNDAY, TZ)
+    assert got.day == date(2026, 10, 5) and got.blocked is None
+
+
+def test_genuinely_different_days_still_conflict():
+    got = resolve.resolve("I will work from home tomorrow and drive to work on Friday", SUNDAY, TZ)
+    assert got.blocked == "conflicting_times"
+
+
+def test_if_and_not_alone_do_not_cancel_or_hedge_but_cancellation_words_do():
+    ok = resolve.resolve("The form is due Monday, if it's not already done. Not sure if you finished", SUNDAY, TZ)
+    assert ok.blocked is None and not ok.tentative
+    assert resolve.resolve("can't make it tonight at 7", SUNDAY, TZ).blocked == "negated_or_cancelled"
+    assert resolve.resolve("the 7pm game is cancelled", SUNDAY, TZ).blocked == "negated_or_cancelled"
+
+
+def test_proposals_are_tentative_even_without_a_question_mark():
+    assert r("Put us for 1PM lmk if that works").tentative
+    assert r("maybe dinner tomorrow at 7pm").tentative
+    assert not r("dinner tomorrow at 7pm").tentative
+
+
+def test_got_is_not_past_tense():
+    got = resolve.resolve("The deadline got extended to tonight. Room form due 11:59pm", ARRIVAL, TZ)
+    assert got.blocked is None and got.start == at(21, 23, 59)
+    assert resolve.resolve("I was at the library at 6", ARRIVAL, TZ).blocked == "past_reference"
+
+
+def test_a_half_hour_drift_still_counts_as_on_file():
+    assert found("meet at 1PM", [commit("Zzz", at(21, 13, 30))]).basis == "time"
+    assert found("meet at 1PM", [commit("Zzz", at(21, 14, 0))]) is None
