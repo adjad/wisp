@@ -249,8 +249,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // An accessory app has no menu bar, so the standard edit shortcuts don't route
     // to the focused field. A hidden main menu with an Edit submenu fixes that.
+    // While the chat window is open the app is regular and shows this menu, so it
+    // also carries the application menu's Hide, Close and Quit items.
     private func installEditMenu() {
         let main = NSMenu()
+        let appItem = NSMenuItem()
+        main.addItem(appItem)
+        let app = NSMenu(title: "Wisp")
+        appItem.submenu = app
+        app.addItem(withTitle: "Hide Wisp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        app.addItem(.separator())
+        app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        let quitItem = app.addItem(withTitle: "Quit Wisp", action: #selector(quit), keyEquivalent: "q")
+        quitItem.target = self
         let editItem = NSMenuItem()
         main.addItem(editItem)
         let edit = NSMenu(title: "Edit")
@@ -723,7 +734,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Quit Wisp after the engine and its helpers have stopped. Every quit
+    /// request goes through here (see applicationShouldTerminate), so the Dock,
+    /// the application menu, and the menu bar all shut down the same way.
     @objc private func quit() {
+        guard !quitStarted else { return }
+        quitStarted = true
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
         Task {
             // Let any just-fired Settings change (role/model) finish
@@ -734,8 +750,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await client.shutdownOMLX()
             await BrowserBridgeActivation.shared.shutdown()
             await backend.stopAndWait()
-            await MainActor.run { NSApp.terminate(nil) }
+            await MainActor.run {
+                terminationReady = true
+                NSApp.terminate(nil)
+            }
         }
+    }
+
+    // A quit request from the Dock, the application menu or the system does not
+    // pass through quit(). Cancel it, run the shutdown in quit(), and let that
+    // terminate the app once the backend has stopped.
+    private var quitStarted = false
+    private var terminationReady = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if terminationReady { return .terminateNow }
+        quit()
+        return .terminateCancel
     }
 
     @objc private func openSettings() {
