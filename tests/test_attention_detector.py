@@ -342,3 +342,47 @@ def test_got_is_not_past_tense():
 def test_a_half_hour_drift_still_counts_as_on_file():
     assert found("meet at 1PM", [commit("Zzz", at(21, 13, 30))]).basis == "time"
     assert found("meet at 1PM", [commit("Zzz", at(21, 14, 0))]) is None
+
+
+# ------------------------------------------------ times taken from earlier in the thread
+
+def lunch_thread(reply, reply_after=180, proposal="Yo getting lunch at 11:30 lmk if ur coming",
+                 proposal_dir="outgoing", proposal_age=0):
+    p = msg("p", "Sam", proposal, T - proposal_age, proposal_dir)
+    r_ = msg("r", "Sam", reply, T + reply_after)
+    h = msg("h", "Sam", "hey", T - 86400 - proposal_age, "outgoing")
+    return detector([h, p, r_]), r_
+
+
+def test_an_acceptance_inherits_the_time_the_user_proposed():
+    det, reply = lunch_thread("yea sure i'll meet u guys there")
+    d = det.decide(reply)
+    assert d.alert and d.resolved.start == at(21, 11, 30)
+    assert "time:from_thread" in d.resolved.inferred and not d.resolved.tentative
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(reply="sorry can't make it"),                                       # a decline
+    dict(reply="what time again"),                                           # not an acceptance
+    dict(reply="yea sure", proposal_dir="incoming"),                         # their own message echoed
+    dict(reply="yea sure", proposal_age=7 * 3600),                           # stale proposal
+    dict(reply="yea sure", reply_after=3 * 3600),                            # 11:30 already past
+])
+def test_inheritance_does_not_fire_when_it_would_be_a_guess(kwargs):
+    det, reply = lunch_thread(**kwargs)
+    d = det.decide(reply)
+    assert not d.alert and d.blocked_by in ("no_time_stated", "no_usable_time")
+
+
+def test_an_inherited_time_that_is_already_on_the_calendar_stays_silent():
+    p = msg("p", "Sam", "lunch at 11:30 lmk if ur coming", T, "outgoing")
+    reply = msg("r", "Sam", "yea sure", T + 120)
+    d = detector([msg("h", "Sam", "hey", T - 86400, "outgoing"), p, reply],
+                 [commit("Lunch with Sam", at(21, 11, 30))]).decide(reply)
+    assert d.blocked_by == "already_on_file"
+
+
+def test_a_bare_clock_twelve_hours_out_is_a_guess():
+    evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
+    assert resolve.resolve("meet at 10am", evening, TZ).tentative            # 13h away
+    assert not resolve.resolve("meet at 10am", ARRIVAL, TZ).tentative        # 1h away

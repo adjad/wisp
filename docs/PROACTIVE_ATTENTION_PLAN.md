@@ -230,6 +230,7 @@ work, not a forecast.
 | `cue_baseline` (any time/place cue) | 114 | 7 | 6% | 88% |
 | `uncaptured_commitment`, first cut | 15 | 2 | 13% | 25% |
 | `uncaptured_commitment`, after review | 3 | 3 | 100% | 38% |
+| + times inherited from the thread | 4 | 4 | 100% | 50% |
 
 The first cut's false alerts were almost all one thing: 11 of 13 were *date-only* mentions
 ("your order arrives tomorrow", "check your stocks today", "nothing due today"). The review
@@ -248,13 +249,24 @@ changed the rules for stated reasons rather than for single items:
   arrived on is context when another day is named ("Quick Sunday heads-up... due Monday").
 - A half-hour drift (1PM vs a 1:30 entry) still counts as on file.
 
-**What it still misses (5 of 8), by cause:**
+**What it still misses (4 of 8), by cause:**
 
 | Cause | Misses | Fix lives in |
 | --- | ---: | --- |
-| Time is in an earlier message in the thread ("yea sure I'll meet u there" after the user proposed lunch at 2:30) or two days are named | 2 | Thread-aware resolution, Slice 3 |
+| Two different days are named in one reply, and the clock was in an earlier message ("work from home tomorrow and drive on Friday") | 1 | Merging partial facts across messages, Slice 3 |
 | An obligation with no time at all ("package is ready at the mailroom", "get stuff from Trader Joe's today") | 2 | Task/obligation detection; likely model-assisted, Slice 3 |
 | Mail ("final reminder" about a form; no time in the subject) | 1 | Mail has no two-way signal and is subject-only; open question 4 |
+
+**Times inherited from the thread (built).** A short acceptance ("yea sure i'll meet u there",
+"sure") takes its time from the USER's own proposal earlier in the same thread, within six
+hours, only when that time has a clock and is still ahead of the reply. It does not fire for a
+decline, for an echo of the other person's own message, for a stale proposal, or for a time
+already past. A bare clock more than 12 hours out is now marked tentative (said at 11pm,
+"at 10am" could be a guess). The full-corpus run then produced 5 alerts in 26.5 days; the one
+outside the labelled sample was reviewed by hand and is correct (a friend's "sure" accepting the
+user's "3:30?", 65 minutes ahead, not on the calendar). It was outside the sample because "sure"
+has no time word, so the cue prefilter never offers such replies: **the sampler should treat a
+short acceptance that follows the user's time proposal as a cue** before the next labelling round.
 
 Prefilter check: the control stratum had 1 missing in 59 (1.7%), about 24 more across the
 1,414 texts the cue prefilter never shows anyone. Those are the same no-time obligations.
