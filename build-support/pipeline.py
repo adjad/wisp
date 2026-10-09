@@ -512,7 +512,7 @@ def plist(meta: dict) -> dict:
         "CFBundleName": "Wisp", "CFBundleDisplayName": "Wisp", "CFBundleIdentifier": CONFIG["bundle_identifier"],
         "CFBundleVersion": meta["build_number"], "CFBundleShortVersionString": meta["version"],
         "CFBundleExecutable": "Wisp", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL",
-        "LSUIElement": True, "LSMinimumSystemVersion": CONFIG["minimum_macos"], "NSHighResolutionCapable": True,
+        "LSMinimumSystemVersion": CONFIG["minimum_macos"], "NSHighResolutionCapable": True,
         "NSCalendarsFullAccessUsageDescription": "Wisp reads your calendar to show upcoming events and remind you before they start.",
         "NSCalendarsUsageDescription": "Wisp reads your calendar to show upcoming events and remind you before they start.",
         "NSRemindersFullAccessUsageDescription": "Wisp mirrors the reminders you set into the macOS Reminders app.",
