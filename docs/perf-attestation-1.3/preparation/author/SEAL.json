@@ -1,0 +1,11 @@
+{
+  "actor": "/root/attestation_design_analysis",
+  "status": "COMPLETE_QUIESCENT",
+  "manifestPath": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/CHECKSUMS.json",
+  "manifestSHA256": "c55a9b85612f9b850675eb017c9de210ec408d0fe76667c756370763cbd6890e",
+  "proposalSHA256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+  "handoffSHA256": "552cc20c29138b87e08c64990a5868c5a1a3f64ff5830a5c64be2ce474efefc4",
+  "authorApproval": false,
+  "productOwnership": false,
+  "runtimeResourcesCreated": 0
+}
