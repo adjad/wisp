@@ -568,6 +568,52 @@ def test_topic_lookup_forces_get_upcoming_before_a_compose_guesses() -> None:
               d.force_first_tool != "get_upcoming", f"-> {d.force_first_tool}")
 
 
+def test_person_said_routes_to_message_and_mail_reads() -> None:
+    print("\n'what did <person> say' reads messages (and mail), not the ambiguous route")
+    # Verified failure 2026-10-08: "what did trishe say" named no channel, fell to
+    # the 22-tool retrieved route, which had view_messages but not
+    # summarize_messages; the model gave up with "couldn't produce a reliable
+    # answer".
+    for prompt in ("what did trishe say", "what did my mom say", "what has Dan sent me",
+                   "what did my mom say yesterday", "wat did dad say"):
+        s = set(subset(prompt))
+        check(f"{prompt!r} offers summarize_messages + view_messages",
+              {"summarize_messages", "view_messages"} <= s, f"-> {sorted(s) or 'UNSCOPED'}")
+        check(f"{prompt!r} offers no send tool",
+              not (s & {"send_message", "send_email"}), f"-> {sorted(s)}")
+    print("  a SAVED contact is private even with a time word (else web_search)")
+    import service.tools.imessage_tools as msg_mod
+    saved = dict(msg_mod._contacts)
+    msg_mod._contacts.update({"+15550001": "Trisha Jain", "+15550002": "Dan Smith"})
+    try:
+        for prompt in ("what did trishe say yesterday", "what did Dan say today"):
+            s = set(subset(prompt))
+            check(f"{prompt!r} reads messages, not the web",
+                  "summarize_messages" in s and "web_search" not in s, f"-> {sorted(s)}")
+        s = set(subset("what did Trump say today"))
+        check("an unsaved name keeps the web reading", "web_search" in s, f"-> {sorted(s)}")
+    finally:
+        msg_mod._contacts.clear(); msg_mod._contacts.update(saved)
+    print("  …but not for public figures, pronouns, or objects")
+    for prompt in ("what did Trump say about tariffs", "what did you say", "what did I say",
+                   "what did the report say", "what did he say"):
+        s = set(subset(prompt))
+        check(f"{prompt!r} is not claimed as a message read",
+              "summarize_messages" not in s or "view_emails" not in s, f"-> {sorted(s)}")
+
+
+def test_conversation_match_tolerates_name_spelling() -> None:
+    print("\nconversation names match despite a spelling difference")
+    from service.tools.imessage_tools import _match_conversation
+    records = [(1.0, "chat1", "Trisha Jain", "Trisha Jain: hi", False),
+               (2.0, "chat2", "Dan Smith", "Dan Smith: yo", False)]
+    for query, want in (("trishe", "Trisha Jain"), ("trisha", "Trisha Jain"), ("dan", "Dan Smith")):
+        match, error = _match_conversation(records, query)
+        check(f"{query!r} -> {want}", match is not None and match[1] == want, f"-> {match} {error}")
+    match, error = _match_conversation(records, "zebedee")
+    check("an unrelated name still reports no match", match is None and "No conversation" in (error or ""))
+
+
 if __name__ == "__main__":
     test_every_tool_has_a_scoped_home()
     test_device_apps_and_web_are_scoped()
@@ -584,5 +630,7 @@ if __name__ == "__main__":
     test_ambiguous_channel_withholds_every_outbound_tool()
     test_answering_the_channel_question_restores_the_right_tools()
     test_topic_lookup_forces_get_upcoming_before_a_compose_guesses()
+    test_person_said_routes_to_message_and_mail_reads()
+    test_conversation_match_tolerates_name_spelling()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)
