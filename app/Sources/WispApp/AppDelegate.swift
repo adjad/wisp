@@ -751,7 +751,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func beginShutdown() {
         shutdownStarted = true
         // Quitting must never hang: exit after a bound even if a stop step stalls.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+        // The bound is longer than the stop steps' own limits added together.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
             MainActor.assumeIsolated { self.finishShutdown() }
         }
         // Stopping the engine unloads any models and frees its ~2GB baseline too.
@@ -771,18 +772,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func finishShutdown() {
         guard !shutdownFinished else { return }
         shutdownFinished = true
-        if systemAwaitingReply {
-            NSApp.reply(toApplicationShouldTerminate: true)
-        } else {
-            NSApp.terminate(nil)
-        }
+        // Signals the backend if the stop steps did not get to it. After a clean
+        // stop the backend is already detached, so this does nothing.
+        backend.stop()
+        exitNow()
     }
 
     /// Exit without stopping the engine. Used when this launch only hands over to a
     /// copy that is already running, and when an alert quits Wisp without a service.
     private func terminateWithoutShutdown() {
         shutdownFinished = true
-        NSApp.terminate(nil)
+        exitNow()
+    }
+
+    /// Ends the app, answering a system logout or restart that is waiting for it.
+    private func exitNow() {
+        if systemAwaitingReply {
+            NSApp.reply(toApplicationShouldTerminate: true)
+        } else {
+            NSApp.terminate(nil)
+        }
     }
 
     // A quit from the Dock, the application menu or the system does not call quit().
