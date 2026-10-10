@@ -21,7 +21,7 @@ import time
 from unittest.mock import patch
 
 
-MODEL = "Ling-3.0-tiny-Wisp-V2-merged-oQ4e"
+MODEL = "Ling-3.0-tiny-oQ4e"
 CLOCK = "\nThe current date and time is Tuesday, September 8, 2026 at 6:30 PM."
 BODY = (
     "The workshop is on September 15 at 2:00 PM in Room 204. "
