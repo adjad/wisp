@@ -550,7 +550,7 @@ def test_ordinary_unzoned_times_and_place_names_still_resolve():
     assert r("dinner tomorrow at 7pm America/Los_Angeles").start == at(22, 19)  # the user's own zone
 
 
-@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "ASAP", "tmrw", "gym", "sharp", "ur place"])
+@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "ASAP", "gym", "sharp", "ur place"])
 def test_an_ordinary_word_after_a_clock_is_not_mistaken_for_a_timezone(word):
     """The extractor files any word after a clock under "timezone"; only real zones may decline."""
     got = r(f"lunch at 11:30am {word}")
@@ -616,3 +616,61 @@ def test_unrelated_chatter_after_the_proposal_does_not_stop_a_normal_acceptance(
     d = det.decide(rep)
     assert d.alert and d.resolved.start == at(21, 11, 30)
     assert "time:from_thread" in d.resolved.inferred
+
+
+# ------------------------------- the stated day survives, and local DST is checked (safety review)
+
+@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "gym", "sharp", "ASAP", "ur place"])
+def test_a_stray_word_after_the_clock_does_not_cost_the_stated_day(word):
+    """The extractor read the word as a timezone and then could not resolve "tomorrow"."""
+    got = r(f"Meet tomorrow at 11:30am {word}")
+    assert got.blocked is None and got.start == at(22, 11, 30), word       # tomorrow, never today
+    assert "date:next_occurrence" not in got.inferred
+
+
+def test_the_original_example_resolves_to_tomorrow_and_keeps_the_hedge():
+    got = r("Meet tomorrow at 11:30am lol")
+    assert got.start == at(22, 11, 30)
+    assert r("Put us for 1PM lmk if that works").tentative                 # the word still marks a proposal
+
+
+@pytest.mark.parametrize("text,day", [
+    ("Meet 9/22 at 11:30am lol", 22), ("Meet 2026-09-22 at 11:30am ok", 22),
+    ("Meet Wednesday at 11:30am lmk", 23), ("Meet September 24 at 11:30am bye", 24),
+])
+def test_other_stated_days_also_survive_a_stray_word(text, day):
+    got = r(text)
+    assert got.blocked is None and got.start == at(day, 11, 30), text
+
+
+@pytest.mark.parametrize("text", ["lunch at 11:30am tmrw", "dinner at 7pm tmr", "Meet Sept 24 at 11:30am"])
+def test_a_stated_day_that_cannot_be_read_is_refused_not_turned_into_the_next_occurrence(text):
+    got = r(text)
+    assert got.start is None and got.blocked == "date_unresolved", text
+
+
+def test_bare_clocks_and_foreign_zones_are_unchanged_by_the_day_guard():
+    assert r("meet at 6pm").start == at(21, 18)
+    assert r("meet at 6pm lol").start == at(21, 18)
+    assert r("tomorrow at 15:00 UTC").start == at(22, 8)
+
+
+@pytest.mark.parametrize("text", [
+    "Meet 2026-03-08 at 02:30 America/Los_Angeles",     # the hour that does not exist
+    "Meet 2026-11-01 at 01:30 America/Los_Angeles",     # the hour that happens twice
+    "Meet 2026-03-08 at 2:30am",                         # the same, with no zone named
+    "Meet 2026-11-01 at 1:30am",
+])
+def test_a_local_time_in_a_dst_gap_or_fold_is_declined_even_in_the_users_own_zone(text):
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    got = resolve.resolve(text, arrival, TZ)
+    assert got.start is None and got.blocked == "dst_ambiguous", text
+
+
+def test_unambiguous_local_times_around_the_dst_change_still_resolve():
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    assert resolve.resolve("Meet 2026-03-08 at 3:30am America/Los_Angeles", arrival, TZ).start is not None
+    assert resolve.resolve("Meet 2026-03-08 at 1:30am America/Los_Angeles", arrival, TZ).start is not None
+    assert resolve.resolve("Meet 2026-11-01 at 2:30am America/Los_Angeles", arrival, TZ).start is not None
+    foreign = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)
+    assert foreign.blocked == "other_timezone"                              # the foreign-zone control is retained
