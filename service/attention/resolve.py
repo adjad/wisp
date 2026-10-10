@@ -91,6 +91,12 @@ def _next_clock(arrival: datetime, hour: int, minute: int, zone: ZoneInfo) -> da
     return today if today > arrival else _at(arrival.date() + timedelta(days=1), hour, minute, zone)
 
 
+def _far(start: datetime, arrival: datetime) -> bool:
+    """A bare clock with no day ("at 6") means "soon". Read as 12+ hours away it is a
+    guess (said at 11pm, did they mean tomorrow evening or tomorrow morning?)."""
+    return start - arrival > timedelta(hours=12)
+
+
 def _source_zone(fact, tz: str) -> ZoneInfo | None | bool:
     """The zone the sender stated, if it differs from the user's.
 
@@ -272,7 +278,8 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
         if day is None:                                 # nearest upcoming of am/pm
             start = min(_next_clock(arrival, h, minute, zone) for h in (hour, hour + 12))
             return Resolved(start, start.date(), True, quote,
-                            tuple(inferred + ["date:next_occurrence"]), tentative)
+                            tuple(inferred + ["date:next_occurrence"]),
+                            tentative or _far(start, arrival))
         # A known day with a bare hour: 1-6 is the afternoon; 7-11 could be either.
         if not 1 <= hour <= 6:
             tentative = True
@@ -281,5 +288,6 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
     if day is None:
         start = _next_clock(arrival, hour, minute, zone)
         return Resolved(start, start.date(), True, quote,
-                        tuple(inferred + ["date:next_occurrence"]), tentative)
+                        tuple(inferred + ["date:next_occurrence"]),
+                        tentative or _far(start, arrival))
     return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative)

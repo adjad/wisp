@@ -344,6 +344,50 @@ def test_a_half_hour_drift_still_counts_as_on_file():
     assert found("meet at 1PM", [commit("Zzz", at(21, 14, 0))]) is None
 
 
+# ------------------------------------------------ times taken from earlier in the thread
+
+def lunch_thread(reply, reply_after=180, proposal="Yo getting lunch at 11:30 lmk if ur coming",
+                 proposal_dir="outgoing", proposal_age=0):
+    p = msg("p", "Sam", proposal, T - proposal_age, proposal_dir)
+    r_ = msg("r", "Sam", reply, T + reply_after)
+    h = msg("h", "Sam", "hey", T - 86400 - proposal_age, "outgoing")
+    return detector([h, p, r_]), r_
+
+
+def test_an_acceptance_inherits_the_time_the_user_proposed():
+    det, reply = lunch_thread("yea sure i'll meet u guys there")
+    d = det.decide(reply)
+    assert d.alert and d.resolved.start == at(21, 11, 30)
+    assert "time:from_thread" in d.resolved.inferred and not d.resolved.tentative
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(reply="sorry can't make it"),                                       # a decline
+    dict(reply="what time again"),                                           # not an acceptance
+    dict(reply="yea sure", proposal_dir="incoming"),                         # their own message echoed
+    dict(reply="yea sure", proposal_age=7 * 3600),                           # stale proposal
+    dict(reply="yea sure", reply_after=3 * 3600),                            # 11:30 already past
+])
+def test_inheritance_does_not_fire_when_it_would_be_a_guess(kwargs):
+    det, reply = lunch_thread(**kwargs)
+    d = det.decide(reply)
+    assert not d.alert and d.blocked_by in ("no_time_stated", "no_usable_time")
+
+
+def test_an_inherited_time_that_is_already_on_the_calendar_stays_silent():
+    p = msg("p", "Sam", "lunch at 11:30 lmk if ur coming", T, "outgoing")
+    reply = msg("r", "Sam", "yea sure", T + 120)
+    d = detector([msg("h", "Sam", "hey", T - 86400, "outgoing"), p, reply],
+                 [commit("Lunch with Sam", at(21, 11, 30))]).decide(reply)
+    assert d.blocked_by == "already_on_file"
+
+
+def test_a_bare_clock_twelve_hours_out_is_a_guess():
+    evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
+    assert resolve.resolve("meet at 10am", evening, TZ).tentative            # 13h away
+    assert not resolve.resolve("meet at 10am", ARRIVAL, TZ).tentative        # 1h away
+
+
 # ------------------------------------------------ an explicitly stated timezone (review ATT179-01)
 
 def test_an_explicit_utc_time_is_converted_not_relabelled():
@@ -403,6 +447,62 @@ def test_an_ordinary_word_after_a_clock_is_not_mistaken_for_a_timezone(word):
 @pytest.mark.parametrize("zone", ["EST", "pst", "IST", "HST", "BST", "UTC+2", "GMT+2", "+02:00", "CEST", "AEDT"])
 def test_real_zone_abbreviations_and_offsets_are_declined(zone):
     assert r(f"lunch tomorrow at 3pm {zone}").blocked == "other_timezone", zone
+
+
+# ------------------------------------- a later cancellation ends inheritance (review ATT181-01)
+
+def thread_after(*turns, reply="okay"):
+    """(seconds after T-3600, direction, text) turns, then an incoming reply 2 min after the last."""
+    rows = [msg("h", "Sam", "hey", T - 86400, "outgoing")]
+    for k, (offset, direction, text) in enumerate(turns):
+        rows.append(msg(f"t{k}", "Sam", text, T - 3600 + offset, direction))
+    last = T - 3600 + turns[-1][0] + 120
+    rep = msg("rep", "Sam", reply, last)
+    return detector(rows + [rep]), rep
+
+
+def test_an_acceptance_after_the_users_own_cancellation_does_not_revive_the_old_plan():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"),
+                            (60, "outgoing", "Lunch today at 11:30am is cancelled."))
+    d = det.decide(rep)
+    assert not d.alert and d.blocked_by == "no_time_stated"
+
+
+@pytest.mark.parametrize("withdrawal", ["nvm", "never mind about lunch", "scratch that", "let's skip lunch",
+                                        "can't make lunch actually"])
+def test_a_withdrawal_in_words_also_ends_inheritance(withdrawal):
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", withdrawal))
+    assert not det.decide(rep).alert, withdrawal
+
+
+def test_the_other_persons_cancellation_also_ends_inheritance():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"),
+                            (60, "incoming", "can't do lunch anymore sorry"))
+    assert not det.decide(rep).alert
+
+
+def test_a_replacement_time_governs_and_an_unreadable_replacement_does_not_fall_back():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "actually lunch at 12:30pm"))
+    d = det.decide(rep)
+    assert d.alert and d.resolved.start == at(21, 12, 30)
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch at 11:30am or 12:30pm?"))
+    assert not det.decide(rep).alert               # ambiguous replacement: do not revive 11:30
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch in 20 minutes"))
+    assert not det.decide(rep).alert
+
+
+def test_a_proposal_whose_time_has_passed_is_not_revived_by_an_older_one():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch today at 7:30am"),
+                            )
+    assert not det.decide(rep).alert
+
+
+def test_unrelated_chatter_after_the_proposal_does_not_stop_a_normal_acceptance():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "bring the notes"),
+                            (90, "incoming", "lol ok"))
+    d = det.decide(rep)
+    assert d.alert and d.resolved.start == at(21, 11, 30)
+    assert "time:from_thread" in d.resolved.inferred
 
 
 # ------------------------------- the stated day survives, and local DST is checked (safety review)
