@@ -1,0 +1,55 @@
+{
+  "bad": [],
+  "grounded_rows": 660,
+  "history_replays": 880,
+  "routing_rows": 3740,
+  "semantic_review_required": true,
+  "stats": {
+    "dev": {
+      "expanded_template_ids": 273,
+      "families": 61,
+      "groups": {
+        "boundary": 40,
+        "filters": 65,
+        "followup": 80,
+        "grounded": 60,
+        "multisource": 45,
+        "simple": 20,
+        "time": 90
+      },
+      "rows": 400,
+      "source_statuses": {
+        "denied": 6,
+        "missing": 6,
+        "ok": 78,
+        "partial": 6,
+        "timeout": 6,
+        "truncated": 6
+      }
+    },
+    "train": {
+      "expanded_template_ids": 1863,
+      "families": 125,
+      "groups": {
+        "boundary": 400,
+        "filters": 650,
+        "followup": 800,
+        "grounded": 600,
+        "multisource": 450,
+        "simple": 200,
+        "time": 900
+      },
+      "rows": 4000,
+      "source_statuses": {
+        "denied": 50,
+        "missing": 25,
+        "ok": 625,
+        "partial": 50,
+        "timeout": 50,
+        "truncated": 50
+      }
+    }
+  },
+  "status": "PASS_INDEPENDENT_STRUCTURAL_AND_SIDECAR_CHECKS_ONLY",
+  "strict_source_presence_check_separately_fails": 477
+}

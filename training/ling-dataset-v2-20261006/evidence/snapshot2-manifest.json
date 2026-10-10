@@ -1,0 +1,174 @@
+{
+  "snapshot_version": 2,
+  "base": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "candidate_git_state": "uncommitted isolated namespace",
+  "all_authors_explicitly_quiescent": true,
+  "samples": 497,
+  "all_families_sampled": true,
+  "static_cpu_status": "PASS_STATIC_DATA_QA",
+  "initial_review_verdict": "BLOCK",
+  "repair": "Exactly98 mixed-source finalanswers, natural singular/plural and single-source checker correction, bounded clause-source association controls, expanded_template_ids units, independentlypassing control baselines and hash-bound packaging",
+  "tokenizer_and_actual_trainer_masking_qualified": false,
+  "files": {
+    "DATA_CARD.md": {
+      "bytes": 7731,
+      "sha256": "92243f8d1a7b4fb0260b2cac6abcd9d7023fc46d0055c1a17a76795ec4c9b958"
+    },
+    "README.md": {
+      "bytes": 2554,
+      "sha256": "e5359a8f6b8afce7c9ed22c9a91f26e2720e3490a88a0a298e1f610072c62acb"
+    },
+    "SPEC.md": {
+      "bytes": 8115,
+      "sha256": "0a7bccef45de1ad8eda0459e648a287e1742765be15beb96e854ce2f0257d367"
+    },
+    "dev.jsonl": {
+      "bytes": 1113035,
+      "sha256": "633a9c448e443a6f3d3b75f516189bd7e6532690c0d13ee2821976e68112455a"
+    },
+    "dev.provenance.jsonl": {
+      "bytes": 530030,
+      "sha256": "a46cc9a65a8c9318d88bc4b3cf14728e6c63d4a9aebdc5807207340435913483"
+    },
+    "evidence/bounded-repair-diff.json": {
+      "bytes": 3068,
+      "sha256": "653725b72f331c06bcf13b1ff0d9c954026e809179d5d014e5b500acacf8b1b2"
+    },
+    "evidence/reproduction.json": {
+      "bytes": 299,
+      "sha256": "0f9291cbf687087bc6f599d5b2226997d21d6612198964cc5932d98f6f89d5cf"
+    },
+    "generate.py": {
+      "bytes": 2452,
+      "sha256": "530a4dcec513b5c9b58fb6574c171a76d09a0b71158d266d136d837725fd34b8"
+    },
+    "intent.schema.v1.json": {
+      "bytes": 3860,
+      "sha256": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678"
+    },
+    "manifest.json": {
+      "bytes": 1081,
+      "sha256": "a6f874d32464fe24226bfaee1ec2b1819a2a1e55173c909b14a7466f4f0eae9a"
+    },
+    "methodlog.md": {
+      "bytes": 1744,
+      "sha256": "284d05efb4082cd0f38ffa8cf5d6725beecaec8f89bc6520a4c31e7af72d10d7"
+    },
+    "package.py": {
+      "bytes": 2336,
+      "sha256": "02405aab4596809436cdb9a9c44714c00518426981776b2fe8452a0fe66466c9"
+    },
+    "pilot-train.jsonl": {
+      "bytes": 5495554,
+      "sha256": "ab486297ecccf5df041caa1334cfec67a1570891c5b8b010dcbced1f49bc8d51"
+    },
+    "preflight.py": {
+      "bytes": 1928,
+      "sha256": "52d1502235a493005e89474d276265fa320966cb84f7ac30c5e9ee59698b722a"
+    },
+    "qa.py": {
+      "bytes": 14587,
+      "sha256": "41839385a023c010ffe226ee282fd88f484ae2db4b3dafd73c1b6fea5548e3ae"
+    },
+    "registration.json": {
+      "bytes": 606,
+      "sha256": "26a60f942a6b87c56843b4e28f9a0a874f16722d4fabf83f56a07542e75d8c73"
+    },
+    "review-samples.jsonl": {
+      "bytes": 2031671,
+      "sha256": "a9e22c739a557d7fe61a43feb540074b4f8996658d609abd02cb292640648eac"
+    },
+    "router-system.txt": {
+      "bytes": 2472,
+      "sha256": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830"
+    },
+    "shards/arguments/README.md": {
+      "bytes": 4666,
+      "sha256": "16ac021036ce4c1bdbfb94577298895cac497c19a0721fceb67cd82c53872fda"
+    },
+    "shards/arguments/dev.jsonl": {
+      "bytes": 511833,
+      "sha256": "7c2e551efb81e5b0a764597c929e18b9f2a6faa16c4fe07c6e3732e70c8116ff"
+    },
+    "shards/arguments/dev.provenance.jsonl": {
+      "bytes": 128079,
+      "sha256": "da4780b9c44ff9717671f6ec97ae2d11c3bfd5615e3fa4a1385970346ef174f1"
+    },
+    "shards/arguments/generate.py": {
+      "bytes": 37330,
+      "sha256": "1b55bdfcd56d6bb04dd2a742b726630d9f51e1210e51bc532201a9f5e0922bdc"
+    },
+    "shards/arguments/train.jsonl": {
+      "bytes": 5126517,
+      "sha256": "565157d7281a0663b03373750733abf5e2e00f2c13b625abda51a46c282b8e59"
+    },
+    "shards/arguments/train.provenance.jsonl": {
+      "bytes": 1291425,
+      "sha256": "d61e56351fd7f9ffd6b6ae3d6e55317b772577f56cc7fa77bd1d8428ee9cc1a1"
+    },
+    "shards/context/README.md": {
+      "bytes": 6809,
+      "sha256": "900e2287a4db591eac0f990cf139e8d9e9aa2734d5ba68f88baf1ce070f62b53"
+    },
+    "shards/context/dev.jsonl": {
+      "bytes": 517886,
+      "sha256": "f210fb53e5e9419a9c7f3a85473a9815adc75772e8bb10fed1f9adcc23cd0655"
+    },
+    "shards/context/dev.provenance.jsonl": {
+      "bytes": 289237,
+      "sha256": "a451e3f91e5c2481f05e6dcd52c11f633291e9cb9aefca8bdc6097f051fe67d6"
+    },
+    "shards/context/generate.py": {
+      "bytes": 50273,
+      "sha256": "1341174b3e86c36a5468084fcd97971041d85450265ecb2d4353726de59f9eeb"
+    },
+    "shards/context/train.jsonl": {
+      "bytes": 5122211,
+      "sha256": "dcef2825221bcef934a58e29699a943c9b47bfb14624bd0fd8312f405ba2a7a3"
+    },
+    "shards/context/train.provenance.jsonl": {
+      "bytes": 2831115,
+      "sha256": "473a33fa09c583958d22d4d6dcd5e10be557a142dec402e594c76423a5b2d948"
+    },
+    "shards/grounded/README.md": {
+      "bytes": 7275,
+      "sha256": "a88c184d95c8f6a6ea91e3232da27f427e57212824d64631b45603307deb128d"
+    },
+    "shards/grounded/dev.jsonl": {
+      "bytes": 83316,
+      "sha256": "c4b3687826fcfe2f3512521bcc1aeaae88ceb0f13e0469c64af7ab4753dffe39"
+    },
+    "shards/grounded/dev.provenance.jsonl": {
+      "bytes": 112714,
+      "sha256": "0fca7e119d17a54c495ef1db3129a6d2670f9b9b8feefc249646bdf393c157f2"
+    },
+    "shards/grounded/generate.py": {
+      "bytes": 36636,
+      "sha256": "49a59c442c6b6f899821f0f16d1019aead369927eb4e0b29841fa208843481f6"
+    },
+    "shards/grounded/train.jsonl": {
+      "bytes": 740499,
+      "sha256": "e4d114eab17ab006e77da4a18ac9ce1acf1f105bbd458f9ca801939c1267ea5d"
+    },
+    "shards/grounded/train.provenance.jsonl": {
+      "bytes": 955065,
+      "sha256": "593e75b54318df0347625570b2424b663912c121b4e55e5ae83f74a8dc1006f1"
+    },
+    "train.jsonl": {
+      "bytes": 10989227,
+      "sha256": "f9830d01ac92d0e351077ec5fc7f53edb7c6c10d9070714bbded762aa934fa7d"
+    },
+    "train.provenance.jsonl": {
+      "bytes": 5077605,
+      "sha256": "1cf399a65fe34eb64ad2f9f68b381dc0f3612c7d0e97682b5b03641a4efe1d2b"
+    },
+    "validate.py": {
+      "bytes": 6436,
+      "sha256": "dca23b6c576afbc0b0f8f689a99f5f6910ac04eb50d1efb064b4e978ae8d4da2"
+    },
+    "validation.json": {
+      "bytes": 13274,
+      "sha256": "cbe277933c6834af4b8ebe9cd0944345756a3a6ad0ebd05f2305df6696d1fe2e"
+    }
+  }
+}

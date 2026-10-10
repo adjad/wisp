@@ -1,0 +1,73 @@
+{
+  "verdict": "BLOCK",
+  "verdict_scope": "Enabling the proposal as specified; safe default-preserving preparation remains conditional on parent ownership and release",
+  "basis": "Static design/source counterexamples and primary-source research; no tests or probes executed",
+  "findings": [
+    {
+      "id": "F1", "severity": "P1", "blocking": true,
+      "title": "Freshness bound excludes existing connection writes",
+      "design_lines": [119, 131, 140, 142, 146, 197, 256, 258],
+      "main_refs": ["service/inference/attributed_transport.py:490-507", "service/inference/attributed_transport.py:574-594"],
+      "static_trace": ["Qualified authority is loaded and connection is admitted before expiry", "Connection pauses or system sleeps past hard expiry without a new load", "Process/parent facts, endpoint owners, fingerprints, manifest and generation remain unchanged", "Proposed per-write fence omits age and can admit a credential/header or body using the expired tree/group verdict"],
+      "impact": "The finite R1/wake guarantee is not enforced; per-write timeouts do not bound pauses or the entire phase.",
+      "required_revision": "Immutable qualification lease, absolute sleep-aware expiry checked around async inspection and at every nonempty write; refuse/close after expiry. Define any separately accepted bounded grace.",
+      "needed_proof": ["Sleep/delay after connect", "Expiry between header/body", "Repeated writes exceeding total lease", "Expiry during async inspection", "Old stream after refresh"],
+      "qualification": "Static failure of the advertised new bound, not a runtime reproduction or assertion that current main leaks"
+    },
+    {
+      "id": "F2", "severity": "P1", "blocking": true,
+      "title": "Endpoint oracle does not attest all native decision fields",
+      "design_lines": [166, 180, 185, 193, 264, 326],
+      "evidence_refs": ["docs/perf-attestation-evidence/layout.c", "docs/perf-attestation-evidence/layout.out", "docs/perf-attestation-evidence/probe_sockets.py:22-40"],
+      "static_trace": ["Return size and endpoint bytes remain valid", "A same-size profile/decoding error reads the sharing status from a clear field", "Own endpoint oracle still matches", "False unshared evidence can reach native acceptance"],
+      "required_revision": "Qualified complete ABI/profile and all decision fields; unknown or uncertain profiles use legacy decision. Keep native off/non-authoritative until proved.",
+      "needed_proof": ["Every supported OS/architecture/header profile", "Endpoint-preserving sharing/state/generation/identity mutations", "Descriptor reuse", "Cross-client latch", "Complete native/legacy differential"],
+      "qualification": "Concrete missing proof/negative-control class; no ABI mutation executed here"
+    },
+    {
+      "id": "F3", "severity": "P1", "blocking": true,
+      "title": "Native accept does not imply current legacy parser accepts",
+      "design_lines": [176, 185, 262, 263],
+      "main_refs": ["service/inference/local_peer.py:215-262", "service/inference/local_peer.py:427-462"],
+      "static_trace": ["This IPv4 connection is valid, stable and unshared", "Another process has an unrelated established IPv6 connection with remote port 8000", "No additional local port-8000 listener is needed", "Legacy global port-filtered parser rejects the IPv6 record before pair selection", "Per-pid native lookup need not see it and may accept the valid pair"],
+      "required_revision": "Legacy-authoritative shadow and explicit treatment of every old refusal class; intentional more-permissive verdict changes require independent review and human acceptance instead of a parity claim.",
+      "needed_proof": ["Global unrelated IPv6/malformed/inaccessible/oversized inventories", "Extra-owner records", "Production parser as oracle rather than permissive per-pid probe parser"],
+      "qualification": "Static predicate contradiction, not a demonstrated credential leak"
+    },
+    {
+      "id": "F4", "severity": "P2", "blocking": true,
+      "title": "Refresh token, stale-completion and hung-build semantics conflict",
+      "design_lines": [123, 129, 141, 142, 144, 148, 258, 288, 314],
+      "main_refs": ["service/inference/attributed_transport.py:142-153", "service/inference/attributed_transport.py:490-507", "service/inference/attributed_transport.py:570-606"],
+      "static_trace": ["Refresh owns G0", "Invalidation advances G1 and another build publishes current B", "Old completion follows generation-changed eviction clause", "B is evicted even though stale completion should be discarded"],
+      "required_revision": "Short-held metadata lock and compare-and-swap key/generation/build tokens; stale success/failure must be no-op. Define hung-work recovery without waiting on its lock, bounded workers and post-await revocation checks. Preserve synchronous non-waiting close and prevent late publication.",
+      "needed_proof": ["Stale success/failure after newer publish", "Hung refresh plus hard expiry", "Cross-client close/quarantine/manifest races", "Cancellation/fork reset", "No post-revocation bytes or post-close publication"],
+      "qualification": "Contradictory/incomplete state-machine specification, not an executed race"
+    },
+    {
+      "id": "F5", "severity": "P2", "blocking": true,
+      "title": "D2 recommendation omits native exec-version evidence",
+      "design_lines": [28, 71, 127, 209, 278, 325],
+      "evidence_refs": ["docs/perf-attestation-evidence/probe_exec.py:35-40", "docs/perf-attestation-evidence/probe_exec_same.py", "RESEARCH.json"],
+      "required_revision": "Separate exec detection from argv-only rewriting; qualify or explicitly reject the private exec-version mechanism before recommending unavoidable R2 acceptance. Retain existing binding for unsupported cases and preserve process_identity tuple.",
+      "needed_proof": ["Supported OS/private API layout and permissions", "Server/parent same-binary and A-B-A exec", "Version change during multi-call facts", "API failures and argv-only rewrite"],
+      "qualification": "Apple upstream source supports investigating the mechanism; deployed Darwin/API compatibility remains unqualified"
+    }
+  ],
+  "nonblocking_notes": [
+    {"id": "N1", "subject": "Clock recommendation supported by primary documentation/source; no local sleep/wake test"},
+    {"id": "N2", "subject": "Sharing is a sampled reference-count signal, not atomic exclusivity; fallback retains legacy invisible-holder limitations"},
+    {"id": "N3", "subject": "Full fact-set microbenchmark, end-to-end gains, refresh contention and lifecycle eviction effects unmeasured; no 40ms/global speed qualification"},
+    {"id": "N4", "subject": "Reconcile 25% versus 50% criteria with the authoritative release protocol before freeze"},
+    {"id": "N5", "subject": "Default-on P1/P2 and kill-switch behavior cannot substitute for pending human risk acceptance; retain default legacy admission"}
+  ],
+  "D1_D4": [
+    {"id": "D1", "present_safe_choice": "No additional cross-connection reuse window", "conditional_options": "30/60/300 seconds only after enforceable lease and publication protocol, explicit human acceptance; W is not a bound on code already loaded during writable exposure"},
+    {"id": "D2", "present_safe_choice": "Keep binding at every existing fence", "conditional_options": "Qualify native exec generation; separately decide mutable argv predicate; preserve legacy for unsupported profiles"},
+    {"id": "D3", "present_safe_choice": "Native off; legacy authoritative", "conditional_options": "Dark parser then admitted shadow; enable only with complete ABI, differential, sharing/race proof and exact-candidate gates; 500 ordinary observations alone insufficient"},
+    {"id": "D4", "present_safe_choice": "Full binding per connection", "conditional_options": "Any later amortization needs independent proposal and admission analysis; no coalescing now"}
+  ],
+  "human_risk_acceptance_recorded": false,
+  "product_writer_released": false,
+  "no_merge_no_activation_no_deploy_hold": true
+}
