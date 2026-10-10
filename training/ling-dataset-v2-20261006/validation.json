@@ -1,0 +1,377 @@
+{
+  "authored_surface_units": {
+    "arguments": {
+      "dev_request_surfaces": 78,
+      "train_request_surfaces": 141
+    },
+    "context": {
+      "assistant_context_phrasings": 5,
+      "contrast_branches_per_family": 2,
+      "dev_opening_prefixes": 5,
+      "train_opening_prefixes": 20
+    },
+    "grounded": {
+      "dev_surface_ids": 30,
+      "request_and_answer_surfaces_per_family": 3,
+      "train_surface_ids": 72
+    },
+    "note": "Units differ by shard and are not summed as full authored templates."
+  },
+  "negative_controls": [
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "forbidden_source_domain",
+      "reason": "schema:['$.sources[0].domain:enum']",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "optional_null",
+      "reason": "schema:['$.sources[0].account:type']",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "excluded_source_proposal",
+      "reason": "semantic specification mismatch",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "final_loss_missing",
+      "reason": "final not supervised",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "system_drift",
+      "reason": "system drift",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1135",
+      "baseline_passed": true,
+      "control": "nonjson_target",
+      "reason": "Extra data: line 1 column 4 (char 3)",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-context-train-0811",
+      "baseline_passed": true,
+      "control": "invalid_calendar_date",
+      "reason": "day 30 must be in range 1..28 for month 2 in year 2029",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-context-train-0811",
+      "baseline_passed": true,
+      "control": "competing_time_forms",
+      "reason": "competing/empty time forms",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-arguments-train-1588",
+      "baseline_passed": true,
+      "control": "schema_valid_wrong_count",
+      "reason": "semantic specification mismatch",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-context-train-1297",
+      "baseline_passed": true,
+      "control": "nonread_grants_access",
+      "reason": "semantic specification mismatch",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-context-train-1570",
+      "baseline_passed": true,
+      "control": "earlier_assistant_loss_leak",
+      "reason": "earlier assistant supervised",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0036",
+      "baseline_passed": true,
+      "control": "grounded_facts_omitted",
+      "reason": "required phrase missing: Cedar 11 workshop",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0036",
+      "baseline_passed": true,
+      "control": "fixture_marker_drift",
+      "reason": "missing fixture marker",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0036",
+      "baseline_passed": true,
+      "control": "status_attribution_corruption",
+      "reason": "source status mismatch",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0036",
+      "baseline_passed": true,
+      "control": "false_outbound_success",
+      "reason": "forbidden claim",
+      "rejected": true
+    },
+    {
+      "accepted": true,
+      "baseline_id": "v2-grounded-train-0166",
+      "control": "single_source_without_repeated_label"
+    },
+    {
+      "accepted": true,
+      "baseline_id": "v2-grounded-train-0511",
+      "control": "natural_singular_mixed_labels"
+    },
+    {
+      "baseline_id": "v2-grounded-train-0511",
+      "baseline_passed": true,
+      "control": "missing_mixed_source_label",
+      "reason": "missing mixed-source attribution ['notes']",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0511",
+      "baseline_passed": true,
+      "control": "wrong_source_fact_association",
+      "reason": "wrong source association for 'Use the green cover.'",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0332",
+      "baseline_passed": true,
+      "control": "invented_confirmation",
+      "reason": "forbidden claim",
+      "rejected": true
+    },
+    {
+      "baseline_id": "v2-grounded-train-0280",
+      "baseline_passed": true,
+      "control": "invented_complete_coverage",
+      "reason": "forbidden claim",
+      "rejected": true
+    }
+  ],
+  "no_final_read": true,
+  "pilot": {
+    "boundary": 200,
+    "filters": 325,
+    "followup": 400,
+    "grounded": 300,
+    "multisource": 225,
+    "simple": 100,
+    "time": 450
+  },
+  "semantic_limit": "Oracle/evidence/capability checks plus independent sample review; no universal natural-language entailment proof.",
+  "splits": {
+    "dev": {
+      "categories": {
+        "apology_draft_or_send": 5,
+        "calendar.free_time.minutes_optional": 15,
+        "calendar.overview.none": 10,
+        "calendar.overview.unsupported": 5,
+        "calendar.records.query": 15,
+        "calendar_location_constraint": 5,
+        "calendar_reminder_prohibition_only": 5,
+        "email.overview.account": 5,
+        "email.overview.account_count": 10,
+        "email.records.query_account_unread": 15,
+        "email.records.query_count": 5,
+        "email.records.query_unread_count": 5,
+        "festival_mail_to_open_calendar": 10,
+        "fixture_overview": 60,
+        "historical_mail_range_and_calendar_month": 5,
+        "literal_delete_message_search": 5,
+        "literal_message_query_and_note_lookup": 5,
+        "mail_prohibition_with_general_time_management_question": 5,
+        "maintenance_notes_to_reminder_digest": 10,
+        "matched_calendar_and_reminder_searches": 5,
+        "message_read_status_constraint": 5,
+        "messages.overview.conversation": 5,
+        "messages.overview.conversation_count": 10,
+        "messages.overview.conversation_message_unread": 5,
+        "messages.records.query_count": 5,
+        "museum_reminders_to_message_search": 10,
+        "night_shift_chat_and_next_day_calendar": 5,
+        "none.public": 10,
+        "notes.overview.count": 10,
+        "notes.overview.query_count": 5,
+        "notes.records.query_count": 10,
+        "notes_mail_with_negative_person_constraint": 5,
+        "public_delivery_protocol_question": 5,
+        "read.messages": 5,
+        "read.notes": 5,
+        "reminders.overview.scope": 5,
+        "reminders.records.query": 10,
+        "reminders.records.query_unsupported": 5,
+        "remove_mail_unread_keep_range_account_limit": 10,
+        "remove_note_period_keep_search_limit": 10,
+        "replace_chat_day_keep_group_limit": 10,
+        "replace_reminder_search_keep_tomorrow": 10,
+        "save_memo_plus_reminder_read": 5,
+        "tomorrow_agenda_exclude_web_and_mail": 5,
+        "townhall_mail_and_zoning_notes": 5,
+        "travel_calendar_to_photo_notes": 10,
+        "upcoming_checks_and_archived_mail": 5,
+        "weekly_agenda_with_recipe_notes": 5
+      },
+      "expanded_template_ids": 273,
+      "families": 61,
+      "groups": {
+        "boundary": 40,
+        "filters": 65,
+        "followup": 80,
+        "grounded": 60,
+        "multisource": 45,
+        "simple": 20,
+        "time": 90
+      },
+      "max_characters": 3170,
+      "median_characters": 2755,
+      "rows": 400,
+      "scenarios": 247,
+      "tasks": {
+        "grounded": 60,
+        "routing": 340
+      }
+    },
+    "train": {
+      "categories": {
+        "archive_inbox_to_research_notes": 40,
+        "bounded_chat_search_to_mail_search": 40,
+        "calendar.free_time.minutes": 60,
+        "calendar.free_time.minutes_optional": 80,
+        "calendar.overview.account": 60,
+        "calendar.overview.none": 30,
+        "calendar.records.account": 30,
+        "calendar.records.query": 30,
+        "calendar.records.query_account": 80,
+        "calendar.records.query_unsupported": 50,
+        "calendar_negative_person_constraint": 25,
+        "calendar_only_explicit_reminder_prohibition": 25,
+        "calendar_reminders_prohibit_mail_and_chat": 25,
+        "change_reminder_scope_preserve_search": 40,
+        "chat_digest_and_reminder_scope": 25,
+        "chat_search_note_search": 25,
+        "club_chat_to_rehearsal_calendar": 40,
+        "create_or_outline_calendar_event": 25,
+        "day_agenda_plus_notebook_lookup": 25,
+        "delete_effect_plus_note_read": 25,
+        "delete_or_find_note": 25,
+        "email.overview.account_count": 80,
+        "email.overview.account_unread_count": 30,
+        "email.overview.unread": 30,
+        "email.overview.unread_count": 80,
+        "email.records.query": 50,
+        "email.records.query_account": 80,
+        "email.records.query_account_count": 30,
+        "email.records.query_account_unread": 30,
+        "email.records.query_unread_count": 30,
+        "errands_and_mail_exclude_notes": 25,
+        "field_notes_to_errand_reminders": 40,
+        "fixture_overview": 600,
+        "free_slot_and_reference_notes": 25,
+        "inbox_day_calendar_week": 25,
+        "include_read_mail_preserve_mail_context": 40,
+        "invitation_wording_here": 25,
+        "limited_inbox_to_reminder_search": 40,
+        "literal_action_words_email_search": 25,
+        "literal_rule_words_note_search": 25,
+        "mail_chat_separate_limits": 25,
+        "mail_digest_and_overdue_reminders": 25,
+        "mail_notes_distinct_literal_searches": 25,
+        "message_unread_constraint": 25,
+        "messages.overview.conversation": 30,
+        "messages.overview.conversation_count": 80,
+        "messages.overview.none": 30,
+        "messages.records.query": 30,
+        "messages.records.query_count": 80,
+        "messages.records.query_message_unread": 50,
+        "month_personal_agenda": 25,
+        "none.public": 100,
+        "note_search_with_entity_exclusion": 25,
+        "notes.overview.count": 30,
+        "notes.overview.none": 30,
+        "notes.records.query": 30,
+        "notes.records.query_count": 110,
+        "notes_calendar_account_binding": 25,
+        "ordinary_question_with_chat_prohibition": 25,
+        "overdue_chores_to_mail_digest": 40,
+        "packing_reminders_to_family_chat": 40,
+        "public_email_explanation": 25,
+        "pure_source_prohibition": 25,
+        "read.calendar": 50,
+        "read.email": 50,
+        "reading_notes_to_free_time": 40,
+        "reminder_completion_constraint": 25,
+        "reminders.overview.none": 30,
+        "reminders.records.query": 60,
+        "reminders.records.query_scope": 50,
+        "reminders.records.query_unsupported": 50,
+        "remove_chat_name_preserve_period_and_limit": 40,
+        "remove_mail_account_preserve_other_filters": 40,
+        "rename_calendar_search_preserve_account_and_day": 40,
+        "replace_inbox_range_preserve_other_filters": 40,
+        "replace_note_search_preserve_period_and_limit": 40,
+        "reply_wording_here": 25,
+        "save_or_draft_note": 25,
+        "send_effect_plus_inbox_read": 25,
+        "send_or_draft_reply": 25,
+        "three_source_work_digest": 25,
+        "today_personal_agenda": 25,
+        "tomorrow_personal_agenda": 25,
+        "unlimit_notes_preserve_search_and_period": 40,
+        "unread_inbox_to_project_messages": 40,
+        "vendor_calendar_to_design_notes": 40,
+        "week_personal_agenda": 25,
+        "weekend_chat_to_plain_notes": 40,
+        "work_calendar_to_inbox_digest": 40
+      },
+      "expanded_template_ids": 1863,
+      "families": 125,
+      "groups": {
+        "boundary": 400,
+        "filters": 650,
+        "followup": 800,
+        "grounded": 600,
+        "multisource": 450,
+        "simple": 200,
+        "time": 900
+      },
+      "max_characters": 3131,
+      "median_characters": 2754,
+      "rows": 4000,
+      "scenarios": 2317,
+      "tasks": {
+        "grounded": 600,
+        "routing": 3400
+      }
+    }
+  },
+  "status": "PASS_STATIC_DATA_QA",
+  "tokenizer_length_or_actual_axolotl_masking_qualified": false,
+  "validated_file_sha256": {
+    "dev.jsonl": "633a9c448e443a6f3d3b75f516189bd7e6532690c0d13ee2821976e68112455a",
+    "dev.provenance.jsonl": "a46cc9a65a8c9318d88bc4b3cf14728e6c63d4a9aebdc5807207340435913483",
+    "manifest.json": "a6f874d32464fe24226bfaee1ec2b1819a2a1e55173c909b14a7466f4f0eae9a",
+    "pilot-train.jsonl": "ab486297ecccf5df041caa1334cfec67a1570891c5b8b010dcbced1f49bc8d51",
+    "train.jsonl": "f9830d01ac92d0e351077ec5fc7f53edb7c6c10d9070714bbded762aa934fa7d",
+    "train.provenance.jsonl": "1cf399a65fe34eb64ad2f9f68b381dc0f3612c7d0e97682b5b03641a4efe1d2b"
+  },
+  "validator_sha256": {
+    "intent.schema.v1.json": "85186431c4d3e8f1c38ca7d2aa899714da1dd5b275de97998432a6de76705678",
+    "qa.py": "41839385a023c010ffe226ee282fd88f484ae2db4b3dafd73c1b6fea5548e3ae",
+    "router-system.txt": "800b235e8ab3ed7d76e74461cd20dbd0d58cb111e3d8f31b5adba27117b1b830",
+    "validate.py": "dca23b6c576afbc0b0f8f689a99f5f6910ac04eb50d1efb064b4e978ae8d4da2"
+  }
+}

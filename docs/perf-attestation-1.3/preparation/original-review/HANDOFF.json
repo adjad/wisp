@@ -1,0 +1,61 @@
+{
+  "artifact_type": "independent_design_review_handoff",
+  "status": "COMPLETE_QUIESCENT",
+  "verdict": "BLOCK",
+  "main_sha": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "design_sha": "1449ab162c2f92e73162950240054964af636cdf",
+  "design_file_sha256": "75b64fd02687a770527a3aa6ac176a5b2964550fce93ce0f3b0d0ca2af2c353c",
+  "actor_thread_id": "01a08523-47c7-76e3-be42-aee801a314fd",
+  "parent_and_sole_dispatcher": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+  "report": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REPORT.json",
+  "report_sha256": "1d056b646f47a090dfd78373d8669a3868ecd5f1bab84f8b640d3b68c45e93b1",
+  "review": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REVIEW.md",
+  "review_sha256": "c20ebd46bde9f4a2679e7de22b97abc68bcad963c488043df4dfe6b163746756",
+  "acceptance_sha256": "e324a188ddfd721651ae0f05e57eb4cbc08055b57485b730a3981d11126489bc",
+  "release_sha256": "855fbe3f811c15ff64678dc17902794da1660fdf2d3e06464ba8ec2930cad108",
+  "blockers": [
+    {
+      "id": "F1",
+      "severity": "P1",
+      "title": "Freshness bound excludes existing connection writes"
+    },
+    {
+      "id": "F2",
+      "severity": "P1",
+      "title": "Endpoint oracle does not attest all native decision fields"
+    },
+    {
+      "id": "F3",
+      "severity": "P1",
+      "title": "Native accept does not imply current legacy parser accepts"
+    },
+    {
+      "id": "F4",
+      "severity": "P2",
+      "title": "Refresh token, stale-completion and hung-build semantics conflict"
+    },
+    {
+      "id": "F5",
+      "severity": "P2",
+      "title": "D2 recommendation omits native exec-version evidence"
+    }
+  ],
+  "next_parent_actions": [
+    "Record one repair owner and revise the enabled design for F1-F5",
+    "Keep default legacy admission and native off; preparation remains ownership/release conditional",
+    "Resolve Claude ownership acknowledgment/disposition before product edits",
+    "Bring concrete revised D1-D4 choices to the owning human; handoff recommendations are not acceptance",
+    "Obtain fresh bound design/candidate review and later execution/CI/specialist/performance gates as applicable"
+  ],
+  "tests_or_probes_run": 0,
+  "native_or_socket_or_model_or_cloud_calls": false,
+  "source_or_registry_edits": false,
+  "human_risk_acceptance": false,
+  "product_writer_released": false,
+  "same_head_candidate_audit": false,
+  "no_merge_no_activation_no_deploy_hold": true,
+  "quiescent": true,
+  "live_children_or_resources_remaining": 0,
+  "checksum_rule": "Root CHECKSUMS.json inventories every other evidence file; SEAL.json anchors that manifest and REPORT/HANDOFF. Both are excluded from their own inventory to avoid self-reference. Files set444/directories555.",
+  "recorded_at_utc": "2026-10-06T22:05:48.962267+00:00"
+}
