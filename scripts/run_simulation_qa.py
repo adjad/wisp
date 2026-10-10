@@ -195,6 +195,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Inert bounded attestation store; supplied facts and manual interleavings only.
+    "tests/test_attestation_store.py",
     # Synthetic content-free journal, bounded offline planner replay; no external effects.
     "tests/test_diagnostics.py",
     "tests/test_wisp_cowork.py",
