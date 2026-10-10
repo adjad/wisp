@@ -506,3 +506,15 @@ async def test_the_creation_identity_is_kept_in_the_ledger_detail(ledger):
     f = Fakes(result={"ok": True, "status": "succeeded", "where": "apple_and_wisp", "created": created})
     out = await run(mom_thread(), MON_9AM + 60, ledger, f)
     assert ledger.get(out[0].source_id)["detail"]["result"]["created"] == created
+
+
+async def test_a_long_lead_lets_a_matching_reminder_reach_the_effect_so_reuse_is_reachable(ledger):
+    """Review: with lead_minutes=180 a reminder already on file 3 hours before the event is outside
+    both matching windows, so the effect IS reached (and the wiring may then reuse that reminder).
+    The ownership rule must therefore not rely on this case being excluded upstream."""
+    f = Fakes()
+    event = datetime(2026, 9, 21, 18, 0, tzinfo=ZONE).timestamp()
+    existing = commit("Mom: Meet me in the Quad at 6PM (6:00 PM)", event - 180 * 60)
+    out = await run(mom_thread(), MON_9AM + 60, ledger, f, commitments=[existing], lead_minutes=180)
+    assert [o.state for o in out] == ["created"] and len(f.created) == 1
+    assert f.created[0].due_ts == event - 180 * 60                    # the very time that reminder already holds

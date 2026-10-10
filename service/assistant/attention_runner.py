@@ -64,25 +64,45 @@ def _rows_near(due: float) -> dict[str, dict]:
     return rows
 
 
-def _created_identity(plan: Plan, when_iso: str, started: float, before: set[str], where: str) -> dict | None:
-    """The exact object this call created, or None when that cannot be established.
+def _payload_action_id(plan: Plan, when_iso: str) -> str | None:
+    """The deterministic action id `add_reminder` derives for this exact reminder."""
+    from service.assistant.outbox import _reminder_base_action_id
+    payload = {"title": plan.title.strip(), "due_ts": datetime.fromisoformat(when_iso).timestamp(),
+               "commitment_kind": "reminder"}
+    return _reminder_base_action_id("create_reminder", payload)
 
-    Apple Reminders: the verified native receipt's `source_id`, read from the action store, and
-    only a receipt written DURING this call (an identical earlier reminder reuses its old receipt,
-    and that object is not ours). Wisp only: the one new local row with this title and time.
+
+def _action_ids(base: str | None) -> set[str] | None:
+    """Ids of every stored native action for this exact reminder, or None if unreadable."""
+    if base is None:
+        return None
+    try:
+        return {str(a["id"]) for a in hub.store.reminder_actions_by_prefix(base)}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _created_identity(plan: Plan, base: str | None, actions_before: set[str] | None,
+                      before: set[str], where: str) -> dict | None:
+    """The exact object this call created, or None when that cannot be proved.
+
+    Apple Reminders: a native action row that did NOT exist before the call, whose verified
+    result names the `source_id`. `add_reminder` reuses an earlier succeeded create for the same
+    title and time without writing a new action, so a reused receipt leaves no new row and gets
+    no identity, however recently it was written: time never proves ownership. Exactly one new
+    row is required; anything else is ambiguous.
+    Wisp only: the one new local row with this title and time.
     A reminder whose identity is not recorded cannot be undone through the endpoint."""
     try:
         if where == "apple_and_wisp":
-            from service.assistant.outbox import _reminder_base_action_id
-            payload = {"title": plan.title.strip(), "due_ts": datetime.fromisoformat(when_iso).timestamp(),
-                       "commitment_kind": "reminder"}
-            base = _reminder_base_action_id("create_reminder", payload)
+            if base is None or actions_before is None:
+                return None
             fresh = [a for a in hub.store.reminder_actions_by_prefix(base)
-                     if (a.get("created_at") or 0) >= started - 1
+                     if str(a["id"]) not in actions_before
                      and isinstance(a.get("result"), dict) and a["result"].get("ok") is True
                      and a["result"].get("source_id")]
             ids = {str(a["result"]["source_id"]) for a in fresh}
-            return {"source": "reminders", "source_id": ids.pop()} if len(ids) == 1 else None
+            return {"source": "reminders", "source_id": ids.pop()} if len(fresh) == 1 and len(ids) == 1 else None
         new = [r for rid, r in _rows_near(plan.due_ts).items()
                if rid not in before and r.get("source") == "manual" and r.get("title") == plan.title.strip()
                and r.get("when_ts") is not None and abs(float(r["when_ts"]) - plan.due_ts) <= 90]
@@ -100,13 +120,18 @@ async def create_reminder(plan: Plan) -> dict:
     is prose, so it is classified conservatively: only "Reminder set:" is success.
 
     On success the result also carries `created`: the identity of the object made, which is
-    what Undo is bound to.
+    what Undo is bound to. A success that reused an existing reminder is still a success, but
+    carries `created: None` because this call did not make it.
     """
     from service.tools.assistant_tools import add_reminder
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
     # and a time in a repeated DST hour keeps its meaning.
     when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
-    started = time.time()
+    try:
+        base = _payload_action_id(plan, when_iso)
+    except Exception:  # noqa: BLE001
+        base = None
+    actions_before = _action_ids(base)
     try:
         before = set(_rows_near(plan.due_ts))
     except Exception:  # noqa: BLE001
@@ -115,7 +140,7 @@ async def create_reminder(plan: Plan) -> dict:
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
         return {"ok": True, "status": "succeeded", "where": where,
-                "created": _created_identity(plan, when_iso, started, before, where)}
+                "created": _created_identity(plan, base, actions_before, before, where)}
     lowered = text.lower()
     unknown = any(k in lowered for k in ("unconfirmed", "not verified", "nothing was confirmed"))
     return {"ok": False, "status": "unknown" if unknown else "failed", "error": text[:300]}

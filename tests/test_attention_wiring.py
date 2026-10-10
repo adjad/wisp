@@ -465,67 +465,111 @@ def test_switching_to_live_through_the_api_re_baselines_at_that_instant(client, 
 APPLE = "Reminder set: “t” — Mon at 5:30 PM in Apple Reminders and Wisp."
 
 
-def fake_receipts(monkeypatch, rows_for):
-    """Fake add_reminder (returning the Apple success prose) and the action store behind it."""
-    import time as clock
+def fake_receipts(monkeypatch, before, after):
+    """Fake add_reminder (returning the Apple success prose) and the action store behind it.
+
+    The store is read twice, as the wiring does: once before the call and once after."""
     from types import SimpleNamespace
     from service.assistant.outbox import _reminder_base_action_id
     from service.tools import assistant_tools
-    seen = {}
+    seen, reads = {}, []
 
     async def add(title, when_iso, kind="reminder"):
         seen["when_iso"], seen["title"] = when_iso, title
         return APPLE
 
     def by_prefix(prefix):
-        payload = {"title": seen["title"].strip(), "commitment_kind": "reminder",
-                   "due_ts": datetime.fromisoformat(seen["when_iso"]).timestamp()}
-        assert prefix == _reminder_base_action_id("create_reminder", payload)      # bound to THIS payload
-        return rows_for(clock.time())
+        reads.append(prefix)
+        if "when_iso" in seen:
+            payload = {"title": seen["title"].strip(), "commitment_kind": "reminder",
+                       "due_ts": datetime.fromisoformat(seen["when_iso"]).timestamp()}
+            assert prefix == _reminder_base_action_id("create_reminder", payload)   # bound to THIS payload
+        rows = before if len(reads) == 1 else after
+        if isinstance(rows, Exception):
+            raise rows
+        return rows
     monkeypatch.setattr(assistant_tools, "add_reminder", add)
     fake_store = SimpleNamespace(reminder_actions_by_prefix=by_prefix)
     monkeypatch.setattr(type(wiring.hub), "store", property(lambda self: fake_store))
 
 
-def receipt(created_at, source_id="native-A", ok=True):
-    return {"created_at": created_at, "result": {"ok": ok, "status": "succeeded", "source_id": source_id}}
+def action(action_id, source_id="native-A", ok=True, created_at=None):
+    import time as clock
+    return {"id": action_id, "created_at": clock.time() if created_at is None else created_at,
+            "result": {"ok": ok, "status": "succeeded", "source_id": source_id}}
 
 
-async def test_the_native_receipt_written_during_the_call_is_the_recorded_identity(monkeypatch):
-    fake_receipts(monkeypatch, lambda now: [receipt(now + 1)])
+async def test_an_action_that_did_not_exist_before_the_call_is_the_recorded_identity(monkeypatch):
+    fake_receipts(monkeypatch, before=[], after=[action("new-1")])
     got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
     assert got["created"] == {"source": "reminders", "source_id": "native-A"}
 
 
-@pytest.mark.parametrize("rows", [
-    lambda now: [receipt(now - 600)],                                  # an older reminder's receipt was reused
-    lambda now: [],                                                    # no receipt at all
-    lambda now: [receipt(now + 1, ok=False)],                          # not a verified success
-    lambda now: [receipt(now + 1, "native-A"), receipt(now + 2, "native-B")],   # ambiguous
+@pytest.mark.parametrize("before,after", [
+    ([action("old")], [action("old")]),                                         # reused: no new action row
+    ([action("old", created_at=0)], [action("old", created_at=0)]),             # reused, however old
+    ([], []),                                                                   # no receipt at all
+    ([], [action("new-1", ok=False)]),                                          # not a verified success
+    ([], [action("new-1", "native-A"), action("new-2", "native-B")]),           # ambiguous origin
+    ([], [action("new-1", "native-A"), action("new-2", "native-A")]),           # two new actions
+    (RuntimeError("store unavailable"), [action("new-1")]),                     # no baseline: cannot tell
 ])
-async def test_without_one_fresh_unambiguous_receipt_no_identity_is_recorded(monkeypatch, rows):
-    fake_receipts(monkeypatch, rows)
+async def test_without_exactly_one_new_verified_action_no_identity_is_recorded(monkeypatch, before, after):
+    fake_receipts(monkeypatch, before, after)
     got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
-    assert got["ok"] is True and got["created"] is None                # still created; just not undoable
+    assert got["ok"] is True and got["status"] == "succeeded" and got["created"] is None
 
 
-async def test_a_wisp_only_identity_is_the_one_new_local_row_not_an_identical_older_one(monkeypatch):
-    from service.tools import assistant_tools
-    due = datetime.now().replace(microsecond=0).timestamp() + 7200
-    older = wiring.assistant_store.add_manual("same", due)              # made by the user earlier
-    made = []
+async def test_a_receipt_written_a_moment_before_the_call_is_not_owned_by_it(monkeypatch):
+    """The old rule accepted a receipt up to a second old; time alone never proves ownership."""
+    import time as clock
+    recent = action("old", created_at=clock.time() - 0.5)
+    fake_receipts(monkeypatch, before=[recent], after=[recent])
+    got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert got["created"] is None
 
-    async def add(title, when_iso, kind="reminder"):
-        made.append(wiring.assistant_store.add_manual(title, due))
-        return "Reminder set: “same” — Mon in Wisp only; Apple Reminders was not changed (x)."
-    monkeypatch.setattr(assistant_tools, "add_reminder", add)
-    got = await wiring.create_reminder(live.Plan("same", due, None, "today", "q"))
-    assert got["created"] == {"source": "manual", "id": made[0]["id"]} and made[0]["id"] != older["id"]
+
+async def test_real_upstream_reuse_of_a_recent_complete_receipt_succeeds_without_ownership(monkeypatch):
+    """Through the REAL add_reminder and outbox: an earlier verified create for the exact title and
+    time still present natively is reused (no new action), so this call owns nothing."""
+    import time as clock
+    from service.assistant.outbox import _reminder_base_action_id
+    due = float((int(clock.time()) // 60) * 60 + 7200)
+    plan = live.Plan("Reused reminder", due, None, "today", "q")
+    when_iso = datetime.fromtimestamp(due, ZoneInfo(TZ)).isoformat(timespec="minutes")
+    payload = {"title": plan.title, "due_ts": datetime.fromisoformat(when_iso).timestamp(),
+               "commitment_kind": "reminder"}
+    base = _reminder_base_action_id("create_reminder", payload)
+    st = wiring.hub.store
+    st.sync_source("reminders", [{"source_id": "native-OLD", "kind": "reminder", "title": plan.title,
+                                  "when_ts": payload["due_ts"]}])
+    old = {"type": "create_reminder", "action_id": base, **payload}
+    row = st.enqueue_event(old, dedupe_key="action:" + base, target={"type": "verified_reminder"},
+                           expires_at=clock.time() + 45)
+    claim = st.claim_calendar_action(row["id"], "create_reminder", base, old)
+    st.complete_calendar_action(row["id"], "create_reminder", claim["claim_token"], {
+        "ok": True, "status": "succeeded", "error": "", "source_id": "native-OLD",
+        "title": plan.title, "due_ts": payload["due_ts"]})
+    queue = wiring.hub.subscribe()                                     # the app is "connected"
+    try:
+        got = await wiring.create_reminder(plan)
+    finally:
+        wiring.hub.unsubscribe(queue)
+    assert got["ok"] is True and got["where"] == "apple_and_wisp"      # the reminder exists: success
+    assert got["created"] is None                                      # but this call did not make it
+    assert len(st.reminder_actions_by_prefix(base)) == 1               # upstream really reused it
+
+
+async def test_a_reused_reminder_cannot_be_undone(store):
+    """With no identity recorded, Undo refuses and never reaches the delete."""
+    created_row(created=None)
+    store["heads"] = [native()]
+    assert (await wiring.undo("msg:m"))["ok"] is False and store["retired"] == []
 
 
 async def test_the_identity_is_persisted_in_the_ledger_through_a_live_pass(isolated, feed, monkeypatch):
     go_live(isolated)
-    fake_receipts(monkeypatch, lambda now: [receipt(now + 1, "native-Z")])
+    fake_receipts(monkeypatch, before=[], after=[action("new-1", "native-Z")])
 
     async def quiet(event):
         pass
@@ -536,6 +580,24 @@ async def test_the_identity_is_persisted_in_the_ledger_through_a_live_pass(isola
     assert [o.state for o in out] == ["created"]
     row = wiring.get_ledger().get(out[0].source_id)
     assert row["detail"]["result"]["created"] == {"source": "reminders", "source_id": "native-Z"}
+
+
+async def test_both_instants_of_a_repeated_hour_keep_distinct_exact_timestamps_through_serialization(monkeypatch):
+    """01:30 happens twice on 2026-11-01. Each separately specified instant must reach add_reminder
+    with its own offset, so the two reminders neither merge nor shift."""
+    from service.tools import assistant_tools
+    sent = []
+
+    async def capture(title, when_iso, kind="reminder"):
+        sent.append(when_iso)
+        return "Reminder set: “t” — in Wisp only; Apple Reminders was not changed (x)."
+    monkeypatch.setattr(assistant_tools, "add_reminder", capture)
+    pdt = datetime(2026, 11, 1, 8, 30, tzinfo=ZoneInfo("UTC")).timestamp()       # 01:30 PDT
+    pst = datetime(2026, 11, 1, 9, 30, tzinfo=ZoneInfo("UTC")).timestamp()       # 01:30 PST
+    for due in (pdt, pst):
+        await wiring.create_reminder(live.Plan("t", due, None, "today", "q"))
+    assert sent[0].endswith("-07:00") and sent[1].endswith("-08:00"), sent
+    assert [datetime.fromisoformat(s).timestamp() for s in sent] == [pdt, pst]
 
 
 # ----------------------------- the API's enable stamp survives the first live pass (review ATT182-03)
