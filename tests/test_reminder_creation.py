@@ -208,7 +208,7 @@ class ReminderCreation(unittest.IsolatedAsyncioTestCase):
 
         async def turn(prompt, previous=None):
             d = await route(prompt, last_assistant=previous)
-            return await loop.run_agent(LiveClient(), "Ling-3.0-tiny-oQ4e", history,
+            return await loop.run_agent(LiveClient(), "Ling-3.0-tiny-Wisp-V2-merged-oQ4e", history,
                 emit, type("Approver", (), {"confirm": AsyncMock(return_value=True)})(),
                 tools=d.tool_subset, expect_tool_first=d.expect_tool_first,
                 required_tool_groups=d.required_tool_groups, forbidden_tools=d.forbidden_tools,

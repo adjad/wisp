@@ -167,7 +167,7 @@ def test_installed_ling_template_places_schemas_before_changing_clock(monkeypatc
     # Use the actual model template when installed; portable invariant tests
     # above still run on machines without the local Ling model.
     path = Path(os.environ.get("WISP_LING_TEMPLATE", str(
-        Path.home() / "Desktop/OMLX_Model_Files/Ling-3.0-tiny-oQ4e/chat_template.jinja")))
+        Path.home() / "Desktop/OMLX_Model_Files/Ling-3.0-tiny-Wisp-V2-merged-oQ4e/chat_template.jinja")))
     if not path.exists():
         pytest.skip("Ling's installed chat template is unavailable")
     from jinja2 import Environment
