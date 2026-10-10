@@ -44,7 +44,7 @@ _OTHER_DAY = re.compile(
     r"|(?-i:\b(?!(?:AM|PM)\b)[A-Z]{2,6}\b)"
     r"|\b(?:yesterday|weekend|day\s+after|in\s+\w+\s+(?:days?|weeks?|months?)|"
     r"(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT|CET|CEST|EET|EEST|WET|WEST|"
-    r"IST|BST|JST|KST|HKT|SGT|AEST|AEDT|ACST|ACDT|AWST|NZST|NZDT|ET|CT|MT|PT|MSK)|"
+    r"IST|BST|JST|KST|HKT|SGT|AEST|AEDT|ACST|ACDT|AWST|NZST|NZDT|ET|CT|MT|PT|MSK|AKST|AKDT|Z)|"
     r"(?:[a-z]+\s+){1,4}(?:time|timezone)|timezone)\b", re.I)
 _HEDGE = re.compile(
     r"\?|\b(?:maybe|perhaps|probably|possibly|might|could\s+we|can\s+we|should\s+we|"
@@ -64,6 +64,22 @@ _PLAN_SENTENCE = re.compile(
     rf"(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?", re.I)
 _BOOKED_DINNER = re.compile(
     rf"dinner(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?,\s+I\s+booked\s+a\s+table", re.I)
+# The hackathon model fallback has a bounded assertion grammar too. Free-form
+# pre-clock text could otherwise hide an unsupported relative date or zone.
+# Keep this separate from _rule_plan so natural fixtures exercise inference.
+_MODEL_SENTENCE = re.compile(
+    rf"I\s+can\s+make\s+it\s+to\s+the\s+Quad(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?", re.I)
+# Only these surrounding sentences have an understood role in the prototype.
+# Unknown headings/attributions must not disappear when a sentence is located.
+_GREETING = re.compile(r"(?:hey|hi|hello)!", re.I)
+_LOGISTICS = re.compile(r"[.!]\s+bring\s+the\s+blue\s+folder[.!]?", re.I)
+_TIME_TAIL = re.compile(rf"(?:\s*{_DAY})?(?:,\s*I\s+booked\s+a\s+table)?\s*", re.I)
+_MONTH = re.compile(
+    r"(?<![a-z])(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])", re.I)
+_UNSUPPORTED_TEMPORAL = re.compile(
+    r"\b(?:on|next|last|days?|weeks?|months?|years?|first|second|third|fourth|fifth|sixth|"
+    r"seventh|eighth|ninth|tenth|eleventh|twelfth|\w*teenth|twentieth|thirtieth)\b", re.I)
 _PROMO = re.compile(
     r"https?://|www\.|\b\d{1,3}\s?%\s*off\b|\breply\s+stop\b|\bopt\s*out\b|\bunsubscribe\b|"
     r"\bfree\b|\bwinner\b|\bcongratulations\b|\bact\s+now\b|\blimited\s+time\b|\bverify\b|"
@@ -140,6 +156,37 @@ def _rule_plan(quote: str) -> bool:
     return bool(_PLAN_SENTENCE.fullmatch(skeleton) or _BOOKED_DINNER.fullmatch(skeleton))
 
 
+def _supported_source(text: str, match: re.Match) -> bool:
+    """A bounded source envelope and temporal clause, shared by both paths."""
+    quote = _sentence(text, match)
+    start = text.find(quote) if quote else -1
+    if start < 0 or text.find(quote, start + 1) >= 0:
+        return False
+    prefix = text[:start].strip()
+    suffix = text[start + len(quote):].strip()
+    if prefix and not _GREETING.fullmatch(prefix):
+        return False
+    if suffix not in {"", ".", "!"} and not _LOGISTICS.fullmatch(suffix):
+        return False
+    # There must be one clock span, with no other date/room/number interpreted
+    # as harmless context. Dates are not supported, regardless of separators.
+    remainder = text[:match.start()] + text[match.end():]
+    if re.search(r"\d", remainder) or _MONTH.search(remainder) or _UNSUPPORTED_TEMPORAL.search(remainder):
+        return False
+    clock = _clock(quote)
+    if clock is None:
+        return False
+    local_match = clock[2]
+    skeleton = quote[:local_match.start()] + "<TIME>" + quote[local_match.end():]
+    if not (_rule_plan(quote) or _MODEL_SENTENCE.fullmatch(skeleton)):
+        return False
+    # A clock must follow "at" and end its temporal clause. Only a supported
+    # day or the prototype's booking suffix may follow it. Any other suffix,
+    # including unknown zones of any case/length, is unclassified and abstains.
+    return bool(re.search(r"\bat\s*$", quote[:local_match.start()], re.I)
+                and _TIME_TAIL.fullmatch(quote[local_match.end():]))
+
+
 def resolve_when(text: str, sent_at: float) -> tuple[float, re.Match] | None:
     """Resolve the stated time to an epoch, or None when it is not unambiguous."""
     if _HEDGE.search(text) or _OTHER_DAY.search(text) or _UNSAFE_CONTEXT.search(text):
@@ -148,6 +195,15 @@ def resolve_when(text: str, sent_at: float) -> tuple[float, re.Match] | None:
     if clock is None:
         return None
     hour, minute, match = clock
+    if not _supported_source(text, match):
+        return None
+    # Dayparts have deliberately bounded, disjoint clock ranges. Never silently
+    # discard a contradictory qualifier and schedule its bare clock instead.
+    for phrase, low, high in ((r"this\s+morning", 0, 12),
+                              (r"this\s+afternoon", 12, 17),
+                              (r"this\s+evening|tonight", 17, 24)):
+        if re.search(rf"\b(?:{phrase})\b", text, re.I) and not low <= hour < high:
+            return None
     if _TOMORROW.search(text) and _TODAY.search(text):
         return None
     base = datetime.fromtimestamp(sent_at)

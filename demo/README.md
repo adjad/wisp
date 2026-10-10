@@ -92,6 +92,14 @@ separately enforce that no live Messages reader is called.
 - Only synthetic incoming Messages reach the model. No mail or sender learning.
 - Explicit supported clock times within 24 hours; questions, hedges, promotions,
   scam shapes, competing times and unsupported dates are silent.
+- The model fallback is intentionally limited to the whole sentence
+  `I can make it to the Quad [day] at [clock] [day]`, with optional supported
+  day words. This wording stays a rule miss. The model copies its sentence;
+  code validates it. This demo does not support arbitrary natural phrasing.
+- Surrounding text is limited to an optional `Hey!`, `Hi!`, or `Hello!` greeting
+  and an optional `Bring the blue folder` sentence. Unknown context abstains.
+- Dayparts use bounded local hours: morning before noon, afternoon from noon
+  until 5PM, evening/tonight from 5PM onward. Contradictory clocks abstain.
 - At most three Catch alerts per local day, with durable dedupe per message.
 - Bounded cached quotes and abstentions are rechecked against current state.
 - Commitment and alert persistence is atomic. The app uses normal durable replay.

@@ -642,6 +642,16 @@ _OTHER_PEOPLES_PLANS = [
     "Dinner with Alex has class at 6PM",
     "She said 'Meet me at 6PM'", "I heard Alex has dinner at 6PM",
     "I was told to meet Alex at 6PM", "I said 'I can make it at 6PM'",
+    *[f"{heading}{plan}" for heading in (
+        "Alex wrote this:\n", "Alex texted:\n", "Text from Alex:\n",
+        "Alex wrote this. ", "Message from Alex:\n", "Alex's invitation follows.\n",
+    ) for plan in ("Meet me at 6PM", "I can make it to the Quad at 6PM")],
+    "Meet me at 6PM. Those are Alex's exact words.",
+    "I can make it to the Quad at 6PM. Alex wrote that.",
+    "I am forwarding Alex’s invitation: meet me at 6PM",
+    "I can make it to the Quad in a fortnight at 6PM",
+    "I can make it to the Quad after tomorrow at 6PM",
+    "I can make it to the Quad in q time at 6PM",
 ]
 _UNSUPPORTED_QUALIFIERS = [
     "CET", "CEST", "IST", "BST", "JST", "AEST", "AEDT", "NZST", "NZDT",
@@ -650,6 +660,16 @@ _UNSUPPORTED_QUALIFIERS = [
     "+6:00", "-6:00", "+06:00", "-0600",
     "on 14 October", "on 14th October", "on the 14th of October",
     "on October 14th", "on 14 Oct.", "on 14-Oct", "on 14.Oct", "on 14/October",
+    "akst", "akdt", "Z", "z", "xyz", "unknownzone", "q",
+    "on October-14", "on Oct-14", "on October/14", "on October14",
+    "on 14thOctober", "on 10-14", "on the 14th", "on the fourteenth",
+]
+
+_UNSUPPORTED_HEADINGS = [
+    f"{heading}:\n{plan}" for heading in (
+        "akst", "akdt", "Z", "z", "xyz", "unknownzone",
+        "On October-14", "On Oct14", "On 10-14", "On the 14th",
+    ) for plan in ("Meet me at 6PM", NATURAL)
 ]
 
 
@@ -683,13 +703,13 @@ def test_audit_meridiem_period_cannot_strip_a_continuing_qualifier():
     assert extract.validate_quote(item, prefix, now=NOW, commitments=[]) is None
 
 
-@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS + [
+@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS + _UNSUPPORTED_HEADINGS + [
     f"Meet me at 6PM {q}" for q in _UNSUPPORTED_QUALIFIERS
 ] + [f"{NATURAL} {q}" for q in _UNSUPPORTED_QUALIFIERS])
 def test_audit_ineligible_messages_have_no_runtime_effects(text, store, monkeypatch):
     client = fake_client(monkeypatch, quote=text)
     # Even a cooperative model must not override code eligibility.
-    async def infer(_):
+    async def infer(item, model_client):
         client.calls += 1
         return text
     monkeypatch.setattr(extract.local_extractor, "_infer", infer)
@@ -698,6 +718,65 @@ def test_audit_ineligible_messages_have_no_runtime_effects(text, store, monkeypa
     assert client.calls == 0 and hub.events == []
     assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
     assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("text", _UNSUPPORTED_HEADINGS)
+def test_residual_headings_cannot_be_stripped_before_time_validation(text):
+    item = msg(text)
+    assert detectors.resolve_when(text, item.ts) is None
+    assert run([item]) == []
+    assert extract.eligible_when(item, now=NOW, commitments=[]) is None
+    assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
+
+
+def test_runtime_inference_stub_positive_control(store, monkeypatch):
+    client = fake_client(monkeypatch, quote=NATURAL)
+    async def infer(item, model_client):
+        client.calls += 1
+        assert item.text == NATURAL
+        return item.text
+    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
+    hub = FakeHub()
+    assert len(tick(store, hub, [msg(NATURAL, id="demo:stub-positive")])) == 1
+    assert client.calls == 1 and len(hub.events) == 1
+    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 1
+
+
+@pytest.mark.parametrize("daypart,clock", [
+    ("this morning", "6PM"), ("this morning", "12PM"),
+    ("this afternoon", "11AM"), ("this afternoon", "5PM"),
+    ("this evening", "4PM"), ("this evening", "6AM"),
+    ("tonight", "4PM"), ("tonight", "12AM"),
+])
+def test_incompatible_daypart_has_no_dispatch_or_effect(daypart, clock, store, monkeypatch):
+    calls = []
+    async def infer(item, client):
+        calls.append(item.id)
+        return item.text
+    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
+    hub = FakeHub()
+    for plan in ("Meet me", "I can make it to the Quad"):
+        text = f"{plan} {daypart} at {clock}"
+        item = msg(text, id=f"demo:daypart-{plan}")
+        assert detectors.resolve_when(text, item.ts) is None
+        assert run([item]) == []
+        assert extract.eligible_when(item, now=NOW, commitments=[]) is None
+        assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
+        assert tick(store, hub, [item]) == []
+    assert calls == [] and hub.events == []
+    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("daypart,clock", [
+    ("this morning", "11:59AM"), ("this afternoon", "12PM"),
+    ("this afternoon", "4:59PM"), ("this evening", "5PM"),
+    ("this evening", "11:59PM"), ("tonight", "5PM"),
+])
+def test_compatible_daypart_boundaries_resolve(daypart, clock):
+    text = f"Meet me {daypart} at {clock}"
+    assert detectors.resolve_when(text, at(1)) is not None
 
 
 @pytest.mark.parametrize("text", [
