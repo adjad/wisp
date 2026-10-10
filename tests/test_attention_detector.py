@@ -620,3 +620,15 @@ def test_synthetic_catch_never_replays_outside_demo_mode(store, monkeypatch):
     assert [r["id"] for r in store.pending_events()] == [live["event_id"]]
     assert not store.event_attempt(demo["event_id"])
     assert store.event_attempt(live["event_id"])
+
+
+@pytest.mark.parametrize("offset", ["+06:00", "-0600", "+0600", "-06:00"])
+def test_unsupported_numeric_timezone_offsets_fail_closed(offset):
+    # 6AM and +06:00 used to collapse to the same clock, hiding the offset.
+    text = f"I can make it to the Quad at 6AM {offset}"
+    now = at(19)
+    item = msg(text, ts=now-60)
+    assert detectors.resolve_when(text, item.ts) is None
+    assert extract.eligible_when(item, now=now, commitments=[]) is None
+    assert extract.validate_quote(item, text, now=now, commitments=[]) is None
+    assert detectors.detect([msg(f"Meet me at 6AM {offset}", ts=now-60)], now=now, commitments=[]) == []

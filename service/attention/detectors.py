@@ -37,6 +37,7 @@ _OTHER_DAY = re.compile(
     r"|\bnext\s+(?:week|weekend|month|year)\b"
     r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
     r"|\b\d{1,2}/\d{1,2}\b|\b\d{4}-\d{2}-\d{2}\b"
+    r"|(?<!\w)[+-]\d{2}:?\d{2}(?!\w)"
     r"|\b(?:yesterday|weekend|day\s+after|in\s+\w+\s+(?:days?|weeks?|months?)|"
     r"(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT)|"
     r"(?:eastern|central|mountain|pacific|local|your|my)\s+time|timezone)\b", re.I)
