@@ -72,8 +72,18 @@ class Resolved:
     blocked: str | None = None      # why nothing was resolved
 
 
+class _AmbiguousWall(ValueError):
+    """A local wall time that does not exist (spring gap) or happens twice (autumn fold)."""
+
+
 def _at(day: date, hour: int, minute: int, zone: ZoneInfo) -> datetime:
-    return datetime.combine(day, time(hour, minute), zone)
+    """A wall time in `zone`. Refuses a DST gap or fold instead of silently picking an instant:
+    the sender meant one of them, and a reminder an hour off is worse than none."""
+    wall = datetime.combine(day, time(hour, minute))
+    first, second = wall.replace(tzinfo=zone, fold=0), wall.replace(tzinfo=zone, fold=1)
+    if first.utcoffset() != second.utcoffset():
+        raise _AmbiguousWall(str(wall))
+    return first
 
 
 def _next_clock(arrival: datetime, hour: int, minute: int, zone: ZoneInfo) -> datetime:
@@ -152,8 +162,53 @@ def _yearless(arrival: datetime, month: int, day: int) -> date | None:
     return None
 
 
+# A day the sender named. If one was written and the result still carries no day, it was lost
+# on the way (the extractor can drop it), and "the next 11:30" is a guess about a different day.
+_STATED_DAY = re.compile(
+    r"\b(?:tomorrow|tmrw|tmr|tmw|day\s+after\s+tomorrow|" + "|".join(_WEEKDAYS) + r")\b"
+    r"|\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b\d{4}-\d{2}-\d{2}\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b", re.I)
+
+
+def _without_stray_words(text: str, tz: str, arrival: datetime, source_id: str) -> str:
+    """Drop a trailing word the extractor mistook for a timezone ("... 11:30am lol").
+
+    The extractor files ANY short word after a clock under `timezone`, and once it has chosen
+    that "zone" it can no longer resolve a "tomorrow" earlier in the same phrase. Setting a word
+    that is not a real zone off with a comma restores the phrase to what the sender meant, and keeps
+    the word ("lmk" still marks a proposal)."""
+    for _ in range(3):
+        facts = extract_temporal_facts(text, captured_at=arrival, timezone=tz,
+                                       evidence=EvidenceContext("attention", source_id)).facts
+        for f in facts:
+            named, quote = f.start.timezone, f.span.quote
+            if (f.start.hour is not None and named and named != tz and named not in ("UTC", "Z")
+                    and "/" not in named and not _ZONE_ABBREVIATION.match(named)
+                    and quote in text):
+                # The word follows the clock; the span may run on past it ("... 11:30am ur place").
+                spaced = re.sub(r"(?<=[\dapmAPM])\s+(" + re.escape(named) + r")\b", r", \1", quote, count=1)
+                if spaced != quote:
+                    text = text.replace(quote, spaced, 1)
+                    break
+        else:
+            return text
+    return text
+
+
 def resolve(text: str, arrival: datetime, tz: str, source_id: str = "x") -> Resolved:
     """Best single time stated in `text`, or a `Resolved` explaining why none."""
+    arrival = arrival.astimezone(ZoneInfo(tz))
+    text = _without_stray_words(text, tz, arrival, source_id)
+    try:
+        got = _resolve(text, arrival, tz, source_id)
+    except _AmbiguousWall:
+        return Resolved(None, None, False, "", blocked="dst_ambiguous")
+    if got.has_clock and "date:next_occurrence" in got.inferred and _STATED_DAY.search(text):
+        return Resolved(None, None, False, got.quote, tentative=got.tentative, blocked="date_unresolved")
+    return got
+
+
+def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
     zone = ZoneInfo(tz)
     arrival = arrival.astimezone(zone)
     facts = list(extract_temporal_facts(
