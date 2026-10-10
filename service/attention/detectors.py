@@ -31,28 +31,39 @@ _H24 = re.compile(r"(?<![\w:])(?P<h>1[3-9]|2[0-3]|0\d):(?P<m>[0-5]\d)(?![\w:])")
 _NOON = re.compile(r"\bnoon\b", re.I)
 _TOMORROW = re.compile(r"\b(?:tomorrow|tmrw|tmr)\b", re.I)
 _TODAY = re.compile(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", re.I)
-# A day we do not resolve (weekday, month/day, "next week"): never guess.
+# Unsupported dates/zones: never discard a qualifier and guess local time.
+# Unknown uppercase codes also abstain; false negatives are safe in this demo.
 _OTHER_DAY = re.compile(
     r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues?|wed|thurs?|fri|sat|sun)\b"
     r"|\bnext\s+(?:week|weekend|month|year)\b"
-    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b"
+    r"|\b\d{1,2}(?:st|nd|rd|th)?[\s./-]+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b"
     r"|\b\d{1,2}/\d{1,2}\b|\b\d{4}-\d{2}-\d{2}\b"
-    r"|(?<!\w)[+-]\d{2}:?\d{2}(?!\w)"
+    r"|[+-]\d{1,2}:?\d{2}(?!\w)"
+    r"|\b[a-z_]+/[a-z_]+(?:/[a-z_]+)?\b"
+    r"|(?-i:\b(?!(?:AM|PM)\b)[A-Z]{2,6}\b)"
     r"|\b(?:yesterday|weekend|day\s+after|in\s+\w+\s+(?:days?|weeks?|months?)|"
-    r"(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT)|"
-    r"(?:eastern|central|mountain|pacific|local|your|my)\s+time|timezone)\b", re.I)
+    r"(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT|CET|CEST|EET|EEST|WET|WEST|"
+    r"IST|BST|JST|KST|HKT|SGT|AEST|AEDT|ACST|ACDT|AWST|NZST|NZDT|ET|CT|MT|PT|MSK)|"
+    r"(?:[a-z]+\s+){1,4}(?:time|timezone)|timezone)\b", re.I)
 _HEDGE = re.compile(
     r"\?|\b(?:maybe|perhaps|probably|possibly|might|could\s+we|can\s+we|should\s+we|"
     r"if\s+(?:you|we|i|it)|tentative|tbd|tbc|or\s+so|around|about|approx\w*|roughly|"
     r"cancel\w*|resched\w*|moved|postponed|not|never|won['’]?t|cannot|can['’]?t|"
     r"don['’]?t|would|could|should|unless|hopefully|hoping|hope|try|trying|"
     r"depending|assuming|aiming)\b", re.I)
-# What makes a time a plan rather than a passing mention.
-_PLAN = re.compile(
-    r"\b(?:meet|meeting|see\s+you|pick\s*(?:you\s*)?up|drop\s*(?:you\s*)?off|dinner|lunch|"
-    r"breakfast|brunch|coffee|drinks|class|lecture|exam|quiz|interview|appointment|flight|"
-    r"reservation|come\s+over|come\s+by|call\s+me|game|practice|rehearsal|party|"
-    r"be\s+there|be\s+at|show\s+up|leaving|leave|there|at\s+the)\b", re.I)
+# Complete supported plan sentences, with the located clock replaced by <TIME>.
+# An activity mentioned anywhere in a message is not evidence of participation.
+# Keep the prototype's direct invitations and narrow elliptical schedule forms;
+# other phrasing must pass the local extractor's separate personal-plan checks.
+_DAY = r"(?:today|tonight|tomorrow|tmrw|tmr|this\s+(?:morning|afternoon|evening))"
+_PARTICIPANT = r"(?:mom|dad|you|us|(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}))"
+_PLAN_SENTENCE = re.compile(
+    rf"(?:meet\s+me(?:\s+in\s+the\s+Quad)?|see\s+you|class|"
+    rf"(?:dinner|lunch)(?:\s+with\s+{_PARTICIPANT})?)"
+    rf"(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?", re.I)
+_BOOKED_DINNER = re.compile(
+    rf"dinner(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?,\s+I\s+booked\s+a\s+table", re.I)
 _PROMO = re.compile(
     r"https?://|www\.|\b\d{1,3}\s?%\s*off\b|\breply\s+stop\b|\bopt\s*out\b|\bunsubscribe\b|"
     r"\bfree\b|\bwinner\b|\bcongratulations\b|\bact\s+now\b|\blimited\s+time\b|\bverify\b|"
@@ -66,7 +77,8 @@ _STOP = {"the", "and", "with", "for", "you", "your", "that", "this", "have", "wi
 # clause cannot strip a condition, quotation, cancellation or instruction.
 _UNSAFE_CONTEXT = re.compile(
     r"\b(?:if|unless|pretend|imagine|hypothetical|example|quoted?|forwarded|"
-    r"no\s+longer|used\s+to|ignore|instructions?|system|assistant)\b|[\"“”`>]", re.I)
+    r"said|says|told|heard|reported|no\s+longer|used\s+to|ignore|instructions?|system|assistant)\b"
+    r"|[\"“”`>]|(?<!\w)['‘]|['’](?!\w)", re.I)
 
 
 @dataclass(frozen=True)
@@ -109,11 +121,23 @@ def _clock(text: str) -> tuple[int, int, re.Match] | None:
 def _sentence(text: str, match: re.Match) -> str:
     """The sentence holding the time, as an exact substring of ``text``."""
     start = max((text.rfind(c, 0, match.start()) for c in ".!?\n"), default=-1) + 1
-    # "6 p.m." swallows its closing period into the match; that period still ends the sentence.
-    after = match.end() - 1 if match[0].endswith(".") else match.end()
+    # A period inside p.m./a.m. may be followed by a qualifier in the same
+    # sentence. Never truncate there and lose "is Alex's plan", for example.
+    # Ambiguous abbreviation boundaries retain the continuation and fail closed.
+    abbreviation = bool(re.search(r"[ap]\.m\.$", match[0], re.I))
+    after = match.end() if abbreviation or not match[0].endswith(".") else match.end() - 1
     ends = [i for i in (text.find(c, after) for c in ".!?\n") if i != -1]
     end = min(ends) if ends else len(text)
     return text[start:end].strip()
+
+
+def _rule_plan(quote: str) -> bool:
+    clock = _clock(quote)
+    if clock is None:
+        return False
+    match = clock[2]
+    skeleton = quote[:match.start()] + "<TIME>" + quote[match.end():]
+    return bool(_PLAN_SENTENCE.fullmatch(skeleton) or _BOOKED_DINNER.fullmatch(skeleton))
 
 
 def resolve_when(text: str, sent_at: float) -> tuple[float, re.Match] | None:
@@ -164,7 +188,7 @@ def detect(items: list[Item], *, now: float, commitments: list[dict],
         text = item.text or ""
         if item.direction != "incoming" or not text.strip() or not item.sender.strip():
             continue
-        if is_promo_or_scam(item.sender, text) or not _PLAN.search(text):
+        if is_promo_or_scam(item.sender, text):
             continue
         resolved = resolve_when(text, item.ts)
         if resolved is None:
@@ -173,7 +197,7 @@ def detect(items: list[Item], *, now: float, commitments: list[dict],
         if not (now <= when_ts <= now + horizon_s):
             continue
         quote = _sentence(text, match)
-        if not quote or quote not in text:
+        if not quote or quote not in text or not _rule_plan(quote):
             continue                    # grounded or absent
         if already_on_file(when_ts, text, commitments):
             continue

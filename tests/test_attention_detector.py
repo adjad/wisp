@@ -632,3 +632,79 @@ def test_unsupported_numeric_timezone_offsets_fail_closed(offset):
     assert extract.eligible_when(item, now=now, commitments=[]) is None
     assert extract.validate_quote(item, text, now=now, commitments=[]) is None
     assert detectors.detect([msg(f"Meet me at 6AM {offset}", ts=now-60)], now=now, commitments=[]) == []
+
+
+_OTHER_PEOPLES_PLANS = [
+    "Alex will be at the Quad at 6PM", "Alex has dinner at 6PM",
+    "He has class at 6PM", "Her dinner is at 6PM", "Alex's appointment is at 6PM",
+    "Dinner at 6PM is Alex's plan", "Dinner at 6PM is when the restaurant opens",
+    "Dinner at 6 p.m. is Alex's plan", "Dinner at 6 p.m. is when the restaurant opens",
+    "Dinner with Alex has class at 6PM",
+    "She said 'Meet me at 6PM'", "I heard Alex has dinner at 6PM",
+    "I was told to meet Alex at 6PM", "I said 'I can make it at 6PM'",
+]
+_UNSUPPORTED_QUALIFIERS = [
+    "CET", "CEST", "IST", "BST", "JST", "AEST", "AEDT", "NZST", "NZDT",
+    "PT", "ET", "MSK", "XYZ", "pt", "msk",
+    "Europe/Paris", "America/Los_Angeles", "Central European time", "Paris time",
+    "+6:00", "-6:00", "+06:00", "-0600",
+    "on 14 October", "on 14th October", "on the 14th of October",
+    "on October 14th", "on 14 Oct.", "on 14-Oct", "on 14.Oct", "on 14/October",
+]
+
+
+@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS)
+def test_audit_third_party_and_reported_plans_are_not_rule_hits(text):
+    assert run([msg(text)]) == []
+
+
+@pytest.mark.parametrize("qualifier", _UNSUPPORTED_QUALIFIERS)
+def test_audit_unsupported_qualifiers_rejected_by_resolver_rules_and_model(qualifier):
+    for text in (f"Meet me at 6PM {qualifier}", f"{NATURAL} {qualifier}"):
+        item = msg(text)
+        assert detectors.resolve_when(text, item.ts) is None
+        assert run([item]) == []
+        assert extract.eligible_when(item, now=NOW, commitments=[]) is None
+        assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
+
+
+@pytest.mark.parametrize("text", ["Meet me at 6PM+6:00", NATURAL + "-06:00"])
+def test_audit_attached_numeric_zone_is_rejected(text):
+    item = msg(text)
+    assert detectors.resolve_when(text, item.ts) is None
+    assert run([item]) == []
+    assert extract.eligible_when(item, now=NOW, commitments=[]) is None
+    assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
+
+
+def test_audit_meridiem_period_cannot_strip_a_continuing_qualifier():
+    prefix = "I can make it to the Quad at 6 p.m."
+    item = msg(prefix + " is just something Alex wrote")
+    assert extract.validate_quote(item, prefix, now=NOW, commitments=[]) is None
+
+
+@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS + [
+    f"Meet me at 6PM {q}" for q in _UNSUPPORTED_QUALIFIERS
+] + [f"{NATURAL} {q}" for q in _UNSUPPORTED_QUALIFIERS])
+def test_audit_ineligible_messages_have_no_runtime_effects(text, store, monkeypatch):
+    client = fake_client(monkeypatch, quote=text)
+    # Even a cooperative model must not override code eligibility.
+    async def infer(_):
+        client.calls += 1
+        return text
+    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
+    hub = FakeHub()
+    assert tick(store, hub, [msg(text, id="demo:audit")]) == []
+    assert client.calls == 0 and hub.events == []
+    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "Meet me in the Quad at 6PM", "Meet me at 6PM", "see you at 16:30",
+    "Dinner at 7:30pm", "Dinner with Mom at 6pm", "class at 9am",
+    "lunch tomorrow at 12pm", "Dinner at 6PM, I booked a table",
+    "Meet me today at 6 p.m.", "Meet me at 9AM tomorrow",
+])
+def test_audit_repair_preserves_supported_complete_plan_sentences(text):
+    assert len(run([msg(text)])) == 1
