@@ -374,6 +374,8 @@ from service.memory.api import router as memory_router
 app.include_router(memory_router)
 from service.assistant.today_api import router as today_router
 app.include_router(today_router)
+from service.assistant.attention_api import router as attention_router
+app.include_router(attention_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 

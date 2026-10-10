@@ -70,6 +70,7 @@ class Resolved:
     inferred: tuple[str, ...] = ()  # e.g. ("date:next_occurrence", "meridiem")
     tentative: bool = False         # a question or proposal, or a guessed meridiem
     blocked: str | None = None      # why nothing was resolved
+    at: int | None = None           # offset in the text of the phrase that gave the time
 
 
 class _AmbiguousWall(ValueError):
@@ -241,32 +242,33 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
     # Every day the message mentions. Mentions that agree ("Monday (10/5)") are one day.
     # The day the message itself arrived on is dropped when another day is named
     # ("Quick Sunday heads-up. ... due Monday"): it describes the present, not the plan.
-    days: dict[date, tuple[str, ...]] = {}
+    days: dict[date, tuple[tuple[str, ...], int]] = {}
     for f in facts:
         s = f.start
         if s.year and s.month and s.day:
-            days.setdefault(date(s.year, s.month, s.day), ())
+            days.setdefault(date(s.year, s.month, s.day), ((), f.span.start))
         elif s.month and s.day:
             cand = _yearless(arrival, s.month, s.day)
             if cand:
-                days.setdefault(cand, ("date:year",))
+                days.setdefault(cand, (("date:year",), f.span.start))
         else:
             cand = _weekday_date(arrival, f.span.quote)
             if cand:
-                days.setdefault(cand, ("date:nearest_weekday",))
+                days.setdefault(cand, (("date:nearest_weekday",), f.span.start))
     if len(days) > 1 and arrival.date() in days:
         del days[arrival.date()]
     if len(days) > 1:
         return Resolved(None, None, False, quote, tentative=tentative, blocked="conflicting_times")
-    day, inferred = next(iter(days.items())) if days else (None, ())
+    day, (inferred, day_at) = next(iter(days.items())) if days else (None, ((), None))
     inferred = list(inferred)
 
     if not clocks:
         if day is None:
             return Resolved(None, None, False, quote, tentative=tentative, blocked="no_usable_time")
-        return Resolved(None, day, False, quote, tuple(inferred), tentative)
+        return Resolved(None, day, False, quote, tuple(inferred), tentative, at=day_at)
 
     f = clocks[0]
+    at = f.span.start
     hour, minute = f.start.hour, f.start.minute or 0
     if source is not None:                    # the sender named a zone: keep that instant
         return _in_source_zone(f, source, zone, quote, inferred, tentative)
@@ -279,15 +281,15 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
             start = min(_next_clock(arrival, h, minute, zone) for h in (hour, hour + 12))
             return Resolved(start, start.date(), True, quote,
                             tuple(inferred + ["date:next_occurrence"]),
-                            tentative or _far(start, arrival))
+                            tentative or _far(start, arrival), at=at)
         # A known day with a bare hour: 1-6 is the afternoon; 7-11 could be either.
         if not 1 <= hour <= 6:
             tentative = True
         hour += 12
-        return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative)
+        return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative, at=at)
     if day is None:
         start = _next_clock(arrival, hour, minute, zone)
         return Resolved(start, start.date(), True, quote,
                         tuple(inferred + ["date:next_occurrence"]),
-                        tentative or _far(start, arrival))
-    return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative)
+                        tentative or _far(start, arrival), at=at)
+    return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative, at=at)
