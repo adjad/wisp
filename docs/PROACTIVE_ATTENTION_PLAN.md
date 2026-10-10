@@ -197,7 +197,78 @@ failure in Slice 0's report.
 | `schedule_change` | Text references an existing commitment with a *different* date (uses A09) |
 | `unanswered_ask` | Inbound request with no reply after N hours (Messages only; Sent mail isn't cached, P5) |
 
-*Owns:* `service/attention/detectors.py`. Detectors must not import the model client.
+**Built (core, offline).** `uncaptured_commitment` exists as a pure function over a frozen
+snapshot, scored by the Slice 0 harness (`replay_attention.py report --predictor
+uncaptured_commitment`). It is a fixed sequence of gates; the first "no" is recorded as
+`blocked_by`, and the report shows `missed_by_gate` so every labelled miss names the gate that
+caused it:
+
+| Gate | Module | Rule |
+| --- | --- | --- |
+| direction | `detectors` | Incoming only |
+| screen | `exclusions` | Promo, scam, automated senders never alert (P3) |
+| contact | `contacts` | Recent two-way contact, computed as of arrival, never from later messages (P4) |
+| resolve | `resolve` | A concrete time read the way a person reads a chat; every default it applies is recorded in `inferred` |
+| soon | `detectors` | Starts within 48h of arrival (date-only: within 2 calendar days) |
+| confirmed | `detectors` | A question or guessed meridiem alerts only if the user replied in-thread within 6h without declining |
+| on_file | `matching` | Not already in Calendar or Reminders; errs toward "known" |
+
+Things the resolver deliberately refuses: picking between competing times, treating "in 20
+minutes" as a plan, resolving a cancelled or past-tense clause. It also corrects one
+shortcoming of the shared parser for chat: "7:30" with no am/pm is read as 07:30 with no
+ambiguity flag, which would turn "dinner tomorrow at 7:30" into breakfast.
+
+**First measurement (2026-10-08, 173 items, labels by Claude, not the user).** At the user's
+request the sample was labelled by the assistant, kept in a separate file
+(`labels-<snapshot>.claude.jsonl`; the user's own file is untouched). Of 173 scored items only
+**8 are real "missing" commitments** (4.6%), so every number here has wide error bars, and the
+detector was then tuned on these same items, so they are **in-sample**: evidence that the gates
+work, not a forecast.
+
+| | Alerts | Correct | Precision | Recall |
+| --- | --- | --- | --- | --- |
+| `cue_baseline` (any time/place cue) | 114 | 7 | 6% | 88% |
+| `uncaptured_commitment`, first cut | 15 | 2 | 13% | 25% |
+| `uncaptured_commitment`, after review | 3 | 3 | 100% | 38% |
+
+The first cut's false alerts were almost all one thing: 11 of 13 were *date-only* mentions
+("your order arrives tomorrow", "check your stocks today", "nothing due today"). The review
+changed the rules for stated reasons rather than for single items:
+
+- **A bare day needs an obligation word** (`due`, `don't forget`, `pick up`, `exam`...). A
+  clock time needs none.
+- **Contact means the user has written back (P4, interpretation to confirm).** Every real
+  commitment came from a thread with 5 to 100 replies from the user; a group blast with 19
+  messages and no reply caused a false alert. The earlier "3+ recent incoming" path is gone.
+- **Cancellation and hedging are judged from words that mean them.** The shared parser marked
+  any clause containing "not" as cancelled and any containing "if" as conditional, which
+  refused "due Monday, if it's not already done". `got` is no longer treated as past tense
+  ("the deadline got extended to tonight").
+- **Several mentions of the same day are one day** ("Monday (10/5)"), and the day the message
+  arrived on is context when another day is named ("Quick Sunday heads-up... due Monday").
+- A half-hour drift (1PM vs a 1:30 entry) still counts as on file.
+
+**What it still misses (5 of 8), by cause:**
+
+| Cause | Misses | Fix lives in |
+| --- | ---: | --- |
+| Time is in an earlier message in the thread ("yea sure I'll meet u there" after the user proposed lunch at 2:30) or two days are named | 2 | Thread-aware resolution, Slice 3 |
+| An obligation with no time at all ("package is ready at the mailroom", "get stuff from Trader Joe's today") | 2 | Task/obligation detection; likely model-assisted, Slice 3 |
+| Mail ("final reminder" about a form; no time in the subject) | 1 | Mail has no two-way signal and is subject-only; open question 4 |
+
+Prefilter check: the control stratum had 1 missing in 59 (1.7%), about 24 more across the
+1,414 texts the cue prefilter never shows anyone. Those are the same no-time obligations.
+
+Also found while labelling: one change-of-time message ("date & time changed to 9:00 PM") for
+an event whose 8:00 PM entry is already on the calendar. That is a `schedule_change` case and
+is deliberately not a notification in v1.
+
+**Known limits.** Undated Reminders are not in the commitments table, so they cannot match.
+English only. The past-tense and decline word lists are short and untuned. "Soon" is a fixed
+48h placeholder. Not wired to any live source and creates nothing.
+
+*Owns:* `service/attention/{detectors,resolve,exclusions,contacts,matching,prediction}.py`,
+`tests/test_attention_detector.py`. Detectors must not import the model client.
 
 ### Slice 3 — Model extraction for the remainder (M)
 

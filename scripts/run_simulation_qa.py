@@ -214,6 +214,9 @@ ADDITIONAL_FULL_TESTS = {
     # Proactive-attention Slice 0: synthetic fixtures and temp directories only; no
     # subprocess, network, model, or access to the real caches or assistant.db.
     "tests/test_attention_slice0.py",
+    # Pure detector, resolver, screen and matcher over in-memory synthetic items;
+    # no I/O, clock, model or live store.
+    "tests/test_attention_detector.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
