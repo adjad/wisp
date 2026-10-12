@@ -132,6 +132,7 @@ def power_control(action: str) -> str:
              "install the pending update", "update macos"],
 )
 def software_update(action: str = "check", confirm: bool = False) -> str:
+    from service.router.model_led import BuiltinCompletion
     a = (action or "check").strip().lower()
     if a == "check":
         p = _run(["softwareupdate", "-l"], timeout=60)
@@ -144,7 +145,8 @@ def software_update(action: str = "check", confirm: bool = False) -> str:
             return ("(error: installing updates needs confirm=true — it may "
                     "restart the Mac. Check first with action='check'.)")
         p = _run(["softwareupdate", "-i", "-a"], timeout=1800)
-        return (p.stdout + p.stderr).strip() or "(update process finished with no output.)"
+        return BuiltinCompletion((p.stdout + p.stderr).strip() or "(update process finished with no output.)",
+                                 tool_name="software_update", completion_code=p.returncode)
     return f"(error: unknown action {a!r}. Use check or install.)"
 
 
@@ -224,6 +226,7 @@ def manage_login_items(action: str, app_path: str = "") -> str:
 )
 def uninstall_app(name: str) -> str:
     from pathlib import Path
+    from service.router.model_led import BuiltinCompletion
 
     app_name = name.strip()
     if not app_name.endswith(".app"):
@@ -235,9 +238,10 @@ def uninstall_app(name: str) -> str:
             result = _osa(script)
             if result.returncode != 0:
                 return f"(could not remove {app_name}: {(result.stderr or '').strip()})"
-            return (f"Moved {app_name} to Trash. Preference files and support "
-                    f"data (if any) were left behind — macOS has no built-in "
-                    f"way to clean those up.")
+            return BuiltinCompletion(f"Moved {app_name} to Trash. Preference files and support "
+                                     f"data (if any) were left behind — macOS has no built-in "
+                                     f"way to clean those up.",
+                                     tool_name="uninstall_app", completion_code=result.returncode)
     return f"(couldn't find {app_name} in /Applications.)"
 
 

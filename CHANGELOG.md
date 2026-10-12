@@ -4,7 +4,72 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-12
+
 ### Added
+
+- Added model-led routing behind `WISP_MODEL_LED_ROUTING=1` (off by default): the local model reads each request and picks tools from a capability catalog instead of the rules router. Remote-only mode, behavior questions and literal inputs keep the rules router, and sends still always ask first. It stays off by default because Ling V2 does not yet follow its tool-loading step reliably.
+
+### Changed
+
+- Pull-request CI runs a preview build and Simulation QA as parallel jobs, and Simulation QA runs test modules concurrently (`--jobs N`). Tags and releases still run the full strict build with every gate.
+- Remote inference is now a generic, user-configured mode with no built-in server. It starts only when Wisp is launched with `WISP_REMOTE_ONLY=1` and `~/.moe/config.yaml` has a complete `inference.remote_only` profile (an HTTPS `base_url`, a `model_id`, a `keychain:<name>` credential and every request limit). With the flag set and no valid profile, the backend refuses to start. See docs/REMOTE_INFERENCE.md.
+- Remote inference is now read/write. Every built-in tool that doesn't need Wisp's on-Mac models (so not `create_tool`, `use_skill`, `wisp_skills`, `wisp_mcp` or skill and MCP tools) runs under the normal safety policy: sends always confirm and can't be granted, writes ask once, always or never. This is what `WISP_REMOTE_FULL=1` used to turn on. The separate read-only remote mode is gone, along with its 403s on the behavior and approval endpoints. For a read-only Mac, use View Only, which still denies writes in remote mode. `WISP_REMOTE_FULL` is now ignored (it logs one deprecation line).
+- Remote inference refuses a `base_url` with spaces, control characters or non-ASCII characters (a leading space or trailing newline used to pass).
+- Behavior learning is now on by default. Turn it off with "Learn my routines" in Settings (Privacy & Access), which takes effect at once and keeps what was already learned, or launch with `WISP_BEHAVIOR=0`. `WISP_BEHAVIOR=1` or `0` overrides the saved setting. It still learns only from your calendar, reminders, message timing (never message text) and how you use Wisp, nudges at most 4 a day, acts automatically only on Wisp's own schedule, and keeps everything on this Mac. New endpoints: `GET/PUT /behavior/settings`.
+- Behavior learning privacy controls: Settings has **Forget what Wisp learned** (`DELETE /behavior/data`, JSON body `{"confirm": true}`), which deletes the learned data and removes the untouched reminders and holds Wisp added on its own (anything you edited or completed is kept). The 180-day and 30-day age-out now runs while learning is off too. Automatic actions ask the safety policy like the `add_reminder` tool, so View Only turns them into offers. If `config.yaml` is unreadable, learning is treated as off and saving the setting returns a clear error. A pass already running when you switch learning off publishes and performs nothing. Under remote inference, nudge wording and event labeling are off by default (`WISP_BEHAVIOR_PHRASER=1` opts in), and the Settings text says what goes to your server.
+
+### Removed
+
+- Removed the GX10 server support: `brain_server/`, `deploy/gx10/`, the GX10 runbooks, the remote behavior brain (`WISP_BRAIN_MODE`, `WISP_BRAIN_URL`, `WISP_BRAIN_TOKEN`) and the pinned GX10 remote-inference profile.
+- Removed the Intel Mac builds: the `WISP_REMOTE_ONLY_DEMO`, `WISP_FOUNDER_DEMO` and `WISP_REMOTE_FULL` app compile flags and their code paths.
+- Removed every demo mode:
+  - the founder demo and its fictional fixtures (`WISP_FOUNDER_DEMO`);
+  - the Aria demo world (`WISP_ARIA_DEMO`, the `/demo/aria/*` endpoints, the menu toggle and the separate demo state directory);
+  - the behavior engine's synthetic persona mode (`WISP_BEHAVIOR_SYNTHETIC_ONLY`, `POST /behavior/reset`);
+  - the Catch demo (`WISP_ATTENTION_DEMO`). The proactive attention runner is unchanged;
+  - the `demo/` tooling.
+
+An older install may still have an unused `~/.moe/aria-demo/` folder from the Aria demo. Wisp no longer reads it, so you can delete it.
+
+### Fixed
+
+- `http_request` no longer follows redirects. A 307 or 308 used to re-send the request body and custom headers to a host you never approved; a redirect is now reported as not followed.
+- "What do you know about me?" answers from what you asked Wisp to remember again, now that behavior learning is on by default. "What have you learned about me?" and questions about your habits still list learned routines.
+
+## [1.3.0] - 2026-10-11
+
+### Added
+
+- Added proactive attention: Wisp watches incoming messages for plans or commitments that aren't on your calendar ("Can we do Thursday at 3?") and, in shadow mode (the default), records what it would do without acting. Opting in to live mode creates a verified Apple Reminder for each one, at most 3 a day, never 22:00–08:00, only when Wisp's safety policy allows the write (view-only blocks it), with Undo that only removes what Wisp created. Message quotes are cleared from its ledger after 7 days.
+- Added `./scripts/wisp-build preview`: an installable, ad-hoc-signed preview build in minutes (no Simulation QA), never eligible for release.
+
+### Changed
+
+- Model-backed tests use Ling 3.0 tiny V2 (oQ4e).
+- `correct_pattern` now asks before changing a learned pattern, and the behavior write endpoints are refused in read-only remote builds.
+- Wisp is now a regular Mac app instead of a menu-bar-only one. It has a Dock icon, an app menu (Settings, Hide, Close Window, Quit) and a Window menu, opening it shows the Chat window, and clicking the Dock icon brings the window back. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q quits it through the same shutdown as the menu-bar Quit. The notch and the menu-bar icon are unchanged.
+
+### Fixed
+
+- The Chat thread no longer pulls you back to the bottom while you scroll up to read.
+- Fixed `wisp-build all --allow-dirty` failing its own final check on a clean checkout.
+
+## [1.2.5] - 2026-10-11
+
+Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
+
+### Added
+
+- Added the behavior engine: Wisp learns routines from Calendar, Reminders, message metadata and what you ask it, predicts the day, and sends a few nudges (at most 4 a day, quiet 22:00–07:00). Patterns are deterministic statistics with evidence counts; the model only phrases them. Reversible actions (a reminder, a "Tentative:" hold on Wisp's own schedule) are done automatically with Undo; messages and meeting changes are only drafted. Off unless `WISP_BEHAVIOR=1`. Ask "What do you know about me?", "What will tomorrow look like?" or "Which meetings do I usually cancel?". See docs/BEHAVIOR_ENGINE.md.
+- Added nudge cards and actionable notifications (Undo, Do it, Useful, Not now, Wrong) in the app.
+- Added Catch: Wisp notices a plan stated in a text ("Dinner at 7, I booked a table") that isn't on your schedule and adds it to Wisp's schedule with an alert. Off unless `WISP_ATTENTION_DEMO=1`.
+- Added Workflow20 grounded multi-source workflows with guarded action execution, a personal knowledge index, calendar planning, file organization and grocery-list tools.
+- Added a remote-inference mode for Intel Macs: every model role runs on a paired GX10 (or other OpenAI-compatible server) over Tailscale with a Keychain token, while data and tools stay on the Mac. A read-only founder profile and a full profile (all tools with normal approvals, the scheduler and 32k context) are available.
+- Added the Aria demo mode for remote builds: a fully synthetic, interactive demo world (mail, messages, notes, reminders, contacts, calendar) where sends land in synthetic threads with scripted replies and nothing leaves the Mac, with proactive items in the Daily Summary and the top bar.
+- Added an optional brain server and GX10 deploy scripts (gateway supervision, 32k context) under brain_server/ and deploy/gx10/.
+- Added the iPhone app foundation (ios/): WispCore, the Workflow20 contract and a local-inference interface.
+- Added demo tooling: `demo/seed_mac_persona.py` and `demo/wisp_demo.py` (persona seeding, behavior and Catch demos, rehearsal reset).
 
 - Added the Wisp Chat window: a real, resizable window for long conversations, opened from the menu-bar menu ("Open Wisp Chat") or from the notch panel's new "Open in Wisp Chat" button, which continues the current conversation there. A sidebar lists every saved chat by day with search and delete; the thread shows which tools Wisp used above each answer; confirmation cards and message drafts work as they do in the notch, in the thread; and a details panel (⌘I) shows the route, model, speed, and tools for any answer. It follows the Mac's light or dark appearance. Today, Research, Memory, Search, and Settings open from its sidebar. See docs/CHAT_WINDOW.md.
 - Added `GET /chats`, a conversation list with a title (the first prompt) and a one-line preview for each saved chat.

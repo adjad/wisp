@@ -237,6 +237,25 @@ def place_call(to: str, audio_only: bool = True) -> str:
 async def wisp_status() -> str:
     from service.config import models_config, role_to_model
 
+    from service.inference.remote_policy import remote_only_profile
+    profile = remote_only_profile()
+    if profile is not None:
+        # Remote inference must not claim on-Mac inference: every request
+        # goes to the pinned remote endpoint, and there is no local engine.
+        from urllib.parse import urlsplit
+        lines = [f"Answering with: {profile.model_id}",
+                 f"Inference runs on your remote server ({urlsplit(profile.base_url).hostname}), "
+                 "not on this Mac: what you ask, and the data a reply needs, is sent there.",
+                 "There is no local model or embedder in this build."]
+        try:
+            from service.inference.remote_policy import remote_tool_allowed
+            from service.tools.registry import routable_tool_names
+            usable = [n for n in routable_tool_names() if remote_tool_allowed(n)]
+            lines.append(f"Usable tools available: {len(usable)}")
+        except Exception:  # noqa: BLE001
+            pass
+        return "\n".join(lines)
+
     cfg = models_config()
     roles = cfg.get("roles", {}) or {}
     agent = role_to_model("agent")

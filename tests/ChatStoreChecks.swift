@@ -7,6 +7,8 @@ import Foundation
 @MainActor
 final class ScriptedBackend: ChatBackend {
     var chats: [ChatSummary]? = []
+    /// The next this-many list requests fail, like a service that is still starting.
+    var listFailures = 0
     var history: [String: [ChatMessage]] = [:]
     var script: (String) -> [ChatEvent] = { _ in [] }
     var approvals: [(actionId: String, approved: Bool, scope: String, requestId: String, session: String)] = []
@@ -31,7 +33,10 @@ final class ScriptedBackend: ChatBackend {
         release.resume()
     }
 
-    func listChats() async -> [ChatSummary]? { chats }
+    func listChats() async -> [ChatSummary]? {
+        if listFailures > 0 { listFailures -= 1; return nil }
+        return chats
+    }
     func loadChat(id: String) async -> [ChatMessage]? {
         if holdNextHistoryLoad {
             holdNextHistoryLoad = false
@@ -301,6 +306,22 @@ struct ChatStoreChecks {
             let text = store.selected!.messages.last!.text
             check(text == (0..<200).map { "w\($0) " }.joined(), "all 200 deltas arrive in order")
             check(store.selected!.messages.last!.phase == .done, "done follows the last delta")
+        }
+
+        // The window opens before the service is up: it retries until the service answers.
+        do {
+            let backend = ScriptedBackend()
+            backend.chats = [ChatSummary(id: "late", title: "Came up late", preview: "", lastUsed: Date(), turnCount: 2)]
+            backend.listFailures = 3
+            let store = ChatStore(backend: backend)
+            await store.refreshWhenReady(maxAttempts: 10, retryDelay: .milliseconds(10))
+            check(store.reachable && store.conversations.count == 1, "the list loads once the service answers")
+            let never = ScriptedBackend()
+            never.listFailures = 100
+            let giveUp = ChatStore(backend: never)
+            await giveUp.refreshWhenReady(maxAttempts: 3, retryDelay: .milliseconds(10))
+            check(!giveUp.reachable, "it stops trying when the service never answers")
+            check(never.listFailures == 97, "it makes exactly the attempts it was given")
         }
 
         // Full access is read from and written to the service.

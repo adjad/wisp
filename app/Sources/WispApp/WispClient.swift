@@ -304,6 +304,109 @@ final class WispClient {
         return obj["period"] as? String ?? period
     }
 
+    // --- behavior engine (service/behavior) ---------------------------------
+    // Learned routines, predictions and nudges. Nudges themselves arrive as
+    // `nudge` events on the assistant stream; these calls answer them.
+
+    /// Nudge/pattern ids are deterministic ASCII hashes; anything else is
+    /// refused rather than spliced into a URL path.
+    static func behaviorSafeID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= 200 else { return false }
+        return id.unicodeScalars.allSatisfy { s in
+            (s.value >= 48 && s.value <= 57) || (s.value >= 65 && s.value <= 90)
+                || (s.value >= 97 && s.value <= 122) || "-_.:".unicodeScalars.contains(s)
+        }
+    }
+
+    private func behaviorRequest(_ method: String, _ path: String, body: [String: Any]? = nil,
+                                 timeout: TimeInterval = 15) async -> [String: Any]? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.timeoutInterval = timeout
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
+        else { return nil }
+        if data.isEmpty { return [:] }
+        return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+    }
+
+    // POST /behavior/nudges/{id}/feedback {"verdict": useful|not_now|wrong}
+    @discardableResult
+    func behaviorFeedback(nudgeID: String, verdict: String) async -> Bool {
+        guard Self.behaviorSafeID(nudgeID), ["useful", "not_now", "wrong"].contains(verdict),
+              let obj = await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/feedback",
+                                              body: ["verdict": verdict]) else { return false }
+        return obj["ok"] as? Bool ?? true
+    }
+
+    // POST /behavior/nudges/{id}/undo -> reverses the auto action(s) the
+    // backend already performed (reminder / tentative hold).
+    @discardableResult
+    func behaviorUndo(nudgeID: String) async -> Bool {
+        guard Self.behaviorSafeID(nudgeID),
+              let obj = await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/undo",
+                                              body: [:], timeout: 30) else { return false }
+        return obj["ok"] as? Bool ?? true
+    }
+
+    // POST /behavior/nudges/{id}/act {"action_index": n}. open_prompt ->
+    // {"ok", "prompt", "label"}: the prompt is only prefilled in the composer,
+    // nothing is sent. Offered add_reminder/add_hold -> {"ok", "created":
+    // {"title", "when_ts"}, "can_undo"} or {"ok": false, "detail"}.
+    func behaviorAct(nudgeID: String, actionIndex: Int) async -> [String: Any]? {
+        guard Self.behaviorSafeID(nudgeID), actionIndex >= 0 else { return nil }
+        return await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/act",
+                                     body: ["action_index": actionIndex])
+    }
+
+    // GET /behavior/status | /behavior/patterns | /behavior/predict | /behavior/profile
+    func behaviorGet(_ endpoint: String) async -> [String: Any]? {
+        guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
+        return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the
+    // state in effect, or nil when the backend can't be reached; a WISP_BEHAVIOR
+    // launch override can make the effective state differ from the request.
+    func behaviorEnabled() async -> Bool? {
+        await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
+    }
+
+    func setBehaviorEnabled(_ on: Bool) async -> Bool? {
+        await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
+    }
+
+    // GET /behavior/settings, whole payload: "enabled", "remote_active" (a remote
+    // inference profile is pinned) and "phraser" (nudge wording / event labeling
+    // requests are allowed to leave the Mac's local model).
+    func behaviorSettings() async -> [String: Any]? {
+        await behaviorRequest("GET", "behavior/settings")
+    }
+
+    // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the
+    // untouched reminders/holds it created. Returns the counts, or nil on failure.
+    func forgetBehaviorData() async -> [String: Any]? {
+        await behaviorRequest("DELETE", "behavior/data", body: ["confirm": true], timeout: 60)
+    }
+
+    // POST /behavior/run -> mine + predict + generate nudges now.
+    func behaviorRun() async -> [String: Any]? {
+        await behaviorRequest("POST", "behavior/run", body: [:], timeout: 60)
+    }
+
+    // POST /behavior/patterns/{id} {"status": active|confirmed|rejected}
+    @discardableResult
+    func setBehaviorPatternStatus(_ patternID: String, status: String) async -> Bool {
+        guard Self.behaviorSafeID(patternID), ["active", "confirmed", "rejected"].contains(status),
+              let obj = await behaviorRequest("POST", "behavior/patterns/\(patternID)",
+                                              body: ["status": status]) else { return false }
+        return obj["ok"] as? Bool ?? true
+    }
+
     // GET /assistant/events (SSE) -> reminders + `changed` pings.
     func assistantEvents(onEvent: @escaping (Event) async -> Bool) async {
         let req = URLRequest(url: deliveryURL.appendingPathComponent("assistant/events"))

@@ -19,6 +19,7 @@ from typing import Any
 PLACEHOLDER = "[redacted credential]"
 
 _PREFIXED = (
+    r"wisp_meeting_cap_[0-9a-f]{64}",          # transient private Calendar capability
     r"sk-or-v1-[A-Za-z0-9]{20,}",               # OpenRouter
     r"sk-ant-[A-Za-z0-9_-]{20,}",               # Anthropic
     r"sk-(?:proj-)?[A-Za-z0-9_-]{32,}",         # OpenAI-style

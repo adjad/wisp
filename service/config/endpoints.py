@@ -147,6 +147,9 @@ def endpoint(name: str = "local") -> Endpoint:
 
 
 def role_target(role: str) -> Target:
+    from service.inference.remote_policy import remote_only_profile, remote_default_target
+    if remote_only_profile() is not None:
+        return remote_default_target(role)
     from service.config import models_config, role_to_model, model_context_window
     cfg = models_config()
     binding = cfg.get("inference", {}).get("bindings", {}).get(role, {})
@@ -183,6 +186,8 @@ def role_target(role: str) -> Target:
 
 def local_role_target(role: str) -> Target:
     """Resolve a role against the local roster, ignoring cloud bindings."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Alternate inference target")
     from service.config import _local_role_model, model_context_window
 
     model = _local_role_model(role)
@@ -192,6 +197,8 @@ def local_role_target(role: str) -> Target:
 
 def cloud_super_model_target(role: str) -> Target:
     """Resolve the configured cloud target used by privacy-gated Super Model."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Alternate inference target")
     from service.config import cloud_super_model_enabled, models_config
 
     if not cloud_super_model_enabled():

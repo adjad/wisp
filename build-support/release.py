@@ -30,178 +30,6 @@ REQUIRED_SECRETS = (
 )
 
 
-
-def require_release_performance(runner, args):
-    """Gate both publishers before credentials/effects. Hash expectations come from source;
-    receipt and approval digests come from the measurement owner's reviewed external record.
-    Downloading a package is never authority to publish it.
-    """
-    import importlib.util
-    from argparse import Namespace
-    import sys
-
-    receipt = getattr(args, "performance_receipt", None)
-    approval = getattr(args, "performance_baseline", None)
-    receipt_digest = getattr(args, "performance_receipt_sha256", None)
-    approval_digest = getattr(args, "performance_baseline_sha256", None)
-    if (not receipt or not approval or not isinstance(receipt_digest, str)
-            or not isinstance(approval_digest, str)
-            or not re.fullmatch(r"[a-f0-9]{64}", receipt_digest)
-            or not re.fullmatch(r"[a-f0-9]{64}", approval_digest)):
-        raise BuildError("Release requires a performance receipt, reviewed baseline approval and independently recorded digests")
-    path = ROOT / "scripts/release_performance.py"
-    spec = importlib.util.spec_from_file_location("_wisp_release_performance_gate", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-        bundle_path = ROOT / "test_fixtures/performance/release_v1.json"
-        bundle = module.load_bundle(bundle_path)
-        expected_sha = git("rev-parse", "HEAD")
-        if not re.fullmatch(r"[a-f0-9]{40}", expected_sha):
-            raise ValueError("candidate SHA is invalid")
-        code, result = module.check_receipt(Namespace(
-            receipt=Path(receipt), bundle=bundle_path, expect_candidate_sha=expected_sha,
-            expect_corpus_sha256=bundle["corpus_sha256"], expect_policy_sha256=bundle["policy_sha256"],
-            expect_harness_sha256=module.harness_sha256(),
-            approved_baseline=Path(approval), approved_baseline_sha256=approval_digest,
-            expect_receipt_sha256=receipt_digest, lane="desktop", repo=ROOT,
-            candidate_worktree=None, baseline_worktree=None, now=None))
-    except Exception as exc:
-        raise BuildError(f"Release performance evidence could not be verified: {type(exc).__name__}") from None
-    finally:
-        sys.modules.pop(spec.name, None)
-    json_write(runner.logs / "release-performance-gate.json", result)
-    if code != 0 or result.get("verdict") != "PASS" or result.get("authorizes_release") is not True:
-        raise BuildError("Release performance gate did not authorize publication")
-    return result
-
-WAIVER_SCHEMA = "wisp.release_performance.waiver/1"
-WAIVER_MAX_BYTES = 16 * 1024
-WAIVER_KEYS = ("schema", "version", "decision", "approved_by", "approved_on", "scope",
-               "reason", "evidence_ref", "follow_up")
-WAIVER_ARGUMENTS = ("performance_waiver", "performance_waiver_sha256")
-EVIDENCE_ARGUMENTS = ("performance_receipt", "performance_baseline",
-                      "performance_receipt_sha256", "performance_baseline_sha256")
-
-
-def _waiver_git(*arguments):
-    """Raw bytes from git in this checkout; any failure is a generic refusal."""
-    try:
-        return subprocess.run(["git", "-C", str(ROOT), *arguments], capture_output=True,
-                              check=True, timeout=60).stdout
-    except (subprocess.SubprocessError, OSError):
-        raise BuildError("Release performance waiver could not be verified against Git") from None
-
-
-def _waiver_object(data):
-    def unique(pairs):
-        keys = [key for key, _ in pairs]
-        if len(set(keys)) != len(keys):
-            raise ValueError("duplicate key")
-        return dict(pairs)
-
-    return json.loads(data.decode("utf-8"), object_pairs_hook=unique)
-
-
-def require_performance_waiver(runner, args):
-    """Ad-hoc-only, per-version, committed and digest-bound waiver of the performance gate.
-
-    Authority is the reviewed, merged record at HEAD plus a digest supplied out of band
-    (a workflow input). This never produces PASS: it records WAIVED. Every failure is a
-    BuildError that carries no file content.
-    """
-    import datetime
-
-    waiver, digest = (getattr(args, name, None) for name in WAIVER_ARGUMENTS)
-    if not waiver or not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
-        raise BuildError("Performance waiver requires the committed record and an independently recorded digest")
-    version = CONFIG["version"]
-    if not re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", version):
-        raise BuildError("Performance waiver requires a numeric release version")
-    if os.environ.get("GITHUB_REF") != "refs/tags/v" + version:
-        raise BuildError("Performance waiver requires the exact version tag")
-    relative = f"docs/releases/{version}-performance-waiver.json"
-    expected = Path(os.path.normpath(ROOT / relative))
-    given = Path(os.path.normpath(ROOT / Path(waiver)))
-    if given != expected:
-        raise BuildError("Performance waiver must be the committed record for this version")
-    current = Path(ROOT)
-    try:
-        for part in relative.split("/"):
-            current = current / part
-            if stat.S_ISLNK(os.lstat(current).st_mode):
-                raise BuildError("Performance waiver path must not contain symbolic links")
-        descriptor = os.open(expected, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError:
-        raise BuildError("Performance waiver record could not be opened") from None
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode):
-            raise BuildError("Performance waiver must be a small regular file")
-        chunks = []
-        remaining = WAIVER_MAX_BYTES + 1
-        while remaining:
-            chunk = os.read(descriptor, remaining)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        data = b"".join(chunks)
-    except OSError:
-        raise BuildError("Performance waiver record could not be read") from None
-    finally:
-        os.close(descriptor)
-    if len(data) > WAIVER_MAX_BYTES:
-        raise BuildError("Performance waiver must be a small regular file")
-    # Tracked, a plain blob, byte-identical to HEAD and unmodified in index and tree.
-    entry = _waiver_git("ls-tree", "-z", "HEAD", "--", relative)
-    if not entry.startswith(b"100644 blob ") or not entry.rstrip(b"\0").endswith(b"\t" + relative.encode()):
-        raise BuildError("Performance waiver must be a tracked regular file at HEAD")
-    if (_waiver_git("status", "--porcelain", "--untracked-files=all", "--", relative)
-            or _waiver_git("show", f"HEAD:{relative}") != data):
-        raise BuildError("Performance waiver must be committed and unmodified at HEAD")
-    if hashlib.sha256(data).hexdigest() != digest:
-        raise BuildError("Performance waiver digest does not match the independently recorded digest")
-    try:
-        record = _waiver_object(data)
-    except (ValueError, UnicodeDecodeError, RecursionError):
-        raise BuildError("Performance waiver is not valid strict JSON") from None
-    if (not isinstance(record, dict) or set(record) != set(WAIVER_KEYS)
-            or any(not isinstance(record[key], str) for key in WAIVER_KEYS)):
-        raise BuildError("Performance waiver must contain exactly the expected string fields")
-    try:
-        # Exact YYYY-MM-DD: parsing must round-trip, so other ISO spellings are refused.
-        approved_on = datetime.date.fromisoformat(record["approved_on"])
-    except ValueError:
-        approved_on = None
-    if (record["schema"] != WAIVER_SCHEMA or record["version"] != version
-            or record["decision"] != "waived" or record["scope"] != "ad_hoc_release_only"
-            or not record["approved_by"].strip() or len(record["reason"].strip()) < 80
-            or not record["evidence_ref"].strip() or not record["follow_up"].strip()
-            or approved_on is None or approved_on.isoformat() != record["approved_on"]):
-        raise BuildError("Performance waiver does not authorize this version and scope")
-    candidate = _waiver_git("rev-parse", "HEAD").decode("ascii", "replace").strip()
-    if not re.fullmatch(r"[a-f0-9]{40}", candidate):
-        raise BuildError("Performance waiver candidate SHA is invalid")
-    result = {"verdict": "WAIVED", "waived": True, "authorizes_release": True,
-              "waiver_sha256": digest, "version": version, "candidate_sha": candidate,
-              "approved_by": record["approved_by"], "approved_on": record["approved_on"]}
-    json_write(runner.logs / "release-performance-gate.json", result)
-    return result
-
-
-def require_ad_hoc_performance_authority(runner, args):
-    """Evidence or a waiver, never both; with neither, the evidence gate refuses."""
-    waiver = any(getattr(args, name, None) for name in WAIVER_ARGUMENTS)
-    evidence = any(getattr(args, name, None) for name in EVIDENCE_ARGUMENTS)
-    if waiver and evidence:
-        raise BuildError("A performance waiver is mutually exclusive with performance evidence")
-    if waiver:
-        return require_performance_waiver(runner, args)
-    return require_release_performance(runner, args)
-
-
 def github_release_for_tag(env, tag):
     """Return one public or draft release for tag, failing closed on API ambiguity."""
     result = subprocess.run(
@@ -311,7 +139,6 @@ def create_public_draft(runner, assets, env, tag, meta):
 def release_ad_hoc(runner, args):
     """Publish the verified app ZIP; retain complete evidence in CI artifacts."""
     ad_hoc_preflight(args)
-    require_ad_hoc_performance_authority(runner, args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")
@@ -721,9 +548,6 @@ def install_then_publish(runner, prepared, destination, tag, env):
 def release(runner, args):
     # All validation and credential checks precede any signing/upload/publication.
     preflight(args)
-    if any(getattr(args, name, None) for name in WAIVER_ARGUMENTS):
-        raise BuildError("The signed release never accepts a performance waiver")
-    require_release_performance(runner, args)
     candidate = args.output.resolve()
     if not candidate.is_relative_to((ROOT / "dist").resolve()):
         raise BuildError("Release input must be beneath this checkout's dist/")

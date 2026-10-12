@@ -52,13 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
     // which only tracks bar-vs-expanded WHILE docked.
     private var notchDocked = true
-    private let calendarReader = CalendarReader()
-    private let remindersWriter = RemindersWriter()
-    private let mailReader = MailReader()
-    private let messagesReader = MessagesReader()
-    private let notesReader = NotesReader()
-    private let contactsReader = ContactsReader()
-    private let browserHistoryReader = BrowserHistoryReader()
+    private var calendarReader: CalendarReader?
+    private var remindersWriter: RemindersWriter?
+    private var mailReader: MailReader?
+    private var messagesReader: MessagesReader?
+    private var notesReader: NotesReader?
+    private var contactsReader: ContactsReader?
+    private var browserHistoryReader: BrowserHistoryReader?
+    private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -172,7 +173,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         createPanelIfNeeded()
         model.collapsed = true
         panel?.present()
+        // Wisp is a regular app: opening it shows the Chat window.
+        chatWindow.show()
     }
+
+    // Clicking the Dock icon, or opening Wisp again from Finder or Spotlight while it
+    // is running, brings the Chat window back. Closing the window does not quit Wisp.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        chatWindow.show()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     // MARK: - Smart Search (⌘⇧F)
 
@@ -247,16 +259,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // An accessory app has no menu bar, so the standard edit shortcuts don't route
-    // to the focused field. A hidden main menu with an Edit submenu fixes that.
-    // While the chat window is open the app is regular and shows this menu, so it
-    // also carries the application menu's Hide, Close and Quit items.
+    // The app's main menu: Wisp (Settings, Hide, Quit), Edit (so the standard edit
+    // shortcuts route to the focused field), and Window.
     private func installEditMenu() {
         let main = NSMenu()
         let appItem = NSMenuItem()
         main.addItem(appItem)
         let app = NSMenu(title: "Wisp")
         appItem.submenu = app
+        let settingsItem = app.addItem(withTitle: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        app.addItem(.separator())
         app.addItem(withTitle: "Hide Wisp", action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
         app.addItem(.separator())
         app.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
@@ -273,6 +286,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         edit.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
         edit.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         edit.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        let windowItem = NSMenuItem()
+        main.addItem(windowItem)
+        let window = NSMenu(title: "Window")
+        windowItem.submenu = window
+        window.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        window.addItem(withTitle: "Zoom", action: #selector(NSWindow.performZoom(_:)), keyEquivalent: "")
+        window.addItem(.separator())
+        let chatItem = window.addItem(withTitle: "Wisp Chat", action: #selector(openChat), keyEquivalent: "1")
+        chatItem.target = self
+        NSApp.windowsMenu = window
         NSApp.mainMenu = main
     }
 
@@ -548,17 +571,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reminder stream (the notch "Up Next" countdown).
         Permissions.bootstrap()
         model.onCreateCalendarEvent = { [weak self] title, ts, dur, loc in
-            self?.calendarReader.createEvent(title: title, startTs: ts,
-                                             durationMin: dur, location: loc)
+            self?.calendarReader?.createEvent(title: title, startTs: ts,
+                                              durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
-            self?.calendarReader.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
+            self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
             expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
-            self?.remindersWriter.performVerified(kind: kind, actionID: actionID,
+            self?.remindersWriter?.performVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, expectedTitle: expectedTitle,
                 expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
@@ -569,7 +592,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else {
                 return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
             }
-            return await self.remindersWriter.reconcileVerified(kind: kind, actionID: actionID,
+            guard let writer = self.remindersWriter else {
+                return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
+            }
+            return await writer.reconcileVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
         }
@@ -583,30 +609,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // refresh both header and raw caches so summarize_emails/view_emails
         // can be served without waiting on the 5-min timer.
         model.onSyncEmails = { [weak self] in
-            self?.mailReader.sync()
-            self?.mailReader.syncRaw()
+            guard let self else { return }
+            self.mailReader?.sync()
+            self.mailReader?.syncRaw()
         }
         model.onSyncAssistantSources = { [weak self] sources in
             guard let self else { return }
-            if sources.contains("calendar") { self.calendarReader.sync() }
-            if sources.contains("reminders") { self.remindersWriter.sync() }
-            if sources.contains("email") { self.mailReader.sync() }
-            if sources.contains("messages") { self.messagesReader.sync() }
-            if sources.contains("notes") { self.notesReader.sync() }
-            if sources.contains("browser_history") { self.browserHistoryReader.sync() }
+            if sources.contains("calendar") { self.calendarReader?.sync() }
+            if sources.contains("reminders") { self.remindersWriter?.sync() }
+            if sources.contains("email") { self.mailReader?.sync() }
+            if sources.contains("messages") { self.messagesReader?.sync() }
+            if sources.contains("notes") { self.notesReader?.sync() }
+            if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
         model.startAssistant()
-        // Read Calendar + Reminders + Mail + Messages here (clean Wisp.app TCC
-        // identity) and push to the backend; prompts for access once, then
-        // syncs periodically.
-        calendarReader.start()
-        remindersWriter.start()
-        mailReader.start()
-        messagesReader.start()
-        notesReader.start()
-        browserHistoryReader.start()
-        // Resolves chat.db's bare phone/email handles to real contact names.
-        contactsReader.start()
+        startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
         // panel (HoverView), not SwiftUI's flaky .onHover. Entering the bar
@@ -714,6 +731,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleDebugMode() {
         model.debugMode.toggle()
+    }
+
+    private func startNativeSourceReaders() {
+        guard !nativeSourceReadersStarted else { return }
+        nativeSourceReadersStarted = true
+        calendarReader = CalendarReader()
+        mailReader = MailReader()
+        messagesReader = MessagesReader()
+        browserHistoryReader = BrowserHistoryReader()
+        calendarReader?.start()
+        mailReader?.start()
+        messagesReader?.start()
+        browserHistoryReader?.start()
+        remindersWriter = RemindersWriter()
+        notesReader = NotesReader()
+        contactsReader = ContactsReader()
+        remindersWriter?.start()
+        notesReader?.start()
+        contactsReader?.start()
     }
 
     // Writes the full conversation (every turn's model, route decision,

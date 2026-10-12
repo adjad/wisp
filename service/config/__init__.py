@@ -41,16 +41,38 @@ def _packaged_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
+_overlay_valid = True
+
+
 @lru_cache
 def _user_overlay() -> dict:
-    """Persisted user changes from ~/.moe/config.yaml (may be absent/empty)."""
+    """Persisted user changes from ~/.moe/config.yaml (may be absent/empty).
+
+    A file that cannot be read, parsed, or is not a mapping yields ``{}`` so
+    startup survives, and is remembered as invalid (``user_overlay_valid``) so
+    privacy-sensitive settings can fail closed instead of reading it as defaults."""
+    global _overlay_valid
+    _overlay_valid = True
     if not USER_CONFIG.exists():
         return {}
     try:
         with USER_CONFIG.open() as f:
-            return yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
     except Exception:  # noqa: BLE001 — a corrupt overlay must not break startup
+        _overlay_valid = False
         return {}
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        _overlay_valid = False
+        return {}
+    return loaded
+
+
+def user_overlay_valid() -> bool:
+    """False when ``config.yaml`` exists but is unreadable or not a mapping."""
+    _user_overlay()
+    return _overlay_valid
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -106,6 +128,24 @@ def set_daily_summary_hour(hour: int) -> int:
     hour = 20 if int(hour) >= 12 else 8   # only two choices: 8am or 8pm
     _save_overlay({"daily_summary_hour": hour})
     return hour
+
+
+def get_behavior_enabled() -> bool:
+    """Whether behavior learning ("Learn my routines") is on. Default True; only
+    an explicit false in the user overlay (``behavior: {enabled: false}``)
+    turns it off, as does an overlay that exists but cannot be read (it may
+    hold that false). ``WISP_BEHAVIOR`` overrides this (service/behavior_switch.py)."""
+    if not user_overlay_valid():
+        return False    # an unreadable settings file might hold the user's "off": fail closed
+    section = models_config().get("behavior")
+    return not (isinstance(section, dict) and section.get("enabled") is False)
+
+
+def set_behavior_enabled(enabled: bool) -> bool:
+    if type(enabled) is not bool:
+        raise ValueError("behavior enabled must be a boolean")
+    _save_overlay({"behavior": {"enabled": enabled}})
+    return enabled
 
 
 def omlx_base_url() -> str:
@@ -405,6 +445,11 @@ def _local_role_model(role: str) -> str:
 
 def role_to_model(role: str) -> str:
     """Resolve a logical role to its currently bound concrete model id."""
+    from service.inference.remote_policy import remote_only_profile, require_generation_role
+    profile = remote_only_profile()
+    if profile is not None:
+        require_generation_role(role)
+        return profile.model_id
     model = _local_role_model(role)
     binding = models_config().get("inference", {}).get("bindings", {}).get(role, {})
     return binding.get("model_id") or model
@@ -487,6 +532,8 @@ def save_installed_models(models: list[str]) -> None:
 def set_roles(assignments: dict[str, str]) -> None:
     """Point several roles at installed models in ONE overlay write, so a failure
     cannot leave some roles moved and others not."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     roles: dict[str, str] = {}
     for role, model in assignments.items():
         roles[role] = model
@@ -583,6 +630,8 @@ def set_local_provider(endpoint_cfg: dict, model_id: str, context_window: int,
     saved window is the one the app actually honors, which can be smaller than
     the window the user typed.
     """
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     if (not roles or len(set(roles)) != len(roles)
             or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
         raise ValueError("Choose Reasoning, Agent, or Coding for the local provider")
@@ -667,6 +716,8 @@ def cloud_provider_settings() -> dict:
 def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
                        roles: list[str], super_model_enabled: bool = False) -> None:
     """Persist one tested cloud endpoint and explicit generation-role bindings."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     selected = set(roles)
     if not selected.issubset(CLOUD_ASSIGNABLE_ROLES):
         raise ValueError("Unsupported cloud role")
@@ -698,6 +749,9 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
 
 
 def cloud_super_model_enabled() -> bool:
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return False
     cfg = models_config().get("inference", {})
     endpoint_cfg = cfg.get("endpoints", {}).get("cloud", {})
     super_cfg = cfg.get("super_model", {})

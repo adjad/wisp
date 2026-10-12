@@ -137,6 +137,13 @@ def _ensure_choices(data: dict[str, Any]) -> dict[str, Any]:
 class OMLXClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None,
                  timeout: float = 600.0, *, target: Target | None = None) -> None:
+        from service.inference.remote_policy import remote_only_profile, remote_default_target, validate_remote_target
+        if remote_only_profile() is not None:
+            if base_url is not None or api_key is not None:
+                raise EndpointConfigurationError("Remote-only inference refuses raw URL or credential overrides")
+            if target is None:
+                target = remote_default_target()
+            validate_remote_target(target)
         self.target = target
         ep = target.endpoint if target else (endpoint() if base_url is None else None)
         self.base_url = (ep.base_url if ep else base_url).rstrip("/")
@@ -839,6 +846,11 @@ class OMLXClient:
 
     def _fit_request(self, model, messages, tools, max_tokens, *,
                      use_remaining_context: bool = False):
+        from service.inference.remote_policy import remote_only_profile, validate_remote_target
+        remote_profile = remote_only_profile()
+        if remote_profile is not None:
+            validate_remote_target(self.target)
+            max_tokens = remote_profile.fit_output(max_tokens)
         if self.target is None:
             return model, messages, tools, max_tokens
         if model != self.target.model:
@@ -848,18 +860,21 @@ class OMLXClient:
         from service.agent.loop import _fit_window, _est_tokens
         fit_options = ({"min_output_tokens": 1}
                        if self.endpoint_name == "local_provider" else {})
+        original_messages = messages
         messages, fitted_tools, max_tokens = _fit_window(
             messages, tools or [], max_tokens, model, None,
             context_window=self.target.context_window,
             protected_prefix_count=next((i for i, m in enumerate(messages)
                                          if m.get("role") != "system"), len(messages)),
             **fit_options)
+        if remote_profile is not None and messages != original_messages:
+            raise EndpointConfigurationError("Remote-only context cannot discard selected messages or tool results")
         # Never silently drop required tool schemas or send an overfull prompt.
         if len(fitted_tools) != len(tools or []):
             raise EndpointConfigurationError("Target context is too small for the requested tools")
         cost = sum(_est_tokens(m.get("content") or "") + _est_tokens(m.get("tool_calls") or [])
                    for m in messages) + _est_tokens(fitted_tools)
-        if use_remaining_context and not self.managed and self.endpoint_name != "local_provider":
+        if remote_profile is None and use_remaining_context and not self.managed and self.endpoint_name != "local_provider":
             # Direct cloud answers should not inherit Wisp's historical fixed
             # 8k generation ceiling. After fitting the prompt, offer the model
             # every token left in the user-configured context window. Internal
@@ -891,4 +906,8 @@ class OMLXClient:
             payload["tools"] = tools
             payload["tool_choice"] = tool_choice or "auto"
         payload.update(extra)
+        from service.inference.remote_policy import remote_only_profile
+        remote_profile = remote_only_profile()
+        if remote_profile is not None:
+            remote_profile.validate_payload(payload)
         return payload

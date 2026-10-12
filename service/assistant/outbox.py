@@ -86,11 +86,25 @@ async def _request(event_type: str, payload: dict,
                    timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     """Ask the app to do something and wait for its result.
 
-    Returns {"ok": bool, "error": str, ...}. Never raises.
+    Returns {"ok": bool, "error": str, ...}. Cancellation propagates.
     """
     calendar = event_type in {"create_calendar_event", "delete_calendar_event"}
     reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}
     native = calendar or reminder
+    outbound = event_type in {"send_email", "send_message", "forward_email", "reply_to_email"}
+    if outbound:
+        # Only the host can prove a send never reached publication. Native
+        # error text (or an echoed status) cannot supply that proof afterward.
+        if not hub.has_subscribers:
+            return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+                    "error": "Wisp app is not connected; nothing was sent"}
+        try:
+            if not isinstance(payload, dict) or {"type", "action_id"} & payload.keys():
+                raise ValueError("invalid outbound payload")
+            json.dumps(payload, allow_nan=False)
+        except (TypeError, ValueError, OverflowError):
+            return {"ok": False, "status": "not_attempted", "dispatch_started": False,
+                    "error": "Invalid outbound action payload; nothing was sent"}
     if native and not hub.has_subscribers:
         return {"ok": False, "error": ("Wisp app is not connected; Calendar was not changed"
                                         if calendar else "Wisp app is not connected; Reminders was not changed")}
@@ -167,6 +181,7 @@ async def _request(event_type: str, payload: dict,
         fut = asyncio.get_running_loop().create_future()
         _pending[action_id] = fut
     _pending_waiters[action_id] = _pending_waiters.get(action_id, 0) + 1
+    dispatch_started = False
     try:
         event = {"type": event_type, "action_id": action_id, **payload}
         if native and first_waiter:
@@ -175,9 +190,27 @@ async def _request(event_type: str, payload: dict,
                               expires_at=time.time() + timeout)
         elif not native:
             # Replaying a send after an uncertain result can send it twice.
+            # Set this BEFORE publication: fanout can reach one subscriber
+            # and then raise while attempting another.
+            dispatch_started = True
             await hub.publish(event, durable=False)
-        return await asyncio.wait_for(asyncio.shield(fut), timeout)
+        result = await asyncio.wait_for(asyncio.shield(fut), timeout)
+        if outbound:
+            # Stamp host identity/state after reading the native payload. A
+            # generic native failure cannot prove an external send did not run.
+            if (not isinstance(result, dict) or result.get("ok") is not True
+                    or ("status" in result and result["status"] != "succeeded")):
+                return {"ok": False, "status": "unknown", "dispatch_started": dispatch_started,
+                        "action_id": action_id,
+                        "error": "Outbound result was not confirmed; check the sending app before retrying"}
+            return {**result, "ok": True, "status": "succeeded",
+                    "dispatch_started": dispatch_started, "action_id": action_id}
+        return result
     except asyncio.TimeoutError:
+        if outbound:
+            return {"ok": False, "status": "unknown", "dispatch_started": dispatch_started,
+                    "action_id": action_id,
+                    "error": "Outbound result was not confirmed; check the sending app before retrying"}
         if native:
             return {"ok": False, "status": "unknown", "action_id": action_id,
                     "error": "Native result was not confirmed; reconcile the exact item before retrying"}
@@ -185,6 +218,11 @@ async def _request(event_type: str, payload: dict,
                 "error": ("the Wisp app didn't respond — it may not be running, "
                           "or this build of the app doesn't support this action yet")}
     except Exception as e:  # noqa: BLE001
+        if outbound:
+            return {"ok": False, "status": "unknown" if dispatch_started else "not_attempted",
+                    "dispatch_started": dispatch_started, "action_id": action_id,
+                    "error": ("Outbound result was not confirmed; check the sending app before retrying"
+                              if dispatch_started else "Outbound publication did not start; nothing was sent")}
         if native:
             return {"ok": False, "status": "unknown", "action_id": action_id,
                     "error": f"Native action state is unknown: {e}"}

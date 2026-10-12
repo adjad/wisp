@@ -103,13 +103,55 @@ def test_every_tool_has_a_scoped_home() -> None:
     # indexes its name/description. Count only targets actually demonstrated
     # by a final route, not every incidental tool in the returned menu.
     for prompt, target in (
+            ("What should I work on tomorrow?", "collect_task_evidence"),
+            ("What should I get for groceries without reminders", "grocery_note_evidence"),
+            ("What should I get for groceries without notes", "grocery_reminder_evidence"),
             ("search my chat history for an old project", "search_conversations"),
-            ("clear my saved memories", "clear_memory")):
+            ("clear my saved memories", "clear_memory"),
+            ("Save a knowledge note titled Project:\nBring blue folder.", "save_knowledge"),
+            ("Read my saved knowledge notes.", "read_knowledge"),
+            ("Update knowledge " + "a"*32 + " titled Project:\nBring red folder.", "edit_knowledge"),
+            ("Delete knowledge " + "a"*32, "delete_knowledge"),
+            ("Plan a 30 minute meeting after my exam tomorrow.", "plan_meeting"),
+            ("Add a private calendar block for a 30 minute meeting after my exam tomorrow.",
+             "commit_private_meeting")):
         offered = subset(prompt)
         check(f"{target} has a demonstrated final route", target in offered,
               f"{prompt!r} -> {offered}")
         if target in offered:
             reachable.add(target)
+        if target in {'save_knowledge','read_knowledge','edit_knowledge','delete_knowledge',
+                      'plan_meeting','commit_private_meeting'}:
+            d = dec(prompt)
+            if target in {'plan_meeting','commit_private_meeting'}:
+                expected = {'plan_meeting','get_upcoming','find_free_time'}
+                if target == 'commit_private_meeting':
+                    expected.add('commit_private_meeting')
+                check(f'{target} has only checked meeting tools', set(offered) == expected)
+            else:
+                check(f'{target} has a bounded knowledge menu', len(offered) <= 2)
+            check(f'{target} has no direct effect', not d.direct_calls)
+            if target in {'edit_knowledge','delete_knowledge'}:
+                check(f'{target} reads the exact ID before effect selection',
+                      d.force_first_tool == 'read_knowledge'
+                      and d.required_tool_groups == (frozenset({'read_knowledge'}),)
+                      and d.tool_argument_bindings['read_knowledge'] == {'record_id':'a'*32}
+                      and 'expected_revision' not in d.tool_argument_bindings[target])
+    meeting = dec('Plan a 30 minute meeting after my exam tomorrow.')
+    check('generic meeting plans cannot commit or send invitations',
+          set(meeting.tool_subset) == {'plan_meeting','get_upcoming','find_free_time'}
+          and not meeting.direct_calls
+          and {'commit_private_meeting','send_email','send_message','schedule_send'} <= meeting.forbidden_tools)
+    check('knowledge reads offer no mutation or live-source adapters',
+          subset('Read my saved knowledge notes.') == ['read_knowledge'])
+    for prompt in ['Do not delete knowledge ' + 'a'*32,
+                   'Explain "Delete knowledge ' + 'a'*32 + '".',
+                   'Do not save a knowledge note titled Project:\nBring blue folder.']:
+        d = dec(prompt)
+        check(f'{prompt!r} cannot activate knowledge writes',
+              not {'save_knowledge','edit_knowledge','delete_knowledge'} & set(d.tool_subset or [])
+              and not d.direct_calls and not d.force_first_tool
+              and not d.required_tool_groups and not d.tool_argument_bindings)
     read_tools = subset("show my saved memories")
     check("a memory read does not offer filesystem deletion",
           not any(REGISTRY[n].category == "fs_delete" for n in read_tools),
@@ -147,7 +189,7 @@ def test_device_apps_and_web_are_scoped() -> None:
                          ("open Safari", "open_app"),
                          ("quit spotify", "quit_app"),
                          ("play some music", "music"),
-                         ("what's the weather in Tokyo", "web_fetch"),
+                         ("what's the weather in Tokyo", "get_weather"),
                          ("what's the price of bitcoin", "web_fetch")):
         s = subset(prompt)
         # PROPORTIONAL, not a fixed number — a fixed ceiling needed manual
@@ -163,6 +205,12 @@ def test_device_apps_and_web_are_scoped() -> None:
         check(f"{prompt!r} -> scoped, offers {tool}",
               bool(s) and tool in s and len(s) <= ceiling,
               f"-> {len(s)} tools (ceiling {ceiling}): {s or 'UNSCOPED'}")
+
+    d = dec("what's the weather in Tokyo")
+    check('Tokyo weather has exact provider scope and arguments',
+          d.tool_subset == ['get_weather']
+          and d.direct_calls == [('get_weather',{'location':'Tokyo','period':''})]
+          and d.tool_argument_bindings == {'get_weather':{'location':'Tokyo','period':''}})
 
 
 def test_ambiguous_gets_core_not_everything() -> None:
@@ -325,8 +373,20 @@ def test_multi_round_flags_the_sequential_routes() -> None:
         d = dec(prompt)
         check(f"{prompt!r} (aggregate to-do) is multi_round", d.multi_round,
               f"subset={d.tool_subset}")
-        check(f"{prompt!r} offers all 4 sources",
-              set(d.tool_subset or []) >= set(R._ALL_SOURCES), f"-> {d.tool_subset}")
+        if prompt == 'what do I need to do':
+            args = {'period':'today', 'include_overdue':True, 'include_undated':True,
+                    **{f'include_{source}':True for source in ('calendar','reminders','email','messages','notes')}}
+            check('priority requires the exact source collector before narration',
+                  d.tool_subset == ['collect_task_evidence']
+                  and d.required_tool_groups == (frozenset({'collect_task_evidence'}),)
+                  and d.tool_argument_bindings == {'collect_task_evidence':args}
+                  and d.direct_calls == [('collect_task_evidence',args)]
+                  and d.force_first_tool is None and d.expect_tool_first
+                  and REGISTRY['collect_task_evidence'].category == 'assistant_read')
+        else:
+            check(f"{prompt!r} keeps aggregate source coverage",
+                  set(d.tool_subset or []) >= {'get_upcoming','search_reminders',
+                      'summarize_messages','summarize_emails','search_notes'}, f"-> {d.tool_subset}")
     d = dec("summarize the PDF in my downloads")
     check("document route (list_dir THEN read_file) is multi_round", d.multi_round,
           f"subset={d.tool_subset}")
@@ -343,11 +403,12 @@ def test_narration_after_names_each_multi_round_route_requirement() -> None:
     # multi_round alone is a whole-TURN veto on the narration gate, which is
     # stronger than the risk it guards. narration_after says which tools, once
     # answered, mean the requirement is met. See RouteDecision.narration_after.
-    ALL4 = set(R._ALL_SOURCES)
+    aggregate = {'get_upcoming','search_reminders','summarize_messages','summarize_emails','search_notes'}
     for prompt in ("what do I need to do", "help me plan my day"):
         d = dec(prompt)
-        check(f"{prompt!r} releases only after all 4 sources",
-              set(d.narration_after) == ALL4, f"-> {sorted(d.narration_after)}")
+        expected = {'collect_task_evidence'} if prompt == 'what do I need to do' else aggregate
+        check(f"{prompt!r} releases only after each required source",
+              set(d.narration_after) == expected, f"-> {sorted(d.narration_after)}")
     d = dec("summarize the PDF in my downloads")
     check("document route releases after read_file, not list_dir",
           set(d.narration_after) == {"read_file"}, f"-> {sorted(d.narration_after)}")
@@ -614,6 +675,36 @@ def test_conversation_match_tolerates_name_spelling() -> None:
     check("an unrelated name still reports no match", match is None and "No conversation" in (error or ""))
 
 
+
+def test_conversation_match_requires_resolved_identity_after_fuzzy_selection() -> None:
+    print("\nexact, substring and fuzzy matches require resolved conversation identities")
+    from service.tools.imessage_tools import _match_conversation
+    refresh = "Messages are refreshing conversation identities. Please try again in a moment."
+    unresolved = [(1.0, None, "Trisha Jain", "Trisha Jain: hi", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(unresolved, query)
+        check(f"unresolved {query!r} requests an identity refresh",
+              match is None and error == refresh, f"-> {match} {error}")
+
+    mixed = unresolved + [(2.0, "chat1", "Trisha Jain", "Trisha Jain: hello", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(mixed, query)
+        check(f"mixed unresolved/resolved {query!r} cannot select a conversation",
+              match is None and error == refresh, f"-> {match} {error}")
+
+    resolved = [(1.0, "chat1", "Trisha Jain", "Trisha Jain: hi", False)]
+    match, error = _match_conversation(resolved, "trishe")
+    check("a unique resolved fuzzy match retains its exact identity",
+          match == ("chat1", "Trisha Jain") and error is None, f"-> {match} {error}")
+
+    ambiguous = resolved + [(2.0, "chat2", "Trisha Jain", "Trisha Jain: hello", False)]
+    for query in ("Trisha Jain", "trisha", "trishe"):
+        match, error = _match_conversation(ambiguous, query)
+        check(f"multiple resolved {query!r} require disambiguation",
+              match is None and "More than one conversation matched" in (error or ""),
+              f"-> {match} {error}")
+
+
 if __name__ == "__main__":
     test_every_tool_has_a_scoped_home()
     test_device_apps_and_web_are_scoped()
@@ -632,5 +723,6 @@ if __name__ == "__main__":
     test_topic_lookup_forces_get_upcoming_before_a_compose_guesses()
     test_person_said_routes_to_message_and_mail_reads()
     test_conversation_match_tolerates_name_spelling()
+    test_conversation_match_requires_resolved_identity_after_fuzzy_selection()
     print(f"\n{PASS} passed, {FAIL} failed")
     sys.exit(1 if FAIL else 0)

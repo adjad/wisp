@@ -197,7 +197,95 @@ failure in Slice 0's report.
 | `schedule_change` | Text references an existing commitment with a *different* date (uses A09) |
 | `unanswered_ask` | Inbound request with no reply after N hours (Messages only; Sent mail isn't cached, P5) |
 
-*Owns:* `service/attention/detectors.py`. Detectors must not import the model client.
+**Built (core, offline).** `uncaptured_commitment` exists as a pure function over a frozen
+snapshot, scored by the Slice 0 harness (`replay_attention.py report --predictor
+uncaptured_commitment`). It is a fixed sequence of gates; the first "no" is recorded as
+`blocked_by`, and the report shows `missed_by_gate` so every labelled miss names the gate that
+caused it:
+
+| Gate | Module | Rule |
+| --- | --- | --- |
+| direction | `detectors` | Incoming only |
+| screen | `exclusions` | Promo, scam, automated senders never alert (P3) |
+| contact | `contacts` | Recent two-way contact, computed as of arrival, never from later messages (P4) |
+| resolve | `resolve` | A concrete time read the way a person reads a chat; every default it applies is recorded in `inferred` |
+| soon | `detectors` | Starts within 48h of arrival (date-only: within 2 calendar days) |
+| confirmed | `detectors` | A question or guessed meridiem alerts only if the user replied in-thread within 6h without declining |
+| on_file | `matching` | Not already in Calendar or Reminders; errs toward "known" |
+
+Things the resolver deliberately refuses: picking between competing times, treating "in 20
+minutes" as a plan, resolving a cancelled or past-tense clause. It also corrects one
+shortcoming of the shared parser for chat: "7:30" with no am/pm is read as 07:30 with no
+ambiguity flag, which would turn "dinner tomorrow at 7:30" into breakfast.
+
+**First measurement (2026-10-08, 173 items, labels by Claude, not the user).** At the user's
+request the sample was labelled by the assistant, kept in a separate file
+(`labels-<snapshot>.claude.jsonl`; the user's own file is untouched). Of 173 scored items only
+**8 are real "missing" commitments** (4.6%), so every number here has wide error bars, and the
+detector was then tuned on these same items, so they are **in-sample**: evidence that the gates
+work, not a forecast.
+
+| | Alerts | Correct | Precision | Recall |
+| --- | --- | --- | --- | --- |
+| `cue_baseline` (any time/place cue) | 114 | 7 | 6% | 88% |
+| `uncaptured_commitment`, first cut | 15 | 2 | 13% | 25% |
+| `uncaptured_commitment`, after review | 3 | 3 | 100% | 38% |
+| + times inherited from the thread | 4 | 4 | 100% | 50% |
+
+The first cut's false alerts were almost all one thing: 11 of 13 were *date-only* mentions
+("your order arrives tomorrow", "check your stocks today", "nothing due today"). The review
+changed the rules for stated reasons rather than for single items:
+
+- **A bare day needs an obligation word** (`due`, `don't forget`, `pick up`, `exam`...). A
+  clock time needs none.
+- **Contact means the user has written back (P4, interpretation to confirm).** Every real
+  commitment came from a thread with 5 to 100 replies from the user; a group blast with 19
+  messages and no reply caused a false alert. The earlier "3+ recent incoming" path is gone.
+- **Cancellation and hedging are judged from words that mean them.** The shared parser marked
+  any clause containing "not" as cancelled and any containing "if" as conditional, which
+  refused "due Monday, if it's not already done". `got` is no longer treated as past tense
+  ("the deadline got extended to tonight").
+- **Several mentions of the same day are one day** ("Monday (10/5)"), and the day the message
+  arrived on is context when another day is named ("Quick Sunday heads-up... due Monday").
+- A half-hour drift (1PM vs a 1:30 entry) still counts as on file.
+
+**What it still misses (4 of 8), by cause:**
+
+| Cause | Misses | Fix lives in |
+| --- | ---: | --- |
+| Two different days are named in one reply, and the clock was in an earlier message ("work from home tomorrow and drive on Friday") | 1 | Merging partial facts across messages, Slice 3 |
+| An obligation with no time at all ("package is ready at the mailroom", "get stuff from Trader Joe's today") | 2 | Task/obligation detection; likely model-assisted, Slice 3 |
+| Mail ("final reminder" about a form; no time in the subject) | 1 | Mail has no two-way signal and is subject-only; open question 4 |
+
+**Stated timezones (repaired after the independent review).** A time that names a zone is converted, not relabelled: "tomorrow at 15:00 UTC" is 08:00 Pacific, not 15:00. Only an unambiguous named zone (`UTC`, an IANA name such as `America/New_York`) with a stated date and am/pm is converted; abbreviations (`EST`, `PT`, `IST`), offsets (`+02:00`, `UTC+2`), zone words ("3pm Eastern"), a time in a stated zone that the sender left without a date or am/pm, and a time that falls in a DST gap or fold in that zone are declined (`other_timezone`). Two zones at the same hour are a conflict. An ordinary word after a clock ("lmk", "ok") is not a zone. An ordinary word after a clock ("lmk", "lol") is set off with a comma before extraction, because the extractor otherwise reads it as a timezone and then loses a "tomorrow" earlier in the phrase ("tomorrow at 11:30am lol" resolved to TODAY, a 24-hour-early reminder; found by the focused safety review). The word is kept, so "lmk" still marks a proposal. A stated day that is still lost ("11:30am tmrw", a month abbreviation the extractor does not read) is refused (`date_unresolved`), never turned into the next occurrence. A wall time the resolver builds in the user's own zone that falls in a DST gap or fold is declined (`dst_ambiguous`), including when the zone is named explicitly.
+
+**Times inherited from the thread (built).** A short acceptance ("yea sure i'll meet u there",
+"sure") takes its time from the USER's own proposal earlier in the same thread, within six
+hours, only when that time has a clock and is still ahead of the reply. It does not fire for a
+decline, for an echo of the other person's own message, for a stale proposal, or for a time
+already past. The newest message in the window that speaks to the plan governs: a later
+cancellation or withdrawal ("is cancelled", "nvm", "scratch that") from either side, a replacement
+time, an ambiguous or already-past replacement, all end the search instead of reviving the older
+proposal. A bare clock more than 12 hours out is now marked tentative (said at 11pm,
+"at 10am" could be a guess). The full-corpus run then produced 5 alerts in 26.5 days; the one
+outside the labelled sample was reviewed by hand and is correct (a friend's "sure" accepting the
+user's "3:30?", 65 minutes ahead, not on the calendar). It was outside the sample because "sure"
+has no time word, so the cue prefilter never offers such replies: **the sampler should treat a
+short acceptance that follows the user's time proposal as a cue** before the next labelling round.
+
+Prefilter check: the control stratum had 1 missing in 59 (1.7%), about 24 more across the
+1,414 texts the cue prefilter never shows anyone. Those are the same no-time obligations.
+
+Also found while labelling: one change-of-time message ("date & time changed to 9:00 PM") for
+an event whose 8:00 PM entry is already on the calendar. That is a `schedule_change` case and
+is deliberately not a notification in v1.
+
+**Known limits.** Undated Reminders are not in the commitments table, so they cannot match.
+English only. The past-tense and decline word lists are short and untuned. "Soon" is a fixed
+48h placeholder. Not wired to any live source and creates nothing.
+
+*Owns:* `service/attention/{detectors,resolve,exclusions,contacts,matching,prediction}.py`,
+`tests/test_attention_detector.py`. Detectors must not import the model client.
 
 ### Slice 3 — Model extraction for the remainder (M)
 
@@ -262,6 +350,52 @@ failure in Slice 0's report.
 - Confirming a lower-confidence ("unconfirmed") item can create a Today task with a labelled
   effort estimate; `replan` places it. A morning proposal: "here's the plan; 3 things I caught."
 - This is where A17 (multi-day Today) pays off; do a single-day version first.
+
+**Built (backend, shadow by default).** `service/attention/{live,ledger,runner}.py` decide and
+record; `service/assistant/attention_runner.py` is the only code that touches live state, and
+`service/assistant/attention_api.py` exposes `GET /assistant/attention`, `PUT
+/assistant/attention/settings` and `POST /assistant/attention/undo`. The scheduler calls
+`run_tick()` every 30 seconds. No model is involved.
+
+| Safety property | How it is enforced |
+| --- | --- |
+| Does nothing until the user opts in | Mode defaults to `shadow`: decisions are recorded in the ledger and nothing else happens. A missing settings file means shadow; a corrupt or out-of-range one means `off`. |
+| No flood on enabling | A baseline is stamped on the first pass **and every time the mode is switched into live**: by the settings endpoint at the instant of the switch, and by the runner whenever the previous pass was not live. `off` (including an unreadable settings file) is recorded as a mode, so live, off, live re-baselines too. Nothing older than the latest baseline is ever acted on. |
+| Once per message | The ledger's primary key is the message id; `claim()` succeeds exactly once, before the effect. |
+| Never retries an uncertain write | A crash after the claim leaves `claimed`, promoted to `unknown`; `unknown` and `failed` are final. |
+| Uses the existing verified path | The reminder is created by `add_reminder` (deterministic action id, no twin on an unknown outcome, Wisp-only fallback). Only a result starting "Reminder set:" counts as success. |
+| Fresh check before writing | "Is it on the calendar now?" is re-read from the store immediately before the effect. |
+| Bounded | `daily_cap` (default 3) counts every attempt that is not a verified failure (created, **unknown**, in flight, and **undone**: undoing a reminder does not free a slot) per local day, because an unanswered write may exist; excess is recorded as `capped`. At most **one reminder is written per pass**. |
+| Never blocks the scheduler | The pass runs as a background task, single-flight (`schedule_tick`); the scheduler loop never awaits a reminder write, which can take 45 seconds to time out. |
+| Cheap lures are refused, but this is a screen, not a guarantee | Messages containing a phone number (10 or more digits, separated by spaces, dots, brackets, hyphens, en dashes, underscores or commas), an email address, an IP address, a defanged dot (`evil[.]com`) or any dotted name that ends in letters (`.ru`, `.biz`, `chase.de`) are refused. The only links allowed are map pins, meeting rooms and the user's university, judged by the PARSED host (Apple/Google Maps, Zoom and subdomains, Meet, Teams, FaceTime, `ucsc.edu` and subdomains); any URL containing a backslash, whitespace or control character, non-ASCII, or `%` in the host is refused, because a browser would read it as a different host than the parser. **Still not caught:** spelled-out numbers ("eight hundred..."), a letter O written for zero, and text a sender writes without any link or number. A sender in a shared conversation can still place up to `daily_cap` attacker-worded reminders a day; the worst outcome is that, with no sends, deletes or injection. **Known false positives (they cost a reminder, nothing else):** ten-digit order or confirmation numbers, space-separated timestamps (`2026 09 25 19 30`), file names (`notes.pdf`), `dr.smith`, a sentence run together (`ok.thanks`). |
+| No message text piles up in `assistant.db` | The `attention_added` event is transient (`durable=False`) until the app can acknowledge it. |
+| Quiet hours (default 22:00 to 08:00) | The reminder is still created; the immediate "I added this" alert is not sent. |
+| Only live Messages | The feed must be `ready` for this launch; restored rows are not "new". |
+| Undo removes only its own | Bound to the identity recorded at creation: for Apple Reminders, the verified native `source_id` of an action row that did NOT exist before the call (the stored actions for the exact payload are read before and after; exactly one new, verified row is required), or for a Wisp-only reminder the one new local row. **A reused receipt gets no ownership, however recent**: `add_reminder` reuses an earlier succeeded create for the same title and time without writing a new action, so the call still succeeds but `created` is empty and Undo refuses. Time alone never proves ownership. This is reachable in ordinary use (a reminder already on file `lead_minutes` before the event is outside both matching windows when the lead is long). Undo also requires a ledger row in `created`, that exact object still present with its recorded title and time, and goes through the existing verified delete with no collapsed siblings. A look-alike with the same title and time is a different reminder and is refused. Two simultaneous requests delete once. Not claimed: if another caller creates the identical reminder at the same moment, its origin cannot be proved from the stored actions. |
+| The enable stamp survives the first pass | The API records the switch into live and its mode in one transaction, so the first live pass keeps that instant instead of moving it to its own clock. A change made outside the endpoint (a hand-edited settings file) still re-baselines at the next pass. |
+
+"Soon" is judged from now on the live path, so a message about Friday sent on Monday is
+reconsidered on Thursday morning (it was 58 hours out on Wednesday). The reminder fires 30
+minutes before a timed event (never in the past), at 9:00 for a date with no clock.
+
+**Turning it on** (shadow first, then live):
+
+```bash
+curl -s localhost:8765/assistant/attention                       # see recent decisions
+curl -s -X PUT localhost:8765/assistant/attention/settings -H 'content-type: application/json' -d '{"mode":"live"}'
+```
+
+**Independent audit (2026-10-09): BLOCK, repaired.** One blocker (unknown outcomes did not count toward the cap and each could stall the scheduler for 45 seconds) and several should-fix items (durable event, baseline after `off`, stranger lures, unreadable settings, GUID-less messages, an all-day-event blind spot in the on-file check) were fixed with a test each. One finding was wrong on the facts: the wiring tests *are* isolated, by the repository-root `conftest.py`; a fail-fast guard now asserts it. A re-review of that repair returned a narrower BLOCK (reminder time wrong when the process `TZ` differs from the system zone; `off` then `live` still swept up the paused period; the link allowlist and phone screen were bypassable), which was repaired in turn with a test for each, plus a limited pass now being retried at the next interval instead of the next quarter hour. The second repair needs its own sign-off before merge.
+
+**Designated independent review of the frozen stack (2026-10-09): BLOCK, five findings, repaired.** Stated timezone lost (#179), a cancelled proposal revived by a later "okay" (#181), Undo bound to title and time rather than the created object, undone creations not charged to the daily cap, and the API's enable timestamp overwritten by the first live pass (#182). Each has a regression test that fails on the previous source. A focused safety review of the repaired heads then confirmed three more static findings, repaired in turn: a stray word after a clock cost the stated day (P1, a reminder 24 hours early), a recently reused native receipt was credited to the call that merely reused it (P2), and DST gap/fold was not checked for a time in the user's own zone (P2). Each of those has a test that fails on the previous source, including one through the real `add_reminder` and outbox reuse path. The repaired heads need their own re-review.
+
+Known and accepted: `capped` is final (a message capped today is not reconsidered tomorrow); a create that succeeded but crashed before the ledger recorded it ends as `unknown` and cannot be undone through the endpoint; contact names match on the last 10 digits; the endpoints, like the rest of the backend, have no authentication beyond loopback.
+
+**Not built.** The in-app alert and its Undo button: the backend publishes an
+`attention_added` event, which the app currently ignores (it falls to the `default:` case).
+Until the Swift side lands, the user is alerted by the reminder itself at its due time, and
+Undo is the endpoint above or deleting the reminder. Mail is not read on this path.
+Auditor review is required before merge (outbound action and persisted data).
 
 ### Slice 7 — Shadow run, then graduate (S + calendar time)
 

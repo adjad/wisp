@@ -36,7 +36,15 @@ struct OverlayView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    if let notice = model.transientNotice {
+                        Text(notice)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.bad)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    }
                     MemoryReviewNotice()
+                    NudgeStack(model: model)
                     inputRow.padding(.top, 10)
                     Divider().overlay(Theme.hairline).padding(.vertical, 10)
                     content
