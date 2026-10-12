@@ -47,8 +47,8 @@ def routed(text, **kw):
 
 
 @pytest.mark.parametrize("text, tool, args", [
-    ("what do you know about me", "describe_me", {}),
-    ("What do you know about me?", "describe_me", {}),
+    ("what have you learned about me", "describe_me", {}),
+    ("What have you noticed about me?", "describe_me", {}),
     ("describe me", "describe_me", {}),
     ("what are my habits", "describe_me", {}),
     ("What have you learned about me so far?", "describe_me", {}),
@@ -109,6 +109,14 @@ def test_existing_routes_not_stolen(on, text):
 def test_compound_self_query_keeps_both_halves(on):
     tools = set(routed("what do you know about me, and check my email").tool_subset or ())
     assert "recall" in tools and "summarize_emails" in tools
+
+
+def test_generic_self_query_stays_recall_when_on(on):
+    # describe_me shows only learned patterns; remembered facts live in recall.
+    for text in ("what do you know about me", "What do you know about me?",
+                 "tell me about myself"):
+        d = routed(text)
+        assert d.force_first_tool == "recall", (text, d.reason)
 
 
 def test_off_keeps_original_routes(off):

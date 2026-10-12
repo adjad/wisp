@@ -7293,7 +7293,10 @@ _BEHAVIOR_TAIL = (r"(?:\s+(?:so\s+far|by\s+now|yet|please|then|again|lately|rece
                   r"from\s+my\s+(?:calendar|activity|routine)))?\s*[?.!]*\s*$")
 _BEHAVIOR_DESCRIBE_RE = re.compile(
     _BEHAVIOR_LEAD + r"(?:"
-    r"what\s+(?:do|did)\s+you\s+(?:know|think|remember)\s+about\s+me|"
+    # "What do you know about me" stays memory recall even with learning on:
+    # describe_me lists only learned patterns, which would hide the facts the
+    # user asked Wisp to remember. "What have you learned about me" answers here.
+    r"what\s+(?:do|did)\s+you\s+think\s+about\s+me|"
     # The week: predict_my_day covers only today/tomorrow, so the learned
     # weekly shape (habits, rhythms) answers. Without behavior learning these
     # fall to recall / ambiguous retrieval; no calendar rule claims them.
@@ -7303,7 +7306,6 @@ _BEHAVIOR_DESCRIBE_RE = re.compile(
     r"what\s+(?:have|did)\s+you\s+(?:learn(?:ed|t)?|notice[d]?|figure[d]?\s+out|pick(?:ed)?\s+up)"
     r"(?:\s+about\s+me)?|"
     r"describe\s+me|describe\s+my\s+(?:habits|routines?|patterns|week|life)|"
-    r"tell\s+me\s+(?:what\s+you\s+know\s+)?about\s+(?:me|myself)|"
     r"what\s+are\s+my\s+(?:usual\s+)?(?:habits|routines?|patterns)|"
     r"(?:show|list|tell)\s+(?:me\s+)?(?:about\s+)?my\s+(?:habits|routines?|patterns)|"
     r"what\s+(?:habits|routines?|patterns)\s+(?:do\s+i\s+have|have\s+you\s+(?:noticed|learned|learnt|seen|found)"
