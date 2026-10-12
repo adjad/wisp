@@ -1371,6 +1371,7 @@ async def run_agent(
     # explicit-public-lookup exemption never covers it.
     private_read_in_turn = False
     confirmed_private_web: set[str] = set()
+    typed_hosts: set[str] = set()
 
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
@@ -1387,9 +1388,22 @@ async def run_agent(
         if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
             # A URL the user typed themselves is an explicit public lookup.
             current_public_lookup = True
+        # Hosts the user typed in this message. In a turn that starts private,
+        # the exemption for fetch-style egress is tied to these hosts only.
+        from urllib.parse import urlsplit as _urlsplit
+        for _m in re.finditer(r"https?://[^\s<>\"'`]+", _last_user or ""):
+            try:
+                _h = _urlsplit(_m.group(0).rstrip(".,;:!?)]}")).hostname
+            except ValueError:
+                _h = None
+            if _h:
+                typed_hosts.add(_h.lower())
+        for _m in re.finditer(r"(?<![@\w./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![\w@-])",
+                              (_last_user or "").lower()):
+            typed_hosts.add(_m.group(1))
 
     def _web_detail(args):
-        detail = args.get("url") or args.get("query") or ""
+        detail = args.get("url") or args.get("query") or args.get("target") or ""
         return str(detail)[:300]
 
     def private_web_problem(tool):
@@ -1401,9 +1415,42 @@ async def run_agent(
                     "unless the request explicitly asks for a public lookup.")
         return None
 
-    def in_turn_private_web(tool):
+    def _egress_target(tool, args):
+        """The URL a call would contact, for egress-capable tools; else None."""
+        if tool.name in {"web_fetch", "http_request"}:
+            return str(args.get("url") or "")
+        if tool.name == "open_app":
+            target = str(args.get("target") or "").strip()
+            if "://" in target or re.match(r"(?i)(?:https?|mailto|sms|tel):", target):
+                return target
+        return None
+
+    def _typed_host_url(url):
+        """True only for a plain http(s) URL whose host the user typed this turn."""
+        from urllib.parse import urlsplit
+        if not url or re.search(r"[\\\s\x00-\x1f\x7f]", url):
+            return False
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+        except ValueError:
+            return False
+        return parts.scheme.lower() in {"http", "https"} and bool(host) and host in typed_hosts
+
+    def in_turn_private_web(tool, args=None):
         from service.router.model_led import PRIVATE_WEB_TOOLS
-        return bool(model_led_discovery and private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS)
+        if not model_led_discovery:
+            return False
+        if tool.name == "open_app":
+            return bool(private_read_in_turn and args is not None and _egress_target(tool, args))
+        return bool(private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS)
+
+    def start_private_egress(tool, args):
+        """Turn started private and this fetch-style call is not to a typed host."""
+        if not (model_led_discovery and private_at_start and not private_read_in_turn):
+            return False
+        url = _egress_target(tool, args)
+        return url is not None and not _typed_host_url(url)
 
     def tool_policy(tool, args):
         if private_shell_read_only:
@@ -1413,7 +1460,7 @@ async def run_agent(
                 return Decision(Tier.DENY, problem)
         if model_led_discovery:
             from service.safety.policy import Decision
-            if in_turn_private_web(tool):
+            if in_turn_private_web(tool, args):
                 # Private data was read during this turn: any later egress is
                 # confirmed with its destination shown, whatever the request said.
                 dec = decide(tool.category, args, tool=tool.name)
@@ -1424,6 +1471,16 @@ async def run_agent(
                                 "Confirm the exact destination or query.")
             if problem := private_web_problem(tool):
                 return Decision(Tier.DENY, problem)
+            if start_private_egress(tool, args):
+                # Private data was in context at turn start: a public-lookup
+                # exemption keeps web_search, but a fetch/request/open must
+                # name a host the user typed, or the destination is confirmed.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data is in context; this would contact "
+                                f"{_web_detail(args)}, which is not a host you typed. "
+                                "Confirm the exact destination.")
         dec = decide(tool.category, args, tool=tool.name)
         if model_led_discovery and dec.tier is Tier.ALLOW:
             from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
@@ -1457,8 +1514,11 @@ async def run_agent(
         if model_led_discovery:
             if problem := private_web_problem(tool):
                 return f"(error: {problem} The tool was NOT run.)"
-            if in_turn_private_web(tool) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+            if in_turn_private_web(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
                 return ("(error: Private data was read earlier in this turn; web access now "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
+            if start_private_egress(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data is in context; contacting a host you did not type "
                         "requires explicit confirmation of its destination. The tool was NOT run.)")
         claim = None
         if model_led_discovery:
@@ -1860,6 +1920,16 @@ async def run_agent(
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
                 private_shell_read_only = True
+                private_read_in_turn = True
+            elif (not planned and not denied
+                  and (name in {"run_applescript", "run_shortcut"}
+                       or registered.category in {"mcp_action", "skill_tool"})
+                  and outcome.status not in {"denied", "planned", "unsupported"}
+                  and not (str(result).startswith("(error:") and "NOT run" in str(result)[:400])
+                  and str(result) != "The user denied this action."):
+                # Output of automation, MCP action and skill tools can carry
+                # private data the host cannot classify: latch egress once the
+                # tool actually ran (even when its receipt was unverified).
                 private_read_in_turn = True
             from service.router.model_led import needs_effect_owner
             from service.router.model_led import effectful_call

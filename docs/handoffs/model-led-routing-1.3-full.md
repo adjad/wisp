@@ -231,9 +231,10 @@ Two changes reach the default (routing-off) path and are intentional:
 - F3: in model-led turns, `OPAQUE_OUTBOUND_TOOLS` always require confirmation,
   including under full access and standing grants. A validated read-only
   `run_shell` argv (the existing private-shell read path) is exempt.
-- F4: `POST /sessions/{sid}/effects/resolve` (optional `{"effect_id": ...}`) lets
-  the user mark running or uncertain model effects as checked. It lifts the
-  session barrier only; the consumed claim stays, so nothing is re-run.
+- F4: `POST /sessions/{sid}/effects/resolve` lets the user mark running or
+  uncertain model effects as checked. It requires `Content-Type: application/json`
+  and a JSON body of `{"effect_id": "<id>"}` or `{"all": true}` (see N3 below). It
+  lifts the session barrier only; the consumed claim stays, so nothing is re-run.
 
 ## Audit-repair round 2
 
@@ -253,6 +254,27 @@ Two changes reach the default (routing-off) path and are intentional:
   request cannot lift the barrier.
 - N4: the unresolved-action scan skips non-model-led rows without parsing their
   `state_json` when `model_effects_only` is set.
+
+## Audit-repair round 3 (model-led routing only)
+
+- M1: when a turn starts private (private history or remembered facts) and the
+  explicit-public-lookup or typed-URL exemption applies, `web_search` stays
+  allowed, but `web_fetch` and `http_request` require a confirmation card showing
+  the URL unless the URL's host exactly equals a host the user typed in the current
+  message. Subdomains, look-alike hosts, userinfo tricks (`host@evil`) and URLs
+  containing backslashes or whitespace never match. `execute_tool` rechecks that an
+  unconfirmed call is not run. After an in-turn private read the stricter rule
+  (confirm every web call, typed host or not) still applies.
+- M2: `open_app` with a URL-like `target` (scheme `http`, `https`, `mailto`, `sms`,
+  `tel`, or anything containing `://`) is treated as a private-web tool. After the
+  in-turn private latch, and in turns that start private (unless the host is one the
+  user typed), it requires confirmation showing the target, even under full access
+  or a tool-wide grant. File-path targets and turns with no private context are
+  unchanged.
+- L3: a result from `run_applescript`, `run_shortcut`, any `mcp_action` tool or any
+  `skill_tool` tool sets the in-turn private-read latch (their output can carry
+  private data), once the tool actually ran, including when its receipt was
+  unverified. Denied, planned and not-run results do not latch.
 
 ### Known follow-up (N2, not fixed here)
 
