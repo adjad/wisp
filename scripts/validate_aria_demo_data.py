@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Validate the Aria demo dataset (stdlib only). Usage: python3 validate.py [data_dir]"""
+"""Validate the Aria demo dataset (stdlib only).
+
+Usage: python3 scripts/validate_aria_demo_data.py [data_dir]
+(default data_dir: service/demo/aria). Kept outside the service package so that
+importing service modules never runs these checks.
+"""
 import json, os, re, sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
-HERE = sys.argv[1] if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
+HERE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "service", "demo", "aria")
 CUTOFF = datetime.fromisoformat("2026-10-11T23:59:00-07:00")
 EARLIEST = datetime.fromisoformat("2026-08-10T00:00:00-07:00")
 BASE_CONTACTS = {"c%02d" % i for i in range(1, 15)}   # founder-demo.json c01..c14

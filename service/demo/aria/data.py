@@ -5,7 +5,7 @@ Sources:
 * ``service/demo/founder-demo.json`` — notes n01-n12, reminders r01-r22,
   contacts c01-c14 (unchanged founder fixtures; still the single source for
   those three types);
-* this package's JSON files (schemas in README.md, checked by validate.py):
+* this package's JSON files (schemas in README.md, checked by scripts/validate_aria_demo_data.py):
   ``contacts_extra.json`` (c15-c19), ``mail.json`` (threads + messages with
   absolute ``-07:00`` dates), ``messages.json`` (chats + messages),
   ``reply_templates.json`` (deterministic scripted replies).

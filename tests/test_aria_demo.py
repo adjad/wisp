@@ -101,7 +101,7 @@ class DataChecks(AriaFixture):
         self.assertEqual(len(bundle['contacts_extra']), 5)
         self.assertEqual(len(bundle['founder']['notes']), 12)
         self.assertEqual(len(bundle['founder']['reminders']), 22)
-        out = subprocess.run([sys.executable, str(ROOT / 'service/demo/aria/validate.py')], capture_output=True,
+        out = subprocess.run([sys.executable, str(ROOT / 'scripts/validate_aria_demo_data.py')], capture_output=True,
                              text=True, timeout=60)
         self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
         self.assertIn('PASS', out.stdout)
