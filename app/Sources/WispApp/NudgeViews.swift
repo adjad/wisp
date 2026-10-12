@@ -68,7 +68,7 @@ struct BehaviorNudge: Identifiable, Equatable {
     let actions: [NudgeAction]
     let expiresAt: Double?
     /// The hub event that carried it. A NEW event_id for a known nudge id
-    /// means it re-fired (e.g. after a demo reset), not a replay.
+    /// means it re-fired (e.g. after a state reset), not a replay.
     var eventID = ""
     /// The backend's `can_undo` (whether something it did is still undoable);
     /// nil from an older backend, which falls back to the auto flags.

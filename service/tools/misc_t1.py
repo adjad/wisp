@@ -240,11 +240,11 @@ async def wisp_status() -> str:
     from service.inference.remote_policy import remote_only_profile
     profile = remote_only_profile()
     if profile is not None:
-        # Remote-only builds must not claim on-Mac inference: every request
-        # goes to the pinned GX10 endpoint, and there is no local engine.
+        # Remote inference must not claim on-Mac inference: every request
+        # goes to the pinned remote endpoint, and there is no local engine.
         from urllib.parse import urlsplit
         lines = [f"Answering with: {profile.model_id}",
-                 f"Inference runs on your GX10 ({urlsplit(profile.base_url).hostname}), "
+                 f"Inference runs on your remote server ({urlsplit(profile.base_url).hostname}), "
                  "not on this Mac: what you ask, and the data a reply needs, is sent there.",
                  "There is no local model or embedder in this build."]
         try:

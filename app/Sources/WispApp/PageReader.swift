@@ -1,9 +1,7 @@
 import AppKit
 import ApplicationServices
 import PDFKit
-#if !WISP_REMOTE_ONLY_DEMO
 import Vision
-#endif
 
 // Pull the text out of whatever window the user is looking at.
 //
@@ -103,13 +101,11 @@ enum PageReader {
             }
         }
 
-#if !WISP_REMOTE_ONLY_DEMO
         // B — OCR whatever is on screen.
         if let text = await ocrFrontWindow(pid: app.processIdentifier), text.count > 20 {
             return PageText(text: text, source: .screen, appName: appName,
                             title: title, anchors: [], pid: app.processIdentifier)
         }
-#endif
         return PageText(text: "", source: .none, appName: appName,
                         title: title, anchors: [], pid: app.processIdentifier)
     }
@@ -216,7 +212,6 @@ enum PageReader {
 
     // MARK: - OCR
 
-#if !WISP_REMOTE_ONLY_DEMO
     /// Capture the frontmost window of `pid` and run Vision text recognition.
     private static func ocrFrontWindow(pid: pid_t) async -> String? {
         guard let image = captureWindow(pid: pid) else { return nil }
@@ -265,7 +260,6 @@ enum PageReader {
         }
         return nil
     }
-#endif
 
     // MARK: - Navigation
 

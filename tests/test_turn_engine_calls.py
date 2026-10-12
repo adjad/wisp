@@ -464,6 +464,10 @@ def test_a_fresh_proof_is_trusted_up_to_the_lease(engine, monkeypatch):
 def test_proof_has_an_absolute_age_limit_even_when_renewed(engine, monkeypatch):
     clock = {"t": 1000.0}
     monkeypatch.setattr(readiness, "_now", lambda: clock["t"])
+    # Identical calls are only this test's clock; the repeated-read guard
+    # (tests/test_repeated_read_guard.py) would otherwise skip them.
+    from service.agent import loop as agent_loop
+    monkeypatch.setattr(agent_loop, "_read_call_key", lambda name, args: None)
 
     def step_tool():
         clock["t"] += readiness.RESIDENCY_LEASE_SECONDS - 1

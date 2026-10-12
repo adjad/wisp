@@ -13,11 +13,10 @@ from tests.test_model_led_entrypoint import endpoint  # noqa: F401  (fixture)
 @pytest.fixture
 def behavior_on(monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    monkeypatch.delenv("WISP_FOUNDER_DEMO", raising=False)
 
 
 @pytest.mark.parametrize("prompt", [
-    "what do you know about me", "describe me", "what are my habits"])
+    "what have you learned about me", "describe me", "what are my habits"])
 def test_behavior_claim_is_recognized(behavior_on, prompt):
     assert router.behavior_route_claim(prompt)
 
@@ -29,7 +28,7 @@ def test_ordinary_prompts_are_not_behavior_claims(behavior_on, prompt):
 
 def test_behavior_claim_follows_the_behavior_kill_switch(monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
-    assert not router.behavior_route_claim("what do you know about me")
+    assert not router.behavior_route_claim("what have you learned about me")
 
 
 def test_behavior_question_uses_the_legacy_route_under_model_led(endpoint, behavior_on, monkeypatch):
@@ -41,7 +40,7 @@ def test_behavior_question_uses_the_legacy_route_under_model_led(endpoint, behav
         "describe_me", "Synthetic learned routines", {"type": "object", "properties": {
             "subject": {"type": "string"}}}, "assistant_read", describe)
     monkeypatch.setattr(main, "route", router.route)   # the real 1.2.5 router
-    endpoint.request("what do you know about me")
+    endpoint.request("what have you learned about me")
     call = endpoint.agent_calls[0]
     assert call["model_led_discovery"] is False and call["claim_effect"] is None
     assert [name for name, _ in call["direct_calls"]] == ["describe_me"]

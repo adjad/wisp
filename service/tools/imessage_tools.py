@@ -69,9 +69,6 @@ _name_handles: dict[str, list[str]] = {}
 
 
 def cache_contacts(mapping: dict) -> None:
-    from service.demo.founder import enabled
-    if enabled():
-        return
     global _contacts, _name_handles
     _contacts = {_norm_handle(k): v for k, v in (mapping or {}).items()
                  if k and v and _norm_handle(k)}
@@ -126,9 +123,6 @@ def clear_contacts() -> None:
 
 
 def apply_contacts_sync(body: dict) -> bool:
-    from service.demo.founder import enabled
-    if enabled():
-        return False
     global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current
     revision = body.get("revision")
     if revision is not None and (type(revision) is not int or revision <= 0):
@@ -183,8 +177,7 @@ def resolve_contact(text: str, *, prefix_only: bool = False) -> str:
     label on a message line, so a phone number quoted inside the message BODY
     is left alone (rewriting body text would corrupt what was actually said).
     """
-    from service.demo.founder import enabled
-    if enabled() or not _contacts:
+    if not _contacts:
         return text
     if prefix_only:
         head, sep, rest = text.partition(":")
@@ -2167,9 +2160,6 @@ async def summarize_messages(day: str | None = None, count: int = 30,
     category="messages_read",
 )
 async def lookup_contact(name: str) -> str:
-    from service.demo.founder import enabled, contacts
-    if enabled():
-        return contacts(name, lookup=True)
     matches = find_contacts(name)
     if not matches:
         if not _name_handles:
@@ -2207,9 +2197,6 @@ async def lookup_contact(name: str) -> str:
     category="messages_read",
 )
 async def list_contacts(query: str = "") -> str:
-    from service.demo.founder import enabled, contacts
-    if enabled():
-        return contacts(query)
     names = contact_names()
     if not names:
         return ("(No contacts are synced yet — Wisp needs Contacts access, or "

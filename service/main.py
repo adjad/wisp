@@ -15,8 +15,8 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 from __future__ import annotations
 
 import asyncio
-from service.inference.remote_policy import (aria_demo_mode, remote_full_mode, remote_only_profile,
-                                             remote_read_only_mode, require_generation_role,
+from service.inference.remote_policy import (remote_only_profile,
+                                             require_generation_role,
                                              require_local_models_disabled)
 import json
 import os
@@ -284,8 +284,6 @@ async def lifespan(app: FastAPI):
     global client
     client = OMLXClient()
     profile = remote_only_profile()
-    from service.demo.founder import enabled as founder_demo_enabled
-    founder_demo_enabled()  # validate opt-in resource before serving the preview
     started_tasks = []
     if profile is not None:
         try:
@@ -361,34 +359,18 @@ async def lifespan(app: FastAPI):
         started_tasks.append(asyncio.create_task(nodes.run()))
         from service.memory.api import worker as memory_worker
         started_tasks.append(asyncio.create_task(memory_worker.run(client)))
-    elif remote_full_mode():
-        # The full remote build (Intel v5) runs the assistant scheduler as on a
-        # Mac with local models: due reminders and holds, the daily brief,
-        # user-approved scheduled sends, and behavior ticks (on by default in
-        # this build; WISP_BEHAVIOR=0 still turns them off). The scheduler never
-        # starts or loads oMLX; its only model call is the behavior phraser,
-        # which goes to the pinned GX10 target and stands down while a chat
-        # turn is in flight. Deliberately NOT started here: the oMLX warmup and
-        # idle unloader (local engine only), Super Model warmup, proactive
-        # nodes (other hosts), and conversation-memory capture (local model
-        # only; it would idle anyway since the fast role is unmanaged).
-        if aria_demo_mode():
-            # The Aria demo: open (seeding on first use) the synthetic world
-            # and mirror its calendar/reminders into the demo assistant store
-            # before the scheduler's first tick.
-            from service.demo.aria import tools as aria_tools
-            aria_tools.mirror()
-        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
     else:
-        # The remote-only build starts no assistant scheduler, so behavior
-        # learning (on automatically in the founder demo) runs its own loop.
-        # The flag is read BEFORE importing the runtime: its import chain must
-        # not load while behavior learning is off.
-        from service.behavior.flags import env_enabled as behavior_enabled
-        if behavior_enabled():
-            from service.assistant import behavior_runtime
-            started_tasks.append(asyncio.create_task(
-                behavior_runtime.run_loop(assistant_store, assistant_hub)))
+        # Remote inference runs the assistant scheduler as on a Mac with
+        # local models: due reminders and holds, the daily brief, user-approved
+        # scheduled sends, and behavior ticks (unless behavior learning is off). The
+        # scheduler never starts or loads oMLX; its only model call is the
+        # behavior phraser, which goes to the pinned remote target and stands
+        # down while a chat turn is in flight. Deliberately NOT started here:
+        # the oMLX warmup and idle unloader (local engine only), Super Model
+        # warmup, proactive nodes (other hosts), and conversation-memory
+        # capture (local model only; it would idle anyway since the fast role
+        # is unmanaged).
+        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -503,19 +485,20 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
 
 
-# Full remote build: history the agent sees per turn. The GX10 contract is a
-# 32k-token window and a 131,072-byte messages+tools aggregate, and the remote
-# fit refuses to trim selected messages, so history must leave room for the
-# system prompt, up to 32 tool schemas, tool results and the output budget.
-# The local formula below would give old turns ~20k tokens (~80 KB); 6k tokens
-# (~24 KB) keeps the last few turns for follow-ups like "reply to that".
-_REMOTE_FULL_HISTORY_TOKENS = 6000
+# Remote inference: history the agent sees per turn. The remote fit
+# refuses to trim selected messages and the profile caps the messages+tools
+# aggregate in bytes, so history must leave room for the system prompt, tool
+# schemas, tool results and the output budget. A fifth of the aggregate byte
+# budget at ~4 bytes per token (6.5k tokens for a 131,072-byte profile) keeps
+# the last few turns for follow-ups like "reply to that".
+_REMOTE_HISTORY_SHARE = 20
 
 
 def _history_budget(target: Target) -> int:
     budget = max(1500, target.context_window - 11500)
-    if remote_full_mode():
-        budget = min(budget, _REMOTE_FULL_HISTORY_TOKENS)
+    if remote_only_profile() is not None:
+        cap = max(1500, remote_only_profile().aggregate_bytes // _REMOTE_HISTORY_SHARE)
+        budget = min(budget, cap)
     return budget
 
 
@@ -1465,9 +1448,8 @@ async def agent(body: dict[str, Any]):
             # allowlist that would silently exclude a renamed trained model.
             model_led_turn = False
             model_led_target = None
-            # Model-led routing is a local-inference mode. The remote-only builds
-            # (Intel read-only, full remote and the Aria demo) keep the legacy
-            # router, whose remote tool contract they were built and tested
+            # Model-led routing is a local-inference mode. Remote-only mode keeps
+            # the legacy router, whose remote tool contract it was built and tested
             # against. Deterministic 1.2.5 claims stay deterministic in either
             # mode: a literal envelope (knowledge fields, grocery selectors,
             # queued-send review) is data, and a behavior question is answered
@@ -1894,7 +1876,7 @@ async def agent(body: dict[str, Any]):
 
             user_msg: dict[str, Any] = {
                 "role": "user",
-                "content": prompt if (super_model_cloud or model_led_turn or remote_read_only_mode()) else (decision.resolved_request or prompt),
+                "content": prompt if (super_model_cloud or model_led_turn) else (decision.resolved_request or prompt),
             }
             schedule_read = (not model_led_turn and not (workflow_turn and workflow_turn.decision)
                              and _current_schedule_source_route(decision, prompt))
@@ -1908,7 +1890,7 @@ async def agent(body: dict[str, Any]):
             turn_private_shell_history = private_shell_history or bool(current_shell_session and (
                 store.turn_count(sid) or current_shell_session.get("summary")
                 or current_shell_session.get("summarized_idx")))
-            messages = ([user_msg] if super_model_cloud or remote_read_only_mode() else _tool_turn_messages(
+            messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
                 sid, user_msg, max_tokens=_history_budget(target),
                 test_mode=test_mode,
                 verified_results_only=(decision.verified_results_only or
@@ -2025,24 +2007,6 @@ async def agent(body: dict[str, Any]):
                              + "".join("\n" + guidance for guidance in synthesis_guidance)
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
-                if remote_read_only_mode() and _agent_memory_context_allowed(
-                        decision, cloud=super_model_cloud,
-                        grounded_workflow=bool(workflow_turn and workflow_turn.decision),
-                        schedule_read=schedule_read):
-                    # Remote-only keeps memory context off (include_memory_context
-                    # below); the learned profile card is the one exception, under
-                    # the same gate the memory block uses elsewhere.
-                    from service.memory.prompt_blocks import remote_only_context_block
-                    style_hint += remote_only_context_block()
-                if remote_read_only_mode():
-                    # Read-only remote sends the raw prompt, not decision.resolved_request,
-                    # so a behavior route's "answer only from these results"
-                    # instruction rides in the style hint instead (a few hundred
-                    # bytes, well inside the gateway's budget).
-                    from service.router.router import behavior_guidance
-                    guidance = behavior_guidance(decision)
-                    if guidance:
-                        style_hint += "\n" + guidance
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
@@ -2058,10 +2022,7 @@ async def agent(body: dict[str, Any]):
                                                               if model_led_turn else None),
                                         claim_effect=claim_model_action if model_led_turn else None,
                                         finish_effect=finish_model_action if model_led_turn else None,
-                                        # Model-led turns never run in a remote-only build
-                                        # (see model_led_turn), so the legacy branch keeps
-                                        # the remote read-only memory exclusion.
-                                        include_memory_context=not remote_read_only_mode() and _agent_memory_context_allowed(
+                                        include_memory_context=_agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),
@@ -2118,13 +2079,7 @@ async def agent(body: dict[str, Any]):
                 # tool-free. Excluded for "coding" too: several of the
                 # style rules (no em/en dashes, no hyphenated compounds) are
                 # prose-specific and could otherwise bleed into code syntax.
-                if remote_read_only_mode():
-                    # Only the learned profile card rides along here; every
-                    # other memory/skill context stays off in this build.
-                    from service.memory.prompt_blocks import remote_only_context_block
-                    msgs = [{"role": "system", "content": ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
-                             + remote_only_context_block()}] + messages
-                elif super_model_cloud:
+                if super_model_cloud:
                     # The privacy decision covers only the literal current prompt.
                     # Do not attach local memory, conversation rewrites, role prompts,
                     # skill files, or timestamps to a cloud Super Model request.
@@ -2476,22 +2431,11 @@ async def resolve_session_effects(sid: str, request: Request) -> dict[str, Any]:
 @app.get("/assistant/next")
 async def assistant_next() -> dict[str, Any]:
     """The single soonest active commitment — data for the notch countdown chip."""
-    from service.demo.founder import enabled, reminder_rows
-    if enabled():
-        now = time.time()
-        rows = assistant_store.calendar_events_overlapping(now, now + 60 * 86400) + reminder_rows(now)
-        rows = sorted((r for r in rows if r["when_ts"] >= now), key=lambda r:r["when_ts"])
-        return {"commitment": rows[0] if rows else None, "demo_reminders": True}
     return {"commitment": assistant_store.next_active()}
 
 
 @app.get("/assistant/upcoming")
 async def assistant_upcoming(days: int = 7) -> dict[str, Any]:
-    from service.demo.founder import enabled, reminder_rows
-    if enabled():
-        now = time.time();end = now + max(1, min(days, 60)) * 86400
-        rows = assistant_store.calendar_events_overlapping(now, end) + [r for r in reminder_rows(now) if now <= r["when_ts"] < end]
-        return {"commitments": sorted(rows, key=lambda r:r["when_ts"]), "demo_reminders": True}
     return {"commitments": assistant_store.upcoming(days=max(1, min(days, 60)))}
 
 
@@ -2511,10 +2455,6 @@ async def assistant_sync_status(sources: str = "calendar,reminders,email,message
     return sources_snapshot(wanted)
 
 
-# _ARIA_SYNC_NOTE: the Aria demo reads nothing from the Mac. Every native
-# sync push below is refused while it runs (the v5 app also stops syncing), so
-# no real Calendar, Reminders, Mail, Messages, Notes, Contacts or browser
-# history reaches it.
 @app.post("/assistant/sync/calendar")
 async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     """Receive calendar events (or, with source='reminders', native
@@ -2522,10 +2462,6 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     (which holds the TCC grant) and sync into the commitments store. Each
     `source` is a separate replace-set (see AssistantStore.sync_source), so
     Calendar and Reminders syncing independently can't wipe each other out."""
-    from service.inference.remote_policy import aria_demo_mode as _aria_demo
-    if _aria_demo():
-        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     raw_source = body.get("source", "calendar")
     aliases = {"calendar": "calendar", "apple calendar": "calendar", "apple_calendar": "calendar",
                "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders"}
@@ -2536,9 +2472,6 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
               if isinstance(raw_source, str) and raw_source.isascii() else None)
     if source is None:
         raise HTTPException(status_code=422, detail="source must be Calendar or Reminders")
-    from service.demo.founder import enabled, PROVENANCE
-    if source == "reminders" and enabled():
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": PROVENANCE}
     diagnostics = body.get("diagnostics") or {}
     if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
             or diagnostics.get("available") is False):
@@ -2602,8 +2535,6 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/assistant/commitments")
 async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
     """Manually add a reminder/event. Accepts when_ts (epoch) or when_iso."""
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     title = str(body.get("title") or "").strip()
     if not title:
         return {"ok": False, "error": "title required"}
@@ -2626,8 +2557,6 @@ async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/assistant/commitments/{cid}")
 async def assistant_update(cid: str, body: dict[str, Any]) -> dict[str, Any]:
     """Mark a commitment done/dismissed (status)."""
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     status = str(body.get("status") or "").strip()
     if status not in {"active", "done", "dismissed"}:
         return {"ok": False, "error": "status must be active|done|dismissed"}
@@ -2677,11 +2606,6 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
     from service.assistant.sync_status import ensure_daily_sources
     from datetime import datetime as _dt
     part = "morning" if _dt.now().hour < 12 else "evening"
-    if aria_demo_mode():
-        # Demo: no native sources to wait for; bring the demo's nudges current
-        # so the summary's Heads up section reflects them (cards arrive too).
-        from service.demo.aria.proactive import refresh_behavior
-        await refresh_behavior(assistant_store, assistant_hub)
     # Never present restored caches as current before source readiness. Awaited
     # ONCE, here, and handed to _sections — which used to repeat the same wait.
     snapshot = await ensure_daily_sources(timeout_seconds=_SOURCE_WAIT_S)
@@ -2730,10 +2654,6 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     only touched when present: MailReader posts them on separate cadences, so
     a headers-only sync must not wipe out the still-fresh raw cache (and
     vice versa)."""
-    from service.inference.remote_policy import aria_demo_mode as _aria_demo
-    if _aria_demo():
-        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.email_tools import (
         cache_emails, cache_history_headers, cache_raw_emails, set_email_availability)
     if "headers" in body:
@@ -2769,16 +2689,6 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
 async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     """Receive raw Notes.app content from the Swift app (which holds Notes
     Automation access) so search_notes can look through it verbatim."""
-    from service.inference.remote_policy import aria_demo_mode as _aria_demo
-    if _aria_demo():
-        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
-    from service.demo.founder import enabled, PROVENANCE
-    if enabled():
-        # The Aria demo answers Notes from fictional fixtures. In the Intel v5
-        # build the app's Notes reader may still be running from real mode, so
-        # real note content is refused here rather than cached.
-        return {"ok": True, "ignored_native_sync": True, "demo": PROVENANCE}
     from service.tools.notes_tools import cache_notes
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
@@ -2802,10 +2712,6 @@ async def assistant_contacts_privacy_status() -> dict[str, Any]:
 @app.post("/assistant/sync/browser_history")
 async def assistant_sync_browser_history(body: dict[str, Any]) -> dict[str, Any]:
     """Receive an explicit consent state and authoritative browser snapshot."""
-    from service.inference.remote_policy import aria_demo_mode as _aria_demo
-    if _aria_demo():
-        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.browser_history_tools import apply_browser_history_sync, browser_history_privacy_status
     try:
         applied = apply_browser_history_sync(body)
@@ -2819,10 +2725,6 @@ async def assistant_sync_messages(body: dict[str, Any]) -> dict[str, Any]:
     """Receive recent iMessage/SMS lines from the Swift app (which holds the
     Full Disk Access needed to read chat.db directly) so the messages tool
     can summarize them with the summarizer."""
-    from service.inference.remote_policy import aria_demo_mode as _aria_demo
-    if _aria_demo():
-        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
-        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.imessage_tools import apply_contacts_sync, cache_messages, contacts_privacy_status
     diag = body.get("diagnostics") or {}
     # Contacts arrive on their own (much slower) schedule from ContactsReader,
@@ -2845,24 +2747,9 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
     """Cancel/delete a commitment. For a real calendar event, ask the Swift app
     to remove it from macOS Calendar (it holds the write grant); the re-sync then
     drops it from the store. Manual items are deleted outright."""
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     c = assistant_store.get(cid)
     if not c:
         return {"ok": False, "error": "not found"}
-    from service.inference.remote_policy import aria_demo_mode
-    if aria_demo_mode() and c["source"] in {"calendar", "reminders"}:
-        # Mirrored from the Aria demo's synthetic world: change it there.
-        from service.demo.aria import tools as aria_tools
-        from service.demo.aria.world import get_world
-        world = get_world()
-        if c["source"] == "calendar":
-            world.cancel_event(c.get("source_id") or "")
-        else:
-            world.update_reminder(c.get("source_id") or "", status="deleted")
-        aria_tools.mirror()
-        await assistant_hub.publish({"type": "changed"})
-        return {"ok": True}
     if c["source"] == "calendar":
         from service.assistant.outbox import request as app_request
         if not c.get("source_id") or c.get("when_ts") is None:
@@ -2945,8 +2832,6 @@ async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, 
 
 @app.post("/assistant/events/{event_id}/claim")
 async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     if set(body) != {"kind", "action_id", "payload"}:
         raise HTTPException(status_code=422, detail="kind, action_id and exact payload are required")
     try:
@@ -2995,8 +2880,6 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     on it, not a regex. Those checks are for catching the model before a human
     looks — see action_tools.human_reviewed_content.
     """
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     from service.safety.audit import audit
     from service.tools.action_tools import human_reviewed_content, send_message
 
@@ -3010,62 +2893,12 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "result": "The message must be text."}
     if not message.strip():
         return {"ok": False, "result": "The message is empty."}
-    from service.inference.remote_policy import aria_demo_mode
-    if aria_demo_mode():
-        # The Aria demo's draft card sends into the synthetic thread only.
-        from service.demo.aria import tools as aria_tools
-        result = await aria_tools.send_message(to=to, text=message)
-        ok = "Sent (simulated" in result
-    else:
-        with human_reviewed_content():
-            result = await send_message(to=to, text=message)
-        ok = result.startswith("Message sent to ")
+    with human_reviewed_content():
+        result = await send_message(to=to, text=message)
+    ok = result.startswith("Message sent to ")
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
     return {"ok": ok, "result": result}
-
-
-@app.get("/demo/aria/status")
-async def aria_demo_status() -> dict[str, Any]:
-    """Whether this backend is the Aria demo, and its synthetic-world counts."""
-    if not aria_demo_mode():
-        return {"enabled": False, "counts": None}
-    from service.demo.aria import tools as aria_tools
-    return await asyncio.to_thread(aria_tools.status)
-
-
-@app.get("/demo/aria/topbar")
-async def aria_demo_topbar() -> dict[str, Any]:
-    """The collapsed top bar in the demo: next synthetic event + one proactive
-    chip (from the demo's delivered behavior nudges). Empty outside the demo."""
-    if not aria_demo_mode():
-        return {"enabled": False, "next": None, "chip": None}
-    from service.demo.aria.proactive import topbar
-    return {"enabled": True, **(await asyncio.to_thread(topbar))}
-
-
-@app.post("/demo/aria/reset")
-async def aria_demo_reset() -> dict[str, Any]:
-    """Restore the Aria demo's seeded world and clear its learned behavior.
-
-    Only ever touches demo state (service.paths.state_dir() is the demo
-    directory whenever this is reachable). 409 outside the demo."""
-    if not aria_demo_mode():
-        raise HTTPException(status_code=409, detail="Wisp is not running the Aria demo")
-    from service.demo.aria import tools as aria_tools
-    from service.demo.aria.world import get_world
-    counts = await asyncio.to_thread(get_world().reset)
-    from service.behavior.flags import env_enabled as behavior_enabled
-    if behavior_enabled():
-        from service.assistant import behavior_runtime
-        await asyncio.to_thread(behavior_runtime.clear_demo_state, assistant_store)
-    await asyncio.to_thread(aria_tools.mirror)
-    await assistant_hub.publish({"type": "changed"})
-    # Re-learn the persona and re-fire today's nudges (fresh budget) in the
-    # background, so the reset returns at once.
-    from service.demo.aria.proactive import refresh_behavior
-    asyncio.create_task(refresh_behavior(assistant_store, assistant_hub))
-    return {"ok": True, "counts": counts}
 
 
 @app.get("/assistant/events")
@@ -3081,8 +2914,6 @@ async def assistant_events() -> StreamingResponse:
 
 @app.post("/agent/approve")
 async def approve(body: dict[str, Any]) -> dict[str, Any]:
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     sid, action_id = body.get("session_id"), body.get("action_id")
     approved, request_id = body.get("approved"), body.get("request_id")
     # A decision authorizes or refuses a real action, so the body is validated

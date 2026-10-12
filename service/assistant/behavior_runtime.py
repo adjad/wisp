@@ -1,28 +1,17 @@
 """Mac-side runtime for the behavior engine: feed it, run it, act on it.
 
-Off unless ``WISP_BEHAVIOR=1``, ``WISP_FOUNDER_DEMO=1`` or the full remote
-build (``WISP_REMOTE_ONLY=1`` + ``WISP_REMOTE_FULL=1``) turns it on;
-``WISP_BEHAVIOR=0`` always wins. ``WISP_BEHAVIOR_SYNTHETIC_ONLY=1`` (implied
-by the founder demo only) learns from the synthetic persona instead of real
-data; the full remote build learns from real activity.
+On by default; off with Settings -> "Learn my routines" or ``WISP_BEHAVIOR=0``
+(see ``service.behavior_switch``). Turning it off stops ingestion and nudges
+and keeps what was learned.
 
-Brain
-    ``local`` (default): an in-process ``BehaviorEngine`` at
-    ``<WISP_HOME>/behavior.db``. ``remote``: ``RemoteEngine`` at
-    ``WISP_BRAIN_URL`` (``WISP_BRAIN_MODE=remote`` or a URL alone selects it),
-    bearer token from ``WISP_BRAIN_TOKEN`` or Keychain (service
-    ``com.wisp.inference``, account ``wispbrain:<sha256(url)>``, the same
-    origin-bound scheme as provider credentials). Any remote failure falls back
-    to the local engine for ``REMOTE_RETRY_S`` so the demo never dies.
+Engine
+    An in-process ``BehaviorEngine`` at ``<WISP_HOME>/behavior.db``.
 
 Ingestion (every ``INGEST_EVERY_S`` and right after a Calendar sync; each
 source is independent and never raises into the scheduler)
-    real mode: Calendar (replace-set snapshot so deletes/moves are detected),
-    Reminders, Messages metadata (direction, contact, time — never text), the
-    user's Wisp asks (a coarse topic label — never text), approvals/denials.
-    synthetic mode: ``generate_persona(now)`` once per day (idempotent ids)
-    plus ONLY Calendar events in a calendar named ``Wisp Demo``; never real
-    Messages, Reminders, Notes or asks.
+    Calendar (replace-set snapshot so deletes/moves are detected), Reminders,
+    Messages metadata (direction, contact, time — never text), the user's Wisp
+    asks (a coarse topic label — never text), approvals/denials.
 
 Acting
     New nudges go through the existing hub as durable ``nudge`` events
@@ -33,6 +22,18 @@ Acting
     ``open_prompt`` is never performed automatically: messages, emails and
     changes to real meetings are only drafted, via a prefilled prompt the user
     approves in the overlay.
+
+Safety policy
+    Every write (automatic or tapped) asks ``decide("assistant_write", ...,
+    tool="add_reminder")`` first, exactly like the attention runner. Anything
+    short of ALLOW (View Only, a remote-profile refusal) means nothing is
+    written; an automatic action is downgraded to an offer and the nudge is
+    still delivered.
+
+Forgetting and retention
+    ``forget_all`` deletes everything learned (``DELETE /behavior/data``).
+    ``age_out`` applies the 180-day / 30-day retention even while learning is
+    off (the scheduler runs it about every six hours, and on toggle-off).
 """
 from __future__ import annotations
 
@@ -45,6 +46,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -58,19 +60,13 @@ EVENT_PREFIX = "behavior:"
 EVENT_KIND = "nudge"
 BEHAVIOR_CONTEXT = "Added by Wisp from your routine"
 HOLD_PREFIX = "Tentative: "
-DEMO_CALENDAR = "wisp demo"
 
 TICK_S = 30.0
 INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
-REMOTE_RETRY_S = 120.0
-CALENDAR_GRACE_S = 180.0   # synthetic: wait this long for a first Calendar read
 FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
-# Same event: same title, starts within this window. The persona regenerates
-# each day from a seeded RNG over a shifted range, so the same routine event
-# can come back minutes away from the copy seeded into the calendar earlier.
-CAL_MATCH_S = 3 * 3600.0
+STOP_WAIT_S = 30.0         # stop() waits this long for a delivery/action already in flight
 CARD_TTL_S = 60.0
 CARD_MAX_BYTES = 700
 HISTORY_S = 56 * 86400
@@ -82,57 +78,14 @@ ASK_LIMIT = 500
 # Flags
 # --------------------------------------------------------------------------
 
-def founder_demo() -> bool:
-    from service.behavior.flags import founder_demo_env
-    return founder_demo_env()
-
-
 def enabled() -> bool:
-    from service.behavior.flags import env_enabled
-    return env_enabled()
-
-
-def synthetic_only() -> bool:
-    # The Aria demo learns the synthetic persona plus its synthetic calendar
-    # (mirrored into the demo store as the "Wisp Demo" calendar), never real data.
-    from service.demo.aria import env_requested as aria_demo
-    return os.environ.get("WISP_BEHAVIOR_SYNTHETIC_ONLY") == "1" or founder_demo() or aria_demo()
-
-
-def brain_url() -> str:
-    url = os.environ.get("WISP_BRAIN_URL", "").strip()
-    if url:
-        return url
-    try:
-        from service.config import models_config
-        brain = models_config().get("brain") or {}
-        return str(brain.get("url") or "").strip() if isinstance(brain, dict) else ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def brain_mode() -> str:
-    from service.demo.aria import env_requested as aria_demo
-    if aria_demo():
-        return "local"   # a remote brain is shared with real mode; the demo never feeds it
-    mode = os.environ.get("WISP_BRAIN_MODE", "").strip().lower()
-    if not mode:
-        try:
-            from service.config import models_config
-            brain = models_config().get("brain") or {}
-            mode = str(brain.get("mode") or "").strip().lower() if isinstance(brain, dict) else ""
-        except Exception:  # noqa: BLE001
-            mode = ""
-    if mode not in {"local", "remote"}:
-        mode = "remote" if os.environ.get("WISP_BRAIN_URL", "").strip() else "local"
-    return mode
+    from service.behavior_switch import enabled as flag_enabled
+    return flag_enabled()
 
 
 def _home() -> Path:
-    # The Aria demo's synthetic persona learns into its own state directory
-    # (service.paths.state_dir), never the real-mode behavior.db.
-    from service.paths import state_dir
-    return state_dir()
+    from service.paths import MOE_DIR
+    return MOE_DIR
 
 
 # --------------------------------------------------------------------------
@@ -142,42 +95,11 @@ def _home() -> Path:
 def _default_local_factory(path: Path):
     from service.behavior.engine import BehaviorEngine
     phraser = None
-    if os.environ.get("WISP_BEHAVIOR_PHRASER", "1") != "0":
+    from service.behavior_switch import phraser_enabled
+    if phraser_enabled():     # off by default under remote inference (titles would leave the Mac)
         from service.assistant.behavior_phraser import WispPhraser
         phraser = WispPhraser()
-    from service.demo.aria import env_requested as aria_demo
-    if aria_demo():
-        # The persona plants its next gym-morning conflict and Tue/Thu
-        # back-to-back run within the coming week; look that far so the demo
-        # shows them on any day.
-        from service.demo.aria.proactive import DEMO_NUDGE_HORIZON_S
-        return BehaviorEngine(path, phraser=phraser, min_horizon_s=DEMO_NUDGE_HORIZON_S)
     return BehaviorEngine(path, phraser=phraser)
-
-
-def _brain_token(url: str) -> Callable[[], str]:
-    def token() -> str:
-        value = os.environ.get("WISP_BRAIN_TOKEN", "").strip()
-        if value:
-            return value
-        from service.config.provider_credentials import resolve_keychain
-        return resolve_keychain("wispbrain", url)
-    return token
-
-
-def _default_remote_factory(home: Path):
-    url = brain_url()
-    if not url:
-        return None
-    from service.behavior.client import RemoteEngine
-    return RemoteEngine(url, _brain_token(url), cache_path=home / CARD_CACHE)
-
-
-def _default_persona(now: float):
-    # Same zone the engine mines in (the Mac's), so "gym at 6:45" reads as 6:45.
-    from service.behavior.persona import generate_persona
-    from service.behavior.timeutil import resolve_tz, tz_name
-    return generate_persona(now, tz=tz_name(resolve_tz(None)))
 
 
 def _default_messages() -> dict:
@@ -240,37 +162,25 @@ class TickBusy(RuntimeError):
     """A forced run could not start: another tick held the lock too long."""
 
 
+class RuntimeStopped(RuntimeError):
+    """The runtime was stopped (its learned data is being or was erased): nothing may be
+    written through it any more. Callers holding a stale reference refuse cleanly."""
+
+
 class BehaviorRuntime:
-    def __init__(self, home: Path | None = None, *, mode: str | None = None,
-                 synthetic: bool | None = None, founder: bool | None = None,
+    def __init__(self, home: Path | None = None, *,
                  local_factory: Callable[[Path], Any] | None = None,
-                 remote_factory: Callable[[Path], Any] | None = None,
-                 persona_fn: Callable[[float], Any] | None = None,
                  messages_fn: Callable[[], dict] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
-                 clock: Callable[[], float] = time.time,
-                 calendar_grace_s: float | None = None) -> None:
+                 clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
-        self.mode = mode or brain_mode()
-        self.synthetic = synthetic_only() if synthetic is None else synthetic
-        self.founder = founder_demo() if founder is None else founder
         self._local_factory = local_factory or _default_local_factory
-        self._remote_factory = remote_factory or _default_remote_factory
-        self._persona_fn = persona_fn or _default_persona
         self._messages_fn = messages_fn or _default_messages
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
         self._session_db_fn = session_db_fn or _default_session_db
         self.clock = clock
-        self._started = clock()
-        self._calendar_grace_s = CALENDAR_GRACE_S if calendar_grace_s is None else float(calendar_grace_s)
-        self._calendar_ready = False
         self._local_engine = None
-        self._remote_engine = None
-        self._remote_built = False
-        self._remote_down_until = 0.0
-        self.active = "local"
-        self._failover = False
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
         self._tick_lock: asyncio.Lock | None = None
@@ -280,6 +190,12 @@ class BehaviorRuntime:
         self.errors: dict[str, str] = {}
         self.last: dict[str, float] = {}
         self._db_lock = threading.RLock()
+        self._stopped = False
+        # Guards ``_stopped`` and the count of deliveries/actions in flight. stop() sets the
+        # flag and waits for the count to reach zero under this one lock, so no write that
+        # began before stop() can land after it returns, and none can begin afterwards.
+        self._gate = threading.Condition()
+        self._inflight = 0
         self.home.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -304,14 +220,44 @@ class BehaviorRuntime:
             self._db.execute("INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                              (key, value))
 
+    @contextmanager
+    def _in_flight(self):
+        """Register one delivery/action/user write. Raises ``RuntimeStopped`` when the
+        runtime is already stopped; otherwise stop() waits for it to finish."""
+        with self._gate:
+            if self._stopped:
+                raise RuntimeStopped("behavior runtime was stopped")
+            self._inflight += 1
+        try:
+            yield
+        finally:
+            with self._gate:
+                self._inflight -= 1
+                self._gate.notify_all()
+
+    def stop(self) -> None:
+        """Refuse all further work and wait for a pass already running on the worker
+        thread and for any delivery or action already in flight to finish. When it
+        returns nothing can write through this runtime. Used before the learned data
+        is deleted."""
+        with self._gate:
+            self._stopped = True
+            self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
+        with self._work_lock:
+            pass
+
+    def live(self) -> bool:
+        """False once stopped or once learning is switched off: nothing may be
+        published or performed after that, even by a pass already in flight."""
+        return not self._stopped and enabled()
+
     def close(self) -> None:
-        for eng in (self._local_engine, self._remote_engine):
-            close = getattr(eng, "close", None)
-            if close is not None:
-                try:
-                    close()
-                except Exception:  # noqa: BLE001
-                    pass
+        close = getattr(self._local_engine, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self._db.close()
         except Exception:  # noqa: BLE001
@@ -319,45 +265,15 @@ class BehaviorRuntime:
 
     # ---- engine selection ----------------------------------------------------
     def local_engine(self):
+        if self._stopped:
+            raise RuntimeStopped("behavior runtime was stopped")
         if self._local_engine is None:
             self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
 
-    def _remote(self):
-        if not self._remote_built:
-            self._remote_built = True
-            try:
-                self._remote_engine = self._remote_factory(self.home)
-            except Exception as exc:  # noqa: BLE001
-                self.errors["remote"] = f"{type(exc).__name__}: {exc}"[:200]
-                self._remote_engine = None
-        return self._remote_engine
-
-    def _target_key(self) -> str:
-        if self.mode == "remote" and self.clock() >= self._remote_down_until and self._remote() is not None:
-            return "remote"
-        return "local"
-
     def call(self, method: str, *args, **kwargs):
-        """Call an engine method on the remote brain when configured and up,
-        else (or on any remote transport failure) on the local engine.
-        KeyError/ValueError are semantic answers (404/400) and propagate."""
-        if self._target_key() == "remote":
-            remote = self._remote()
-            try:
-                result = getattr(remote, method)(*args, **kwargs)
-                self.active = "remote"
-                return result
-            except (KeyError, ValueError):
-                raise
-            except Exception as exc:  # noqa: BLE001 — BrainUnavailable and friends
-                self._remote_down_until = self.clock() + REMOTE_RETRY_S
-                self.errors["remote"] = f"{type(exc).__name__}: {exc}"[:200]
-                self._failover = True
-                # Local must be fully re-fed: forget its ingest/mine stamps.
-                self._stamps.pop("local", None)
-                log.warning("behavior brain unavailable; using the local engine")
-        self.active = "local"
+        """Call an engine method. KeyError/ValueError are semantic answers
+        (404/400) and propagate."""
         return getattr(self.local_engine(), method)(*args, **kwargs)
 
     async def acall(self, method: str, *args, **kwargs):
@@ -366,8 +282,6 @@ class BehaviorRuntime:
     # ---- external hooks --------------------------------------------------------
     def record_decision(self, tool: str, approved: bool) -> None:
         from service.behavior.types import Observation
-        if self.synthetic:
-            return   # the synthetic persona never learns from the user's real approvals
         now = self.clock()
         tool = str(tool or "")[:64]
         if not tool:
@@ -379,18 +293,11 @@ class BehaviorRuntime:
     # ---- ingestion -----------------------------------------------------------
     def _ingest(self, store, now: float, stamps: dict) -> bool:
         changed = False
-        steps: list[tuple[str, Callable[[], bool]]] = []
-        if self.synthetic:
-            # Calendar first: whether a "Wisp Demo" calendar exists decides
-            # where upcoming events come from (it, not the persona).
-            steps.append(("calendar", lambda: self._ingest_calendar(store, now, stamps)))
-            steps.append(("persona", lambda: self._ingest_persona(store, now, stamps)))
-        else:
-            steps.append(("calendar", lambda: self._ingest_calendar(store, now, stamps)))
-        if not self.synthetic and not self.founder:
-            steps += [("reminders", lambda: self._ingest_reminders(store, now)),
-                      ("messages", lambda: self._ingest_messages(now)),
-                      ("asks", lambda: self._ingest_asks(now))]
+        steps: list[tuple[str, Callable[[], bool]]] = [
+            ("calendar", lambda: self._ingest_calendar(store, now, stamps)),
+            ("reminders", lambda: self._ingest_reminders(store, now)),
+            ("messages", lambda: self._ingest_messages(now)),
+            ("asks", lambda: self._ingest_asks(now))]
         for name, step in steps:
             try:
                 changed = bool(step()) or changed
@@ -402,9 +309,6 @@ class BehaviorRuntime:
     def _flush_decisions(self) -> bool:
         if not self._pending:
             return False
-        if self.synthetic:
-            self._pending.clear()   # real approvals never feed the synthetic persona
-            return False
         batch = []
         while self._pending:
             batch.append(self._pending.popleft())
@@ -413,80 +317,6 @@ class BehaviorRuntime:
         except Exception as exc:  # noqa: BLE001
             self.errors["decisions"] = f"{type(exc).__name__}: {exc}"[:200]
             return False
-
-    def _demo_calendar_seen(self) -> bool:
-        return self.kv_get("demo_calendar_seen") == "1"
-
-    def _calendar_ready_for(self, sync: dict, now: float) -> bool:
-        """Synthetic demo only: whether the first Calendar read has settled.
-        Until it has, persona upcoming events are not ingested and no nudge is
-        generated: a seeded "Wisp Demo" calendar must win over the persona's
-        own copy of the same events, or both would nudge. With Calendar access
-        off (a denied read also settles it) or no report at all, the persona's
-        upcoming events are used after CALENDAR_GRACE_S of uptime."""
-        if not self.synthetic or self._calendar_ready:
-            return True
-        if _finite(sync.get("last_sync")) and not sync.get("syncing"):
-            self._calendar_ready = True
-        elif now - self._started >= self._calendar_grace_s:
-            self._calendar_ready = True
-        return self._calendar_ready
-
-    def _demo_cal_seen(self, key: str) -> dict[str, list]:
-        try:
-            value = json.loads(self.kv_get(f"demo_cal:{key}", "{}") or "{}")
-        except ValueError:
-            return {}
-        return value if isinstance(value, dict) else {}
-
-    def _remember_demo_cal(self, key: str, observations: list, now: float) -> None:
-        """Every "Wisp Demo" calendar event fed to engine ``key`` (title, start),
-        so a later persona regeneration never adds its own copy of the same
-        event: the calendar's copy stays in the engine after it passes, and
-        persona history would otherwise double-count that day."""
-        seen = {oid: v for oid, v in self._demo_cal_seen(key).items()
-                if isinstance(v, list) and len(v) == 2 and _finite(v[1]) and float(v[1]) >= now - HISTORY_S}
-        for o in observations:
-            seen[o.id] = [_norm_title(o.subject), float(o.ts)]
-        self.kv_set(f"demo_cal:{key}", json.dumps(seen, sort_keys=True))
-
-    def _ingest_persona(self, store, now: float, stamps: dict) -> bool:
-        """The synthetic persona, regenerated once per local day (ids are stable
-        within a day). Rows a previous day's persona contributed that today's no
-        longer has are dropped from the local engine so history never doubles.
-        With a seeded "Wisp Demo" calendar, upcoming events come from it only."""
-        day = datetime.fromtimestamp(now).date().isoformat()
-        key = self._target_key()
-        seen = self._demo_calendar_seen()
-        # Persona upcoming events only once the first Calendar read settled
-        # without a demo calendar (see _calendar_ready_for).
-        upcoming = not seen and self._calendar_ready
-        marker = f"{day}:{int(seen)}:{int(upcoming)}"
-        if stamps.get("persona_day") == marker:
-            return False
-        persona = self._persona_fn(now)
-        obs = list(getattr(persona, "observations", ()) or ())
-        if upcoming:
-            obs += list(getattr(persona, "upcoming", ()) or ())
-        # An event the "Wisp Demo" calendar already supplied (same title, start
-        # within CAL_MATCH_S) comes from the calendar only, past or upcoming.
-        starts: dict[str, list[float]] = {}
-        for title, ts in self._demo_cal_seen(key).values():
-            starts.setdefault(title, []).append(float(ts))
-        if starts:
-            obs = [o for o in obs if o.kind != "event" or not any(
-                abs(float(o.ts) - ts) <= CAL_MATCH_S for ts in starts.get(_norm_title(o.subject), ()))]
-        ids = sorted({o.id for o in obs})
-        previous = set(json.loads(self.kv_get(f"persona_ids:{key}", "[]") or "[]"))
-        stale = previous - set(ids)
-        count = self.call("observe", obs)
-        if stale and self.active == "local":
-            store_ = getattr(self.local_engine(), "_store", None)
-            if store_ is not None and hasattr(store_, "delete_observations"):
-                count += store_.delete_observations(sorted(stale))
-        self.kv_set(f"persona_ids:{key}", json.dumps(ids))
-        stamps["persona_day"] = marker
-        return bool(count)
 
     def _calendar_rows(self, store, start: float, end: float) -> list[dict]:
         with store._lock:
@@ -524,24 +354,10 @@ class BehaviorRuntime:
         if not sync.get("available") or not _finite(last_sync):
             return False   # no completed read yet: an empty set is not "everything cancelled"
         start, end = now - HISTORY_S, now + AHEAD_S
-        if self.synthetic:
-            # Demo: history comes from the persona; the real "Wisp Demo"
-            # calendar supplies only what is still ahead, so a live delete or
-            # move is diffed while seeded past events never double-count.
-            start = now - 3600
         rows = self._calendar_rows(store, start, end)
-        if self.synthetic:
-            rows = [r for r in rows if (r.get("context") or "").strip().casefold() == DEMO_CALENDAR]
-            if rows:
-                self.kv_set("demo_calendar_seen", "1")
-            elif not self._demo_calendar_seen():
-                stamps["cal_sync"] = last_sync
-                return False   # no "Wisp Demo" calendar: persona events alone
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
                            window_start=start, window_end=end, taken_at=float(last_sync)) or {}
-        if self.synthetic:
-            self._remember_demo_cal(self.active, observations, now)
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
 
@@ -617,8 +433,9 @@ class BehaviorRuntime:
     def work(self, store, now: float, *, force: bool = False) -> tuple[list, str]:
         """Ingest/mine/generate as due. Returns (undelivered nudges, engine key)."""
         with self._work_lock:
-            self._failover = False
-            key = self._target_key()
+            key = "local"
+            if not self.live():
+                return [], key
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             changed = self._flush_decisions()
             sync = {}
@@ -627,11 +444,8 @@ class BehaviorRuntime:
             except Exception:  # noqa: BLE001
                 pass
             fresh_calendar = _finite(sync.get("last_sync")) and sync.get("last_sync") != stamps.get("cal_sync")
-            ready = self._calendar_ready_for(sync, now)
-            if (force or now - stamps["ingest"] >= INGEST_EVERY_S or fresh_calendar
-                    or stamps.get("cal_ready") != ready):
+            if force or now - stamps["ingest"] >= INGEST_EVERY_S or fresh_calendar:
                 changed = self._ingest(store, now, stamps) or changed
-                stamps["cal_ready"] = ready
                 stamps["ingest"] = now
                 self.last["ingest"] = now
             nudges: list = []
@@ -641,43 +455,58 @@ class BehaviorRuntime:
                     stamps["mine"] = now
                     self.last["mine"] = now
                     self.invalidate_card()   # patterns changed: refreshed below
-                # Synthetic: no nudge before the first Calendar read settled
-                # (otherwise the persona's copy and the calendar's copy of the
-                # same event would each nudge once).
-                if ready and (force or changed or now - stamps["nudge"] >= NUDGE_EVERY_S):
+                if force or changed or now - stamps["nudge"] >= NUDGE_EVERY_S:
                     self.call("generate_nudges", now)
                     stamps["nudge"] = now
                     self.last["nudge"] = now
-                    active = self.active
-                    cursor = int(self.kv_get(f"cursor:{active}", "0") or 0)
+                    cursor = int(self.kv_get(f"cursor:{key}", "0") or 0)
                     nudges, _ = self.call("nudges_since", cursor, 50)
                 self.errors.pop("engine", None)
             except Exception as exc:  # noqa: BLE001
                 self.errors["engine"] = f"{type(exc).__name__}: {exc}"[:200]
-            if self._failover:
-                self._stamps.pop("local", None)
             if self._card is None or self.clock() - self._card[0] >= CARD_TTL_S:
                 self.refresh_card(now)
-            return nudges, self.active
+            return nudges, key
 
     # ---- delivery (event loop) ---------------------------------------------------
-    def _commitment_source(self) -> str:
-        from service.assistant.store import MANUAL_SOURCE, QA_SEED_SOURCE
-        # QA-seed rows are hidden unless WISP_QA_SEED=1; only use that source
-        # when the rehearsal environment can see it. Otherwise the action is a
-        # normal Wisp-schedule row, tracked here so clear_demo_state removes it.
-        if self.synthetic and os.environ.get("WISP_QA_SEED") == "1":
-            return QA_SEED_SOURCE
-        return MANUAL_SOURCE
+    def policy_block(self, action) -> str | None:
+        """Why the safety policy forbids this Wisp-schedule write, or None when it
+        is ALLOW. Same door as the model's ``add_reminder`` and the attention
+        runner: View Only, remote-profile checks and grants all apply. Anything
+        short of ALLOW (a CONFIRM has nobody to ask here) and a policy that cannot
+        be evaluated are refusals. A refusal is audited."""
+        params = getattr(action, "params", None) or {}
+        args = {"title": " ".join(str(params.get("title") or "").split())[:200],
+                "kind": "event" if getattr(action, "type", "") == "add_hold" else "reminder"}
+        try:
+            from service.safety import Tier, decide
+            dec = decide("assistant_write", args, tool="add_reminder")
+            reason = None if dec.tier is Tier.ALLOW else (dec.reason or dec.tier.value)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"safety policy unavailable ({type(exc).__name__})"
+        if reason is not None:
+            try:
+                from service.safety import audit
+                audit("deny", tool="add_reminder", source="behavior", reason=reason)
+            except Exception:  # noqa: BLE001 — the refusal stands even if it cannot be logged
+                pass
+        return reason
 
     def perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
-        """Create one reversible Wisp-schedule item. Idempotent per (nudge, action)."""
+        """Create one reversible Wisp-schedule item. Idempotent per (nudge, action).
+        Raises ``RuntimeStopped`` (before touching anything) once the runtime is stopped."""
+        with self._in_flight():
+            return self._perform_action(store, nudge_id, idx, action, now)
+
+    def _perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
         with self._db_lock:
             row = self._db.execute("SELECT * FROM actions WHERE nudge_id=? AND idx=?",
                                    (nudge_id, idx)).fetchone()
         if row is not None:
             return dict(row) if row["undone_at"] is None else None
         if action.type not in {"add_reminder", "add_hold"}:
+            return None
+        if self.policy_block(action) is not None:
             return None
         params = action.params or {}
         title = " ".join(str(params.get("title") or "").split())[:200]
@@ -695,7 +524,8 @@ class BehaviorRuntime:
         end = params.get("end_ts")
         import uuid
         cid = uuid.uuid4().hex
-        source = self._commitment_source()
+        from service.assistant.store import MANUAL_SOURCE
+        source = MANUAL_SOURCE
         with store.transaction() as db:
             norm = title.casefold()
             for other in db.execute(
@@ -737,11 +567,26 @@ class BehaviorRuntime:
         return next((n for n in found if n.id == nudge_id), None)
 
     async def deliver(self, store, hub, nudge, now: float) -> dict | None:
+        """Publish one nudge (and perform its automatic actions). A forget/stop waits for
+        a delivery already in flight, and a stopped runtime delivers nothing."""
+        try:
+            with self._in_flight():
+                return await self._deliver(store, hub, nudge, now)
+        except RuntimeStopped:
+            return None
+
+    async def _deliver(self, store, hub, nudge, now: float) -> dict | None:
         if nudge.expires_at is not None and _finite(nudge.expires_at) and float(nudge.expires_at) <= now:
+            return None
+        if not self.live():
             return None
         performed = []
         for idx, action in enumerate(nudge.actions):
             if action.auto and action.type in {"add_reminder", "add_hold"}:
+                if self.policy_block(action) is not None:
+                    continue           # downgraded to an offer: the nudge still goes out, nothing is written
+                if not self.live():    # switched off mid-delivery: check right before the write
+                    return None
                 try:
                     done = self.perform_action(store, nudge.id, idx, action, now)
                 except Exception as exc:  # noqa: BLE001
@@ -760,6 +605,8 @@ class BehaviorRuntime:
                 action["auto"] = idx in done_idx
         event["auto_performed"] = performed
         event["can_undo"] = bool(performed)
+        if not self.live():            # last check before anything becomes visible
+            return None
         self.remember_nudge(nudge)
         row = await hub.publish(event, dedupe_key=EVENT_PREFIX + nudge.id, expires_at=nudge.expires_at)
         if isinstance(row, dict) and row.get("event_id"):
@@ -799,7 +646,7 @@ class BehaviorRuntime:
             return []
         if lock.locked():
             # /behavior/run: wait for the running tick instead of silently
-            # doing nothing, so a demo drop is really ingested; bounded.
+            # doing nothing, so a fresh change is really ingested; bounded.
             try:
                 await asyncio.wait_for(lock.acquire(), FORCE_WAIT_S)
             except asyncio.TimeoutError:
@@ -817,11 +664,15 @@ class BehaviorRuntime:
         nudges, key = await asyncio.to_thread(self.work, store, now, force=force)
         published: list[dict] = []
         for nudge in sorted(nudges, key=lambda n: n.seq):
+            if not self.live():
+                break    # cursor not advanced: it is delivered if learning is turned back on
             try:
                 row = await self.deliver(store, hub, nudge, now)
             except Exception as exc:  # noqa: BLE001 — retried next tick (dedupe + idempotent actions)
                 self.errors["deliver"] = f"{type(exc).__name__}: {exc}"[:200]
                 break
+            if row is None and not self.live():
+                break    # switched off mid-delivery: leave the cursor so this nudge is not lost
             self.kv_set(f"cursor:{key}", str(max(int(nudge.seq), int(self.kv_get(f'cursor:{key}', '0') or 0))))
             if row is not None:
                 published.append(row)
@@ -831,12 +682,17 @@ class BehaviorRuntime:
     # ---- user verdicts --------------------------------------------------------------
     def feedback(self, store, nudge_id: str, verdict: str) -> None:
         from service.behavior.types import Feedback
-        self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
-        with self._db_lock, self._db:
-            self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
-        self.retire_event(store, nudge_id)
+        with self._in_flight():
+            self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
+            with self._db_lock, self._db:
+                self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
+            self.retire_event(store, nudge_id)
 
     def undo(self, store, nudge_id: str) -> list[dict]:
+        with self._in_flight():
+            return self._undo(store, nudge_id)
+
+    def _undo(self, store, nudge_id: str) -> list[dict]:
         now = self.clock()
         with self._db_lock:
             rows = [dict(r) for r in self._db.execute(
@@ -859,6 +715,46 @@ class BehaviorRuntime:
             self.errors["feedback"] = f"{type(exc).__name__}: {exc}"[:200]
             self.retire_event(store, nudge_id)
         return removed
+
+    @staticmethod
+    def _untouched(current: dict, action: dict) -> bool:
+        """True while a Wisp-created item is exactly as Wisp made it: still active,
+        same source/context/title/time, and never updated since creation. Anything the
+        user edited, completed, moved or dismissed is theirs now."""
+        from service.assistant.store import MANUAL_SOURCE
+        try:
+            return (current.get("status") == "active"
+                    and current.get("source") == MANUAL_SOURCE
+                    and str(current.get("context") or "").startswith(BEHAVIOR_CONTEXT)
+                    and current.get("title") == action.get("title")
+                    and abs(float(current["when_ts"]) - float(action["when_ts"])) < 1.0
+                    and abs(float(current["updated_at"]) - float(current["created_at"])) < 1e-6)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def remove_untouched_auto_items(self, store) -> dict:
+        """Delete the still-active reminders/holds Wisp created on its own schedule that
+        the user has not touched (same identity record ``undo`` uses). Edited, completed,
+        moved or dismissed items are kept: they are the user's now."""
+        with self._db_lock:
+            rows = [dict(r) for r in self._db.execute(
+                "SELECT * FROM actions WHERE undone_at IS NULL AND commitment_id IS NOT NULL")]
+        removed: list[dict] = []
+        kept = 0
+        for r in rows:
+            try:
+                current = store.get(r["commitment_id"])
+                if current is None:
+                    continue          # already gone
+                if not self._untouched(current, r):
+                    kept += 1
+                    continue
+                store.delete(r["commitment_id"])
+                removed.append({"type": r["type"], "title": r["title"], "when_ts": r["when_ts"]})
+            except Exception as exc:  # noqa: BLE001 — one stubborn item never blocks the forget
+                self.errors["forget"] = f"{type(exc).__name__}: {exc}"[:200]
+                kept += 1
+        return {"removed": removed, "kept": kept}
 
     def delivered(self, limit: int = 20) -> list[dict]:
         with self._db_lock:
@@ -939,15 +835,10 @@ class BehaviorRuntime:
     # ---- status ----------------------------------------------------------------
     def status(self) -> dict:
         info: dict[str, Any] = {
-            "enabled": True, "synthetic": self.synthetic, "founder_demo": self.founder,
-            "mode": self.mode, "active_engine": self.active,
-            "remote_url": brain_url() if self.mode == "remote" else "",
-            "remote_retry_at": self._remote_down_until or None,
+            "enabled": True,
             "last": dict(self.last), "errors": dict(self.errors),
-            "cursor": {k: int(self.kv_get(f"cursor:{k}", "0") or 0) for k in ("local", "remote")},
+            "cursor": {"local": int(self.kv_get("cursor:local", "0") or 0)},
             "pending_decisions": len(self._pending),
-            # Synthetic: nudges wait for the first Calendar read (or the grace period).
-            "waiting_for_calendar": self.synthetic and not self._calendar_ready,
         }
         with self._db_lock:
             info["delivered_nudges"] = self._db.execute("SELECT COUNT(*) FROM nudges").fetchone()[0]
@@ -966,17 +857,145 @@ class BehaviorRuntime:
 
 _runtime: BehaviorRuntime | None = None
 _runtime_lock = threading.Lock()
+# True from the moment forget_all detaches the runtime until its files are gone. While set,
+# get_runtime() returns None, so nothing (a chat turn's profile card, a Calendar poke,
+# /behavior/status, a tool, an approval) can build a new runtime on the old files mid-erase.
+_forgetting = False
+_forget_lock = threading.Lock()      # one forget at a time
+
+
+def forgetting() -> bool:
+    """Whether Wisp is erasing what it learned right now."""
+    with _runtime_lock:
+        return _forgetting
 
 
 def get_runtime() -> BehaviorRuntime | None:
-    """The process runtime, or None when behavior learning is off."""
+    """The process runtime, or None when behavior learning is off or being erased."""
     global _runtime
     if not enabled():
         return None
     with _runtime_lock:
+        if _forgetting:
+            return None
         if _runtime is None:
             _runtime = BehaviorRuntime()
         return _runtime
+
+
+def _drop_nudge_events(store) -> int:
+    """Remove delivered behavior nudges from the hub's durable queue: their text is learned data."""
+    try:
+        with store.transaction() as db:
+            return int(db.execute("DELETE FROM assistant_events WHERE kind=? AND dedupe_key LIKE ?",
+                                  (EVENT_KIND, EVENT_PREFIX + "%")).rowcount or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def forget_all(store, home: Path | None = None) -> dict:
+    """Delete everything Wisp learned about the user's routines. Works whether
+    learning is on or off. Stops the runtime (waiting for a pass in flight),
+    removes the untouched Wisp-created reminders/holds, closes every connection,
+    deletes ``behavior.db``, ``behavior_runtime.db`` (with ``-wal``/``-shm``) and the
+    profile card cache, and drops pending nudge events. Items the user edited,
+    completed or moved are kept. If learning is still on, Wisp starts over from
+    the next ingest."""
+    global _runtime, _forgetting
+    explicit_home = Path(home) if home is not None else None
+    with _forget_lock:
+        with _runtime_lock:
+            _forgetting = True            # get_runtime() answers None until the files are gone
+            runtime, _runtime = _runtime, None
+        try:
+            return _forget_locked(store, runtime, explicit_home)
+        finally:
+            with _runtime_lock:
+                _forgetting = False
+
+
+def _forget_locked(store, runtime: BehaviorRuntime | None, explicit_home: Path | None) -> dict:
+    home = explicit_home or (runtime.home if runtime is not None else _home())
+    if runtime is None and (home / RUNTIME_DB).exists():
+        try:
+            runtime = BehaviorRuntime(home)   # only to read the undo identities; never opens the engine
+        except Exception:  # noqa: BLE001 — an unreadable runtime db still gets deleted below
+            runtime = None
+    items: dict = {"removed": [], "kept": 0}
+    if runtime is not None:
+        runtime.stop()
+        try:
+            items = runtime.remove_untouched_auto_items(store)
+        finally:
+            runtime.close()
+    deleted = 0
+    failed: list[str] = []
+    names = [CARD_CACHE]
+    for base in (ENGINE_DB, RUNTIME_DB):
+        names += [base, base + "-wal", base + "-shm"]
+    try:
+        names += [p.name for p in home.glob(ENGINE_DB + ".schema-*")]   # moved-aside old-schema copies
+    except OSError:
+        failed.append(ENGINE_DB + ".schema-*")
+    for name in names:
+        try:
+            (home / name).unlink()
+            deleted += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            failed.append(name)    # keep going: delete everything else, then say what is left
+    events = _drop_nudge_events(store)
+    return {"removed_items": items["removed"], "kept_items": items["kept"],
+            "files_deleted": deleted, "files_failed": failed, "nudge_events_deleted": events}
+
+
+AGE_OUT_EVERY_S = 6 * 3600.0
+_last_age_out: float | None = None
+
+
+def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int]:
+    """Apply the retention limits (observations 180 days, nudges 30 days) to what is
+    already on disk, whether or not learning is on. Plain SQL on its own connections:
+    it never starts the engine, the phraser or a runtime, and never migrates a database."""
+    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S
+    home = Path(home) if home is not None else _home()
+    now = time.time() if now is None else float(now)
+    out = {"observations": 0, "nudges": 0, "delivered": 0}
+
+    def run(name: str, statements: list[tuple[str, str, float]]) -> None:
+        path = home / name
+        if not path.exists():
+            return
+        conn = None
+        try:
+            # mode=rw: never create the file (an erase may have just removed it).
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30)
+            with conn:
+                for key, sql, cutoff in statements:
+                    out[key] += int(conn.execute(sql, (cutoff,)).rowcount or 0)
+        except sqlite3.DatabaseError:
+            pass          # unreadable or a different schema: leave it alone
+        finally:
+            if conn is not None:
+                conn.close()
+
+    run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
+                    ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
+    run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+    return out
+
+
+async def _maybe_age_out(home: Path | None = None) -> None:
+    """Retention, at most about every six hours; the first tick after launch runs it."""
+    global _last_age_out
+    if forgetting():
+        return
+    mark = time.monotonic()
+    if _last_age_out is not None and mark - _last_age_out < AGE_OUT_EVERY_S:
+        return
+    _last_age_out = mark
+    await asyncio.to_thread(age_out, home)
 
 
 def set_runtime(runtime: BehaviorRuntime | None) -> None:
@@ -991,18 +1010,13 @@ async def tick(store, hub, *, now: float | None = None, force: bool = False) -> 
     try:
         runtime = get_runtime()
         if runtime is None:
+            await _maybe_age_out()    # retention does not depend on the switch (skipped mid-erase)
             return []
+        await _maybe_age_out(runtime.home)
         return await runtime.tick(store, hub, now=now, force=force)
     except Exception as exc:  # noqa: BLE001
         log.warning("behavior tick failed: %s", type(exc).__name__)
         return []
-
-
-async def run_loop(store, hub) -> None:
-    """Standalone loop for builds without the assistant scheduler (remote-only)."""
-    while True:
-        await tick(store, hub)
-        await asyncio.sleep(TICK_S)
 
 
 def poke(store, hub) -> None:
@@ -1032,47 +1046,6 @@ def profile_card() -> str:
         return runtime.profile_card() if runtime is not None else ""
     except Exception:  # noqa: BLE001
         return ""
-
-
-def clear_demo_state(store=None, home: Path | None = None) -> dict:
-    """Remove everything behavior learning added: Wisp-schedule items it
-    created, its hub events, ``behavior.db`` and runtime state. The user's own
-    commitments are never touched (only ids this runtime recorded, plus rows
-    carrying its context marker)."""
-    global _runtime
-    home = Path(home) if home is not None else _home()
-    if store is None:
-        from service.assistant.store import assistant_store as store
-    ids: set[str] = set()
-    with _runtime_lock:
-        runtime, _runtime = _runtime, None
-    if runtime is not None and runtime.home == home:
-        ids |= runtime._behavior_ids()
-        runtime.close()
-    elif (home / RUNTIME_DB).exists():
-        try:
-            db = sqlite3.connect(str(home / RUNTIME_DB))
-            ids |= {r[0] for r in db.execute("SELECT commitment_id FROM actions WHERE commitment_id IS NOT NULL")}
-            db.close()
-        except sqlite3.Error:
-            pass
-    with store.transaction() as db:
-        ids |= {r[0] for r in db.execute("SELECT id FROM commitments WHERE context LIKE ?",
-                                         (BEHAVIOR_CONTEXT + "%",))}
-        for cid in ids:
-            db.execute("DELETE FROM commitments WHERE id=?", (cid,))
-            db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
-            db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
-        events = db.execute("DELETE FROM assistant_events WHERE dedupe_key LIKE ?",
-                            (EVENT_PREFIX + "%",)).rowcount
-    removed_files = []
-    for name in (ENGINE_DB, ENGINE_DB + "-wal", ENGINE_DB + "-shm", RUNTIME_DB, CARD_CACHE):
-        try:
-            (home / name).unlink()
-            removed_files.append(name)
-        except OSError:
-            pass
-    return {"commitments": len(ids), "events": events, "files": removed_files}
 
 
 def day_bounds(day: str, now: float) -> tuple[float, float]:

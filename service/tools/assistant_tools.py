@@ -485,9 +485,6 @@ async def get_upcoming(days: int = 7, account: str | None = None,
     # above contributes other sources only, never a later/deleted occurrence
     # or Calendar provenance attached to a manual display-dedupe winner.
     rows = calendar_rows + _without_withheld_sources(rows, {"calendar"})
-    from service.demo.founder import enabled, reminder_rows
-    if enabled():
-        rows = [r for r in rows if r.get("source") == "calendar"] + [r for r in reminder_rows(now) if now <= r["when_ts"] < end]
     items = _filter_account(rows, account)
     if calendar_only:
         # Raw occurrences are available above. A manual winner carrying
@@ -1039,9 +1036,6 @@ def reminders_matching(scope: str = "all", query: str = "",
     Calendar events are excluded. A Wisp reminder can carry a task-like kind,
     so source provenance—not the display kind—is the safe boundary.
     """
-    from service.demo.founder import enabled, matching_reminders
-    if enabled():
-        return matching_reminders(query, scope, now)
     scope = (scope or "all").strip().lower()
     if scope not in _REMINDER_SCOPES:
         return []
@@ -1158,9 +1152,6 @@ def _stale_note(hidden: int) -> str:
              "what does my reminder say"],
 )
 async def search_reminders(query: str, scope: str = "all") -> str:
-    from service.demo.founder import enabled, reminder_text
-    if enabled():
-        return reminder_text(query, scope)
     from service.assistant.sync_status import ensure_sources
     readiness = await ensure_sources(("reminders",), timeout_seconds=4.0)
     state = next((source["state"] for source in readiness["sources"]

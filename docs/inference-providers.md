@@ -7,6 +7,9 @@ confirmation, and execution remain Wisp's existing routing policy. Choosing a
 cloud endpoint sends that role's prompts, conversation context, and any supplied
 tool schemas to the provider; generation may incur provider charges.
 
+To send every role to one remote server instead (for a Mac that cannot run the
+local models), see [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md).
+
 This configuration-only candidate does not add a settings screen or modify the
 installed app. Edit the `inference` section of `~/.moe/config.yaml`, preserving
 other settings, and restart the service after changing it. Never put a key,

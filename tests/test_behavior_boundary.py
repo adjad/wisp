@@ -1,11 +1,11 @@
-"""service.behavior must stay portable: it runs in-process on the Mac and inside
-brain_server on the GX10. Importing service.assistant / service.tools /
+"""service.behavior must stay portable: a pure engine the Mac runtime calls
+in-process. Importing service.assistant / service.tools /
 service.main / service.config / service.inference would build live stores
 against ~/.moe or require macOS, so no module in the package may import them.
 
 Checked statically (every import at any depth, including function-local ones)
 so the result does not depend on what other tests already put in sys.modules.
-The only third-party import allowed is httpx (client.py / phraser.py)."""
+The only third-party import allowed is httpx (phraser.py)."""
 import ast
 import sys
 from pathlib import Path
@@ -28,7 +28,7 @@ def _imports(path: Path):
 
 def test_behavior_package_never_imports_the_live_assistant():
     files = sorted(PACKAGE.glob("*.py"))
-    assert {"engine.py", "miners.py", "store.py", "persona.py"} <= {f.name for f in files}
+    assert {"engine.py", "miners.py", "store.py"} <= {f.name for f in files}
     for path in files:
         for name in _imports(path):
             assert not any(name == b or name.startswith(b + ".") for b in BANNED), f"{path.name} imports {name}"
@@ -46,8 +46,8 @@ def test_behavior_package_uses_only_stdlib_itself_and_httpx():
 
 
 def test_engine_modules_do_not_import_httpx():
-    """The engine side is pure stdlib; only the HTTP client and the phraser talk to a network."""
+    """The engine side is pure stdlib; only the phraser talks to a network."""
     for path in sorted(PACKAGE.glob("*.py")):
-        if path.name in ("client.py", "phraser.py"):
+        if path.name == "phraser.py":
             continue
         assert "httpx" not in {n.split(".")[0] for n in _imports(path)}, path.name

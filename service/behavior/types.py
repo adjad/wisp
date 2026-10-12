@@ -1,12 +1,11 @@
-"""Shared data contract for the behavior engine, brain server, Mac runtime and
-Swift app. Change only with every consumer in mind: these shapes travel over
-HTTP between the Mac and the GX10 (``to_dict``/``from_dict``) and into the
-app's hub events (``Nudge.to_event``).
+"""Shared data contract for the behavior engine, Mac runtime and Swift app.
+Change only with every consumer in mind: these shapes are persisted as JSON
+(``to_dict``/``from_dict``) and travel into the app's hub events
+(``Nudge.to_event``).
 
 Times are epoch seconds (float). Weekdays are 0=Monday..6=Sunday. Minutes are
 minutes after local midnight. "Local" means the engine's configured timezone
-(``BehaviorEngine(tz=...)``; on the GX10 ``brain_server --tz``, which must be
-the user's timezone). Snapshots and observations carry only epoch timestamps,
+(``BehaviorEngine(tz=...)``, which must be the user's timezone). Snapshots and observations carry only epoch timestamps,
 no ``tz``: the engine does not adopt a timezone from its callers.
 """
 from __future__ import annotations
