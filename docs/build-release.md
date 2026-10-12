@@ -19,6 +19,7 @@ The driver records the actual compiler, SDK, OS, and whether strict checking ran
 ./scripts/wisp-build bootstrap
 ./scripts/wisp-build test
 ./scripts/wisp-build swift
+./scripts/wisp-build preview
 ./scripts/wisp-build all
 ./scripts/wisp-build verify --output dist/<candidate-directory>
 ```
@@ -28,6 +29,15 @@ The driver records the actual compiler, SDK, OS, and whether strict checking ran
 and QA report; it is never release eligible. `--test-python` supports test auditing
 with an existing interpreter and cannot be used to package an app. `swift` runs
 all native fixture contracts and a release-mode Swift compilation.
+
+`preview` is the fast path for local installs: it runs the same Swift release
+build, bundle assembly, dependency bundling, ad-hoc signing, structure/native
+validation and relocated-backend smoke as `all`, but skips Simulation QA, the
+native/browser peer gates, benchmark contracts and distribution-evidence
+validation. It accepts a dirty tree implicitly and writes
+`dist/<version>-<build>-<commit>-preview/` with a `-preview` ZIP, `WispPreviewBuild`
+set in Info.plist, and `preview: true` in provenance. `verify`, `release` and
+`release-ad-hoc` refuse preview artifacts. Use `all` for anything that may ship.
 
 `./scripts/package_app.sh` delegates to `wisp-build all`. It does not install the
 result. All generated files stay under `.wisp-build/` and `dist/`, except temporary
