@@ -296,7 +296,10 @@ def _mac_seed(demo, monkeypatch, output="removed 2"):
 def test_cleanup_script_deletes_only_drop_events_in_wisp_demo(demo):
     script = demo.drop_cleanup_script()
     assert 'calendar "Wisp Demo"' in script and '"[wisp-demo-id:drop-"' in script
-    assert "delete (first event of wispCal whose uid is" in script
+    assert "set ev to first event of wispCal whose uid is" in script
+    # Marker re-checked on the event itself right before deleting.
+    tail = script.split("repeat with u in doomed", 1)[1]
+    assert tail.index('contains "[wisp-demo-id:drop-"') < tail.index("delete ev")
     # Never the calendar itself, never another calendar.
     assert "delete (first calendar" not in script and "every calendar" not in script
 
@@ -384,3 +387,12 @@ def test_run_reports_busy_and_calendar_wait(demo, backend, capsys):
                                                       "status": {"waiting_for_calendar": True}})
     demo.cmd_behavior(args(action="run"))
     assert "first Calendar read" in capsys.readouterr().out
+
+
+def test_cleanup_script_compiles(demo, tmp_path):
+    import shutil, subprocess
+    if not shutil.which("osacompile"):
+        pytest.skip("osacompile unavailable")
+    src = tmp_path / "c.applescript"
+    src.write_text(demo.drop_cleanup_script())
+    subprocess.run(["osacompile", "-o", "/dev/null", str(src)], check=True)

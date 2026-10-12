@@ -214,7 +214,18 @@ ADDITIONAL_FULL_TESTS = {
     # Proactive-attention Slice 0: synthetic fixtures and temp directories only; no
     # subprocess, network, model, or access to the real caches or assistant.db.
     "tests/test_attention_slice0.py",
+    "tests/test_attention_catch.py",
+    # Pure detector, resolver, screen and matcher over in-memory synthetic items;
+    # no I/O, clock, model or live store.
     "tests/test_attention_detector.py",
+    # Runner, ledger, planner and settings with every effect faked; ledger and settings live
+    # in temp directories. No Reminders, hub, model or real ~/.moe access.
+    "tests/test_attention_runner.py",
+    # Wiring and endpoints with faked feed, reminder tool, hub and store reads, and MOE_DIR
+    # redirected to a temp dir. An in-process TestClient only; no listener or network.
+    "tests/test_attention_wiring.py",
+    # Catch/runner dedupe guard: temp stores and ledger, fakes for every effect.
+    "tests/test_attention_dedupe.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",

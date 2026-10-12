@@ -119,7 +119,7 @@ Use separate isolated processes; Wisp resolves its data directory on import:
 
 ```sh
 WISP_HOME="$(mktemp -d -t wisp-catch-tests)" WISP_QA_SEED=1 \
-  .venv/bin/python -m pytest -q tests/test_attention_detector.py
+  .venv/bin/python -m pytest -q tests/test_attention_catch.py
 WISP_HOME="$(mktemp -d -t wisp-attention-tests)" \
   .venv/bin/python -m pytest -q tests/test_attention_slice0.py
 ```

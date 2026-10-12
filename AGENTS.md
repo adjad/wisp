@@ -7,6 +7,14 @@
 - Keep one primary writer responsible for a file at a time. Do not edit paths owned by another active task.
 - Before editing, state the intended outcome, base commit, owned paths, expected validation, and likely integration dependencies.
 
+## Fast pipeline (default for feature work)
+
+- One integrator plus parallel workers. Each worker owns a disjoint set of files in its own Worktree; push WIP early and merge worker branches onto a single integration branch rather than into `main` one by one.
+- Bounded slices may go to the Codex CLI: `codex exec -C <worktree> -s workspace-write -m gpt-6-luna -c model_reasoning_effort=xhigh "<prompt>" < /dev/null`. Its sandbox cannot commit because worktree git metadata lives outside it, so the integrator commits and pushes.
+- Use `./scripts/wisp-build preview` for local installs and previews: the same Swift build, bundle assembly, signing, structure/native validation and relocated-backend smoke as `all`, without Simulation QA, peer gates, benchmark contracts or distribution evidence. Previews are marked (`-preview`, `WispPreviewBuild`) and are never publishable. Use `wisp-build all` only for releases.
+- The independent Release Auditor runs only when a risk trigger applies, and it may review after a preview build instead of blocking every candidate. It is still required, with a non-`BLOCK` verdict on the exact SHA, before a risk-triggered change merges to `main`.
+- The release-performance gate no longer exists (removed in 1.2.5); do not wait on or cite it.
+
 ## Delegation
 
 - Use subagents for independent read-heavy work such as codebase exploration, test-gap analysis, risk review, and summarization.
@@ -72,7 +80,7 @@
 
 The default delivery path is deliberately small: one builder, mandatory exact-SHA mechanical evidence, and required PR CI for the same remote head when configured. The builder provides the exact base, branch, commit SHA, changed-file list, commands and results for the repository's existing checks, risks, and handoff. If a PR has zero configured checks, record CI as **unavailable/non-passing**—never as a CI pass. Failed required CI, missing mechanical evidence, an incomplete diff, or insufficient validation stops the candidate. A code change or reconciliation creates a new candidate and requires fresh evidence for its new SHA.
 
-Add an independent **Wisp Release Auditor** review for major or risk-sensitive changes: security or privacy boundaries; persisted data or migrations; permissions, authentication, native or external integrations, or outbound actions; release, packaging, build, CI, or delivery controls; concurrency, recovery, destructive operations, or difficult performance work; substantial cross-component behavior or refactors; or a mechanical/CI result whose correctness cannot be established from routine checks. The Orchestrator records the trigger and exact candidate SHA. Low-risk, localized documentation, tests, fixtures, and narrowly mechanical changes may omit the Auditor when the Control Center records why no trigger applies. The read-only Auditor returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; a `BLOCK` stops the candidate. Any change after review invalidates that review.
+Add an independent **Wisp Release Auditor** review (timing per the fast pipeline above) for major or risk-sensitive changes: security or privacy boundaries; persisted data or migrations; permissions, authentication, native or external integrations, or outbound actions; release, packaging, build, CI, or delivery controls; concurrency, recovery, destructive operations, or difficult performance work; substantial cross-component behavior or refactors; or a mechanical/CI result whose correctness cannot be established from routine checks. The Orchestrator records the trigger and exact candidate SHA. Low-risk, localized documentation, tests, fixtures, and narrowly mechanical changes may omit the Auditor when the Control Center records why no trigger applies. The read-only Auditor returns `PASS`, `PASS_WITH_NOTES`, or `BLOCK`; a `BLOCK` stops the candidate. Any change after review invalidates that review.
 
 Before the final gate cycle, fetch current `origin/main`, reconcile it into the task branch without force, verify the intended PR diff is non-empty, and remove any unrelated files. Then freeze one candidate SHA: push it, run exact-SHA mechanical validation and required CI, and obtain any triggered Auditor or specialist-QA verdict against that same SHA. Do not keep editing a frozen candidate or repeat full gates merely to refresh status. A required repair or a later main reconciliation creates a new frozen candidate and invalidates the prior commit-bound evidence.
 

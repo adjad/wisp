@@ -153,11 +153,19 @@ GX10 outage does not blank it.
 - `POST /behavior/reset` (synthetic only) deletes all of the above plus the
   Wisp-schedule items behavior learning created.
 
+## What goes to the remote model
+
+- Read-only founder build: only the profile card (at most 700 bytes).
+- Full remote mode (`WISP_REMOTE_FULL`): the GX10 also receives memory facts, the
+  profile card, about 6k tokens of conversation history, full tool results
+  (including mail and message text), and behavior phrasing facts (event titles,
+  contact names).
+
 ## Flags
 
 | Flag | Meaning |
 | --- | --- |
-| `WISP_BEHAVIOR=1` | Behavior learning on. Off by default. |
+| `WISP_BEHAVIOR=1` | Behavior learning on. Off by default in normal Mac builds; ON by default in the Intel full-remote build (`WISP_REMOTE_FULL`), where it learns from real activity. `WISP_BEHAVIOR=0` is the kill switch. |
 | `WISP_BEHAVIOR=0` | Kill switch: behavior learning off even in the founder demo build. |
 | `WISP_FOUNDER_DEMO=1` | Founder build: turns behavior on and implies synthetic-only. The Intel app sets this (with `WISP_REMOTE_ONLY=1`) for its backend. |
 | `WISP_BEHAVIOR_SYNTHETIC_ONLY=1` | Learn from the persona and the `Wisp Demo` calendar only. Required for `/behavior/reset`. |

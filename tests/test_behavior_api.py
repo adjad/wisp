@@ -161,3 +161,16 @@ def test_run_surfaces_busy_when_another_tick_holds_the_lock(client, live, monkey
     data = client.post("/behavior/run").json()
     assert data["ok"] is False and data["busy"] is True and data["published"] == 0
     assert "in progress" in data["detail"]
+
+
+@pytest.mark.parametrize("path,body", [
+    ("/behavior/patterns/p1", {"status": "rejected"}),
+    ("/behavior/nudges/n1/feedback", {"verdict": "useful"}),
+    ("/behavior/nudges/n1/act", {"action_index": 0}),
+    ("/behavior/nudges/n1/undo", None),
+])
+def test_state_changing_routes_403_in_read_only_remote(client, live, monkeypatch, path, body):
+    monkeypatch.setattr(behavior_api, "remote_read_only_mode", lambda: True)
+    resp = client.post(path, json=body) if body is not None else client.post(path)
+    assert resp.status_code == 403
+    assert client.get("/behavior/patterns").status_code == 200

@@ -1,266 +1,189 @@
-"""Rule-based detector for the one notifying reason code: ``uncaptured_commitment``.
+"""`uncaptured_commitment`: the one detector allowed to interrupt the user.
 
-A person texts something that is coming up soon ("Meet me in the Quad at 6PM"),
-it is in neither Calendar nor Reminders, and it is not promotional. Pure code, no
-model, no I/O: callers pass messages, the clock and the commitments on file.
+Fires when a text or email from someone the user is actually in contact with
+states something coming up soon that is in neither Calendar nor Reminders.
 
-Fail closed. Anything ambiguous (no am/pm, a question, a hedge, two competing
-times, a weekday name, a promo/scam shape, an unresolvable sender) yields no
-candidate rather than a confident alert. Every candidate carries a verbatim quote
-that is a substring of the message, located by code.
+The decision is a fixed sequence of gates. The first to say no wins and is
+recorded as `blocked_by`, so a labelled miss in the report points at the gate
+that caused it rather than at "the detector". Order is deliberate: the cheap,
+safety-critical gates (promo/scam, contact) come before anything reads a time.
 
-The dates it resolves are deliberately narrow: a clock time with an explicit
-meridiem (or a 24-hour time past 12), optionally with "today"/"tonight"/"tomorrow".
-With no day word, the next occurrence of that time after the message arrived.
+  1 direction    only incoming messages
+  2 screen       promo / scam / automated never alert                (P3)
+  3 contact      recent two-way contact with the sender              (P4)
+  4 resolve      a concrete time, read the way a person reads a chat
+  5 soon         starts within `soon_hours` of arrival
+  6 confirmed    a question or guessed meridiem needs the user's own "yes" in reply
+  7 on_file      not already in Calendar or Reminders
+
+Pure and deterministic. Takes a `Snapshot` (frozen data) and never reads a live
+source, a clock, or a model.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
-from service.attention.corpus import Item
+from service.attention.contacts import Contacts
+from service.attention.corpus import Item, Snapshot
+from service.attention.prediction import Prediction
+from service.attention.exclusions import screen
+from service.attention.matching import find_on_file
+from service.attention.resolve import _CANCEL, Resolved, resolve
 
-REASON = "uncaptured_commitment"
-HORIZON_S = 24 * 3600          # "soon"
-KNOWN_NEAR_S = 15 * 60         # a commitment this close is the same thing
-KNOWN_RELATED_S = 60 * 60      # ...or this close when it shares a content word
+CODE = "uncaptured_commitment"
+SOON_HOURS = 48.0
+REPLY_WINDOW_S = 6 * 3600
+# A date with no clock time ("tomorrow", "Friday") alerts only when the sentence also states
+# something the user must do or attend. Without this, "your order arrives tomorrow" and
+# "check your stocks today" were 11 of the first 13 false alerts on real data.
+_OBLIGATION = re.compile(
+    r"(?<!nothing )(?<!no )\b(?:due|deadline|submit|turn\s+in|hand\s+in|don'?t\s+forget|"
+    r"remember\s+to|reminder|need\s+to|have\s+to|must|pick\s+up|appointment|exam|quiz|"
+    r"midterm|final|interview|meeting|rsvp|sign\s+up|register|expires?|closes?)\b", re.I)
+# A short reply that accepts a plan the user proposed ("yea sure i'll meet u there").
+_AFFIRM = re.compile(
+    r"^\W*(?:yes|yea|yeah|yep|yup|sure|ok(?:ay)?|k|sounds\s+(?:good|great)|works(?:\s+for\s+me)?|"
+    r"perfect|bet|down|deal|i'?ll\s+be\s+there|see\s+you(?:\s+there)?|can\s+do|count\s+me\s+in|"
+    r"will\s+do)\b", re.I)
+PROPOSAL_WINDOW_S = 6 * 3600
+# The plan was taken back in words `resolve` does not treat as a cancellation.
+_WITHDRAW = re.compile(r"\b(?:nvm|never\s*mind|scratch\s+that|forget\s+(?:it|that)|call\s+it\s+off|"
+                       r"off\s+the\s+table|skip\s+(?:it|that|lunch|dinner|the))\b", re.I)
+_DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unable|rain\s*check|"
+                      r"pass|busy)\b", re.I)
 
-_AMPM = re.compile(r"(?<![\w:])(?P<h>1[0-2]|0?[1-9])(?::(?P<m>[0-5]\d))?\s*(?P<ap>[ap])\.?m\.?(?![a-z])", re.I)
-_H24 = re.compile(r"(?<![\w:])(?P<h>1[3-9]|2[0-3]|0\d):(?P<m>[0-5]\d)(?![\w:])")
-_NOON = re.compile(r"\bnoon\b", re.I)
-_TOMORROW = re.compile(r"\b(?:tomorrow|tmrw|tmr)\b", re.I)
-_TODAY = re.compile(r"\b(?:today|tonight|this\s+(?:morning|afternoon|evening))\b", re.I)
-# Unsupported dates/zones: never discard a qualifier and guess local time.
-# Unknown uppercase codes also abstain; false negatives are safe in this demo.
-_OTHER_DAY = re.compile(
-    r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tues?|wed|thurs?|fri|sat|sun)\b"
-    r"|\bnext\s+(?:week|weekend|month|year)\b"
-    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?\b"
-    r"|\b\d{1,2}(?:st|nd|rd|th)?[\s./-]+(?:of\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\b"
-    r"|\b\d{1,2}/\d{1,2}\b|\b\d{4}-\d{2}-\d{2}\b"
-    r"|[+-]\d{1,2}:?\d{2}(?!\w)"
-    r"|\b[a-z_]+/[a-z_]+(?:/[a-z_]+)?\b"
-    r"|(?-i:\b(?!(?:AM|PM)\b)[A-Z]{2,6}\b)"
-    r"|\b(?:yesterday|weekend|day\s+after|in\s+\w+\s+(?:days?|weeks?|months?)|"
-    r"(?:EST|EDT|CST|CDT|MST|MDT|PST|PDT|UTC|GMT|CET|CEST|EET|EEST|WET|WEST|"
-    r"IST|BST|JST|KST|HKT|SGT|AEST|AEDT|ACST|ACDT|AWST|NZST|NZDT|ET|CT|MT|PT|MSK|AKST|AKDT|Z)|"
-    r"(?:[a-z]+\s+){1,4}(?:time|timezone)|timezone)\b", re.I)
-_HEDGE = re.compile(
-    r"\?|\b(?:maybe|perhaps|probably|possibly|might|could\s+we|can\s+we|should\s+we|"
-    r"if\s+(?:you|we|i|it)|tentative|tbd|tbc|or\s+so|around|about|approx\w*|roughly|"
-    r"cancel\w*|resched\w*|moved|postponed|not|never|won['’]?t|cannot|can['’]?t|"
-    r"don['’]?t|would|could|should|unless|hopefully|hoping|hope|try|trying|"
-    r"depending|assuming|aiming)\b", re.I)
-# Complete supported plan sentences, with the located clock replaced by <TIME>.
-# An activity mentioned anywhere in a message is not evidence of participation.
-# Keep the prototype's direct invitations and narrow elliptical schedule forms;
-# other phrasing must pass the local extractor's separate personal-plan checks.
-_DAY = r"(?:today|tonight|tomorrow|tmrw|tmr|this\s+(?:morning|afternoon|evening))"
-_PARTICIPANT = r"(?:mom|dad|you|us|(?-i:[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,2}))"
-_PLAN_SENTENCE = re.compile(
-    rf"(?:meet\s+me(?:\s+in\s+the\s+Quad)?|see\s+you|class|"
-    rf"(?:dinner|lunch)(?:\s+with\s+{_PARTICIPANT})?)"
-    rf"(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?", re.I)
-_BOOKED_DINNER = re.compile(
-    rf"dinner(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?,\s+I\s+booked\s+a\s+table", re.I)
-# The hackathon model fallback has a bounded assertion grammar too. Free-form
-# pre-clock text could otherwise hide an unsupported relative date or zone.
-# Keep this separate from _rule_plan so natural fixtures exercise inference.
-_MODEL_SENTENCE = re.compile(
-    rf"I\s+can\s+make\s+it\s+to\s+the\s+Quad(?:\s+{_DAY})?\s+at\s+<TIME>(?:\s+{_DAY})?", re.I)
-# Only these surrounding sentences have an understood role in the prototype.
-# Unknown headings/attributions must not disappear when a sentence is located.
-_GREETING = re.compile(r"(?:hey|hi|hello)!", re.I)
-_LOGISTICS = re.compile(r"[.!]\s+bring\s+the\s+blue\s+folder[.!]?", re.I)
-_TIME_TAIL = re.compile(rf"(?:\s*{_DAY})?(?:,\s*I\s+booked\s+a\s+table)?\s*", re.I)
-_MONTH = re.compile(
-    r"(?<![a-z])(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
-    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])", re.I)
-_UNSUPPORTED_TEMPORAL = re.compile(
-    r"\b(?:on|next|last|days?|weeks?|months?|years?|first|second|third|fourth|fifth|sixth|"
-    r"seventh|eighth|ninth|tenth|eleventh|twelfth|\w*teenth|twentieth|thirtieth)\b", re.I)
-_PROMO = re.compile(
-    r"https?://|www\.|\b\d{1,3}\s?%\s*off\b|\breply\s+stop\b|\bopt\s*out\b|\bunsubscribe\b|"
-    r"\bfree\b|\bwinner\b|\bcongratulations\b|\bact\s+now\b|\blimited\s+time\b|\bverify\b|"
-    r"\bclick\b|\bgift\s+card\b|\bclaim\b|\bpromo\w*|\bcoupon\b|\bsale\b|\bdiscount\b|"
-    r"\byour\s+(?:package|account|order|parcel)\b|\bdelivery\b|\bpassword\b|\bone[- ]time\s+code\b|"
-    r"\bverification\s+code\b", re.I)
-_STOP = {"the", "and", "with", "for", "you", "your", "that", "this", "have", "will", "from",
-         "meet", "call", "see", "at", "in", "me", "to", "be", "a", "an", "of", "on", "pm", "am"}
 
-# Apply full-source exclusions to rules and local extraction alike. A positive
-# clause cannot strip a condition, quotation, cancellation or instruction.
-_UNSAFE_CONTEXT = re.compile(
-    r"\b(?:if|unless|pretend|imagine|hypothetical|example|quoted?|forwarded|"
-    r"said|says|told|heard|reported|no\s+longer|used\s+to|ignore|instructions?|system|assistant)\b"
-    r"|[\"“”`>]|(?<!\w)['‘]|['’](?!\w)", re.I)
+def local_timezone() -> str:
+    """The Mac's IANA zone, from /etc/localtime. Falls back to UTC if it can't tell."""
+    try:
+        path = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in path:
+            return path.split("zoneinfo/", 1)[1]
+    except OSError:
+        pass
+    return "UTC"
 
 
 @dataclass(frozen=True)
-class Candidate:
-    reason: str
-    item_id: str
-    sender: str
-    conversation: str
-    when_ts: float
-    quote: str          # verbatim substring of the message text
-    text: str
-    rule: str           # which rule fired, for the "why" line
+class Decision:
+    alert: bool
+    blocked_by: str | None = None
+    resolved: Resolved | None = None
+    importance: float = 0.0
+    why: tuple[str, ...] = ()
+    source: Item | None = None      # the message whose words state the plan (the user's own
+                                    # proposal, when the time was inherited from the thread)
 
 
-def is_promo_or_scam(sender: str, text: str) -> bool:
-    s = (sender or "").strip()
-    if _PROMO.search(text or ""):
-        return True
-    # Short codes and alphanumeric sender IDs ("SHOP", "48921") are businesses, not people.
-    if re.fullmatch(r"\+?\d{3,7}", s):
-        return True
-    return bool(re.fullmatch(r"[A-Z0-9][A-Z0-9\-]{2,10}", s)) and not s.isdigit() and s == s.upper()
+class UncapturedCommitment:
+    def __init__(self, snapshot: Snapshot, tz: str | None = None, soon_hours: float = SOON_HOURS):
+        self.snapshot = snapshot
+        self.tz = tz or local_timezone()
+        self.soon = timedelta(hours=soon_hours)
+        self.contacts = Contacts(snapshot.items)
 
+    def _user_confirmed(self, item: Item) -> bool:
+        """The user wrote back in the same thread soon after, and not to decline."""
+        if item.source != "messages":
+            return False
+        later = [i for i in self.snapshot.items
+                 if i.source == "messages" and i.conversation == item.conversation
+                 and i.direction == "outgoing" and item.ts < i.ts <= item.ts + REPLY_WINDOW_S]
+        return bool(later) and not any(_DECLINE.search(i.text) for i in later)
 
-def _clock(text: str) -> tuple[int, int, re.Match] | None:
-    """The single unambiguous clock time in ``text``; None if none or competing."""
-    found: list[tuple[int, int, re.Match]] = []
-    for m in _AMPM.finditer(text):
-        hour = int(m["h"]) % 12 + (12 if m["ap"].lower() == "p" else 0)
-        found.append((hour, int(m["m"] or 0), m))
-    for m in _H24.finditer(text):
-        found.append((int(m["h"]), int(m["m"]), m))
-    for m in _NOON.finditer(text):
-        found.append((12, 0, m))
-    if len({(h, mi) for h, mi, _ in found}) != 1:
-        return None
-    return found[0]
+    def _inherit(self, item: Item, arrival: datetime) -> tuple[Resolved, Item] | None:
+        """A time the reply does not state, taken from the user's own earlier message.
 
-
-def _sentence(text: str, match: re.Match) -> str:
-    """The sentence holding the time, as an exact substring of ``text``."""
-    start = max((text.rfind(c, 0, match.start()) for c in ".!?\n"), default=-1) + 1
-    # A period inside p.m./a.m. may be followed by a qualifier in the same
-    # sentence. Never truncate there and lose "is Alex's plan", for example.
-    # Ambiguous abbreviation boundaries retain the continuation and fail closed.
-    abbreviation = bool(re.search(r"[ap]\.m\.$", match[0], re.I))
-    after = match.end() if abbreviation or not match[0].endswith(".") else match.end() - 1
-    ends = [i for i in (text.find(c, after) for c in ".!?\n") if i != -1]
-    end = min(ends) if ends else len(text)
-    return text[start:end].strip()
-
-
-def _rule_plan(quote: str) -> bool:
-    clock = _clock(quote)
-    if clock is None:
-        return False
-    match = clock[2]
-    skeleton = quote[:match.start()] + "<TIME>" + quote[match.end():]
-    return bool(_PLAN_SENTENCE.fullmatch(skeleton) or _BOOKED_DINNER.fullmatch(skeleton))
-
-
-def _supported_source(text: str, match: re.Match) -> bool:
-    """A bounded source envelope and temporal clause, shared by both paths."""
-    quote = _sentence(text, match)
-    start = text.find(quote) if quote else -1
-    if start < 0 or text.find(quote, start + 1) >= 0:
-        return False
-    prefix = text[:start].strip()
-    suffix = text[start + len(quote):].strip()
-    if prefix and not _GREETING.fullmatch(prefix):
-        return False
-    if suffix not in {"", ".", "!"} and not _LOGISTICS.fullmatch(suffix):
-        return False
-    # There must be one clock span, with no other date/room/number interpreted
-    # as harmless context. Dates are not supported, regardless of separators.
-    remainder = text[:match.start()] + text[match.end():]
-    if re.search(r"\d", remainder) or _MONTH.search(remainder) or _UNSUPPORTED_TEMPORAL.search(remainder):
-        return False
-    clock = _clock(quote)
-    if clock is None:
-        return False
-    local_match = clock[2]
-    skeleton = quote[:local_match.start()] + "<TIME>" + quote[local_match.end():]
-    if not (_rule_plan(quote) or _MODEL_SENTENCE.fullmatch(skeleton)):
-        return False
-    # A clock must follow "at" and end its temporal clause. Only a supported
-    # day or the prototype's booking suffix may follow it. Any other suffix,
-    # including unknown zones of any case/length, is unclassified and abstains.
-    return bool(re.search(r"\bat\s*$", quote[:local_match.start()], re.I)
-                and _TIME_TAIL.fullmatch(quote[local_match.end():]))
-
-
-def resolve_when(text: str, sent_at: float) -> tuple[float, re.Match] | None:
-    """Resolve the stated time to an epoch, or None when it is not unambiguous."""
-    if _HEDGE.search(text) or _OTHER_DAY.search(text) or _UNSAFE_CONTEXT.search(text):
-        return None
-    clock = _clock(text)
-    if clock is None:
-        return None
-    hour, minute, match = clock
-    if not _supported_source(text, match):
-        return None
-    # Dayparts have deliberately bounded, disjoint clock ranges. Never silently
-    # discard a contradictory qualifier and schedule its bare clock instead.
-    for phrase, low, high in ((r"this\s+morning", 0, 12),
-                              (r"this\s+afternoon", 12, 17),
-                              (r"this\s+evening|tonight", 17, 24)):
-        if re.search(rf"\b(?:{phrase})\b", text, re.I) and not low <= hour < high:
+        Only when the reply is a short acceptance and the time comes from something the
+        USER wrote in the same thread within six hours. The user proposing and the other
+        person accepting is a plan; the user answering a proposal is `_user_confirmed`'s
+        job, and an incoming message echoing an incoming one is nobody's plan.
+        The inherited time must still be ahead of the reply, and must have a clock.
+        """
+        words = item.text.split()
+        if item.source != "messages" or len(words) > 12 or not _AFFIRM.search(item.text) \
+                or _DECLINE.search(item.text):
             return None
-    if _TOMORROW.search(text) and _TODAY.search(text):
+        # Newest first, and the FIRST message that says anything about the plan governs: a later
+        # cancellation, withdrawal, replacement or unreadable time ends the search. Skipping it
+        # would revive an older proposal the user had already taken back.
+        for prev in reversed(self.snapshot.thread_before(item, 8)):
+            if item.ts - prev.ts > PROPOSAL_WINDOW_S:
+                break
+            if _CANCEL.search(prev.text) or _WITHDRAW.search(prev.text):
+                return None                       # from either side: the plan is off
+            if prev.direction != "outgoing":
+                continue
+            got = resolve(prev.text, datetime.fromtimestamp(prev.ts, timezone.utc), self.tz, prev.id)
+            if got.blocked in ("no_time_stated", "no_usable_time"):
+                continue                          # ordinary chatter, not about the plan
+            if got.blocked or not got.has_clock or got.start is None or got.start <= arrival:
+                return None
+            return Resolved(got.start, got.day, True, got.quote, got.inferred + ("time:from_thread",),
+                            tentative=False, at=got.at), prev
         return None
-    base = datetime.fromtimestamp(sent_at)
-    day = base.date() + timedelta(days=1 if _TOMORROW.search(text) else 0)
-    when = datetime(day.year, day.month, day.day, hour, minute)
-    if not _TOMORROW.search(text) and not _TODAY.search(text) and when <= base:
-        when += timedelta(days=1)       # no day word: the next time it is that time
-    elif when <= base:
-        return None                     # "today at 9am" sent at 10am is not a future plan
-    # Local wall times during the DST gap/fold do not identify one instant.
-    if when.timestamp() != when.replace(fold=1).timestamp():
-        return None
-    return when.timestamp(), match
+
+    def decide(self, item: Item, as_of: datetime | None = None) -> Decision:
+        """Decide one message. `as_of` is "now" for the live path: the time is read relative
+        to when the message ARRIVED, but whether it is SOON is judged from `as_of`, so a
+        message about Friday sent on Monday is reconsidered on Wednesday. Replay leaves it
+        unset and judges soon from arrival."""
+        if item.direction != "incoming":
+            return Decision(False, "not_incoming")
+        verdict = screen(item)
+        if verdict:
+            return Decision(False, verdict)
+        imp = self.contacts.importance(item)
+        if not imp.eligible:
+            return Decision(False, imp.reason, importance=imp.score)
+        arrival = datetime.fromtimestamp(item.ts, timezone.utc)
+        r = resolve(item.text, arrival, self.tz, item.id)
+        context, source = item.text, item
+        if r.blocked in ("no_time_stated", "no_usable_time"):
+            inherited = self._inherit(item, arrival)
+            if inherited:
+                r, source = inherited
+                context = f"{source.text} {item.text}"
+        if r.blocked or r.day is None:
+            return Decision(False, r.blocked or "no_usable_time", r, imp.score)
+
+        if not r.has_clock and not _OBLIGATION.search(context):
+            return Decision(False, "date_only_no_obligation", r, imp.score)
+
+        anchor = as_of or arrival
+        if r.has_clock and r.start is not None:
+            soon = anchor <= r.start <= anchor + self.soon
+        else:   # date-only: soon if the day falls inside the window, counted in calendar days
+            local_day = anchor.astimezone(ZoneInfo(self.tz)).date()
+            soon = 0 <= (r.day - local_day).days <= int(self.soon.total_seconds() // 86400)
+        if not soon:
+            return Decision(False, "not_soon", r, imp.score)
+
+        if r.tentative and not self._user_confirmed(item):
+            return Decision(False, "unconfirmed", r, imp.score)
+
+        match = find_on_file(r, context, self.snapshot.commitments, self.tz)
+        if match:
+            return Decision(False, "already_on_file", r, imp.score,
+                            (f"{match.basis}: {match.title}",))
+        why = (f"stated: {r.quote}", f"contact: {imp.reason}") + tuple(f"inferred {x}" for x in r.inferred)
+        return Decision(True, None, r, imp.score, why, source)
+
+    def __call__(self, item: Item, snapshot: Snapshot) -> Prediction:
+        d = self.decide(item)
+        return Prediction(d.alert, CODE if d.alert else None, d.blocked_by)
 
 
-def _words(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z]{4,}", (text or "").lower()) if w not in _STOP}
+_cache: dict[int, tuple[Snapshot, UncapturedCommitment]] = {}
 
 
-def already_on_file(when_ts: float, text: str, commitments: list[dict]) -> bool:
-    mine = _words(text)
-    for c in commitments:
-        w = c.get("when_ts")
-        if w is None or c.get("status", "active") != "active":
-            continue
-        gap = abs(float(w) - when_ts)
-        if gap <= KNOWN_NEAR_S or (gap <= KNOWN_RELATED_S and mine & _words(c.get("title", ""))):
-            return True
-    return False
-
-
-def detect(items: list[Item], *, now: float, commitments: list[dict],
-           horizon_s: float = HORIZON_S) -> list[Candidate]:
-    """Candidates for ``items`` (oldest first). ``commitments`` is what is on file."""
-    out: list[Candidate] = []
-    seen: list[tuple[float, str]] = []
-    for item in sorted(items, key=lambda i: i.ts):
-        text = item.text or ""
-        if item.direction != "incoming" or not text.strip() or not item.sender.strip():
-            continue
-        if is_promo_or_scam(item.sender, text):
-            continue
-        resolved = resolve_when(text, item.ts)
-        if resolved is None:
-            continue
-        when_ts, match = resolved
-        if not (now <= when_ts <= now + horizon_s):
-            continue
-        quote = _sentence(text, match)
-        if not quote or quote not in text or not _rule_plan(quote):
-            continue                    # grounded or absent
-        if already_on_file(when_ts, text, commitments):
-            continue
-        # The same plan restated in a thread is one alert.
-        if any(abs(when_ts - w) < 60 and item.conversation == c for w, c in seen):
-            continue
-        seen.append((when_ts, item.conversation))
-        out.append(Candidate(REASON, item.id, item.sender, item.conversation, when_ts, quote, text,
-                             "stated a near-term plan with no matching item in Wisp's synced schedule"))
-    return out
+def uncaptured_commitment(item: Item, snapshot: Snapshot) -> Prediction:
+    """Registry entry: builds (and remembers) one detector per snapshot."""
+    entry = _cache.get(id(snapshot))
+    if entry is None or entry[0] is not snapshot:
+        entry = _cache[id(snapshot)] = (snapshot, UncapturedCommitment(snapshot))
+    return entry[1](item, snapshot)

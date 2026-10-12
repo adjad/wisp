@@ -1581,6 +1581,108 @@ print('external venv readable; private home and writes denied')
             else:
                 p.validate_native(runner, bundle, self.meta)
 
+    def test_preview_command_is_accepted_and_dry_run_has_no_side_effects(self):
+        with patch.object(sys, "argv", ["pipeline.py", "preview", "--dry-run"]), patch.object(p, "Runner") as runner:
+            self.assertEqual(p.main(), 0)
+            runner.assert_not_called()
+
+    def test_preview_metadata_allows_dirty_tree_and_marks_preview(self):
+        def git(*args):
+            if args[:1] == ("status",):
+                return " M service/x.py"
+            if args == ("rev-parse", "--is-shallow-repository"):
+                return "false"
+            return "1700000000" if args[0] == "show" else "7" if args[0] == "rev-list" else "b" * 40
+        with patch.object(p, "git", side_effect=git):
+            with self.assertRaisesRegex(p.BuildError, "Commit source changes"):
+                p.metadata(False, None)
+            meta = p.metadata(False, None, preview=True)
+        self.assertTrue(meta["preview"])
+        self.assertTrue(meta["dirty"])
+        self.assertTrue(p.plist(meta)["WispPreviewBuild"])
+        self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
+        self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
+
+    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+        meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
+        output = p.ROOT / "dist" / "unit-test-preview-output"
+        stages = []
+        class FakeRunner:
+            logs = self.root
+            records = []
+            env = {}
+            def __init__(inner):
+                pass
+            def run(inner, *a, **k):
+                return 0, self.root / "x.log"
+        with patch.object(sys, "argv", ["pipeline.py", "preview"]), \
+                patch.object(p, "Runner", FakeRunner), \
+                patch.object(p, "check_locks"), patch.object(p, "doctor", return_value={}), \
+                patch.object(p, "metadata", return_value=meta) as metadata, \
+                patch.object(p, "source_fingerprint", return_value="0" * 64), \
+                patch.object(p, "bootstrap", return_value=Path(sys.executable)), \
+                patch.object(p, "git", return_value=meta["commit"]), \
+                patch.object(p, "simulation_tests", side_effect=lambda *a, **k: stages.append("simulation")), \
+                patch.object(p, "verify_artifacts", side_effect=lambda *a, **k: stages.append("verify")), \
+                patch.object(p, "build_swift", side_effect=lambda *a, **k: stages.append("swift") or Path("bin")), \
+                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append("assemble") or self.root / "Wisp.app"), \
+                patch.object(p, "validate_structure", side_effect=lambda *a, **k: stages.append("structure")), \
+                patch.object(p, "prepare_native_for_signing"), \
+                patch.object(p, "validate_native", side_effect=lambda *a, **k: stages.append("native")), \
+                patch.object(p, "sign_adhoc", side_effect=lambda *a, **k: stages.append("sign")), \
+                patch.object(p, "relocation_smoke", side_effect=lambda *a, **k: stages.append("smoke")), \
+                patch.object(p, "finalize", side_effect=lambda *a, **k: stages.append("finalize")), \
+                patch.object(Path, "mkdir"):
+            self.assertEqual(p.main(), 0)
+        metadata.assert_called_once_with(False, None, True)
+        self.assertEqual(stages, ["swift", "assemble", "structure", "native", "sign", "smoke", "finalize"])
+
+    def test_preview_artifact_is_refused_by_release_verification(self):
+        self.artifact()
+        provenance = json.loads((self.root / "provenance.json").read_text())
+        provenance["source"] = dict(self.meta, preview=True)
+        p.json_write(self.root / "provenance.json", provenance)
+        p.checksums(self.root)
+        with self.assertRaisesRegex(p.BuildError, "never release eligible"):
+            p.verify_artifacts(self.root)
+
+    def test_allow_dirty_on_clean_tree_does_not_record_dirty_allowed(self):
+        import native_peer_gate, browser_bridge_gate, release_performance_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        def git(*args):
+            if args[:1] == ("status",):
+                return ""
+            return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+        for dirty, expected in (("", False), (" M x.py", True)):
+            calls.clear()
+            def git(*args, dirty=dirty):
+                if args[:1] == ("status",):
+                    return dirty
+                return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+            with self.synthetic_profile_metadata(), patch.object(p, "git", side_effect=git), \
+                    patch.object(p, "_qa_node_runtime", return_value=Path("/usr/bin/true")), \
+                    patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), \
+                    patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation") as validate:
+                p.simulation_tests(FakeRunner(), Path(sys.executable), allow_dirty=True)
+            _, command = next(c for c in calls if c[0] == "simulation-qa")
+            self.assertEqual("--allow-dirty" in command, expected)
+            self.assertEqual(validate.call_args.kwargs["allow_dirty"], expected)
+
+    def test_release_preflights_still_reject_allow_dirty(self):
+        args = Namespace(allow_dirty=True, test_python=None, offline=False, output=self.root)
+        with self.assertRaisesRegex(p.BuildError, "preview"):
+            release.preflight(args, {})
+        with self.assertRaisesRegex(p.BuildError, "preview"):
+            release.ad_hoc_preflight(args, {})
+
     def test_dry_run_does_not_write_or_run_stage(self):
         with patch.object(sys, "argv", ["pipeline.py", "release", "--dry-run"]), patch.object(p, "Runner") as runner:
             self.assertEqual(p.main(), 0)
