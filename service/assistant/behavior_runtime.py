@@ -22,6 +22,18 @@ Acting
     ``open_prompt`` is never performed automatically: messages, emails and
     changes to real meetings are only drafted, via a prefilled prompt the user
     approves in the overlay.
+
+Safety policy
+    Every write (automatic or tapped) asks ``decide("assistant_write", ...,
+    tool="add_reminder")`` first, exactly like the attention runner. Anything
+    short of ALLOW (View Only, a remote-profile refusal) means nothing is
+    written; an automatic action is downgraded to an offer and the nudge is
+    still delivered.
+
+Forgetting and retention
+    ``forget_all`` deletes everything learned (``DELETE /behavior/data``).
+    ``age_out`` applies the 180-day / 30-day retention even while learning is
+    off (the scheduler runs it about every six hours, and on toggle-off).
 """
 from __future__ import annotations
 
@@ -81,7 +93,8 @@ def _home() -> Path:
 def _default_local_factory(path: Path):
     from service.behavior.engine import BehaviorEngine
     phraser = None
-    if os.environ.get("WISP_BEHAVIOR_PHRASER", "1") != "0":
+    from service.behavior_switch import phraser_enabled
+    if phraser_enabled():     # off by default under remote inference (titles would leave the Mac)
         from service.assistant.behavior_phraser import WispPhraser
         phraser = WispPhraser()
     return BehaviorEngine(path, phraser=phraser)
@@ -170,6 +183,7 @@ class BehaviorRuntime:
         self.errors: dict[str, str] = {}
         self.last: dict[str, float] = {}
         self._db_lock = threading.RLock()
+        self._stopped = False
         self.home.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -194,6 +208,18 @@ class BehaviorRuntime:
             self._db.execute("INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                              (key, value))
 
+    def stop(self) -> None:
+        """Refuse all further work and wait for a pass already running on the
+        worker thread to finish. Used before the learned data is deleted."""
+        self._stopped = True
+        with self._work_lock:
+            pass
+
+    def live(self) -> bool:
+        """False once stopped or once learning is switched off: nothing may be
+        published or performed after that, even by a pass already in flight."""
+        return not self._stopped and enabled()
+
     def close(self) -> None:
         close = getattr(self._local_engine, "close", None)
         if close is not None:
@@ -208,6 +234,8 @@ class BehaviorRuntime:
 
     # ---- engine selection ----------------------------------------------------
     def local_engine(self):
+        if self._stopped:
+            raise RuntimeError("behavior runtime was stopped")
         if self._local_engine is None:
             self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
@@ -375,6 +403,8 @@ class BehaviorRuntime:
         """Ingest/mine/generate as due. Returns (undelivered nudges, engine key)."""
         with self._work_lock:
             key = "local"
+            if not self.live():
+                return [], key
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             changed = self._flush_decisions()
             sync = {}
@@ -408,6 +438,29 @@ class BehaviorRuntime:
             return nudges, key
 
     # ---- delivery (event loop) ---------------------------------------------------
+    def policy_block(self, action) -> str | None:
+        """Why the safety policy forbids this Wisp-schedule write, or None when it
+        is ALLOW. Same door as the model's ``add_reminder`` and the attention
+        runner: View Only, remote-profile checks and grants all apply. Anything
+        short of ALLOW (a CONFIRM has nobody to ask here) and a policy that cannot
+        be evaluated are refusals. A refusal is audited."""
+        params = getattr(action, "params", None) or {}
+        args = {"title": " ".join(str(params.get("title") or "").split())[:200],
+                "kind": "event" if getattr(action, "type", "") == "add_hold" else "reminder"}
+        try:
+            from service.safety import Tier, decide
+            dec = decide("assistant_write", args, tool="add_reminder")
+            reason = None if dec.tier is Tier.ALLOW else (dec.reason or dec.tier.value)
+        except Exception as exc:  # noqa: BLE001
+            reason = f"safety policy unavailable ({type(exc).__name__})"
+        if reason is not None:
+            try:
+                from service.safety import audit
+                audit("deny", tool="add_reminder", source="behavior", reason=reason)
+            except Exception:  # noqa: BLE001 — the refusal stands even if it cannot be logged
+                pass
+        return reason
+
     def perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
         """Create one reversible Wisp-schedule item. Idempotent per (nudge, action)."""
         with self._db_lock:
@@ -416,6 +469,8 @@ class BehaviorRuntime:
         if row is not None:
             return dict(row) if row["undone_at"] is None else None
         if action.type not in {"add_reminder", "add_hold"}:
+            return None
+        if self.policy_block(action) is not None:
             return None
         params = action.params or {}
         title = " ".join(str(params.get("title") or "").split())[:200]
@@ -478,9 +533,15 @@ class BehaviorRuntime:
     async def deliver(self, store, hub, nudge, now: float) -> dict | None:
         if nudge.expires_at is not None and _finite(nudge.expires_at) and float(nudge.expires_at) <= now:
             return None
+        if not self.live():
+            return None
         performed = []
         for idx, action in enumerate(nudge.actions):
             if action.auto and action.type in {"add_reminder", "add_hold"}:
+                if self.policy_block(action) is not None:
+                    continue           # downgraded to an offer: the nudge still goes out, nothing is written
+                if not self.live():    # switched off mid-delivery: check right before the write
+                    return None
                 try:
                     done = self.perform_action(store, nudge.id, idx, action, now)
                 except Exception as exc:  # noqa: BLE001
@@ -499,6 +560,8 @@ class BehaviorRuntime:
                 action["auto"] = idx in done_idx
         event["auto_performed"] = performed
         event["can_undo"] = bool(performed)
+        if not self.live():            # last check before anything becomes visible
+            return None
         self.remember_nudge(nudge)
         row = await hub.publish(event, dedupe_key=EVENT_PREFIX + nudge.id, expires_at=nudge.expires_at)
         if isinstance(row, dict) and row.get("event_id"):
@@ -556,11 +619,15 @@ class BehaviorRuntime:
         nudges, key = await asyncio.to_thread(self.work, store, now, force=force)
         published: list[dict] = []
         for nudge in sorted(nudges, key=lambda n: n.seq):
+            if not self.live():
+                break    # cursor not advanced: it is delivered if learning is turned back on
             try:
                 row = await self.deliver(store, hub, nudge, now)
             except Exception as exc:  # noqa: BLE001 — retried next tick (dedupe + idempotent actions)
                 self.errors["deliver"] = f"{type(exc).__name__}: {exc}"[:200]
                 break
+            if row is None and not self.live():
+                break    # switched off mid-delivery: leave the cursor so this nudge is not lost
             self.kv_set(f"cursor:{key}", str(max(int(nudge.seq), int(self.kv_get(f'cursor:{key}', '0') or 0))))
             if row is not None:
                 published.append(row)
@@ -598,6 +665,46 @@ class BehaviorRuntime:
             self.errors["feedback"] = f"{type(exc).__name__}: {exc}"[:200]
             self.retire_event(store, nudge_id)
         return removed
+
+    @staticmethod
+    def _untouched(current: dict, action: dict) -> bool:
+        """True while a Wisp-created item is exactly as Wisp made it: still active,
+        same source/context/title/time, and never updated since creation. Anything the
+        user edited, completed, moved or dismissed is theirs now."""
+        from service.assistant.store import MANUAL_SOURCE
+        try:
+            return (current.get("status") == "active"
+                    and current.get("source") == MANUAL_SOURCE
+                    and str(current.get("context") or "").startswith(BEHAVIOR_CONTEXT)
+                    and current.get("title") == action.get("title")
+                    and abs(float(current["when_ts"]) - float(action["when_ts"])) < 1.0
+                    and abs(float(current["updated_at"]) - float(current["created_at"])) < 1e-6)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+    def remove_untouched_auto_items(self, store) -> dict:
+        """Delete the still-active reminders/holds Wisp created on its own schedule that
+        the user has not touched (same identity record ``undo`` uses). Edited, completed,
+        moved or dismissed items are kept: they are the user's now."""
+        with self._db_lock:
+            rows = [dict(r) for r in self._db.execute(
+                "SELECT * FROM actions WHERE undone_at IS NULL AND commitment_id IS NOT NULL")]
+        removed: list[dict] = []
+        kept = 0
+        for r in rows:
+            try:
+                current = store.get(r["commitment_id"])
+                if current is None:
+                    continue          # already gone
+                if not self._untouched(current, r):
+                    kept += 1
+                    continue
+                store.delete(r["commitment_id"])
+                removed.append({"type": r["type"], "title": r["title"], "when_ts": r["when_ts"]})
+            except Exception as exc:  # noqa: BLE001 — one stubborn item never blocks the forget
+                self.errors["forget"] = f"{type(exc).__name__}: {exc}"[:200]
+                kept += 1
+        return {"removed": removed, "kept": kept}
 
     def delivered(self, limit: int = 20) -> list[dict]:
         with self._db_lock:
@@ -713,6 +820,102 @@ def get_runtime() -> BehaviorRuntime | None:
         return _runtime
 
 
+def _drop_nudge_events(store) -> int:
+    """Remove delivered behavior nudges from the hub's durable queue: their text is learned data."""
+    try:
+        with store.transaction() as db:
+            return int(db.execute("DELETE FROM assistant_events WHERE kind=? AND dedupe_key LIKE ?",
+                                  (EVENT_KIND, EVENT_PREFIX + "%")).rowcount or 0)
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def forget_all(store, home: Path | None = None) -> dict:
+    """Delete everything Wisp learned about the user's routines. Works whether
+    learning is on or off. Stops the runtime (waiting for a pass in flight),
+    removes the untouched Wisp-created reminders/holds, closes every connection,
+    deletes ``behavior.db``, ``behavior_runtime.db`` (with ``-wal``/``-shm``) and the
+    profile card cache, and drops pending nudge events. Items the user edited,
+    completed or moved are kept. If learning is still on, Wisp starts over from
+    the next ingest."""
+    global _runtime
+    explicit_home = Path(home) if home is not None else None
+    with _runtime_lock:
+        runtime, _runtime = _runtime, None
+    home = explicit_home or (runtime.home if runtime is not None else _home())
+    if runtime is None and (home / RUNTIME_DB).exists():
+        try:
+            runtime = BehaviorRuntime(home)   # only to read the undo identities; never opens the engine
+        except Exception:  # noqa: BLE001 — an unreadable runtime db still gets deleted below
+            runtime = None
+    items: dict = {"removed": [], "kept": 0}
+    if runtime is not None:
+        runtime.stop()
+        try:
+            items = runtime.remove_untouched_auto_items(store)
+        finally:
+            runtime.close()
+    deleted = 0
+    names = [CARD_CACHE]
+    for base in (ENGINE_DB, RUNTIME_DB):
+        names += [base, base + "-wal", base + "-shm"]
+    names += [p.name for p in home.glob(ENGINE_DB + ".schema-*")]   # moved-aside old-schema copies
+    for name in names:
+        try:
+            (home / name).unlink()
+            deleted += 1
+        except FileNotFoundError:
+            pass
+    events = _drop_nudge_events(store)
+    return {"removed_items": items["removed"], "kept_items": items["kept"],
+            "files_deleted": deleted, "nudge_events_deleted": events}
+
+
+AGE_OUT_EVERY_S = 6 * 3600.0
+_last_age_out: float | None = None
+
+
+def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int]:
+    """Apply the retention limits (observations 180 days, nudges 30 days) to what is
+    already on disk, whether or not learning is on. Plain SQL on its own connections:
+    it never starts the engine, the phraser or a runtime, and never migrates a database."""
+    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S
+    home = Path(home) if home is not None else _home()
+    now = time.time() if now is None else float(now)
+    out = {"observations": 0, "nudges": 0, "delivered": 0}
+
+    def run(name: str, statements: list[tuple[str, str, float]]) -> None:
+        path = home / name
+        if not path.exists():
+            return
+        conn = None
+        try:
+            conn = sqlite3.connect(str(path), timeout=30)
+            with conn:
+                for key, sql, cutoff in statements:
+                    out[key] += int(conn.execute(sql, (cutoff,)).rowcount or 0)
+        except sqlite3.DatabaseError:
+            pass          # unreadable or a different schema: leave it alone
+        finally:
+            if conn is not None:
+                conn.close()
+
+    run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
+                    ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
+    run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+    return out
+
+
+async def _maybe_age_out(home: Path | None = None) -> None:
+    """Retention, at most about every six hours; the first tick after launch runs it."""
+    global _last_age_out
+    mark = time.monotonic()
+    if _last_age_out is not None and mark - _last_age_out < AGE_OUT_EVERY_S:
+        return
+    _last_age_out = mark
+    await asyncio.to_thread(age_out, home)
+
+
 def set_runtime(runtime: BehaviorRuntime | None) -> None:
     """Install (tests, rehearsal tooling) or drop the process runtime."""
     global _runtime
@@ -725,7 +928,9 @@ async def tick(store, hub, *, now: float | None = None, force: bool = False) -> 
     try:
         runtime = get_runtime()
         if runtime is None:
+            await _maybe_age_out()    # retention does not depend on the switch
             return []
+        await _maybe_age_out(runtime.home)
         return await runtime.tick(store, hub, now=now, force=force)
     except Exception as exc:  # noqa: BLE001
         log.warning("behavior tick failed: %s", type(exc).__name__)

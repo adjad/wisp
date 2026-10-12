@@ -9,6 +9,10 @@ Behavior learning is ON by default. Precedence, highest first:
    (Settings -> "Learn my routines").
 3. Default: on.
 
+If ``config.yaml`` exists but cannot be read or is not a mapping, the saved
+setting is unknown and may be an "off", so it counts as OFF (fail closed) until
+the file is fixed; only an explicit ``WISP_BEHAVIOR=1`` still turns learning on.
+
 Every caller asks per call and nothing caches the answer, so flipping the
 setting starts or stops ingestion and nudging without restarting Wisp. Callers
 on hot or tightly stubbed paths (the router, prompt assembly, the remote
@@ -32,12 +36,43 @@ def env_override() -> bool | None:
 
 
 def setting_enabled() -> bool:
-    """The persisted ``behavior.enabled`` setting (default True)."""
+    """The persisted ``behavior.enabled`` setting (default True). False when the
+    settings file is unreadable: an unknown setting never switches learning on."""
     try:
         from service.config import get_behavior_enabled
         return get_behavior_enabled()
-    except Exception:  # noqa: BLE001 — an unreadable setting is the default, not a crash
+    except Exception:  # noqa: BLE001 — fail closed: an unreadable setting is not consent
+        return False
+
+
+def setting_readable() -> bool:
+    """False when ``~/.moe/config.yaml`` exists but cannot be read as a mapping."""
+    try:
+        from service.config import user_overlay_valid
+        return user_overlay_valid()
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def remote_active() -> bool:
+    """Whether a remote-inference profile is pinned for this launch. An
+    invalid profile counts as active (fail closed: assume data would leave)."""
+    try:
+        from service.inference.remote_policy import remote_only_profile
+        return remote_only_profile() is not None
+    except Exception:  # noqa: BLE001
         return True
+
+
+def phraser_enabled() -> bool:
+    """Whether the engine may send wording / event-categorization requests to a
+    model. On a Mac with local models it is on unless ``WISP_BEHAVIOR_PHRASER=0``.
+    Under remote inference those requests carry calendar titles and nudge facts to
+    the configured server, so it is OFF unless ``WISP_BEHAVIOR_PHRASER=1``."""
+    raw = os.environ.get("WISP_BEHAVIOR_PHRASER")
+    if remote_active():
+        return raw == "1"
+    return raw != "0"
 
 
 def enabled() -> bool:

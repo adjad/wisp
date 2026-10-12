@@ -321,6 +321,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
+    "tests/test_behavior_privacy.py",
     "tests/test_behavior_routing.py",
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",

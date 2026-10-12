@@ -112,4 +112,12 @@ model runs (calendar, reminders, mail and message text), plus memory facts and
 recent conversation history (bounded by `aggregate_bytes`). Choose a server
 you trust with that data.
 
+Behavior learning ("Learn my routines", on by default) adds two things. A short
+summary of what Wisp learned about your routines is part of the system prompt,
+so it goes to your server with every prompt. Nudge wording and event
+categorization would send calendar titles and nudge facts to your server, so
+they are **off by default in remote mode**; set `WISP_BEHAVIOR_PHRASER=1` at
+launch to turn them on. Turn "Learn my routines" off, or use **Forget what Wisp
+learned** in Settings, to stop or erase the learning itself.
+
 `wisp_status` ("which model are you using?") names the remote model and host.

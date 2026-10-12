@@ -1,7 +1,7 @@
 """HTTP surface for behavior learning (``/behavior/*``).
 
 Behavior learning is on by default ("Learn my routines" in Settings, or
-``WISP_BEHAVIOR=0/1`` at launch). Every route except ``/settings`` answers 409
+``WISP_BEHAVIOR=0/1`` at launch). Every route except ``/settings`` and ``DELETE /data`` answers 409
 with a plain explanation while it is off. Engine work runs off the event loop.
 Only Wisp-internal state changes here: Undo deletes items Wisp itself created on its own schedule, and ``act``
 returns the prefilled request for an ``open_prompt`` action rather than
@@ -12,7 +12,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+import yaml
+from fastapi import APIRouter, HTTPException, Request
 
 from service.assistant import behavior_runtime
 
@@ -48,7 +49,13 @@ def _settings_payload() -> dict[str, Any]:
     from service import behavior_switch as flags
     override = flags.env_override()
     return {"enabled": flags.enabled(), "setting": flags.setting_enabled(),
-            "env_override": override}
+            "env_override": override,
+            # False when ~/.moe/config.yaml exists but cannot be read: learning is then off.
+            "settings_readable": flags.setting_readable(),
+            # A remote-inference profile is pinned: wording/categorization requests would go
+            # to that server, so they are off unless WISP_BEHAVIOR_PHRASER=1.
+            "remote_active": flags.remote_active(),
+            "phraser": flags.phraser_enabled()}
 
 
 @router.get("/settings")
@@ -61,19 +68,53 @@ async def behavior_settings() -> dict[str, Any]:
 @router.put("/settings")
 async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str, Any]:
     """Turn behavior learning on or off now, without restarting Wisp. Off stops
-    ingesting, mining and nudging; what was learned is kept (nothing is cleared)."""
+    ingesting, mining and nudging; what was learned is kept (use ``DELETE /behavior/data``
+    to erase it) but is still aged out (180 days / 30 days)."""
     value = _body(body).get("enabled")
     if type(value) is not bool:
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     from service.config import set_behavior_enabled
     from service.tools.behavior_tools import sync_availability
-    await asyncio.to_thread(set_behavior_enabled, value)
+    try:
+        await asyncio.to_thread(set_behavior_enabled, value)
+    except (ValueError, OSError, yaml.YAMLError) as exc:
+        # An unreadable config.yaml is never overwritten; learning stays off until it is fixed.
+        raise HTTPException(
+            status_code=409,
+            detail="Wisp can't save this setting because its settings file (~/.moe/config.yaml) "
+                   "can't be read. Fix or remove that file and try again. Learning stays off until then.",
+        ) from exc
     sync_availability()
     payload = _settings_payload()
+    if not payload["enabled"]:
+        await asyncio.to_thread(behavior_runtime.age_out)   # retention applies while off too
     if payload["enabled"]:
         store, hub = _store_hub()
         behavior_runtime.poke(store, hub)
     return payload
+
+
+@router.delete("/data")
+async def behavior_forget(request: Request) -> dict[str, Any]:
+    """Forget what Wisp learned: delete the behavior databases and profile card, and
+    remove the still-untouched reminders/holds Wisp created itself. Works while learning
+    is on or off. Requires a JSON body ``{"confirm": true}`` (so a cross-site simple
+    request cannot trigger it). Items the user edited, completed or moved are kept."""
+    if not (request.headers.get("content-type") or "").lower().startswith("application/json"):
+        raise HTTPException(status_code=415, detail="Content-Type: application/json required")
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="JSON object body required") from exc
+    if not isinstance(body, dict) or body.get("confirm") is not True:
+        raise HTTPException(status_code=422, detail="confirm must be true")
+    store, hub = _store_hub()
+    result = await asyncio.to_thread(behavior_runtime.forget_all, store)
+    try:
+        await hub.publish({"type": "changed"}, durable=False)
+    except Exception:  # noqa: BLE001 — the data is already gone
+        pass
+    return {"ok": True, **result}
 
 
 @router.get("/status")
@@ -214,6 +255,10 @@ async def behavior_act(nudge_id: str, body: dict[str, Any] | None = None) -> dic
         await asyncio.to_thread(_feedback_quietly, runtime, store, nudge_id)
         return {"ok": True, "type": "open_prompt", "prompt": prompt, "label": action.label}
     if action.type in {"add_reminder", "add_hold"}:
+        blocked = await asyncio.to_thread(runtime.policy_block, action)
+        if blocked:
+            return {"ok": False, "type": action.type,
+                    "detail": f"Nothing was added: blocked by the safety policy ({blocked})."}
         done = await asyncio.to_thread(runtime.perform_action, store, nudge_id, idx, action, runtime.clock())
         if done is None:
             return {"ok": False, "type": action.type,

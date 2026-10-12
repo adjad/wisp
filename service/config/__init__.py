@@ -41,16 +41,38 @@ def _packaged_config() -> dict:
         return yaml.safe_load(f) or {}
 
 
+_overlay_valid = True
+
+
 @lru_cache
 def _user_overlay() -> dict:
-    """Persisted user changes from ~/.moe/config.yaml (may be absent/empty)."""
+    """Persisted user changes from ~/.moe/config.yaml (may be absent/empty).
+
+    A file that cannot be read, parsed, or is not a mapping yields ``{}`` so
+    startup survives, and is remembered as invalid (``user_overlay_valid``) so
+    privacy-sensitive settings can fail closed instead of reading it as defaults."""
+    global _overlay_valid
+    _overlay_valid = True
     if not USER_CONFIG.exists():
         return {}
     try:
         with USER_CONFIG.open() as f:
-            return yaml.safe_load(f) or {}
+            loaded = yaml.safe_load(f)
     except Exception:  # noqa: BLE001 — a corrupt overlay must not break startup
+        _overlay_valid = False
         return {}
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        _overlay_valid = False
+        return {}
+    return loaded
+
+
+def user_overlay_valid() -> bool:
+    """False when ``config.yaml`` exists but is unreadable or not a mapping."""
+    _user_overlay()
+    return _overlay_valid
 
 
 def _deep_merge(base: dict, over: dict) -> dict:
@@ -111,7 +133,10 @@ def set_daily_summary_hour(hour: int) -> int:
 def get_behavior_enabled() -> bool:
     """Whether behavior learning ("Learn my routines") is on. Default True; only
     an explicit false in the user overlay (``behavior: {enabled: false}``)
-    turns it off. ``WISP_BEHAVIOR`` overrides this (service/behavior_switch.py)."""
+    turns it off, as does an overlay that exists but cannot be read (it may
+    hold that false). ``WISP_BEHAVIOR`` overrides this (service/behavior_switch.py)."""
+    if not user_overlay_valid():
+        return False    # an unreadable settings file might hold the user's "off": fail closed
     section = models_config().get("behavior")
     return not (isinstance(section, dict) and section.get("enabled") is False)
 

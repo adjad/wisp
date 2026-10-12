@@ -380,6 +380,19 @@ final class WispClient {
         await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
     }
 
+    // GET /behavior/settings, whole payload: "enabled", "remote_active" (a remote
+    // inference profile is pinned) and "phraser" (nudge wording / event labeling
+    // requests are allowed to leave the Mac's local model).
+    func behaviorSettings() async -> [String: Any]? {
+        await behaviorRequest("GET", "behavior/settings")
+    }
+
+    // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the
+    // untouched reminders/holds it created. Returns the counts, or nil on failure.
+    func forgetBehaviorData() async -> [String: Any]? {
+        await behaviorRequest("DELETE", "behavior/data", body: ["confirm": true], timeout: 60)
+    }
+
     // POST /behavior/run -> mine + predict + generate nudges now.
     func behaviorRun() async -> [String: Any]? {
         await behaviorRequest("POST", "behavior/run", body: [:], timeout: 60)

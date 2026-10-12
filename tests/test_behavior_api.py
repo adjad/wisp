@@ -59,6 +59,10 @@ def live(monkeypatch, tmp_path, store):
     return rt, engine, hub
 
 
+def _core(payload):
+    return {k: payload[k] for k in ("enabled", "setting", "env_override")}
+
+
 def test_disabled_status_and_409(client, monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert client.get("/behavior/status").json()["enabled"] is False
@@ -179,7 +183,8 @@ def test_default_is_on_without_any_flag_or_setting(client, tmp_path):
     from service import behavior_switch as flags
     assert flags.env_override() is None and flags.setting_enabled() and flags.enabled()
     data = client.get("/behavior/settings").json()
-    assert data == {"enabled": True, "setting": True, "env_override": None}
+    assert data == {"enabled": True, "setting": True, "env_override": None,
+                    "settings_readable": True, "remote_active": False, "phraser": True}
 
 
 def test_setting_off_then_on_takes_effect_without_restart(client, live, monkeypatch, store):
@@ -190,7 +195,7 @@ def test_setting_off_then_on_takes_effect_without_restart(client, live, monkeypa
     monkeypatch.setattr(behavior_api.behavior_runtime, "poke", lambda *a: None)
     assert client.get("/behavior/status").json()["enabled"] is True
     off = client.put("/behavior/settings", json={"enabled": False}).json()
-    assert off == {"enabled": False, "setting": False, "env_override": None}
+    assert _core(off) == {"enabled": False, "setting": False, "env_override": None}
     assert config.get_behavior_enabled() is False
     assert "enabled: false" in config.USER_CONFIG.read_text()
     # Ticking, the API and the tools all stand down at once...
@@ -212,10 +217,10 @@ def test_env_override_beats_the_setting_both_ways(client, monkeypatch):
     monkeypatch.setattr(behavior_api.behavior_runtime, "poke", lambda *a: None)
     client.put("/behavior/settings", json={"enabled": False})
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    assert client.get("/behavior/settings").json() == {"enabled": True, "setting": False, "env_override": True}
+    assert _core(client.get("/behavior/settings").json()) == {"enabled": True, "setting": False, "env_override": True}
     client.put("/behavior/settings", json={"enabled": True})
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
-    assert client.get("/behavior/settings").json() == {"enabled": False, "setting": True, "env_override": False}
+    assert _core(client.get("/behavior/settings").json()) == {"enabled": False, "setting": True, "env_override": False}
     assert config.get_behavior_enabled() is True              # the saved choice is untouched
 
 
