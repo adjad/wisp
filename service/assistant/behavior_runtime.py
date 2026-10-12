@@ -6,14 +6,8 @@ build (``WISP_REMOTE_ONLY=1`` + ``WISP_REMOTE_FULL=1``) turns it on;
 by the founder demo only) learns from the synthetic persona instead of real
 data; the full remote build learns from real activity.
 
-Brain
-    ``local`` (default): an in-process ``BehaviorEngine`` at
-    ``<WISP_HOME>/behavior.db``. ``remote``: ``RemoteEngine`` at
-    ``WISP_BRAIN_URL`` (``WISP_BRAIN_MODE=remote`` or a URL alone selects it),
-    bearer token from ``WISP_BRAIN_TOKEN`` or Keychain (service
-    ``com.wisp.inference``, account ``wispbrain:<sha256(url)>``, the same
-    origin-bound scheme as provider credentials). Any remote failure falls back
-    to the local engine for ``REMOTE_RETRY_S`` so the demo never dies.
+Engine
+    An in-process ``BehaviorEngine`` at ``<WISP_HOME>/behavior.db``.
 
 Ingestion (every ``INGEST_EVERY_S`` and right after a Calendar sync; each
 source is independent and never raises into the scheduler)
@@ -64,7 +58,6 @@ TICK_S = 30.0
 INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
-REMOTE_RETRY_S = 120.0
 CALENDAR_GRACE_S = 180.0   # synthetic: wait this long for a first Calendar read
 FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
 # Same event: same title, starts within this window. The persona regenerates
@@ -99,35 +92,6 @@ def synthetic_only() -> bool:
     return os.environ.get("WISP_BEHAVIOR_SYNTHETIC_ONLY") == "1" or founder_demo() or aria_demo()
 
 
-def brain_url() -> str:
-    url = os.environ.get("WISP_BRAIN_URL", "").strip()
-    if url:
-        return url
-    try:
-        from service.config import models_config
-        brain = models_config().get("brain") or {}
-        return str(brain.get("url") or "").strip() if isinstance(brain, dict) else ""
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def brain_mode() -> str:
-    from service.demo.aria import env_requested as aria_demo
-    if aria_demo():
-        return "local"   # a remote brain is shared with real mode; the demo never feeds it
-    mode = os.environ.get("WISP_BRAIN_MODE", "").strip().lower()
-    if not mode:
-        try:
-            from service.config import models_config
-            brain = models_config().get("brain") or {}
-            mode = str(brain.get("mode") or "").strip().lower() if isinstance(brain, dict) else ""
-        except Exception:  # noqa: BLE001
-            mode = ""
-    if mode not in {"local", "remote"}:
-        mode = "remote" if os.environ.get("WISP_BRAIN_URL", "").strip() else "local"
-    return mode
-
-
 def _home() -> Path:
     # The Aria demo's synthetic persona learns into its own state directory
     # (service.paths.state_dir), never the real-mode behavior.db.
@@ -153,24 +117,6 @@ def _default_local_factory(path: Path):
         from service.demo.aria.proactive import DEMO_NUDGE_HORIZON_S
         return BehaviorEngine(path, phraser=phraser, min_horizon_s=DEMO_NUDGE_HORIZON_S)
     return BehaviorEngine(path, phraser=phraser)
-
-
-def _brain_token(url: str) -> Callable[[], str]:
-    def token() -> str:
-        value = os.environ.get("WISP_BRAIN_TOKEN", "").strip()
-        if value:
-            return value
-        from service.config.provider_credentials import resolve_keychain
-        return resolve_keychain("wispbrain", url)
-    return token
-
-
-def _default_remote_factory(home: Path):
-    url = brain_url()
-    if not url:
-        return None
-    from service.behavior.client import RemoteEngine
-    return RemoteEngine(url, _brain_token(url), cache_path=home / CARD_CACHE)
 
 
 def _default_persona(now: float):
@@ -241,10 +187,9 @@ class TickBusy(RuntimeError):
 
 
 class BehaviorRuntime:
-    def __init__(self, home: Path | None = None, *, mode: str | None = None,
+    def __init__(self, home: Path | None = None, *,
                  synthetic: bool | None = None, founder: bool | None = None,
                  local_factory: Callable[[Path], Any] | None = None,
-                 remote_factory: Callable[[Path], Any] | None = None,
                  persona_fn: Callable[[float], Any] | None = None,
                  messages_fn: Callable[[], dict] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
@@ -252,11 +197,9 @@ class BehaviorRuntime:
                  clock: Callable[[], float] = time.time,
                  calendar_grace_s: float | None = None) -> None:
         self.home = Path(home) if home is not None else _home()
-        self.mode = mode or brain_mode()
         self.synthetic = synthetic_only() if synthetic is None else synthetic
         self.founder = founder_demo() if founder is None else founder
         self._local_factory = local_factory or _default_local_factory
-        self._remote_factory = remote_factory or _default_remote_factory
         self._persona_fn = persona_fn or _default_persona
         self._messages_fn = messages_fn or _default_messages
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
@@ -266,11 +209,6 @@ class BehaviorRuntime:
         self._calendar_grace_s = CALENDAR_GRACE_S if calendar_grace_s is None else float(calendar_grace_s)
         self._calendar_ready = False
         self._local_engine = None
-        self._remote_engine = None
-        self._remote_built = False
-        self._remote_down_until = 0.0
-        self.active = "local"
-        self._failover = False
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
         self._tick_lock: asyncio.Lock | None = None
@@ -305,13 +243,12 @@ class BehaviorRuntime:
                              (key, value))
 
     def close(self) -> None:
-        for eng in (self._local_engine, self._remote_engine):
-            close = getattr(eng, "close", None)
-            if close is not None:
-                try:
-                    close()
-                except Exception:  # noqa: BLE001
-                    pass
+        close = getattr(self._local_engine, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self._db.close()
         except Exception:  # noqa: BLE001
@@ -323,41 +260,9 @@ class BehaviorRuntime:
             self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
 
-    def _remote(self):
-        if not self._remote_built:
-            self._remote_built = True
-            try:
-                self._remote_engine = self._remote_factory(self.home)
-            except Exception as exc:  # noqa: BLE001
-                self.errors["remote"] = f"{type(exc).__name__}: {exc}"[:200]
-                self._remote_engine = None
-        return self._remote_engine
-
-    def _target_key(self) -> str:
-        if self.mode == "remote" and self.clock() >= self._remote_down_until and self._remote() is not None:
-            return "remote"
-        return "local"
-
     def call(self, method: str, *args, **kwargs):
-        """Call an engine method on the remote brain when configured and up,
-        else (or on any remote transport failure) on the local engine.
-        KeyError/ValueError are semantic answers (404/400) and propagate."""
-        if self._target_key() == "remote":
-            remote = self._remote()
-            try:
-                result = getattr(remote, method)(*args, **kwargs)
-                self.active = "remote"
-                return result
-            except (KeyError, ValueError):
-                raise
-            except Exception as exc:  # noqa: BLE001 — BrainUnavailable and friends
-                self._remote_down_until = self.clock() + REMOTE_RETRY_S
-                self.errors["remote"] = f"{type(exc).__name__}: {exc}"[:200]
-                self._failover = True
-                # Local must be fully re-fed: forget its ingest/mine stamps.
-                self._stamps.pop("local", None)
-                log.warning("behavior brain unavailable; using the local engine")
-        self.active = "local"
+        """Call an engine method. KeyError/ValueError are semantic answers
+        (404/400) and propagate."""
         return getattr(self.local_engine(), method)(*args, **kwargs)
 
     async def acall(self, method: str, *args, **kwargs):
@@ -456,7 +361,7 @@ class BehaviorRuntime:
         longer has are dropped from the local engine so history never doubles.
         With a seeded "Wisp Demo" calendar, upcoming events come from it only."""
         day = datetime.fromtimestamp(now).date().isoformat()
-        key = self._target_key()
+        key = "local"
         seen = self._demo_calendar_seen()
         # Persona upcoming events only once the first Calendar read settled
         # without a demo calendar (see _calendar_ready_for).
@@ -480,7 +385,7 @@ class BehaviorRuntime:
         previous = set(json.loads(self.kv_get(f"persona_ids:{key}", "[]") or "[]"))
         stale = previous - set(ids)
         count = self.call("observe", obs)
-        if stale and self.active == "local":
+        if stale:
             store_ = getattr(self.local_engine(), "_store", None)
             if store_ is not None and hasattr(store_, "delete_observations"):
                 count += store_.delete_observations(sorted(stale))
@@ -541,7 +446,7 @@ class BehaviorRuntime:
         result = self.call("observe_snapshot", "calendar", observations,
                            window_start=start, window_end=end, taken_at=float(last_sync)) or {}
         if self.synthetic:
-            self._remember_demo_cal(self.active, observations, now)
+            self._remember_demo_cal("local", observations, now)
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
 
@@ -617,8 +522,7 @@ class BehaviorRuntime:
     def work(self, store, now: float, *, force: bool = False) -> tuple[list, str]:
         """Ingest/mine/generate as due. Returns (undelivered nudges, engine key)."""
         with self._work_lock:
-            self._failover = False
-            key = self._target_key()
+            key = "local"
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             changed = self._flush_decisions()
             sync = {}
@@ -648,17 +552,14 @@ class BehaviorRuntime:
                     self.call("generate_nudges", now)
                     stamps["nudge"] = now
                     self.last["nudge"] = now
-                    active = self.active
-                    cursor = int(self.kv_get(f"cursor:{active}", "0") or 0)
+                    cursor = int(self.kv_get(f"cursor:{key}", "0") or 0)
                     nudges, _ = self.call("nudges_since", cursor, 50)
                 self.errors.pop("engine", None)
             except Exception as exc:  # noqa: BLE001
                 self.errors["engine"] = f"{type(exc).__name__}: {exc}"[:200]
-            if self._failover:
-                self._stamps.pop("local", None)
             if self._card is None or self.clock() - self._card[0] >= CARD_TTL_S:
                 self.refresh_card(now)
-            return nudges, self.active
+            return nudges, key
 
     # ---- delivery (event loop) ---------------------------------------------------
     def _commitment_source(self) -> str:
@@ -940,11 +841,8 @@ class BehaviorRuntime:
     def status(self) -> dict:
         info: dict[str, Any] = {
             "enabled": True, "synthetic": self.synthetic, "founder_demo": self.founder,
-            "mode": self.mode, "active_engine": self.active,
-            "remote_url": brain_url() if self.mode == "remote" else "",
-            "remote_retry_at": self._remote_down_until or None,
             "last": dict(self.last), "errors": dict(self.errors),
-            "cursor": {k: int(self.kv_get(f"cursor:{k}", "0") or 0) for k in ("local", "remote")},
+            "cursor": {"local": int(self.kv_get("cursor:local", "0") or 0)},
             "pending_decisions": len(self._pending),
             # Synthetic: nudges wait for the first Calendar read (or the grace period).
             "waiting_for_calendar": self.synthetic and not self._calendar_ready,

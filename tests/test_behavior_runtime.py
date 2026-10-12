@@ -1,5 +1,5 @@
 """Behavior runtime: ingest -> mine -> nudge -> hub, auto actions + Undo,
-Calendar snapshot mapping, remote fallback, profile card. Synthetic data only;
+Calendar snapshot mapping, profile card. Synthetic data only;
 every store lives under tmp_path."""
 from __future__ import annotations
 
@@ -172,8 +172,7 @@ def store(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY", "WISP_BRAIN_URL",
-                "WISP_BRAIN_MODE", "WISP_BRAIN_TOKEN", "WISP_QA_SEED"):
+    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY", "WISP_QA_SEED"):
         monkeypatch.delenv(key, raising=False)
     br.set_runtime(None)
     yield
@@ -181,7 +180,7 @@ def _env(monkeypatch):
 
 
 def make_runtime(tmp_path, engine=None, *, synthetic=True, founder=False, calendar=None,
-                 messages=None, mode="local", remote=None, clock=lambda: NOW, persona=FakePersona,
+                 messages=None, clock=lambda: NOW, persona=FakePersona,
                  calendar_grace_s=0.0):
     # calendar_grace_s=0: tests that do not model Calendar start nudging at
     # once (the startup wait for a first Calendar read has its own tests).
@@ -197,8 +196,8 @@ def make_runtime(tmp_path, engine=None, *, synthetic=True, founder=False, calend
         return messages or {"state": "unavailable", "records": []}
 
     rt = br.BehaviorRuntime(
-        tmp_path / "home", mode=mode, synthetic=synthetic, founder=founder,
-        local_factory=lambda path: engine, remote_factory=lambda home: remote,
+        tmp_path / "home", synthetic=synthetic, founder=founder,
+        local_factory=lambda path: engine,
         persona_fn=persona_fn, messages_fn=messages_fn,
         calendar_sync_fn=lambda: calendar if calendar is not None else {"available": False},
         session_db_fn=lambda: (_ for _ in ()).throw(RuntimeError("no sessions in tests")),
@@ -240,14 +239,6 @@ def test_behavior_zero_is_a_kill_switch_even_in_the_founder_demo(monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert not env_enabled() and not br.enabled()
     assert profile_block() == "" and _unavailable()
-
-
-def test_brain_mode_selection(monkeypatch):
-    assert br.brain_mode() == "local"
-    monkeypatch.setenv("WISP_BRAIN_URL", "https://brain.example.test")
-    assert br.brain_mode() == "remote"
-    monkeypatch.setenv("WISP_BRAIN_MODE", "local")
-    assert br.brain_mode() == "local"
 
 
 # --------------------------------------------------------------------------
@@ -702,46 +693,6 @@ def test_scheduler_runs_behavior_tick_in_background_one_at_a_time(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Remote brain falls back to the local engine
-# --------------------------------------------------------------------------
-
-class DownBrain:
-    def __getattr__(self, name):
-        def fail(*a, **k):
-            from service.behavior.client import BrainUnavailable
-            raise BrainUnavailable("synthetic outage")
-        return fail
-
-
-def test_remote_unavailable_falls_back_to_local(tmp_path, store):
-    rt, local = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]), mode="remote",
-                             remote=DownBrain())
-    published = tick(rt, store, FakeHub())
-    assert len(published) == 1                       # the demo keeps going on the local engine
-    assert rt.active == "local" and "remote" in rt.errors
-    assert local.obs and local.mined == 1
-    assert rt.status()["active_engine"] == "local"
-
-
-def test_remote_semantic_errors_propagate(tmp_path):
-    class Brain(FakeEngine):
-        def set_pattern_status(self, pattern_id, status):
-            raise KeyError(pattern_id)
-    remote = Brain()
-    rt, local = make_runtime(tmp_path, mode="remote", remote=remote)
-    with pytest.raises(KeyError):
-        rt.call("set_pattern_status", "nope", "rejected")
-    assert rt.call("patterns") and rt.active == "remote"
-
-
-def test_remote_used_when_healthy(tmp_path, store):
-    remote = FakeEngine(nudges=[gym_conflict_nudge()])
-    rt, local = make_runtime(tmp_path, mode="remote", remote=remote)
-    tick(rt, store, FakeHub())
-    assert remote.obs and not local.obs and rt.status()["cursor"]["remote"] == 1
-
-
-# --------------------------------------------------------------------------
 # Profile card + prompt assembly
 # --------------------------------------------------------------------------
 
@@ -919,7 +870,7 @@ def test_with_real_engine_and_persona(tmp_path, store):
     except ImportError:
         pytest.skip("persona generator not available yet")
     now = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0).timestamp()
-    rt = br.BehaviorRuntime(tmp_path / "home", mode="local", synthetic=True, founder=True,
+    rt = br.BehaviorRuntime(tmp_path / "home", synthetic=True, founder=True,
                             local_factory=lambda p: engine, persona_fn=generate_persona,
                             messages_fn=lambda: {"state": "unavailable"},
                             calendar_sync_fn=lambda: {"available": False}, clock=lambda: now)

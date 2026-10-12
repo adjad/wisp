@@ -5,16 +5,14 @@ reword it. Any failure, timeout, empty answer, or answer that appears to add
 facts returns ``None`` (or ``{}`` for ``categorize``) so the engine keeps its
 code-composed text.
 
-``OpenAIPhraser`` talks to any OpenAI-compatible ``/chat/completions``:
-
-- On the GX10 brain server: native Ollama, ``http://127.0.0.1:11434`` +
-  ``/v1`` (no token).
-- On the Intel Mac (local engine, remote-only build): the GX10 gateway,
-  ``https://6wjp.tail4cc204.ts.net`` + ``/v1`` with the gateway bearer token
-  (pass a callable so the secret is read from Keychain per request).
+``OpenAIPhraser`` talks to any OpenAI-compatible ``/chat/completions``
+(for example a local Ollama at ``http://127.0.0.1:11434`` + ``/v1``; pass a
+callable token so a secret is read per request). The Mac runtime uses
+``service.assistant.behavior_phraser.WispPhraser`` instead, which reuses the
+prompts and checks defined here.
 
 The request body is restricted to ``{model, messages, max_tokens, stream,
-temperature}`` so it also satisfies the remote-only gateway contract
+temperature}`` so it also satisfies the remote-inference payload contract
 (``service.inference.remote_policy.RemoteOnlyProfile.validate_payload``).
 
 Boundary: imports only stdlib, ``httpx`` and ``service.behavior.*``.

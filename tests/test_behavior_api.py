@@ -69,7 +69,7 @@ def test_run_publishes_and_status(client, live, store):
     data = client.post("/behavior/run").json()
     assert data["ok"] and data["published"] == 2 and set(data["nudge_ids"]) == {"n1", "n2"}
     status = client.get("/behavior/status").json()
-    assert status["enabled"] and status["synthetic"] and status["active_engine"] == "local"
+    assert status["enabled"] and status["synthetic"]
     assert status["delivered_nudges"] == 2 and status["auto_actions"] == 2
     assert status["engine"]["patterns"] == 3
 

@@ -119,7 +119,7 @@ async def run() -> None:
             pass
         # Behavior learning (off unless WISP_BEHAVIOR=1 or the founder demo):
         # ingest/mine/nudge on its own internal cadence; never raises. A tick
-        # can take seconds (mining, a remote brain), so it runs as a background
+        # can take seconds (mining, phrasing), so it runs as a background
         # task and never delays reminders, the brief or scheduled sends; at
         # most one runs at a time.
         try:

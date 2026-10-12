@@ -38,7 +38,7 @@ class Recorder:
 
 def make(rec, **kw):
     kw.setdefault("model", "qwen3.6:35b")
-    return OpenAIPhraser("https://gx10.example.ts.net", "/v1", transport=httpx.MockTransport(rec), **kw)
+    return OpenAIPhraser("https://phraser.example", "/v1", transport=httpx.MockTransport(rec), **kw)
 
 
 FACTS = {"habit": "gym", "usual_time": "07:00", "conflict": "Team sync", "day": "Tuesday"}
@@ -49,7 +49,7 @@ def test_payload_keys_restricted_and_url():
     out = make(rec, token="secret-token").phrase("habit_conflict", FACTS)
     assert out == "Your Team sync on Tuesday overlaps the gym at 07:00."
     req = rec.requests[0]
-    assert str(req.url) == "https://gx10.example.ts.net/v1/chat/completions"
+    assert str(req.url) == "https://phraser.example/v1/chat/completions"
     assert req.headers["authorization"] == "Bearer secret-token"
     body = rec.payloads[0]
     assert set(body) == {"model", "messages", "max_tokens", "stream", "temperature"}
@@ -174,7 +174,7 @@ def test_constructor_validation():
 
 def test_behavior_modules_respect_import_boundary():
     forbidden = ("service.assistant", "service.tools", "service.main", "service.config", "service.inference")
-    for name in ("phraser.py", "client.py"):
+    for name in ("phraser.py",):
         tree = ast.parse((ROOT / "service" / "behavior" / name).read_text())
         for node in ast.walk(tree):
             mods = []

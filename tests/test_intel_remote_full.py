@@ -321,7 +321,7 @@ class BehaviorChecks(FullFixture):
         with patch.dict(os.environ, {'WISP_REMOTE_ONLY': '1', 'WISP_REMOTE_FULL': '1'}, clear=False):
             os.environ.pop('WISP_FOUNDER_DEMO', None)
             os.environ.pop('WISP_BEHAVIOR_SYNTHETIC_ONLY', None)
-            rt = br.BehaviorRuntime(home, mode='local', local_factory=lambda path: Mock())
+            rt = br.BehaviorRuntime(home, local_factory=lambda path: Mock())
             try:
                 self.assertFalse(rt.synthetic)
                 self.assertFalse(rt.founder)

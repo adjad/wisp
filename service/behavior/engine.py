@@ -1,11 +1,6 @@
-"""BehaviorEngine: the single facade used by both deployments.
+"""BehaviorEngine: the single facade over the behavior package.
 
-- GX10: ``brain_server`` wraps one engine instance behind HTTP.
-- Mac (local mode): ``service.assistant.behavior_runtime`` calls it in-process.
-
-The Mac runtime never needs to know which one it talks to:
-``service.behavior.client.RemoteEngine`` implements the same public methods
-over HTTP (same names, same argument/return types, via ``types`` to_dict/from_dict).
+``service.assistant.behavior_runtime`` calls it in-process on the Mac.
 
 CONTRACT (implemented by the engine workstream; signatures are fixed):
 see each method's docstring. Internals live in sibling modules: ``store``
@@ -35,7 +30,7 @@ MOVE_PAIR_MAX_S = 7 * 86400
 # across an integer boundary changes the id. A "move" smaller than this is the
 # same event re-read: no event_moved, and no event_cancelled either.
 MOVE_MIN_S = 60
-# Phrasing runs under the engine lock and the brain server gives each call 30s:
+# Phrasing runs under the engine lock, so it must stay bounded:
 # per generate pass, phrase at most this many nudges, and start no phrase call
 # once this much wall time has passed since the pass began (mining included).
 # Worst case is ~budget + one phraser timeout; the rest keep their template text.

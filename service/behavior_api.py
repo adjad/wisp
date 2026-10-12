@@ -69,7 +69,7 @@ async def behavior_run() -> dict[str, Any]:
     try:
         published = await runtime.tick(store, hub, force=True)
     except behavior_runtime.TickBusy as exc:
-        # A scheduled tick is still running (a slow remote brain or mining):
+        # A scheduled tick is still running (mining or phrasing):
         # say so instead of answering "nothing new".
         return {"ok": False, "busy": True, "published": 0, "nudge_ids": [],
                 "detail": f"{exc}; try again in a moment"}

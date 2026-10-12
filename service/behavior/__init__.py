@@ -1,9 +1,8 @@
 """Behavior engine: learn the user's routines from what they do, predict the
 next day, and propose (or perform reversible) actions before being asked.
 
-Portable by design. The same package runs in-process on a Mac
-(``brain.mode: local``) and inside ``brain_server`` on the GX10
-(``brain.mode: remote``). It is pure Python + SQLite and must never import
+Portable by design: it runs in-process on the Mac. It is pure Python + SQLite
+and must never import
 ``service.assistant``, ``service.tools``, ``service.main`` or ``service.config``
 (importing those builds live stores against ~/.moe or needs macOS). A test pins
 this. The Mac-side runtime that reads native sources and performs actions lives

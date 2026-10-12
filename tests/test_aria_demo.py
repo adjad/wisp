@@ -191,8 +191,6 @@ class BoundaryChecks(AriaFixture):
         from service.behavior import flags
         self.assertTrue(flags.env_enabled())
         self.assertTrue(br.synthetic_only())
-        with patch.dict(os.environ, {'WISP_BRAIN_MODE': 'remote', 'WISP_BRAIN_URL': 'https://brain.example'}):
-            self.assertEqual(br.brain_mode(), 'local')
         with patch.dict(os.environ, {'WISP_BEHAVIOR': '0'}):
             self.assertFalse(flags.env_enabled())
 
@@ -314,7 +312,7 @@ class ProactiveSurfaces(AriaFixture):
         self.hub = Hub(self.store)
         with patch.dict(os.environ, {'WISP_BEHAVIOR_PHRASER': '0'}):
             self.rt = br.BehaviorRuntime(
-                home, mode='local', synthetic=True,
+                home, synthetic=True,
                 local_factory=lambda p: BehaviorEngine(p, min_horizon_s=DEMO_NUDGE_HORIZON_S),
                 calendar_sync_fn=lambda: {'available': True, 'last_sync': self.now},
                 session_db_fn=lambda: None, clock=lambda: self.now, calendar_grace_s=0.0)
