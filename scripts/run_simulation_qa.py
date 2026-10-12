@@ -22,7 +22,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -37,6 +39,14 @@ TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_GIT = "/usr/bin/git"
 TRUSTED_BASH = "/bin/bash"
 TRUSTED_SWIFTC = "/usr/bin/swiftc"
+# Parallel workers share one console. Each gate's status line and any failure
+# output are written under this lock so they never interleave mid-gate.
+_OUTPUT_LOCK = threading.Lock()
+
+
+def default_jobs() -> int:
+    """One worker per available CPU; ``--jobs 1`` restores sequential runs."""
+    return max(1, os.cpu_count() or 1)
 
 
 class NodeRuntimeError(RuntimeError):
@@ -578,8 +588,9 @@ def _run(
             stderr=error,
             launch_error=error,
         )
-        print(f"[FAIL] {name} (launch error; {duration:.2f}s)", flush=True)
-        print(error, file=sys.stderr)
+        with _OUTPUT_LOCK:
+            print(f"[FAIL] {name} (launch error; {duration:.2f}s)", flush=True)
+            print(error, file=sys.stderr, flush=True)
         return result
     duration = time.monotonic() - started
     passed, failed, skipped = _counts(proc.stdout + "\n" + proc.stderr, proc.returncode)
@@ -602,14 +613,15 @@ def _run(
     state = _gate_status(result)
     rendered = tuple("unreported" if count is None else str(count)
                      for count in (passed, failed, skipped))
-    print(
-        f"[{state}] {name} ({rendered[0]} passed, {rendered[1]} failed, "
-        f"{rendered[2]} skipped; {duration:.2f}s)",
-        flush=True,
-    )
-    if proc.returncode:
-        print(proc.stdout, end="")
-        print(proc.stderr, end="", file=sys.stderr)
+    with _OUTPUT_LOCK:
+        print(
+            f"[{state}] {name} ({rendered[0]} passed, {rendered[1]} failed, "
+            f"{rendered[2]} skipped; {duration:.2f}s)",
+            flush=True,
+        )
+        if proc.returncode:
+            print(proc.stdout, end="", flush=True)
+            print(proc.stderr, end="", file=sys.stderr, flush=True)
     return result
 
 
@@ -627,7 +639,8 @@ def _blocked_result(name: str, command: list[str], dependency: str) -> GateResul
         stderr=message,
         blocked_by=dependency,
     )
-    print(f"[BLOCKED] {name} ({message})", flush=True)
+    with _OUTPUT_LOCK:
+        print(f"[BLOCKED] {name} ({message})", flush=True)
     return result
 
 
@@ -833,6 +846,69 @@ def _run_native_gates(build_dir: Path) -> list[GateResult]:
     return results
 
 
+# Scheduling hint for parallel runs only: start the slowest known modules first
+# so one of them does not begin near the end and become the critical path.
+# This never changes selection, the report order or any verdict; a stale or
+# missing entry only costs wall time.
+_START_FIRST = (
+    "tests/test_runtime_attestation_t0.py",
+    "tests/test_outbound_content_provenance.py",
+    "tests/test_fast_path_intent.py",
+    "tests/test_release_performance.py",
+    "tests/build_pipeline/managed_live_qa_checks.py",
+    "tests/build_pipeline/pipeline_checks.py",
+    "tests/test_workflow20_reminder_time.py",
+    "tests/test_runtime_proc_path.py",
+)
+
+
+def _submission_order(tests: list[str]) -> list[str]:
+    selected = set(tests)
+    first = [path for path in _START_FIRST if path in selected]
+    return first + [path for path in tests if path not in first]
+
+
+def _run_python_gate(path: str) -> GateResult:
+    # Resolve _run/_python_command at call time: the build pipeline wrapper
+    # substitutes _run to import separately sandboxed evidence.
+    return _run(
+        path,
+        _python_command(path),
+        require_nonzero_count=path in LEGACY_SCRIPT_TESTS,
+    )
+
+
+def _run_gates(tests: list[str], run_native: bool, jobs: int) -> list[GateResult]:
+    """Run every selected gate; results always follow selection order.
+
+    Each Python module keeps its own process and temporary state (see _run),
+    so modules are independent and may run concurrently. Native gates keep
+    their compile-before-contract dependencies by running as one ordered chain
+    on a single worker, started first because it is the longest serial path.
+    ``jobs == 1`` is exactly the historical sequential schedule.
+    """
+    if jobs <= 1:
+        results = [_run_python_gate(path) for path in tests]
+        if run_native:
+            with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
+                results.extend(_run_native_gates(Path(build)))
+        return results
+    with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build, \
+            ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="simqa") as pool:
+        try:
+            native = pool.submit(_run_native_gates, Path(build)) if run_native else None
+            futures = {path: pool.submit(_run_python_gate, path) for path in _submission_order(tests)}
+            results = [futures[path].result() for path in tests]
+            if native is not None:
+                results.extend(native.result())
+        except BaseException:
+            # An unexpected runner error aborts the run as it would sequentially;
+            # do not start queued gates while the error propagates.
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+    return results
+
+
 def _selected_tests(profiles: list[str]) -> list[str]:
     if "full" in profiles:
         discovered = {
@@ -890,6 +966,10 @@ def main() -> int:
         "--allow-dirty", action="store_true",
         help="Infrastructure development only; candidate verdicts must never use this.",
     )
+    parser.add_argument(
+        "--jobs", type=int, default=None, metavar="N",
+        help="Concurrent gate processes (default: one per CPU; 1 runs sequentially).",
+    )
     parser.add_argument("--list", action="store_true", help="List selected gates and exit.")
     args = parser.parse_args()
     if not args.list and args.report is None:
@@ -902,6 +982,9 @@ def main() -> int:
         else:
             parser.error("--report must be outside the candidate Worktree")
 
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        parser.error("--jobs must be at least 1")
     profiles = args.profile or ["full"]
     expected = args.expected_sha.lower()
     if not re.fullmatch(r"[0-9a-f]{40}", expected):
@@ -945,17 +1028,10 @@ def main() -> int:
         if base else []
     )
     started = time.monotonic()
-    results: list[GateResult] = []
-    for path in tests:
-        results.append(_run(
-            path,
-            _python_command(path),
-            require_nonzero_count=path in LEGACY_SCRIPT_TESTS,
-        ))
-
-    if run_native:
-        with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
-            results.extend(_run_native_gates(Path(build)))
+    if jobs > 1:
+        print(f"Simulation QA: {len(tests)} modules"
+              f"{' + native gates' if run_native else ''}; {jobs} parallel jobs", flush=True)
+    results = _run_gates(tests, run_native, jobs)
 
     end_sha = _git("rev-parse", "HEAD")
     stable = end_sha == start_sha == expected

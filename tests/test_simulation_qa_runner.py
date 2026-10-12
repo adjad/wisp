@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import sys
+import threading
+import time
 
 import pytest
 
@@ -455,8 +457,9 @@ def test_main_fails_and_reports_when_head_changes(
     assert payload["worktree_clean"] is True
 
 
+@pytest.mark.parametrize("jobs", ["1", "4"])
 def test_native_launch_error_is_reported_and_dependent_gate_is_blocked(
-        monkeypatch, tmp_path: Path) -> None:
+        monkeypatch, tmp_path: Path, jobs: str) -> None:
     expected = "a" * 40
     report = tmp_path / "launch-report.json"
     missing_compiler = tmp_path / "missing-compiler"
@@ -468,7 +471,7 @@ def test_native_launch_error_is_reported_and_dependent_gate_is_blocked(
     ])
     monkeypatch.setattr(sys, "argv", [
         "run_simulation_qa.py", "--expected-sha", expected,
-        "--only-native", "--report", str(report),
+        "--only-native", "--report", str(report), "--jobs", jobs,
     ])
 
     assert simqa.main() == 1
@@ -509,3 +512,206 @@ def test_run_forwards_valid_fixture_prefix_to_native_contract(monkeypatch):
         "import os; assert os.environ['WISP_BUILD_FIXTURE_PREFIX'] == 'wispqa-owned-run_123'; print('1 passed')"])
     assert simqa._gate_status(result) == "PASS"
     assert result.passed == 1
+
+
+# --- Parallel scheduling -----------------------------------------------------
+
+def _fixture_report(monkeypatch, tmp_path: Path, jobs: str, name: str) -> tuple[int, dict]:
+    """Run main() over real child processes whose finish order is reversed."""
+    expected = "a" * 40
+    tests = [f"tests/test_fixture_{index}.py" for index in range(6)]
+    # Earlier modules sleep longer, so a parallel run finishes them last.
+    sleeps = {path: 0.05 * (len(tests) - index) for index, path in enumerate(tests)}
+    outcomes = {path: ("print('1 failed, 2 passed'); raise SystemExit(1)" if index == 2
+                       else f"print('{index + 1} passed, 1 skipped')")
+                for index, path in enumerate(tests)}
+    monkeypatch.setattr(simqa, "_git", _fake_git_state(expected=expected))
+    monkeypatch.setattr(simqa, "_selected_tests", lambda _profiles: list(tests))
+    monkeypatch.setattr(simqa, "_dependencies", lambda: {})
+    monkeypatch.setattr(simqa, "_python_command", lambda path: [
+        sys.executable, "-c", f"import time; time.sleep({sleeps[path]}); {outcomes[path]}"])
+    ok = [sys.executable, "-c", "print('3 checks passed')"]
+    monkeypatch.setattr(simqa, "_native_gates", lambda _build: [
+        ("native/a-compile", [sys.executable, "-c", "raise SystemExit(2)"]),
+        ("native/a-contract", ok),
+        ("native/b-compile", [sys.executable, "-c", "pass"]),
+        ("native/b-contract", ok),
+    ])
+    monkeypatch.setitem(simqa._NATIVE_GATE_DEPENDENCIES, "native/a-contract", "native/a-compile")
+    monkeypatch.setitem(simqa._NATIVE_GATE_DEPENDENCIES, "native/b-contract", "native/b-compile")
+    report = tmp_path / f"{name}.json"
+    monkeypatch.setattr(sys, "argv", [
+        "run_simulation_qa.py", "--expected-sha", expected, "--report", str(report), "--jobs", jobs,
+    ])
+    code = simqa.main()
+    return code, json.loads(report.read_text(encoding="utf-8"))
+
+
+def _without_timings(report: dict) -> dict:
+    report = json.loads(json.dumps(report))
+    report["totals"].pop("duration_s")
+    for item in report["results"]:
+        item.pop("duration_s")
+    return report
+
+
+def test_parallel_report_is_identical_to_sequential_apart_from_timings(
+        monkeypatch, tmp_path: Path) -> None:
+    sequential_code, sequential = _fixture_report(monkeypatch, tmp_path, "1", "sequential")
+    parallel_code, parallel = _fixture_report(monkeypatch, tmp_path, "4", "parallel")
+
+    assert sequential_code == parallel_code == 1
+    assert _without_timings(parallel) == _without_timings(sequential)
+    assert list(parallel) == list(sequential)                            # same schema, same key order
+    assert [item["name"] for item in parallel["results"]] == [
+        *(f"tests/test_fixture_{index}.py" for index in range(6)),
+        "native/a-compile", "native/a-contract", "native/b-compile", "native/b-contract",
+    ]
+    statuses = {item["name"]: item["status"] for item in parallel["results"]}
+    assert statuses["tests/test_fixture_2.py"] == "FAIL"
+    assert statuses["native/a-contract"] == "BLOCKED"                   # dependency kept under concurrency
+    assert statuses["native/b-contract"] == "PASS"
+    assert parallel["totals"]["failed_gates"] == 2 and parallel["totals"]["blocked_gates"] == 1
+    assert parallel["status"] == "FAIL"
+
+
+def test_parallel_jobs_run_gates_concurrently_through_the_patched_runner(monkeypatch) -> None:
+    # simulation.py substitutes _run; the pool must still call the substitute.
+    barrier = threading.Barrier(3, timeout=10)
+
+    def fake_run(name, command, cwd=simqa.ROOT, *, require_nonzero_count=False):
+        barrier.wait()                                                      # only passes if 3 run at once
+        return simqa.GateResult(name, command, 0, 0.0, 1, 0, 0, "", "")
+
+    monkeypatch.setattr(simqa, "_run", fake_run)
+    results = simqa._run_gates(["tests/c.py", "tests/a.py", "tests/b.py"], False, 3)
+
+    assert [item.name for item in results] == ["tests/c.py", "tests/a.py", "tests/b.py"]
+
+
+def test_one_job_runs_every_gate_sequentially_in_selection_order(monkeypatch) -> None:
+    order, active, peak = [], [0], [0]
+    lock = threading.Lock()
+
+    def fake_run(name, command, cwd=simqa.ROOT, *, require_nonzero_count=False):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+            order.append(name)
+        time.sleep(0.01)
+        with lock:
+            active[0] -= 1
+        return simqa.GateResult(name, command, 0, 0.0, 1, 0, 0, "", "")
+
+    monkeypatch.setattr(simqa, "_run", fake_run)
+    monkeypatch.setattr(simqa, "_native_gates", lambda _build: [("native/x", ["x"]), ("native/y", ["y"])])
+    results = simqa._run_gates(["tests/b.py", "tests/a.py"], True, 1)
+
+    assert peak[0] == 1
+    assert order == [item.name for item in results] == ["tests/b.py", "tests/a.py", "native/x", "native/y"]
+
+
+def test_default_jobs_is_one_per_cpu_and_never_zero(monkeypatch) -> None:
+    monkeypatch.setattr(simqa.os, "cpu_count", lambda: 3)
+    assert simqa.default_jobs() == 3
+    monkeypatch.setattr(simqa.os, "cpu_count", lambda: None)
+    assert simqa.default_jobs() == 1
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1"])
+def test_jobs_must_be_positive(monkeypatch, tmp_path: Path, jobs: str) -> None:
+    monkeypatch.setattr(sys, "argv", [
+        "run_simulation_qa.py", "--expected-sha", "a" * 40, "--only-native",
+        "--report", str(tmp_path / "report.json"), "--jobs", jobs,
+    ])
+    with pytest.raises(SystemExit, match="2"):
+        simqa.main()
+
+
+# --- Regression gate: parallelism and pull-request dedupe --------------------
+
+def _regression_fixture(monkeypatch, tmp_path: Path):
+    from scripts import test_replay_failure_fixes as gate
+    tests = tmp_path / "tests"
+    tests.mkdir(exist_ok=True)
+    paths = []
+    for index in range(5):
+        path = tests / f"test_case_{index}.py"
+        path.write_text("", encoding="utf-8")
+        paths.append(path)
+    monkeypatch.setattr(gate, "ROOT", tmp_path)
+    # Earlier modules finish last; module 3 fails.
+    monkeypatch.setattr(gate, "_command", lambda path: [
+        sys.executable, "-c",
+        f"import time; time.sleep({0.05 * (5 - paths.index(path))}); "
+        f"raise SystemExit({1 if path.name == 'test_case_3.py' else 0})"])
+    return gate, paths
+
+
+def _summary(output: str) -> list[str]:
+    return [line for line in output.splitlines()
+            if line.startswith(("Regression gate: ", "REGRESSION: ", "KNOWN FAILURE", "BASELINE"))
+            and "parallel jobs" not in line]
+
+
+def test_parallel_regression_gate_matches_the_sequential_verdict(monkeypatch, tmp_path, capfd) -> None:
+    gate, _paths = _regression_fixture(monkeypatch, tmp_path)
+
+    assert gate.main(["--jobs", "1"]) == 1
+    sequential = _summary(capfd.readouterr().out)
+    assert gate.main(["--jobs", "4"]) == 1
+    parallel = _summary(capfd.readouterr().out)
+
+    assert sequential == parallel == [
+        "Regression gate: 4/5 test modules passed", "REGRESSION: tests/test_case_3.py"]
+
+
+def test_regression_gate_rejects_nonpositive_jobs(monkeypatch, tmp_path) -> None:
+    gate, _paths = _regression_fixture(monkeypatch, tmp_path)
+    with pytest.raises(SystemExit, match="2"):
+        gate.main(["--jobs", "0"])
+
+
+def test_pull_request_regressions_run_exactly_what_simulation_qa_does_not(
+        monkeypatch, tmp_path, capfd) -> None:
+    gate, paths = _regression_fixture(monkeypatch, tmp_path)
+    covered = {f"tests/{path.name}" for path in paths if path.name != "test_case_3.py"}
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", covered)
+
+    assert gate._outside_simulation_qa(paths) == [tmp_path / "tests/test_case_3.py"]
+    assert gate.main(["--only-outside-simulation-qa", "--jobs", "2"]) == 1   # the uncovered failure still blocks
+    output = capfd.readouterr().out
+    assert "Regression gate: 0/1 test modules passed" in output
+    assert "REGRESSION: tests/test_case_3.py" in output
+
+    monkeypatch.setattr(simqa, "SAFE_FULL_TESTS", covered | {"tests/test_case_3.py"})
+    assert gate.main(["--only-outside-simulation-qa"]) == 0
+    assert "Regression gate: 0/0 test modules passed" in capfd.readouterr().out
+
+
+def test_real_manifest_leaves_no_module_to_either_gate_alone() -> None:
+    from scripts import test_replay_failure_fixes as gate
+    # Simulation QA's full profile runs every discovered module, so pull-request
+    # python-regressions has nothing left to repeat; a drift fails both gates.
+    assert gate._outside_simulation_qa(gate._tests()) == []
+
+
+def test_parallel_start_hint_changes_only_scheduling(monkeypatch) -> None:
+    started = []
+    lock = threading.Lock()
+
+    def fake_run(name, command, cwd=simqa.ROOT, *, require_nonzero_count=False):
+        with lock:
+            started.append(name)
+        return simqa.GateResult(name, command, 0, 0.0, 1, 0, 0, "", "")
+
+    monkeypatch.setattr(simqa, "_run", fake_run)
+    monkeypatch.setattr(simqa, "_START_FIRST", ("tests/z.py", "tests/not-selected.py"))
+    tests = ["tests/a.py", "tests/m.py", "tests/z.py"]
+    results = simqa._run_gates(tests, False, 1)
+    assert started == tests                                                 # --jobs 1: historical order
+    started.clear()
+    results = simqa._run_gates(tests, False, 2)
+    assert sorted(started) == sorted(tests)                                 # nothing added or dropped
+    assert [item.name for item in results] == tests                         # report keeps selection order
+    assert simqa._submission_order(tests) == ["tests/z.py", "tests/a.py", "tests/m.py"]   # long pole queued first

@@ -334,7 +334,7 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
     ])
 
 
-def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
+def simulation_tests(runner, python, *, allow_dirty=False, native_only=False, jobs=None):
     # Record dirty_allowed only when the tree is really dirty, so the final
     # distribution check (which derives it from meta["dirty"]) stays consistent.
     allow_dirty = bool(allow_dirty and git("status", "--porcelain", "--untracked-files=normal"))
@@ -402,6 +402,9 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
             command.append("--allow-dirty")
         if native_only:
             command.append("--only-native")
+        if jobs is not None:
+            # Concurrency only; every gate keeps its own process and state.
+            command.extend(["--jobs", str(jobs)])
         qa_env = dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
                       PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report),
                       BENCHMARK_GATE_REPORT=str(benchmark_report), BENCHMARK_GATE_SHA256=digest(benchmark_report),
@@ -1213,6 +1216,7 @@ def main():
     # `preview` = fast local install: full build/sign/validate/smoke, no QA gates, never publishable.
     p.add_argument("--strict-toolchain", action="store_true")
     p.add_argument("--build-number")
+    p.add_argument("--jobs", type=int, help="Concurrent Simulation QA gates (default: one per CPU; 1 = sequential)")
     p.add_argument("--output", type=Path)
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
@@ -1222,6 +1226,8 @@ def main():
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
+    if args.jobs is not None and args.jobs < 1:
+        p.error("--jobs must be at least 1")
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts" if args.command != "preview" else "SKIPPED for preview: Simulation QA, native/browser peer gates, benchmark contracts, distribution evidence", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
@@ -1281,7 +1287,7 @@ def main():
             lock(runner, args.offline)
         elif args.command == "swift":
             python = args.test_python.absolute() if args.test_python else bootstrap(runner, args.offline)
-            simulation_tests(runner, python, allow_dirty=args.allow_dirty, native_only=True)
+            simulation_tests(runner, python, allow_dirty=args.allow_dirty, native_only=True, jobs=args.jobs)
             build_swift(runner)
         else:
             if args.test_python and args.command != "test":
@@ -1296,7 +1302,7 @@ def main():
             if args.command == "bootstrap":
                 return 0
             if not preview:
-                simulation_tests(runner, python, allow_dirty=args.allow_dirty)
+                simulation_tests(runner, python, allow_dirty=args.allow_dirty, jobs=args.jobs)
             if packaging:
                 binary = build_swift(runner)
                 output = (args.output or ROOT / "dist" / f"{meta['version']}-{meta['build_number']}-{meta['commit'][:12]}{'-preview' if preview else ''}").resolve()
