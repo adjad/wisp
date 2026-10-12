@@ -9,7 +9,6 @@ All notable changes to Wisp are documented here.
 ### Added
 
 - Added proactive attention: Wisp watches incoming messages for plans or commitments that aren't on your calendar ("Can we do Thursday at 3?") and, in shadow mode (the default), records what it would do without acting. Opting in to live mode creates a verified Apple Reminder for each one, at most 3 a day, never 22:00–08:00, only when Wisp's safety policy allows the write (view-only blocks it), with Undo that only removes what Wisp created. Message quotes are cleared from its ledger after 7 days.
-- Added model-led routing and tool selection behind `WISP_MODEL_LED_ROUTING=1` (off by default): the local model picks tools from a capability catalog instead of the rules router. Remote/Aria builds, behavior questions and literal inputs keep the rules router; sends still always confirm.
 - Added `./scripts/wisp-build preview`: an installable, ad-hoc-signed preview build in minutes (no Simulation QA), never eligible for release.
 
 ### Changed
