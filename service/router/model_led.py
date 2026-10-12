@@ -28,6 +28,9 @@ READ_CATEGORIES = frozenset({
 PRIVATE_EGRESS_TOOLS = frozenset({
     "web_search", "web_fetch", "http_request", "run_shell", "run_applescript",
 })
+# Public-web egress that must not follow a private read unless the current
+# request explicitly asks for a public lookup.
+PRIVATE_WEB_TOOLS = frozenset({"web_search", "web_fetch", "http_request"})
 OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript",
                                     "create_tool", "http_request", "place_call"})
 BUILTIN_COMPLETION_MODULES = {

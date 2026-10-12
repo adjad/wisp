@@ -203,3 +203,34 @@ Delivery must reconcile current `main`, freeze and push one candidate, then bind
 mechanical validation, configured CI and independent risk review to that exact
 SHA. The original preview's passing evidence does not qualify this successor.
 Installation, model activation and release publication are separate actions.
+
+## Legacy behaviour changes carried by this branch
+
+Two changes reach the default (routing-off) path and are intentional:
+
+- `service/router/semantic.py` `_gate_open`: a request that begins with
+  "uninstall X" (optionally prefixed by "please" or "can/could/would you") now
+  opens the file-action tool gate, so the semantic retriever may offer file tools
+  for it. Previously only the file-action pattern or an explicit writing intent
+  did.
+- `service/tools/imessage_tools.py` `_match_conversation`: the "Messages are
+  refreshing conversation identities" check now also covers fuzzy contact
+  matches. A fuzzy match containing a conversation with no identity yet returns
+  the refresh message instead of resolving to it.
+
+## Audit-repair round on the 1.2.5 rebase
+
+- F1: the legacy claims (`claim_effect_call`, `claim_workflow_effect`) are blocked
+  only by an unresolved model-led effect, as in 1.2.5. The session-wide barrier
+  over earlier legacy plans applies to `claim_model_effect` only, so an earlier
+  failed, cancelled, superseded or denied plan no longer blocks an unrelated typed
+  effect with routing off.
+- F2: in a model-led turn, after the private-read signal, `web_search`,
+  `web_fetch` and `http_request` are denied for the rest of the turn unless the
+  current request itself is an explicit public lookup.
+- F3: in model-led turns, `OPAQUE_OUTBOUND_TOOLS` always require confirmation,
+  including under full access and standing grants. A validated read-only
+  `run_shell` argv (the existing private-shell read path) is exempt.
+- F4: `POST /sessions/{sid}/effects/resolve` (optional `{"effect_id": ...}`) lets
+  the user mark running or uncertain model effects as checked. It lifts the
+  session barrier only; the consumed claim stays, so nothing is re-run.

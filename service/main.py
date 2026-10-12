@@ -2436,6 +2436,21 @@ async def delete_session(sid: str) -> dict[str, Any]:
     return {"ok": True}
 
 
+@app.post("/sessions/{sid}/effects/resolve")
+async def resolve_session_effects(sid: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The user confirms they checked the outcome of an unverified action.
+
+    Lifts the session barrier left by an uncertain model-proposed effect. It
+    never re-runs anything; the earlier claim stays consumed.
+    """
+    if not store.get_session(sid):
+        raise HTTPException(status_code=404, detail="unknown session")
+    effect_id = (body or {}).get("effect_id")
+    if effect_id is not None and not isinstance(effect_id, str):
+        raise HTTPException(status_code=422, detail="effect_id must be a string")
+    return {"ok": True, "resolved": store.resolve_model_effects(sid, effect_id)}
+
+
 # ---------------------------------------------------------------------------
 # Assistant layer — commitments (calendar/manual), reminders, the notch chip.
 # ---------------------------------------------------------------------------

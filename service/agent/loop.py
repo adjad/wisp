@@ -1360,13 +1360,52 @@ async def run_agent(
                     or classify_shell_context(m["content"]).private))
                 for m in messages))
 
+    # The current request's own words decide whether a public lookup was asked
+    # for. Computed once from the incoming messages, never from tool output.
+    current_public_lookup = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_public_lookup
+        _last_user = next((m.get("content") for m in reversed(messages)
+                           if isinstance(m, dict) and m.get("role") == "user"
+                           and isinstance(m.get("content"), str)), "")
+        try:
+            current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
+        except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
+            current_public_lookup = False
+
+    def private_web_problem(tool):
+        """Once private data is in context, public egress needs explicit intent."""
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        if private_shell_read_only and tool.name in PRIVATE_WEB_TOOLS and not current_public_lookup:
+            return ("Private data was read in this turn; web access is unavailable "
+                    "unless the request explicitly asks for a public lookup.")
+        return None
+
     def tool_policy(tool, args):
         if private_shell_read_only:
             from service.tools.registry import private_shell_problem
             if problem := private_shell_problem(tool, args):
                 from service.safety.policy import Decision
                 return Decision(Tier.DENY, problem)
-        return decide(tool.category, args, tool=tool.name)
+            if problem := private_web_problem(tool):
+                from service.safety.policy import Decision
+                return Decision(Tier.DENY, problem)
+        dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
+            if tool.name in OPAQUE_OUTBOUND_TOOLS and not _validated_shell_read(tool, args):
+                # Full access and standing grants do not cover actions whose
+                # real-world effect the host cannot inspect.
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "opaque outbound action chosen by the model: "
+                                "confirmation is always required in model-led routing")
+        return dec
+
+    def _validated_shell_read(tool, args):
+        if tool.name != "run_shell":
+            return False
+        from service.safety.policy import read_only_shell_argv
+        return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
 
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
@@ -1379,7 +1418,7 @@ async def run_agent(
         # Recheck after any approval/await or registry mutation, before claims.
         if private_shell_read_only:
             from service.tools.registry import private_shell_problem
-            if problem := private_shell_problem(tool, args):
+            if problem := private_shell_problem(tool, args) or private_web_problem(tool):
                 return f"(error: {problem} The tool was NOT run.)"
         claim = None
         if model_led_discovery:

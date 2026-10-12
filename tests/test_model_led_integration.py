@@ -437,3 +437,75 @@ def test_private_shell_metadata_or_code_copy_does_not_gain_exception(synthetic, 
     result = asyncio.run(registry.run_tool(tool, {"cmd": "pwd"}, private_shell_read_only=True))
     assert "NOT run" in result
     assert not calls
+
+
+# Round-2 audit repairs: model-led-only egress and opaque-outbound confirmation.
+def _web_tools(register):
+    for name in ("web_search", "web_fetch"):
+        register(name, "web_tools", "web_read", parameters={"type": "object", "properties": {
+            "query": {"type": "string"}, "url": {"type": "string"}}})
+    register("http_request", "action_tools", "network_write", parameters={"type": "object", "properties": {
+        "url": {"type": "string"}}})
+
+
+@pytest.mark.parametrize("web", ["web_search", "web_fetch", "http_request"])
+def test_private_read_denies_public_web_for_rest_of_turn(synthetic, web):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(True)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", web])],
+        [call("view_messages")], [call(web, query="Sarah", url="https://example.invalid")],
+        "Synthetic reply."], prompt="what did Sarah text me", approval=approval)
+    assert [name for name, _ in effects] == ["view_messages"]
+    assert not approval.calls
+    denied = [e for e in events if e["type"] == "tool_call" and e["name"] == web]
+    if web != "http_request":  # a network write is also refused earlier, with no policy card
+        assert denied and denied[0]["decision"] == "deny"
+
+
+def test_private_read_sibling_web_call_in_same_response_is_denied(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
+        [call("view_messages"), call("web_search", query="Sarah")], "Synthetic reply."],
+        prompt="what did Sarah text me", approval=Approval(True))
+    assert [name for name, _ in effects] == ["view_messages"]
+
+
+def test_explicit_public_lookup_request_keeps_web_after_private_read(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
+        [call("view_messages")], [call("web_search", query="Sarah Connor news")], "Synthetic reply."],
+        prompt="search the web for Sarah Connor news", approval=Approval(True))
+    assert [name for name, _ in effects] == ["view_messages", "web_search"]
+
+
+@pytest.mark.parametrize("name", ["run_shortcut", "place_call"])
+@pytest.mark.parametrize("model_led", [True, False])
+def test_opaque_outbound_always_confirms_in_model_led_even_with_full_access(synthetic, monkeypatch, name, model_led):
+    effects, register = synthetic
+    register(name, "shortcuts_bridge", "app_control", parameters={"type": "object", "properties": {
+        "name": {"type": "string"}}})
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    monkeypatch.setattr("service.safety.grants.check", lambda *args: "allow")
+    approval = Approval(False)
+    script = ([[call(DISCOVERY_TOOL, families=["automation"], tools=[name])]] if model_led else []) + [
+        [call(name, name="fixture")], "Synthetic reply."]
+    _, events, _ = run(script, prompt="Run my fixture shortcut", approval=approval,
+                       model_led_discovery=model_led, tools=[] if model_led else [name])
+    if model_led:
+        assert len(approval.calls) == 1 and approval.calls[0]["tool"] == name
+        assert not effects  # denial leaves the opaque action unrun
+    else:
+        assert not approval.calls  # legacy behaviour unchanged
+        assert [n for n, _ in effects] == [name]
+
+
+def test_validated_shell_read_is_not_forced_to_confirm_by_opaque_rule(synthetic, monkeypatch):
+    monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["automation"], tools=["run_shell"])],
+         [call("run_shell", cmd="pwd")], "Synthetic reply."], prompt="Print my working directory",
+        approval=approval)
+    assert not approval.calls

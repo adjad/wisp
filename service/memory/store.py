@@ -441,7 +441,8 @@ class SessionStore:
                 # or overwrite a newer revision in another process.
                 self._db.execute("BEGIN IMMEDIATE")
                 owner = self._db.execute("SELECT session_id FROM workflows WHERE id=?", (plan_id,)).fetchone()
-                if owner and self._unresolved_action_locked(owner["session_id"], exclude=plan_id):
+                if owner and self._unresolved_action_locked(
+                        owner["session_id"], exclude=plan_id, model_effects_only=True):
                     self._db.commit()
                     return False
                 if revision is None:
@@ -473,7 +474,7 @@ class SessionStore:
         with self._lock:
             try:
                 self._db.execute("BEGIN IMMEDIATE")
-                if self._unresolved_action_locked(sid, exclude=plan_id):
+                if self._unresolved_action_locked(sid, exclude=plan_id, model_effects_only=True):
                     self._db.commit()
                     return False
                 changed = self._db.execute(
@@ -561,6 +562,30 @@ class SessionStore:
                 raise
         return bool(changed)
 
+    def resolve_model_effects(self, sid: str, effect_id: str | None = None) -> int:
+        """User attests they checked the destination of unverified model effects.
+
+        Moves running/uncertain model effects to a terminal state so they stop
+        blocking the session. The consumed claim stays in place: it is never
+        a retry token, only the barrier is lifted. Returns the number resolved.
+        """
+        sql = ("UPDATE workflows SET status='completed', "
+               "state_json=json_set(state_json,'$.status','resolved','$.resolved_by_user',json('true')), "
+               "updated_at=? WHERE session_id=? AND kind='model_led_effect' "
+               "AND status IN ('running','uncertain')")
+        params: list = [time.time(), sid]
+        if effect_id is not None:
+            sql += " AND id=?"
+            params.append(effect_id)
+        with self._lock:
+            try:
+                changed = self._db.execute(sql, params).rowcount
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return int(changed)
+
     def pending_model_effects(self, sid: str) -> list[dict]:
         """Bounded factual recovery context, never replay instructions/arguments."""
         with self._lock:
@@ -572,13 +597,17 @@ class SessionStore:
                  "status": state["status"], "outbound": state["outbound"]} for row in rows]
 
     def _unresolved_action_locked(self, sid: str, *, tool: str | None = None,
-                                  outbound: bool = True, exclude: str | None = None) -> dict | None:
-        """One unresolved-action barrier shared by model and legacy owners.
+                                  outbound: bool = True, exclude: str | None = None,
+                                  model_effects_only: bool = False) -> dict | None:
+        """Unresolved-action barrier for model-proposed effects.
 
         Caller holds the connection lock/transaction. Unknown external effects
         block retargeting; uncertain same-tool mutations block argument changes.
-        Legacy owners with consumed claims remain blocking until a verified
-        terminal result, independent of routing mode or age.
+        Legacy owners with consumed claims block a NEW model-proposed effect
+        until a verified terminal result, independent of age. Legacy claim
+        paths pass model_effects_only=True: they are blocked only by an
+        unresolved model effect, never by an unrelated earlier legacy plan in
+        the same session (that restores the 1.2.5 per-plan claim semantics).
         """
         rows = self._db.execute(
             "SELECT id,kind,status,state_json FROM workflows WHERE session_id=? "
@@ -592,6 +621,8 @@ class SessionStore:
                         (tool is None or state.get("tool") == tool or
                          (outbound and state.get("outbound")))):
                     return dict(row)
+            elif model_effects_only:
+                continue
             elif self._db.execute(
                     "SELECT 1 FROM task_effect_claims WHERE plan_id=? LIMIT 1", (row["id"],)).fetchone():
                 return dict(row)

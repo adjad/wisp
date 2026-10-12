@@ -199,13 +199,57 @@ def test_consumed_cancelled_legacy_attempt_survives_reopen_and_mode_switch(owned
         for tool, args in [("send_message", {"to": "Fixture"}), ("send_message", {"to": "Changed"}),
                            ("send_email", {"to": "changed@example.invalid"})]:
             assert not other.claim_model_effect(sid, "new", tool, args, outbound=True)["admitted"]
+        # A new typed plan is its own owner (1.2.5 semantics): the earlier
+        # legacy attempt blocks only NEW model-proposed effects, never another
+        # legacy plan's claim, in any routing mode.
         fresh = WorkflowPlan(status="running", channel="email", recipient="Changed", revision=1)
         other.save_workflow(sid, fresh.to_dict())
-        assert not other.claim_workflow_effect(sid, fresh.id, "fresh-outbound", revision=1)
-        assert not other.claim_effect_call(fresh.id, "fresh-task-call", revision=1)
-        assert other._db.execute("SELECT count(*) FROM task_effect_claims").fetchone()[0] == 1
+        assert other.claim_workflow_effect(sid, fresh.id, "fresh-outbound", revision=1)
+        assert other.claim_effect_call(fresh.id, "fresh-task-call", revision=1)
+        assert other._db.execute("SELECT count(*) FROM task_effect_claims").fetchone()[0] == 3
     finally:
         other._db.close()
+
+
+@pytest.mark.parametrize("mode", [None, "0", "1"])
+@pytest.mark.parametrize("final", ["failed", "cancelled", "superseded", "denied"])
+def test_earlier_failed_plan_does_not_block_unrelated_typed_effect(owned_store, monkeypatch, mode, final):
+    """Routing OFF default path: t1 consumed a claim then ended; unrelated t2 still runs."""
+    from service.workflows.models import WorkflowPlan
+    if mode is None:
+        monkeypatch.delenv("WISP_MODEL_LED_ROUTING", raising=False)
+    else:
+        monkeypatch.setenv("WISP_MODEL_LED_ROUTING", mode)
+    store, sid = owned_store
+    t1 = WorkflowPlan(status="running", channel="messages", recipient="One", revision=1)
+    store.save_workflow(sid, t1.to_dict())
+    assert store.claim_workflow_effect(sid, t1.id, f"workflow_effect:{t1.id}", revision=1)
+    t1.status = final
+    store.save_workflow(sid, t1.to_dict())
+    t2 = WorkflowPlan(status="running", channel="email", recipient="Two", revision=1)
+    store.save_workflow(sid, t2.to_dict())
+    assert store.claim_effect_call(t2.id, "t2-call", revision=1)
+    assert store.claim_workflow_effect(sid, t2.id, f"workflow_effect:{t2.id}", revision=1)
+
+
+def test_unresolved_model_effect_still_blocks_legacy_claims_until_user_resolves(owned_store):
+    from service.workflows.models import WorkflowPlan
+    store, sid = owned_store
+    first = store.claim_model_effect(sid, "one", "send_message", {"to": "A"}, outbound=True)
+    assert first["admitted"] and store.finish_model_effect(sid, first, verified=False)
+    plan = WorkflowPlan(status="running", channel="email", recipient="Two", revision=1)
+    store.save_workflow(sid, plan.to_dict())
+    assert not store.claim_effect_call(plan.id, "call", revision=1)
+    assert not store.claim_workflow_effect(sid, plan.id, "wf", revision=1)
+    assert not store.claim_model_effect(sid, "two", "send_email", {"to": "B"}, outbound=True)["admitted"]
+    # Explicit user resolution lifts the barrier without re-running anything.
+    assert store.resolve_model_effects(sid, "model_effect:unknown") == 0
+    assert store.resolve_model_effects(sid) == 1
+    assert not store.pending_model_effects(sid) and not store.unresolved_action(sid)
+    assert store._db.execute("SELECT count(*) FROM task_effect_claims WHERE plan_id=?",
+                             (first["effect_id"],)).fetchone()[0] == 1  # claim stays consumed
+    assert store.resolve_model_effects(sid) == 0
+    assert store.claim_effect_call(plan.id, "call", revision=1)
 
 
 @pytest.mark.parametrize("status,claimed", [("cancelled", False), ("denied", False), ("completed", True)])
@@ -458,3 +502,23 @@ def test_window_receipts_match_actual_builtin_actions(text):
     from service.router.model_led import trusted_effect_receipt
     assert trusted_effect_receipt(SimpleNamespace(name="window_control"),
         SimpleNamespace(status="succeeded", effect="read", text=text))
+
+
+def test_resolve_endpoint_lifts_uncertain_barrier_only_on_explicit_request(owned_store, monkeypatch):
+    import asyncio
+    from fastapi import HTTPException
+    from service import main
+    store, sid = owned_store
+    monkeypatch.setattr(main, "store", store)
+    claim = store.claim_model_effect(sid, "one", "place_call", {"to": "A"}, outbound=True)
+    store.finish_model_effect(sid, claim, verified=False)
+    assert store.pending_model_effects(sid)
+    with pytest.raises(HTTPException) as unknown:
+        asyncio.run(main.resolve_session_effects("missing-session", None))
+    assert unknown.value.status_code == 404
+    with pytest.raises(HTTPException) as bad:
+        asyncio.run(main.resolve_session_effects(sid, {"effect_id": 7}))
+    assert bad.value.status_code == 422
+    assert store.pending_model_effects(sid)  # nothing resolved by rejected requests
+    assert asyncio.run(main.resolve_session_effects(sid, {"effect_id": claim["effect_id"]})) == {"ok": True, "resolved": 1}
+    assert not store.pending_model_effects(sid) and not store.unresolved_action(sid)
