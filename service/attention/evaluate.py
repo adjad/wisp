@@ -10,18 +10,11 @@ The report holds counts and ids only, never message text, so it is safe to paste
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Callable
 
 from service.attention.corpus import Item, Snapshot, has_cue
 from service.attention.labels import NEGATIVE, POSITIVE
-
-
-@dataclass(frozen=True)
-class Prediction:
-    alert: bool
-    reason: str | None = None       # reason code, for per-detector reporting
-
+from service.attention.prediction import Prediction
 
 Predictor = Callable[[Item, Snapshot], Prediction]
 
@@ -35,7 +28,13 @@ def cue_baseline(item: Item, snapshot: Snapshot) -> Prediction:
     return Prediction(item.direction == "incoming" and has_cue(item.text), "cue")
 
 
-PREDICTORS: dict[str, Predictor] = {"never": never, "cue_baseline": cue_baseline}
+def _registry() -> dict[str, Predictor]:
+    from service.attention.detectors import uncaptured_commitment
+    return {"never": never, "cue_baseline": cue_baseline,
+            "uncaptured_commitment": uncaptured_commitment}
+
+
+PREDICTORS: dict[str, Predictor] = _registry()
 
 
 def _ratio(num: int, den: int) -> float | None:
@@ -49,6 +48,7 @@ def evaluate(snapshot: Snapshot, sample: list[dict], labels: dict[str, dict],
     fp_by_label: dict[str, int] = {}
     fp_ids: list[str] = []
     fn_ids: list[str] = []
+    fn_blocked: dict[str, int] = {}          # which gate caused each missed commitment
     by_reason: dict[str, dict[str, int]] = {}
     strata: dict[str, dict[str, int]] = {}
     unlabelled = skipped = 0
@@ -83,6 +83,8 @@ def evaluate(snapshot: Snapshot, sample: list[dict], labels: dict[str, dict],
         elif positive:
             fn += 1
             fn_ids.append(item.id)
+            gate = pred.blocked_by or "unspecified"
+            fn_blocked[gate] = fn_blocked.get(gate, 0) + 1
         else:
             tn += 1
 
@@ -99,6 +101,7 @@ def evaluate(snapshot: Snapshot, sample: list[dict], labels: dict[str, dict],
         "tp": tp, "fp": fp, "fn": fn, "tn": tn,
         "precision": _ratio(tp, tp + fp), "recall": _ratio(tp, tp + fn),
         "false_alerts_by_label": {k: fp_by_label.get(k, 0) for k in NEGATIVE if fp_by_label.get(k)},
+        "missed_by_gate": fn_blocked,
         "by_reason": by_reason, "strata": strata,
         "prefilter": {"control_missing_rate": miss_rate,
                       "estimated_missed": round(miss_rate * rejected, 1) if miss_rate is not None else None,

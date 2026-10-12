@@ -56,7 +56,7 @@ os.environ["WISP_QA_SEED"] = "1"
 
 from service.assistant.store import QA_SEED_SOURCE, assistant_store  # noqa: E402
 from service.assistant import attention_demo  # noqa: E402
-from service.attention import detectors  # noqa: E402
+from service.attention import catch_rules  # noqa: E402
 from service.paths import MOE_DIR  # noqa: E402
 from tests.fixtures import persona  # noqa: E402
 
@@ -181,7 +181,7 @@ def cmd_drop(a: argparse.Namespace) -> None:
     row = attention_demo.add_overlay_message(sender, text,
         direction="outgoing" if a.preset == "outgoing" else "incoming")
     item = [i for i in attention_demo.load_overlay() if i.id == attention_demo.OVERLAY_ID_PREFIX + row["id"]]
-    hits = detectors.detect(item, now=time.time(), commitments=assistant_store.active_future(time.time(), 3))
+    hits = catch_rules.detect(item, now=time.time(), commitments=assistant_store.active_future(time.time(), 3))
     print(f'delivered: {sender}: "{text}"')
     print("expected: " + (f"rule alert within ~30 s ({_fmt_clock(hits[0].when_ts)} added to Wisp's schedule)"
                           if hits else PRESETS[a.preset][2] if not a.text
@@ -419,7 +419,8 @@ def drop_cleanup_script(container: str = "Wisp Demo") -> str:
     """AppleScript deleting ONLY the events `drop` added to the ``container``
     calendar (description carries a ``[wisp-demo-id:drop-…]`` marker). Seeded
     persona events and every other calendar are left alone. Uids are collected
-    first, so deleting never shifts the list being walked. Uids and descriptions
+    first, so deleting never shifts the list being walked, and each event's marker is
+    re-checked by uid right before it is deleted (the bulk lists are paired by index). Uids and descriptions
     are each fetched in ONE bulk Apple event and walked as plain lists; looping
     ``repeat with ev in (every event … whose …)`` would re-run the filtered query
     for every property read (quadratic, timed out on ~200 events)."""
@@ -446,8 +447,12 @@ def drop_cleanup_script(container: str = "Wisp Demo") -> str:
             "\t\tend repeat\n"
             "\t\trepeat with u in doomed\n"
             "\t\t\ttry\n"
-            "\t\t\t\tdelete (first event of wispCal whose uid is (contents of u))\n"
-            "\t\t\t\tset removedCount to removedCount + 1\n"
+            "\t\t\t\tset ev to first event of wispCal whose uid is (contents of u)\n"
+            "\t\t\t\tset d2 to description of ev\n"
+            "\t\t\t\tif d2 is not missing value and d2 contains " + seed.as_string(DROP_MARKER) + " then\n"
+            "\t\t\t\t\tdelete ev\n"
+            "\t\t\t\t\tset removedCount to removedCount + 1\n"
+            "\t\t\t\tend if\n"
             "\t\t\tend try\n"
             "\t\tend repeat\n"
             "\tend if\n"
