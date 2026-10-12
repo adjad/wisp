@@ -224,6 +224,8 @@ ADDITIONAL_FULL_TESTS = {
     # Wiring and endpoints with faked feed, reminder tool, hub and store reads, and MOE_DIR
     # redirected to a temp dir. An in-process TestClient only; no listener or network.
     "tests/test_attention_wiring.py",
+    # Catch/runner dedupe guard: temp stores and ledger, fakes for every effect.
+    "tests/test_attention_dedupe.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",

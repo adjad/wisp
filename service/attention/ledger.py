@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-STATES = ("shadow", "claimed", "created", "failed", "unknown", "capped", "already_on_file", "undone")
+STATES = ("shadow", "claimed", "created", "failed", "unknown", "capped", "already_on_file", "handled_elsewhere", "undone")
 STALE_CLAIM_S = 300
 
 
@@ -83,6 +83,12 @@ class Ledger:
     def get(self, source_id: str) -> dict | None:
         row = self._db.execute("SELECT * FROM actions WHERE source_id=?", (source_id,)).fetchone()
         return _row(row) if row else None
+
+    def holds_effect(self, source_id: str) -> bool:
+        """True when this message was claimed for a real action that may exist (not shadow, not
+        a verified failure). The other attention path must leave such a message alone."""
+        row = self._db.execute("SELECT state FROM actions WHERE source_id=?", (source_id,)).fetchone()
+        return bool(row) and row[0] in ("claimed", "created", "unknown", "undone")
 
     def known(self, source_ids: list[str]) -> set[str]:
         found: set[str] = set()

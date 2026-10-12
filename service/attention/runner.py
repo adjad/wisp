@@ -51,6 +51,7 @@ class Outcomes(list):
 Create = Callable[[Plan], Awaitable[dict]]            # -> {"ok": bool, "status": str, "error": str}
 Publish = Callable[[dict], Awaitable[None]]
 Commitments = Callable[[], list[dict]]
+Handled = Callable[[str], bool]                       # message id -> another path already acted on it
 NameFor = Callable[[str], "str | None"]               # a phone/email handle -> contact name
 
 
@@ -64,7 +65,8 @@ class Outcome:
 
 async def process(*, records: list[dict], commitments: list[dict], now: float, tz: str,
                   settings: Settings, ledger: Ledger, create: Create, publish: Publish,
-                  fresh_commitments: Commitments, name_for: NameFor | None = None) -> Outcomes:
+                  fresh_commitments: Commitments, name_for: NameFor | None = None,
+                  handled_elsewhere: Handled | None = None) -> Outcomes:
     outcomes: Outcomes = Outcomes()
     if settings.mode == "off":
         # Remember that it was off. Resuming live afterwards must re-baseline, or the messages
@@ -117,6 +119,14 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         if ledger.count_since(local_midnight(now, tz), CAP_STATES, exclude=item.id) >= settings.daily_cap:
             ledger.finish(item.id, "capped", detail, now)
             outcomes.append(Outcome(item.id, "capped", plan.title, detail))
+            continue
+
+        # The Catch demo path keys its commitment by this message. If it already acted, this
+        # path must not make a second reminder. The check and the claim above have no await
+        # between them, so the two paths cannot interleave.
+        if handled_elsewhere is not None and handled_elsewhere(item.id):
+            ledger.finish(item.id, "handled_elsewhere", detail, now)
+            outcomes.append(Outcome(item.id, "handled_elsewhere", plan.title, detail))
             continue
 
         # The calendar may have changed since the tick began (the user may have just added it).
