@@ -500,7 +500,34 @@ async def _run_aria_demo_tool(tool: Tool, args: dict) -> str:
         return f"(error running {tool.name}: {e})"
 
 
-async def run_tool(tool: Tool, args: dict) -> str:
+def private_shell_target(tool: Tool) -> bool:
+    """Recognize the named/category shell and aliases of its original code."""
+    from service.tools.builtin import _PRIVATE_SHELL_DISPATCH
+    original, code, _, _ = _PRIVATE_SHELL_DISPATCH
+    return (tool.name == "run_shell" or tool.category == "shell"
+            or tool.func is original or getattr(tool.func, "__code__", None) is code)
+
+
+def private_shell_implementation(tool: Tool) -> bool:
+    from service.tools.builtin import _PRIVATE_SHELL_DISPATCH
+    original, code, runner, runner_code = _PRIVATE_SHELL_DISPATCH
+    return (tool.name == "run_shell" and tool.category == "shell" and tool.func is original
+            and getattr(original, "__code__", None) is code
+            and getattr(runner, "__code__", None) is runner_code)
+
+
+def private_shell_problem(tool: Tool, args: dict) -> str | None:
+    if not private_shell_target(tool):
+        return None
+    from service.safety.policy import read_only_shell_argv
+    if not private_shell_implementation(tool):
+        return "Private context permits only the original builtin shell read implementation."
+    if set(args) != {"cmd"} or read_only_shell_argv(args.get("cmd")) is None:
+        return "Private context permits only validated local shell reads; no overrides, composition or private paths."
+    return None
+
+
+async def run_tool(tool: Tool, args: dict, *, private_shell_read_only: bool = False) -> str:
     """Runs the tool and returns its result as a tool_result string.
 
     Previously an unhandled exception here (missing/misnamed/wrong-typed
@@ -518,6 +545,20 @@ async def run_tool(tool: Tool, args: dict) -> str:
             return ("This tool needs Wisp's on-Mac models or extensions, which this "
                     "remote-inference build does not run; nothing was executed.")
         return "This action is unavailable in the four-read remote-only demo; nothing was executed."
+
+    def normalize_result(res):
+        # Preserve the existing display-only/public-source separation first.
+        if (type(res) is _OutboundUnknownResult or _valid_message_draft(res, tool.name)
+                or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
+            return res
+        from service.router.model_led import BuiltinCompletion, authoritative_builtin, effectful_call
+        if (type(res) is BuiltinCompletion and res.tool_name == tool.name
+                and authoritative_builtin(tool)
+                and type(res.completion_code) is int
+                and res.phase == ("mutation" if effectful_call(tool, args) else "read")):
+            return res
+        return str(res)
+
     if tool.unavailable_reason:
         return tool.unavailable_reason
     from service.inference.remote_policy import aria_demo_mode
@@ -551,21 +592,23 @@ async def run_tool(tool: Tool, args: dict) -> str:
         # not the parallel-tool-execution work that was built, measured and
         # reverted (see the block comment in agent/loop.py). Still exactly one
         # tool at a time, and nothing here touches oMLX.
+        if private_shell_read_only:
+            if problem := private_shell_problem(tool, args):
+                return f"(error: {problem} The tool was NOT run.)"
+            if private_shell_target(tool):
+                from service.tools.builtin import _PRIVATE_SHELL_DISPATCH
+                runner = _PRIVATE_SHELL_DISPATCH[2]
+                # Snapshot the sole immutable argument before the worker wait.
+                return normalize_result(await asyncio.to_thread(runner, args["cmd"]))
         if inspect.iscoroutinefunction(tool.func):
             res = await tool.func(**args)
-            if (type(res) is _OutboundUnknownResult or _valid_message_draft(res, tool.name)
-                    or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
-                return res
-            return str(res)
+            return normalize_result(res)
         res = await asyncio.to_thread(tool.func, **args)
         # A sync function can still RETURN an awaitable (a plain `def` that
         # hands back a coroutine); to_thread only resolves the call itself.
         if inspect.isawaitable(res):
             res = await res
-        if (type(res) is _OutboundUnknownResult or _valid_message_draft(res, tool.name)
-                    or isinstance(res, (DisplayOnlyToolResult, PublicSearchToolResult))):
-            return res
-        return str(res)
+        return normalize_result(res)
     except TypeError as e:
         return (f"(error calling {tool.name}({args!r}): {e}. "
                 f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")

@@ -570,7 +570,7 @@ def test_engine_down_gives_the_same_user_visible_failure(engine):
     assert "health" in engine.fake.sequence()           # the full start path still ran
 
 
-def test_missing_model_fails_the_same_way(engine, instant_sleep):
+def test_missing_model_fails_the_same_way(engine):
     engine.fake.installed = [OTHER]
     engine.fake.loaded = set()
     real = engine.client.ensure_only
