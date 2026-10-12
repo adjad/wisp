@@ -783,6 +783,19 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
 # unloaded the model.
 _MAX_TOOL_RESULT_CHARS = 12000
 
+# open_app targets: any URI scheme is egress-capable; only a bare path (/ or ~)
+# is a local file. Leading whitespace and case are ignored.
+_URI_SCHEME_RE = re.compile(r"\s*[A-Za-z][A-Za-z0-9+.-]*:")
+_BROWSER_APP_RE = re.compile(
+    r"\b(?:safari|chrome|chromium|firefox|arc|edge|brave|opera|vivaldi|orion)\b", re.I)
+_BROWSER_DOC_RE = re.compile(r"\.(?:html?|xhtml|shtml|svg|webarchive|mht|mhtml)\s*$", re.I)
+
+
+def _opens_in_browser(app_name: str, target: str) -> bool:
+    """A local file that a browser would render (and so could run or fetch)."""
+    return bool(_BROWSER_APP_RE.search(app_name or "") or _BROWSER_DOC_RE.search(target or ""))
+
+
 # Tool names as they're written in the prompt: `send_email`, `get_upcoming`.
 _PROMPT_TOOL_RE = re.compile(r"`([a-z_][a-z0-9_]*)`")
 
@@ -1232,6 +1245,14 @@ async def run_agent(
     # below — so callers get the plan for free from the existing event
     # stream, no separate return path needed.
     test_mode: bool = False,
+    model_led_discovery: bool = False,
+    # Host-only negative provenance, computed before session history is trimmed.
+    # HTTP body/model arguments never set this; False cannot clear other inputs.
+    private_shell_history: bool | None = None,
+    claim_effect: Callable[[object, dict], dict] | None = None,
+    finish_effect: Callable[[dict, bool], bool] | None = None,
+    require_fresh_personal: bool = False,
+    fresh_personal_scope: dict | None = None,
     # Whether to emit raw_model_io events (see _run_step) — the full request
     # (messages + every offered tool schema) and response, on every attempt of
     # every step. Real cost: measured up to ~1.6MB for a single session. The
@@ -1335,15 +1356,251 @@ async def run_agent(
         from service.tools.registry import routable_tool_names
         tools = sorted(routable_tool_names() - {"plan_meeting", "commit_private_meeting"})
 
+    # Monotonic negative authority. main supplies actual pre-trimming session
+    # provenance; other callers conservatively retain assistant/tool/system
+    # context. A new invocation in an existing conversation is not a reset.
+    private_shell_read_only = False
+    history_private = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_shell_context
+        history_private = (private_shell_history is not None and private_shell_history is not False
+            or any(
+                not isinstance(m, dict)
+                or m.get("role") in {"assistant", "tool"}
+                or m.get("role") not in {"user", "system"}
+                or (m.get("role") == "system" and private_shell_history is not False)
+                or (m.get("role") == "user" and (
+                    not isinstance(m.get("content"), str)
+                    or classify_shell_context(m["content"]).private))
+                for m in messages))
+        private_shell_read_only = history_private
+
+    # Turn-START private signal for web egress: actual private content in the
+    # history or remembered facts. It is assigned once, after the memory block
+    # is built (below), and never mutated during the turn. Merely offering the
+    # messages tools or carrying the identity block is not private content.
+    private_at_start = False
+    # In-turn latch: set by ANY private read made during this turn. The
+    # explicit-public-lookup exemption never covers it.
+    private_read_in_turn = False
+    confirmed_private_web: set[str] = set()
+    typed_hosts: set[str] = set()
+
+    # The current request's own words decide whether a public lookup was asked
+    # for. Computed once from the incoming messages, never from tool output.
+    current_public_lookup = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_public_lookup
+        _last_user = next((m.get("content") for m in reversed(messages)
+                           if isinstance(m, dict) and m.get("role") == "user"
+                           and isinstance(m.get("content"), str)), "")
+        try:
+            current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
+        except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
+            current_public_lookup = False
+        if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
+            # A URL the user typed themselves is an explicit public lookup.
+            current_public_lookup = True
+        # Hosts the user typed in this message. In a turn that starts private,
+        # the exemption for fetch-style egress is tied to these hosts only.
+        from urllib.parse import urlsplit as _urlsplit
+        for _m in re.finditer(r"https?://[^\s<>\"'`]+", _last_user or ""):
+            try:
+                _h = _urlsplit(_m.group(0).rstrip(".,;:!?)]}")).hostname
+            except ValueError:
+                _h = None
+            if _h:
+                typed_hosts.add(_h.lower())
+        for _m in re.finditer(r"(?<![@\w./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![\w@-])",
+                              (_last_user or "").lower()):
+            typed_hosts.add(_m.group(1))
+
+    # Structured "did the tool body actually run" signal. execute_tool sets it
+    # immediately before run_tool and _record_outcome consumes it, so the latch
+    # never has to infer execution from a tool's own output text.
+    _exec_state = {"ran": False}
+
+    def _web_detail(args):
+        detail = args.get("url") or args.get("query") or args.get("target") or ""
+        return str(detail)[:300]
+
+    def private_web_problem(tool):
+        """Turn-start private context: public egress needs explicit intent."""
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
+                and not current_public_lookup):
+            return ("Private data is in context; web access is unavailable "
+                    "unless the request explicitly asks for a public lookup.")
+        return None
+
+    def _egress_target(tool, args):
+        """The URL a call would contact, for egress-capable tools; else None."""
+        if tool.name in {"web_fetch", "http_request"}:
+            return str(args.get("url") or "")
+        if tool.name == "open_app":
+            target = str(args.get("target") or "").strip()
+            # Any URI scheme is egress-capable (http, mailto, sms, tel, data,
+            # javascript, facetime, imessage, shortcuts, slack, custom://...).
+            # A bare macOS path starts with / or ~ and never matches the scheme.
+            if "://" in target or _URI_SCHEME_RE.match(target):
+                return target
+            # A local file opened in a browser can run its scripts and load
+            # remote content, so it is treated as web egress as well.
+            if target and _opens_in_browser(str(args.get("name") or ""), target):
+                return target
+        return None
+
+    def _typed_host_url(url):
+        """True only for a plain http(s) URL whose host the user typed this turn.
+
+        Default ports only (none, 80, 443) and no userinfo, so the exemption
+        cannot be pointed at a different service on a typed host.
+        """
+        from urllib.parse import urlsplit
+        if not url or re.search(r"[\\\s\x00-\x1f\x7f]", url):
+            return False
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+            port = parts.port
+        except ValueError:
+            return False
+        if "@" in parts.netloc or port not in (None, 80, 443):
+            return False
+        return parts.scheme.lower() in {"http", "https"} and bool(host) and host in typed_hosts
+
+    def in_turn_private_web(tool, args=None):
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        if not model_led_discovery:
+            return False
+        if tool.name == "open_app":
+            return bool(private_read_in_turn and args is not None and _egress_target(tool, args))
+        return bool(private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS)
+
+    def start_private_egress(tool, args):
+        """Turn started private and this fetch-style call is not to a typed host."""
+        if not (model_led_discovery and private_at_start and not private_read_in_turn):
+            return False
+        url = _egress_target(tool, args)
+        return url is not None and not _typed_host_url(url)
+
+    def tool_policy(tool, args):
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                from service.safety.policy import Decision
+                return Decision(Tier.DENY, problem)
+        if model_led_discovery:
+            from service.safety.policy import Decision
+            if in_turn_private_web(tool, args):
+                # Private data was read during this turn: any later egress is
+                # confirmed with its destination shown, whatever the request said.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data was read earlier in this turn; "
+                                f"this would contact the web ({_web_detail(args)}). "
+                                "Confirm the exact destination or query.")
+            if problem := private_web_problem(tool):
+                return Decision(Tier.DENY, problem)
+            if start_private_egress(tool, args):
+                # Private data was in context at turn start: a public-lookup
+                # exemption keeps web_search, but a fetch/request/open must
+                # name a host the user typed, or the destination is confirmed.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data is in context; this would contact "
+                                f"{_web_detail(args)}, which is not a host you typed. "
+                                "Confirm the exact destination.")
+        dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
+            if tool.name in OPAQUE_OUTBOUND_TOOLS and not _validated_shell_read(tool, args):
+                # Full access and standing grants do not cover actions whose
+                # real-world effect the host cannot inspect.
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "opaque outbound action chosen by the model: "
+                                "confirmation is always required in model-led routing")
+        return dec
+
+    def _validated_shell_read(tool, args):
+        if tool.name != "run_shell":
+            return False
+        from service.safety.policy import read_only_shell_argv
+        return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
+
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
+        _exec_state["ran"] = False
         if tool.name in {"plan_meeting", "commit_private_meeting"}:
             if public_web_synthesis or not _meeting_local_client(client):
                 return "(error: Private meeting capability transport requires local inference; no action ran.)"
             guarded_meeting = True
         elif _meeting_safe(args) != args:
             return "(error: Private meeting capabilities cannot be carried into another tool; no action ran.)"
-        result = await run_tool(tool, args)
+        # Recheck after any approval/await or registry mutation, before claims.
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                return f"(error: {problem} The tool was NOT run.)"
+        if model_led_discovery:
+            if problem := private_web_problem(tool):
+                return f"(error: {problem} The tool was NOT run.)"
+            if in_turn_private_web(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data was read earlier in this turn; web access now "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
+            if start_private_egress(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data is in context; contacting a host you did not type "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
+        claim = None
+        if model_led_discovery:
+            from service.router.model_led import effectful_call, has_effect_contract
+            if effectful_call(tool, args):
+                if not has_effect_contract(tool, classify_tool_outcome(tool.name, "")):
+                    return "(error: This action has no supported completion contract. It was NOT run.)"
+                # This point is reached only AFTER argument validation, policy
+                # and exact confirmation. No metadata request can claim/run an
+                # effect. Durable ownership is mandatory, not an optional hint.
+                if claim_effect is None or finish_effect is None:
+                    return "(error: No durable action owner is available. The action was NOT run.)"
+                claim = claim_effect(tool, args)
+                if not claim.get("admitted"):
+                    return ("(error: An earlier action with this scope is already owned or "
+                            "has an uncertain outcome. The action was NOT run again; "
+                            "check the earlier result/destination before retrying.)")
+        # A fetch that was allowed only because its host was typed (or its exact
+        # URL was confirmed) must stay on that host: no cross-host redirects, no
+        # archive.org fallback carrying the URL.
+        strict_fetch = (model_led_discovery and tool.name == "web_fetch"
+                        and (private_at_start or private_read_in_turn))
+        try:
+            _exec_state["ran"] = True
+            from service.research.web import strict_host_fetch
+            with strict_host_fetch(strict_fetch):
+                if private_shell_read_only:
+                    result = await run_tool(tool, args, private_shell_read_only=True)
+                else:
+                    result = await run_tool(tool, args)
+        except BaseException:
+            if claim is not None:
+                # A failed settlement leaves the persisted running claim in
+                # place. Cancellation cannot turn it into a retryable effect.
+                try:
+                    finish_effect(claim, False)
+                except Exception:
+                    pass
+            raise
+        if claim is not None:
+            outcome = classify_tool_outcome(tool.name, str(result))
+            # Unknown extension actions default to 'read' in the legacy outcome
+            # classifier. That default is not a verified mutation receipt.
+            from service.router.model_led import trusted_effect_receipt
+            verified = trusted_effect_receipt(tool, outcome, result)
+            if not finish_effect(claim, verified):
+                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            if not verified:
+                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
         if tool.name == "plan_meeting" and isinstance(result, str):
             prefix = "Private meeting proposal: "
             try:
@@ -1418,7 +1675,7 @@ async def run_agent(
     # trigger these rules, so paying for them on every step of e.g. "open
     # Safari" or "set the volume" was pure waste. `tools is None` is the
     # unscoped route (the whole registry, messages included).
-    offers_messages = tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
+    offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
     if not public_web_synthesis:
         try:
@@ -1430,6 +1687,12 @@ async def run_agent(
                                                   messages=offers_messages)
         except Exception:  # noqa: BLE001
             identity_hint = ""
+
+    if model_led_discovery and identity_hint:
+        # Conservatively includes static attribution guidance: the combined
+        # identity builder has no separate provenance result. Never inspect
+        # its prose to decide whether actual personal facts are present.
+        private_shell_read_only = True
 
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
@@ -1457,6 +1720,14 @@ async def run_agent(
         return {**args, "symbols": permitted_stock_symbols(memory_query, symbols)}
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
+
+    if model_led_discovery and memory_hint:
+        private_shell_read_only = True
+
+    # Web egress treats only real private content as a turn-start signal:
+    # history, or remembered facts. The identity block does not count.
+    if model_led_discovery:
+        private_at_start = bool(history_private or memory_hint)
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
@@ -1510,8 +1781,39 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    schemas = [s for s in _admit(tool_schemas(tools))
-               if s["function"]["name"] not in forbidden_tools]
+    discovery = None
+    capability_catalog = None
+    if model_led_discovery:
+        # Capability metadata does not authorize execution or new disclosure.
+        if not getattr(client, "managed", True) or public_web_synthesis:
+            raise ValueError("Model-led discovery requires managed local inference")
+        if force_first_tool or direct_calls or required_tool_groups:
+            raise ValueError("An owned execution plan must retain its controlled route")
+        from service.router.model_led import (
+            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
+            SelectionError, discovery_schema, registry_specs,
+        )
+        from service.tools.registry import REGISTRY
+
+        def fresh_capability_catalog():
+            shell_blocked = set()
+            if private_shell_read_only:
+                from service.tools.registry import private_shell_target, private_shell_implementation
+                shell_blocked = {t.name for t in REGISTRY.values()
+                                 if private_shell_target(t)
+                                 and not private_shell_implementation(t)}
+            return CapabilityCatalog.build(
+                registry_specs(REGISTRY),
+                blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
+
+        discovery = DiscoveryState()
+        capability_catalog = fresh_capability_catalog()
+        tools = []
+        schemas = ([discovery_schema(capability_catalog)]
+                   if capability_catalog.families else [])
+    else:
+        schemas = [s for s in _admit(tool_schemas(tools))
+                   if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
     # this set is premature, not impossible — see the rejection below.
@@ -1524,6 +1826,7 @@ async def run_agent(
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
+                       + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
                        + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
@@ -1619,6 +1922,7 @@ async def run_agent(
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
+    fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
     contact_receipts: dict[str, str] = {}
@@ -1630,7 +1934,54 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
+        nonlocal fresh_personal_evidence, private_shell_read_only, private_read_in_turn
+        # Consume the structured execution flag (set only by execute_tool just
+        # before the tool body runs); a confirmation denial never reaches it.
+        executed = bool(_exec_state["ran"]) and not planned and not denied
+        _exec_state["ran"] = False
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if model_led_discovery and str(result).startswith((
+                "(error: Action was attempted but", "(error: Action did not return a verified")):
+            from dataclasses import replace
+            outcome = replace(outcome, facts={**outcome.facts, "completion_uncertain": True})
+        from service.router.model_led import personal_evidence_matches
+        if (not planned and not denied and outcome.status in {"succeeded", "no_match"}
+                and (registered := get_tool(name))
+                and personal_evidence_matches(fresh_personal_scope or {}, registered, args or {}, contact_receipts, str(result))):
+            fresh_personal_evidence = True
+        if model_led_discovery and (registered := get_tool(name)):
+            # Known local/private reads restrict every subsequent dispatch,
+            # including siblings from this model response. Shell reads retain
+            # category='shell'; recognize the original host builtin and actual
+            # read phase separately from arbitrary model/tool prose.
+            from service.tools.registry import private_shell_implementation
+            # Any returned original shell output can contain local facts,
+            # including a read-phase receipt or an error/path after a failed
+            # command. Phase/prose is not permission to clear the restriction.
+            shell_read = (private_shell_implementation(registered)
+                          and not planned and not denied)
+            if (registered.category.endswith("read")
+                    and registered.category != "web_read"
+                    or registered.category == "screen" or shell_read
+                    or name in {"recall", "search_memory", "search_conversations"}):
+                private_shell_read_only = True
+                private_read_in_turn = True
+            elif (not planned and not denied
+                  and (name in {"run_applescript", "run_shortcut"}
+                       or registered.category in {"mcp_action", "skill_tool"})
+                  and executed):
+                # Output of automation, MCP action and skill tools can carry
+                # private data the host cannot classify: latch egress once the
+                # tool actually ran (even when its receipt was unverified).
+                private_read_in_turn = True
+            from service.router.model_led import needs_effect_owner
+            from service.router.model_led import effectful_call
+            if effectful_call(registered, args or {}) and outcome.effect == "read":
+                from dataclasses import replace
+                outcome = replace(outcome, effect="changed")
+            if effectful_call(registered, args or {}) and not planned and not denied:
+                from service.router.model_led import builtin_completion_outcome
+                outcome = builtin_completion_outcome(registered, result, outcome)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if name == "lookup_contact" and args is not None:
@@ -1683,6 +2034,11 @@ async def run_agent(
             return uncertain[-1].text
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
+        if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
+            # Preserve reference history, but refuse to promote an old answer,
+            # memory or unrelated public search into a current personal fact.
+            if not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
+                return "I haven't checked a current personal source for that yet. Which source should I check?"
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
         if test_mode and actions:
@@ -1693,6 +2049,8 @@ async def run_agent(
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
+            if outcome.facts.get("completion_uncertain"):
+                return f"I attempted {name}, but couldn't verify completion. Check the destination before retrying."
             return f"The requested action was not completed ({name}): {outcome.text}"
         if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
             receipts = [outcome.text for _, outcome in actions
@@ -1825,7 +2183,7 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
-        _dec = decide(_tool.category, _args, tool=_name)
+        _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
@@ -1861,6 +2219,7 @@ async def run_agent(
                     + (f"\n…and {len(_rows) - 60} more"
                        if len(_rows) > 60 else ""))
             if _note_decision(_name, await approver.confirm(_action)):
+                confirmed_private_web.add(_action_fingerprint(_name, _args))
                 _result = await execute_tool(_tool, _args)
                 audit("confirm_allow", tool=_name, args=_args)
             else:
@@ -2112,6 +2471,7 @@ async def run_agent(
         mode = narration_mode()
         narrating = (
             mode != "off"
+            and not model_led_discovery
             and tools is not None
             and not (forcing_first_step or expecting_tool)
             and (not multi_round or _unmet_group() is None
@@ -2221,6 +2581,8 @@ async def run_agent(
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
             allowed_names = {s["function"]["name"] for s in step_schemas}
+            if model_led_discovery and step_schemas != offered_schemas:
+                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
@@ -2502,6 +2864,32 @@ async def run_agent(
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
+            if discovery is not None and name == DISCOVERY_TOOL:
+                # Do not widen this step's allowed_names. A sibling real call
+                # must not gain authority from a schema request in this batch.
+                # Metadata never enters source/effect receipts or tool_digest.
+                try:
+                    capability_catalog = fresh_capability_catalog()
+                    expansion = discovery.expand(
+                        args, capability_catalog, step_offered=frozenset(allowed_names))
+                    tools = list(expansion.names)
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
+                    if discovery.attempts < MAX_DISCOVERIES:
+                        schemas.append(discovery_schema(capability_catalog))
+                    turn_tool_names = {s["function"]["name"] for s in schemas}
+                    msgs[0] = {"role": "system", "content": (
+                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    result = expansion.receipt()
+                    await emit({"type": "routing_discovery", "families": list(expansion.families),
+                                "tools": tools, "status": "ready_next_step"})
+                except SelectionError as error:
+                    result = f"Schema selection rejected: {error}. No source was read or action performed."
+                    if discovery.attempts >= MAX_DISCOVERIES:
+                        schemas = [s for s in schemas if s["function"]["name"] != DISCOVERY_TOOL]
+                    await emit({"type": "routing_discovery", "status": "rejected"})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
             # fixed values before grounding, confirmation previews and tool
@@ -2663,7 +3051,7 @@ async def run_agent(
             # complete every requested step" — a real-execution failure message
             # for a turn in which, by construction, nothing was ever attempted.
             if test_mode:
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 result = _TEST_MODE_STUB
                 await emit({"type": "tool_call", "id": cid, "name": name, "args": args,
                             "decision": dec.tier.value, "reason": dec.reason,
@@ -2751,7 +3139,7 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 
@@ -2891,6 +3279,7 @@ async def run_agent(
                     else:
                         approved = _note_decision(name, await approver.confirm(action))
                     if approved:
+                        confirmed_private_web.add(_action_fingerprint(name, args))
                         # Whether the card actually SHOWED the outgoing text
                         # (confirm_preview populates `preview` for the outbound
                         # tools). Only then has a human read the exact words, and
@@ -3001,7 +3390,10 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = _admit(tool_schemas(tools))
+                schemas = [s for s in _admit(tool_schemas(tools))
+                           if s["function"]["name"] not in forbidden_tools]
+                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
+                    schemas.append(discovery_schema(fresh_capability_catalog()))
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound

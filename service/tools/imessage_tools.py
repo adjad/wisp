@@ -1413,10 +1413,10 @@ def _match_conversation(records, query: str):
     matches = exact or [candidate for candidate in candidates
                         if any(needle and needle in alias
                                for alias in _conversation_aliases(candidate[1]))]
-    if matches and any(conversation_id is None for conversation_id, _label in matches):
-        return None, "Messages are refreshing conversation identities. Please try again in a moment."
     if not matches and needle:
         matches = _fuzzy_conversations(candidates, needle)
+    if matches and any(conversation_id is None for conversation_id, _label in matches):
+        return None, "Messages are refreshing conversation identities. Please try again in a moment."
     if len(matches) == 1:
         return matches[0], None
     if not matches:
