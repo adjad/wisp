@@ -433,9 +433,7 @@ def _allowed(name: str, *, writing: bool) -> bool:
 
 def _gate_open(text: str, *, writing: bool) -> bool:
     """Whether file-mutating tools may be offered for this request at all."""
-    uninstall = re.match(
-        r"^\s*(?:please\s+|(?:can|could|would)\s+you\s+)?uninstall\s+\S", text, re.I)
-    return writing or bool(_FILE_ACTION_RE.search(text) or uninstall)
+    return writing or bool(_FILE_ACTION_RE.search(text))
 
 
 async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
