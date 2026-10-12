@@ -737,7 +737,6 @@ async def test_a_remote_only_profile_blocks_writes_through_the_policy(isolated, 
     go_live(isolated)
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
     monkeypatch.setattr(remote_policy, "remote_tool_allowed", lambda tool: False)
-    monkeypatch.setattr(remote_policy, "aria_demo_mode", lambda: False)
     monkeypatch.setattr(remote_policy, "remote_read_only_mode", lambda: False)
     assert await wiring.run_tick(NOW) == []
     assert effects["created"] == [] and wiring.get_ledger().get("msg:m") is None
@@ -745,11 +744,10 @@ async def test_a_remote_only_profile_blocks_writes_through_the_policy(isolated, 
     assert (await wiring.undo("msg:m"))["ok"] is False
 
 
-@pytest.mark.parametrize("which", ["aria_demo_mode", "remote_read_only_mode"])
-async def test_demo_and_founder_builds_never_read_or_write_even_in_shadow(isolated, monkeypatch, which):
+async def test_read_only_remote_build_never_reads_or_writes_even_in_shadow(isolated, monkeypatch):
     from service.inference import remote_policy
     from service.tools import imessage_tools
-    monkeypatch.setattr(remote_policy, which, lambda: True)
+    monkeypatch.setattr(remote_policy, "remote_read_only_mode", lambda: True)
     reads = []
     monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: reads.append(1) or FEED)
     assert await wiring.run_tick(NOW) == [] and reads == []

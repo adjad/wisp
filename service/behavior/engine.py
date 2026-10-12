@@ -53,12 +53,8 @@ class Phraser(Protocol):
 
 class BehaviorEngine:
     def __init__(self, db_path: str | Path, *, phraser: Phraser | None = None,
-                 clock=None, tz: str | None = None, min_horizon_s: float | None = None) -> None:
+                 clock=None, tz: str | None = None) -> None:
         self._store = Store(db_path)
-        # Optional longer look-ahead (the Aria demo uses a week so its planted
-        # gym conflict and back-to-back run are always in view, whatever day it
-        # is shown). None keeps the normal horizon below.
-        self._min_horizon_s = float(min_horizon_s) if min_horizon_s else 0.0
         self._phraser = phraser
         self._clock = clock or time.time
         self._tz = resolve_tz(tz)
@@ -240,7 +236,7 @@ class BehaviorEngine:
         tomorrow afternoon's meetings from an early-afternoon run (demo at 13:00
         drops a 14:00-16:00 run tomorrow, 25-27h out)."""
         tomorrow = local_dt(now, self._tz).date() + timedelta(days=1)
-        return max(float(NUDGE_HORIZON_S), day_end(tomorrow, self._tz) - now, self._min_horizon_s)
+        return max(float(NUDGE_HORIZON_S), day_end(tomorrow, self._tz) - now)
 
     def _events_for(self, now: float, horizon_s: float) -> list[Observation]:
         """Events from local midnight today to the end of the horizon's last day,

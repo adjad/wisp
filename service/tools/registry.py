@@ -262,13 +262,11 @@ class Tool:
         return self.description if self.retrieval_description is None else self.retrieval_description
 
     def schema(self) -> dict:
-        from service.demo.founder import enabled, TOOL_DESCRIPTIONS
-        description = TOOL_DESCRIPTIONS.get(self.name, self.description) if enabled() else self.description
         return {
             "type": "function",
             "function": {
                 "name": self.name,
-                "description": description,
+                "description": self.description,
                 "parameters": self.parameters,
             },
         }
@@ -478,28 +476,6 @@ def is_tool_error(result: str) -> bool:
     return result.strip().startswith("(error")
 
 
-async def _run_aria_demo_tool(tool: Tool, args: dict) -> str:
-    """The Aria demo's dispatch boundary (service/demo/aria/tools.py). Called
-    by run_tool for every tool except the demo's data-free PASSTHROUGH tools:
-    a tool with a synthetic implementation runs against the synthetic world,
-    and anything else does not run at all. The registered native
-    implementation (AppleScript, EventKit, the app outbox) is never called."""
-    from service.demo.aria import tools as aria_tools
-    if tool.name not in aria_tools.SYNTHETIC:
-        return "This action isn't part of the Aria demo; nothing was executed."
-    if args:
-        args = {k: v for k, v in args.items() if k}
-    if (err := _validate_args(tool, args)) is not None:
-        return err
-    try:
-        return str(await aria_tools.dispatch(tool, args or {}))
-    except TypeError as e:
-        return (f"(error calling {tool.name}({args!r}): {e}. "
-                f"Expected arguments — {_arg_hint(tool)}. Call it again with corrected arguments.)")
-    except Exception as e:  # noqa: BLE001 — same contract as run_tool
-        return f"(error running {tool.name}: {e})"
-
-
 async def run_tool(tool: Tool, args: dict) -> str:
     """Runs the tool and returns its result as a tool_result string.
 
@@ -517,14 +493,9 @@ async def run_tool(tool: Tool, args: dict) -> str:
         if remote_full_mode():
             return ("This tool needs Wisp's on-Mac models or extensions, which this "
                     "remote-inference build does not run; nothing was executed.")
-        return "This action is unavailable in the four-read remote-only demo; nothing was executed."
+        return "This action is unavailable in read-only remote inference; nothing was executed."
     if tool.unavailable_reason:
         return tool.unavailable_reason
-    from service.inference.remote_policy import aria_demo_mode
-    if aria_demo_mode():
-        from service.demo.aria.tools import PASSTHROUGH
-        if tool.name not in PASSTHROUGH:
-            return await _run_aria_demo_tool(tool, args)
     # Drop junk empty-name keys before dispatch. Small models emit `{"": ""}`
     # for a no-argument tool instead of `{}` — observed live: a `show_profile`
     # call came back as {'': ''}, raised TypeError, and burned a whole agent

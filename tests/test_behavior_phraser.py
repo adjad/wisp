@@ -201,7 +201,7 @@ def test_real_engine_uses_phraser_and_payloads_fit_gateway(tmp_path):
     from service.behavior.engine import BehaviorEngine
     from service.inference.remote_policy import RemoteOnlyProfile
     try:
-        from service.behavior.persona import generate_persona
+        from tests.fixtures.behavior_persona import generate_persona
         BehaviorEngine(tmp_path / "probe.db").close()
     except (NotImplementedError, ImportError):
         pytest.skip("BehaviorEngine not implemented yet")

@@ -1,6 +1,6 @@
-"""Miners recover the routines planted in the fictional demo persona.
+"""Miners recover the routines planted in the fictional test persona.
 
-Synthetic data only: ``generate_persona`` (Aria Solano, fictional) and small
+Synthetic data only: ``generate_persona`` (tests/fixtures, fictional) and small
 hand-built timelines. The engine runs on a temp SQLite file.
 """
 import time
@@ -11,7 +11,7 @@ import pytest
 
 from service.behavior import miners
 from service.behavior.engine import BehaviorEngine
-from service.behavior.persona import generate_persona
+from tests.fixtures.behavior_persona import generate_persona
 from service.behavior.types import Observation
 
 TZ = ZoneInfo("America/Los_Angeles")

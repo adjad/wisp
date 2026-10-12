@@ -3,7 +3,7 @@ expects next.
 
 All four read (or, for ``correct_pattern``, edit) Wisp-internal learned state
 only — never a native source — so they need no confirmation and are allowed in
-the Intel remote-only founder demo too (see ``remote_policy``). Every line
+read-only remote inference too (see ``remote_policy``). Every line
 carries its evidence counts so the model can say how sure Wisp is.
 """
 from __future__ import annotations

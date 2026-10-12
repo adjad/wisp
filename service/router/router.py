@@ -7283,8 +7283,8 @@ def _guard_scheduled_cancel(decision: RouteDecision, original_text: str) -> Rout
 
 # --------------------------------------------------------------------------
 # Behavior learning: "what do you know about me", "predict my day", "when do I
-# usually work out". Active only while behavior learning is on (WISP_BEHAVIOR=1
-# or the founder demo); otherwise every phrase keeps its existing route (e.g.
+# usually work out". Active only while behavior learning is on (WISP_BEHAVIOR=1);
+# otherwise every phrase keeps its existing route (e.g.
 # "what do you know about me" -> recall). Whole-utterance matches only, so a
 # compound request ("... and check my email") keeps the claims router.
 _BEHAVIOR_LEAD = (r"^\s*(?:(?:hey|ok|okay)\s+)?(?:wisp[,:]?\s+)?(?:so\s+)?"

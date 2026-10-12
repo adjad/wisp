@@ -22,11 +22,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from service.paths import STATE_DIR
+from service.paths import MOE_DIR
 
-# STATE_DIR is ~/.moe except while a demo runs (see service.paths.state_dir):
-# a demo never loads the user's real Mail/Messages/Notes caches.
-CACHE_DIR = STATE_DIR / "cache"
+CACHE_DIR = MOE_DIR / "cache"
 
 
 def _path(name: str) -> Path:

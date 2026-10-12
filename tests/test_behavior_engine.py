@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from service.behavior.engine import BehaviorEngine
-from service.behavior.persona import generate_persona
+from tests.fixtures.behavior_persona import generate_persona
 from service.behavior.types import Feedback, Nudge, Observation
 
 TZ = ZoneInfo("America/Los_Angeles")

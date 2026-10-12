@@ -77,5 +77,5 @@ class PolicyChecks(RemoteFixture):
     def test_exact_seven_tool_names(self):
         names={'get_upcoming','get_past_events','search_reminders','view_emails','summarize_emails','view_messages','summarize_messages'}
         self.assertEqual(policy._READ_TOOLS,names)
-        for n in names:self.assertTrue(policy.remote_demo_tool_allowed(n))
-        for n in ['lookup_contact','list_contacts','send_message','read_file','get_upcoming_alias',None,[]]:self.assertFalse(policy.remote_demo_tool_allowed(n))
+        for n in names:self.assertTrue(policy.remote_read_tool_allowed(n))
+        for n in ['lookup_contact','list_contacts','send_message','read_file','get_upcoming_alias',None,[]]:self.assertFalse(policy.remote_read_tool_allowed(n))

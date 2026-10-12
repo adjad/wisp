@@ -103,21 +103,13 @@ async def run() -> None:
                 assistant_store.sync_source(c.name, items)
             except Exception:  # noqa: BLE001 — a connector must never break the loop
                 pass
-        # The Aria demo: deliver its simulated scheduled sends (never the app outbox).
-        try:
-            from service.inference.remote_policy import aria_demo_mode
-            if aria_demo_mode():
-                from service.demo.aria import tools as aria_tools
-                await aria_tools.tick(hub)
-        except Exception:  # noqa: BLE001 — never break the loop
-            pass
         # fire any due reminders
         try:
             for note in due_reminders(assistant_store):
                 await hub.publish(note)
         except Exception:  # noqa: BLE001
             pass
-        # Behavior learning (off unless WISP_BEHAVIOR=1 or the founder demo):
+        # Behavior learning (off unless WISP_BEHAVIOR=1):
         # ingest/mine/nudge on its own internal cadence; never raises. A tick
         # can take seconds (mining, phrasing), so it runs as a background
         # task and never delays reminders, the brief or scheduled sends; at
@@ -151,11 +143,8 @@ async def run() -> None:
         # baseline on first use, then publishes only terminal transitions or a
         # one-time stalled alert; ordinary progress commentary stays quiet.
         try:
-            from service.inference.remote_policy import aria_demo_mode
             from service.codex_monitor import codex_monitor
-            # The Aria demo shows only its synthetic world; real Codex tasks
-            # (and the monitor's checkpoint) stay out of it.
-            for event in ([] if aria_demo_mode() else codex_monitor.poll_events()):
+            for event in codex_monitor.poll_events():
                 await hub.publish(event)
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
@@ -244,8 +233,8 @@ async def _fire_scheduled_sends() -> None:
 
 
 def _brief_state_path():
-    from service.paths import STATE_DIR
-    return STATE_DIR / "brief_state.json"
+    from service.paths import MOE_DIR
+    return MOE_DIR / "brief_state.json"
 
 
 def _brief_date() -> date | None:

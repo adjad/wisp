@@ -1,22 +1,15 @@
 """Mac-side runtime for the behavior engine: feed it, run it, act on it.
 
-Off unless ``WISP_BEHAVIOR=1``, ``WISP_FOUNDER_DEMO=1`` or the full remote
-build (``WISP_REMOTE_ONLY=1`` + ``WISP_REMOTE_FULL=1``) turns it on;
-``WISP_BEHAVIOR=0`` always wins. ``WISP_BEHAVIOR_SYNTHETIC_ONLY=1`` (implied
-by the founder demo only) learns from the synthetic persona instead of real
-data; the full remote build learns from real activity.
+Off unless ``WISP_BEHAVIOR=1`` turns it on.
 
 Engine
     An in-process ``BehaviorEngine`` at ``<WISP_HOME>/behavior.db``.
 
 Ingestion (every ``INGEST_EVERY_S`` and right after a Calendar sync; each
 source is independent and never raises into the scheduler)
-    real mode: Calendar (replace-set snapshot so deletes/moves are detected),
-    Reminders, Messages metadata (direction, contact, time — never text), the
-    user's Wisp asks (a coarse topic label — never text), approvals/denials.
-    synthetic mode: ``generate_persona(now)`` once per day (idempotent ids)
-    plus ONLY Calendar events in a calendar named ``Wisp Demo``; never real
-    Messages, Reminders, Notes or asks.
+    Calendar (replace-set snapshot so deletes/moves are detected), Reminders,
+    Messages metadata (direction, contact, time — never text), the user's Wisp
+    asks (a coarse topic label — never text), approvals/denials.
 
 Acting
     New nudges go through the existing hub as durable ``nudge`` events
@@ -52,18 +45,12 @@ EVENT_PREFIX = "behavior:"
 EVENT_KIND = "nudge"
 BEHAVIOR_CONTEXT = "Added by Wisp from your routine"
 HOLD_PREFIX = "Tentative: "
-DEMO_CALENDAR = "wisp demo"
 
 TICK_S = 30.0
 INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
-CALENDAR_GRACE_S = 180.0   # synthetic: wait this long for a first Calendar read
 FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
-# Same event: same title, starts within this window. The persona regenerates
-# each day from a seeded RNG over a shifted range, so the same routine event
-# can come back minutes away from the copy seeded into the calendar earlier.
-CAL_MATCH_S = 3 * 3600.0
 CARD_TTL_S = 60.0
 CARD_MAX_BYTES = 700
 HISTORY_S = 56 * 86400
@@ -75,28 +62,14 @@ ASK_LIMIT = 500
 # Flags
 # --------------------------------------------------------------------------
 
-def founder_demo() -> bool:
-    from service.behavior.flags import founder_demo_env
-    return founder_demo_env()
-
-
 def enabled() -> bool:
     from service.behavior.flags import env_enabled
     return env_enabled()
 
 
-def synthetic_only() -> bool:
-    # The Aria demo learns the synthetic persona plus its synthetic calendar
-    # (mirrored into the demo store as the "Wisp Demo" calendar), never real data.
-    from service.demo.aria import env_requested as aria_demo
-    return os.environ.get("WISP_BEHAVIOR_SYNTHETIC_ONLY") == "1" or founder_demo() or aria_demo()
-
-
 def _home() -> Path:
-    # The Aria demo's synthetic persona learns into its own state directory
-    # (service.paths.state_dir), never the real-mode behavior.db.
-    from service.paths import state_dir
-    return state_dir()
+    from service.paths import MOE_DIR
+    return MOE_DIR
 
 
 # --------------------------------------------------------------------------
@@ -109,21 +82,7 @@ def _default_local_factory(path: Path):
     if os.environ.get("WISP_BEHAVIOR_PHRASER", "1") != "0":
         from service.assistant.behavior_phraser import WispPhraser
         phraser = WispPhraser()
-    from service.demo.aria import env_requested as aria_demo
-    if aria_demo():
-        # The persona plants its next gym-morning conflict and Tue/Thu
-        # back-to-back run within the coming week; look that far so the demo
-        # shows them on any day.
-        from service.demo.aria.proactive import DEMO_NUDGE_HORIZON_S
-        return BehaviorEngine(path, phraser=phraser, min_horizon_s=DEMO_NUDGE_HORIZON_S)
     return BehaviorEngine(path, phraser=phraser)
-
-
-def _default_persona(now: float):
-    # Same zone the engine mines in (the Mac's), so "gym at 6:45" reads as 6:45.
-    from service.behavior.persona import generate_persona
-    from service.behavior.timeutil import resolve_tz, tz_name
-    return generate_persona(now, tz=tz_name(resolve_tz(None)))
 
 
 def _default_messages() -> dict:
@@ -188,26 +147,17 @@ class TickBusy(RuntimeError):
 
 class BehaviorRuntime:
     def __init__(self, home: Path | None = None, *,
-                 synthetic: bool | None = None, founder: bool | None = None,
                  local_factory: Callable[[Path], Any] | None = None,
-                 persona_fn: Callable[[float], Any] | None = None,
                  messages_fn: Callable[[], dict] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
-                 clock: Callable[[], float] = time.time,
-                 calendar_grace_s: float | None = None) -> None:
+                 clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
-        self.synthetic = synthetic_only() if synthetic is None else synthetic
-        self.founder = founder_demo() if founder is None else founder
         self._local_factory = local_factory or _default_local_factory
-        self._persona_fn = persona_fn or _default_persona
         self._messages_fn = messages_fn or _default_messages
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
         self._session_db_fn = session_db_fn or _default_session_db
         self.clock = clock
-        self._started = clock()
-        self._calendar_grace_s = CALENDAR_GRACE_S if calendar_grace_s is None else float(calendar_grace_s)
-        self._calendar_ready = False
         self._local_engine = None
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
@@ -271,8 +221,6 @@ class BehaviorRuntime:
     # ---- external hooks --------------------------------------------------------
     def record_decision(self, tool: str, approved: bool) -> None:
         from service.behavior.types import Observation
-        if self.synthetic:
-            return   # the synthetic persona never learns from the user's real approvals
         now = self.clock()
         tool = str(tool or "")[:64]
         if not tool:
@@ -284,18 +232,11 @@ class BehaviorRuntime:
     # ---- ingestion -----------------------------------------------------------
     def _ingest(self, store, now: float, stamps: dict) -> bool:
         changed = False
-        steps: list[tuple[str, Callable[[], bool]]] = []
-        if self.synthetic:
-            # Calendar first: whether a "Wisp Demo" calendar exists decides
-            # where upcoming events come from (it, not the persona).
-            steps.append(("calendar", lambda: self._ingest_calendar(store, now, stamps)))
-            steps.append(("persona", lambda: self._ingest_persona(store, now, stamps)))
-        else:
-            steps.append(("calendar", lambda: self._ingest_calendar(store, now, stamps)))
-        if not self.synthetic and not self.founder:
-            steps += [("reminders", lambda: self._ingest_reminders(store, now)),
-                      ("messages", lambda: self._ingest_messages(now)),
-                      ("asks", lambda: self._ingest_asks(now))]
+        steps: list[tuple[str, Callable[[], bool]]] = [
+            ("calendar", lambda: self._ingest_calendar(store, now, stamps)),
+            ("reminders", lambda: self._ingest_reminders(store, now)),
+            ("messages", lambda: self._ingest_messages(now)),
+            ("asks", lambda: self._ingest_asks(now))]
         for name, step in steps:
             try:
                 changed = bool(step()) or changed
@@ -307,9 +248,6 @@ class BehaviorRuntime:
     def _flush_decisions(self) -> bool:
         if not self._pending:
             return False
-        if self.synthetic:
-            self._pending.clear()   # real approvals never feed the synthetic persona
-            return False
         batch = []
         while self._pending:
             batch.append(self._pending.popleft())
@@ -318,80 +256,6 @@ class BehaviorRuntime:
         except Exception as exc:  # noqa: BLE001
             self.errors["decisions"] = f"{type(exc).__name__}: {exc}"[:200]
             return False
-
-    def _demo_calendar_seen(self) -> bool:
-        return self.kv_get("demo_calendar_seen") == "1"
-
-    def _calendar_ready_for(self, sync: dict, now: float) -> bool:
-        """Synthetic demo only: whether the first Calendar read has settled.
-        Until it has, persona upcoming events are not ingested and no nudge is
-        generated: a seeded "Wisp Demo" calendar must win over the persona's
-        own copy of the same events, or both would nudge. With Calendar access
-        off (a denied read also settles it) or no report at all, the persona's
-        upcoming events are used after CALENDAR_GRACE_S of uptime."""
-        if not self.synthetic or self._calendar_ready:
-            return True
-        if _finite(sync.get("last_sync")) and not sync.get("syncing"):
-            self._calendar_ready = True
-        elif now - self._started >= self._calendar_grace_s:
-            self._calendar_ready = True
-        return self._calendar_ready
-
-    def _demo_cal_seen(self, key: str) -> dict[str, list]:
-        try:
-            value = json.loads(self.kv_get(f"demo_cal:{key}", "{}") or "{}")
-        except ValueError:
-            return {}
-        return value if isinstance(value, dict) else {}
-
-    def _remember_demo_cal(self, key: str, observations: list, now: float) -> None:
-        """Every "Wisp Demo" calendar event fed to engine ``key`` (title, start),
-        so a later persona regeneration never adds its own copy of the same
-        event: the calendar's copy stays in the engine after it passes, and
-        persona history would otherwise double-count that day."""
-        seen = {oid: v for oid, v in self._demo_cal_seen(key).items()
-                if isinstance(v, list) and len(v) == 2 and _finite(v[1]) and float(v[1]) >= now - HISTORY_S}
-        for o in observations:
-            seen[o.id] = [_norm_title(o.subject), float(o.ts)]
-        self.kv_set(f"demo_cal:{key}", json.dumps(seen, sort_keys=True))
-
-    def _ingest_persona(self, store, now: float, stamps: dict) -> bool:
-        """The synthetic persona, regenerated once per local day (ids are stable
-        within a day). Rows a previous day's persona contributed that today's no
-        longer has are dropped from the local engine so history never doubles.
-        With a seeded "Wisp Demo" calendar, upcoming events come from it only."""
-        day = datetime.fromtimestamp(now).date().isoformat()
-        key = "local"
-        seen = self._demo_calendar_seen()
-        # Persona upcoming events only once the first Calendar read settled
-        # without a demo calendar (see _calendar_ready_for).
-        upcoming = not seen and self._calendar_ready
-        marker = f"{day}:{int(seen)}:{int(upcoming)}"
-        if stamps.get("persona_day") == marker:
-            return False
-        persona = self._persona_fn(now)
-        obs = list(getattr(persona, "observations", ()) or ())
-        if upcoming:
-            obs += list(getattr(persona, "upcoming", ()) or ())
-        # An event the "Wisp Demo" calendar already supplied (same title, start
-        # within CAL_MATCH_S) comes from the calendar only, past or upcoming.
-        starts: dict[str, list[float]] = {}
-        for title, ts in self._demo_cal_seen(key).values():
-            starts.setdefault(title, []).append(float(ts))
-        if starts:
-            obs = [o for o in obs if o.kind != "event" or not any(
-                abs(float(o.ts) - ts) <= CAL_MATCH_S for ts in starts.get(_norm_title(o.subject), ()))]
-        ids = sorted({o.id for o in obs})
-        previous = set(json.loads(self.kv_get(f"persona_ids:{key}", "[]") or "[]"))
-        stale = previous - set(ids)
-        count = self.call("observe", obs)
-        if stale:
-            store_ = getattr(self.local_engine(), "_store", None)
-            if store_ is not None and hasattr(store_, "delete_observations"):
-                count += store_.delete_observations(sorted(stale))
-        self.kv_set(f"persona_ids:{key}", json.dumps(ids))
-        stamps["persona_day"] = marker
-        return bool(count)
 
     def _calendar_rows(self, store, start: float, end: float) -> list[dict]:
         with store._lock:
@@ -429,24 +293,10 @@ class BehaviorRuntime:
         if not sync.get("available") or not _finite(last_sync):
             return False   # no completed read yet: an empty set is not "everything cancelled"
         start, end = now - HISTORY_S, now + AHEAD_S
-        if self.synthetic:
-            # Demo: history comes from the persona; the real "Wisp Demo"
-            # calendar supplies only what is still ahead, so a live delete or
-            # move is diffed while seeded past events never double-count.
-            start = now - 3600
         rows = self._calendar_rows(store, start, end)
-        if self.synthetic:
-            rows = [r for r in rows if (r.get("context") or "").strip().casefold() == DEMO_CALENDAR]
-            if rows:
-                self.kv_set("demo_calendar_seen", "1")
-            elif not self._demo_calendar_seen():
-                stamps["cal_sync"] = last_sync
-                return False   # no "Wisp Demo" calendar: persona events alone
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
                            window_start=start, window_end=end, taken_at=float(last_sync)) or {}
-        if self.synthetic:
-            self._remember_demo_cal("local", observations, now)
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
 
@@ -531,11 +381,8 @@ class BehaviorRuntime:
             except Exception:  # noqa: BLE001
                 pass
             fresh_calendar = _finite(sync.get("last_sync")) and sync.get("last_sync") != stamps.get("cal_sync")
-            ready = self._calendar_ready_for(sync, now)
-            if (force or now - stamps["ingest"] >= INGEST_EVERY_S or fresh_calendar
-                    or stamps.get("cal_ready") != ready):
+            if force or now - stamps["ingest"] >= INGEST_EVERY_S or fresh_calendar:
                 changed = self._ingest(store, now, stamps) or changed
-                stamps["cal_ready"] = ready
                 stamps["ingest"] = now
                 self.last["ingest"] = now
             nudges: list = []
@@ -545,10 +392,7 @@ class BehaviorRuntime:
                     stamps["mine"] = now
                     self.last["mine"] = now
                     self.invalidate_card()   # patterns changed: refreshed below
-                # Synthetic: no nudge before the first Calendar read settled
-                # (otherwise the persona's copy and the calendar's copy of the
-                # same event would each nudge once).
-                if ready and (force or changed or now - stamps["nudge"] >= NUDGE_EVERY_S):
+                if force or changed or now - stamps["nudge"] >= NUDGE_EVERY_S:
                     self.call("generate_nudges", now)
                     stamps["nudge"] = now
                     self.last["nudge"] = now
@@ -562,15 +406,6 @@ class BehaviorRuntime:
             return nudges, key
 
     # ---- delivery (event loop) ---------------------------------------------------
-    def _commitment_source(self) -> str:
-        from service.assistant.store import MANUAL_SOURCE, QA_SEED_SOURCE
-        # QA-seed rows are hidden unless WISP_QA_SEED=1; only use that source
-        # when the rehearsal environment can see it. Otherwise the action is a
-        # normal Wisp-schedule row, tracked here so clear_demo_state removes it.
-        if self.synthetic and os.environ.get("WISP_QA_SEED") == "1":
-            return QA_SEED_SOURCE
-        return MANUAL_SOURCE
-
     def perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
         """Create one reversible Wisp-schedule item. Idempotent per (nudge, action)."""
         with self._db_lock:
@@ -596,7 +431,8 @@ class BehaviorRuntime:
         end = params.get("end_ts")
         import uuid
         cid = uuid.uuid4().hex
-        source = self._commitment_source()
+        from service.assistant.store import MANUAL_SOURCE
+        source = MANUAL_SOURCE
         with store.transaction() as db:
             norm = title.casefold()
             for other in db.execute(
@@ -700,7 +536,7 @@ class BehaviorRuntime:
             return []
         if lock.locked():
             # /behavior/run: wait for the running tick instead of silently
-            # doing nothing, so a demo drop is really ingested; bounded.
+            # doing nothing, so a fresh change is really ingested; bounded.
             try:
                 await asyncio.wait_for(lock.acquire(), FORCE_WAIT_S)
             except asyncio.TimeoutError:
@@ -840,12 +676,10 @@ class BehaviorRuntime:
     # ---- status ----------------------------------------------------------------
     def status(self) -> dict:
         info: dict[str, Any] = {
-            "enabled": True, "synthetic": self.synthetic, "founder_demo": self.founder,
+            "enabled": True,
             "last": dict(self.last), "errors": dict(self.errors),
             "cursor": {"local": int(self.kv_get("cursor:local", "0") or 0)},
             "pending_decisions": len(self._pending),
-            # Synthetic: nudges wait for the first Calendar read (or the grace period).
-            "waiting_for_calendar": self.synthetic and not self._calendar_ready,
         }
         with self._db_lock:
             info["delivered_nudges"] = self._db.execute("SELECT COUNT(*) FROM nudges").fetchone()[0]
@@ -930,47 +764,6 @@ def profile_card() -> str:
         return runtime.profile_card() if runtime is not None else ""
     except Exception:  # noqa: BLE001
         return ""
-
-
-def clear_demo_state(store=None, home: Path | None = None) -> dict:
-    """Remove everything behavior learning added: Wisp-schedule items it
-    created, its hub events, ``behavior.db`` and runtime state. The user's own
-    commitments are never touched (only ids this runtime recorded, plus rows
-    carrying its context marker)."""
-    global _runtime
-    home = Path(home) if home is not None else _home()
-    if store is None:
-        from service.assistant.store import assistant_store as store
-    ids: set[str] = set()
-    with _runtime_lock:
-        runtime, _runtime = _runtime, None
-    if runtime is not None and runtime.home == home:
-        ids |= runtime._behavior_ids()
-        runtime.close()
-    elif (home / RUNTIME_DB).exists():
-        try:
-            db = sqlite3.connect(str(home / RUNTIME_DB))
-            ids |= {r[0] for r in db.execute("SELECT commitment_id FROM actions WHERE commitment_id IS NOT NULL")}
-            db.close()
-        except sqlite3.Error:
-            pass
-    with store.transaction() as db:
-        ids |= {r[0] for r in db.execute("SELECT id FROM commitments WHERE context LIKE ?",
-                                         (BEHAVIOR_CONTEXT + "%",))}
-        for cid in ids:
-            db.execute("DELETE FROM commitments WHERE id=?", (cid,))
-            db.execute("DELETE FROM notify_log WHERE commitment_id=?", (cid,))
-            db.execute("DELETE FROM calendar_event_ends WHERE commitment_id=?", (cid,))
-        events = db.execute("DELETE FROM assistant_events WHERE dedupe_key LIKE ?",
-                            (EVENT_PREFIX + "%",)).rowcount
-    removed_files = []
-    for name in (ENGINE_DB, ENGINE_DB + "-wal", ENGINE_DB + "-shm", RUNTIME_DB, CARD_CACHE):
-        try:
-            (home / name).unlink()
-            removed_files.append(name)
-        except OSError:
-            pass
-    return {"commitments": len(ids), "events": events, "files": removed_files}
 
 
 def day_bounds(day: str, now: float) -> tuple[float, float]:

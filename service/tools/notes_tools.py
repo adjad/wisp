@@ -87,9 +87,6 @@ def _clean_stamp(value, now: float) -> float:
 
 def cache_notes(raw: str, available: bool = True, reason: str = "",
                 snapshot_started_at: float | None = None) -> None:
-    from service.demo.founder import enabled
-    if enabled():
-        return
     global _notes, _notes_at, _available, _reason, _snapshot_at
     global _snapshot_started_at, _received_at, _receipt_started
     global _receipt_available, _receipt_reason
@@ -129,9 +126,6 @@ def snapshot_age_seconds(now: float | None = None) -> float | None:
 
 
 def notes_sync_state() -> str:
-    from service.demo.founder import enabled
-    if enabled():
-        return "ready"
     if _available is None:
         return "syncing"
     return "ready" if _available else "unavailable"
@@ -182,21 +176,6 @@ def raw_notes_snapshot(*, limit: int = 500, byte_limit: int = 100_000) -> RawNot
     """
     if type(limit) is not int or not 1 <= limit <= 500 or type(byte_limit) is not int or not 1 <= byte_limit <= 100_000:
         raise ValueError("invalid Notes snapshot bounds")
-    from service.demo.founder import enabled, note_rows, PROVENANCE
-    if enabled():
-        rows = note_rows();records = [];used = 0
-        for r in rows:
-            body = PROVENANCE + "\n" + r["body"]
-            size = len((r["title"] + r["folder"] + body).encode())
-            if len(records) >= limit or used + size > byte_limit:
-                continue
-            used += size
-            records.append(MappingProxyType({"modified_at": r["ts"], "title": r["title"], "folder": r["folder"],
-                                             "body": body, "reference": "founder-demo:" + r["id"], "native_id": None}))
-        records = tuple(records)
-        digest = hashlib.sha256(repr(records).encode()).hexdigest()
-        receipt = MappingProxyType({"available": True, "reason": PROVENANCE, "received_at": time.time(), "started_at": time.time()})
-        return RawNotesSnapshot(0, "founder_demo", time.time(), time.time(), receipt, records, len(rows), 0, len(rows)-len(records), digest)
     with _publication_lock:
         _purge_if_expired()
         raw, generation, origin = _notes, _notes_generation, _notes_origin
@@ -235,9 +214,6 @@ def raw_notes_snapshot(*, limit: int = 500, byte_limit: int = 100_000) -> RawNot
 
 
 def _parse() -> list[dict]:
-    from service.demo.founder import enabled, note_rows, PROVENANCE
-    if enabled():
-        return [{**r, "body": PROVENANCE + "\n" + r["body"]} for r in note_rows()]
     out: list[dict] = []
     for record in _notes.split(_RS):
         record = record.strip()
@@ -485,9 +461,6 @@ async def search_notes_impl(query: str | None = None, count: int | None = None,
     refresh  ask the app for a NEW native read first and say honestly whether the
              data searched is current, stale (with its age), timed out or unavailable.
     """
-    from service.demo.founder import enabled, notes_text
-    if enabled():
-        return notes_text(query, count, period, day)
     receipt: dict | None = None
     if refresh:
         from service.assistant.sync_status import refresh_notes

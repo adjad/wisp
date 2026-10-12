@@ -28,7 +28,7 @@ def _imports(path: Path):
 
 def test_behavior_package_never_imports_the_live_assistant():
     files = sorted(PACKAGE.glob("*.py"))
-    assert {"engine.py", "miners.py", "store.py", "persona.py"} <= {f.name for f in files}
+    assert {"engine.py", "miners.py", "store.py"} <= {f.name for f in files}
     for path in files:
         for name in _imports(path):
             assert not any(name == b or name.startswith(b + ".") for b in BANNED), f"{path.name} imports {name}"

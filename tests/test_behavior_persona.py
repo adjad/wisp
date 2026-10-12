@@ -1,15 +1,12 @@
-"""The fictional demo persona (Aria Solano): deterministic, clearly fictional,
-consistent with founder-demo.json, and planted so a demo fires nudges."""
-import json
+"""The behavior-engine test persona (tests/fixtures/behavior_persona.py):
+deterministic, clearly fictional, and planted so the engine fires nudges."""
 from datetime import datetime, timedelta
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from service.behavior.persona import generate_persona
+from tests.fixtures.behavior_persona import generate_persona
 
 TZ = ZoneInfo("America/Los_Angeles")
 NOW = datetime(2026, 10, 13, 8, 0, tzinfo=TZ).timestamp()
-DEMO = Path(__file__).resolve().parents[1] / "service" / "demo" / "founder-demo.json"
 
 
 def _dump(p):
@@ -51,15 +48,6 @@ def test_calendar_seed_matches_kept_events():
         assert c.attrs["start_ts"] == c.ts and c.attrs["subject"] == c.subject
         assert c.id.removeprefix("demo:cancel:") not in cal
     assert all(e["end_ts"] > e["start_ts"] and e["title"] for e in p.calendar_events)
-
-
-def test_people_match_founder_demo_contacts():
-    contacts = {f"{c['given_name']} {c['family_name']}" for c in json.loads(DEMO.read_text())["contacts"]}
-    p = generate_persona(NOW)
-    people = {o.subject for o in p.observations if o.kind.startswith("message_")}
-    assert people - {"Mom"} <= contacts
-    attendees = {a for o in p.observations + p.upcoming for a in o.attrs.get("attendees", [])}
-    assert attendees <= contacts
 
 
 def test_upcoming_plants_a_gym_conflict_and_a_back_to_back_run():

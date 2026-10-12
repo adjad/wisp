@@ -6,16 +6,14 @@ inference.remote_only. Settings cannot change this snapshot after startup.
 Two modes share the pinned origin, model, Keychain-only credential and payload
 validation:
 
-* read-only (the Intel founder demo, ``WISP_REMOTE_ONLY=1`` alone): only the
-  seven native reads, the behavior tools and (with ``WISP_FOUNDER_DEMO=1``)
-  the fictional fixture readers; every other tool, approval and write endpoint
-  is refused. Budgets are the original 8k gateway contract.
+* read-only (``WISP_REMOTE_ONLY=1`` alone): only the seven native reads and
+  the behavior tools; every other tool, approval and write endpoint is
+  refused. Budgets are the original 8k gateway contract.
 * full (``WISP_REMOTE_ONLY=1`` + ``WISP_REMOTE_FULL=1``, Intel v5): every
   built-in tool that does not need a local model or a Wisp-local extension
   runtime, each decided by the normal safety policy (service/safety/policy.py
   and grants.py) exactly as on a Mac with local models. Budgets follow the
-  100k-context GX10 contract (REMOTE_FULL_PROFILE). Mutually exclusive with
-  the founder demo.
+  100k-context GX10 contract (REMOTE_FULL_PROFILE).
 """
 from __future__ import annotations
 
@@ -32,9 +30,6 @@ if TYPE_CHECKING:
 _FORCED_MODE = os.environ.get("WISP_REMOTE_ONLY")
 # Read once at import, like _FORCED_MODE: the mode is a launch decision.
 _FULL_MODE = os.environ.get("WISP_REMOTE_FULL")
-_FOUNDER_MODE = os.environ.get("WISP_FOUNDER_DEMO")
-# The Aria demo (service/demo/aria): full mode against a synthetic world.
-_ARIA_MODE = os.environ.get("WISP_ARIA_DEMO")
 _READ_TOOLS = frozenset({"get_upcoming", "get_past_events", "search_reminders",
                          "view_emails", "summarize_emails", "view_messages",
                          "summarize_messages"})
@@ -132,16 +127,12 @@ REMOTE_FULL_PROFILE = RemoteOnlyProfile(**REMOTE_FULL_LIMITS)
 
 
 def _full_requested() -> bool:
-    if _FULL_MODE not in {None, "1"} or _ARIA_MODE not in {None, "1"}:
+    if _FULL_MODE not in {None, "1"}:
         _refuse("Invalid remote full launch mode")
-    if _ARIA_MODE == "1" and _FULL_MODE != "1":
-        _refuse("The Aria demo requires the full remote launch")
     if _FULL_MODE != "1":
         return False
     if _FORCED_MODE != "1":
         _refuse("Remote full mode requires the forced remote-only launch")
-    if _FOUNDER_MODE is not None:
-        _refuse("Remote full mode and the founder demo are mutually exclusive")
     return True
 
 
@@ -163,7 +154,7 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
     if _FORCED_MODE is None:
         return None
     # Full mode accepts only the full (32k) contract. Read-only mode (the
-    # founder/Aria demo) accepts the original 8k contract or, because the Intel
+    # build) accepts the original 8k contract or, because the Intel
     # v5 package ships ONE profile for both of its runtime modes, the full
     # contract: the larger budgets add no tools, writes or endpoints there.
     candidates = (REMOTE_FULL_PROFILE,) if full else (RemoteOnlyProfile(), REMOTE_FULL_PROFILE)
@@ -198,13 +189,8 @@ def remote_full_mode() -> bool:
     return remote_only_profile() is not None and _full_requested()
 
 
-def aria_demo_mode() -> bool:
-    """True in the validated full remote build launched as the Aria demo."""
-    return remote_full_mode() and _ARIA_MODE == "1"
-
-
 def remote_read_only_mode() -> bool:
-    """True in the read-only remote build (the Intel founder demo)."""
+    """True in the validated read-only remote build (WISP_REMOTE_ONLY=1 alone)."""
     return remote_only_profile() is not None and not _full_requested()
 
 
@@ -250,45 +236,36 @@ def remote_tool_allowed(tool_name: str | None) -> bool:
     """Whether a remote-only build may offer/run this tool at all.
 
     Full mode: every built-in except _REMOTE_FULL_EXCLUDED; the normal safety
-    policy then decides allow/confirm/deny for each call. Aria demo (full mode
-    + WISP_ARIA_DEMO=1): only the demo's synthetic or data-free tools, still
-    under the normal policy. Read-only mode: the fixed founder-demo allowlist
-    (remote_demo_tool_allowed)."""
+    policy then decides allow/confirm/deny for each call. Read-only mode: the
+    fixed read allowlist (remote_read_tool_allowed)."""
     if not isinstance(tool_name, str) or not tool_name:
         return False
     if remote_full_mode():
         if tool_name in _REMOTE_FULL_EXCLUDED:
             return False
-        if aria_demo_mode():
-            # The Aria demo runs only tools with a synthetic implementation or
-            # that touch no personal data or native app (demo/aria/tools.py).
-            from service.demo.aria.tools import allowed
-            from service.tools.registry import REGISTRY
-            return allowed(tool_name) and tool_name in REGISTRY
         # Only tools registered by Wisp itself; skill and MCP runtimes never
         # start in a remote-only build, but refuse their names regardless.
         from service.tools.registry import REGISTRY
         tool = REGISTRY.get(tool_name)
         return (tool is not None and tool.category != "skill_tool"
                 and not tool_name.startswith("mcp_"))
-    return remote_demo_tool_allowed(tool_name)
+    return remote_read_tool_allowed(tool_name)
 
 
-def remote_demo_tool_allowed(tool_name: str | None) -> bool:
-    """The read-only (founder demo) allowlist. Unchanged by full mode."""
+def remote_read_tool_allowed(tool_name: str | None) -> bool:
+    """The read-only allowlist. Unchanged by full mode."""
     if not isinstance(tool_name, str):
         return False
     if tool_name in _READ_TOOLS:
         return True
     # Behavior-learning tools read (or, for correct_pattern, edit) only Wisp's
-    # own learned profile — never a native source — and they are the point of
-    # the founder demo. Allowed only while behavior learning is on, so the
-    # pinned read set (_READ_TOOLS) is unchanged. Their schemas are small; the
-    # demo routes offer them alone (see router._behavior_request).
+    # own learned profile — never a native source. Allowed only while
+    # behavior learning is on, so the pinned read set (_READ_TOOLS) is
+    # unchanged. Their schemas are small; the routes offer them alone (see
+    # router._behavior_request).
     if tool_name in _BEHAVIOR_TOOLS:
         # The same import-free switch behavior_runtime.enabled() uses; the
         # assistant package (which opens stores) is never imported from here.
         from service.behavior.flags import env_enabled
         return env_enabled()
-    from service.demo.founder import enabled
-    return tool_name in {"search_notes", "lookup_contact", "list_contacts"} and enabled()
+    return False

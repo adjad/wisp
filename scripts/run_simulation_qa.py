@@ -311,10 +311,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_facing_summary_thinking.py",
     # Reviewed synthetic Workflow20 fixtures: temporary state, fake providers,
     # and guarded owned Python children; no live inference or personal sources.
-    # Behavior engine: pure SQLite in temp dirs, the fictional persona, ASGI
+    # Behavior engine: pure SQLite in temp dirs, the fictional test persona, ASGI
     # TestClient/httpx MockTransport (no listener) and FakeHub; no model, Keychain,
-    # Calendar, Messages or network. Deploy-script checks run bash -n / --dry-run
-    # against a fake `tailscale` on PATH; demo seeding mocks every osascript call.
+    # Calendar, Messages or network.
     "tests/test_behavior_api.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
@@ -325,21 +324,13 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_routing.py",
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",
-    "tests/test_seed_mac_persona.py",
-    "tests/test_wisp_demo_behavior.py",
-    # Intel/GX10 founder preview: fictional fixtures, patched sockets, mocked
+    # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
-    "tests/test_founder_demo.py",
     "tests/test_intel_remote_no_local.py",
     "tests/test_intel_remote_only_client.py",
     "tests/test_intel_remote_only_main.py",
     "tests/test_intel_remote_policy.py",
     "tests/test_intel_remote_read_boundary.py",
-    # Intel v5 full remote mode + synthetic Aria demo world: temp WISP_HOME, mocked
-    # native implementations that fail if called, ASGI TestClient; no network,
-    # Keychain, model or native app access. The Swift mapping check skips when
-    # swiftc cannot run.
-    "tests/test_aria_demo.py",
     "tests/test_intel_remote_full.py",
     # Workflow20 draft/receipt identity: sockets and subprocess forbidden, disposable stores.
     "tests/test_workflow20_draft_identity.py",

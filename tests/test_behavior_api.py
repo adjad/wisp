@@ -1,4 +1,4 @@
-"""/behavior/* endpoints on a minimal app (no service.main import). Synthetic only."""
+"""/behavior/* endpoints on a minimal app (no service.main import). Fake engine only."""
 from __future__ import annotations
 
 import pytest
@@ -13,7 +13,7 @@ from tests.test_behavior_runtime import NOW, FakeEngine, FakeHub, at, gym_confli
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY", "WISP_QA_SEED"):
+    for key in ("WISP_BEHAVIOR", "WISP_QA_SEED"):
         monkeypatch.delenv(key, raising=False)
     br.set_runtime(None)
     yield
@@ -51,8 +51,7 @@ def live(monkeypatch, tmp_path, store):
 
 def test_disabled_status_and_409(client):
     assert client.get("/behavior/status").json()["enabled"] is False
-    for method, path, body in [("post", "/behavior/run", None), ("post", "/behavior/reset", None),
-                               ("post", "/behavior/clear", None), ("get", "/behavior/nudges", None),
+    for method, path, body in [("post", "/behavior/run", None), ("get", "/behavior/nudges", None),
                                ("get", "/behavior/patterns", None),
                                ("get", "/behavior/predict", None), ("get", "/behavior/profile", None),
                                ("post", "/behavior/patterns/p1", {"status": "rejected"}),
@@ -69,7 +68,7 @@ def test_run_publishes_and_status(client, live, store):
     data = client.post("/behavior/run").json()
     assert data["ok"] and data["published"] == 2 and set(data["nudge_ids"]) == {"n1", "n2"}
     status = client.get("/behavior/status").json()
-    assert status["enabled"] and status["synthetic"]
+    assert status["enabled"]
     assert status["delivered_nudges"] == 2 and status["auto_actions"] == 2
     assert status["engine"]["patterns"] == 3
 
@@ -140,16 +139,11 @@ def test_act_open_prompt_and_offered_reminder(client, live, store):
     assert client.post("/behavior/nudges/zzz/act", json={"action_index": 0}).status_code == 404
 
 
-def test_reset_synthetic_only(client, live, store, monkeypatch, tmp_path):
-    rt, engine, hub = live
-    client.post("/behavior/run")
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
-    out = client.post("/behavior/clear").json()
-    assert out["ok"] and out["commitments"] == 2 and out["events"] == 0
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    real, _ = make_runtime(tmp_path / "real", FakeEngine(), synthetic=False)
-    br.set_runtime(real)
-    assert client.post("/behavior/reset").status_code == 409
+def test_reset_endpoints_are_gone(client, live):
+    # The synthetic-demo reset was removed with the demo persona; real learned
+    # state is never wiped over HTTP.
+    assert client.post("/behavior/reset").status_code in {404, 405}
+    assert client.post("/behavior/clear").status_code in {404, 405}
 
 
 def test_run_surfaces_busy_when_another_tick_holds_the_lock(client, live, monkeypatch):

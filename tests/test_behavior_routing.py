@@ -15,7 +15,6 @@ NAMES = ("describe_me", "predict_my_day", "my_patterns", "correct_pattern")
 
 @pytest.fixture
 def on(monkeypatch):
-    monkeypatch.delenv("WISP_FOUNDER_DEMO", raising=False)
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     for name in NAMES:   # routability follows the launch environment
         monkeypatch.setattr(REGISTRY[name], "unavailable_reason", "")
@@ -24,7 +23,6 @@ def on(monkeypatch):
 @pytest.fixture
 def off(monkeypatch):
     monkeypatch.delenv("WISP_BEHAVIOR", raising=False)
-    monkeypatch.delenv("WISP_FOUNDER_DEMO", raising=False)
 
 
 def routed(text, **kw):

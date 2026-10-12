@@ -1,8 +1,7 @@
 """HTTP surface for behavior learning (``/behavior/*``).
 
 Every route answers 409 with a plain explanation while behavior learning is
-off (it is on with ``WISP_BEHAVIOR=1`` and by default in the founder demo and
-full remote builds; ``WISP_BEHAVIOR=0`` turns it off). Engine work runs off the event loop. Only Wisp-internal state changes
+off (it is on with ``WISP_BEHAVIOR=1``). Engine work runs off the event loop. Only Wisp-internal state changes
 here: Undo deletes items Wisp itself created on its own schedule, and ``act``
 returns the prefilled request for an ``open_prompt`` action rather than
 sending or changing anything.
@@ -19,8 +18,7 @@ from service.inference.remote_policy import remote_read_only_mode
 
 router = APIRouter(prefix="/behavior", tags=["behavior"])
 
-_DISABLED = ("Behavior learning is off. Launch Wisp with WISP_BEHAVIOR=1 "
-             "(the founder demo build turns it on automatically).")
+_DISABLED = "Behavior learning is off. Launch Wisp with WISP_BEHAVIOR=1."
 _PATTERN_STATUSES = ("active", "confirmed", "rejected")
 _VERDICTS = ("useful", "not_now", "wrong")
 
@@ -63,7 +61,7 @@ async def behavior_status() -> dict[str, Any]:
 
 @router.post("/run")
 async def behavior_run() -> dict[str, Any]:
-    """Ingest + mine + generate + deliver now (demo rehearsal)."""
+    """Ingest + mine + generate + deliver now."""
     runtime = _runtime()
     store, hub = _store_hub()
     try:
@@ -77,24 +75,6 @@ async def behavior_run() -> dict[str, Any]:
     return {"ok": True, "published": len(published),
             "nudge_ids": [p.get("nudge_id") for p in published if isinstance(p, dict)],
             "status": status}
-
-
-@router.post("/clear")
-@router.post("/reset")
-async def behavior_reset() -> dict[str, Any]:
-    """Synthetic demo only: forget everything behavior learning stored (its
-    engine DB, delivered nudges, and the Wisp-schedule items it created) so a
-    rehearsal starts fresh with a full nudge budget. Real data is never reset."""
-    runtime = _runtime()
-    if not runtime.synthetic:
-        raise HTTPException(status_code=409, detail="Reset is only available for synthetic demo data")
-    store, hub = _store_hub()
-    result = await asyncio.to_thread(behavior_runtime.clear_demo_state, store, runtime.home)
-    try:
-        await hub.publish({"type": "changed"}, durable=False)
-    except Exception:  # noqa: BLE001
-        pass
-    return {"ok": True, **result}
 
 
 @router.get("/patterns")

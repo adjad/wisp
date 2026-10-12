@@ -1,17 +1,13 @@
-"""Intel v5 full remote mode (WISP_REMOTE_FULL=1) and the Aria demo switch.
+"""Full remote-inference mode (WISP_REMOTE_FULL=1).
 
 Synthetic only: a fresh WISP_HOME, sockets forbidden, no app import that
-starts anything. Founder/read-only behavior is covered by the existing
-test_intel_remote_* and test_founder_demo suites, which must stay green.
+starts anything. Read-only behavior is covered by the other remote suites.
 """
 import ast
 import asyncio
 import copy
-import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from types import ModuleType, SimpleNamespace
@@ -50,7 +46,7 @@ class FullFixture(RemoteFixture):
     def setUp(self):
         super().setUp()
         self.cfg = {'inference': {'remote_only': _profile_dict(policy.REMOTE_FULL_PROFILE)}}
-        for p in (patch.object(policy, '_FULL_MODE', '1'), patch.object(policy, '_FOUNDER_MODE', None)):
+        for p in (patch.object(policy, '_FULL_MODE', '1'),):
             p.start()
             self.addCleanup(p.stop)
         policy.remote_only_profile.cache_clear()
@@ -96,11 +92,11 @@ class ContractChecks(FullFixture):
                 policy.remote_only_profile()
 
     def test_launch_flag_combinations_fail_closed(self):
-        for forced, full, founder in [(None, '1', None), ('0', '1', None), ('1', '1', '1'), ('1', 'yes', None), ('1', '1', '0')]:
+        for forced, full in [(None, '1'), ('0', '1'), ('1', 'yes'), ('1', '0')]:
             policy.remote_only_profile.cache_clear()
-            with self.subTest(forced=forced, full=full, founder=founder), \
+            with self.subTest(forced=forced, full=full), \
                     patch.object(policy, '_FORCED_MODE', forced), patch.object(policy, '_FULL_MODE', full), \
-                    patch.object(policy, '_FOUNDER_MODE', founder), self.assertRaises(EndpointConfigurationError):
+                    self.assertRaises(EndpointConfigurationError):
                 policy.remote_only_profile()
 
     def test_full_payload_budget(self):
@@ -141,7 +137,7 @@ class ToolChecks(FullFixture):
                 self.assertTrue(policy.remote_tool_allowed(name))
         # Read-only allowlist is NOT what decides full mode.
         self.assertTrue(policy.remote_tool_allowed('lookup_contact'))
-        self.assertFalse(policy.remote_demo_tool_allowed('send_email'))
+        self.assertFalse(policy.remote_read_tool_allowed('send_email'))
 
     def test_full_mode_excludes_only_local_runtime_tools(self):
         excluded = {n for n in REGISTRY if not policy.remote_tool_allowed(n)}
@@ -193,7 +189,6 @@ class MainChecks(FullFixture):
     def _lifespan_ns(self, fake, scheduler_run, bomb):
         return {'asyncio': asyncio, 'asynccontextmanager': asynccontextmanager,
                 'remote_only_profile': policy.remote_only_profile, 'remote_full_mode': policy.remote_full_mode,
-                'aria_demo_mode': policy.aria_demo_mode,
                 'require_local_models_disabled': policy.require_local_models_disabled,
                 'OMLXClient': lambda: fake, 'role_to_model': lambda role: 'qwen3.6:35b',
                 'skills': SimpleNamespace(load=bomb), 'mcp_manager': SimpleNamespace(start=bomb, stop=bomb),
@@ -293,103 +288,11 @@ class MainChecks(FullFixture):
 
 
 class BehaviorChecks(FullFixture):
-    def test_behavior_defaults_on_real_and_kill_switch(self):
+    def test_behavior_follows_only_its_own_flag(self):
         from service.behavior import flags
-        from service.assistant import behavior_runtime as br
-        env = {'WISP_REMOTE_ONLY': '1', 'WISP_REMOTE_FULL': '1'}
-        with patch.dict(os.environ, env, clear=False):
-            os.environ.pop('WISP_BEHAVIOR', None)
-            os.environ.pop('WISP_FOUNDER_DEMO', None)
-            os.environ.pop('WISP_BEHAVIOR_SYNTHETIC_ONLY', None)
-            self.assertTrue(flags.env_enabled())
-            self.assertFalse(br.synthetic_only())
-            self.assertFalse(br.founder_demo())
-            self.assertTrue(policy.remote_tool_allowed('describe_me'))
-            os.environ['WISP_BEHAVIOR'] = '0'
-            self.assertFalse(flags.env_enabled())
-            self.assertIsNone(br.get_runtime())
-        with patch.dict(os.environ, {'WISP_REMOTE_FULL': '1'}, clear=False):
-            os.environ.pop('WISP_REMOTE_ONLY', None)
-            os.environ.pop('WISP_BEHAVIOR', None)
-            os.environ.pop('WISP_FOUNDER_DEMO', None)
-            self.assertFalse(flags.env_enabled())  # full flag alone is not the v5 launch
-
-    def test_real_runtime_is_not_synthetic(self):
-        from service.assistant import behavior_runtime as br
-        home = Path(os.environ['WISP_HOME']) / f'behavior-{id(self)}'
-        home.mkdir()
         with patch.dict(os.environ, {'WISP_REMOTE_ONLY': '1', 'WISP_REMOTE_FULL': '1'}, clear=False):
-            os.environ.pop('WISP_FOUNDER_DEMO', None)
-            os.environ.pop('WISP_BEHAVIOR_SYNTHETIC_ONLY', None)
-            rt = br.BehaviorRuntime(home, local_factory=lambda path: Mock())
-            try:
-                self.assertFalse(rt.synthetic)
-                self.assertFalse(rt.founder)
-            finally:
-                rt.close()
-
-
-def _paths_in_subprocess(extra_env: dict) -> dict:
-    code = ('import importlib, json\n'
-            'm = importlib.import_module\n'
-            'paths, store, outbound_queue = m("service.paths"), m("service.assistant.store"), m("service.assistant.outbound_queue")\n'
-            'sessions, facts, grants = m("service.memory.store"), m("service.memory.facts"), m("service.safety.grants")\n'
-            'scheduler, behavior_runtime = m("service.assistant.scheduler"), m("service.assistant.behavior_runtime")\n'
-            'cache_store = m("service.tools.cache_store")\n'
-            'print(json.dumps({"moe": str(paths.MOE_DIR), "state": str(paths.STATE_DIR),\n'
-            '  "assistant": str(store.DB_PATH), "queue": str(outbound_queue.DB_PATH),\n'
-            '  "sessions": str(sessions.DB_PATH), "facts": str(facts.DB_PATH),\n'
-            '  "grants": str(grants.GRANTS_PATH), "brief": str(scheduler._brief_state_path()),\n'
-            '  "behavior": str(behavior_runtime._home()), "cache": str(cache_store.CACHE_DIR)}))\n')
-    env = {k: v for k, v in os.environ.items()
-           if k not in {'WISP_FOUNDER_DEMO', 'WISP_REMOTE_FULL', 'WISP_REMOTE_ONLY', 'WISP_ARIA_DEMO'}}
-    env.update(extra_env)
-    out = subprocess.run([sys.executable, '-c', code], cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
-    assert out.returncode == 0, out.stderr[-2000:]
-    return json.loads(out.stdout.strip().splitlines()[-1])
-
-
-class FounderStateSeparation(RemoteFixture):
-    def test_demo_and_real_state_never_share_files(self):
-        real = _paths_in_subprocess({'WISP_REMOTE_ONLY': '1', 'WISP_REMOTE_FULL': '1'})
-        demo = _paths_in_subprocess({'WISP_REMOTE_ONLY': '1', 'WISP_FOUNDER_DEMO': '1'})
-        home = Path(os.environ['WISP_HOME']).resolve()
-        self.assertEqual(Path(real['state']).resolve(), home)
-        self.assertEqual(Path(demo['state']).resolve(), home / 'aria-demo')
-        self.assertEqual(real['moe'], demo['moe'])  # shared home: caches and identity unchanged
-        for key in ('assistant', 'queue', 'sessions', 'facts', 'grants', 'brief', 'behavior', 'cache'):
-            with self.subTest(key=key):
-                self.assertNotEqual(real[key], demo[key])
-                self.assertTrue(Path(demo[key]).resolve().is_relative_to(home / 'aria-demo'))
-                self.assertFalse(Path(real[key]).resolve().is_relative_to(home / 'aria-demo'))
-
-    def test_demo_ignores_native_notes_reminders_contacts_pushes(self):
-        tree = ast.parse((ROOT / 'service/main.py').read_text())
-        notes = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'assistant_sync_notes')
-        ifs = [n for n in notes.body if isinstance(n, ast.If)]
-        self.assertEqual([ast.unparse(n.test) for n in ifs[:2]], ['_aria_demo()', 'enabled()'])
-        self.assertIn('ignored_native_sync', ast.unparse(ifs[1]))
-
-
-class SwiftModeMapping(RemoteFixture):
-    def test_swift_toggle_maps_to_exactly_one_backend_mode(self):
-        swiftc = '/usr/bin/swiftc'
-        if not Path(swiftc).exists():
-            self.skipTest('swiftc unavailable')
-        out_dir = Path(os.environ['WISP_HOME']) / f'swift-{id(self)}'
-        out_dir.mkdir()
-        binary = out_dir / 'aria-checks'
-        try:
-            build = subprocess.run([swiftc, '-DWISP_REMOTE_ONLY_DEMO', '-DWISP_REMOTE_FULL', '-module-cache-path',
-                                    str(out_dir / 'cache'), str(ROOT / 'app/Sources/WispApp/AriaDemoMode.swift'),
-                                    str(ROOT / 'tests/AriaDemoModeChecks.swift'), '-o', str(binary)],
-                                   capture_output=True, text=True, timeout=600)
-        except OSError:
-            self.skipTest('swiftc cannot run here (sandboxed)')
-        if build.returncode != 0 and 'SDK' in build.stderr:
-            self.skipTest('no macOS SDK for swiftc')
-        self.assertEqual(build.returncode, 0, build.stderr[-3000:])
-        run = subprocess.run([str(binary)], capture_output=True, text=True, timeout=60,
-                             env={'PATH': '/usr/bin:/bin'})
-        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-        self.assertIn('AriaDemoModeChecks passed', run.stdout)
+            os.environ.pop('WISP_BEHAVIOR', None)
+            self.assertFalse(flags.env_enabled())   # remote inference does not turn it on
+            self.assertTrue(policy.remote_tool_allowed('describe_me'))  # full mode: the registry decides
+            os.environ['WISP_BEHAVIOR'] = '1'
+            self.assertTrue(flags.env_enabled())

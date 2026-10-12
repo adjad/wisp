@@ -141,15 +141,6 @@ class FakeHub:
         return {**event, "event_id": f"ev{len(self.events)}"}
 
 
-class FakePersona:
-    def __init__(self, now):
-        self.observations = [Observation(id=f"demo:gym:{d}", kind="event", ts=at(6, 30, -d),
-                                         end_ts=at(8, 0, -d), subject="Gym", source="demo",
-                                         category="fitness") for d in range(1, 15)]
-        self.upcoming = [Observation(id="demo:sync:1", kind="event", ts=at(16, 0, 1), subject="Team sync",
-                                     source="demo", category="meeting")]
-
-
 def gym_conflict_nudge(nid="n1", expires=None):
     return Nudge(
         id=nid, kind="habit_conflict", title="Gym vs. 7:00 meeting",
@@ -172,36 +163,28 @@ def store(tmp_path):
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY", "WISP_QA_SEED"):
+    for key in ("WISP_BEHAVIOR", "WISP_QA_SEED"):
         monkeypatch.delenv(key, raising=False)
     br.set_runtime(None)
     yield
     br.set_runtime(None)
 
 
-def make_runtime(tmp_path, engine=None, *, synthetic=True, founder=False, calendar=None,
-                 messages=None, clock=lambda: NOW, persona=FakePersona,
-                 calendar_grace_s=0.0):
-    # calendar_grace_s=0: tests that do not model Calendar start nudging at
-    # once (the startup wait for a first Calendar read has its own tests).
+def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=lambda: NOW):
     engine = engine or FakeEngine()
-    calls = {"persona": 0, "messages": 0}
-
-    def persona_fn(now):
-        calls["persona"] += 1
-        return persona(now)
+    calls = {"messages": 0}
 
     def messages_fn():
         calls["messages"] += 1
         return messages or {"state": "unavailable", "records": []}
 
     rt = br.BehaviorRuntime(
-        tmp_path / "home", synthetic=synthetic, founder=founder,
+        tmp_path / "home",
         local_factory=lambda path: engine,
-        persona_fn=persona_fn, messages_fn=messages_fn,
+        messages_fn=messages_fn,
         calendar_sync_fn=lambda: calendar if calendar is not None else {"available": False},
         session_db_fn=lambda: (_ for _ in ()).throw(RuntimeError("no sessions in tests")),
-        clock=clock, calendar_grace_s=calendar_grace_s)
+        clock=clock)
     rt.calls = calls
     return rt, engine
 
@@ -221,42 +204,20 @@ def test_off_by_default(monkeypatch, store):
     assert br.profile_card() == ""
 
 
-def test_founder_demo_turns_it_on_and_synthetic(monkeypatch):
-    monkeypatch.setenv("WISP_FOUNDER_DEMO", "1")
-    assert br.enabled() and br.synthetic_only() and br.founder_demo()
-    monkeypatch.delenv("WISP_FOUNDER_DEMO")
-    monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    assert br.enabled() and not br.synthetic_only()
-    monkeypatch.setenv("WISP_BEHAVIOR_SYNTHETIC_ONLY", "1")
-    assert br.synthetic_only()
-
-
-def test_behavior_zero_is_a_kill_switch_even_in_the_founder_demo(monkeypatch):
+def test_behavior_zero_and_other_values_are_off(monkeypatch):
     from service.behavior.flags import env_enabled
     from service.memory.prompt_blocks import profile_block
     from service.tools.behavior_tools import _unavailable
-    monkeypatch.setenv("WISP_FOUNDER_DEMO", "1")
+    monkeypatch.setenv("WISP_BEHAVIOR", "yes")
+    assert not env_enabled()
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert not env_enabled() and not br.enabled()
     assert profile_block() == "" and _unavailable()
 
 
 # --------------------------------------------------------------------------
-# Synthetic ingest -> mine -> nudge -> hub
+# Ingest -> mine -> nudge -> hub
 # --------------------------------------------------------------------------
-
-def test_synthetic_persona_ingested_once_per_day_and_never_real_messages(tmp_path, store):
-    rt, eng = make_runtime(tmp_path)
-    hub = FakeHub()
-    tick(rt, store, hub)
-    assert rt.calls["persona"] == 1 and rt.calls["messages"] == 0
-    assert "demo:gym:1" in eng.obs and "demo:sync:1" in eng.obs
-    assert eng.mined == 1
-    tick(rt, store, hub, now=NOW + 400, force=True)      # same day: idempotent, no re-generation
-    assert rt.calls["persona"] == 1
-    tick(rt, store, hub, now=NOW + 86400, force=True)    # next day: refreshed
-    assert rt.calls["persona"] == 2
-
 
 def test_nudge_published_with_app_event_shape_and_auto_actions(tmp_path, store):
     rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]))
@@ -372,7 +333,7 @@ def test_feedback_retires_pending_event(tmp_path, store):
 # Calendar snapshot mapping (cancellations are detected by the engine diff)
 # --------------------------------------------------------------------------
 
-def _cal(title, when, *, sid, calendar="Wisp Demo", end=None, all_day=False):
+def _cal(title, when, *, sid, calendar="Work", end=None, all_day=False):
     return {"source_id": sid, "kind": "meeting", "title": title, "context": calendar, "when_ts": when,
             "end_ts": end, "all_day": all_day, "confidence": 1.0}
 
@@ -389,43 +350,20 @@ def test_calendar_snapshot_maps_ids_and_detects_cancellation(tmp_path, store):
     tick(rt, store, FakeHub())
     source, ids, start, end, taken = eng.snapshot_calls[-1]
     assert source == "calendar" and taken == NOW - 5
-    # Wisp Demo only, upcoming only (persona supplies history), no all-day.
-    assert sorted(ids) == sorted([f"cal:t:{int(at(16, 0, 1))}", f"cal:b:{int(at(17, 0, 1))}"])
+    # Every calendar, past and upcoming, but no all-day events.
+    assert sorted(ids) == sorted([f"cal:g:{int(at(6, 30, -1))}", f"cal:t:{int(at(16, 0, 1))}",
+                                  f"cal:b:{int(at(17, 0, 1))}", f"cal:r:{int(at(11, 0, 1))}"])
     sync_ = eng.obs[f"cal:t:{int(at(16, 0, 1))}"]
     assert sync_.kind == "event" and sync_.end_ts == at(16, 30, 1) and sync_.source_id == "t"
-    assert sync_.attrs["calendar"] == "Wisp Demo"
-    # With a seeded demo calendar the persona contributes history only.
-    assert "demo:gym:1" in eng.obs and "demo:sync:1" not in eng.obs
+    assert sync_.attrs["calendar"] == "Work"
+    assert eng.obs[f"cal:r:{int(at(11, 0, 1))}"].attrs["calendar"] == "Home"
     mined = eng.mined
-    # The presenter deletes "Board prep"; the app re-syncs the calendar.
+    # The user deletes "Board prep"; the app re-syncs the calendar.
     store.sync_source("calendar", [i for i in items if i["source_id"] != "b"])
     sync["last_sync"] = NOW + 10
     tick(rt, store, FakeHub(), now=NOW + 20)              # a fresh sync is ingested immediately
     assert f"x:cal:b:{int(at(17, 0, 1))}" in eng.obs      # engine diff saw the cancellation
     assert eng.mined == mined + 1                         # changed -> re-mined right away
-
-
-def test_seeding_demo_calendar_later_drops_persona_upcoming(tmp_path, store):
-    class StoreEngine(FakeEngine):
-        class _Store:
-            def __init__(self, outer):
-                self.outer = outer
-
-            def delete_observations(self, ids):
-                return sum(1 for i in ids if self.outer.obs.pop(i, None) is not None)
-
-        def __init__(self):
-            super().__init__()
-            self._store = self._Store(self)
-    sync = {"available": True, "last_sync": NOW}
-    rt, eng = make_runtime(tmp_path, StoreEngine(), calendar=sync)
-    tick(rt, store, FakeHub())
-    assert "demo:sync:1" in eng.obs                        # no demo calendar yet: persona upcoming
-    store.sync_source("calendar", [_cal("Team sync", at(16, 0, 1), sid="t")])
-    sync["last_sync"] = NOW + 10
-    tick(rt, store, FakeHub(), now=NOW + 20)
-    assert "demo:sync:1" not in eng.obs and f"cal:t:{int(at(16, 0, 1))}" in eng.obs
-    assert "demo:gym:1" in eng.obs                         # history stays
 
 
 def test_wisp_marked_done_calendar_row_is_not_a_cancellation(tmp_path, store):
@@ -454,14 +392,6 @@ def test_calendar_not_read_until_a_completed_sync(tmp_path, store):
     assert eng.snapshot_calls == []
 
 
-def test_synthetic_without_demo_calendar_uses_persona_only(tmp_path, store):
-    store.sync_source("calendar", [_cal("Real thing", at(10, 0, 1), sid="r", calendar="Work")])
-    rt, eng = make_runtime(tmp_path, calendar={"available": True, "last_sync": NOW})
-    tick(rt, store, FakeHub())
-    assert eng.snapshot_calls == [] and "demo:gym:1" in eng.obs
-    assert not any(k.startswith("cal:") for k in eng.obs)
-
-
 def test_real_mode_reads_all_calendars_messages_metadata_and_reminders(tmp_path, store):
     store.sync_source("calendar", [_cal("Standup", at(10, 0, 1), sid="s", calendar="Work")])
     store.add_manual("Call mom", at(18, 0))
@@ -470,13 +400,12 @@ def test_real_mode_reads_all_calendars_messages_metadata_and_reminders(tmp_path,
          "conversation": "Sam", "text": "secret text never ingested"},
         {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "sender": "Me",
          "conversation": "Priya", "text": "also secret"}]}
-    rt, eng = make_runtime(tmp_path, synthetic=False, calendar={"available": True, "last_sync": NOW},
+    rt, eng = make_runtime(tmp_path, calendar={"available": True, "last_sync": NOW},
                            messages=messages)
     store.sync_source("calendar", [_cal("Standup", at(10, 0, 1), sid="s", calendar="Work"),
                                    _cal("Old 1:1", at(15, 0, -7), sid="o", calendar="Work",
                                         end=at(15, 30, -7))])
     tick(rt, store, FakeHub())
-    assert rt.calls["persona"] == 0
     assert any(k.startswith("cal:s:") for k in eng.obs)
     assert eng.obs[f"cal:o:{int(at(15, 0, -7))}"].end_ts == at(15, 30, -7)     # real mode keeps history
     assert eng.obs["msg:m1"].kind == "message_in" and eng.obs["msg:m1"].subject == "Sam"
@@ -486,24 +415,15 @@ def test_real_mode_reads_all_calendars_messages_metadata_and_reminders(tmp_path,
     assert "asks" in rt.errors                             # a failing source never stops the others
 
 
-def test_founder_never_reads_reminders_or_messages(tmp_path, store):
-    store.add_manual("Native-ish reminder", at(18, 0))
-    rt, eng = make_runtime(tmp_path, synthetic=True, founder=True,
-                           messages={"state": "ready", "records": []})
-    tick(rt, store, FakeHub())
-    assert rt.calls["messages"] == 0
-    assert not any(o.kind.startswith("reminder") for o in eng.obs.values())
-
-
 def test_behavior_created_reminders_are_not_ingested_back(tmp_path, store):
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]), synthetic=False)
+    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]))
     tick(rt, store, FakeHub())
     tick(rt, store, FakeHub(), now=NOW + br.INGEST_EVERY_S + 1)
     assert not any(o.subject == "Pack gym bag" for o in eng.obs.values())
 
 
 def test_approval_and_denial_are_recorded(tmp_path, store):
-    rt, eng = make_runtime(tmp_path, synthetic=False)
+    rt, eng = make_runtime(tmp_path)
     rt.record_decision("send_message", True)
     rt.record_decision("add_calendar_event", False)
     tick(rt, store, FakeHub())
@@ -511,119 +431,14 @@ def test_approval_and_denial_are_recorded(tmp_path, store):
     assert kinds == [("approval", "send_message"), ("denial", "add_calendar_event")]
 
 
-def test_synthetic_persona_never_learns_real_approvals(tmp_path, store):
-    rt, eng = make_runtime(tmp_path, synthetic=True)
-    rt.record_decision("send_message", True)
-    rt.record_decision("add_calendar_event", False)
-    assert len(rt._pending) == 0
-    rt._pending.append(Observation(id="dec:x:1", kind="approval", ts=NOW, subject="x", source="wisp"))
-    tick(rt, store, FakeHub())                 # anything queued earlier is dropped, not observed
-    assert not [o for o in eng.obs.values() if o.source == "wisp"] and len(rt._pending) == 0
-
-
 def test_agent_loop_hook_is_safe(monkeypatch, tmp_path):
     from service.agent.loop import _note_decision
     assert _note_decision("send_message", True) is True       # disabled: pass-through
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    rt, eng = make_runtime(tmp_path, synthetic=False)
+    rt, eng = make_runtime(tmp_path)
     br.set_runtime(rt)
     assert _note_decision("send_email", False) is False
     assert [o.kind for o in rt._pending] == ["denial"]
-
-
-# --------------------------------------------------------------------------
-# Synthetic startup: no nudge before the first Calendar read settles
-# --------------------------------------------------------------------------
-
-def test_synthetic_waits_for_first_calendar_read_then_uses_demo_calendar(tmp_path, store):
-    sync = {"available": False}
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]), calendar=sync,
-                           calendar_grace_s=br.CALENDAR_GRACE_S)
-    hub = FakeHub()
-    assert tick(rt, store, hub, force=True) == []           # even a forced run waits
-    assert eng.generated == 0 and hub.events == []
-    assert "demo:gym:1" in eng.obs and "demo:sync:1" not in eng.obs   # history yes, upcoming no
-    assert rt.status()["waiting_for_calendar"] is True
-    # The first read lands with the seeded "Wisp Demo" calendar: it alone supplies upcoming events.
-    store.sync_source("calendar", [_cal("Team sync", at(16, 0, 1), sid="t")])
-    sync.update({"available": True, "last_sync": NOW + 30})
-    [row] = tick(rt, store, hub, now=NOW + 40)
-    assert row["nudge_id"] == "n1" and eng.generated == 1
-    assert "demo:sync:1" not in eng.obs and f"cal:t:{int(at(16, 0, 1))}" in eng.obs
-    assert rt.status()["waiting_for_calendar"] is False
-
-
-def test_synthetic_falls_back_to_persona_upcoming_after_grace(tmp_path, store):
-    clock = [NOW]
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]),
-                           calendar={"available": False}, clock=lambda: clock[0],
-                           calendar_grace_s=br.CALENDAR_GRACE_S)
-    hub = FakeHub()
-    assert tick(rt, store, hub) == [] and eng.generated == 0
-    clock[0] = NOW + br.CALENDAR_GRACE_S + 1                 # Calendar access off: no read ever comes
-    [row] = tick(rt, store, hub, now=clock[0])
-    assert row["nudge_id"] == "n1" and "demo:sync:1" in eng.obs
-
-
-def test_denied_calendar_read_settles_at_once(tmp_path, store):
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]),
-                           calendar={"available": False, "syncing": False, "last_sync": NOW - 5},
-                           calendar_grace_s=br.CALENDAR_GRACE_S)
-    [row] = tick(rt, store, FakeHub())
-    assert row["nudge_id"] == "n1" and "demo:sync:1" in eng.obs
-
-
-def test_real_mode_never_waits_for_calendar(tmp_path, store):
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]), synthetic=False,
-                           calendar_grace_s=br.CALENDAR_GRACE_S)
-    rt._ingest_reminders = lambda store, now: False
-    [row] = tick(rt, store, FakeHub())
-    assert row["nudge_id"] == "n1"
-
-
-class _DeletingEngine(FakeEngine):
-    """FakeEngine whose local store can delete observations (like BehaviorStore)."""
-
-    class _Store:
-        def __init__(self, outer):
-            self.outer = outer
-
-        def delete_observations(self, ids):
-            return sum(1 for i in ids if self.outer.obs.pop(i, None) is not None)
-
-    def __init__(self, nudges=()):
-        super().__init__(nudges=nudges)
-        self._store = self._Store(self)
-
-
-def test_persona_never_duplicates_a_demo_calendar_event_across_a_day_boundary(tmp_path, store):
-    """Monday the calendar supplies Tuesday's gym; Wednesday's regenerated
-    persona history has its own (jittered) copy of it: only one may count."""
-    class JitterPersona:
-        def __init__(self, now):
-            day = int((now - NOW) // 86400)
-            self.observations = [Observation(
-                id=f"demo:gym:{day}:{d}", kind="event", ts=at(6, 35, d), end_ts=at(7, 30, d),
-                subject="Gym", source="demo", category="fitness") for d in range(-3, day + 1) if at(6, 35, d) < now]
-            self.upcoming = []
-
-    clock = [NOW]
-    sync = {"available": True, "last_sync": NOW}
-    store.sync_source("calendar", [_cal("Gym", at(6, 30, 1), sid="g", end=at(7, 30, 1))])
-    rt, eng = make_runtime(tmp_path, _DeletingEngine(), calendar=sync, clock=lambda: clock[0],
-                           persona=JitterPersona)
-    tick(rt, store, FakeHub())
-    assert f"cal:g:{int(at(6, 30, 1))}" in eng.obs
-    clock[0] = at(12, 0, 2)                                  # Wednesday noon: new persona day
-    sync["last_sync"] = clock[0]
-    tick(rt, store, FakeHub(), now=clock[0])
-
-    def gyms_on(day):
-        lo, hi = at(0, 0, day), at(0, 0, day + 1)
-        return sorted(o.id.split(":")[0] for o in eng.obs.values()
-                      if o.kind == "event" and o.subject == "Gym" and lo <= o.ts < hi)
-    assert gyms_on(1) == ["cal"]                             # Tuesday: the calendar's copy only
-    assert gyms_on(0) == ["demo"] and gyms_on(2) == ["demo"]  # other days: persona history
 
 
 def test_published_auto_flags_are_true_only_for_performed_actions(tmp_path, store):
@@ -711,7 +526,7 @@ def test_profile_block_in_memory_and_remote_only_assembly(monkeypatch, tmp_path)
     monkeypatch.setattr("service.memory.facts.memory_context_block", lambda query="": "\nFACT", raising=False)
     assert prompt_blocks.profile_block() == ""
     assert prompt_blocks.remote_only_context_block() == ""
-    monkeypatch.setenv("WISP_FOUNDER_DEMO", "1")
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
     rt, eng = make_runtime(tmp_path)
     rt.refresh_card()
     br.set_runtime(rt)
@@ -740,32 +555,6 @@ def test_main_wires_profile_into_remote_only_paths():
     # Read-only remote keeps memory off; the full build (WISP_REMOTE_FULL) follows the Mac path.
     assert "include_memory_context=not remote_read_only_mode() and" in text
     assert "behavior_router" in src and "behavior_runtime.run_loop(assistant_store, assistant_hub)" in src
-
-
-# --------------------------------------------------------------------------
-# Cleanup
-# --------------------------------------------------------------------------
-
-def test_clear_demo_state(tmp_path, store):
-    from service.assistant.hub import Hub
-    rt, eng = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]))
-    tick(rt, store, Hub(store))
-    mine = store.add_manual("My own reminder", at(19, 0))
-    (rt.home / br.ENGINE_DB).write_text("engine")
-    br.set_runtime(rt)
-    out = br.clear_demo_state(store, rt.home)
-    assert out["commitments"] == 2 and out["events"] == 1
-    assert set(out["files"]) >= {br.ENGINE_DB, br.RUNTIME_DB}
-    left = [r[0] for r in store._db.execute("SELECT id FROM commitments")]
-    assert left == [mine["id"]]
-    assert store.event_by_key("behavior:n1") is None
-
-
-def test_qa_seed_source_used_in_rehearsal(monkeypatch, tmp_path, store):
-    monkeypatch.setenv("WISP_QA_SEED", "1")
-    rt, _ = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]))
-    tick(rt, store, FakeHub())
-    assert {r[0] for r in store._db.execute("SELECT source FROM commitments")} == {"wisp_seed"}
 
 
 # --------------------------------------------------------------------------
@@ -852,40 +641,7 @@ def test_phraser_returns_none_on_event_loop():
 
 
 # --------------------------------------------------------------------------
-# Against the real engine + persona, once they exist
-# --------------------------------------------------------------------------
-
-def _real_engine_or_skip(path):
-    try:
-        from service.behavior.engine import BehaviorEngine
-        return BehaviorEngine(path)
-    except (NotImplementedError, ImportError) as exc:
-        pytest.skip(f"behavior engine not implemented yet: {exc}")
-
-
-def test_with_real_engine_and_persona(tmp_path, store):
-    engine = _real_engine_or_skip(tmp_path / "real.db")
-    try:
-        from service.behavior.persona import generate_persona
-    except ImportError:
-        pytest.skip("persona generator not available yet")
-    now = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0).timestamp()
-    rt = br.BehaviorRuntime(tmp_path / "home", synthetic=True, founder=True,
-                            local_factory=lambda p: engine, persona_fn=generate_persona,
-                            messages_fn=lambda: {"state": "unavailable"},
-                            calendar_sync_fn=lambda: {"available": False}, clock=lambda: now)
-    hub = FakeHub()
-    asyncio.run(rt.tick(store, hub, now=now, force=True))
-    assert rt.errors.get("persona") is None and rt.errors.get("engine") is None, rt.errors
-    assert engine.patterns(), "persona produced no patterns"
-    assert len(rt.refresh_card(now).encode()) <= 700
-    for e in hub.events:
-        if e["event"]["type"] == "nudge":
-            assert all(e["event"][k] for k in ("nudge_id", "title", "body", "because"))
-
-
-# --------------------------------------------------------------------------
-# Remote-only (Intel founder) build: no assistant scheduler, so main.lifespan
+# Read-only remote inference: no assistant scheduler, so main.lifespan
 # starts the behavior loop itself — and only when behavior learning is on.
 # --------------------------------------------------------------------------
 
@@ -943,10 +699,7 @@ class RemoteOnlyLifespan(RemoteFixture):
         async def run():
             with patch.dict("sys.modules", {"service.identity": identity, "service.config.quarantine": q,
                                             "service.browser": browser, "service.browser.host": host}), \
-                    patch("service.config.quarantine", q), patch.object(br, "run_loop", fake_loop), \
-                    patch("service.demo.founder.enabled", Mock(return_value=True)):
-                # The founder fixture validator reads its flags at import time;
-                # it has its own tests, so it is stubbed here.
+                    patch("service.config.quarantine", q), patch.object(br, "run_loop", fake_loop):
                 async with ns["lifespan"](None):
                     await asyncio.sleep(0)
         asyncio.run(run())
@@ -954,19 +707,12 @@ class RemoteOnlyLifespan(RemoteFixture):
         return watched, started, (store_obj, hub_obj)
 
     def test_behavior_loop_started_only_when_enabled(self):
-        old = {k: os.environ.pop(k, None) for k in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO")}
+        old = {k: os.environ.pop(k, None) for k in ("WISP_BEHAVIOR",)}
         try:
             watched, started, _ = self._run()
             self.assertEqual(watched, [()])
             self.assertEqual(started, [])
             os.environ["WISP_BEHAVIOR"] = "1"
-            watched, started, pair = self._run()
-            self.assertEqual(len(watched[0]), 1)
-            self.assertEqual(started, [pair])
-            # The Intel founder build sets only WISP_FOUNDER_DEMO=1 (plus
-            # WISP_REMOTE_ONLY): the loop must start from that flag alone.
-            os.environ.pop("WISP_BEHAVIOR")
-            os.environ["WISP_FOUNDER_DEMO"] = "1"
             watched, started, pair = self._run()
             self.assertEqual(len(watched[0]), 1)
             self.assertEqual(started, [pair])

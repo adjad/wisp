@@ -50,12 +50,10 @@ def reset() -> None:
 def _remote_profile_block() -> str | None:
     """Why this process must not read messages or write reminders at all, or None.
 
-    The Aria demo and the read-only founder build run on synthetic or fixed data; the runner
-    would otherwise read the real Messages feed and write real reminders behind them."""
+    Read-only remote inference allows no writes; the runner would otherwise read the real
+    Messages feed and write real reminders behind it."""
     try:
-        from service.inference.remote_policy import aria_demo_mode, remote_read_only_mode
-        if aria_demo_mode():
-            return "the Aria demo build does not run the attention runner"
+        from service.inference.remote_policy import remote_read_only_mode
         if remote_read_only_mode():
             return "the read-only remote build does not run the attention runner"
     except Exception:  # noqa: BLE001 — if the profile cannot be read, assume the restrictive one

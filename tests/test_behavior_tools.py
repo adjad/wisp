@@ -5,7 +5,6 @@ import asyncio
 
 import pytest
 
-import service.demo.founder  # noqa: F401 — read its launch flags from the clean environment first
 from service.assistant import behavior_runtime as br
 from service.tools import behavior_tools as bt
 from service.tools.registry import REGISTRY, classify_tool_outcome, run_tool
@@ -16,7 +15,7 @@ NAMES = ("describe_me", "predict_my_day", "my_patterns", "correct_pattern")
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
-    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY"):
+    for key in ("WISP_BEHAVIOR",):
         monkeypatch.delenv(key, raising=False)
     br.set_runtime(None)
     yield
@@ -112,14 +111,10 @@ def test_correct_pattern_by_id_and_text(on):
 def test_remote_only_allowlist_tracks_behavior_flag(monkeypatch):
     from service.inference import remote_policy
     for name in NAMES:
-        assert not remote_policy.remote_demo_tool_allowed(name)
-    monkeypatch.setenv("WISP_FOUNDER_DEMO", "1")
-    for name in NAMES:
-        assert remote_policy.remote_demo_tool_allowed(name)
-    monkeypatch.delenv("WISP_FOUNDER_DEMO")
+        assert not remote_policy.remote_read_tool_allowed(name)
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    assert all(remote_policy.remote_demo_tool_allowed(name) for name in NAMES)
-    assert not remote_policy.remote_demo_tool_allowed("send_message")
+    assert all(remote_policy.remote_read_tool_allowed(name) for name in NAMES)
+    assert not remote_policy.remote_read_tool_allowed("send_message")
     # The pinned four-read set itself is unchanged.
     assert "describe_me" not in remote_policy._READ_TOOLS
 

@@ -49,9 +49,9 @@ import uuid
 import json
 from pathlib import Path
 
-from service.paths import STATE_DIR
+from service.paths import MOE_DIR
 
-DB_PATH = STATE_DIR / "sessions.db"
+DB_PATH = MOE_DIR / "sessions.db"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
