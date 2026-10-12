@@ -4,6 +4,21 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Remote inference is now a generic, user-configured mode with no built-in server. It starts only when Wisp is launched with `WISP_REMOTE_ONLY=1` and `~/.moe/config.yaml` has a complete `inference.remote_only` profile (an HTTPS `base_url`, a `model_id`, a `keychain:<name>` credential and every request limit). With the flag set and no valid profile, the backend refuses to start. `WISP_REMOTE_FULL=1` still turns on full tools with normal approvals. Behavior learning no longer turns on by itself in full remote mode; it needs `WISP_BEHAVIOR=1`. See docs/REMOTE_INFERENCE.md.
+
+### Removed
+
+- Removed the GX10 server support: `brain_server/`, `deploy/gx10/`, the GX10 runbooks, the remote behavior brain (`WISP_BRAIN_MODE`, `WISP_BRAIN_URL`, `WISP_BRAIN_TOKEN`) and the pinned GX10 remote-inference profile.
+- Removed the Intel Mac builds: the `WISP_REMOTE_ONLY_DEMO`, `WISP_FOUNDER_DEMO` and `WISP_REMOTE_FULL` app compile flags and their code paths.
+- Removed every demo mode:
+  - the founder demo and its fictional fixtures (`WISP_FOUNDER_DEMO`);
+  - the Aria demo world (`WISP_ARIA_DEMO`, the `/demo/aria/*` endpoints, the menu toggle and the separate demo state directory);
+  - the behavior engine's synthetic persona mode (`WISP_BEHAVIOR_SYNTHETIC_ONLY`, `POST /behavior/reset`);
+  - the Catch demo (`WISP_ATTENTION_DEMO`). The proactive attention runner is unchanged;
+  - the `demo/` tooling.
+
 ## [1.3.0] - 2026-10-11
 
 ### Added

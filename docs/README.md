@@ -15,6 +15,12 @@ Start with the root [README](../README.md) for what Wisp is and how to run it.
   engine that replaced free-form tool selection for common tasks.
 - [CONVERSATION_MEMORY_PLAN.md](CONVERSATION_MEMORY_PLAN.md) — conversation
   memory design (proposed; no extraction or migration has run).
+- [BEHAVIOR_ENGINE.md](BEHAVIOR_ENGINE.md) — routine learning, predictions
+  and nudges (`WISP_BEHAVIOR=1`).
+- [inference-providers.md](inference-providers.md) — per-role local, remote and
+  cloud inference bindings.
+- [REMOTE_INFERENCE.md](REMOTE_INFERENCE.md) — remote-only inference: every
+  role on one user-configured server (`WISP_REMOTE_ONLY=1`).
 
 ## Tools and routing
 

@@ -10,22 +10,17 @@ are deterministic statistics with evidence ids. An optional LLM (the
 *phraser*) may reword a nudge body and label ambiguous event titles from a
 fixed list. It never decides, and never adds facts.
 
-Demo script: [BEHAVIOR_DEMO.md](BEHAVIOR_DEMO.md). GX10 setup:
-[gx10/RUNBOOK.md](gx10/RUNBOOK.md). Brain server API:
-[../brain_server/README.md](../brain_server/README.md).
-
 ## Data flow
 
 ```
  Mac sources                 Mac runtime (service/assistant/           Engine (service/behavior)
  -----------                 behavior_runtime.py)                       -------------------------
- Calendar (EventKit)  --+    ingest every 5 min + after a Calendar     local:  BehaviorEngine in-process
+ Calendar (EventKit)  --+    ingest every 5 min + after a Calendar     BehaviorEngine in-process
  Reminders            --+--> sync; mine every 30 min or on change;  --> <WISP_HOME>/behavior.db
- Messages (metadata)  --+    generate nudges every 60 s                 remote: RemoteEngine --HTTPS+bearer-->
- Wisp asks (topic)    --+    (tick every 30 s)                                  brain_server on the GX10
- Approvals/denials    --+           |                                          (Tailscale :8443 -> :8790)
- [synthetic: persona +             |  any remote failure -> local engine for 120 s
-  "Wisp Demo" calendar only]       v
+ Messages (metadata)  --+    generate nudges every 60 s
+ Wisp asks (topic)    --+    (tick every 30 s)
+ Approvals/denials    --+           |
+                                    v
                           new Nudge objects  <-- observe / mine / predict / generate_nudges / feedback
                                    |
         perform auto actions (add_reminder / add_hold on Wisp's OWN schedule), record them for Undo
@@ -40,8 +35,8 @@ Demo script: [BEHAVIOR_DEMO.md](BEHAVIOR_DEMO.md). GX10 setup:
 
 The engine package (`service/behavior`) is pure Python + SQLite and must not
 import `service.assistant`, `service.tools`, `service.main`, `service.config`
-or `service.inference`. A test pins this, because the same code runs on the Mac
-and inside `brain_server` on the GX10.
+or `service.inference`. A test pins this, so the engine stays a pure library
+the Mac runtime calls in-process.
 
 ## What it learns
 
@@ -130,56 +125,48 @@ confirmed patterns first, then the best of each kind, then today's predictions,
 whole lines only, code-composed. `prompt_blocks.profile_block()` adds it to the
 system prompt with a header that says the patterns "may be wrong, never state
 them as certain facts". It is cached 60 s and never blocks the event loop. In
-the **remote-only (Intel founder) build** all other memory context is off and
-`remote_only_context_block()` adds only this card. A `RemoteEngine` keeps the
-last good card in `<WISP_HOME>/behavior_profile_card.txt` (mode 0600), so a
-GX10 outage does not blank it.
+**read-only remote inference** ([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)) all
+other memory context is off and `remote_only_context_block()` adds only this
+card.
 
-## Privacy: what each mode reads and where it goes
+## Privacy: what it reads and where it goes
 
-| Mode | Reads | Leaves the Mac |
-| --- | --- | --- |
-| Real (`WISP_BEHAVIOR=1`) | Calendar events, Reminders, **Messages metadata** (direction, contact, time; never text), the topic label of the user's Wisp asks (never the text), approvals/denials | nothing in `local` brain mode, except short phrasing facts sent to the configured inference endpoint |
-| Synthetic (`WISP_BEHAVIOR_SYNTHETIC_ONLY=1`, implied by the founder demo) | the fictional persona and **only** the calendar named `Wisp Demo`. Never real Messages, Reminders, Notes or asks | same |
-| `remote` brain | as above | observations (titles, contacts, times) go to the GX10 brain server over Tailscale, bearer token from Keychain or `WISP_BRAIN_TOKEN` |
-
+- With `WISP_BEHAVIOR=1` it reads Calendar events, Reminders, **Messages
+  metadata** (direction, contact, time; never text), the topic label of the
+  user's Wisp asks (never the text), and approvals/denials.
 - Learned data lives in `<WISP_HOME>/behavior.db` (default `~/.moe/behavior.db`),
-  next to `behavior_runtime.db` (delivered nudges and auto actions). On the GX10
-  it is `~/.local/share/wisp-brain/brain.db`.
-- In `local` mode with a phraser, only the few facts of one nudge (title, body,
-  evidence line, button labels) go to the inference endpoint, which in the
-  founder build is the GX10 gateway. Event titles may go too, to label unknown
-  titles. The timeline does not.
-- `POST /behavior/reset` (synthetic only) deletes all of the above plus the
-  Wisp-schedule items behavior learning created.
+  next to `behavior_runtime.db` (delivered nudges and auto actions). Nothing
+  else leaves the Mac, except phrasing facts (below).
+- With a phraser, only the few facts of one nudge (title, body, evidence line,
+  button labels) go to the inference endpoint the `fast` role uses: the local
+  model, or the user's remote server under remote inference. Event titles may
+  go too, to label unknown titles. The timeline does not.
 
-## What goes to the remote model
+## What goes to a remote model
 
-- Read-only founder build: only the profile card (at most 700 bytes).
-- Full remote mode (`WISP_REMOTE_FULL`): the GX10 also receives memory facts, the
-  profile card, about 6k tokens of conversation history, full tool results
-  (including mail and message text), and behavior phrasing facts (event titles,
-  contact names).
+Only under remote inference ([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)):
+
+- Read-only mode (`WISP_REMOTE_ONLY=1`): of the learned data, only the profile
+  card (at most 700 bytes) and behavior phrasing facts; no memory facts or
+  history.
+- Full mode (`WISP_REMOTE_FULL=1`): the server also receives memory facts, the
+  profile card, recent conversation history (bounded by the profile's byte
+  budget), full tool results (including mail and message text), and behavior
+  phrasing facts (event titles, contact names).
 
 ## Flags
 
 | Flag | Meaning |
 | --- | --- |
-| `WISP_BEHAVIOR=1` | Behavior learning on. Off by default in normal Mac builds; ON by default in the Intel full-remote build (`WISP_REMOTE_FULL`), where it learns from real activity. `WISP_BEHAVIOR=0` is the kill switch. |
-| `WISP_BEHAVIOR=0` | Kill switch: behavior learning off even in the founder demo build. |
-| `WISP_FOUNDER_DEMO=1` | Founder build: turns behavior on and implies synthetic-only. The Intel app sets this (with `WISP_REMOTE_ONLY=1`) for its backend. |
-| `WISP_BEHAVIOR_SYNTHETIC_ONLY=1` | Learn from the persona and the `Wisp Demo` calendar only. Required for `/behavior/reset`. |
-| `WISP_BRAIN_MODE` | `local` (default) or `remote`. Falls back to `brain.mode` in `<WISP_HOME>/config.yaml`. If neither is valid, a set `WISP_BRAIN_URL` selects `remote`. |
-| `WISP_BRAIN_URL` | Brain origin, for example `https://6wjp.tail4cc204.ts.net:8443`, no trailing slash (the Keychain account hashes it). Falls back to `brain.url` in config. |
-| `WISP_BRAIN_TOKEN` | Bearer token. Otherwise Keychain service `com.wisp.inference`, account `wispbrain:<sha256(URL)>`. |
-| `WISP_BEHAVIOR_PHRASER=0` | Local engine only: template text, no phrasing calls. |
+| `WISP_BEHAVIOR=1` | Behavior learning on. Off otherwise (including under remote inference). |
+| `WISP_BEHAVIOR=0` | Off (the same as unset). |
+| `WISP_BEHAVIOR_PHRASER=0` | Template text, no phrasing calls. |
 | `WISP_HOME` | Moves all of Wisp's state, including `behavior.db`. |
 
 Tick cadence: runtime tick 30 s, ingest 5 min (and right after a Calendar
 sync, which the app does about once a minute), mine 30 min or on change,
-nudges 60 s. The brain server mines every 15 min and generates nudges every
-60 s by default. The remote-only build has no assistant scheduler, so it runs
-`behavior_runtime.run_loop` itself.
+nudges 60 s. Read-only remote inference has no assistant scheduler, so it
+runs `behavior_runtime.run_loop` itself.
 
 ## Endpoints
 
@@ -188,9 +175,8 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 
 | Route | Purpose |
 | --- | --- |
-| `GET /behavior/status` | enabled, mode, active engine, last runs, errors, counts |
+| `GET /behavior/status` | enabled, last runs, errors, counts |
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
-| `POST /behavior/reset` (alias `/behavior/clear`) | synthetic only: forget everything, fresh nudge budget |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
 | `GET /behavior/profile?subject=` | profile card, patterns, predictions, summary |
@@ -199,12 +185,10 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 | `POST /behavior/nudges/{id}/undo` | remove what Wisp added; counts as `undo` feedback |
 | `POST /behavior/nudges/{id}/act` `{"action_index"}` | offered action: returns the prompt, or creates the reversible item |
 
-The GX10 brain server speaks `/v1/*` (see its README).
-
 ## Tools and routing
 
-Four read-only tools, hidden while behavior is off and allowed in the
-remote-only build: `describe_me`, `predict_my_day` (today or tomorrow),
+Four read-only tools, hidden while behavior is off and allowed in read-only
+remote inference: `describe_me`, `predict_my_day` (today or tomorrow),
 `my_patterns` (query) and `correct_pattern` (confirm, reject or restore; only
 changes Wisp's learned profile). The router claims whole-utterance phrases
 before other routes, for example "What do you know about me?", "Predict my
@@ -217,37 +201,33 @@ my email") keep the normal router.
 ## Testing
 
 ```sh
-WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py tests/test_brain_server.py tests/test_seed_mac_persona.py tests/test_wisp_demo_behavior.py
+WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py
 ```
 
 | File | Covers |
 | --- | --- |
 | `test_behavior_engine.py` | facade, snapshot diffing, pattern status, phraser fallbacks, cursors |
-| `test_behavior_miners.py`, `test_behavior_persona.py` | miners recover the routines planted in the fictional persona |
+| `test_behavior_miners.py`, `test_behavior_persona.py` | miners recover the routines planted in the fictional test persona (`tests/fixtures/behavior_persona.py`) |
 | `test_behavior_predict_nudges.py` | predictions, budget, quiet hours, cooldown, dedupe, mute, undo |
 | `test_behavior_phraser.py` | `OpenAIPhraser` contract, fail-closed behavior |
-| `test_behavior_client.py`, `test_brain_server.py` | client/server round trip, auth, limits, deploy script syntax |
-| `test_behavior_runtime.py`, `test_behavior_api.py` | ingest to hub, auto actions and Undo, remote fallback, endpoints |
+| `test_behavior_runtime.py`, `test_behavior_api.py` | ingest to hub, auto actions and Undo, endpoints |
 | `test_behavior_tools.py`, `test_behavior_routing.py` | tools and router phrases |
 | `test_behavior_boundary.py` | `service.behavior` stays portable |
-| `test_seed_mac_persona.py`, `test_wisp_demo_behavior.py` | demo seeding and CLI, with osascript and HTTP mocked |
 
 ## Known limitations
 
 - **Cancellation history starts at install.** Calendar apps do not keep what
   was deleted, so on real data cancel/move patterns only accumulate from the
-  day Wisp first saw the calendar. The demo persona plants this history.
-- **No scheduler in the founder build.** Wisp-schedule reminders and holds are
-  created (and Undo works), but nothing fires them. What the audience sees is
-  the nudge notification itself and the panel card.
+  day Wisp first saw the calendar.
+- **No scheduler in read-only remote inference.** Wisp-schedule reminders and
+  holds are created (and Undo works), but nothing fires them; the nudge
+  notification and the panel card still appear.
 - **Phrasing can fall back to templates.** The Mac phraser gives each call 6 s,
   allows 4 calls per minute, and skips while the user is waiting on a turn. A
-  slow GX10 therefore shows the code-composed text. That is intentional.
-- **Rehearsals consume the daily budget** (4 per day). Run `POST
-  /behavior/reset` before the real run.
+  slow server therefore shows the code-composed text. That is intentional.
 - **A stale hold stays.** If the user really cancels a meeting that has a
   "Tentative: Likely skip" hold, the hold is not removed automatically.
 - **Approvals, denials and declines are recorded but not mined yet.**
-- **Time zones.** The brain server's `--tz` must be the user's zone; snapshots
-  carry only epoch times.
-- **Single user.** One engine database per Mac or brain.
+- **Time zones.** The engine mines in the Mac's zone; snapshots carry only
+  epoch times.
+- **Single user.** One engine database per Mac.

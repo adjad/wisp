@@ -51,8 +51,8 @@ Wisp_Hackathon repository; original Wisp main remains unchanged.
 - A default availability window is 09:00–18:00; its result labels that window.
   Explicit integer-hour `after`/`before` bounds use the stated hour through
   midnight/from midnight. Unsupported combinations do not broaden the read.
-- This candidate does not implement the separately planned Intel/GX10/Tailscale
-  remote-only runtime; startup, authentication, packaging and endpoint changes
+- This candidate does not implement the separately planned remote-only
+  inference runtime; startup, authentication, packaging and endpoint changes
   for that milestone remain outside this diff.
 
 See CONTRACT.md for fixture and observation format. Use the benchmark runner's
