@@ -38,3 +38,39 @@ def test_identical_read_guard_applies_under_model_led_discovery(synthetic):
     run([[discover("calendar", "get_upcoming")], [call("get_upcoming", period="this week")],
          [call("get_upcoming", period="this week")], "Synthetic agenda."])
     assert effects == [("get_upcoming", {"period": "this week"})]
+
+
+def test_read_after_a_write_outside_the_effect_table_runs_again(synthetic):
+    # set_volume-style tools default to effect "read" in the outcome table; the
+    # guard must still treat them as writes because their category isn't a read.
+    effects, register = synthetic
+    register("set_volume", "device_tools", "system_write", parameters={"type": "object", "properties": {
+        "level": {"type": "integer"}}, "additionalProperties": False})
+    run([[call("get_upcoming", days=1)], [call("set_volume", level=50)],
+         [call("get_upcoming", days=1)], "Synthetic answer."],
+        model_led_discovery=False, tools=["get_upcoming", "set_volume"], approval=Approval(allowed=True))
+    assert [name for name, _ in effects] == ["get_upcoming", "set_volume", "get_upcoming"]
+
+
+def test_a_parenthesized_notice_does_not_block_an_identical_retry(synthetic, monkeypatch):
+    from service.tools import registry
+    calls = []
+
+    async def empty_search(**args):
+        calls.append(args)
+        return "(no public web results found; do not answer from memory.)"
+    empty_search.__module__ = "service.tools.web_tools"
+    monkeypatch.setitem(registry.REGISTRY, "web_search", registry.Tool(
+        "web_search", "Synthetic search", {"type": "object", "properties": {"query": {"type": "string"}}},
+        "web_read", empty_search))
+    run([[call("web_search", query="x")], [call("web_search", query="x")], "Synthetic answer."],
+        model_led_discovery=False, tools=["web_search"])
+    assert len(calls) == 2
+
+
+def test_volatile_status_reads_can_be_checked_again(synthetic):
+    effects, register = synthetic
+    register("get_battery_status", "system_tools", "system_read")
+    run([[call("get_battery_status")], [call("get_battery_status")], "Synthetic answer."],
+        model_led_discovery=False, tools=["get_battery_status"])
+    assert [name for name, _ in effects] == ["get_battery_status", "get_battery_status"]
