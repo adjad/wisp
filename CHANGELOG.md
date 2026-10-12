@@ -4,6 +4,10 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Wisp is now a regular Mac app instead of a menu-bar-only one. It has a Dock icon, an app menu (Settings, Hide, Close Window, Quit) and a Window menu, opening it shows the Chat window, and clicking the Dock icon brings the window back. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q quits it through the same shutdown as the menu-bar Quit. The notch and the menu-bar icon are unchanged.
+
 ## [1.2.5] - 2026-10-11
 
 Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
