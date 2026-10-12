@@ -14,7 +14,7 @@ Read-only sources this stays consistent with: `service/demo/founder-demo.json` (
 | `mail.json` | Aria's mailbox | 48 threads, 99 messages (inbox 51, sent 25, archive 23), 12 unread (4 dated today), 10 flagged, 16 with attachments |
 | `messages.json` | iMessage-style threads | 275 messages in 6 chats: Dev 102, Mom 52, Cedarloop core 65, Maya 27, Samira 18, Nora 11 (4 unread) |
 | `reply_templates.json` | Canned simulated replies | 18 contacts, 71 templates, 5 generic |
-| `validate.py` | Stdlib checker (`python3 validate.py`) | - |
+| `scripts/validate_aria_demo_data.py` | Stdlib checker (`python3 scripts/validate_aria_demo_data.py`) | - |
 
 ### contacts_extra.json
 `{schema_version, synthetic, provenance, contacts[]}`. Each contact: `id, given_name, family_name, role, organization, email, phone, relationship, context`. IDs continue the base set: c15 Marisol Solano (Mom), c16 Maya Brandt (friend), c17 Ingrid Lund (board chair), c18 Hana Weiss (outside counsel, Larkspur Legal), c19 Pilar Nunez (recruiter, Alder Search). The base c01-c14 are not repeated.
@@ -73,4 +73,4 @@ Deliberate departure from the brief: the story has no term sheet (note n08 forbi
 14. "Find everything about Foundry." (mail t21-t23, notes n05, reminders r03/r14, core chat)
 
 ## Validation
-Run `python3 validate.py` in this folder. It checks JSON validity, unique ids, parseable `-07:00` dates not later than 2026-10-11T23:59, reserved email domains (including addresses inside body text), `555-01xx` phones, that every referenced contact exists (c01-c14 base or c15-c19), thread size 1-6, counts, Dev/Mom rhythm, and template coverage.
+Run `python3 scripts/validate_aria_demo_data.py` from the repository root. It checks JSON validity, unique ids, parseable `-07:00` dates not later than 2026-10-11T23:59, reserved email domains (including addresses inside body text), `555-01xx` phones, that every referenced contact exists (c01-c14 base or c15-c19), thread size 1-6, counts, Dev/Mom rhythm, and template coverage.
