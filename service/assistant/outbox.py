@@ -88,13 +88,6 @@ async def _request(event_type: str, payload: dict,
 
     Returns {"ok": bool, "error": str, ...}. Cancellation propagates.
     """
-    from service.demo.aria import env_requested as aria_demo
-    if aria_demo():
-        # The Aria demo never asks the app to touch a native app or send
-        # anything: its actions run against the synthetic world instead
-        # (service/demo/aria). Nothing is published, so nothing can leave.
-        return {"ok": False, "status": "not_attempted", "dispatch_started": False,
-                "error": "The Aria demo never performs native actions; nothing was sent or changed"}
     calendar = event_type in {"create_calendar_event", "delete_calendar_event"}
     reminder = event_type in {"create_reminder", "update_reminder", "complete_reminder", "delete_reminder"}
     native = calendar or reminder

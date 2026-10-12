@@ -28,9 +28,9 @@ import threading
 import time
 from pathlib import Path
 
-from service.paths import STATE_DIR
+from service.paths import MOE_DIR
 
-GRANTS_PATH = STATE_DIR / "grants.json"
+GRANTS_PATH = MOE_DIR / "grants.json"
 
 # Outbound actions under the user's identity, plus installing self-authored
 # code. Always ask, every time, no standing grant available. See the module

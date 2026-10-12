@@ -1,8 +1,8 @@
-"""Fictional demo persona: eight weeks of Aria Solano's behavior, plus two weeks ahead.
+"""Test fixture: eight weeks of a fictional person's behavior, plus two weeks ahead.
 
-Aria is the fictional founder/CEO of Cedarloop from ``service/demo/founder-demo.json``
-(same contacts, same company story). Every name, message and event here is made
-up; every id starts with ``demo:`` so demo data can always be found and removed.
+Used only by the behavior-engine tests (miners, predictions, nudges, phraser).
+Every name, company, message and event here is made up; every id starts with
+``demo:`` so fixture data can never be mistaken for real observations.
 
 The history is generated with planted routines whose ground truth is returned
 in ``Persona.expected`` so tests can check that the miners recover them:
@@ -22,7 +22,7 @@ jitter and which customer/variant comes up use a seeded RNG. Deterministic for
 a given (now, tz, weeks, seed).
 
 The upcoming two weeks always contain a meeting over the next gym morning and
-a 4-meeting back-to-back run on the next Tue/Thu, so a demo fires
+a 4-meeting back-to-back run on the next Tue/Thu, so the engine fires
 ``habit_conflict`` and ``cancel_likely`` nudges.
 """
 from __future__ import annotations
@@ -36,7 +36,7 @@ from typing import Any
 from service.behavior.timeutil import at_minute, daterange, local_dt, resolve_tz
 from service.behavior.types import Observation
 
-USER = "Aria Solano"
+USER = "Robin Vale"
 CALENDAR = "Wisp Demo"
 GYM = "Morning lift"
 GYM_START, GYM_LEN = 6 * 60 + 45, 60
@@ -325,7 +325,7 @@ def generate_persona(now: float, *, tz: str = "America/Los_Angeles", weeks_back:
             if run_future:
                 forced_b2b_done = True
         if wd == 3:
-            b.event(day, 15 * 60, 30, "Dev / Aria 1:1", "dev-aria-1-1", location="Cedarloop office",
+            b.event(day, 15 * 60, 30, "Dev / Robin 1:1", "dev-robin-1-1", location="Cedarloop office",
                     organizer="Dev Malik", attendees=("Dev Malik", USER),
                     notes="Delivery slots, SSO evidence, Jonah hiring loop.")
         if wd == 2:
@@ -361,7 +361,7 @@ def generate_persona(now: float, *, tz: str = "America/Los_Angeles", weeks_back:
         elif rng.random() < 0.03:
             b.exchange(day, 12 * 60 + rng.randint(0, 50), "Mom", _MOM_IN, _MOM_OUT)
 
-    # One-off reminders and notes that match the founder-demo storyline.
+    # One-off reminders and notes for the same fictional storyline.
     b.reminder(b.ts(today + timedelta(days=1), 9 * 60 + 30), "Send tenant-isolation evidence to Priya",
                "Attach synthetic test evidence and unresolved exceptions.")
     b.reminder(b.ts(today + timedelta(days=2), 10 * 60), "Protect Lena’s four-hour export block",

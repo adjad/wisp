@@ -1,6 +1,6 @@
 import asyncio
 from unittest.mock import patch,Mock,AsyncMock
-from tests.test_intel_remote_policy import RemoteFixture,policy,EndpointConfigurationError,config
+from tests.test_remote_inference_policy import RemoteFixture,policy,EndpointConfigurationError,config
 from service.config import endpoints
 from service.inference import super_model
 from service.inference.readiness import TurnInferenceClient
@@ -9,7 +9,7 @@ from service.inference.inference_errors import ModelLoadError
 class NoLocalChecks(RemoteFixture):
     def test_all_roles_and_settings_cannot_choose_local_or_cloud(self):
         for role in policy.remote_only_profile().generation_roles:
-            self.assertEqual(config.role_to_model(role),'qwen3.6:35b');self.assertEqual(endpoints.role_target(role),policy.remote_default_target(role))
+            self.assertEqual(config.role_to_model(role),'example-model');self.assertEqual(endpoints.role_target(role),policy.remote_default_target(role))
         for role in ['embedding','reranker','unknown']:
             with self.assertRaises(EndpointConfigurationError):endpoints.role_target(role)
         with patch.object(config,'_save_overlay') as write:
@@ -28,7 +28,7 @@ class NoLocalChecks(RemoteFixture):
         turn=TurnInferenceClient(fake,start,fallback_start=fallback)
         async def run():
             with patch('service.inference.readiness.OMLXClient') as constructor:
-                with self.assertRaises(ModelLoadError):await turn._ensure_generation('qwen3.6:35b')
+                with self.assertRaises(ModelLoadError):await turn._ensure_generation('example-model')
                 constructor.assert_not_called()
         asyncio.run(run());fallback.assert_not_called()
     def test_legacy_config_roles_behavior_preserved(self):

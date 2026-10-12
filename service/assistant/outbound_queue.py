@@ -33,9 +33,9 @@ import time
 import uuid
 from pathlib import Path
 
-from service.paths import STATE_DIR
+from service.paths import MOE_DIR
 
-DB_PATH = STATE_DIR / "assistant.db"
+DB_PATH = MOE_DIR / "assistant.db"
 
 # How late a due send may fire. Beyond this it's marked `missed` rather than
 # delivered — see the module docstring. 30 minutes is deliberately short: the

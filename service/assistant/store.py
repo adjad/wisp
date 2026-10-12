@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from service.assistant.recovery import recovery_guidance
-from service.paths import STATE_DIR
+from service.paths import MOE_DIR
 
 # Most undated reminders one native snapshot may carry. The app sends at most this many
 # plus the TRUE total, so the backend can tell a complete list from a truncated one.
@@ -79,7 +79,7 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
     return UndatedSnapshot(kept, max(total, len(rows)),
                            total > len(raw) or len(rows) > UNDATED_MAX)
 
-DB_PATH = STATE_DIR / "assistant.db"
+DB_PATH = MOE_DIR / "assistant.db"
 
 # scripts/wisp_testdata.py seeds fake commitments ("Dentist Follow-up",
 # "Team Standup", "Take the laundry out"…) into this same live DB under this
@@ -824,16 +824,6 @@ class AssistantStore:
         return ids
 
     def _invalidate_reminders(self) -> None:
-        if os.environ.get("WISP_QA_SEED") != "1":
-            self._db.execute(
-                "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
-                "AND state='pending' AND dedupe_key LIKE 'attention:demo:%'")
-        # Catch notices are useful only before the plan starts. Other durable
-        # event kinds retain their existing expiry/delivery semantics.
-        self._db.execute(
-            "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
-            "AND state='pending' AND dedupe_key LIKE 'attention:%' "
-            "AND expires_at IS NOT NULL AND expires_at <= ?", (time.time(),))
         for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
             target = json.loads(row["target"])
             if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):

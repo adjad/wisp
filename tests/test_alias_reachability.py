@@ -73,7 +73,7 @@ print(json.dumps(out))
 
 def _behavior_routes(pairs: list[tuple[str, str]]) -> list:
     """Behavior-learning tools exist only while behavior learning is on
-    (WISP_BEHAVIOR=1 / founder demo): route() then claims their phrasings ahead
+    (WISP_BEHAVIOR=1): route() then claims their phrasings ahead
     of the regex rules, and with it off every phrase deliberately keeps its
     existing route. Tool availability is cached per process, so they are
     checked in a fresh interpreter started with the flag set."""

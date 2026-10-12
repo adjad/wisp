@@ -1,5 +1,7 @@
-"""/behavior/* endpoints on a minimal app (no service.main import). Synthetic only."""
+"""/behavior/* endpoints on a minimal app (no service.main import). Fake engine only."""
 from __future__ import annotations
+
+import asyncio
 
 import pytest
 from fastapi import FastAPI
@@ -8,16 +10,24 @@ from fastapi.testclient import TestClient
 from service import behavior_api
 from service.assistant import behavior_runtime as br
 from service.behavior.types import Action, Nudge
+from service.tools.behavior_tools import BEHAVIOR_TOOL_NAMES
 from tests.test_behavior_runtime import NOW, FakeEngine, FakeHub, at, gym_conflict_nudge, make_runtime
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch):
-    for key in ("WISP_BEHAVIOR", "WISP_FOUNDER_DEMO", "WISP_BEHAVIOR_SYNTHETIC_ONLY", "WISP_QA_SEED"):
+def _env(monkeypatch, tmp_path):
+    from service import config
+    for key in ("WISP_BEHAVIOR", "WISP_QA_SEED"):
         monkeypatch.delenv(key, raising=False)
+    # The saved "Learn my routines" setting lives in a disposable overlay.
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
     br.set_runtime(None)
     yield
     br.set_runtime(None)
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
 
 
 @pytest.fixture
@@ -49,10 +59,14 @@ def live(monkeypatch, tmp_path, store):
     return rt, engine, hub
 
 
-def test_disabled_status_and_409(client):
+def _core(payload):
+    return {k: payload[k] for k in ("enabled", "setting", "env_override")}
+
+
+def test_disabled_status_and_409(client, monkeypatch):
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert client.get("/behavior/status").json()["enabled"] is False
-    for method, path, body in [("post", "/behavior/run", None), ("post", "/behavior/reset", None),
-                               ("post", "/behavior/clear", None), ("get", "/behavior/nudges", None),
+    for method, path, body in [("post", "/behavior/run", None), ("get", "/behavior/nudges", None),
                                ("get", "/behavior/patterns", None),
                                ("get", "/behavior/predict", None), ("get", "/behavior/profile", None),
                                ("post", "/behavior/patterns/p1", {"status": "rejected"}),
@@ -61,7 +75,7 @@ def test_disabled_status_and_409(client):
                                ("post", "/behavior/nudges/n1/act", {"action_index": 0})]:
         resp = getattr(client, method)(path, json=body) if body is not None else getattr(client, method)(path)
         assert resp.status_code == 409, path
-        assert "WISP_BEHAVIOR=1" in resp.json()["detail"]
+        assert "Learn my routines" in resp.json()["detail"]
 
 
 def test_run_publishes_and_status(client, live, store):
@@ -69,7 +83,7 @@ def test_run_publishes_and_status(client, live, store):
     data = client.post("/behavior/run").json()
     assert data["ok"] and data["published"] == 2 and set(data["nudge_ids"]) == {"n1", "n2"}
     status = client.get("/behavior/status").json()
-    assert status["enabled"] and status["synthetic"] and status["active_engine"] == "local"
+    assert status["enabled"]
     assert status["delivered_nudges"] == 2 and status["auto_actions"] == 2
     assert status["engine"]["patterns"] == 3
 
@@ -140,16 +154,11 @@ def test_act_open_prompt_and_offered_reminder(client, live, store):
     assert client.post("/behavior/nudges/zzz/act", json={"action_index": 0}).status_code == 404
 
 
-def test_reset_synthetic_only(client, live, store, monkeypatch, tmp_path):
-    rt, engine, hub = live
-    client.post("/behavior/run")
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
-    out = client.post("/behavior/clear").json()
-    assert out["ok"] and out["commitments"] == 2 and out["events"] == 0
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    real, _ = make_runtime(tmp_path / "real", FakeEngine(), synthetic=False)
-    br.set_runtime(real)
-    assert client.post("/behavior/reset").status_code == 409
+def test_reset_endpoints_are_gone(client, live):
+    # The synthetic-demo reset was removed with the demo persona; real learned
+    # state is never wiped over HTTP.
+    assert client.post("/behavior/reset").status_code in {404, 405}
+    assert client.post("/behavior/clear").status_code in {404, 405}
 
 
 def test_run_surfaces_busy_when_another_tick_holds_the_lock(client, live, monkeypatch):
@@ -163,14 +172,59 @@ def test_run_surfaces_busy_when_another_tick_holds_the_lock(client, live, monkey
     assert "in progress" in data["detail"]
 
 
-@pytest.mark.parametrize("path,body", [
-    ("/behavior/patterns/p1", {"status": "rejected"}),
-    ("/behavior/nudges/n1/feedback", {"verdict": "useful"}),
-    ("/behavior/nudges/n1/act", {"action_index": 0}),
-    ("/behavior/nudges/n1/undo", None),
-])
-def test_state_changing_routes_403_in_read_only_remote(client, live, monkeypatch, path, body):
-    monkeypatch.setattr(behavior_api, "remote_read_only_mode", lambda: True)
-    resp = client.post(path, json=body) if body is not None else client.post(path)
-    assert resp.status_code == 403
-    assert client.get("/behavior/patterns").status_code == 200
+def test_state_changing_routes_are_not_blocked_by_remote_inference(client, live):
+    # Remote inference is read/write now; only View Only (the safety policy) limits writes.
+    for path, body in [("/behavior/patterns/p1", {"status": "rejected"}),
+                       ("/behavior/nudges/n1/feedback", {"verdict": "useful"})]:
+        assert client.post(path, json=body).status_code != 403, path
+
+
+def test_default_is_on_without_any_flag_or_setting(client, tmp_path):
+    from service import behavior_switch as flags
+    assert flags.env_override() is None and flags.setting_enabled() and flags.enabled()
+    data = client.get("/behavior/settings").json()
+    assert data == {"enabled": True, "setting": True, "env_override": None,
+                    "settings_readable": True, "remote_active": False, "phraser": True}
+
+
+def test_setting_off_then_on_takes_effect_without_restart(client, live, monkeypatch, store):
+    from service import config
+    from service.tools.registry import REGISTRY
+    rt, engine, hub = live
+    monkeypatch.delenv("WISP_BEHAVIOR")                       # no override: the setting decides
+    monkeypatch.setattr(behavior_api.behavior_runtime, "poke", lambda *a: None)
+    assert client.get("/behavior/status").json()["enabled"] is True
+    off = client.put("/behavior/settings", json={"enabled": False}).json()
+    assert _core(off) == {"enabled": False, "setting": False, "env_override": None}
+    assert config.get_behavior_enabled() is False
+    assert "enabled: false" in config.USER_CONFIG.read_text()
+    # Ticking, the API and the tools all stand down at once...
+    assert client.get("/behavior/status").json()["enabled"] is False
+    assert client.get("/behavior/nudges").status_code == 409
+    assert asyncio.run(br.tick(store, hub)) == []
+    assert br.get_runtime() is None
+    assert all(REGISTRY[n].unavailable_reason for n in BEHAVIOR_TOOL_NAMES)
+    # ...and what was learned is kept, not cleared.
+    assert br._runtime is rt and rt.home.exists() and (rt.home / br.RUNTIME_DB).exists()
+    on = client.put("/behavior/settings", json={"enabled": True}).json()
+    assert on["enabled"] is True and config.get_behavior_enabled() is True
+    assert client.get("/behavior/nudges").status_code == 200
+    assert not any(REGISTRY[n].unavailable_reason for n in BEHAVIOR_TOOL_NAMES)
+
+
+def test_env_override_beats_the_setting_both_ways(client, monkeypatch):
+    from service import config
+    monkeypatch.setattr(behavior_api.behavior_runtime, "poke", lambda *a: None)
+    client.put("/behavior/settings", json={"enabled": False})
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    assert _core(client.get("/behavior/settings").json()) == {"enabled": True, "setting": False, "env_override": True}
+    client.put("/behavior/settings", json={"enabled": True})
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    assert _core(client.get("/behavior/settings").json()) == {"enabled": False, "setting": True, "env_override": False}
+    assert config.get_behavior_enabled() is True              # the saved choice is untouched
+
+
+def test_settings_rejects_non_boolean(client):
+    for bad in ({}, {"enabled": "false"}, {"enabled": 0}, {"enabled": None}, {"enabled": [True]}):
+        assert client.put("/behavior/settings", json=bad).status_code == 422, bad
+    assert client.get("/behavior/settings").json()["setting"] is True

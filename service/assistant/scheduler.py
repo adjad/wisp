@@ -82,16 +82,29 @@ _behavior_task: asyncio.Task | None = None
 
 
 def _start_behavior_tick() -> asyncio.Task | None:
-    """Start one behavior tick in the background unless one is still running."""
+    """Start one behavior tick in the background unless one is still running.
+
+    While learning is off only the rate-limited retention pass runs (data already on
+    disk is still aged out, as Settings says); no engine, phraser or runtime starts."""
     global _behavior_task
-    from service.behavior.flags import env_enabled
-    if not env_enabled() or (_behavior_task is not None and not _behavior_task.done()):
+    from service.behavior_switch import enabled
+    if _behavior_task is not None and not _behavior_task.done():
         return None
     from service.assistant import behavior_runtime
+    if not enabled():
+        _behavior_task = asyncio.get_running_loop().create_task(_age_out_only(behavior_runtime))
+        return _behavior_task
     # behavior_runtime.tick catches every exception itself, so the task never
     # ends with an unretrieved error.
     _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
     return _behavior_task
+
+
+async def _age_out_only(behavior_runtime) -> None:
+    try:
+        await behavior_runtime._maybe_age_out()
+    except Exception:  # noqa: BLE001 — retention is best effort and must never break the loop
+        pass
 
 
 async def run() -> None:
@@ -103,31 +116,15 @@ async def run() -> None:
                 assistant_store.sync_source(c.name, items)
             except Exception:  # noqa: BLE001 — a connector must never break the loop
                 pass
-        # The Aria demo: deliver its simulated scheduled sends (never the app outbox).
-        try:
-            from service.inference.remote_policy import aria_demo_mode
-            if aria_demo_mode():
-                from service.demo.aria import tools as aria_tools
-                await aria_tools.tick(hub)
-        except Exception:  # noqa: BLE001 — never break the loop
-            pass
         # fire any due reminders
         try:
             for note in due_reminders(assistant_store):
                 await hub.publish(note)
         except Exception:  # noqa: BLE001
             pass
-        # Proactive attention (off unless WISP_ATTENTION_DEMO=1): a text that states
-        # something coming up soon which is not on file becomes a commitment + alert.
-        try:
-            from service.assistant import attention_demo as attention_runtime
-            if attention_runtime.enabled():
-                await attention_runtime.tick(assistant_store, hub)
-        except Exception:  # noqa: BLE001 — never break the loop
-            pass
-        # Behavior learning (off unless WISP_BEHAVIOR=1 or the founder demo):
+        # Behavior learning (on by default; off via Settings or WISP_BEHAVIOR=0):
         # ingest/mine/nudge on its own internal cadence; never raises. A tick
-        # can take seconds (mining, a remote brain), so it runs as a background
+        # can take seconds (mining, phrasing), so it runs as a background
         # task and never delays reminders, the brief or scheduled sends; at
         # most one runs at a time.
         try:
@@ -159,11 +156,8 @@ async def run() -> None:
         # baseline on first use, then publishes only terminal transitions or a
         # one-time stalled alert; ordinary progress commentary stays quiet.
         try:
-            from service.inference.remote_policy import aria_demo_mode
             from service.codex_monitor import codex_monitor
-            # The Aria demo shows only its synthetic world; real Codex tasks
-            # (and the monitor's checkpoint) stay out of it.
-            for event in ([] if aria_demo_mode() else codex_monitor.poll_events()):
+            for event in codex_monitor.poll_events():
                 await hub.publish(event)
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass
@@ -252,8 +246,8 @@ async def _fire_scheduled_sends() -> None:
 
 
 def _brief_state_path():
-    from service.paths import STATE_DIR
-    return STATE_DIR / "brief_state.json"
+    from service.paths import MOE_DIR
+    return MOE_DIR / "brief_state.json"
 
 
 def _brief_date() -> date | None:
