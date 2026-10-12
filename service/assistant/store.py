@@ -824,16 +824,6 @@ class AssistantStore:
         return ids
 
     def _invalidate_reminders(self) -> None:
-        if os.environ.get("WISP_QA_SEED") != "1":
-            self._db.execute(
-                "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
-                "AND state='pending' AND dedupe_key LIKE 'attention:demo:%'")
-        # Catch notices are useful only before the plan starts. Other durable
-        # event kinds retain their existing expiry/delivery semantics.
-        self._db.execute(
-            "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
-            "AND state='pending' AND dedupe_key LIKE 'attention:%' "
-            "AND expires_at IS NOT NULL AND expires_at <= ?", (time.time(),))
         for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
             target = json.loads(row["target"])
             if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):

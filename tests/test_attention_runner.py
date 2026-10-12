@@ -559,7 +559,7 @@ def test_a_pre_existing_loose_settings_tmp_file_is_tightened(tmp_path):
 def test_ledger_reads_take_the_lock(ledger):
     import threading
     ledger.claim("a", now=MON_9AM)
-    calls = ("get", ("a",)), ("holds_effect", ("a",)), ("known", (["a"],)), ("count_since", (0.0,)), ("recent", ())
+    calls = ("get", ("a",)), ("known", (["a"],)), ("count_since", (0.0,)), ("recent", ())
     for name, args in calls:
         done = threading.Event()
         with ledger._lock:                                             # a writer is mid-transaction

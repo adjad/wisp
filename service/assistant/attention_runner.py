@@ -188,18 +188,6 @@ async def create_reminder(plan: Plan) -> dict:
     return {"ok": False, "status": "unknown" if unknown else "failed", "error": text[:300]}
 
 
-def _handled_by_catch(source_id: str) -> bool:
-    """True when the Catch demo path (`attention_demo`) already persisted this message.
-
-    Catch stores its alert under a dedupe key derived from the message id; an unreadable
-    store counts as handled, because a duplicate reminder is worse than a missed one."""
-    try:
-        from service.assistant import attention_demo
-        return assistant_store.event_by_key(attention_demo._key(source_id)) is not None
-    except Exception:  # noqa: BLE001
-        return True
-
-
 def _name_for(handle: str) -> str | None:
     """Contact name for a phone/email handle, from the Messages contact cache (best effort)."""
     try:
@@ -265,8 +253,7 @@ async def run_tick(now: float | None = None) -> list:
     outcomes = await process(
         records=records, commitments=_commitments(now), now=now, tz=local_timezone(),
         settings=settings, ledger=ledger, create=create_reminder, publish=_publish,
-        fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for,
-        handled_elsewhere=_handled_by_catch)
+        fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for)
     if not getattr(outcomes, "limited", False):
         _last_fingerprint = fingerprint               # a limited pass has work left: look again soon
     return outcomes

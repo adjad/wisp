@@ -117,14 +117,6 @@ async def run() -> None:
                 await hub.publish(note)
         except Exception:  # noqa: BLE001
             pass
-        # Proactive attention (off unless WISP_ATTENTION_DEMO=1): a text that states
-        # something coming up soon which is not on file becomes a commitment + alert.
-        try:
-            from service.assistant import attention_demo as attention_runtime
-            if attention_runtime.enabled():
-                await attention_runtime.tick(assistant_store, hub)
-        except Exception:  # noqa: BLE001 — never break the loop
-            pass
         # Behavior learning (off unless WISP_BEHAVIOR=1 or the founder demo):
         # ingest/mine/nudge on its own internal cadence; never raises. A tick
         # can take seconds (mining, a remote brain), so it runs as a background
