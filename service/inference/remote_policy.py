@@ -157,7 +157,10 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")
     raw = inference.get("remote_only")
-    if raw is None and _FORCED_MODE is None:
+    # Only the launcher's WISP_REMOTE_ONLY=1 opts in. A profile left in packaged
+    # defaults or ~/.moe/config.yaml must never move a normal Mac's inference
+    # (and its native reads) to a remote server on its own.
+    if _FORCED_MODE is None:
         return None
     # Full mode accepts only the full (32k) contract. Read-only mode (the
     # founder/Aria demo) accepts the original 8k contract or, because the Intel

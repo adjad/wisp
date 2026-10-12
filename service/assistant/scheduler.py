@@ -159,8 +159,11 @@ async def run() -> None:
         # baseline on first use, then publishes only terminal transitions or a
         # one-time stalled alert; ordinary progress commentary stays quiet.
         try:
+            from service.inference.remote_policy import aria_demo_mode
             from service.codex_monitor import codex_monitor
-            for event in codex_monitor.poll_events():
+            # The Aria demo shows only its synthetic world; real Codex tasks
+            # (and the monitor's checkpoint) stay out of it.
+            for event in ([] if aria_demo_mode() else codex_monitor.poll_events()):
                 await hub.publish(event)
         except Exception:  # noqa: BLE001 — Codex may not be installed/open yet
             pass

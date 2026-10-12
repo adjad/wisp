@@ -52,6 +52,11 @@ class PolicyChecks(RemoteFixture):
         self.legacy();self.assertIsNone(policy.remote_only_profile())
         self.cfg={'inference':{'remote_only':self.profile}};policy._FORCED_MODE='1'
         self.assertIsNone(policy.remote_only_profile())
+    def test_config_profile_without_launcher_flag_stays_local(self):
+        # A remote_only profile in packaged defaults or ~/.moe/config.yaml must not
+        # switch a normal Mac to remote inference without WISP_REMOTE_ONLY=1.
+        policy.remote_only_profile.cache_clear();policy._FORCED_MODE=None
+        self.assertIsNone(policy.remote_only_profile())
     def test_malformed_profile_or_force_fails_closed(self):
         for key,val in [('enabled',False),('model_id','other'),('base_url','https://other.invalid'),('max_tokens',True),('credential_ref','env:FAKE'),('generation_roles',['agent'])]:
             self.cfg={'inference':{'remote_only':copy.deepcopy(self.profile)}};self.cfg['inference']['remote_only'][key]=val

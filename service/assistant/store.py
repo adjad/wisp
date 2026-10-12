@@ -539,9 +539,9 @@ class AssistantStore:
             commitments = [dict(r) for r in self._db.execute(
                 "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE status='active' AND when_ts < ? AND "
-                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR end_ts IS NULL)) "
+                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
                 "OR (source IN ('reminders','manual') AND when_ts >= ?))",
-                (hi, lo, lo, lo))]
+                (hi, lo, lo, lo, lo))]
         fixed = [c for c in commitments if c["source"] == "calendar" or
                  (c["source"] == "manual" and c["kind"] in {"event", "meeting"})]
         deadlines = [c for c in commitments if c not in fixed]
