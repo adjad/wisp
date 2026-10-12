@@ -535,6 +535,39 @@ def _calendar_create_preview(args: dict) -> str:
     return f"Add: {args.get('title', '?')} — {interval}"
 
 
+def _registry():
+    from service.tools.registry import REGISTRY
+    return REGISTRY
+
+
+def _read_categories():
+    from service.router.model_led import READ_CATEGORIES
+    return READ_CATEGORIES
+
+
+# Reads whose answer can change within one turn without any write by Wisp, so
+# an identical repeat ("check again") must still run.
+_VOLATILE_READS = frozenset({
+    "system_status", "get_battery_status", "network_info", "world_time", "get_volume",
+    "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
+    "get_sports_scores", "list_scheduled_sends", "screen_capture", "clipboard_read",
+})
+
+
+def _read_call_key(name: str, args: dict) -> tuple[str, str] | None:
+    """(tool, canonical args) for a registered pure-read tool, else None."""
+    from service.router.model_led import READ_CATEGORIES
+    from service.tools.registry import REGISTRY
+    tool = REGISTRY.get(name)
+    if (tool is None or tool.category not in READ_CATEGORIES or name in _EFFECT_TOOLS
+            or name in _VOLATILE_READS):
+        return None
+    try:
+        return name, json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clean_tool_name(name: str) -> str:
     """Strip stray header tokens a parser can leave glued onto the parsed
     function name (e.g. 'send_message<|channel|>commentary').
@@ -1925,6 +1958,12 @@ async def run_agent(
     fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
+    # Reads that already succeeded this turn, keyed by tool and exact
+    # arguments. An identical repeat returns a pointer to the earlier result
+    # instead of running again (small models loop on a read they already
+    # have). Cleared whenever a non-read succeeds, so a read after a write
+    # still sees fresh data.
+    completed_reads: set[tuple[str, str]] = set()
     contact_receipts: dict[str, str] = {}
     recipient_requirements = {
         name: fixed["_recipient_lookup"] for name, fixed in (tool_argument_bindings or {}).items()
@@ -2968,6 +3007,16 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
 
+            read_key = _read_call_key(name, args)
+            if read_key is not None and read_key in completed_reads:
+                result = (f"({name} already ran with these exact arguments this turn and its "
+                          "result was returned earlier. It was NOT run again. Answer from that "
+                          "result, or call it with different arguments if you need different data.)")
+                audit("reject_repeated_read", tool=name, args=args)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
             if name in _EFFECT_TOOLS and not _prior_requirements_met(name):
                 result = (f"({name} is premature: required source steps have not succeeded "
                           "yet. Complete those reads first, then retry this exact action. "
@@ -3363,6 +3412,19 @@ async def run_agent(
                     return response
             elif outcome.status == "succeeded":
                 tools_answered.add(name)
+            ran_tool = _registry().get(name)
+            if read_key is None and (ran_tool is None or ran_tool.category not in _read_categories()):
+                # Any non-read tool that ran (even one that failed part-way) may
+                # have changed what a read returns. Don't trust outcome.effect:
+                # tools outside the effect table default to "read" even when
+                # they write (set_volume, run_shell).
+                completed_reads.clear()
+            elif outcome.status == "succeeded":
+                if (read_key is not None and outcome.effect == "read"
+                        and not str(result).lstrip().startswith("(")):
+                    # A parenthesized notice ("(no public web results found ...)")
+                    # is not a usable answer; leave an identical retry allowed.
+                    completed_reads.add(read_key)
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body
