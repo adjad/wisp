@@ -168,16 +168,6 @@ final class OverlayModel: ObservableObject {
         didSet { UserDefaults.standard.set(debugMode, forKey: "wisp.debugMode") }
     }
 
-    // Intel v5: whether the running backend is the Aria founder demo (fictional
-    // data, read-only tools). Set at launch and by the menu-bar toggle; drives
-    // the panel's "Aria demo" indicator. Always false outside WISP_REMOTE_FULL.
-    @Published var ariaDemo = AriaDemoMode.available && AriaDemoMode.isOn() {
-        didSet { refreshAriaTopBar() }
-    }
-    // The Aria demo's collapsed-bar content (next event + proactive chip).
-    @Published var ariaTopBar: WispClient.AriaTopBar?
-    private var ariaTopBarTask: Task<Void, Never>?
-
     // --- assistant layer (calendar/reminders) ---
     // Upcoming commitments themselves surface as system notifications (see
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
@@ -906,37 +896,8 @@ final class OverlayModel: ObservableObject {
     // see handleAssistantEvent's "reminder" case.
     private let assistantDelivery = AssistantDelivery()
 
-    func refreshAriaTopBar() {
-        guard ariaDemo else { ariaTopBar = nil; return }
-        Task { [weak self] in
-            guard let self else { return }
-            let bar = await self.client.ariaTopBar()
-            if self.ariaDemo { self.ariaTopBar = bar }
-        }
-    }
-
-    /// Tapping the demo's proactive chip opens the panel on the nudge's card
-    /// (Undo / Useful live there); with no chip it opens the Daily Summary.
-    func openAriaChip() {
-        if let event = ariaTopBar?.chipEvent as? [String: Any], let nudge = BehaviorNudge.parse(event) {
-            requestExpand()
-            showNudge(nudge)
-        } else {
-            runDailySummary()
-        }
-    }
-
     func startAssistant() {
         refreshAssistant()
-        ariaTopBarTask?.cancel()
-        ariaTopBarTask = Task { [weak self] in
-            // The demo's next event and chip change with the clock as well as
-            // with events, so poll gently while the demo runs.
-            while !Task.isCancelled {
-                self?.refreshAriaTopBar()
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
-            }
-        }
         // Nudge notification buttons (Useful / Not now / Wrong / Undo / Do it)
         // route back here on the main actor.
         Notifications.onNudgeResponse = { [weak self] nudgeID, action, info in
@@ -1152,7 +1113,7 @@ final class OverlayModel: ObservableObject {
         // Durable Calendar actions only execute through the claimed bridge.
         switch ev.type {
         case "hello", "heartbeat": return true
-        case "changed": refreshAssistant(); refreshAriaTopBar()
+        case "changed": refreshAssistant()
         case "calendar_action_unknown":
             return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
                 title: "Calendar outcome unknown", body: ev.str("error"))
@@ -1172,7 +1133,6 @@ final class OverlayModel: ObservableObject {
             // A replay that outlived its moment is acknowledged silently.
             if nudge.isExpired() { return true }
             showNudge(nudge)
-            refreshAriaTopBar()
             return await Notifications.deliver(id: nudge.notificationID, title: nudge.title,
                                                body: nudge.notificationBody,
                                                subtitle: nudge.notificationSubtitle,
@@ -1342,7 +1302,7 @@ final class OverlayModel: ObservableObject {
         if let i = nudges.firstIndex(where: { $0.id == nudge.id }) {
             let old = nudges[i]
             if !nudge.eventID.isEmpty, !old.eventID.isEmpty, nudge.eventID != old.eventID {
-                // Same id from a NEW hub event: it re-fired (e.g. after a demo
+                // Same id from a NEW hub event: it re-fired (e.g. after a state
                 // reset), so the card starts fresh; Notifications.deliver
                 // replaces the old banner the same way.
                 nudges[i] = nudge
