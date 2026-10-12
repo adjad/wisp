@@ -123,7 +123,8 @@ class UserReportedRegressions20260903(unittest.TestCase):
         original = REGISTRY["draft_message"]
 
         async def fake_draft(to: str, text: str) -> str:
-            return f"Message draft prepared in Wisp for {to} — nothing has been sent."
+            with patch.object(action_tools, "_resolve_recipient", return_value=("+15555550123", "")):
+                return await action_tools.draft_message(to=to, text=text)
 
         REGISTRY["draft_message"] = Tool(
             name="draft_message", description="fake editable draft",
@@ -148,7 +149,7 @@ class UserReportedRegressions20260903(unittest.TestCase):
 
         card = next((event for event in events
                      if event.get("type") == "message_draft"), None)
-        self.assertEqual(card, {"type": "message_draft", "to": "Mom",
+        self.assertEqual(card, {"type": "message_draft", "to": "+15555550123",
                                 "text": "Hi Mom"})
         self.assertEqual(answer, "")
         self.assertEqual(client.calls, 0, "the model must not replace the card with prose")
@@ -169,6 +170,7 @@ class UserReportedRegressions20260903(unittest.TestCase):
         with patch("service.assistant.sync_status.ensure_sources",
                    new=AsyncMock(return_value=readiness)), \
              patch.object(assistant_tools.assistant_store, "upcoming", return_value=events), \
+             patch.object(assistant_tools.assistant_store, "calendar_events_overlapping", return_value=events), \
              patch.object(assistant_tools.time, "time", return_value=1_799_999_000.0):
             default = asyncio.run(assistant_tools.get_upcoming(days=7))
             explicit = asyncio.run(assistant_tools.get_upcoming(days=7, include_holidays=True))
@@ -201,12 +203,12 @@ class UserReportedRegressions20260903(unittest.TestCase):
         # must never send a real text.
         from service import main
 
-        fake = AsyncMock(return_value="Message sent to Mom (+15555550123).")
+        fake = AsyncMock(return_value="Message sent to +15555550123.")
         with patch.object(action_tools, "send_message", new=fake):
             result = asyncio.run(main.assistant_send_message_draft(
-                {"to": "Mom", "text": "The edited final text"}))
+                {"to": "+15555550123", "text": "The edited final text"}))
         self.assertTrue(result["ok"])
-        fake.assert_awaited_once_with(to="Mom", text="The edited final text")
+        fake.assert_awaited_once_with(to="+15555550123", text="The edited final text")
 
 
 if __name__ == "__main__":

@@ -43,7 +43,7 @@ import asyncio
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import service.tools  # noqa: E402,F401  (registers every tool module)
-from service.router.router import route, rule_route  # noqa: E402
+from service.router.router import _BEHAVIOR_TOOLS_ALL, route, rule_route  # noqa: E402
 from service.tools.registry import REGISTRY  # noqa: E402
 
 PASS, FAIL = 0, 0
@@ -58,8 +58,40 @@ def check(name: str, cond: bool, detail: str = "") -> None:
         print(f"  FAIL {name}" + (f" — {detail}" if detail else ""))
 
 
+_BEHAVIOR_PROBE = """
+import asyncio, json, sys
+import service.tools  # noqa: F401
+from service.router.router import route
+out = []
+for tool, alias in json.loads(sys.argv[1]):
+    d = asyncio.run(route(alias))
+    offered = sorted(set(d.tool_subset or []) | {n for n, _ in d.direct_calls})
+    out.append([tool, alias, d.reason, offered])
+print(json.dumps(out))
+"""
+
+
+def _behavior_routes(pairs: list[tuple[str, str]]) -> list:
+    """Behavior-learning tools exist only while behavior learning is on
+    (WISP_BEHAVIOR=1 / founder demo): route() then claims their phrasings ahead
+    of the regex rules, and with it off every phrase deliberately keeps its
+    existing route. Tool availability is cached per process, so they are
+    checked in a fresh interpreter started with the flag set."""
+    import json
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = {**os.environ, "WISP_BEHAVIOR": "1"}
+    proc = subprocess.run([sys.executable, "-c", _BEHAVIOR_PROBE, json.dumps(pairs)], cwd=root, env=env,
+                          capture_output=True, text=True, timeout=600)
+    if proc.returncode != 0:
+        print(proc.stderr[-2000:])
+        return []
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
 def main() -> int:
     checked = 0
+    behavior_aliases: list[tuple[str, str]] = []
     for tool_name, tool in sorted(REGISTRY.items()):
         for alias in tool.aliases:
             if (tool_name, alias) == ("set_alarm", "set an alarm for half six tomorrow"):
@@ -77,6 +109,9 @@ def main() -> int:
                       and not final.expect_tool_first)
                 check("unsupported clock has no creation obligations or guessed arguments",
                       not final.required_tool_groups and not final.tool_argument_bindings)
+                continue
+            if tool_name in _BEHAVIOR_TOOLS_ALL:
+                behavior_aliases.append((tool_name, alias))
                 continue
             decision = rule_route(alias)
             if decision is None:
@@ -96,6 +131,12 @@ def main() -> int:
             check(f"{tool_name!r} reachable via its own alias {alias[:44]!r}",
                   tool_name in offered,
                   f"rule={decision.reason!r} offered={sorted(offered)}")
+    routed = _behavior_routes(behavior_aliases) if behavior_aliases else []
+    check("behavior-tool aliases routed with behavior learning on", len(routed) == len(behavior_aliases))
+    for tool_name, alias, reason, offered in routed:
+        checked += 1
+        check(f"{tool_name!r} reachable via its own alias {alias[:44]!r} (behavior on)",
+              tool_name in offered, f"route={reason!r} offered={offered}")
     print(f"\nchecked {checked} (tool, own-alias) pairs claimed by a regex rule")
     print(f"{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0

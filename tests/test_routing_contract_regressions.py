@@ -784,7 +784,23 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
             "put a dentist appointment on my Calendar tomorrow at 3pm")
         self.assertIn("add_calendar_event", calendar_write.tool_subset)
         aggregate = await R.route("what's on my to-do list tomorrow?")
-        self.assertTrue(set(R._ALL_SOURCES).issubset(aggregate.tool_subset))
+        expected = {"get_upcoming": {"period": "tomorrow"},
+                    "summarize_messages": {}, "summarize_emails": {}, "search_notes": {}}
+        # The exact tomorrow agenda includes dated native Reminders. Recent
+        # communications can contain tomorrow obligations received earlier;
+        # the all-pending source menu additionally recovers overdue items.
+        self.assertEqual(len(aggregate.direct_calls), len(expected))
+        self.assertEqual(dict(aggregate.direct_calls), expected)
+        self.assertEqual(set(aggregate.tool_subset), set(expected))
+        self.assertEqual(aggregate.tool_argument_bindings, expected)
+        self.assertEqual(aggregate.strict_read_limits, {name: 1 for name in expected})
+        self.assertEqual(aggregate.narration_after, frozenset(expected))
+        self.assertTrue(aggregate.verified_results_only)
+        self.assertTrue(all(REGISTRY[name].category in {"assistant_read", "email_read", "messages_read", "notes_read"}
+                            for name in expected))
+        self.assertIn("receipt dates are not due dates", aggregate.resolved_request)
+        self.assertIn("explicitly due on that target day", aggregate.resolved_request)
+        self.assertIn("limited coverage", aggregate.resolved_request)
 
     async def test_negation_scope_preserves_the_positive_alternative(self):
         calendar_read = await R.route("show tomorrow's calendar")

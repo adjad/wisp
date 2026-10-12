@@ -150,6 +150,20 @@ final class BackendManager {
                                                        generation: snapshot.generation)
             proc.environment?["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
             proc.environment?.merge(extraEnvironment()) { _, new in new }
+#if WISP_FOUNDER_DEMO
+            proc.environment?["WISP_FOUNDER_DEMO"] = "1"
+#endif
+#if WISP_REMOTE_ONLY_DEMO
+            proc.environment?["WISP_REMOTE_ONLY"] = "1"
+#endif
+#if WISP_REMOTE_FULL
+            // Intel v5: both modes use remote-full; the runtime Aria flag
+            // selects demo behavior, and WISP_FOUNDER_DEMO is always removed.
+            if var environment = proc.environment {
+                AriaDemoMode.applyBackendMode(demo: AriaDemoMode.isOn(), to: &environment)
+                proc.environment = environment
+            }
+#endif
             // Echoed by /identity; only this launch's receipt carries it.
             proc.environment?[BackendOwnership.nonceEnvironmentKey] = launchNonce
             proc.standardInput = credentialPipe
@@ -284,6 +298,15 @@ final class BackendManager {
     func stopAndWait(timeout: TimeInterval = 5) async {
         guard let process = detachForStop() else { return }
         _ = await Self.terminateAndWait(process, timeout: timeout)
+    }
+
+    /// Stop this manager's own backend (bounded, as on quit) and launch a fresh
+    /// one, which re-reads launch-time choices such as the Aria demo mode. Does
+    /// nothing while a stranger holds the port.
+    func restart() async {
+        guard !portConflict else { return }
+        await stopAndWait()
+        await startIfNeeded()
     }
 
     private func detachForStop() -> Process? {
@@ -519,10 +542,12 @@ final class BackendManager {
             return bundled
         }
 
+#if !WISP_REMOTE_ONLY_DEMO
         let devRoot = URL(fileURLWithPath: "/Users/adijain/Desktop/MOE_Project")
         if FileManager.default.fileExists(atPath: devRoot.appendingPathComponent("service/main.py").path) {
             return devRoot
         }
+#endif
 
         return nil
     }
@@ -533,10 +558,12 @@ final class BackendManager {
             return bundledPython
         }
 
+#if !WISP_REMOTE_ONLY_DEMO
         let systemPython = URL(fileURLWithPath: "/usr/bin/python3")
         if FileManager.default.fileExists(atPath: systemPython.path) {
             return systemPython
         }
+#endif
 
         return nil
     }

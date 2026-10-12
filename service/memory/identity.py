@@ -39,6 +39,10 @@ _full_name: str | None = None
 def user_name() -> str:
     """The user's real name, or "" if it can't be determined."""
     global _full_name
+    from service.demo.aria import env_requested as aria_demo
+    if aria_demo():
+        from service.demo.aria.world import USER_NAME
+        return USER_NAME   # the Aria demo's user is the fictional Aria Solano
     if _full_name is None:
         try:
             _full_name = subprocess.run(["id", "-F"], capture_output=True,
@@ -50,6 +54,10 @@ def user_name() -> str:
 
 def user_emails() -> list[str]:
     """The user's own account addresses, as reported by the Swift Mail sync."""
+    from service.demo.aria import env_requested as aria_demo
+    if aria_demo():
+        from service.demo.aria.world import USER_EMAIL
+        return [USER_EMAIL]
     try:
         from service.tools.email_tools import get_identity_emails
         return get_identity_emails()

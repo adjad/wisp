@@ -116,13 +116,68 @@ def test_only_filesystem_categories_are_subject_to_the_floor():
         assert policy._hard_deny(category, {"target": "/etc/hosts", "path": "~/.ssh"}) is None
 
 
-def test_operand_extraction_covers_path_named_and_explicit_name_bearing_write_tools():
+def test_operand_extraction_covers_path_named_and_explicit_name_bearing_write_tools(monkeypatch):
     """Check path-named schemas plus reviewed name-derived operands.
 
     A schema's spelling alone cannot prove every tool's path semantics.
     """
     import re
+    import inspect
+    from pathlib import Path
+    from service import personal_knowledge
+    from service.memory.capture import current_source
+    from service.tools import knowledge_tools, email_tools, imessage_tools
     import service.tools  # noqa: F401  register the roster
+    # These exact fields select provenance adapters and native cache identities,
+    # never filesystem operands. All other path-shaped fields remain covered.
+    metadata = {("save_knowledge", "source_type"), ("save_knowledge", "source_id")}
+    knowledge = REGISTRY["save_knowledge"]
+    assert knowledge.category == "fs_write"
+    assert knowledge.func is knowledge_tools.save_knowledge
+    assert knowledge_tools.selected_source is personal_knowledge.selected_source
+    props = knowledge.parameters["properties"]
+    assert props["source_type"] == {"type": "string", "enum": ["user_request", "email", "messages"]}
+    assert props["source_id"] == {"type": "string"}
+    assert {field for name, field in metadata if name == "save_knowledge"} <= set(
+        inspect.signature(knowledge.func).parameters)
+    source_id = "/private/fixture-only/native-id"
+    body = "Exact cached body, with its qualifications."
+    monkeypatch.setattr(email_tools, "raw_email_snapshot", lambda: types.SimpleNamespace(
+        rows=({"message_id": source_id, "account_id": "container.synthetic", "body": body},),
+        generation="synthetic", raw_digest="0" * 64, synced_at=1))
+    monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: {
+        "state": "ready", "coverage": {"malformed": 0}, "records": [{
+            "guid": source_id, "conversation": "container.synthetic", "status": "complete",
+            "direction": "incoming", "text": body}]})
+    saved = []
+    def fixed_store_save(**record):
+        saved.append(record)
+        return record
+    monkeypatch.setattr(knowledge_tools, "_store", types.SimpleNamespace(save=fixed_store_save))
+    def no_path_lookup(*args, **kwargs):
+        raise AssertionError("A native source identity must never be dereferenced as a path")
+    with monkeypatch.context() as fence:
+        fence.setattr("builtins.open", no_path_lookup)
+        fence.setattr(Path, "open", no_path_lookup)
+        fence.setattr(os, "open", no_path_lookup)
+        for source_type, container_label in (("email", "account"), ("messages", "chat")):
+            request = {"source_type": "user_request", "source_id": "request.synthetic",
+                       "session_id": "session.synthetic", "quote":
+                       f"Save {source_type} {source_id} in {container_label} container.synthetic "
+                       "as a knowledge note titled Metadata"}
+            token = current_source.set(request)
+            try:
+                result = knowledge.func("Metadata", source_type=source_type,
+                                        source_id=source_id, container_id="container.synthetic")
+            finally:
+                current_source.reset(token)
+            assert result.startswith("Saved knowledge:"), result
+            assert saved[-1]["text"] == body
+            assert saved[-1]["provenance"]["source_id"] == source_id
+            assert saved[-1]["provenance"]["kind"] == source_type
+            with pytest.raises(ValueError, match="missing or ambiguous"):
+                personal_knowledge.selected_source(source_type, source_id + "/missing", "container.synthetic")
+    assert len(saved) == 2
     pathish = re.compile(r"path|file|dir|folder|dest|source|src|target|archive|output", re.I)
     uncovered = {}
     assert policy._PATH_NAME_TOOLS == {"uninstall_app"}
@@ -134,6 +189,7 @@ def test_operand_extraction_covers_path_named_and_explicit_name_bearing_write_to
                    if (pathish.search(key) or (name == "uninstall_app" and key == "name"))
                    and spec.get("type") in ("string", "array")
                    and key not in policy._PATH_ARG_KEYS
+                   and (name, key) not in metadata
                    and not (name in policy._PATH_NAME_TOOLS and key == "name")]
         if missing:
             uncovered[name] = missing

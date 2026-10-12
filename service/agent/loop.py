@@ -12,6 +12,7 @@ import hashlib
 import re
 import time
 import uuid
+from functools import wraps
 from collections import Counter
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -31,10 +32,11 @@ Emit = Callable[[dict], Awaitable[None]]
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
     "draft_message", "draft_email", "add_reminder", "update_reminder",
-    "add_calendar_event", "update_event",
+    "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
+    "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
@@ -68,6 +70,17 @@ def _cloud_public_raw_evidence(value: object) -> str:
         if piece and "[redacted]" not in piece:
             safe.append(piece)
     return "\n".join(safe) if safe else "(no usable public tool evidence found.)"
+
+
+def _note_decision(tool: str, approved: bool) -> bool:
+    """Behavior-learning hook: record that the user approved/denied a
+    confirm-tier action (tool name only). Never raises; returns `approved`."""
+    try:
+        from service.assistant import behavior_runtime
+        behavior_runtime.record_decision(tool, approved)
+    except Exception:  # noqa: BLE001
+        pass
+    return approved
 
 
 async def _finish_denied_outbound(emit: Emit) -> str:
@@ -1108,6 +1121,39 @@ def _merge_results(results: list[tuple[str, str]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _meeting_safe(value):
+    from service.tools.schedule_extras import redact_meeting_capabilities
+    return redact_meeting_capabilities(value)
+
+
+def _meeting_audit(event, **fields):
+    audit(event, **_meeting_safe(fields))
+
+
+def _meeting_local_client(client):
+    from service.config.endpoints import is_loopback
+    try:
+        return getattr(client, "managed", False) is True and is_loopback(client.base_url)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _meeting_redacted_return(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        try:
+            return _meeting_safe(await function(*args, **kwargs))
+        except Exception as exc:
+            clean = _meeting_safe(str(exc))
+            if clean != str(exc):
+                # Main translates exceptions into persisted/displayed errors.
+                # Never let reusable meeting authority reach that carrier.
+                raise RuntimeError(clean) from None
+            raise
+    return wrapped
+
+
+@_meeting_redacted_return
 async def run_agent(
     client: OMLXClient,
     model: str,
@@ -1117,6 +1163,7 @@ async def run_agent(
     *,
     tools: list[str] | None = None,
     active_skill: str = "",
+    allow_skill_context: bool = True,
     max_steps: int = 8,
     # Sized to what agent steps ACTUALLY generate, not to a round number.
     # max_tokens is not free: oMLX's prefill guard admits a request against
@@ -1248,7 +1295,12 @@ async def run_agent(
     # the full publisher display still reaches only the final UI event.
     # main.py persists our safe return value separately from emitted text.
     news_displays: dict[str, str] = {}
+    # A capability pasted/replayed from a transcript is not a continuation
+    # grant. Only this turn's local planner may put one in ephemeral context.
+    messages = _meeting_safe(messages)
     downstream_emit = emit
+    def audit(event, **fields):
+        _meeting_audit(event, **fields)
 
     async def emit(event: dict):
         if event.get("type") == "text" and news_displays:
@@ -1262,10 +1314,57 @@ async def run_agent(
                 text, model_text=event.get("text", ""),
                 artifact_kind="news" if event.get("text") == DisplayOnlyToolResult.model_text
                 else "mixed")}
-        await downstream_emit(event)
+        await downstream_emit(_meeting_safe(event))
+
+    # Bearer authority never enters a model transcript. The model sees only an
+    # inert, turn-local reference; resolving it still requires exact host intent,
+    # unchanged proposal fields, human approval and the helper's fresh recheck.
+    meeting_refs = {}
+    from service.tools.schedule_extras import _meeting_context
+    try:
+        meeting_origin = _meeting_context()
+    except ValueError:
+        meeting_origin = None
+
+    guarded_meeting = bool(set(tools or ()) & {"plan_meeting", "commit_private_meeting"})
+    if guarded_meeting and (public_web_synthesis or not _meeting_local_client(client)):
+        response = "Private meeting planning requires the local inference path; no Calendar action ran."
+        await emit({"type": "text", "text": response})
+        return response
+    if tools is None and (public_web_synthesis or not _meeting_local_client(client)):
+        from service.tools.registry import routable_tool_names
+        tools = sorted(routable_tool_names() - {"plan_meeting", "commit_private_meeting"})
 
     async def execute_tool(tool, args):
+        nonlocal guarded_meeting
+        if tool.name in {"plan_meeting", "commit_private_meeting"}:
+            if public_web_synthesis or not _meeting_local_client(client):
+                return "(error: Private meeting capability transport requires local inference; no action ran.)"
+            guarded_meeting = True
+        elif _meeting_safe(args) != args:
+            return "(error: Private meeting capabilities cannot be carried into another tool; no action ran.)"
         result = await run_tool(tool, args)
+        if tool.name == "plan_meeting" and isinstance(result, str):
+            prefix = "Private meeting proposal: "
+            try:
+                if result.startswith(prefix):
+                    proposal = json.loads(result[len(prefix):])
+                    raw = proposal.pop("commit_args", None)
+                    if raw is not None:
+                        from service.tools.schedule_extras import private_meeting_review
+                        if meeting_origin is None or _meeting_context() != meeting_origin:
+                            raise ValueError("Private proposal request changed; request a new preview.")
+                        private_args = json.loads(json.dumps(raw, allow_nan=False))
+                        private_meeting_review(private_args)
+                        if len(meeting_refs) >= 64:
+                            raise ValueError("Private proposal budget exhausted; start a new request.")
+                        reference = "wisp_meeting_ref_" + uuid.uuid4().hex
+                        meeting_refs[reference] = private_args
+                        proposal["commit_args"] = {**private_args, "capability_token": reference}
+                    result = prefix + json.dumps(proposal, ensure_ascii=False, allow_nan=False)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                result = "(error: Private proposal could not be bound to this request; request a new preview.)"
+        result = _meeting_safe(result)
         if public_web_synthesis and tool.name not in _CLOUD_PUBLIC_READ_TOOLS:
             return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
@@ -1383,7 +1482,15 @@ async def run_agent(
     def _admit(offered: list[dict]) -> list[dict]:
         """Drop every schema the skill boundary protects. Used at every build and rebuild."""
         blocked = _skill_boundary_names()
-        return [s for s in offered if s["function"]["name"] not in blocked]
+        admitted = [s for s in offered if s["function"]["name"] not in blocked]
+        from service.inference.remote_policy import remote_full_mode, remote_only_profile, remote_tool_allowed
+        if remote_full_mode():
+            # Full remote build: never offer a tool this build cannot run, and
+            # keep the menu inside the gateway's tool-count contract (router
+            # order is relevance order; measured menus stay well under it).
+            admitted = [s for s in admitted if remote_tool_allowed(s["function"]["name"])]
+            admitted = admitted[:remote_only_profile().tools]
+        return admitted
 
     if force_first_tool and _skill_boundary(force_first_tool):
         force_first_tool = None
@@ -1391,7 +1498,7 @@ async def run_agent(
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
-    if not public_web_synthesis and not skills_external:
+    if allow_skill_context and not public_web_synthesis and not skills_external:
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)
@@ -1567,6 +1674,13 @@ async def run_agent(
         return set(group or ()) - (attempted_tools - previews)
 
     def _verified_final(text: str) -> str:
+        uncertain = [outcome for name, outcome in tool_outcomes
+                     if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
+                     and outcome.status == "unknown"]
+        if uncertain:
+            # A missing receipt proves neither sent nor not sent. Stop before
+            # the generic verifier can replace it with a definite negative.
+            return uncertain[-1].text
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
         actions = [(name, outcome) for name, outcome in tool_outcomes
@@ -1691,6 +1805,14 @@ async def run_agent(
         await emit({"type": "text", "text": response})
         return response
     for _name, _args in (direct_calls or []):
+        if _name == "commit_private_meeting":
+            response = "(error: A private meeting commit requires its exact interactive confirmation; direct dispatch refused.)"
+            await emit({"type": "text", "text": response})
+            return response
+        if _meeting_safe(_args) != _args:
+            response = "(error: Private meeting capabilities cannot be carried into another tool; direct dispatch refused.)"
+            await emit({"type": "text", "text": response})
+            return response
         if _skill_boundary(_name):
             audit("reject_skill_boundary", tool=_name, args=_args)
             continue
@@ -1738,7 +1860,7 @@ async def run_agent(
                     "\n".join(_rows[:60])
                     + (f"\n…and {len(_rows) - 60} more"
                        if len(_rows) > 60 else ""))
-            if await approver.confirm(_action):
+            if _note_decision(_name, await approver.confirm(_action)):
                 _result = await execute_tool(_tool, _args)
                 audit("confirm_allow", tool=_name, args=_args)
             else:
@@ -1784,6 +1906,11 @@ async def run_agent(
                 response = "The requested action was not completed because approval was denied."
                 await emit({"type": "text", "text": response})
                 return response
+        elif (_direct_outcome.status == "unknown"
+              and _name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
+            response = _verified_final(_direct_outcome.text)
+            await emit({"type": "text", "text": response})
+            return response
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
@@ -1793,10 +1920,11 @@ async def run_agent(
         elif _direct_outcome.status in {"succeeded", "planned"}:
             tools_answered.add(_name)
         if _direct_outcome.status == "succeeded" and _name == "draft_message":
-            await emit({"type": "message_draft",
-                        "to": str(_args.get("to") or ""),
-                        "text": str(_args.get("text") or "")})
-            return ""
+            from service.tools.registry import _valid_message_draft
+            if _valid_message_draft(_result, _name):
+                await emit({"type": "message_draft",
+                            "to": _result.resolved_to, "text": _result.prepared_text})
+                return ""
         if (_direct_outcome.status == "denied"
                 and _name in _TERMINAL_OUTBOUND_DENIALS):
             return await _finish_denied_outbound(emit)
@@ -2096,6 +2224,10 @@ async def run_agent(
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
+            if guarded_meeting and not _meeting_local_client(client):
+                response = "Private meeting inference changed away from the local path; no further action ran."
+                await emit({"type": "text", "text": response})
+                return response
             # Retrying an unparseable (empty) response at a GREEDY temperature
             # is pointless — decoding is deterministic, so the retry reproduces
             # the identical unparseable token sequence (verified in oMLX's log,
@@ -2356,7 +2488,7 @@ async def run_agent(
                           "always confirmed",
                 "preview": "\n".join(_lines),
             }
-            _batch_approved = await approver.confirm(_batch_action)
+            _batch_approved = _note_decision("calendar_changes", await approver.confirm(_batch_action))
             if _batch_approved:
                 for _, _batch_name, _batch_args in _batch_calls:
                     if _batch_name == "add_calendar_event" and (
@@ -2377,6 +2509,12 @@ async def run_agent(
             if fixed := (tool_argument_bindings or {}).get(name):
                 args = {**args, **{key: value for key, value in fixed.items()
                                   if key != "_recipient_lookup"}}
+            if name != "commit_private_meeting" and _meeting_safe(args) != args:
+                result = "(error: Private meeting capabilities cannot be carried into another tool; no action ran.)"
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                hard_failed.add(name)
+                continue
             if name == "add_calendar_event" and cid in batch_calendar_args:
                 args = batch_calendar_args[cid]
             if name == "add_calendar_event" and (
@@ -2675,6 +2813,29 @@ async def run_agent(
                         action["preview"] = f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
+                    elif name == "commit_private_meeting":
+                        from service.tools.schedule_extras import private_meeting_review
+                        # Consume the inert reference before validation/await.
+                        # Keep all ordinary args/cards/audit/model carriers inert.
+                        try:
+                            args = json.loads(json.dumps(args, allow_nan=False))
+                            reference = args.get("capability_token")
+                            private_args = meeting_refs.pop(reference, None)
+                            if (private_args is None or set(args) != set(private_args)
+                                    or meeting_origin is None or _meeting_context() != meeting_origin
+                                    or json.dumps({k: v for k, v in args.items() if k != "capability_token"}, sort_keys=True, allow_nan=False)
+                                    != json.dumps({k: v for k, v in private_args.items() if k != "capability_token"}, sort_keys=True, allow_nan=False)):
+                                raise ValueError("Private proposal reference is invalid, changed or already used; request a new preview.")
+                            private_args = json.loads(json.dumps(private_args, allow_nan=False))
+                            action["preview"] = private_meeting_review(private_args)
+                        except (ValueError, TypeError) as exc:
+                            result = "(error: " + str(exc) + "; no private block created.)"
+                            await emit({"type": "tool_result", "id": cid, "result": result})
+                            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                            hard_failed.add(name)
+                            continue
+                        action["args"] = json.loads(json.dumps(args, allow_nan=False))
+                        action["fingerprint"] = _action_fingerprint(name, args)
                     elif name == "clear_past_reminders":
                         # A bulk delete has to show its whole list, not a
                         # count: the user asked for "old reminders" and only
@@ -2728,7 +2889,7 @@ async def run_agent(
                     if cid in batch_verdict:
                         approved = batch_verdict[cid]
                     else:
-                        approved = await approver.confirm(action)
+                        approved = _note_decision(name, await approver.confirm(action))
                     if approved:
                         # Whether the card actually SHOWED the outgoing text
                         # (confirm_preview populates `preview` for the outbound
@@ -2738,8 +2899,16 @@ async def run_agent(
                         # is not a review of anything.
                         _reviewed = (name in _OUTBOUND_PREVIEW_TOOLS
                                      and bool(action.get("preview")))
-                        with human_reviewed_content(_reviewed):
-                            result = await execute_tool(tool, args)
+                        if name == "commit_private_meeting":
+                            from service.tools.schedule_extras import approved_private_meeting
+                            try:
+                                with approved_private_meeting(private_args):
+                                    result = await execute_tool(tool, private_args)
+                            except (ValueError, TypeError) as exc:
+                                result = "(error: " + str(exc) + "; request a new private block preview.)"
+                        else:
+                            with human_reviewed_content(_reviewed):
+                                result = await execute_tool(tool, args)
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -2790,6 +2959,11 @@ async def run_agent(
                     response = "The requested action was not completed because approval was denied."
                     await emit({"type": "text", "text": response})
                     return response
+            elif (outcome.status == "unknown"
+                  and name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
+                response = _verified_final(outcome.text)
+                await emit({"type": "text", "text": response})
+                return response
             elif outcome.status in {"failed", "needs_input", "unsupported"}:
                 failed_tools.add(name)
                 if outcome.effect != "read":
@@ -2805,10 +2979,11 @@ async def run_agent(
                 # End the turn after emitting the exact editable recipient/body
                 # so the model cannot replace the card with a Markdown draft or
                 # ask another "should I send it?" question.
-                await emit({"type": "message_draft",
-                            "to": str(args.get("to") or ""),
-                            "text": str(args.get("text") or "")})
-                return ""
+                from service.tools.registry import _valid_message_draft
+                if _valid_message_draft(result, name):
+                    await emit({"type": "message_draft",
+                                "to": result.resolved_to, "text": result.prepared_text})
+                    return ""
             if outcome.status == "denied" and name in _TERMINAL_OUTBOUND_DENIALS:
                 return await _finish_denied_outbound(emit)
             if name == "create_tool" and get_tool(str(args.get("name", "")).strip().lower()):

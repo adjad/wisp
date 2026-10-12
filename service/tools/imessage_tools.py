@@ -69,6 +69,9 @@ _name_handles: dict[str, list[str]] = {}
 
 
 def cache_contacts(mapping: dict) -> None:
+    from service.demo.founder import enabled
+    if enabled():
+        return
     global _contacts, _name_handles
     _contacts = {_norm_handle(k): v for k, v in (mapping or {}).items()
                  if k and v and _norm_handle(k)}
@@ -123,6 +126,9 @@ def clear_contacts() -> None:
 
 
 def apply_contacts_sync(body: dict) -> bool:
+    from service.demo.founder import enabled
+    if enabled():
+        return False
     global _contacts_revision, _contacts_applied_revision, _contacts_privacy_current
     revision = body.get("revision")
     if revision is not None and (type(revision) is not int or revision <= 0):
@@ -177,7 +183,8 @@ def resolve_contact(text: str, *, prefix_only: bool = False) -> str:
     label on a message line, so a phone number quoted inside the message BODY
     is left alone (rewriting body text would corrupt what was actually said).
     """
-    if not _contacts:
+    from service.demo.founder import enabled
+    if enabled() or not _contacts:
         return text
     if prefix_only:
         head, sep, rest = text.partition(":")
@@ -1884,14 +1891,32 @@ async def summarize_messages_for_conversation(conversation: str, *, day: str | N
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
     else:
         start, end, span = float("-inf"), float("inf"), "recent messages"
-    selected = [(ts, context, text)
-                for ts, identity, context, text, _unread in records
-                if (identity, context) == (conversation_id, label) and start <= ts < end]
-    selected = filter_summary_message_rows(sorted(selected, key=lambda row: row[0]))
-    selected = selected[-max(1, min(count, 300)):]
+    matched = [(ts, context, text)
+               for ts, identity, context, text, _unread in records
+               if (identity, context) == (conversation_id, label) and start <= ts < end]
+    eligible = filter_summary_message_rows(sorted(matched, key=lambda row: row[0]))
+    selected = eligible[-max(1, min(count, 300)):]
+    omitted = len(eligible) - len(selected)
+    coverage = (f"Summary input coverage: {len(matched)} cached messages matched this chat/date scope; "
+                f"{len(eligible)} eligible after existing summary filters; "
+                f"{len(selected)} included in the digest input; "
+                f"{omitted} older eligible messages omitted by the count limit. "
+                f"{len(matched) - len(eligible)} messages excluded by summary filters.\n")
+    scan = structured_messages_snapshot()["coverage"]
+    if scan.get("reason") == "structured_feed_absent":
+        coverage += "Native scan coverage is unknown for this legacy feed. "
+    elif scan.get("status") != "complete":
+        coverage += "Messages scan coverage is partial. "
+    coverage += ("Only the available bounded cache was searched; cache freshness and complete "
+                 "chat history are unverified, and older or unsynced messages may be missing. "
+                 "The digest displays selected signals, not every included message.\n\n")
     if not selected:
-        return f"No substantive messages found in {label} for {span}."
-    return await _summarize(selected, f"{label} — {span}")
+        empty = ("Matching cached messages were all excluded by the existing summary filters."
+                 if matched else "No cached messages matched this chat/date scope.")
+        return (coverage + "No substantive messages were eligible for this summary. " + empty
+                + " This does not establish that the chat or its history is empty.")
+    # Keep coverage outside the digest's capped label and presentation budget.
+    return coverage + await _summarize(selected, f"{label} — {span}")
 
 
 def _matches(query: str, context: str, text: str) -> bool:
@@ -1899,13 +1924,96 @@ def _matches(query: str, context: str, text: str) -> bool:
     return q in context.lower() or q in text.lower()
 
 
+def _unread_records(records):
+    """Unknown read state is missing evidence, never a read or unread message."""
+    known = [row for row in records if row[4] is not None]
+    unknown = len(records) - len(known)
+    if records and not known:
+        return [], ("Read/unread status is unavailable for the Messages records in "
+                    "this scope. I can't verify whether any are unread.\n")
+    note = (f"Read/unread coverage is incomplete: {unknown} cached message(s) "
+            "have unknown read status and are excluded.\n" if unknown else "")
+    return [row for row in known if row[4] is True], note
+
+
+def _unread_coverage_note() -> str:
+    # V3 coverage supplements the read flags in V2. Its absence does not make
+    # a V2 read flag unknown, but an explicit partial scan must be disclosed.
+    if _lines.startswith(_STRUCTURED_PREFIX):
+        if structured_messages_snapshot()["coverage"]["status"] != "complete":
+            return "Messages scan coverage is partial; this is not a complete unread inventory.\n"
+    return ""
+
+
+async def _summarize_unread_messages(day: str | None = None, count: int = 30,
+                                    period: str | None = None,
+                                    conversation: str | None = None) -> str:
+    """A source-backed catch-up of all unread content, including routine replies.
+
+    The important-message digest deliberately drops chatter and includes read
+    items. Neither behavior can satisfy an explicit unread request. Render the
+    selected source excerpts directly, with the existing privacy/attribution
+    handling, without promoting an inferred action or calling a model.
+    """
+    from service.assistant.sync_status import ensure_sources
+    await ensure_sources(("messages",))
+    if messages_sync_state() != "ready":
+        return _unavailable_message()
+    records = _parse_records()
+    label = "synced Messages"
+    if conversation:
+        match, error = _match_conversation(records, conversation)
+        if error:
+            return error
+        identity, label = match
+        records = [row for row in records if (row[1], row[2]) == (identity, label)]
+    if period or day:
+        try:
+            start, end, span = resolve_span(period) if period else _day_bounds(day)
+        except (BadPeriod, ValueError):
+            return f"(couldn't understand the date/range {period or day!r})"
+        records = [row for row in records if start <= row[0] < end]
+        label += f" — {span}"
+    rows, note = _unread_records(records)
+    note += _unread_coverage_note()
+    if not rows:
+        if note:
+            return note + "No verified unread messages were returned in this searched scope."
+        return f"No unread messages found in {label}."
+    try:
+        limit = max(1, min(150, int(count)))
+    except (TypeError, ValueError):
+        limit = 30
+    total = len(rows)
+    rows = sorted(rows, key=lambda row: row[0])[-limit:]
+    if total > limit:
+        note += (f"Result coverage: showing {len(rows)} of {total} unread messages; "
+                 f"{total - limit} older unread messages are not shown.\n")
+    excerpts = [(ts, context, redact_summary_codes(text))
+                for ts, _identity, context, text, _unread in rows]
+    lines = [f"Unread messages in {label} ({len(rows)} shown):"]
+    for (ts, context, _text), rendered in zip(excerpts, render_for_summary(excerpts), strict=True):
+        when = datetime.fromtimestamp(ts).strftime("%a %b %-d, %Y %-I:%M %p")
+        lines.append(f"[{when}] {context}: {rendered}")
+    return note + "\n".join(lines)
+
+
 async def view_messages_impl(query: str | None = None, day: str | None = None,
-                             count: int = 20, period: str | None = None) -> str:
+                             count: int = 20, period: str | None = None,
+                             unread: bool = False,
+                             conversation: str | None = None) -> str:
     from service.assistant.sync_status import ensure_sources
     await ensure_sources(("messages",))
     if messages_sync_state() != "ready" or not _lines.strip():
         return _unavailable_message()
-    rows = _parse_lines()
+    records = _parse_records()
+    if conversation:
+        match, error = _match_conversation(records, conversation)
+        if error:
+            return error
+        identity, context = match
+        records = [row for row in records if (row[1], row[2]) == (identity, context)]
+    rows = [(ts, context, text) for ts, _identity, context, text, _state in records]
     label = "your recent messages"
     # `period` (a range) wins over `day` (a single day) when both are given.
     # This is the parameter whose absence produced the reported bug: with no way
@@ -1923,30 +2031,36 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
         except ValueError:
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
         rows = [r for r in rows if start <= r[0] < end]
+    if unread:
+        scoped_records = [row for row in records
+                          if (not period and not day) or start <= row[0] < end]
+        selected, unread_note = _unread_records(scoped_records)
+        rows = [(ts, context, text) for ts, _identity, context, text, _state in selected]
+        label = "UNREAD in " + label
+    else:
+        unread_note = ""
     rows.sort(key=lambda r: r[0])
     scoped = rows
-    note = ""
+    note = unread_note + (_unread_coverage_note() if unread else "")
     if query:
         matched = [r for r in scoped if _matches(query, r[1], r[2])]
         if matched:
             rows = matched
         else:
-            # No exact keyword hit — hand back the whole scoped set so the agent model
-            # can read through it itself rather than dead-ending on a substring
-            # miss (e.g. it searches "pickup" but the text says "grab it").
-            rows = scoped
-            count = max(count, 15)
-            note = (f"(no exact match for {query!r} — showing the raw set below so you "
-                    "can look through it yourself)\n\n")
+            return note + f"No messages matching {query!r} were found in {label}."
     if not rows:
-        return f"No messages found for {label}."
+        return note + f"No {'verified unread ' if unread else ''}messages found for {label}."
     # ANNOUNCE the cut when a range gets truncated. `rows[-count:]` keeps the
     # NEWEST, so a two-month range with the default count can come back holding
     # only the newer month — and the model, seeing a "July through August"
     # label over August-only lines, would report that nothing happened in July.
     # Same principle as the agent loop's _fit_tool_result: a silent truncation
     # produces a confident wrong answer, which is worse than a noisy one.
-    if period and len(rows) > count:
+    try:
+        count = max(1, int(count))
+    except (TypeError, ValueError):
+        count = 20
+    if (period or day or query or unread or conversation) and len(rows) > count:
         note += (f"(showing the {count} most recent of {len(rows)} messages in "
                  f"{label} — the earlier ones are NOT shown, so do not say "
                  f"nothing happened earlier in this range. Raise `count` to "
@@ -1968,7 +2082,10 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
     "etc. Pass `query` to search for a keyword across sender/conversation and "
     "text (e.g. 'birthday', 'pizza', a person's name); pass `period` for a "
     "date RANGE ('this month', 'last week', 'this month and last month') or "
-    "`day` for one specific day; omit all for the most recent messages.",
+    "`day` for one specific day; omit all for the most recent messages. Named "
+    "queries return no match rather than unrelated records. Use `conversation` "
+    "to select one person/group by current conversation identity. Pass `unread` "
+    "for unread-only records; unknown read state is disclosed, never guessed.",
     {"type": "object",
      "properties": {
          "query": {"type": "string",
@@ -1978,12 +2095,16 @@ async def view_messages_impl(query: str | None = None, day: str | None = None,
                  "description": "'today', 'yesterday', or 'YYYY-MM-DD' — scope to that day"},
          "count": {"type": "integer",
                    "description": "max messages to return (default 20)"},
+         "unread": {"type": "boolean", "description": "Only verified unread messages; does not mark anything read."},
+         "conversation": {"type": "string", "description": "One specific person or group chat; ambiguous names ask for clarification."},
      }},
     category="messages_read",
 )
 async def view_messages(query: str | None = None, day: str | None = None,
-                        count: int = 20, period: str | None = None) -> str:
-    return await view_messages_impl(query, day, count, period)
+                        count: int = 20, period: str | None = None,
+                        unread: bool = False,
+                        conversation: str | None = None) -> str:
+    return await view_messages_impl(query, day, count, period, unread, conversation)
 
 
 @register(
@@ -1997,7 +2118,9 @@ async def view_messages(query: str | None = None, day: str | None = None,
     "both for the important three-day digest. Pass `conversation` for one named "
     "person or group chat; an explicit chat summary includes that chat even "
     "when it has no unread or broadly important messages. Summarized by the "
-    "fast local model.",
+    "fast local model. For explicit unread-only catchup, pass `unread=true`: "
+    "returns source-backed excerpts including routine unread replies, with "
+    "unknown read status and truncated coverage disclosed; never marks read.",
     {"type": "object",
      "properties": {
          "period": PERIOD_ARG,
@@ -2006,13 +2129,17 @@ async def view_messages(query: str | None = None, day: str | None = None,
          "conversation": {"type": "string",
                           "description": "specific person or group-chat name to summarize"},
          "count": {"type": "integer",
-                   "description": "when `period`/`day` are omitted, how many recent messages to scan (default 30)"},
+                   "description": "Recent digest scan limit (default 30); unread catchup uses this display limit for every date scope and discloses omissions."},
+         "unread": {"type": "boolean", "description": "Only verified unread messages, including routine replies; combines with day, period and conversation."},
      }},
     category="messages_read",
 )
 async def summarize_messages(day: str | None = None, count: int = 30,
                              period: str | None = None,
-                             conversation: str | None = None) -> str:
+                             conversation: str | None = None,
+                             unread: bool = False) -> str:
+    if unread:
+        return await _summarize_unread_messages(day, count, period, conversation)
     if conversation:
         return await summarize_messages_for_conversation(
             conversation, day=day, period=period, count=count)
@@ -2040,6 +2167,9 @@ async def summarize_messages(day: str | None = None, count: int = 30,
     category="messages_read",
 )
 async def lookup_contact(name: str) -> str:
+    from service.demo.founder import enabled, contacts
+    if enabled():
+        return contacts(name, lookup=True)
     matches = find_contacts(name)
     if not matches:
         if not _name_handles:
@@ -2077,6 +2207,9 @@ async def lookup_contact(name: str) -> str:
     category="messages_read",
 )
 async def list_contacts(query: str = "") -> str:
+    from service.demo.founder import enabled, contacts
+    if enabled():
+        return contacts(query)
     names = contact_names()
     if not names:
         return ("(No contacts are synced yet — Wisp needs Contacts access, or "

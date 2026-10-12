@@ -1,0 +1,41 @@
+# Wisp GX10 inference gateway, supervised as a systemd USER unit.
+# Rendered by deploy/gx10/install-gateway-service.sh (placeholders @...@).
+#
+# Chain: Tailscale Serve https :443 (unchanged) -> http://127.0.0.1:8767 (this
+# process) -> native Ollama http://127.0.0.1:11434.
+#
+# Starts at boot without anyone logging in ONLY when lingering is enabled:
+#   loginctl enable-linger asus      (check: loginctl show-user asus -p Linger)
+# Ollama is a *system* unit, which a user unit cannot depend on; ExecStartPre
+# polls Ollama's /api/version instead. network-online.target does not exist in
+# the user manager, so the After= line below is ordering-only/no-op there; the
+# gateway binds loopback and needs no external network to start.
+
+[Unit]
+Description=Wisp GX10 inference gateway (127.0.0.1:@PORT@ -> Ollama)
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=20
+
+[Service]
+Type=simple
+WorkingDirectory=@GATEWAY_DIR@
+Environment=PYTHONUNBUFFERED=1
+# 1) refuse to start a duplicate if anything already listens on the port
+#    (e.g. the old manually launched gateway); 2) wait for Ollama.
+ExecStartPre=@WAIT_SCRIPT@ --require-free-port @PORT@
+ExecStartPre=@WAIT_SCRIPT@ --url http://127.0.0.1:11434/api/version --timeout 180
+# EXACT existing launch command (same interpreter, flags, token file, model).
+ExecStart=@PYTHON3@ -B @GATEWAY_PY@ --tokens @TOKENS_JSON@ --model @MODEL@
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=240
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=yes
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wisp-gx10-gateway
+
+[Install]
+WantedBy=default.target

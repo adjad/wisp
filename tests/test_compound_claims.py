@@ -138,18 +138,17 @@ _SINGLE = [
     ("remember that I drive a BMW", "memory save intent -> remember", 3, "remember"),
     ("forget that I drive a BMW", "memory forget intent -> forget", 3, "forget"),
     ("what do you know about me", "self query -> recall", 1, "recall"),
-    ("what's new across my apps", "recency sweep -> get_recent_activity", 5,
+    ("what's new across my apps", "recency sweep -> get_recent_activity", 6,
      "get_recent_activity"),
-    ("what's queued to send", "scheduled-send queue -> scoped tools (3)", 3, None),
-    # "cancel" trips the calendar-write domain and "send" trips compose; the
-    # queue claim suppresses both, or this grows 3 -> 14 with a spurious
-    # ask-which-channel prompt.
-    ("cancel that text", "scheduled-send queue -> scoped tools (3)", 3, None),
+    ("what's queued to send", "recorded scheduled-send review; delivery unverified", 1, "list_scheduled_sends"),
+    # Ambiguous cancellation only discovers records; a new exact-ID request is required.
+    ("cancel that text", "recorded scheduled-send review; delivery unverified", 1,
+     "list_scheduled_sends"),
 ]
 
 
 def test_single_domain_routes_are_unchanged() -> None:
-    print("\nsingle-domain routes keep their exact pre-refactor shape")
+    print("\nsingle-domain routes keep their bounded product contracts")
     for prompt, reason, n_tools, force in _SINGLE:
         d = routed(prompt)
         got_n = len(d.tool_subset or [])
@@ -157,6 +156,47 @@ def test_single_domain_routes_are_unchanged() -> None:
         check(f"{prompt!r} offers {n_tools} tools", got_n == n_tools, f"got {got_n}")
         check(f"{prompt!r} force={force}", d.force_first_tool == force,
               f"got {d.force_first_tool!r}")
+
+    from service.tools.registry import REGISTRY
+    recent = routed("what's new across my apps")
+    readers = {'get_recent_activity','get_upcoming','search_reminders',
+               'summarize_messages','summarize_emails','search_notes'}
+    check('recency offers exactly six distinct readers',
+          set(recent.tool_subset or []) == readers and len(recent.tool_subset) == len(readers))
+    check('recency capabilities are registered readers', all(
+          REGISTRY[name].category in {'assistant_read','email_read','messages_read','notes_read'}
+          for name in readers))
+    check('recency forces only cached feed before optional drilldown',
+          recent.force_first_tool == 'get_recent_activity' and recent.expect_tool_first
+          and not recent.direct_calls and not recent.tool_argument_bindings
+          and not recent.clarify_channel)
+    queue_read = routed("what's queued to send")
+    check('canonical queue read has exactly its pending-list reader',
+          queue_read.tool_subset == ['list_scheduled_sends']
+          and queue_read.force_first_tool == 'list_scheduled_sends'
+          and queue_read.expect_tool_first
+          and queue_read.required_tool_groups == (frozenset({'list_scheduled_sends'}),)
+          and queue_read.tool_argument_bindings == {'list_scheduled_sends':{'status':'pending','id':'','count':20}}
+          and not queue_read.direct_calls and queue_read.verified_results_only)
+    check('canonical queue read forbids every other registered tool',
+          set(REGISTRY) - {'list_scheduled_sends'} <= queue_read.forbidden_tools)
+    cancel = routed('cancel that text')
+    check('cancel has only read-only queue discovery until a new exact-ID request',
+          set(cancel.tool_subset or []) == {'list_scheduled_sends'}
+          and len(cancel.tool_subset) == 1
+          and 'cancel_scheduled_send' in cancel.forbidden_tools
+          and 'cancel_scheduled_send' not in cancel.tool_argument_bindings
+          and 'unconditional single exact-ID cancellation' in cancel.resolved_request)
+    check('cancel requires pending discovery first', cancel.expect_tool_first
+          and cancel.force_first_tool == 'list_scheduled_sends'
+          and cancel.required_tool_groups == (frozenset({'list_scheduled_sends'}),)
+          and cancel.tool_argument_bindings == {'list_scheduled_sends':{'status':'pending'}})
+    check('cancel never injects an ambiguous target or dispatches directly',
+          not cancel.direct_calls and cancel.resolved_request.startswith('cancel that text')
+          and not cancel.light_read and not cancel.clarify_channel)
+    check('cancel forbids delivery and drafting',
+          {'schedule_send','send_email','send_message','draft_email','draft_message'}
+          <= cancel.forbidden_tools)
 
 
 def test_device_direct_dispatch_survives() -> None:

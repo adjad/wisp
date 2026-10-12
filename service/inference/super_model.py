@@ -116,6 +116,8 @@ _QUESTIONS = {
 
 
 def _load_agent():
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Local Laya classifier")
     global _agent, _loading, _load_failed
     if _agent is not None:
         return _agent
@@ -149,6 +151,9 @@ async def warm_laya_classifier() -> None:
 
 
 def start_laya_warmup() -> None:
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return
     global _warm_task
     if _warm_task is None or _warm_task.done():
         _warm_task = asyncio.create_task(warm_laya_classifier())
@@ -165,6 +170,8 @@ def laya_router_status() -> str:
 
 
 def _predict_with_laya(prompt: str) -> tuple[float, float, float]:
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Local Laya classifier")
     result = _load_agent().predict(prompt, _QUESTIONS)
     answers = result.get("answers") if isinstance(result, dict) else None
     if not isinstance(answers, dict):

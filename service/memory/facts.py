@@ -13,7 +13,8 @@ from pathlib import Path
 
 from service.config import MOE_DIR
 
-DB_PATH = MOE_DIR / 'facts.db'
+from service.paths import STATE_DIR
+DB_PATH = STATE_DIR / 'facts.db'
 CATEGORIES = ('fact', 'preference', 'person', 'project', 'routine')
 _CONTEXT_CHARS = 2400
 _STOP = set('a an the i me my we our you your is are am was were be been do does did have has had to of for in on at with and or but it this that what which who how when where can could would should please remember recall know about tell said say'.split())

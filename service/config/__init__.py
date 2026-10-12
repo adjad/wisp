@@ -405,6 +405,11 @@ def _local_role_model(role: str) -> str:
 
 def role_to_model(role: str) -> str:
     """Resolve a logical role to its currently bound concrete model id."""
+    from service.inference.remote_policy import remote_only_profile, require_generation_role
+    profile = remote_only_profile()
+    if profile is not None:
+        require_generation_role(role)
+        return profile.model_id
     model = _local_role_model(role)
     binding = models_config().get("inference", {}).get("bindings", {}).get(role, {})
     return binding.get("model_id") or model
@@ -487,6 +492,8 @@ def save_installed_models(models: list[str]) -> None:
 def set_roles(assignments: dict[str, str]) -> None:
     """Point several roles at installed models in ONE overlay write, so a failure
     cannot leave some roles moved and others not."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     roles: dict[str, str] = {}
     for role, model in assignments.items():
         roles[role] = model
@@ -583,6 +590,8 @@ def set_local_provider(endpoint_cfg: dict, model_id: str, context_window: int,
     saved window is the one the app actually honors, which can be smaller than
     the window the user typed.
     """
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     if (not roles or len(set(roles)) != len(roles)
             or any(role not in LOCAL_PROVIDER_ROLES for role in roles)):
         raise ValueError("Choose Reasoning, Agent, or Coding for the local provider")
@@ -667,6 +676,8 @@ def cloud_provider_settings() -> dict:
 def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
                        roles: list[str], super_model_enabled: bool = False) -> None:
     """Persist one tested cloud endpoint and explicit generation-role bindings."""
+    from service.inference.remote_policy import require_local_models_disabled
+    require_local_models_disabled("Inference settings changes")
     selected = set(roles)
     if not selected.issubset(CLOUD_ASSIGNABLE_ROLES):
         raise ValueError("Unsupported cloud role")
@@ -698,6 +709,9 @@ def set_cloud_provider(endpoint_cfg: dict, model_id: str, context_window: int,
 
 
 def cloud_super_model_enabled() -> bool:
+    from service.inference.remote_policy import remote_only_profile
+    if remote_only_profile() is not None:
+        return False
     cfg = models_config().get("inference", {})
     endpoint_cfg = cfg.get("endpoints", {}).get("cloud", {})
     super_cfg = cfg.get("super_model", {})

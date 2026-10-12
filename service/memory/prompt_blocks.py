@@ -45,6 +45,38 @@ def memory_block(query: str = "") -> str:
     """
     try:
         from service.memory.facts import memory_context_block
-        return memory_context_block(query=query)
+        block = memory_context_block(query=query)
+    except Exception:  # noqa: BLE001
+        block = ""
+    return block + profile_block()
+
+
+PROFILE_HEADER = ("\nWhat Wisp has learned about the user's routines (statistical patterns from "
+                  "their own activity; may be wrong, never state them as certain facts):\n")
+
+
+def profile_block() -> str:
+    """The behavior engine's compact profile card (<= 700 bytes), or "".
+
+    Rides along with memory_block on every path that already includes the
+    user's remembered facts. The Intel remote-only build keeps every other
+    memory context off, so main.py adds ONLY this block there (see
+    remote_only_context_block). Cached for 60 s by the runtime and never
+    blocks the event loop; any failure is simply no card.
+    """
+    from service.behavior.flags import env_enabled
+    if not env_enabled():
+        return ""
+    try:
+        from service.assistant.behavior_runtime import profile_card
+        card = profile_card().strip()
     except Exception:  # noqa: BLE001
         return ""
+    return PROFILE_HEADER + card if card else ""
+
+
+def remote_only_context_block() -> str:
+    """Personal context allowed in the remote-only (GX10) build: the learned
+    profile card only. Remembered facts, skills and conversation memory stay
+    off there; the card is small enough for the gateway's byte budget."""
+    return profile_block()

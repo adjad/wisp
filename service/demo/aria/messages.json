@@ -1,0 +1,4186 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "persona": "Aria Solano",
+  "provenance": "Fictional Aria demo iMessage threads. Not real messages.",
+  "as_of": "2026-10-11T17:30:00-07:00",
+  "timezone": "America/Los_Angeles",
+  "chats": [
+    {
+      "id": "chat-dev",
+      "name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "is_group": false,
+      "message_count": 102
+    },
+    {
+      "id": "chat-mom",
+      "name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "is_group": false,
+      "message_count": 52
+    },
+    {
+      "id": "chat-core",
+      "name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "is_group": true,
+      "message_count": 65
+    },
+    {
+      "id": "chat-samira",
+      "name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "is_group": false,
+      "message_count": 18
+    },
+    {
+      "id": "chat-nora",
+      "name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "is_group": false,
+      "message_count": 11
+    },
+    {
+      "id": "chat-maya",
+      "name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "is_group": false,
+      "message_count": 27
+    }
+  ],
+  "messages": [
+    {
+      "id": "im-0001",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Staging isolation harness runs end to end now. 212 cross-tenant cases, all synthetic. Want the summary before Priya sees it?",
+      "date": "2026-08-17T14:12:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0002",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes please. Send it before 4 and I'll read it between calls.",
+      "date": "2026-08-17T14:15:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0003",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Sending. Two cases flaky, I'll pin them down tomorrow.",
+      "date": "2026-08-17T14:21:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0004",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Stand-up in 10. Staging is green.",
+      "date": "2026-08-18T09:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0005",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Customer call with Harborline moved to 2.",
+      "date": "2026-08-18T09:23:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0006",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Thanks both. Focus block 9 to 11 is protected as usual.",
+      "date": "2026-08-18T09:29:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0007",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Lena's audit-log schema is merged. Actor, timestamp, action, site ID. Foundry will ask for site name too.",
+      "date": "2026-08-18T15:03:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0008",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Add the name. Their managers don't know sites by ID.",
+      "date": "2026-08-18T15:05:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0009",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Easy. Will do tomorrow.",
+      "date": "2026-08-18T15:14:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0010",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Harborline asked about SCIM again. I'd rather not promise it this quarter.",
+      "date": "2026-08-19T14:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0011",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Agreed. SSO first, SCIM is a conversation for later. I'll tell Tessa when we speak.",
+      "date": "2026-08-19T14:44:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0012",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Can we keep Thursday's 1:1 at 3? I want to walk you through the SSO flow.",
+      "date": "2026-08-20T16:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0013",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes. Auto-dispatch can wait a week.",
+      "date": "2026-08-20T16:27:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0014",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Appreciate that. It was eating my head.",
+      "date": "2026-08-20T16:32:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0015",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Foundry sent the pilot site list. Ten sites confirmed.",
+      "date": "2026-08-20T17:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0016",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "I'll set up their coordinators this week.",
+      "date": "2026-08-20T17:42:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0017",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Great. Nice work, all.",
+      "date": "2026-08-20T17:51:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0018",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "I said yes to the venue!!! Santa Barbara, here we come.",
+      "date": "2026-08-22T19:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0019",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Yesss! So happy for you two.",
+      "date": "2026-08-22T19:13:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0020",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Still on for our call at 6?",
+      "date": "2026-08-23T17:08:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0021",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Yes! Calling at 6.",
+      "date": "2026-08-23T17:11:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0022",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Good. Dad is making his chili.",
+      "date": "2026-08-23T17:17:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0023",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "That was lovely. Did you eat something today that wasn't a protein bar?",
+      "date": "2026-08-23T19:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0024",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Ha, yes. Salad and everything.",
+      "date": "2026-08-23T19:22:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0025",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "I don't believe you but I love you.",
+      "date": "2026-08-23T19:31:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0026",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Pushed the audit-log schema. Need your call on retention defaults.",
+      "date": "2026-08-24T14:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0027",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "What are the options?",
+      "date": "2026-08-24T14:36:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0028",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "13 months, 24 months, or per-tenant. I'd go 13 and make it configurable.",
+      "date": "2026-08-24T14:38:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0029",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "13 default, per-tenant config. Good.",
+      "date": "2026-08-24T14:46:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0030",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Export spike works for one site. Testing across all ten tomorrow.",
+      "date": "2026-08-25T10:12:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0031",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Amazing. Thanks Lena.",
+      "date": "2026-08-25T10:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0032",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Lena, ping me if the archived-site edge case bites.",
+      "date": "2026-08-25T10:23:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0033",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Security packet v3 is in the drive. Needs your sign-off on the wording.",
+      "date": "2026-08-25T11:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0034",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Looks good, approved.",
+      "date": "2026-08-25T11:43:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0035",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Heads up: cloud bill is creeping. 9% over last month, mostly data transfer.",
+      "date": "2026-08-25T15:48:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0036",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Is it the export spike?",
+      "date": "2026-08-25T15:51:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0037",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Partly. I'll look at caching on Wed.",
+      "date": "2026-08-25T15:57:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0038",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Dad's knee is better! Doctor says no more stairs for a bit.",
+      "date": "2026-08-26T12:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0039",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "So glad. Tell him to listen to the doctor this time.",
+      "date": "2026-08-26T12:44:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0040",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "SSO works against two identity providers on staging. Third one fails on clock skew.",
+      "date": "2026-08-27T14:55:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0041",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Is the third one a customer's?",
+      "date": "2026-08-27T14:57:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0042",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Not any of the pilots. Fine to ignore for now.",
+      "date": "2026-08-27T15:06:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0043",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Great. Don't over-invest.",
+      "date": "2026-08-27T15:10:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0044",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Rivet wants a 4-site pilot starting Monday.",
+      "date": "2026-08-27T16:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0045",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Yes. Imani, can you run onboarding?",
+      "date": "2026-08-27T16:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0046",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "On it. Kickoff Monday 10am.",
+      "date": "2026-08-27T16:31:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0047",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Lena's export spike works end to end. One edge case with archived sites left.",
+      "date": "2026-08-28T16:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0048",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "That's the one Foundry will hit first. Priority.",
+      "date": "2026-08-28T16:12:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0049",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Farmers market tomorrow? Coffee first.",
+      "date": "2026-08-29T08:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0050",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Can't, Saturday focus time. Next one?",
+      "date": "2026-08-29T08:36:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0051",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Deal.",
+      "date": "2026-08-29T08:38:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0052",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Call when you can! The photos from the lake arrived.",
+      "date": "2026-08-30T17:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0053",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Calling at 6!",
+      "date": "2026-08-30T17:22:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0054",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Perfect.",
+      "date": "2026-08-30T17:27:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0055",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Dad says hi. He wants to know if the company is still growing.",
+      "date": "2026-08-30T19:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0056",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "It is, slowly. Three customers are trialing a bigger plan. Tell him I'm on it.",
+      "date": "2026-08-30T19:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0057",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Proud of you, mija.",
+      "date": "2026-08-30T19:18:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0058",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Pilar sent over an infrastructure candidate, Jonah West. Take-home goes out this week. Looks promising on paper.",
+      "date": "2026-08-31T14:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0059",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Good. Let's discuss at the 1:1 and decide whether to run the loop.",
+      "date": "2026-08-31T14:35:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0060",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Reminder: security packet v1 goes to Harborline tomorrow.",
+      "date": "2026-09-01T08:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0061",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Let's call it a draft. It says what exists, nothing more.",
+      "date": "2026-09-01T08:52:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0062",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Agreed. Marked draft.",
+      "date": "2026-09-01T09:00:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0063",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Harborline wants the onboarding plan by Friday. Draft is ready.",
+      "date": "2026-09-01T11:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0064",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Send it, cc me.",
+      "date": "2026-09-01T11:21:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0065",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Staging down for 8 min, DNS thing. Back now. Nothing customer-facing.",
+      "date": "2026-09-01T15:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0066",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Thanks for the heads up. Anything to tell Imani?",
+      "date": "2026-09-01T15:26:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0067",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "No. Pilot environments are separate.",
+      "date": "2026-09-01T15:28:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0068",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Did you get my package?",
+      "date": "2026-09-02T13:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0069",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Not yet, I'll check the front desk.",
+      "date": "2026-09-02T13:18:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0070",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "It's the little jar of the good chili crisp.",
+      "date": "2026-09-02T13:21:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0071",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "You on with Nora at 4?",
+      "date": "2026-09-02T14:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0072",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes. I'll tell her SSO is built but not approved. Same sentence every time.",
+      "date": "2026-09-02T14:28:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0073",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Thank you. Please keep saying it that way.",
+      "date": "2026-09-02T14:31:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0074",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "Ready when you are.",
+      "date": "2026-09-02T15:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0075",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "me",
+      "text": "Dialing in now.",
+      "date": "2026-09-02T15:33:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0076",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Weekly adoption: dispatch board is the favorite feature.",
+      "date": "2026-09-03T17:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0077",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Customers keep saying the exception digest saves them a morning every week.",
+      "date": "2026-09-03T17:33:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0078",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "That's the line for the update. Thank you.",
+      "date": "2026-09-03T17:39:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0079",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Priya sent two exceptions back from the isolation review. Neither blocks, both need a written disposition.",
+      "date": "2026-09-04T16:42:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0080",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Can you write them up by Monday?",
+      "date": "2026-09-04T16:48:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0081",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Yes.",
+      "date": "2026-09-04T16:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0082",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "I'm at the stand with the good peaches. Come!",
+      "date": "2026-09-05T10:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0083",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "On my way, 15 minutes.",
+      "date": "2026-09-05T10:34:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0084",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Saving you one.",
+      "date": "2026-09-05T10:38:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0085",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Still on for our call at 6?",
+      "date": "2026-09-06T17:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0086",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Yes. Long weekend, so I'm free all evening.",
+      "date": "2026-09-06T17:36:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0087",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Lovely. I'm making flan.",
+      "date": "2026-09-06T17:38:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0088",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Thank you for calling. Rest tomorrow, you work too much.",
+      "date": "2026-09-06T19:12:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0089",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Monday is Labor Day. Promise I'll rest. Mostly.",
+      "date": "2026-09-06T19:21:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0090",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Mostly. Hmm.",
+      "date": "2026-09-06T19:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0091",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Back from the long weekend. DNS issue fixed.",
+      "date": "2026-09-08T11:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0092",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Welcome back. Export QA continues.",
+      "date": "2026-09-08T11:07:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0093",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Coffee's on me Thursday.",
+      "date": "2026-09-08T11:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0094",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Field-tech training deck updated with the offline flow.",
+      "date": "2026-09-08T11:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0095",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Thanks Samira, will review after lunch.",
+      "date": "2026-09-08T11:52:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0096",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Back from the long weekend. Rivet's offline recovery repro: can reproduce now. Draft survives, retry screen is just ugly.",
+      "date": "2026-09-08T14:35:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0097",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Good news on data. Tell Lena it's hers.",
+      "date": "2026-09-08T14:44:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0098",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Jonah's take-home is in. Strong on infra, light on incident write-ups.",
+      "date": "2026-09-09T15:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0099",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Great. Let's decide about timing after Owen's numbers.",
+      "date": "2026-09-09T15:54:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0100",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Can I get 20 minutes before the 3 pm 1:1? Want to show you the revised audit-log screen.",
+      "date": "2026-09-10T14:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0101",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "2:30 in your office.",
+      "date": "2026-09-10T14:22:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0102",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Perfect.",
+      "date": "2026-09-10T14:27:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0103",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Nora introduced me to Caleb at Granite Harbor. If anyone gets investor questions: no talk of numbers outside the update.",
+      "date": "2026-09-10T15:45:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0104",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Understood.",
+      "date": "2026-09-10T15:49:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0105",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Got it.",
+      "date": "2026-09-10T15:56:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0106",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Pushed the cohort query for Owen. He needs it by Monday for the retention schedule.",
+      "date": "2026-09-11T16:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0107",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Thanks. He'll send Caleb a clean one.",
+      "date": "2026-09-11T16:21:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0108",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Can you do a dress fitting on the 17th of Oct?",
+      "date": "2026-09-12T09:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0109",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Sending my calendar a hold now.",
+      "date": "2026-09-12T09:57:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0110",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Call when you can! Cousin Elena had her baby.",
+      "date": "2026-09-13T17:22:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0111",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Oh wow, congratulations to her! Calling at 6.",
+      "date": "2026-09-13T17:29:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0112",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Send her something small.",
+      "date": "2026-09-13T17:34:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0113",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "I ordered a tiny quilt for the baby, it ships Tuesday.",
+      "date": "2026-09-13T19:40:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0114",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Perfect. Love you. Eat vegetables.",
+      "date": "2026-09-13T19:51:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0115",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Alder Ridge Plumbing is closing: the owner is retiring. It's not a product issue. Imani, please send their export.",
+      "date": "2026-09-14T09:30:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0116",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Already drafted.",
+      "date": "2026-09-14T09:35:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0117",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Sorry to lose them. Good people.",
+      "date": "2026-09-14T09:46:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0118",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Foundry asked for site names in the export again. Already in.",
+      "date": "2026-09-14T14:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0119",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Ha, they will love that.",
+      "date": "2026-09-14T14:52:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0120",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Lena also found the archived-site bug. Fix is in review.",
+      "date": "2026-09-14T15:00:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0121",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Did you see my email about the weekend?",
+      "date": "2026-09-14T20:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0122",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Yes, replying in the morning. I'm in for the rehearsal dinner.",
+      "date": "2026-09-14T20:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0123",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Foundry sent a 64-question security questionnaire. I'll triage today.",
+      "date": "2026-09-15T12:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0124",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Please. Flag anything that needs Dev.",
+      "date": "2026-09-15T12:14:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0125",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Thursday delivery slot for SSO is still ours?",
+      "date": "2026-09-15T15:22:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0126",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes. Auto-dispatch stays parked.",
+      "date": "2026-09-15T15:25:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0127",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "OK. I'll tell the team so nobody starts it.",
+      "date": "2026-09-15T15:31:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0128",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Please.",
+      "date": "2026-09-15T15:33:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0129",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Lunch order: tacos on me.",
+      "date": "2026-09-16T13:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0130",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Best operations lead.",
+      "date": "2026-09-16T13:22:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0131",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Vegetarian options, please!",
+      "date": "2026-09-16T13:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0132",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Heads up, Nora's call is at 4. Want the retention chart from the dashboard?",
+      "date": "2026-09-16T14:08:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0133",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Please. Screenshot is fine.",
+      "date": "2026-09-16T14:17:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0134",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Sent.",
+      "date": "2026-09-16T14:21:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0135",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "Partners liked the NRR trend. Can you send the cohort table?",
+      "date": "2026-09-16T15:35:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0136",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "me",
+      "text": "Sending the cohort table this afternoon.",
+      "date": "2026-09-16T15:41:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0137",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Tenant-isolation suite is green on staging. 210 of 212; two exceptions documented.",
+      "date": "2026-09-17T16:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0138",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Great. Send me the summary tomorrow and I'll forward to Priya when the dispositions are in.",
+      "date": "2026-09-17T16:37:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0139",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Quick reminder: auto-dispatch is parked. We're on the security and export path.",
+      "date": "2026-09-18T10:50:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0140",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Thanks for the clarity.",
+      "date": "2026-09-18T10:53:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0141",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Understood. But customers keep asking about it.",
+      "date": "2026-09-18T10:59:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0142",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Write down what they ask and we'll revisit after the pilots.",
+      "date": "2026-09-18T11:01:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0143",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Farmers market Saturday?",
+      "date": "2026-09-19T10:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0144",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Absolutely.",
+      "date": "2026-09-19T10:51:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0145",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "I'll bring the tote bags.",
+      "date": "2026-09-19T10:53:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0146",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Honey, I emailed you about Dad's birthday dinner. Did you see it?",
+      "date": "2026-09-20T17:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0147",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Yes! Booked. October 25, 6pm. Not a word to Dad.",
+      "date": "2026-09-20T17:07:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0148",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "My lips are sealed.",
+      "date": "2026-09-20T17:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0149",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "That was a good chat. Love you.",
+      "date": "2026-09-20T18:55:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0150",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Love you too.",
+      "date": "2026-09-20T18:58:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0151",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Rivet's two techs saw the retry screen again. They didn't lose anything.",
+      "date": "2026-09-21T14:45:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0152",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Imani told me. Marcus wants a walkthrough. Lena owns it.",
+      "date": "2026-09-21T14:50:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0153",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "She's on the export block. Walkthrough has to wait.",
+      "date": "2026-09-21T15:01:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0154",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "I know. Marcus will hear it from me.",
+      "date": "2026-09-21T15:03:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0155",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Rivet asked for a recording of the offline flow.",
+      "date": "2026-09-22T11:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0156",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "After Lena's export block. I'll reply to Marcus.",
+      "date": "2026-09-22T11:34:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0157",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Rivet's techs hit a confusing retry screen. No lost work. Lena, are you able to reproduce?",
+      "date": "2026-09-22T14:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0158",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Yes, partially. I'll write it up after the export block.",
+      "date": "2026-09-22T14:14:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0159",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Thanks. No new demos until that block is done.",
+      "date": "2026-09-22T14:18:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0160",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Heads up: I'd rather we not say 'ready for enterprise rollout' anywhere yet. Theo used that line in a deck draft.",
+      "date": "2026-09-22T15:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0161",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "I'll talk to him. Thanks for flagging.",
+      "date": "2026-09-22T15:13:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0162",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "I read your note on pilots. Appreciate the honesty about the SSO status.",
+      "date": "2026-09-23T11:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0163",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "me",
+      "text": "Always. Same sentence every time.",
+      "date": "2026-09-23T11:22:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0164",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "How was your week? Quick text since I'm at the store.",
+      "date": "2026-09-23T12:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0165",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Busy, in a good way. Calling Sunday.",
+      "date": "2026-09-23T12:26:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0166",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Lena found a bug in the export where a deleted user shows as 'unknown actor'.",
+      "date": "2026-09-23T14:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0167",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Does that block the sample?",
+      "date": "2026-09-23T14:23:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0168",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "No, but we need to explain it. I'll add a note.",
+      "date": "2026-09-23T14:29:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0169",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Jonah loop finished. Honestly great. Debrief tomorrow?",
+      "date": "2026-09-24T16:35:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0170",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes. 9am. How was the system design?",
+      "date": "2026-09-24T16:37:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0171",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Calm, practical. Light on incident write-ups, but he asked good questions.",
+      "date": "2026-09-24T16:46:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0172",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Jonah loop is done. Thanks Dev, Lena, Samira for the time.",
+      "date": "2026-09-25T12:10:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0173",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Great candidate.",
+      "date": "2026-09-25T12:17:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0174",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Strong. I'd work with him.",
+      "date": "2026-09-25T12:22:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0175",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Let's discuss Jonah at our 1:1.",
+      "date": "2026-09-25T14:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0176",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes. And write down which interrupts a two-week reliability sprint could remove instead.",
+      "date": "2026-09-25T14:34:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0177",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "OK. I'll have a list Monday.",
+      "date": "2026-09-25T14:41:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0178",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Are you skipping the market again?",
+      "date": "2026-09-26T09:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0179",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "I have to prep a board section, sorry. Coffee Sunday?",
+      "date": "2026-09-26T09:13:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0180",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Always.",
+      "date": "2026-09-26T09:16:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0181",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Still on for our call at 6?",
+      "date": "2026-09-27T17:18:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0182",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Yes, calling at 6.",
+      "date": "2026-09-27T17:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0183",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Dad has a joke for you.",
+      "date": "2026-09-27T17:29:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0184",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Dad says to tell you a startup is just a hobby with more meetings.",
+      "date": "2026-09-27T19:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0185",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Ha! Tell him he's not wrong.",
+      "date": "2026-09-27T19:29:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0186",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Love you, talk next week.",
+      "date": "2026-09-27T19:36:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0187",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Reliability sprint list: paging noise, flaky deploys, manual backups. About 30% of my interrupts.",
+      "date": "2026-09-28T15:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0188",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "That's a real alternative. Put it in the board notes.",
+      "date": "2026-09-28T15:45:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0189",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Bluehollow wants two more sites.",
+      "date": "2026-09-29T09:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0190",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Brilliant. Imani, please send the order form.",
+      "date": "2026-09-29T09:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0191",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Done by noon.",
+      "date": "2026-09-29T09:18:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0192",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Harborline's IT asked if you're SOC 2 certified.",
+      "date": "2026-09-29T11:45:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0193",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "No. Answer plainly: no external certification yet.",
+      "date": "2026-09-29T11:52:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0194",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Can you do Wednesday 2:30 for the Foundry questionnaire? 23 isolation and logging questions.",
+      "date": "2026-09-30T14:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0195",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Wednesday the 7th. Put it in my calendar.",
+      "date": "2026-09-30T15:01:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0196",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Done.",
+      "date": "2026-09-30T15:03:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0197",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "Ready when you are.",
+      "date": "2026-09-30T15:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0198",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "me",
+      "text": "Dialing in now.",
+      "date": "2026-09-30T15:34:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0199",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "September is closed: $42,000 MRR, 28 customers. Thank you.",
+      "date": "2026-10-01T10:30:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0200",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Nice.",
+      "date": "2026-10-01T10:38:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0201",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Great month.",
+      "date": "2026-10-01T10:41:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0202",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Proud of this team.",
+      "date": "2026-10-01T10:47:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0203",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Priya agreed to review next week once I send the evidence.",
+      "date": "2026-10-01T15:12:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0204",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Great. I'll forward once the dispositions are written.",
+      "date": "2026-10-01T15:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0205",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "On it.",
+      "date": "2026-10-01T15:23:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0206",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "I'll follow up in writing about use of funds.",
+      "date": "2026-10-02T10:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0207",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "me",
+      "text": "Thank you, Nora.",
+      "date": "2026-10-02T10:09:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0208",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Export phase 1 pushed. Phase 2 Monday.",
+      "date": "2026-10-02T15:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0209",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "I'm protecting your four-hour block. Send demo requests to Samira.",
+      "date": "2026-10-02T15:52:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0210",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Understood.",
+      "date": "2026-10-02T16:01:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0211",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Pushed export phase 1. Lena says phase 2 Monday.",
+      "date": "2026-10-02T16:08:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0212",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Thanks. I'm protecting her block.",
+      "date": "2026-10-02T16:14:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0213",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Okay market was great. Brought you a loaf of the rye.",
+      "date": "2026-10-03T10:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0214",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Best friend. Bring it Monday.",
+      "date": "2026-10-03T10:26:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0215",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Will do.",
+      "date": "2026-10-03T10:28:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0216",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Call when you can! Dad has been talking about the dinner all week (not the surprise, just dinner).",
+      "date": "2026-10-04T17:35:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0217",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Calling at 6!",
+      "date": "2026-10-04T17:40:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0218",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Wonderful.",
+      "date": "2026-10-04T17:51:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0219",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "You sounded tired. Are you sleeping?",
+      "date": "2026-10-04T19:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0220",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Six hours. Board meeting this month. I'll catch up after.",
+      "date": "2026-10-04T19:12:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0221",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Take Tuesday off. Doctors say sleep is medicine.",
+      "date": "2026-10-04T19:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0222",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Rivet's offline recovery repro is fixed on main. Walkthrough-ready Friday if Lena finishes export first.",
+      "date": "2026-10-05T14:18:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0223",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Perfect, I'll book the Rivet walkthrough.",
+      "date": "2026-10-05T14:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0224",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Don't promise Marcus a date until Lena confirms.",
+      "date": "2026-10-05T14:29:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0225",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Right, thank you.",
+      "date": "2026-10-05T14:33:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0226",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Tue/Thu stack is back. Can we merge Pricing review into Pipeline review?",
+      "date": "2026-10-06T09:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0227",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Yes, we start today.",
+      "date": "2026-10-06T09:19:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0228",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Please. My Thursdays are a blender.",
+      "date": "2026-10-06T09:26:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0229",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Do you want me to take the Wednesday Foundry call so you can protect the export block?",
+      "date": "2026-10-06T12:15:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0230",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Yes please. Tell Elise I'll join the last 10 minutes.",
+      "date": "2026-10-06T12:20:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0231",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Theo wants unlimited sites and 30% off. Please don't let that get through.",
+      "date": "2026-10-06T15:25:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0232",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "It won't. Owen already pushed back. I'm deciding Thursday.",
+      "date": "2026-10-06T15:32:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0233",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Good. Sorry, it's on my mind because unlimited sites hits my infrastructure costs.",
+      "date": "2026-10-06T15:37:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0234",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Reminder: check-up this month? You said you'd book it.",
+      "date": "2026-10-07T12:50:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0235",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "me",
+      "text": "Booked, October 20 with Dr. Osei. Thank you for nagging.",
+      "date": "2026-10-07T12:53:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0236",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "It's called love.",
+      "date": "2026-10-07T12:59:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0237",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "See you at 2:30 for the questionnaire. I'll bring the logging doc.",
+      "date": "2026-10-07T14:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0238",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Samira joins too. See you there.",
+      "date": "2026-10-07T14:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0239",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Reminder for everyone: we say 'SSO is implemented; launch approval is pending' and nothing stronger.",
+      "date": "2026-10-07T16:35:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0240",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c05",
+      "text": "Noted. I'll correct my Harborline note.",
+      "date": "2026-10-07T16:40:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0241",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "I'll send the corrected version for Aria's review.",
+      "date": "2026-10-07T16:51:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0242",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Evidence summary v2 is in your email. Two exceptions, both written up.",
+      "date": "2026-10-08T16:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0243",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Got it. Forwarding to Priya after I read it tonight.",
+      "date": "2026-10-08T16:22:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0244",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Fine. She said she'd start Wednesday.",
+      "date": "2026-10-08T16:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0245",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Wednesday it is. And Jonah's references?",
+      "date": "2026-10-08T16:33:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0246",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "All positive. Nothing blocks. The question is cash.",
+      "date": "2026-10-08T16:39:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0247",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c04",
+      "text": "Draft correction is ready for Aria.",
+      "date": "2026-10-08T17:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0248",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Thanks Samira. I'll review tonight.",
+      "date": "2026-10-08T17:12:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0249",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Rivet asked about the walkthrough again.",
+      "date": "2026-10-08T17:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0250",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Walkthrough follows the export block. I'll reply to Marcus.",
+      "date": "2026-10-08T17:23:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0251",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Draft correction for Harborline is in your inbox. Not sent.",
+      "date": "2026-10-08T18:05:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0252",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Reading it now. Thank you for turning it around quickly.",
+      "date": "2026-10-08T18:16:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0253",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Can you share the export plan with Lena again? She said she hasn't seen the revised one.",
+      "date": "2026-10-09T15:02:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0254",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Not sent yet. I'm writing it Monday, with the retention decision.",
+      "date": "2026-10-09T15:04:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0255",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Thanks. She's blocked on the 'done' definition.",
+      "date": "2026-10-09T15:13:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0256",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Also Tessa's team asked about a Monday 7am call. Over your gym time.",
+      "date": "2026-10-09T16:41:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0257",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "I saw. Gym can slide to Tuesday. Pilots win.",
+      "date": "2026-10-09T16:45:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0258",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c02",
+      "text": "Sprint wrap: isolation evidence v2, export phase 2, Rivet repro fixed on main.",
+      "date": "2026-10-09T17:45:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0259",
+      "chat_id": "chat-nora",
+      "chat_name": "Nora Keene",
+      "participants": [
+        "me",
+        "c08"
+      ],
+      "sender": "c08",
+      "text": "Aria, partner meeting is Wednesday so our usual call is tight. Could we do Thursday the 15th instead, around 4:30?",
+      "date": "2026-10-09T17:50:00-07:00",
+      "is_from_me": false,
+      "read": false
+    },
+    {
+      "id": "im-0260",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c03",
+      "text": "Phase 3 starts Monday at 10.",
+      "date": "2026-10-09T17:51:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0261",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Great week. Enjoy your weekends.",
+      "date": "2026-10-09T17:53:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0262",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Rehearsal dinner menu is out. You need a gluten-free option?",
+      "date": "2026-10-09T19:30:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0263",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "No, I'm fine, thanks. How's the seating chart going?",
+      "date": "2026-10-09T19:39:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0264",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "I have cried twice.",
+      "date": "2026-10-09T19:43:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0265",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Market today at 10?",
+      "date": "2026-10-10T09:10:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0266",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "me",
+      "text": "Sorry, I'm skipping today. Next Saturday!",
+      "date": "2026-10-10T09:17:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0267",
+      "chat_id": "chat-maya",
+      "chat_name": "Maya Brandt",
+      "participants": [
+        "me",
+        "c16"
+      ],
+      "sender": "c16",
+      "text": "Fine, but I'm eating your peaches.",
+      "date": "2026-10-10T09:22:00-07:00",
+      "is_from_me": false,
+      "read": false
+    },
+    {
+      "id": "im-0268",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "c04",
+      "text": "Weekend note: Tessa's 7am Monday check-in is confirmed. I'll dial in with you.",
+      "date": "2026-10-10T09:42:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0269",
+      "chat_id": "chat-samira",
+      "chat_name": "Samira Vale",
+      "participants": [
+        "me",
+        "c04"
+      ],
+      "sender": "me",
+      "text": "Thanks. I'll prep tonight.",
+      "date": "2026-10-10T09:44:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0270",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "c02",
+      "text": "Sorry, Saturday. Quick thought: should we tell Priya about the clock-skew provider? It's not a pilot's, but she may ask.",
+      "date": "2026-10-10T10:12:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0271",
+      "chat_id": "chat-dev",
+      "chat_name": "Dev Malik",
+      "participants": [
+        "me",
+        "c02"
+      ],
+      "sender": "me",
+      "text": "Yes, one line in the evidence note. Full honesty. Thanks for catching it. Go enjoy your weekend.",
+      "date": "2026-10-10T10:19:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0272",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "c07",
+      "text": "Saw a nice note from Pinecrest: they renewed on the annual terms.",
+      "date": "2026-10-10T11:20:00-07:00",
+      "is_from_me": false,
+      "read": true
+    },
+    {
+      "id": "im-0273",
+      "chat_id": "chat-core",
+      "chat_name": "Cedarloop core",
+      "participants": [
+        "me",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "sender": "me",
+      "text": "Wonderful news, thank you Imani!",
+      "date": "2026-10-10T11:29:00-07:00",
+      "is_from_me": true,
+      "read": true
+    },
+    {
+      "id": "im-0274",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Still on for our call at 6?",
+      "date": "2026-10-11T17:12:00-07:00",
+      "is_from_me": false,
+      "read": false
+    },
+    {
+      "id": "im-0275",
+      "chat_id": "chat-mom",
+      "chat_name": "Mom",
+      "participants": [
+        "me",
+        "c15"
+      ],
+      "sender": "c15",
+      "text": "Dad says hi. I made enough soup for a small army.",
+      "date": "2026-10-11T17:14:00-07:00",
+      "is_from_me": false,
+      "read": false
+    }
+  ]
+}

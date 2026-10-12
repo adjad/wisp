@@ -4,7 +4,21 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-10-11
+
+Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.
+
 ### Added
+
+- Added the behavior engine: Wisp learns routines from Calendar, Reminders, message metadata and what you ask it, predicts the day, and sends a few nudges (at most 4 a day, quiet 22:00–07:00). Patterns are deterministic statistics with evidence counts; the model only phrases them. Reversible actions (a reminder, a "Tentative:" hold on Wisp's own schedule) are done automatically with Undo; messages and meeting changes are only drafted. Off unless `WISP_BEHAVIOR=1`. Ask "What do you know about me?", "What will tomorrow look like?" or "Which meetings do I usually cancel?". See docs/BEHAVIOR_ENGINE.md.
+- Added nudge cards and actionable notifications (Undo, Do it, Useful, Not now, Wrong) in the app.
+- Added Catch: Wisp notices a plan stated in a text ("Dinner at 7, I booked a table") that isn't on your schedule and adds it to Wisp's schedule with an alert. Off unless `WISP_ATTENTION_DEMO=1`.
+- Added Workflow20 grounded multi-source workflows with guarded action execution, a personal knowledge index, calendar planning, file organization and grocery-list tools.
+- Added a remote-inference mode for Intel Macs: every model role runs on a paired GX10 (or other OpenAI-compatible server) over Tailscale with a Keychain token, while data and tools stay on the Mac. A read-only founder profile and a full profile (all tools with normal approvals, the scheduler and 32k context) are available.
+- Added the Aria demo mode for remote builds: a fully synthetic, interactive demo world (mail, messages, notes, reminders, contacts, calendar) where sends land in synthetic threads with scripted replies and nothing leaves the Mac, with proactive items in the Daily Summary and the top bar.
+- Added an optional brain server and GX10 deploy scripts (gateway supervision, 32k context) under brain_server/ and deploy/gx10/.
+- Added the iPhone app foundation (ios/): WispCore, the Workflow20 contract and a local-inference interface.
+- Added demo tooling: `demo/seed_mac_persona.py` and `demo/wisp_demo.py` (persona seeding, behavior and Catch demos, rehearsal reset).
 
 - Added the Wisp Chat window: a real, resizable window for long conversations, opened from the menu-bar menu ("Open Wisp Chat") or from the notch panel's new "Open in Wisp Chat" button, which continues the current conversation there. A sidebar lists every saved chat by day with search and delete; the thread shows which tools Wisp used above each answer; confirmation cards and message drafts work as they do in the notch, in the thread; and a details panel (⌘I) shows the route, model, speed, and tools for any answer. It follows the Mac's light or dark appearance. Today, Research, Memory, Search, and Settings open from its sidebar. See docs/CHAT_WINDOW.md.
 - Added `GET /chats`, a conversation list with a title (the first prompt) and a one-line preview for each saved chat.

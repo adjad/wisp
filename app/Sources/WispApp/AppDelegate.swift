@@ -52,13 +52,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // menu-bar icon or ⌥Space bring it back. Distinct from `model.collapsed`,
     // which only tracks bar-vs-expanded WHILE docked.
     private var notchDocked = true
-    private let calendarReader = CalendarReader()
-    private let remindersWriter = RemindersWriter()
-    private let mailReader = MailReader()
-    private let messagesReader = MessagesReader()
-    private let notesReader = NotesReader()
-    private let contactsReader = ContactsReader()
-    private let browserHistoryReader = BrowserHistoryReader()
+    private var calendarReader: CalendarReader?
+#if !WISP_FOUNDER_DEMO
+    private var remindersWriter: RemindersWriter?
+#endif
+    private var mailReader: MailReader?
+    private var messagesReader: MessagesReader?
+#if !WISP_FOUNDER_DEMO
+    private var notesReader: NotesReader?
+    private var contactsReader: ContactsReader?
+#endif
+    private var browserHistoryReader: BrowserHistoryReader?
+    private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -295,6 +300,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // switching it on partway through a chat doesn't lose earlier turns.
         let debugItem = menu.addItem(withTitle: "Debug Mode", action: #selector(toggleDebugMode), keyEquivalent: "")
         debugModeItem = debugItem
+        if AriaDemoMode.available {
+            ariaDemoItem = menu.addItem(withTitle: "Aria demo mode", action: #selector(toggleAriaDemo),
+                                        keyEquivalent: "")
+            let resetItem = menu.addItem(withTitle: "Reset Aria demo data",
+                                         action: #selector(resetAriaDemoData), keyEquivalent: "")
+            resetItem.isHidden = !model.ariaDemo
+            resetItem.isEnabled = model.ariaDemo
+            ariaDemoResetItem = resetItem
+        }
         menu.addItem(withTitle: "Report a Problem…", action: #selector(reportProblem), keyEquivalent: "")
         menu.addItem(withTitle: "Export Chat Debug Log…", action: #selector(exportDebugLog), keyEquivalent: "")
         menu.addItem(.separator())
@@ -307,6 +321,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var rightClickMenu: NSMenu?
     private var debugModeItem: NSMenuItem?
+    private var ariaDemoItem: NSMenuItem?
+    private var ariaDemoResetItem: NSMenuItem?
 
     // The panel is always on screen; the hotkey and menu-bar click just flip
     // between the notch bar and the expanded assistant. No reset — the visible
@@ -314,6 +330,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func toggle() {
         if let event = NSApp.currentEvent, event.type == .rightMouseUp, let menu = rightClickMenu {
             debugModeItem?.state = model.debugMode ? .on : .off
+            ariaDemoItem?.state = model.ariaDemo ? .on : .off
+            ariaDemoResetItem?.isHidden = !model.ariaDemo
+            ariaDemoResetItem?.isEnabled = model.ariaDemo
             statusItem.menu = menu
             statusItem.button?.performClick(nil)
             statusItem.menu = nil
@@ -548,17 +567,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reminder stream (the notch "Up Next" countdown).
         Permissions.bootstrap()
         model.onCreateCalendarEvent = { [weak self] title, ts, dur, loc in
-            self?.calendarReader.createEvent(title: title, startTs: ts,
-                                             durationMin: dur, location: loc)
+            self?.calendarReader?.createEvent(title: title, startTs: ts,
+                                              durationMin: dur, location: loc)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
         model.onDeleteCalendarEvent = { [weak self] identifier, occurrenceTs in
-            self?.calendarReader.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
+            self?.calendarReader?.deleteEvent(identifier: identifier, occurrenceTs: occurrenceTs)
                 ?? ["ok": false, "error": "Calendar handler unavailable"]
         }
+#if !WISP_FOUNDER_DEMO
         model.onVerifiedReminderAction = { [weak self] kind, actionID, sourceID,
             expectedTitle, expectedDueTs, title, dueTs, commitmentKind in
-            self?.remindersWriter.performVerified(kind: kind, actionID: actionID,
+            self?.remindersWriter?.performVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, expectedTitle: expectedTitle,
                 expectedDueTs: expectedDueTs, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
@@ -569,10 +589,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else {
                 return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
             }
-            return await self.remindersWriter.reconcileVerified(kind: kind, actionID: actionID,
+            guard let writer = self.remindersWriter else {
+                return ["ok": false, "status": "unknown", "error": "Reminders handler unavailable"]
+            }
+            return await writer.reconcileVerified(kind: kind, actionID: actionID,
                 sourceID: sourceID, title: title, dueTs: dueTs,
                 commitmentKind: commitmentKind)
         }
+#endif
         model.onOpenChat = { [weak self] sessionId in
             self?.chatWindow.show(sessionId: sessionId)
         }
@@ -583,30 +607,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // refresh both header and raw caches so summarize_emails/view_emails
         // can be served without waiting on the 5-min timer.
         model.onSyncEmails = { [weak self] in
-            self?.mailReader.sync()
-            self?.mailReader.syncRaw()
+            guard let self, !self.model.ariaDemo else { return }
+            self.mailReader?.sync()
+            self.mailReader?.syncRaw()
         }
         model.onSyncAssistantSources = { [weak self] sources in
-            guard let self else { return }
-            if sources.contains("calendar") { self.calendarReader.sync() }
-            if sources.contains("reminders") { self.remindersWriter.sync() }
-            if sources.contains("email") { self.mailReader.sync() }
-            if sources.contains("messages") { self.messagesReader.sync() }
-            if sources.contains("notes") { self.notesReader.sync() }
-            if sources.contains("browser_history") { self.browserHistoryReader.sync() }
+            guard let self, !self.model.ariaDemo else { return }
+            if sources.contains("calendar") { self.calendarReader?.sync() }
+#if !WISP_FOUNDER_DEMO
+            if sources.contains("reminders") { self.remindersWriter?.sync() }
+#endif
+            if sources.contains("email") { self.mailReader?.sync() }
+            if sources.contains("messages") { self.messagesReader?.sync() }
+#if !WISP_FOUNDER_DEMO
+            if sources.contains("notes") { self.notesReader?.sync() }
+#endif
+            if sources.contains("browser_history") { self.browserHistoryReader?.sync() }
         }
         model.startAssistant()
-        // Read Calendar + Reminders + Mail + Messages here (clean Wisp.app TCC
-        // identity) and push to the backend; prompts for access once, then
-        // syncs periodically.
-        calendarReader.start()
-        remindersWriter.start()
-        mailReader.start()
-        messagesReader.start()
-        notesReader.start()
-        browserHistoryReader.start()
-        // Resolves chat.db's bare phone/email handles to real contact names.
-        contactsReader.start()
+        startNativeSourceReaders()
 
         // Pointer enter/exit come from a real AppKit tracking area on the
         // panel (HoverView), not SwiftUI's flaky .onHover. Entering the bar
@@ -714,6 +733,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func toggleDebugMode() {
         model.debugMode.toggle()
+    }
+
+    private func startNativeSourceReaders() {
+        guard !nativeSourceReadersStarted, !model.ariaDemo else { return }
+        nativeSourceReadersStarted = true
+        calendarReader = CalendarReader()
+        mailReader = MailReader()
+        messagesReader = MessagesReader()
+        browserHistoryReader = BrowserHistoryReader()
+        calendarReader?.start()
+        mailReader?.start()
+        messagesReader?.start()
+        browserHistoryReader?.start()
+#if !WISP_FOUNDER_DEMO
+        remindersWriter = RemindersWriter()
+        notesReader = NotesReader()
+        contactsReader = ContactsReader()
+        remindersWriter?.start()
+        notesReader?.start()
+        contactsReader?.start()
+#endif
+    }
+
+    private func retireNativeSourceReaders() {
+        nativeSourceReadersStarted = false
+        // Invalidate consent-channel writes already in flight before releasing
+        // the readers, so retries from the real backend cannot reach demo.
+        _ = BrowserHistoryReader.delivery.begin()
+#if !WISP_FOUNDER_DEMO
+        _ = ContactsReader.delivery.begin()
+#endif
+        calendarReader = nil
+        mailReader = nil
+        messagesReader = nil
+        browserHistoryReader = nil
+#if !WISP_FOUNDER_DEMO
+        remindersWriter = nil
+        notesReader = nil
+        contactsReader = nil
+#endif
+    }
+
+    // Intel v5 (WISP_REMOTE_FULL): switch between real mode and the Aria demo.
+    // The choice persists, the conversation in the panel is left (it belongs
+    // to the other mode's history), and the backend restarts with its runtime
+    // Aria flag set or removed.
+    @objc private func toggleAriaDemo() {
+        let wanted = !model.ariaDemo
+        if !wanted && AriaDemoMode.forcedByEnvironment() {
+            let alert = NSAlert()
+            alert.messageText = "Aria demo mode is forced on"
+            alert.informativeText = "Wisp was launched with WISP_ARIA_DEMO=1 or WISP_FOUNDER_DEMO=1. Relaunch it without that setting to use real mode."
+            alert.runModal()
+            return
+        }
+        let effective = AriaDemoMode.setSaved(wanted)
+        guard effective != model.ariaDemo else { return }
+        model.newChat()
+        model.ariaDemo = effective
+        if effective { retireNativeSourceReaders() }
+        Task { [weak self] in
+            guard let self else { return }
+            await self.backend.restart()
+            if !effective { self.startNativeSourceReaders() }
+            self.model.refreshAssistant()
+        }
+    }
+
+    @objc private func resetAriaDemoData() {
+        guard model.ariaDemo else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await self.client.resetAriaDemoData()
+                self.model.newChat()
+                self.model.refreshAssistant()
+            } catch {
+                self.openAssistant()
+                self.model.showTransientNotice("Couldn't reset Aria demo data: \(error.localizedDescription)")
+            }
+        }
     }
 
     // Writes the full conversation (every turn's model, route decision,

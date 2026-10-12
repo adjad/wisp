@@ -168,12 +168,27 @@ final class OverlayModel: ObservableObject {
         didSet { UserDefaults.standard.set(debugMode, forKey: "wisp.debugMode") }
     }
 
+    // Intel v5: whether the running backend is the Aria founder demo (fictional
+    // data, read-only tools). Set at launch and by the menu-bar toggle; drives
+    // the panel's "Aria demo" indicator. Always false outside WISP_REMOTE_FULL.
+    @Published var ariaDemo = AriaDemoMode.available && AriaDemoMode.isOn() {
+        didSet { refreshAriaTopBar() }
+    }
+    // The Aria demo's collapsed-bar content (next event + proactive chip).
+    @Published var ariaTopBar: WispClient.AriaTopBar?
+    private var ariaTopBarTask: Task<Void, Never>?
+
     // --- assistant layer (calendar/reminders) ---
     // Upcoming commitments themselves surface as system notifications (see
     // Notifications.swift / handleAssistantEvent's "reminder" case) rather
     // than a live in-panel list.
     @Published var summaryPeriod = "AM"    // scheduled daily-brief time: AM(8am) / PM(8pm)
+    // Behavior-engine nudges shown as cards at the top of the panel (newest
+    // first, see NudgeViews.swift). Each also arrives as a notification.
+    @Published var nudges: [BehaviorNudge] = []
+    @Published var transientNotice: String?
     private var assistantTask: Task<Void, Never>?
+    private var transientNoticeTask: Task<Void, Never>?
     // The last scheduled brief this session notified about. The SSE stream is
     // re-subscribed after any drop, so the same brief can arrive twice.
 
@@ -891,8 +906,46 @@ final class OverlayModel: ObservableObject {
     // see handleAssistantEvent's "reminder" case.
     private let assistantDelivery = AssistantDelivery()
 
+    func refreshAriaTopBar() {
+        guard ariaDemo else { ariaTopBar = nil; return }
+        Task { [weak self] in
+            guard let self else { return }
+            let bar = await self.client.ariaTopBar()
+            if self.ariaDemo { self.ariaTopBar = bar }
+        }
+    }
+
+    /// Tapping the demo's proactive chip opens the panel on the nudge's card
+    /// (Undo / Useful live there); with no chip it opens the Daily Summary.
+    func openAriaChip() {
+        if let event = ariaTopBar?.chipEvent as? [String: Any], let nudge = BehaviorNudge.parse(event) {
+            requestExpand()
+            showNudge(nudge)
+        } else {
+            runDailySummary()
+        }
+    }
+
     func startAssistant() {
         refreshAssistant()
+        ariaTopBarTask?.cancel()
+        ariaTopBarTask = Task { [weak self] in
+            // The demo's next event and chip change with the clock as well as
+            // with events, so poll gently while the demo runs.
+            while !Task.isCancelled {
+                self?.refreshAriaTopBar()
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+        // Nudge notification buttons (Useful / Not now / Wrong / Undo / Do it)
+        // route back here on the main actor.
+        Notifications.onNudgeResponse = { [weak self] nudgeID, action, info in
+            guard let self, let response = NudgeResponse.from(notificationAction: action, info: info)
+            else { return }
+            self.respondToNudge(nudgeID, response, fallbackPrompt: info["prompt"] ?? "",
+                                fromNotification: true)
+        }
+        Notifications.registerNudgeCategories()
         assistantTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
@@ -912,6 +965,16 @@ final class OverlayModel: ObservableObject {
     func refreshAssistant() {
         Task { [weak self] in
             self?.summaryPeriod = await self?.client.summarySchedule() ?? "AM"
+        }
+    }
+
+    func showTransientNotice(_ message: String, duration: TimeInterval = 4) {
+        transientNoticeTask?.cancel()
+        transientNotice = message
+        transientNoticeTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0, duration) * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.transientNotice = nil
         }
     }
 
@@ -1089,7 +1152,7 @@ final class OverlayModel: ObservableObject {
         // Durable Calendar actions only execute through the claimed bridge.
         switch ev.type {
         case "hello", "heartbeat": return true
-        case "changed": refreshAssistant()
+        case "changed": refreshAssistant(); refreshAriaTopBar()
         case "calendar_action_unknown":
             return await Notifications.deliver(id: ev.str("event_id") + ":unknown",
                 title: "Calendar outcome unknown", body: ev.str("error"))
@@ -1101,6 +1164,20 @@ final class OverlayModel: ObservableObject {
                   !ev.str("stage").isEmpty, ev.payload["when_ts"] as? Double != nil else { return false }
             let sub = [ev.str("context"), ev.str("when_label")].filter { !$0.isEmpty }.joined(separator: " · ")
             return await Notifications.deliver(id: ev.str("event_id"), title: ev.str("title"), body: sub)
+        case "nudge":
+            // Behavior engine (service/behavior, Nudge.to_event()). Auto
+            // actions were already performed by the backend; the card and the
+            // notification say so and offer Undo. Acked like "reminder".
+            guard let nudge = BehaviorNudge.parse(ev.payload) else { return false }
+            // A replay that outlived its moment is acknowledged silently.
+            if nudge.isExpired() { return true }
+            showNudge(nudge)
+            refreshAriaTopBar()
+            return await Notifications.deliver(id: nudge.notificationID, title: nudge.title,
+                                               body: nudge.notificationBody,
+                                               subtitle: nudge.notificationSubtitle,
+                                               category: nudge.notificationCategory,
+                                               userInfo: nudge.notificationInfo)
         case "create_apple_reminder":
             return false
         case "update_apple_reminder":
@@ -1257,6 +1334,124 @@ final class OverlayModel: ObservableObject {
             return false
         }
         return notificationOK
+    }
+
+    // --- behavior nudges ---------------------------------------------------
+
+    private func showNudge(_ nudge: BehaviorNudge) {
+        if let i = nudges.firstIndex(where: { $0.id == nudge.id }) {
+            let old = nudges[i]
+            if !nudge.eventID.isEmpty, !old.eventID.isEmpty, nudge.eventID != old.eventID {
+                // Same id from a NEW hub event: it re-fired (e.g. after a demo
+                // reset), so the card starts fresh; Notifications.deliver
+                // replaces the old banner the same way.
+                nudges[i] = nudge
+            } else {
+                // Same deterministic id re-delivered: keep the card's local state.
+                var merged = nudge
+                merged.status = old.status
+                merged.undone = old.undone
+                merged.performed = old.performed
+                nudges[i] = merged
+            }
+        } else {
+            nudges.insert(nudge, at: 0)
+            if nudges.count > 3 { nudges.removeLast(nudges.count - 3) }
+        }
+        onResize()
+    }
+
+    func dismissNudge(_ nudgeID: String) {
+        nudges.removeAll { $0.id == nudgeID }
+        onResize()
+    }
+
+    private func setNudge(_ nudgeID: String, status: String? = nil, busy: Bool? = nil,
+                          undone: Bool? = nil, performed: Bool? = nil) {
+        guard let i = nudges.firstIndex(where: { $0.id == nudgeID }) else { return }
+        if let status { nudges[i].status = status }
+        if let busy { nudges[i].busy = busy }
+        if let undone { nudges[i].undone = undone }
+        if let performed { nudges[i].performed = performed }
+        onResize()
+    }
+
+    /// One handler for card buttons and notification actions. Feedback and
+    /// undo go to the backend; an open_prompt action asks the backend for the
+    /// prompt and prefills the composer WITHOUT sending it; an offered
+    /// add_reminder/add_hold is created by the backend (and can be undone).
+    func respondToNudge(_ nudgeID: String, _ response: NudgeResponse,
+                        fallbackPrompt: String = "", fromNotification: Bool = false) {
+        let onCard = nudges.contains { $0.id == nudgeID }
+        if !fromNotification { Notifications.removeDelivered(id: "wisp-nudge:" + nudgeID) }
+        switch response {
+        case .open:
+            requestExpand()
+        case .feedback(let verdict):
+            guard NudgeResponse.verdicts.contains(verdict) else { return }
+            setNudge(nudgeID, status: "Saving…", busy: true)
+            Task { [weak self] in
+                guard let self else { return }
+                let ok = await self.client.behaviorFeedback(nudgeID: nudgeID, verdict: verdict)
+                if ok {
+                    self.dismissNudge(nudgeID)
+                } else {
+                    self.setNudge(nudgeID, status: "Couldn't reach Wisp. Try again.", busy: false)
+                    if fromNotification && !onCard {
+                        Notifications.post(title: "Wisp couldn't save that", body: "Feedback wasn't recorded.")
+                    }
+                }
+            }
+        case .undo:
+            setNudge(nudgeID, status: "Undoing…", busy: true)
+            Task { [weak self] in
+                guard let self else { return }
+                let ok = await self.client.behaviorUndo(nudgeID: nudgeID)
+                self.setNudge(nudgeID, status: ok ? "Undone. Wisp removed what it added." :
+                                                    "Couldn't undo. Check Wisp's schedule.",
+                              busy: false, undone: ok ? true : nil)
+                if fromNotification && !onCard {
+                    Notifications.post(title: ok ? "Undone" : "Couldn't undo",
+                                       body: ok ? "Wisp removed what it added." :
+                                                  "Wisp couldn't reach its backend. Open Wisp to try again.")
+                }
+            }
+        case .act(let index):
+            setNudge(nudgeID, status: "Working…", busy: true)
+            let action = nudges.first(where: { $0.id == nudgeID })?.actions.first(where: { $0.index == index })
+            // Notification "Do it" only exists for open_prompt actions; its
+            // userInfo carries the prompt as a fallback.
+            let isPrompt = action?.isPrompt ?? !fallbackPrompt.isEmpty
+            let localPrompt = action?.prompt ?? fallbackPrompt
+            Task { [weak self] in
+                guard let self else { return }
+                let reply = await self.client.behaviorAct(nudgeID: nudgeID, actionIndex: index)
+                let served = (reply?["prompt"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                if isPrompt || !served.isEmpty {
+                    let prompt = served.isEmpty ? localPrompt : served
+                    guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        self.setNudge(nudgeID, status: "Couldn't prepare that request.", busy: false)
+                        return
+                    }
+                    // Prefill only: the user reviews and presses Return themselves.
+                    let draft = self.input.trimmingCharacters(in: .whitespacesAndNewlines)
+                    self.input = draft.isEmpty ? prompt : self.input + "\n\n" + prompt
+                    self.setNudge(nudgeID, status: "Drafted in the composer. Review it, then press Return.",
+                                  busy: false)
+                    self.requestExpand()
+                    return
+                }
+                if let reply, reply["ok"] as? Bool == true {
+                    let created = reply["created"] as? [String: Any]
+                    let title = created?["title"] as? String ?? action?.title ?? ""
+                    self.setNudge(nudgeID, status: title.isEmpty ? "Added to Wisp's schedule." :
+                                    "Added “\(title)” to Wisp's schedule.", busy: false, performed: true)
+                } else {
+                    let detail = reply?["detail"] as? String ?? "Couldn't reach Wisp. Try again."
+                    self.setNudge(nudgeID, status: detail, busy: false)
+                }
+            }
+        }
     }
 
     /// The first few content lines of a rendered brief, as plain text.

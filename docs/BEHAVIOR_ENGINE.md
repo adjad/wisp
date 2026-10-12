@@ -1,0 +1,245 @@
+# Behavior engine
+
+Wisp learns the user's routines from what they already do (calendar, reminders,
+message rhythm, what they ask Wisp), predicts the next day, and sends a few
+**nudges** before being asked. Some nudges carry a small, reversible action
+that Wisp performs on its own, always with an **Undo**.
+
+**Code mines, the model only talks.** Patterns, predictions and nudge decisions
+are deterministic statistics with evidence ids. An optional LLM (the
+*phraser*) may reword a nudge body and label ambiguous event titles from a
+fixed list. It never decides, and never adds facts.
+
+Demo script: [BEHAVIOR_DEMO.md](BEHAVIOR_DEMO.md). GX10 setup:
+[gx10/RUNBOOK.md](gx10/RUNBOOK.md). Brain server API:
+[../brain_server/README.md](../brain_server/README.md).
+
+## Data flow
+
+```
+ Mac sources                 Mac runtime (service/assistant/           Engine (service/behavior)
+ -----------                 behavior_runtime.py)                       -------------------------
+ Calendar (EventKit)  --+    ingest every 5 min + after a Calendar     local:  BehaviorEngine in-process
+ Reminders            --+--> sync; mine every 30 min or on change;  --> <WISP_HOME>/behavior.db
+ Messages (metadata)  --+    generate nudges every 60 s                 remote: RemoteEngine --HTTPS+bearer-->
+ Wisp asks (topic)    --+    (tick every 30 s)                                  brain_server on the GX10
+ Approvals/denials    --+           |                                          (Tailscale :8443 -> :8790)
+ [synthetic: persona +             |  any remote failure -> local engine for 120 s
+  "Wisp Demo" calendar only]       v
+                          new Nudge objects  <-- observe / mine / predict / generate_nudges / feedback
+                                   |
+        perform auto actions (add_reminder / add_hold on Wisp's OWN schedule), record them for Undo
+                                   |
+                  hub event  type=nudge  (dedupe_key behavior:<id>, expires_at)
+                                   |
+        Swift app (NudgeViews.swift, Notifications.swift): macOS notification + card in the panel
+        buttons: Undo . Do it / offered action . Useful . Not now . Wrong
+                                   |
+        POST /behavior/nudges/{id}/{feedback|undo|act}  -->  runtime  -->  engine
+```
+
+The engine package (`service/behavior`) is pure Python + SQLite and must not
+import `service.assistant`, `service.tools`, `service.main`, `service.config`
+or `service.inference`. A test pins this, because the same code runs on the Mac
+and inside `brain_server` on the GX10.
+
+## What it learns
+
+Every pattern has a plain-English statement, raw counts (`support` of
+`opportunities`), up to 5 evidence observation ids, and a confidence. Confidence
+is the **Wilson lower bound** (one-sided, about 90%) of support/opportunities,
+so "4 of 4" is not trusted more than "40 of 44". Mining looks back 16 weeks.
+Observations are kept 180 days, nudges 30 days.
+
+| Pattern kind | Needs | Example statement |
+| --- | --- | --- |
+| `habit` | at least 4 occurrences over at least 3 weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
+| `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night) | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
+| `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
+| `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
+| `day_shape` | at least 5 weekdays (4 weekend days) of kept events | "On weekdays your first commitment is usually around 6:45am and your last ends around 3:30pm; lunch is usually free 11am–2pm" |
+| `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays" |
+
+A pattern's `status` is `active`, `confirmed` or `rejected`. The user's verdict
+survives re-mining (pattern ids use a coarse window key on purpose). Rejected
+patterns never drive predictions, nudges or the profile card.
+
+Calendar cancellations and moves are *detected*, not read: the runtime sends
+the Calendar as a replace-set snapshot, and an upcoming event that vanished (or
+reappeared elsewhere) becomes `event_cancelled` / `event_moved`.
+
+## Predictions
+
+`predict()` covers at least 24 h and **always through the end of tomorrow**
+(local time), so an early-afternoon run still sees tomorrow afternoon's
+meetings. Each prediction has a probability and a one-line `because` composed
+from counts (for example "20 of the last 24 Mon/Wed/Fri"), never by a model.
+
+| Kind | Meaning |
+| --- | --- |
+| `activity` | a habit expected in the horizon (confidence 0.3 or more; weighted by the last 4 weeks, halved if unseen for 3 weeks) |
+| `contact` | the next window in which the user usually talks to someone (0.3 or more) |
+| `cancel_risk` | an upcoming event in a bucket the user tends to cancel; one per back-to-back run; probability is the bucket's historical rate |
+| `habit_conflict` | an upcoming event booked over a habit (10 min overlap or more) |
+
+## Nudges
+
+Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
+0.85, missed 0.7, contact 0.6, preview 0.5), raised 25% per earlier "Useful".
+
+| Kind | Fires when | Actions |
+| --- | --- | --- |
+| `habit_conflict` | an event overlaps a learned habit | auto: reminder "Remind me" on Wisp's schedule. Offered: "Draft a move request" |
+| `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
+| `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
+| `habit_missed` | a personal habit (confidence 0.5 or more) did not happen today, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
+| `day_preview` | 07:00-10:00, top four predictions for today; expires at noon | none |
+
+Attention rules (`nudges.select`):
+
+- **Budget:** at most 4 nudges per local day. `day_preview` is free.
+- **Cooldown:** one per kind per 3 h. `habit_conflict` and `cancel_likely` are
+  exempt because each is about one specific event (id = kind + event id,
+  expires when the event starts). They still count toward the budget.
+- **Quiet hours:** nothing is generated from 22:00 to 07:00.
+- **Dedupe:** ids are deterministic, so the same situation never fires twice.
+  Expired nudges are never created.
+- **Mute:** two negative verdicts (`not_now`, `wrong` or `undo`) for the same
+  kind and pattern within 7 days mute it for 7 days.
+- **Undo:** an `undo` also turns that kind and pattern's auto actions into
+  offers.
+- **Horizon:** candidates are built for events through the end of tomorrow.
+- **Phrasing:** at most 2 nudges per pass are reworded, and none after 10 s.
+  Title and `because` stay code-composed; the body is capped at 400 characters.
+
+## Autonomy
+
+| Action | Who does it | Rules |
+| --- | --- | --- |
+| `add_reminder`, `add_hold` (`auto: true`) | Wisp, immediately | Only on **Wisp's own schedule**, never Apple Calendar or Apple Reminders. Holds are events titled `Tentative: ...`. Marked "Added by Wisp from your routine". Idempotent per nudge and action, skipped if an identical item already exists at that minute or its time has passed. Recorded so **Undo** deletes exactly those items. |
+| `open_prompt` | the user | Opens the panel with a **prefilled, unsent** request ("Draft a note to ... asking to move ..."). Nothing is sent or changed. |
+
+Anything that sends a message or email, or changes a real meeting, still goes
+through Wisp's normal confirmation card. Behavior learning never writes to
+Apple Calendar.
+
+## Personal context
+
+The engine produces an always-on **profile card** of 700 UTF-8 bytes or less:
+confirmed patterns first, then the best of each kind, then today's predictions,
+whole lines only, code-composed. `prompt_blocks.profile_block()` adds it to the
+system prompt with a header that says the patterns "may be wrong, never state
+them as certain facts". It is cached 60 s and never blocks the event loop. In
+the **remote-only (Intel founder) build** all other memory context is off and
+`remote_only_context_block()` adds only this card. A `RemoteEngine` keeps the
+last good card in `<WISP_HOME>/behavior_profile_card.txt` (mode 0600), so a
+GX10 outage does not blank it.
+
+## Privacy: what each mode reads and where it goes
+
+| Mode | Reads | Leaves the Mac |
+| --- | --- | --- |
+| Real (`WISP_BEHAVIOR=1`) | Calendar events, Reminders, **Messages metadata** (direction, contact, time; never text), the topic label of the user's Wisp asks (never the text), approvals/denials | nothing in `local` brain mode, except short phrasing facts sent to the configured inference endpoint |
+| Synthetic (`WISP_BEHAVIOR_SYNTHETIC_ONLY=1`, implied by the founder demo) | the fictional persona and **only** the calendar named `Wisp Demo`. Never real Messages, Reminders, Notes or asks | same |
+| `remote` brain | as above | observations (titles, contacts, times) go to the GX10 brain server over Tailscale, bearer token from Keychain or `WISP_BRAIN_TOKEN` |
+
+- Learned data lives in `<WISP_HOME>/behavior.db` (default `~/.moe/behavior.db`),
+  next to `behavior_runtime.db` (delivered nudges and auto actions). On the GX10
+  it is `~/.local/share/wisp-brain/brain.db`.
+- In `local` mode with a phraser, only the few facts of one nudge (title, body,
+  evidence line, button labels) go to the inference endpoint, which in the
+  founder build is the GX10 gateway. Event titles may go too, to label unknown
+  titles. The timeline does not.
+- `POST /behavior/reset` (synthetic only) deletes all of the above plus the
+  Wisp-schedule items behavior learning created.
+
+## Flags
+
+| Flag | Meaning |
+| --- | --- |
+| `WISP_BEHAVIOR=1` | Behavior learning on. Off by default. |
+| `WISP_BEHAVIOR=0` | Kill switch: behavior learning off even in the founder demo build. |
+| `WISP_FOUNDER_DEMO=1` | Founder build: turns behavior on and implies synthetic-only. The Intel app sets this (with `WISP_REMOTE_ONLY=1`) for its backend. |
+| `WISP_BEHAVIOR_SYNTHETIC_ONLY=1` | Learn from the persona and the `Wisp Demo` calendar only. Required for `/behavior/reset`. |
+| `WISP_BRAIN_MODE` | `local` (default) or `remote`. Falls back to `brain.mode` in `<WISP_HOME>/config.yaml`. If neither is valid, a set `WISP_BRAIN_URL` selects `remote`. |
+| `WISP_BRAIN_URL` | Brain origin, for example `https://6wjp.tail4cc204.ts.net:8443`, no trailing slash (the Keychain account hashes it). Falls back to `brain.url` in config. |
+| `WISP_BRAIN_TOKEN` | Bearer token. Otherwise Keychain service `com.wisp.inference`, account `wispbrain:<sha256(URL)>`. |
+| `WISP_BEHAVIOR_PHRASER=0` | Local engine only: template text, no phrasing calls. |
+| `WISP_HOME` | Moves all of Wisp's state, including `behavior.db`. |
+
+Tick cadence: runtime tick 30 s, ingest 5 min (and right after a Calendar
+sync, which the app does about once a minute), mine 30 min or on change,
+nudges 60 s. The brain server mines every 15 min and generates nudges every
+60 s by default. The remote-only build has no assistant scheduler, so it runs
+`behavior_runtime.run_loop` itself.
+
+## Endpoints
+
+Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
+`409` while behavior learning is off, except `GET /behavior/status`.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /behavior/status` | enabled, mode, active engine, last runs, errors, counts |
+| `POST /behavior/run` | ingest + mine + nudge + deliver now |
+| `POST /behavior/reset` (alias `/behavior/clear`) | synthetic only: forget everything, fresh nudge budget |
+| `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
+| `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
+| `GET /behavior/profile?subject=` | profile card, patterns, predictions, summary |
+| `GET /behavior/nudges?limit=` | delivered nudges with verdicts and Undo state |
+| `POST /behavior/nudges/{id}/feedback` `{"verdict": useful\|not_now\|wrong}` | teach it |
+| `POST /behavior/nudges/{id}/undo` | remove what Wisp added; counts as `undo` feedback |
+| `POST /behavior/nudges/{id}/act` `{"action_index"}` | offered action: returns the prompt, or creates the reversible item |
+
+The GX10 brain server speaks `/v1/*` (see its README).
+
+## Tools and routing
+
+Four read-only tools, hidden while behavior is off and allowed in the
+remote-only build: `describe_me`, `predict_my_day` (today or tomorrow),
+`my_patterns` (query) and `correct_pattern` (confirm, reject or restore; only
+changes Wisp's learned profile). The router claims whole-utterance phrases
+before other routes, for example "What do you know about me?", "Predict my
+day", "What will tomorrow look like?", "When do I usually work out?", "Which
+meetings do I usually cancel?", "Who do I usually talk to in the afternoon?".
+"That's wrong" corrects a pattern only right after one of those answers (or
+when it names a pattern, habit or routine). Compound requests ("... and check
+my email") keep the normal router.
+
+## Testing
+
+```sh
+WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py tests/test_brain_server.py tests/test_seed_mac_persona.py tests/test_wisp_demo_behavior.py
+```
+
+| File | Covers |
+| --- | --- |
+| `test_behavior_engine.py` | facade, snapshot diffing, pattern status, phraser fallbacks, cursors |
+| `test_behavior_miners.py`, `test_behavior_persona.py` | miners recover the routines planted in the fictional persona |
+| `test_behavior_predict_nudges.py` | predictions, budget, quiet hours, cooldown, dedupe, mute, undo |
+| `test_behavior_phraser.py` | `OpenAIPhraser` contract, fail-closed behavior |
+| `test_behavior_client.py`, `test_brain_server.py` | client/server round trip, auth, limits, deploy script syntax |
+| `test_behavior_runtime.py`, `test_behavior_api.py` | ingest to hub, auto actions and Undo, remote fallback, endpoints |
+| `test_behavior_tools.py`, `test_behavior_routing.py` | tools and router phrases |
+| `test_behavior_boundary.py` | `service.behavior` stays portable |
+| `test_seed_mac_persona.py`, `test_wisp_demo_behavior.py` | demo seeding and CLI, with osascript and HTTP mocked |
+
+## Known limitations
+
+- **Cancellation history starts at install.** Calendar apps do not keep what
+  was deleted, so on real data cancel/move patterns only accumulate from the
+  day Wisp first saw the calendar. The demo persona plants this history.
+- **No scheduler in the founder build.** Wisp-schedule reminders and holds are
+  created (and Undo works), but nothing fires them. What the audience sees is
+  the nudge notification itself and the panel card.
+- **Phrasing can fall back to templates.** The Mac phraser gives each call 6 s,
+  allows 4 calls per minute, and skips while the user is waiting on a turn. A
+  slow GX10 therefore shows the code-composed text. That is intentional.
+- **Rehearsals consume the daily budget** (4 per day). Run `POST
+  /behavior/reset` before the real run.
+- **A stale hold stays.** If the user really cancels a meeting that has a
+  "Tentative: Likely skip" hold, the hold is not removed automatically.
+- **Approvals, denials and declines are recorded but not mined yet.**
+- **Time zones.** The brain server's `--tz` must be the user's zone; snapshots
+  carry only epoch times.
+- **Single user.** One engine database per Mac or brain.

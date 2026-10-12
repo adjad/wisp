@@ -1,0 +1,961 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "provenance": "Fictional founder demo data — not native Mac data",
+  "date_policy": {
+    "timezone": "America/Los_Angeles",
+    "anchor": "Current local calendar day at read time",
+    "notes": "day_offset is note-relative modification date; reminders due_day_offset+due_time are local due times. No frozen absolute dates."
+  },
+  "persona": {
+    "name": "Aria Solano",
+    "company": "Cedarloop",
+    "role": "Founder & CEO",
+    "fictional": true
+  },
+  "business": {
+    "description": "Fictional B2B SaaS for multi-site field-service maintenance coordination",
+    "paying_customers": 28,
+    "mrr_usd": 42000,
+    "arr_usd": 504000,
+    "gross_margin_pct": 79,
+    "trailing_three_month_nrr_pct": 108,
+    "cash_usd": 840000,
+    "monthly_net_burn_usd": 70000,
+    "base_runway_months": 12.0,
+    "uncommitted_pilot_mrr_usd": 6500,
+    "fundraise_target_usd": 2500000,
+    "funding_committed_usd": 0,
+    "nonbinding_interest_usd": 350000
+  },
+  "notes": [
+    {
+      "id": "n01",
+      "title": "Founder operating brief — this week",
+      "body": "Cedarloop is a fictional B2B SaaS company helping field-service teams coordinate maintenance work across sites. This week's objective is evidence-led pilot conversion, not feature volume. We have 28 paying customers and $42,000 MRR; the three current pilots are excluded from both numbers.\n\nThe critical path is tenant-isolation sign-off (Dev + Priya), audit-log export (Lena), and a consistent security packet (Samira). Harborline cannot convert before SSO/security approval; Foundry cannot convert before export evidence; Rivet needs an offline-recovery walkthrough. Dev has two delivery slots and Lena one protected four-hour export block. Do not book extra demo meetings across those blocks.\n\nAria's decisions: defer Jonah's offer until runway and funding evidence improve; hold the proposed unlimited-site discount; prioritize the security/export path over an AI auto-dispatch experiment. The fundraising data room and investor update must say zero committed funding. Today: unblock engineering, review the cash forecast, then send the evidence-based investor update. No one is authorized to promise an enterprise launch date yet.",
+      "tags": [
+        "priorities",
+        "founder",
+        "decision"
+      ],
+      "day_offset": 0,
+      "contact_ids": [
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c06"
+      ],
+      "reminder_ids": [
+        "r01",
+        "r21"
+      ]
+    },
+    {
+      "id": "n02",
+      "title": "Cash runway — hiring decision and downside case",
+      "body": "Finance snapshot, reviewed by Owen: unrestricted cash $840,000; current net cash burn $70,000 per month; base runway 12.0 months. This simple runway calculation assumes flat burn and no new cash. MRR is $42,000, annualized recurring revenue $504,000, and gross margin 79%. Cash burn is not operating expenses and must not be subtracted from revenue a second time.\n\nJonah's proposed hire costs $162,000 base salary and approximately $202,000 loaded annually, rounded to $16,800 additional monthly cash burn. With no offset or funding, new burn would be $86,800/month and runway approximately 9.7 months. No offer has been issued. Aria will defer approval pending an updated forecast and at least one signed pilot conversion, rather than assume investor interest is cash.\n\nDownside planning: Harborline, Rivet and Foundry all remain pilots today. Their possible $6,500 combined MRR is not booked. Owen must show a no-conversion case and a signed-contract-only case. Maintain a cash floor of $500,000; this is a planning trigger, not a covenant or a statement that the company is insolvent.",
+      "tags": [
+        "finance",
+        "runway",
+        "decision"
+      ],
+      "day_offset": -1,
+      "contact_ids": [
+        "c01",
+        "c06",
+        "c14"
+      ],
+      "reminder_ids": [
+        "r05",
+        "r06",
+        "r17"
+      ]
+    },
+    {
+      "id": "n03",
+      "title": "Harborline pilot debrief — SSO is a contract gate",
+      "body": "Tessa Cole at Harborline HVAC runs the six-site pilot. Their coordinators like the dispatch board and the weekly exception digest; the buyer's central concern is access control. Tessa explicitly requires SSO plus an approved security packet before procurement can authorize a paid annual contract.\n\nCommercial proposal: $1,500/month equivalent on an annual contract covering six sites. This is unsigned and excluded from current MRR. Tessa is the operational sponsor, not the sole budget approver. Theo must confirm the procurement owner and a review slot rather than mark the deal closed.\n\nOpen risk: Theo previously described SSO as ready for enterprise rollout. Dev says the feature is implemented but release-blocked until tenant-isolation review and audit-log export evidence are complete. Samira should correct the written follow-up: availability is conditional on sign-off, with no fixed launch promise. Next touch should include the security checklist, named owners and an honest status update. Do not send test customer data or imply an external compliance certification.",
+      "tags": [
+        "customer",
+        "pilot",
+        "security"
+      ],
+      "day_offset": -2,
+      "contact_ids": [
+        "c10",
+        "c04",
+        "c05",
+        "c02"
+      ],
+      "reminder_ids": [
+        "r04",
+        "r09",
+        "r11",
+        "r21"
+      ]
+    },
+    {
+      "id": "n04",
+      "title": "Rivet Fleet pilot — offline recovery walkthrough",
+      "body": "Marcus Bell at Rivet Fleet Services has four sites in the pilot. Mobile technicians sometimes lose connectivity in service bays; Marcus cares more about recovering a draft work order than about a polished dashboard. Two pilot users reported a confusing retry screen, not confirmed loss of submitted work.\n\nConversion hypothesis: a successful offline/reconnect walkthrough plus repeat usage by three dispatch coordinators. Potential contract is $2,000/month equivalent, unsigned and excluded from the $42,000 MRR baseline. Marcus asked for a concise recording and an owner for follow-up. Imani should confirm which coordinators will attend and collect the original device/reconnect sequence.\n\nLena owns the recovery walkthrough, but the audit-log export block takes precedence this week. Schedule the walkthrough after that block; do not interrupt it with a fresh demo request. Theo can follow up on commercial terms only after Marcus confirms the acceptance criteria. Avoid saying the incident was data loss or claiming the reliability problem has been fixed without the recorded reproduction and recovery evidence.",
+      "tags": [
+        "customer",
+        "pilot",
+        "reliability"
+      ],
+      "day_offset": -3,
+      "contact_ids": [
+        "c11",
+        "c03",
+        "c07",
+        "c05"
+      ],
+      "reminder_ids": [
+        "r12",
+        "r13",
+        "r20",
+        "r21"
+      ]
+    },
+    {
+      "id": "n05",
+      "title": "Foundry Facilities — export evidence before procurement",
+      "body": "Elise Hart at Foundry Facilities sponsors a ten-site pilot. Regional managers want a stable audit-log export showing actor, timestamp, action and site. Their current workaround is a manual weekly spreadsheet; an incomplete export would create extra reconciliation work rather than remove it.\n\nPotential paid contract is $3,000/month equivalent for ten sites, subject to procurement. It is not revenue, and Elise is not authorized to bypass procurement. Their ask is a sample export using synthetic records plus a short explanation of retention and access limits. Samira will collect the questionnaire; Lena will deliver the sample only after the export repair passes the agreed checks.\n\nElise also asked for custom regional dashboarding. Aria declined a bespoke dashboard commitment for the pilot. Offer the existing regional filter and validate whether export plus that filter meets the actual reporting need. Success is an accepted export and a named procurement next step. This deal shares the export dependency with Harborline's security packet, so one focused repair unlocks two conversations.",
+      "tags": [
+        "customer",
+        "pilot",
+        "enterprise"
+      ],
+      "day_offset": -1,
+      "contact_ids": [
+        "c12",
+        "c03",
+        "c04",
+        "c05"
+      ],
+      "reminder_ids": [
+        "r03",
+        "r11",
+        "r14",
+        "r15",
+        "r21"
+      ]
+    },
+    {
+      "id": "n06",
+      "title": "Pricing decision — preserve site limits and annual value",
+      "body": "Theo proposed 30% off for the first year and unlimited sites to accelerate all three pilot conversions. Owen rejected the structure: it gives away the expansion lever and hides the economics behind a temporary discount. No discount was approved or sent as final terms.\n\nAria's counterproposal is a maximum 10% annual prepay incentive, only after contract scope and security obligations are settled. The draft pilot quotes remain Harborline $1,500/month for six sites, Rivet $2,000 for four sites, and Foundry $3,000 for ten sites. These are three negotiated packages, not a universal per-site price list. Do not multiply a single per-site price across them.\n\nCombined pipeline value is $6,500 MRR / $78,000 ARR if all three sign at quoted terms, before any approved incentive. Today, current booked MRR is still $42,000. Theo should produce a one-page package/limit table and send it to Aria for approval. A pilot-success milestone is an acceptable trade for timing; unlimited sites or an unapproved custom dashboard are not.",
+      "tags": [
+        "pricing",
+        "sales",
+        "decision"
+      ],
+      "day_offset": -4,
+      "contact_ids": [
+        "c01",
+        "c05",
+        "c06",
+        "c10",
+        "c11",
+        "c12"
+      ],
+      "reminder_ids": [
+        "r09",
+        "r15",
+        "r16"
+      ]
+    },
+    {
+      "id": "n07",
+      "title": "Security readiness — one critical path, three owners",
+      "body": "Readiness status: SSO implementation is present but not approved for enterprise launch. Dev owns tenant-isolation test evidence; Priya independently reviews that evidence. Lena owns the audit-log export repair and a synthetic sample. Samira owns the customer-facing security questionnaire and keeps the status aligned with actual evidence.\n\nBlocked statements: do not claim a certification, completed security review, production readiness or a guaranteed enterprise launch date. The review is about evidence for this pilot scope, not a broad compliance attestation. Harborline's conversion requires this security packet; Foundry independently requires the export sample.\n\nSequencing: Dev sends isolation evidence today; Priya reviews after receipt. Lena protects four hours for export before the Rivet walkthrough. Samira can draft the packet in parallel, but cannot mark the unresolved controls complete. Aria's decision is to postpone the AI auto-dispatch prototype until these launch dependencies are resolved. Escalate any contradiction between sales promises and the packet to Aria immediately; a clean status update is preferable to a false green checklist.",
+      "tags": [
+        "security",
+        "launch",
+        "critical-path"
+      ],
+      "day_offset": -1,
+      "contact_ids": [
+        "c02",
+        "c03",
+        "c04",
+        "c13",
+        "c10",
+        "c12"
+      ],
+      "reminder_ids": [
+        "r01",
+        "r02",
+        "r03",
+        "r04",
+        "r10",
+        "r11",
+        "r14"
+      ]
+    },
+    {
+      "id": "n08",
+      "title": "Seed extension — investor update and data-room gaps",
+      "body": "Aria is exploring a $2.5 million seed extension. Total funding committed is $0. Informal expressed interest is approximately $350,000; it is nonbinding and must never be described as committed capital, a term sheet or money in the bank. The cash forecast excludes it.\n\nNora Keene at Juniper Seed Partners requested evidence of pilot conversion and a concrete use-of-funds plan. Caleb Stone at Granite Harbor Ventures requested retention cohorts, customer concentration and security-readiness details before making a partner introduction. Neither has approved an investment.\n\nThe update should lead with $42,000 MRR, 28 paying customers, 79% gross margin, 108% trailing-three-month NRR and 12.0 months base runway. Explain the three unsigned pilots and their actual blockers. Remaining data-room gaps: Owen's cohort/concentration schedule, the revised cash forecast including a deferred-hire scenario, and Samira's accurately qualified security status. Aria owns the narrative. Send no inflated pipeline revenue and no claim that SSO is launch-approved. Ask for a specific next meeting after the evidence is ready.\n\nWarm introduction chain, recorded in these fictional notes: Priya introduced Aria to Nora; Nora introduced Aria to Caleb. Caleb can sponsor an introduction to a Granite Harbor investment partner only after the cohort appendix and qualified security status are ready. None of these introductions imply investment approval. Ask Priya for narrative feedback in parallel; do not ask her to endorse an uncompleted security review.",
+      "tags": [
+        "fundraising",
+        "investor",
+        "decision"
+      ],
+      "day_offset": -2,
+      "contact_ids": [
+        "c01",
+        "c08",
+        "c09",
+        "c06",
+        "c13"
+      ],
+      "reminder_ids": [
+        "r07",
+        "r08",
+        "r19"
+      ]
+    },
+    {
+      "id": "n09",
+      "title": "Infrastructure hiring — strong candidate, no approved offer",
+      "body": "Jonah West's references were positive and Dev believes he would reduce infrastructure interrupts. Proposed base salary is $162,000; finance estimates approximately $202,000 annual loaded cash cost, rounded to $16,800/month. Hiring is a capital-allocation decision, not a reward for a good interview.\n\nCurrent base runway is 12.0 months ($840,000 cash / $70,000 monthly net burn). Adding this cost without new revenue or funding brings modeled runway to about 9.7 months. The company currently has seven employees and two contractors; Jonah is a candidate and is not counted in either total. Owen is a fractional contractor, not a full-time employee.\n\nDecision: no offer until Aria reviews the revised cash forecast and at least one pilot has a signed conversion. Dev will document which interruptions could instead be reduced by a two-week reliability sprint. Aria owes Jonah a transparent timeline update this week; do not issue an offer, negotiate an unapproved start date, or imply fundraising is committed. Preserve the candidate relationship while keeping the actual decision boundary clear.",
+      "tags": [
+        "hiring",
+        "team",
+        "runway"
+      ],
+      "day_offset": -3,
+      "contact_ids": [
+        "c01",
+        "c02",
+        "c06",
+        "c14"
+      ],
+      "reminder_ids": [
+        "r05",
+        "r06",
+        "r17",
+        "r18",
+        "r22"
+      ]
+    },
+    {
+      "id": "n10",
+      "title": "Board scorecard — booked revenue versus pilot pipeline",
+      "body": "Current operating snapshot: 28 paying customers; $42,000 MRR; $504,000 ARR; 79% gross margin; 108% trailing-three-month net revenue retention. The most recently closed month started at $39,000 MRR and ended at $42,000: $2,000 new-customer MRR plus $2,000 expansion less $1,000 churn. Customer count moved from 27 to 28: two additions and one churn. These figures reconcile; NRR covers a different three-month cohort window.\n\nCash is $840,000 and monthly net burn $70,000, giving 12.0 months simple base runway. Top customer is 14% of MRR ($5,880); top five are 41% ($17,220). Treat concentration as a risk to discuss, not evidence that a pilot will close.\n\nHarborline, Rivet and Foundry are three additional unsigned pilots totaling $6,500 potential MRR. They are excluded from the 28 customers and $42,000 MRR. If all sign at quoted, undiscounted terms, modeled MRR becomes $48,500; that is a scenario, not today's result. Owen owns the board table and cohort/concentration appendix; Aria approves the narrative before circulation.",
+      "tags": [
+        "metrics",
+        "board",
+        "finance"
+      ],
+      "day_offset": -1,
+      "contact_ids": [
+        "c01",
+        "c06",
+        "c07",
+        "c08",
+        "c09"
+      ],
+      "reminder_ids": [
+        "r07",
+        "r08",
+        "r19"
+      ]
+    },
+    {
+      "id": "n11",
+      "title": "Product trade-off — pause auto-dispatch, unblock trust",
+      "body": "The proposed AI auto-dispatch experiment is paused for this delivery cycle. It has encouraging demo feedback but no agreed acceptance criteria, and it competes with the same engineering capacity needed for enterprise trust work. Aria chose a narrow conversion path: tenant isolation, audit-log export, then the offline-recovery walkthrough.\n\nDev has two delivery slots this week. Lena's protected four-hour export block must not be split across sales calls. Samira and Theo can progress questionnaires, procurement mapping and scoped pricing in parallel; Imani can collect adoption evidence without asking engineering to ship a new feature.\n\nDo not interpret the pause as permanent cancellation. Revisit auto-dispatch after the security packet has an evidence-based disposition and two pilot sponsors have confirmed acceptance criteria. No custom Foundry dashboard was promised. Product decisions should name the buyer pain they address: trusted access for Harborline, trustworthy export for Foundry, and reconnect confidence for Rivet. A roadmap slide is not proof that a blocker is solved.",
+      "tags": [
+        "product",
+        "roadmap",
+        "decision"
+      ],
+      "day_offset": -4,
+      "contact_ids": [
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c07"
+      ],
+      "reminder_ids": [
+        "r02",
+        "r13",
+        "r18",
+        "r20"
+      ]
+    },
+    {
+      "id": "n12",
+      "title": "Team check-ins — protect focus and close communication gaps",
+      "body": "Lena reports context switching between export work, Rivet's demo and ad hoc sales requests. Aria will protect one four-hour export block today and route new enterprise questions through Samira. Dev can review the isolation evidence in parallel but cannot promise an extra engineering slot this week.\n\nTheo needs a crisp, approved package table and a correction to the Harborline SSO message. The issue is a mismatched promise, not permission to quietly change the engineering status. Samira owns one shared customer-readiness checklist. Imani will collect coordinator usage and the exact reconnect sequence from Rivet so the next walkthrough answers the real objection.\n\nFounder follow-through: review the cash forecast with Owen, update Jonah honestly, then send investor materials grounded in booked metrics. A productive operating day has fewer interruptions and explicit decisions, not a longer checklist. Completed item: references for Jonah are recorded; that does not approve an offer. Keep communication drafts separate from sent messages; this demo never sends anything.",
+      "tags": [
+        "team",
+        "capacity",
+        "founder"
+      ],
+      "day_offset": -2,
+      "contact_ids": [
+        "c01",
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ],
+      "reminder_ids": [
+        "r02",
+        "r12",
+        "r22"
+      ]
+    }
+  ],
+  "reminders": [
+    {
+      "id": "r01",
+      "title": "Send tenant-isolation evidence to Priya",
+      "detail": "Attach the current synthetic test evidence and unresolved exceptions. Ask for a review disposition, not a blanket certification.",
+      "due_day_offset": 0,
+      "due_time": "09:30",
+      "priority": "high",
+      "owner_contact_id": "c02",
+      "note_ids": [
+        "n07",
+        "n01"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r02",
+      "title": "Protect Lena’s four-hour export block",
+      "detail": "Confirm a 10:00–14:00 focus block with no sales/demo interruptions. Route enterprise questions through Samira.",
+      "due_day_offset": 0,
+      "due_time": "09:00",
+      "priority": "high",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n12",
+        "n11",
+        "n07"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r03",
+      "title": "Deliver synthetic audit-log export sample",
+      "detail": "Include actor, timestamp, action and site; label synthetic rows. This unlocks Foundry and the Harborline security packet.",
+      "due_day_offset": 1,
+      "due_time": "15:00",
+      "priority": "high",
+      "owner_contact_id": "c03",
+      "note_ids": [
+        "n05",
+        "n07"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r04",
+      "title": "Correct Harborline’s SSO readiness follow-up",
+      "detail": "Overdue: clarify implementation exists but enterprise launch approval is pending. Make no launch-date or certification claim.",
+      "due_day_offset": -1,
+      "due_time": "16:00",
+      "priority": "high",
+      "owner_contact_id": "c05",
+      "note_ids": [
+        "n03",
+        "n07"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r05",
+      "title": "Finish no-conversion cash forecast",
+      "detail": "Overdue: base burn $70k, cash $840k. Show the $86.8k hire case and 9.7-month runway; exclude informal funding interest.",
+      "due_day_offset": -2,
+      "due_time": "17:00",
+      "priority": "high",
+      "owner_contact_id": "c06",
+      "note_ids": [
+        "n02",
+        "n09"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r06",
+      "title": "Review runway and defer-or-approve hiring decision",
+      "detail": "Base runway 12.0 months. No offer approved; require revised forecast and a signed pilot conversion before reconsidering.",
+      "due_day_offset": 0,
+      "due_time": "16:30",
+      "priority": "high",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n02",
+        "n09"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r07",
+      "title": "Send evidence-based update to Nora",
+      "detail": "Draft only until Aria approves: $42k MRR, 28 customers, zero funding committed, $350k nonbinding interest. Ask for a next meeting.",
+      "due_day_offset": 1,
+      "due_time": "11:00",
+      "priority": "high",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n08",
+        "n10"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r08",
+      "title": "Prepare Caleb’s cohort and concentration appendix",
+      "detail": "Include trailing-three-month NRR108%, top-customer14%, top-five41%. Separate signed revenue from three unsigned pilots.",
+      "due_day_offset": 1,
+      "due_time": "12:00",
+      "priority": "medium",
+      "owner_contact_id": "c06",
+      "note_ids": [
+        "n08",
+        "n10"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r09",
+      "title": "Confirm Harborline procurement owner and review slot",
+      "detail": "Tessa is the sponsor, not sole approver. Confirm who can authorize the six-site $1,500/month annual package.",
+      "due_day_offset": 1,
+      "due_time": "14:00",
+      "priority": "high",
+      "owner_contact_id": "c05",
+      "note_ids": [
+        "n03",
+        "n06"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r10",
+      "title": "Review isolation evidence independently",
+      "detail": "Review Dev’s evidence only after delivery. Record exceptions and exact scope; do not certify the whole product.",
+      "due_day_offset": 2,
+      "due_time": "10:00",
+      "priority": "high",
+      "owner_contact_id": "c13",
+      "note_ids": [
+        "n07"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r11",
+      "title": "Update shared security packet",
+      "detail": "Draft questionnaires in parallel; keep tenant-isolation and export controls unresolved until evidence is accepted.",
+      "due_day_offset": 2,
+      "due_time": "15:30",
+      "priority": "high",
+      "owner_contact_id": "c04",
+      "note_ids": [
+        "n07",
+        "n03",
+        "n05"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r12",
+      "title": "Collect Rivet reconnect sequence and attendees",
+      "detail": "Ask Marcus for device/reconnect details and identify three dispatch coordinators for acceptance walkthrough.",
+      "due_day_offset": 0,
+      "due_time": "11:30",
+      "priority": "medium",
+      "owner_contact_id": "c07",
+      "note_ids": [
+        "n04",
+        "n12"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r13",
+      "title": "Schedule Rivet offline-recovery walkthrough",
+      "detail": "Place after the protected export block. Demonstrate draft recovery honestly; do not claim confirmed data loss or an unverified fix.",
+      "due_day_offset": 3,
+      "due_time": "13:00",
+      "priority": "high",
+      "owner_contact_id": "c03",
+      "note_ids": [
+        "n04",
+        "n11"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r14",
+      "title": "Send Foundry synthetic export for acceptance",
+      "detail": "First obtain export evidence. Ask Elise to confirm actor/time/action/site fields and name procurement’s next step.",
+      "due_day_offset": 3,
+      "due_time": "16:00",
+      "priority": "high",
+      "owner_contact_id": "c04",
+      "note_ids": [
+        "n05",
+        "n07"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r15",
+      "title": "Draft scoped pilot package table for Aria",
+      "detail": "Six/four/ten sites; $1.5k/$2k/$3k monthly equivalents. No unlimited sites, custom dashboard or unapproved30% discount.",
+      "due_day_offset": 1,
+      "due_time": "09:30",
+      "priority": "medium",
+      "owner_contact_id": "c05",
+      "note_ids": [
+        "n06",
+        "n05"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r16",
+      "title": "Approve annual prepay incentive boundary",
+      "detail": "Maximum proposed10%, not yet customer-approved. Check scope and security obligations before issuing terms.",
+      "due_day_offset": 2,
+      "due_time": "16:30",
+      "priority": "medium",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n06"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r17",
+      "title": "Give Jonah a transparent hiring timeline update",
+      "detail": "Say references are strong and offer approval is deferred pending cash forecast and signed conversion. No invented start date.",
+      "due_day_offset": 2,
+      "due_time": "14:00",
+      "priority": "high",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n09",
+        "n02"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r18",
+      "title": "Write two-week reliability sprint alternative",
+      "detail": "List interruptions reduced without a new hire. Respect two delivery slots; compare against the $16.8k/month loaded hire cost.",
+      "due_day_offset": 4,
+      "due_time": "11:00",
+      "priority": "medium",
+      "owner_contact_id": "c02",
+      "note_ids": [
+        "n09",
+        "n11"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r19",
+      "title": "Prepare board scorecard narrative",
+      "detail": "Reconcile $39k→$42k MRR bridge and27→28customer bridge. Label $48.5k MRR as all-three-pilots scenario only.",
+      "due_day_offset": 5,
+      "due_time": "15:00",
+      "priority": "medium",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n10",
+        "n08"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r20",
+      "title": "Review pilot adoption with customer success",
+      "detail": "Collect weekly coordinator use and acceptance criteria. Revisit auto-dispatch only after security disposition and two sponsor confirmations.",
+      "due_day_offset": 6,
+      "due_time": "10:00",
+      "priority": "low",
+      "owner_contact_id": "c07",
+      "note_ids": [
+        "n11",
+        "n04"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r21",
+      "title": "Revisit enterprise conversion plan",
+      "detail": "Check signed status of all three pilots and remaining security/export/recovery blockers. Do not add pipeline to booked revenue.",
+      "due_day_offset": 7,
+      "due_time": "14:00",
+      "priority": "medium",
+      "owner_contact_id": "c01",
+      "note_ids": [
+        "n01",
+        "n03",
+        "n04",
+        "n05"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "r22",
+      "title": "Record Jonah’s reference-check feedback",
+      "detail": "Completed: two positive references recorded. This completes references only; offer and start date remain unapproved.",
+      "due_day_offset": -1,
+      "due_time": "12:00",
+      "priority": "low",
+      "owner_contact_id": "c02",
+      "note_ids": [
+        "n09",
+        "n12"
+      ],
+      "status": "done"
+    }
+  ],
+  "contacts": [
+    {
+      "id": "c01",
+      "given_name": "Aria",
+      "family_name": "Solano",
+      "role": "Founder & CEO",
+      "organization": "Cedarloop",
+      "email": "aria.solano@example.com",
+      "phone": "+1-202-555-0100",
+      "relationship": "founder",
+      "context": "Owns fundraising, runway and enterprise commitments. Protects two focus blocks daily; signs off pricing and hiring."
+    },
+    {
+      "id": "c02",
+      "given_name": "Dev",
+      "family_name": "Malik",
+      "role": "Co-founder & CTO",
+      "organization": "Cedarloop",
+      "email": "dev.malik@example.com",
+      "phone": "+1-202-555-0101",
+      "relationship": "team",
+      "context": "Owns architecture and tenant isolation. Has two engineering delivery slots this week; refuses to represent SSO as production-ready before evidence is complete."
+    },
+    {
+      "id": "c03",
+      "given_name": "Lena",
+      "family_name": "Ortiz",
+      "role": "Senior Product Engineer",
+      "organization": "Cedarloop",
+      "email": "lena.ortiz@example.com",
+      "phone": "+1-202-555-0102",
+      "relationship": "team",
+      "context": "Owns audit-log export and mobile offline recovery. Needs one uninterrupted four-hour block for the export fix."
+    },
+    {
+      "id": "c04",
+      "given_name": "Samira",
+      "family_name": "Vale",
+      "role": "Head of Operations",
+      "organization": "Cedarloop",
+      "email": "samira.vale@example.com",
+      "phone": "+1-202-555-0103",
+      "relationship": "team",
+      "context": "Runs pilots, security questionnaires and launch checklists. Coordinates partner calls and keeps risk evidence current."
+    },
+    {
+      "id": "c05",
+      "given_name": "Theo",
+      "family_name": "Park",
+      "role": "Account Executive",
+      "organization": "Cedarloop",
+      "email": "theo.park@example.com",
+      "phone": "+1-202-555-0104",
+      "relationship": "team",
+      "context": "Owns pricing experiments and commercial follow-ups. Proposed an unlimited-site pilot discount that finance rejected."
+    },
+    {
+      "id": "c06",
+      "given_name": "Owen",
+      "family_name": "Reed",
+      "role": "Fractional Finance Lead",
+      "organization": "Cedarloop",
+      "email": "owen.reed@example.com",
+      "phone": "+1-202-555-0105",
+      "relationship": "advisor",
+      "context": "Reviews cash and revenue. Seven employees plus two contractors is the current staffing baseline; Owen is one of the contractors."
+    },
+    {
+      "id": "c07",
+      "given_name": "Imani",
+      "family_name": "Flores",
+      "role": "Customer Success Lead",
+      "organization": "Cedarloop",
+      "email": "imani.flores@example.com",
+      "phone": "+1-202-555-0106",
+      "relationship": "team",
+      "context": "Owns customer interviews, adoption and onboarding. Tracks whether coordinators use dispatch boards weekly."
+    },
+    {
+      "id": "c08",
+      "given_name": "Nora",
+      "family_name": "Keene",
+      "role": "Partner",
+      "organization": "Juniper Seed Partners",
+      "email": "nora.keene@example.com",
+      "phone": "+1-202-555-0107",
+      "relationship": "investor",
+      "context": "Interested in capital-efficient vertical SaaS; requested pilot conversion evidence and a precise use-of-funds plan. Interest is not a commitment. Priya introduced Aria to Nora; Nora made the warm introduction to Caleb."
+    },
+    {
+      "id": "c09",
+      "given_name": "Caleb",
+      "family_name": "Stone",
+      "role": "Principal",
+      "organization": "Granite Harbor Ventures",
+      "email": "caleb.stone@example.com",
+      "phone": "+1-202-555-0108",
+      "relationship": "investor",
+      "context": "Asked for security readiness, cohort retention and concentration details. Offered a partner introduction after updated materials. Warm contact via Nora; internal investment-partner introduction is conditional on updated evidence."
+    },
+    {
+      "id": "c10",
+      "given_name": "Tessa",
+      "family_name": "Cole",
+      "role": "VP Operations",
+      "organization": "Harborline HVAC",
+      "email": "tessa.cole@example.com",
+      "phone": "+1-202-555-0109",
+      "relationship": "design partner",
+      "context": "Six-site pilot; requires SSO and a signed security packet before a paid annual contract. Cannot approve pricing alone."
+    },
+    {
+      "id": "c11",
+      "given_name": "Marcus",
+      "family_name": "Bell",
+      "role": "Director of Fleet Operations",
+      "organization": "Rivet Fleet Services",
+      "email": "marcus.bell@example.com",
+      "phone": "+1-202-555-0110",
+      "relationship": "design partner",
+      "context": "Four-site pilot; cares about offline recovery after technicians lose connectivity. Wants a live recovery walkthrough before conversion."
+    },
+    {
+      "id": "c12",
+      "given_name": "Elise",
+      "family_name": "Hart",
+      "role": "Chief Operating Officer",
+      "organization": "Foundry Facilities",
+      "email": "elise.hart@example.com",
+      "phone": "+1-202-555-0111",
+      "relationship": "design partner",
+      "context": "Ten-site pilot; needs trustworthy audit-log export and regional reporting. Budget requires procurement approval."
+    },
+    {
+      "id": "c13",
+      "given_name": "Priya",
+      "family_name": "Sen",
+      "role": "Independent Security Advisor",
+      "organization": "Independent",
+      "email": "priya.sen@example.com",
+      "phone": "+1-202-555-0112",
+      "relationship": "advisor",
+      "context": "Reviews tenant-isolation evidence. Will not sign off a statement of compliance based only on a product demo. Made the warm introduction to Nora; can give narrative feedback without endorsing incomplete security work."
+    },
+    {
+      "id": "c14",
+      "given_name": "Jonah",
+      "family_name": "West",
+      "role": "Senior Infrastructure Engineer candidate",
+      "organization": "Independent",
+      "email": "jonah.west@example.com",
+      "phone": "+1-202-555-0113",
+      "relationship": "candidate",
+      "context": "Strong reference checks; requested a hiring decision this week. Proposed compensation increases net burn; no offer is approved."
+    }
+  ],
+  "prompts": [
+    {
+      "prompt": "Search my notes for the current runway and the Jonah hiring decision.",
+      "expected_facts": [
+        "$840,000 cash and $70,000 monthly net burn give12.0months runway.",
+        "Jonah costs approximately$16,800/month loaded; runway would drop to about9.7months.",
+        "No offer approved; decision deferred pending forecast and signed pilot conversion."
+      ],
+      "note_ids": [
+        "n02",
+        "n09"
+      ],
+      "reminder_ids": [
+        "r05",
+        "r06",
+        "r17"
+      ],
+      "contact_ids": [
+        "c01",
+        "c06",
+        "c14"
+      ]
+    },
+    {
+      "prompt": "Show my overdue reminders, then find the notes explaining why they matter.",
+      "expected_facts": [
+        "r04 corrects Harborline’s SSO claim; due day-1.",
+        "r05 is the no-conversion cash forecast; due day-2.",
+        "r22 is completed and must not appear as overdue active work."
+      ],
+      "note_ids": [
+        "n03",
+        "n07",
+        "n02",
+        "n09"
+      ],
+      "reminder_ids": [
+        "r04",
+        "r05"
+      ],
+      "contact_ids": [
+        "c05",
+        "c06"
+      ]
+    },
+    {
+      "prompt": "Search notes for what is blocking each enterprise pilot.",
+      "expected_facts": [
+        "Harborline: SSO/security sign-off; six sites/$1,500MRR potential.",
+        "Foundry: accepted audit-log export; ten sites/$3,000MRR potential.",
+        "Rivet: offline-recovery walkthrough/adoption; four sites/$2,000MRR potential.",
+        "All unsigned and excluded from booked MRR."
+      ],
+      "note_ids": [
+        "n03",
+        "n04",
+        "n05",
+        "n07"
+      ],
+      "reminder_ids": [
+        "r03",
+        "r09",
+        "r13",
+        "r14"
+      ],
+      "contact_ids": [
+        "c10",
+        "c11",
+        "c12"
+      ]
+    },
+    {
+      "prompt": "Look up Nora Keene and search my fundraising notes for what she needs next.",
+      "expected_facts": [
+        "Nora is a partner at fictional Juniper Seed Partners.",
+        "She wants pilot conversion evidence and a use-of-funds plan.",
+        "Raise target$2.5m; committed$0; informal interest$350k nonbinding."
+      ],
+      "note_ids": [
+        "n08"
+      ],
+      "reminder_ids": [
+        "r07"
+      ],
+      "contact_ids": [
+        "c08"
+      ]
+    },
+    {
+      "prompt": "Search my board scorecard notes and explain booked MRR versus the pilot scenario.",
+      "expected_facts": [
+        "Booked$42kMRR/$504kARR with28payingcustomers.",
+        "All-three-pilots undiscounted scenario$48.5kMRR; added$6.5k is not booked.",
+        "$39k+$2knew+$2kexpansion-$1kchurn=$42k."
+      ],
+      "note_ids": [
+        "n10",
+        "n06"
+      ],
+      "reminder_ids": [
+        "r19"
+      ],
+      "contact_ids": [
+        "c06"
+      ]
+    },
+    {
+      "prompt": "Search notes for the product trade-off and what can happen in parallel.",
+      "expected_facts": [
+        "Auto-dispatch experiment paused, not permanently cancelled.",
+        "Tenant-isolation evidence/review and focused audit-log export are critical path.",
+        "Samira can draft questionnaires, Theo map procurement/package terms, Imani gather adoption evidence in parallel.",
+        "Protect Lena’s four-hour block and Dev’s two delivery slots."
+      ],
+      "note_ids": [
+        "n11",
+        "n07",
+        "n12"
+      ],
+      "reminder_ids": [
+        "r01",
+        "r02",
+        "r08",
+        "r12",
+        "r15"
+      ],
+      "contact_ids": [
+        "c02",
+        "c03",
+        "c04",
+        "c05",
+        "c07"
+      ]
+    },
+    {
+      "prompt": "List my demo contacts and look up the three design partners.",
+      "expected_facts": [
+        "Tessa Cole—Harborline HVAC; Marcus Bell—Rivet Fleet Services; Elise Hart—Foundry Facilities.",
+        "They are fictional design partners, not imported Intel Mac contacts.",
+        "All email addresses example.com; phone numbers reserved fictional5550100–0199."
+      ],
+      "note_ids": [
+        "n03",
+        "n04",
+        "n05"
+      ],
+      "reminder_ids": [],
+      "contact_ids": [
+        "c10",
+        "c11",
+        "c12"
+      ]
+    },
+    {
+      "prompt": "Search my pricing notes for discounts and promises I have not approved.",
+      "expected_facts": [
+        "30%discount/unlimitedsites rejected.",
+        "Maximum proposed10%annualprepay incentive needs approval and scoped obligations.",
+        "No custom Foundry dashboard or guaranteed enterprise launch date approved."
+      ],
+      "note_ids": [
+        "n06",
+        "n05",
+        "n07"
+      ],
+      "reminder_ids": [
+        "r15",
+        "r16",
+        "r04"
+      ],
+      "contact_ids": [
+        "c01",
+        "c05",
+        "c06"
+      ]
+    }
+  ]
+}

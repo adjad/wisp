@@ -78,6 +78,22 @@ def connectors_status() -> dict[str, dict]:
     return dict(_sync_status)
 
 
+_behavior_task: asyncio.Task | None = None
+
+
+def _start_behavior_tick() -> asyncio.Task | None:
+    """Start one behavior tick in the background unless one is still running."""
+    global _behavior_task
+    from service.behavior.flags import env_enabled
+    if not env_enabled() or (_behavior_task is not None and not _behavior_task.done()):
+        return None
+    from service.assistant import behavior_runtime
+    # behavior_runtime.tick catches every exception itself, so the task never
+    # ends with an unretrieved error.
+    _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
+    return _behavior_task
+
+
 async def run() -> None:
     while True:
         # server-side connectors (none today)
@@ -87,11 +103,36 @@ async def run() -> None:
                 assistant_store.sync_source(c.name, items)
             except Exception:  # noqa: BLE001 — a connector must never break the loop
                 pass
+        # The Aria demo: deliver its simulated scheduled sends (never the app outbox).
+        try:
+            from service.inference.remote_policy import aria_demo_mode
+            if aria_demo_mode():
+                from service.demo.aria import tools as aria_tools
+                await aria_tools.tick(hub)
+        except Exception:  # noqa: BLE001 — never break the loop
+            pass
         # fire any due reminders
         try:
             for note in due_reminders(assistant_store):
                 await hub.publish(note)
         except Exception:  # noqa: BLE001
+            pass
+        # Proactive attention (off unless WISP_ATTENTION_DEMO=1): a text that states
+        # something coming up soon which is not on file becomes a commitment + alert.
+        try:
+            from service.assistant import attention_demo as attention_runtime
+            if attention_runtime.enabled():
+                await attention_runtime.tick(assistant_store, hub)
+        except Exception:  # noqa: BLE001 — never break the loop
+            pass
+        # Behavior learning (off unless WISP_BEHAVIOR=1 or the founder demo):
+        # ingest/mine/nudge on its own internal cadence; never raises. A tick
+        # can take seconds (mining, a remote brain), so it runs as a background
+        # task and never delays reminders, the brief or scheduled sends; at
+        # most one runs at a time.
+        try:
+            _start_behavior_tick()
+        except Exception:  # noqa: BLE001 — never break the loop
             pass
         # once-daily brief at the configured hour (8am or 8pm), or first tick
         # after if Wisp wasn't running at that moment.
@@ -177,7 +218,19 @@ async def _fire_scheduled_sends() -> None:
         else:
             res = await app_request("send_message",
                                     {"to": row["recipient"], "text": row["body"]})
-        ok = bool(res.get("ok"))
+        ok = res.get("ok") is True and ("status" not in res or res["status"] == "succeeded")
+        if not ok and not (res.get("ok") is False and res.get("status") == "not_attempted"
+                           and res.get("dispatch_started") is False):
+            # The claim already left the pending queue. A lost/generic native
+            # receipt must never invite another send or a definite failed UI.
+            outbound_queue.mark(row["id"], "unknown", "Sending was not confirmed; check the sending app before retrying")
+            await hub.publish({
+                "type": "scheduled_send_unknown", "notice_id": row["id"],
+                "channel": row["channel"], "display": row["display"],
+                "body": row["body"], "when_ts": row["when_ts"],
+            }, dedupe_key="scheduled_unknown:" + row["id"],
+               target={"type": "scheduled_unknown", "id": row["id"]})
+            continue
         outbound_queue.mark(row["id"], "sent" if ok else "failed",
                             "" if ok else str(res.get("error") or "unknown error"))
         await hub.publish({
@@ -188,8 +241,8 @@ async def _fire_scheduled_sends() -> None:
 
 
 def _brief_state_path():
-    from service.paths import MOE_DIR
-    return MOE_DIR / "brief_state.json"
+    from service.paths import STATE_DIR
+    return STATE_DIR / "brief_state.json"
 
 
 def _brief_date() -> date | None:
