@@ -1,6 +1,6 @@
 """Runtime for ``uncaptured_commitment``: read messages, detect, add, alert.
 
-Lives beside the store it writes; the pure detector is ``service.attention.detectors``
+Lives beside the store it writes; the pure detector is ``service.attention.catch_rules``
 (the Slice 0 package may not import ``service.assistant``).
 
 Off unless ``WISP_ATTENTION_DEMO=1``. ``WISP_ATTENTION_SYNTHETIC_ONLY=1`` bypasses
@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from service.attention.corpus import Item
-from service.attention.detectors import HORIZON_S, REASON, Candidate, already_on_file, detect
+from service.attention.catch_rules import HORIZON_S, REASON, Candidate, already_on_file, detect
 from service.paths import MOE_DIR
 
 DAILY_CAP = 3
@@ -138,6 +138,20 @@ def _sent_today(store, now: float) -> int:
             (KEY_PREFIX + "%", midnight)).fetchone()[0]
 
 
+def _stack_holds(item_id: str) -> bool:
+    """True when the live attention runner has claimed or created a reminder for this message.
+
+    Shadow and verified-failure rows do not count. If the runner's ledger cannot be read the
+    answer is yes: a duplicate reminder is worse than a missed one."""
+    if item_id.startswith(OVERLAY_ID_PREFIX):
+        return False                      # synthetic messages never reach the live runner
+    try:
+        from service.assistant.attention_runner import get_ledger
+        return get_ledger().holds_effect(item_id)
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _persist(store, cand: Candidate, now: float, *, evidence: Item | None = None) -> dict | None:
     """Save the commitment and its replayable alert together, with fresh checks."""
     from service.assistant.reminders import _humanize
@@ -151,7 +165,7 @@ def _persist(store, cand: Candidate, now: float, *, evidence: Item | None = None
         known = [dict(r) for r in db.execute(
             "SELECT title,when_ts,status FROM commitments WHERE status='active' "
             "AND when_ts BETWEEN ? AND ?", (now - 3600, now + HORIZON_S + 3600))]
-        if (store.event_by_key(key) or _sent_today(store, now) >= DAILY_CAP
+        if (store.event_by_key(key) or _stack_holds(cand.item_id) or _sent_today(store, now) >= DAILY_CAP
                 or not now <= cand.when_ts <= now + HORIZON_S
                 or already_on_file(cand.when_ts, cand.text, known)):
             return None
