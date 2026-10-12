@@ -1347,9 +1347,10 @@ async def run_agent(
     # provenance; other callers conservatively retain assistant/tool/system
     # context. A new invocation in an existing conversation is not a reset.
     private_shell_read_only = False
+    history_private = False
     if model_led_discovery:
         from service.router.web_request import classify as classify_shell_context
-        private_shell_read_only = (private_shell_history is not None and private_shell_history is not False
+        history_private = (private_shell_history is not None and private_shell_history is not False
             or any(
                 not isinstance(m, dict)
                 or m.get("role") in {"assistant", "tool"}
@@ -1359,6 +1360,17 @@ async def run_agent(
                     not isinstance(m.get("content"), str)
                     or classify_shell_context(m["content"]).private))
                 for m in messages))
+        private_shell_read_only = history_private
+
+    # Turn-START private signal for web egress: actual private content in the
+    # history or remembered facts. It is assigned once, after the memory block
+    # is built (below), and never mutated during the turn. Merely offering the
+    # messages tools or carrying the identity block is not private content.
+    private_at_start = False
+    # In-turn latch: set by ANY private read made during this turn. The
+    # explicit-public-lookup exemption never covers it.
+    private_read_in_turn = False
+    confirmed_private_web: set[str] = set()
 
     # The current request's own words decide whether a public lookup was asked
     # for. Computed once from the incoming messages, never from tool output.
@@ -1372,14 +1384,26 @@ async def run_agent(
             current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
         except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
             current_public_lookup = False
+        if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
+            # A URL the user typed themselves is an explicit public lookup.
+            current_public_lookup = True
+
+    def _web_detail(args):
+        detail = args.get("url") or args.get("query") or ""
+        return str(detail)[:300]
 
     def private_web_problem(tool):
-        """Once private data is in context, public egress needs explicit intent."""
+        """Turn-start private context: public egress needs explicit intent."""
         from service.router.model_led import PRIVATE_WEB_TOOLS
-        if private_shell_read_only and tool.name in PRIVATE_WEB_TOOLS and not current_public_lookup:
-            return ("Private data was read in this turn; web access is unavailable "
+        if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
+                and not current_public_lookup):
+            return ("Private data is in context; web access is unavailable "
                     "unless the request explicitly asks for a public lookup.")
         return None
+
+    def in_turn_private_web(tool):
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        return bool(model_led_discovery and private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS)
 
     def tool_policy(tool, args):
         if private_shell_read_only:
@@ -1387,8 +1411,18 @@ async def run_agent(
             if problem := private_shell_problem(tool, args):
                 from service.safety.policy import Decision
                 return Decision(Tier.DENY, problem)
+        if model_led_discovery:
+            from service.safety.policy import Decision
+            if in_turn_private_web(tool):
+                # Private data was read during this turn: any later egress is
+                # confirmed with its destination shown, whatever the request said.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data was read earlier in this turn; "
+                                f"this would contact the web ({_web_detail(args)}). "
+                                "Confirm the exact destination or query.")
             if problem := private_web_problem(tool):
-                from service.safety.policy import Decision
                 return Decision(Tier.DENY, problem)
         dec = decide(tool.category, args, tool=tool.name)
         if model_led_discovery and dec.tier is Tier.ALLOW:
@@ -1418,8 +1452,14 @@ async def run_agent(
         # Recheck after any approval/await or registry mutation, before claims.
         if private_shell_read_only:
             from service.tools.registry import private_shell_problem
-            if problem := private_shell_problem(tool, args) or private_web_problem(tool):
+            if problem := private_shell_problem(tool, args):
                 return f"(error: {problem} The tool was NOT run.)"
+        if model_led_discovery:
+            if problem := private_web_problem(tool):
+                return f"(error: {problem} The tool was NOT run.)"
+            if in_turn_private_web(tool) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data was read earlier in this turn; web access now "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
         claim = None
         if model_led_discovery:
             from service.router.model_led import effectful_call, has_effect_contract
@@ -1582,6 +1622,11 @@ async def run_agent(
 
     if model_led_discovery and memory_hint:
         private_shell_read_only = True
+
+    # Web egress treats only real private content as a turn-start signal:
+    # history, or remembered facts. The identity block does not count.
+    if model_led_discovery:
+        private_at_start = bool(history_private or memory_hint)
 
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
@@ -1788,7 +1833,7 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
-        nonlocal fresh_personal_evidence, private_shell_read_only
+        nonlocal fresh_personal_evidence, private_shell_read_only, private_read_in_turn
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         if model_led_discovery and str(result).startswith((
                 "(error: Action was attempted but", "(error: Action did not return a verified")):
@@ -1815,6 +1860,7 @@ async def run_agent(
                     or registered.category == "screen" or shell_read
                     or name in {"recall", "search_memory", "search_conversations"}):
                 private_shell_read_only = True
+                private_read_in_turn = True
             from service.router.model_led import needs_effect_owner
             from service.router.model_led import effectful_call
             if effectful_call(registered, args or {}) and outcome.effect == "read":
@@ -2060,6 +2106,7 @@ async def run_agent(
                     + (f"\n…and {len(_rows) - 60} more"
                        if len(_rows) > 60 else ""))
             if _note_decision(_name, await approver.confirm(_action)):
+                confirmed_private_web.add(_action_fingerprint(_name, _args))
                 _result = await execute_tool(_tool, _args)
                 audit("confirm_allow", tool=_name, args=_args)
             else:
@@ -3119,6 +3166,7 @@ async def run_agent(
                     else:
                         approved = _note_decision(name, await approver.confirm(action))
                     if approved:
+                        confirmed_private_web.add(_action_fingerprint(name, args))
                         # Whether the card actually SHOWED the outgoing text
                         # (confirm_preview populates `preview` for the outbound
                         # tools). Only then has a human read the exact words, and

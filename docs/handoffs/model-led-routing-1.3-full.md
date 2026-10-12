@@ -234,3 +234,30 @@ Two changes reach the default (routing-off) path and are intentional:
 - F4: `POST /sessions/{sid}/effects/resolve` (optional `{"effect_id": ...}`) lets
   the user mark running or uncertain model effects as checked. It lifts the
   session barrier only; the consumed claim stays, so nothing is re-run.
+
+## Audit-repair round 2
+
+- B1: the explicit-public-lookup exemption covers only private signals present at
+  turn start (history or remembered facts). Any private read made during the turn
+  latches `private_read_in_turn`; while it is set, `web_search`, `web_fetch` and
+  `http_request` require a confirmation card showing the URL or query (a policy
+  DENY is kept as DENY). The `execute_tool` recheck blocks an unconfirmed call, so
+  sibling calls cannot slip past. Turn-start private content with no explicit
+  public lookup is still denied.
+- N1: the turn-start web signal no longer includes the identity block or the mere
+  availability of the messages tools. A URL the user typed is an explicit public
+  lookup. (Shell restrictions keep their existing conservative signal.)
+- N3: `POST /sessions/{sid}/effects/resolve` now requires `Content-Type:
+  application/json` and a body of `{"effect_id": "<id>"}` or `{"all": true}`; a
+  bodiless or form-typed request is rejected (415/422), so a cross-site simple
+  request cannot lift the barrier.
+- N4: the unresolved-action scan skips non-model-led rows without parsing their
+  `state_json` when `model_effects_only` is set.
+
+### Known follow-up (N2, not fixed here)
+
+Legacy (non-`model_led_effect`) failed plans that still hold a consumed claim block
+new model-led effect tools (`claim_model_effect`) for the session indefinitely, and
+`effects/resolve` only lifts `model_led_effect` rows. Extending resolve to those
+legacy rows needs a decision on which legacy statuses are safe to mark terminal
+without re-running anything, so it is deferred. Workaround: start a new session.

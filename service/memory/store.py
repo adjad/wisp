@@ -615,14 +615,17 @@ class SessionStore:
         for row in rows:
             if row["id"] == exclude:
                 continue
-            state = json.loads(row["state_json"])
+            if row["kind"] != "model_led_effect" and model_effects_only:
+                # Legacy rows are skipped unparsed on the legacy claim paths.
+                continue
             if row["kind"] == "model_led_effect":
+                # Only model-led rows have state worth parsing; a malformed
+                # legacy state_json is never touched.
+                state = json.loads(row["state_json"])
                 if (self._db.execute("SELECT 1 FROM task_effect_claims WHERE plan_id=? LIMIT 1", (row["id"],)).fetchone() and
                         (tool is None or state.get("tool") == tool or
                          (outbound and state.get("outbound")))):
                     return dict(row)
-            elif model_effects_only:
-                continue
             elif self._db.execute(
                     "SELECT 1 FROM task_effect_claims WHERE plan_id=? LIMIT 1", (row["id"],)).fetchone():
                 return dict(row)

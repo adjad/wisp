@@ -30,7 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
@@ -2437,18 +2437,35 @@ async def delete_session(sid: str) -> dict[str, Any]:
 
 
 @app.post("/sessions/{sid}/effects/resolve")
-async def resolve_session_effects(sid: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def resolve_session_effects(sid: str, request: Request) -> dict[str, Any]:
     """The user confirms they checked the outcome of an unverified action.
 
     Lifts the session barrier left by an uncertain model-proposed effect. It
     never re-runs anything; the earlier claim stays consumed.
+
+    Requires an explicit JSON body, {"effect_id": "<id>"} or {"all": true},
+    with Content-Type: application/json. A bodiless or form-typed request is
+    rejected, so a cross-site "simple" request cannot lift the barrier (a JSON
+    content type forces a CORS preflight).
     """
+    media = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
     if not store.get_session(sid):
         raise HTTPException(status_code=404, detail="unknown session")
-    effect_id = (body or {}).get("effect_id")
-    if effect_id is not None and not isinstance(effect_id, str):
-        raise HTTPException(status_code=422, detail="effect_id must be a string")
-    return {"ok": True, "resolved": store.resolve_model_effects(sid, effect_id)}
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="body must be valid JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a JSON object")
+    effect_id, everything = body.get("effect_id"), body.get("all")
+    if isinstance(effect_id, str) and effect_id and everything is None:
+        return {"ok": True, "resolved": store.resolve_model_effects(sid, effect_id)}
+    if everything is True and effect_id is None:
+        return {"ok": True, "resolved": store.resolve_model_effects(sid)}
+    raise HTTPException(status_code=422,
+                        detail='body must be {"effect_id": "<id>"} or {"all": true}')
 
 
 # ---------------------------------------------------------------------------
