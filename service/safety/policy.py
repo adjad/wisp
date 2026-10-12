@@ -287,8 +287,10 @@ def _derived_path_operands(tool: str | None, args: dict):
         if not target.is_absolute():
             target = source / target
         target = target.resolve()
-        if source == target:
+        group_by = args.get("group_by", "")
+        if source == target and not group_by:
             return
+        from service.file_organization import group_for_filename
         pattern = args["pattern"]
         if "/" in pattern:
             glob = Path(pattern).expanduser()
@@ -297,8 +299,16 @@ def _derived_path_operands(tool: str | None, args: dict):
             pattern = glob.name
         for item in source.iterdir():
             if item.is_file() and fnmatch.fnmatch(item.name, pattern):
+                # Retain the conservative source floor even for a matched
+                # entry excluded from grouping or execution.
                 yield "source child", str(item)
-                yield "destination child", str(target / item.name)
+                group = group_for_filename(item.name, group_by)
+                if group is None:
+                    continue
+                # Preserve the existing floor for protected symlink sources,
+                # even though execution excludes them from the move plan.
+                if not item.is_symlink():
+                    yield "destination child", str(target / group / item.name) if group else str(target / item.name)
 
 
 def _load_yaml() -> dict:
@@ -549,6 +559,17 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     given ("always allow this") — see service/safety/grants.py. Optional so
     older call sites keep working; without it, only the category rules apply.
     """
+    # Remote-only builds: the read-only (founder demo) build denies everything
+    # outside its fixed allowlist; the full build (WISP_REMOTE_FULL) denies only
+    # tools that need on-Mac models/extensions and otherwise falls through to
+    # the ordinary rules below — floor, always-confirm sends, grants, modes —
+    # unchanged.
+    from service.inference.remote_policy import remote_only_profile, remote_tool_allowed, remote_full_mode
+    if remote_only_profile() is not None and not remote_tool_allowed(tool):
+        if remote_full_mode():
+            return Decision(Tier.DENY, "This tool needs on-Mac models or extensions, "
+                            "which this remote-inference build does not run")
+        return Decision(Tier.DENY, "This action is unavailable in the four-read remote-only demo")
     # The floor runs before everything, including full_access and grants.
     # `disable_safety_floor` only ever meant "let full_access mean literally
     # everything" — outside full_access these checks have always been
@@ -563,7 +584,8 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
             return Decision(Tier.DENY, "view-only mode: moving files is disabled")
         if not args.get("preview_token"):
             return Decision(Tier.DENY, "a matching file preview is required before moving")
-        return Decision(Tier.CONFIRM, "moves the exact previewed file set — always confirmed")
+        return Decision(Tier.CONFIRM, "attempts approved moves; exact bytes require stable sources; "
+                        "unknown results may include completed moves and must not be retried automatically")
 
     if (tool in {"send_email", "draft_email"}
             or (tool == "schedule_send" and args.get("channel") == "email")):

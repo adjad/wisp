@@ -958,6 +958,9 @@ def _agenda(now: float) -> dict:
     today_calendar = assistant_store.calendar_events_overlapping(day_start, day_end)
     items = _collapse_schedule_rows(
         today_calendar + assistant_store.upcoming(now=now, days=7))
+    from service.demo.founder import enabled, reminder_rows
+    if enabled():
+        items = [r for r in today_calendar if r.get("source") == "calendar"] + reminder_rows(now)
     today_items = []
     for item in items:
         when_ts = float(item["when_ts"])
@@ -1068,6 +1071,9 @@ def _schedule_section(now: float) -> str:
     elif any("reminders" in _kinds(item) for item in agenda["reminders"]):
         blocks.append("Apple Reminders deletion status is unverified; "
                       "Recently Deleted status cannot be confirmed here.")
+    from service.demo.founder import enabled, PROVENANCE
+    if enabled():
+        blocks.append(PROVENANCE)
     return "\n\n".join(blocks)
 
 
@@ -2044,6 +2050,12 @@ async def _sections(part_of_day: str, snapshot: dict | None = None) -> dict[str,
     model to render them. So anything thrown below degrades to that instead of to
     nothing, and the traceback goes to stderr for whoever is debugging.
     """
+    from service.inference.remote_policy import aria_demo_mode
+    if aria_demo_mode():
+        # The Aria demo's brief comes from its synthetic world and the demo's
+        # behavior nudges, never from native caches (service/demo/aria).
+        from service.demo.aria.proactive import summary_sections
+        return await asyncio.to_thread(summary_sections)
     # Restored caches are intentionally not enough for any Daily Summary
     # source. Ask the Swift app for current Calendar, Reminders, Mail, and
     # Messages reads, then name anything still in flight deterministically.

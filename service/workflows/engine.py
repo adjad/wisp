@@ -411,16 +411,27 @@ def finish_workflow(store, sid: str, plan: WorkflowPlan, captured: dict) -> str:
     denied = bool(captured.get("denied")) or "denied" in result_text or "not approved" in result_text
     from service.tools.registry import classify_tool_outcome
     expected = compile_decision(plan).tool_subset[-1]
-    verified = [classify_tool_outcome(item.get("name", ""),
-                str(item.get("result") or item.get("content") or ""))
-                for item in results if item.get("name") == expected]
+    def outcome(item: dict) -> str:
+        # A draft is only verified from its typed host-preparation receipt,
+        # which the executor checks in-process against the approved recipient
+        # and text. News deliveries then replace that receipt with display-safe
+        # text, so re-classifying the text here would always fail; trust the
+        # status the executor recorded for its own workflow call instead.
+        if (item.get("name") == "draft_message"
+                and str(item.get("id", "")).startswith(f"workflow_{plan.id}_")
+                and item.get("status") in {"succeeded", "failed", "denied"}):
+            return item["status"]
+        return classify_tool_outcome(item.get("name", ""),
+                                     str(item.get("result") or item.get("content") or "")).status
+
+    verified = [outcome(item) for item in results if item.get("name") == expected]
 
     terminal = WorkflowPlan.from_dict(plan.to_dict())
     if denied:
         terminal.status = "cancelled"
         event = "approval_denied"
     elif (not any(item.get("name") == expected for item in calls)
-          or not verified or verified[-1].status != "succeeded"):
+          or not verified or verified[-1] != "succeeded"):
         terminal.status = "failed"
         terminal.last_error = ("delivery outcome uncertain" if calls else
                                "delivery tool did not return a verified success")

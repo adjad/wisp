@@ -31,6 +31,20 @@ final class WispClient {
     private let deliverySession: URLSession
     private let deliveryURL: URL
 
+    struct AriaDemoResetResponse {
+        let counts: [String: Int]
+    }
+
+    enum AriaDemoResetError: LocalizedError {
+        case request(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .request(let detail): return detail
+            }
+        }
+    }
+
     init(deliverySession: URLSession = .shared, deliveryURL: URL = WispClient.baseURL) {
         self.deliverySession = deliverySession
         self.deliveryURL = deliveryURL
@@ -47,6 +61,37 @@ final class WispClient {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return object
+    }
+
+    func resetAriaDemoData() async throws -> AriaDemoResetResponse {
+        var request = URLRequest(url: deliveryURL.appendingPathComponent("demo/aria/reset"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("{}".utf8)
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await deliverySession.data(for: request)
+        } catch {
+            throw AriaDemoResetError.request("Couldn't reach the Wisp service. Try again in a moment.")
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw AriaDemoResetError.request("The Wisp service returned an invalid response.")
+        }
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        if http.statusCode == 409 {
+            let detail = object?["detail"] as? String
+                ?? "The backend is not running in Aria demo mode."
+            throw AriaDemoResetError.request(detail)
+        }
+        guard (200..<300).contains(http.statusCode),
+              object?["ok"] as? Bool == true,
+              let counts = object?["counts"] as? [String: Int] else {
+            throw AriaDemoResetError.request("The Wisp service couldn't reset Aria demo data.")
+        }
+        return AriaDemoResetResponse(counts: counts)
     }
 
     struct Event {
@@ -161,6 +206,31 @@ final class WispClient {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let c = obj["commitment"] as? [String: Any] else { return nil }
         return Commitment.parse(c)
+    }
+
+    // GET /demo/aria/topbar -> the Aria demo's collapsed-bar data: the next
+    // synthetic event and at most one proactive chip carrying the nudge's hub
+    // payload (so a tap can show the same card). nil outside the demo.
+    struct AriaTopBar: Equatable {
+        let nextTitle: String
+        let nextLabel: String
+        let chipLabel: String
+        let chipEvent: NSDictionary?
+    }
+
+    func ariaTopBar() async -> AriaTopBar? {
+        var request = URLRequest(url: Self.baseURL.appendingPathComponent("demo/aria/topbar"))
+        request.timeoutInterval = 5
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              obj["enabled"] as? Bool == true else { return nil }
+        let next = obj["next"] as? [String: Any]
+        let chip = obj["chip"] as? [String: Any]
+        return AriaTopBar(nextTitle: next?["title"] as? String ?? "",
+                          nextLabel: next?["label"] as? String ?? "",
+                          chipLabel: chip?["label"] as? String ?? "",
+                          chipEvent: (chip?["event"] as? [String: Any]).map { NSDictionary(dictionary: $0) })
     }
 
     // GET /assistant/upcoming -> next N days.
@@ -302,6 +372,85 @@ final class WispClient {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return period }
         return obj["period"] as? String ?? period
+    }
+
+    // --- behavior engine (service/behavior) ---------------------------------
+    // Learned routines, predictions and nudges. Nudges themselves arrive as
+    // `nudge` events on the assistant stream; these calls answer them.
+
+    /// Nudge/pattern ids are deterministic ASCII hashes; anything else is
+    /// refused rather than spliced into a URL path.
+    static func behaviorSafeID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.count <= 200 else { return false }
+        return id.unicodeScalars.allSatisfy { s in
+            (s.value >= 48 && s.value <= 57) || (s.value >= 65 && s.value <= 90)
+                || (s.value >= 97 && s.value <= 122) || "-_.:".unicodeScalars.contains(s)
+        }
+    }
+
+    private func behaviorRequest(_ method: String, _ path: String, body: [String: Any]? = nil,
+                                 timeout: TimeInterval = 15) async -> [String: Any]? {
+        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
+        req.httpMethod = method
+        req.timeoutInterval = timeout
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        guard let (data, response) = try? await URLSession.shared.data(for: req),
+              let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
+        else { return nil }
+        if data.isEmpty { return [:] }
+        return ((try? JSONSerialization.jsonObject(with: data)) as? [String: Any]) ?? [:]
+    }
+
+    // POST /behavior/nudges/{id}/feedback {"verdict": useful|not_now|wrong}
+    @discardableResult
+    func behaviorFeedback(nudgeID: String, verdict: String) async -> Bool {
+        guard Self.behaviorSafeID(nudgeID), ["useful", "not_now", "wrong"].contains(verdict),
+              let obj = await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/feedback",
+                                              body: ["verdict": verdict]) else { return false }
+        return obj["ok"] as? Bool ?? true
+    }
+
+    // POST /behavior/nudges/{id}/undo -> reverses the auto action(s) the
+    // backend already performed (reminder / tentative hold).
+    @discardableResult
+    func behaviorUndo(nudgeID: String) async -> Bool {
+        guard Self.behaviorSafeID(nudgeID),
+              let obj = await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/undo",
+                                              body: [:], timeout: 30) else { return false }
+        return obj["ok"] as? Bool ?? true
+    }
+
+    // POST /behavior/nudges/{id}/act {"action_index": n}. open_prompt ->
+    // {"ok", "prompt", "label"}: the prompt is only prefilled in the composer,
+    // nothing is sent. Offered add_reminder/add_hold -> {"ok", "created":
+    // {"title", "when_ts"}, "can_undo"} or {"ok": false, "detail"}.
+    func behaviorAct(nudgeID: String, actionIndex: Int) async -> [String: Any]? {
+        guard Self.behaviorSafeID(nudgeID), actionIndex >= 0 else { return nil }
+        return await behaviorRequest("POST", "behavior/nudges/\(nudgeID)/act",
+                                     body: ["action_index": actionIndex])
+    }
+
+    // GET /behavior/status | /behavior/patterns | /behavior/predict | /behavior/profile
+    func behaviorGet(_ endpoint: String) async -> [String: Any]? {
+        guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
+        return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    // POST /behavior/run -> mine + predict + generate nudges now.
+    func behaviorRun() async -> [String: Any]? {
+        await behaviorRequest("POST", "behavior/run", body: [:], timeout: 60)
+    }
+
+    // POST /behavior/patterns/{id} {"status": active|confirmed|rejected}
+    @discardableResult
+    func setBehaviorPatternStatus(_ patternID: String, status: String) async -> Bool {
+        guard Self.behaviorSafeID(patternID), ["active", "confirmed", "rejected"].contains(status),
+              let obj = await behaviorRequest("POST", "behavior/patterns/\(patternID)",
+                                              body: ["status": status]) else { return false }
+        return obj["ok"] as? Bool ?? true
     }
 
     // GET /assistant/events (SSE) -> reminders + `changed` pings.

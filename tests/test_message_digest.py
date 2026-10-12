@@ -1579,8 +1579,18 @@ def test_actionable_short_code_phrases_survive_every_summary_path(monkeypatch, b
 
     assert asyncio.run(messages.summarize_messages()) == (
         "important messages from the last three days (read or unread)")
-    assert asyncio.run(messages.summarize_messages(conversation="74643")) == (
-        "74643 — recent messages")
+    result = asyncio.run(messages.summarize_messages(conversation="74643"))
+    coverage, digest = result.split("\n\n", 1)
+    assert digest == "74643 — recent messages"
+    assert coverage.startswith(
+        "Summary input coverage: 1 cached messages matched this chat/date scope; "
+        "1 eligible after existing summary filters; 1 included in the digest input; "
+        "0 older eligible messages omitted by the count limit. "
+        "0 messages excluded by summary filters.\n")
+    assert "Native scan coverage is unknown for this legacy feed." in coverage
+    assert "Only the available bounded cache was searched" in coverage
+    assert "cache freshness and complete chat history are unverified" in coverage
+    assert "older or unsynced messages may be missing" in coverage
     assert [rows for rows, _label in captured] == [
         [(ts, "74643", text)],
         [(ts, "74643", text)],
@@ -1666,7 +1676,17 @@ def test_explicit_group_summary_keeps_read_routine_messages(monkeypatch):
 
     result = asyncio.run(M.summarize_messages(conversation="Weekend"))
 
-    assert result == 'Group "Weekend" — recent messages'
+    coverage, digest = result.split("\n\n", 1)
+    assert digest == 'Group "Weekend" — recent messages'
+    assert coverage.startswith(
+        "Summary input coverage: 2 cached messages matched this chat/date scope; "
+        "2 eligible after existing summary filters; 2 included in the digest input; "
+        "0 older eligible messages omitted by the count limit. "
+        "0 messages excluded by summary filters.\n")
+    assert "Native scan coverage is unknown for this legacy feed." in coverage
+    assert "Only the available bounded cache was searched" in coverage
+    assert "cache freshness and complete chat history are unverified" in coverage
+    assert "older or unsynced messages may be missing" in coverage
     assert [text for _ts, _context, text in captured] == [
         "Alex: The blue cooler is in the garage.",
         "Casey: I put the folding chairs beside it.",

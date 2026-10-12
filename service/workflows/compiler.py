@@ -53,6 +53,18 @@ _ADDRESSEE_CUE = re.compile(r"\bto\b|@|\bme\b|\bmyself\b", re.I)
 
 def outbound_verb(text: str) -> bool:
     """True when the text asks to deliver something, not merely names email."""
+    from service.workflows.workflow20 import personal_read
+    if personal_read(text) is not None:
+        return False
+    # Retrospective communication questions are reads. Consume the whole
+    # question so a subsequent independent delivery still reaches compilation.
+    if re.fullmatch(
+            r"\s*(?:what\s+(?:did|has|had)|did)\s+(?:my\s+)?"
+            r"[A-Za-z][A-Za-z'’-]*(?:\s+[A-Za-z][A-Za-z'’-]*){0,2}\s+"
+            r"(?:text(?:ed)?|e-?mail(?:ed)?|message[ds]?|send|sent|write|wrote|say|said|tell|told)"
+            r"(?:\s+(?:me|to\s+me|back|earlier|today|yesterday|last\s+night|this\s+morning|recently|lately))*"
+            r"[.!?\s]*", text, re.I):
+        return False
     masked = _EMAIL_NOUN_USE.sub(" ", text)
     if _LEADING_EMAIL_NOUN.match(masked) and not _ADDRESSEE_CUE.search(masked):
         masked = _LEADING_EMAIL_NOUN.sub(" ", masked, count=1)
@@ -142,7 +154,7 @@ def extract_channel(text: str) -> str:
         return "email"
     if _MESSAGES_CHANNEL.search(value):
         return "messages"
-    if (re.search(r"\bsend\b[^.?!]{0,50}\ban?\s+e-?mail\b", value, re.I)
+    if (re.search(r"\b(?:send|draft|compose|write)\b[^.?!]{0,50}\ban?\s+e-?mail\b", value, re.I)
             or re.search(r"\bto\s+my\s+(?:e-?mail|inbox)\b", value, re.I)
             or _EMAIL.search(value) or _EMAIL_CHANNEL.search(value)
             or _EMAIL_PROPER_NAME.search(value)):
@@ -224,7 +236,7 @@ def extract_recipient(text: str, channel: str = "") -> str:
         r"\b(?:send|draft|compose|write)\s+(?:an?\s+)?(?:i\s*message|message|text|e-?mail)"
         r"\s+to\s+(?:my\s+)?(?P<name>[A-Za-z][A-Za-z'\- ]{0,60}?)"
         r"(?=\s+(?:with|about|saying|that)\b|[,.!?]|$)",
-        r"\b(?:send|text|message|e-?mail)\s+(?:my\s+)?"
+        r"\b(?:send|text|message|e-?mail|draft|compose|write)\s+(?:my\s+)?"
         r"(?P<name>[A-Za-z][A-Za-z'\- ]{0,60}?)\s+(?:an?\s+)?"
         r"(?:i\s*message|message|text|e-?mail)\b",
         r"\be-?mail\s+(?:to\s+)?(?P<name>[A-Za-z][A-Za-z'\-]{0,30})"
@@ -947,8 +959,98 @@ def _reminder_source_args(text: str) -> dict | None:
     return merged
 
 
+_AVAILABILITY_PAYLOAD_RE = re.compile(
+    r"\b(?:my\s+)?(?:availability|free\s+(?:time|slots?|windows?|gaps?|openings?)|"
+    r"open\s+(?:time|slots?|windows?)|available\s+(?:time|slots?|windows?))\b",re.I)
+
+
+def _availability_source_args(text, date_range):
+    """Bind one complete, personally owned availability expression.
+
+    Delivery time is not a source period. Unsupported ownership, ranges,
+    durations, or other residual words deliberately produce an invalid period;
+    the checked availability tool refuses it before any delivery can happen.
+    """
+    cue = _AVAILABILITY_PAYLOAD_RE.search(text)
+    if not cue:
+        return None
+    invalid = {"_workflow_availability": True, "minutes": 5,
+               "period": "unsupported availability scope; ask for an exact day and time range"}
+    if len(list(_AVAILABILITY_PAYLOAD_RE.finditer(text))) != 1:
+        return invalid
+    periods = r"today|tomorrow|(?:this|next)\s+(?:week|month)"
+    prefix, tail = text[:cue.start()], text[cue.end():]
+    before = re.search(rf"(?P<period>{periods})(?:'s|’s)?\s*$", prefix, re.I)
+    if before:
+        prefix = prefix[:before.start()]
+    after = re.match(rf"\s*(?:for\s+)?(?P<period>{periods})\b", tail, re.I)
+    if before and after or not (before or after):
+        return invalid
+    selected = (after or before)["period"].casefold()
+    if after:
+        tail = tail[after.end():]
+    recipient = extract_recipient(text)
+    who = re.escape(recipient) if recipient else r"(?!)"
+    channel = r"(?:an?\s+)?(?:e-?mail|message|text|i\s*message)"
+    envelope = prefix + ' ' + tail
+    if (re.search(r'\be-?mail\b', envelope, re.I)
+            and re.search(r'\b(?:texts?|messages?|i\s*message)\b', envelope, re.I)):
+        return invalid
+    # Only the known delivery envelope may surround the source expression.
+    # In particular, Alice's availability is never the user's Calendar.
+    if not re.fullmatch(
+            rf"\s*(?:(?:please|can you|could you|would you)\s+)?"
+            rf"(?:schedule\s+)?(?:send|text|message|e-?mail|share|forward|draft|compose|write)\s+"
+            rf"(?:(?:{who})\s+)?(?:{channel}\s+)?"
+            rf"(?:to\s+(?:{who})\s+)?(?:(?:with|containing|about)\s+)?"
+            rf"(?:(?:a|the)\s+summary\s+of\s+)?", prefix, re.I):
+        return invalid
+    args = {"_workflow_availability": True, "period": selected, "minutes": 5}
+    part = re.match(r"\s*(morning\s+and\s+afternoon|morning|afternoon)\b", tail, re.I)
+    if part:
+        hours = {"morning": (9, 12), "afternoon": (12, 18),
+                 "morning and afternoon": (9, 18)}
+        start, end = hours[" ".join(part[1].casefold().split())]
+        args.update(day_start=start, day_end=end)
+        tail = tail[part.end():]
+    bound = re.match(r"\s*(after|before)\s+(\d{1,2})\s*(am|pm)\b", tail, re.I)
+    if bound:
+        hour = int(bound[2])
+        if not 1 <= hour <= 12 or part:
+            return invalid
+        hour = hour % 12 + (12 if bound[3].casefold() == "pm" else 0)
+        start, end = (hour, 24) if bound[1].casefold() == "after" else (0, hour)
+        if start >= end:
+            return invalid
+        args.update(day_start=start, day_end=end)
+        tail = tail[bound.end():]
+    dispatch = r"(?:(?:today|tomorrow|tonight)\s+)?at\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)"
+    envelope_match = re.fullmatch(
+            rf"\s*(?:to\s+(?:{who}))?\s*"
+            rf"(?:(?:via|through|using)\s+(?:e-?mail|messages?|texts?|i\s*message))?\s*"
+            rf"(?:(?:to\s+go\s+out|to\s+be\s+sent|for\s+delivery)\s+(?P<dispatch>{dispatch}))?"
+            rf"\s*[.!?]*\s*", tail, re.I)
+    if not envelope_match:
+        return invalid
+    if envelope_match['dispatch']:
+        args['_workflow_dispatch'] = envelope_match['dispatch']
+    return args
+
+
+def source_call(plan,source):
+    """One source selection contract shared by planning and both execution paths."""
+    args = dict(plan.source_args.get(source,{}))
+    availability = args.pop("_workflow_availability",False)
+    args.pop('_workflow_dispatch',None)
+    if source == "calendar" and availability is True:
+        return "find_free_time",args
+    return SOURCE_TO_TOOL[source],args
+
+
 def _source_args(source: str, text: str, date_range: str) -> dict:
     if source == "calendar":
+        if availability := _availability_source_args(text,date_range):
+            return availability
         if re.search(r"\bmove[ -]in\s+date\b", text, re.I):
             return {"days": 60, "calendar_only": True, "query": "move in"}
         if re.search(r"\bthis\s+week\s+and\s+next\s+week\b", text, re.I):
@@ -1006,6 +1108,43 @@ def _delivery_scope_text(text: str) -> str:
 def _unquoted_scope_text(text: str) -> str:
     """Literal bodies are opaque to source selection, including apostrophes."""
     return _QUOTED_SPAN.sub(' ', text)
+
+
+def _file_directed_write(text: str) -> bool:
+    """Keep file authorship out of summary delivery, preserving full scope.
+
+    Literal message bodies are opaque. A concrete path is meaningful here
+    only as the destination of a leading write/save/draft command; a path in
+    an email's subject/body must not change its recipient or channel.
+    """
+    plain = _unquoted_scope_text(text)
+    command = (r"^\s*(?:(?:please|can\s+you|could\s+you|would\s+you|will\s+you)\s+)*"
+               r"(?:(?:do\s+not|don['’]?t|never)\s+)?(?:write|append|save|create|draft|put)\b")
+    if not re.search(command, plain, re.I):
+        return False
+    if re.search(command + r"\s+(?:(?:a|an|the|this|new)\s+)?"
+                 r"(?:(?:text|markdown|json|csv|log|python|swift|html)\s+)?file\b", plain, re.I):
+        return True
+    if re.search(command + r"\s+(?:(?:a|an)\s+)?(?:text|message|e-?mail)\s+(?:to|for)\b", plain, re.I):
+        return False
+    if re.search(command + r"\s+(?!the\b|an?\b|this\b|text\b)[\w.'’-]+(?:\s+[\w.'’-]+){0,2}\s+(?:an?\s+)?(?:message|text|e-?mail)\b", plain, re.I):
+        return False
+    destination = r"\b(?:to|into|in|at|as)\s+(?:(?:a|an|the|new)\s+)?(?:file\s+)?"
+    path = r"(?:/[^\s,;!?]+|~/(?:[^\s,;!?]+)?|\.{1,2}/[^\s,;!?]+|[\w-]+(?:\.[\w-]+)+)"
+    if re.search(destination + path + r"(?=\s|$|[,;!?])", plain, re.I):
+        return True
+    if re.search(r"\b(?:to|into|in|as)\s+(?:(?:a|an|the|new)\s+)?file\b", plain, re.I):
+        return True
+    for quoted in _QUOTED_SPAN.finditer(text):
+        # A quoted destination may contain spaces; a quoted body remains
+        # opaque unless the surrounding command directly names it as a path.
+        before = _unquoted_scope_text(text[:quoted.start()])
+        if re.search(destination + r"$", before, re.I):
+            value = quoted.group(0)[1:-1]
+            if (value.startswith(("/", "~/", "./", "../")) or
+                    re.fullmatch(r"[\w -]+(?:\.[\w-]+)+", value)):
+                return True
+    return False
 
 
 def _message_scope_text(text: str) -> str:
@@ -2213,6 +2352,8 @@ def extract_sources(text: str) -> list[str]:
     if re.search(r"\b(?:cal[ae]ndar|agenda|meetings?|events?|appointments?|move[ -]in\s+date|"
                  r"my\s+schedule|schedule\s+(?:summary|report|digest|recap))\b", text, re.I):
         sources.append("calendar")
+    if _AVAILABILITY_PAYLOAD_RE.search(text) and "calendar" not in sources:
+        sources.append("calendar")
     # Remove explicit destination phrases before looking for an inbox source;
     # "send a news report to my email" names email as the channel, not data to
     # summarize.
@@ -2378,6 +2519,10 @@ def explicit_delivery(text: str) -> str:
 
 
 def extract_delivery_time(text: str) -> str:
+    if _AVAILABILITY_PAYLOAD_RE.search(text):
+        # Source dayparts are never dispatch times. Only the explicit dispatch
+        # span consumed by the availability grammar can authorize scheduling.
+        return (_availability_source_args(text, '') or {}).get('_workflow_dispatch', '')
     match = _WHEN.search(text)
     return match.group(0) if match else ""
 
@@ -2449,6 +2594,8 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
         raise ValueError("Prior display must come from the server store")
     original = text
     if deliberate(text) is not None:
+        return None
+    if _file_directed_write(text):
         return None
     text = _delivery_scope_text(_normalize(_message_scope_text(text)))
     text = _bind_inline_read_then_deliver(text)
@@ -2605,6 +2752,10 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
                      source_ranges.get(source, "")))
         for source in sources
     }
+    if any(isinstance(value,dict) and value.get('_workflow_availability') is True
+           and value.get('period','').startswith('unsupported availability scope')
+           for value in args.values()):
+        content_error = CONTENT_QUESTION
     if "calendar" in constraint_scopes and "calendar" in args:
         if set(args["calendar"]) - {"days", "period"}:
             content_error = CONTENT_QUESTION
@@ -2648,7 +2799,9 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
     channel = extract_channel(text)
     delivery_text = _mask_message_conversation_binding(text)
     delivery = ("draft" if _DRAFT.search(delivery_text)
-                else ("scheduled" if _SCHEDULE.search(delivery_text) else "send"))
+                else ("scheduled" if (_SCHEDULE.search(delivery_text)
+                      or any(isinstance(value,dict) and value.get('_workflow_dispatch')
+                             for value in args.values())) else "send"))
     # Immediate self-delivery uses the reviewable draft path, matching the
     # existing outbound safety rule. Explicit future sends still use the
     # scheduled queue and its confirmation.
@@ -2682,7 +2835,7 @@ def compile_new(text: str, *, last_user: str = "", last_assistant: str = "",
 def compile_decision(plan: WorkflowPlan) -> RouteDecision:
     if plan.content_error or plan.news_clarification_provenance:
         raise ValueError("Outbound content must be clarified before compiling an effect")
-    source_tools = [SOURCE_TO_TOOL[source] for source in plan.sources]
+    source_tools = [source_call(plan,source)[0] for source in plan.sources]
     named_recipient = plan.recipient not in {"", "me"} and not (
         _EMAIL.fullmatch(plan.recipient) or _PHONE.fullmatch(plan.recipient))
     contact_tools = ["lookup_contact"] if named_recipient else []
@@ -2693,8 +2846,7 @@ def compile_decision(plan: WorkflowPlan) -> RouteDecision:
     else:
         effect = "send_message" if plan.channel == "messages" else "send_email"
 
-    direct_calls = [(SOURCE_TO_TOOL[source], plan.source_args.get(source, {}))
-                    for source in plan.sources]
+    direct_calls = [source_call(plan,source) for source in plan.sources]
     if named_recipient:
         direct_calls.append(("lookup_contact", {"name": plan.recipient}))
     offered = list(dict.fromkeys(source_tools + contact_tools + [effect]))
@@ -2705,8 +2857,7 @@ def compile_decision(plan: WorkflowPlan) -> RouteDecision:
     # be retried, but the model cannot silently narrow four requested symbols
     # to the one that happened to succeed or widen a date range on retry.
     bindings: dict[str, dict] = {
-        SOURCE_TO_TOOL[source]: dict(plan.source_args.get(source, {}))
-        for source in plan.sources
+        name: args for name,args in (source_call(plan,source) for source in plan.sources)
     }
     bindings[effect] = {"to": plan.recipient}
     if plan.artifact_text:

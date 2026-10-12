@@ -211,14 +211,37 @@ def test_recency_questions_route_to_it() -> None:
 
 
 def test_todo_questions_are_not_stolen() -> None:
-    print("\n…but to-do/planning questions keep the aggregate route")
-    # These look similar and mean the opposite: outstanding vs changed.
-    for prompt in ("what do I need to do", "help me plan my day",
-                   "anything i need to do", "what's on my todo list"):
+    print("\n…but outstanding-work questions keep priority or aggregate source coverage")
+    from service.tools.registry import REGISTRY
+    # Priorities explicitly include overdue and undated work in addition to the
+    # requested window. These route checks do not qualify evidence or ranking.
+    for prompt, period in [('what do I need to do','today'),
+                           ('What should I work on now?','today'),
+                           ('What should I work on tomorrow?','tomorrow'),
+                           ('What do I need to do this week?','this week')]:
         d = dec(prompt)
-        check(f"{prompt!r} stays on the 4-source aggregate",
-              d.force_first_tool != "get_recent_activity"
-              and set(d.tool_subset or []) >= set(R._ALL_SOURCES), f"-> {d.reason}")
+        expected = {'collect_task_evidence'}
+        args = {'period':period, 'include_overdue':True, 'include_undated':True,
+                **{f'include_{source}':True for source in ('calendar','reminders','email','messages','notes')}}
+        check(f'{prompt!r} offers exactly the dedicated priority collector',
+              set(d.tool_subset or []) == expected and len(d.tool_subset) == 1)
+        check(f'{prompt!r} preserves period and overdue/undated work',
+              d.tool_argument_bindings == {'collect_task_evidence':args})
+        check(f'{prompt!r} needs the source collector before narration',
+              d.required_tool_groups == (frozenset(expected),)
+              and d.multi_round and d.expect_tool_first and set(d.narration_after) == expected)
+        check(f'{prompt!r} does not execute recency or effects',
+              d.direct_calls == [('collect_task_evidence',args)]
+              and d.force_first_tool is None
+              and REGISTRY['collect_task_evidence'].category == 'assistant_read'
+              and d.resolved_request.startswith(prompt))
+    # Other existing planning forms keep aggregate source coverage.
+    required = {'get_upcoming','search_reminders','summarize_messages','summarize_emails','search_notes'}
+    for prompt in ('help me plan my day','anything i need to do',"what's on my todo list"):
+        d = dec(prompt)
+        check(f'{prompt!r} stays on aggregate source coverage',
+              d.force_first_tool != 'get_recent_activity'
+              and set(d.tool_subset or []) >= required, f'-> {d.reason}')
 
 
 def test_named_channel_is_not_widened() -> None:

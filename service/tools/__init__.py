@@ -12,6 +12,7 @@ import service.tools.recent_tools  # noqa: F401  (registers the cross-source rec
 import service.tools.browser_history_tools  # noqa: F401  (registers the browser history search tool)
 import service.tools.web_tools  # noqa: F401    (registers the web_fetch tool)
 import service.tools.memory_tools  # noqa: F401   (registers remember/recall/forget)
+import service.tools.knowledge_tools  # noqa: F401  (explicit saved snapshots/style/followup evidence)
 import service.tools.action_tools  # noqa: F401   (registers send_email/send_message/http_request)
 import service.tools.tool_authoring  # noqa: F401 (registers draft_tool/create_tool)
 # --- Capability Atlas, Phase 1 (T1) ---
@@ -24,6 +25,8 @@ import service.tools.system_extras  # noqa: F401   (display, capture, toggles, s
 import service.tools.window_tools  # noqa: F401    (windows, app switching, reveal)
 import service.tools.maps_travel  # noqa: F401     (places, drive time, directions)
 import service.tools.everyday  # noqa: F401        (daily_brief, find_my_device)
+import service.tools.task_evidence  # noqa: F401   (bounded priority evidence)
+import service.tools.grocery_lists  # noqa: F401   (separate shopping source evidence)
 import service.tools.schedule_extras  # noqa: F401 (complete_reminder, find_free_time)
 import service.tools.misc_t1  # noqa: F401         (alerts, definitions, calls, status)
 import service.tools.search_coverage  # noqa: F401 (deterministic "how far back" answers)
@@ -44,6 +47,7 @@ import service.tools.automation_tools  # noqa: F401 (raw AppleScript, schedule_t
 # notes_write.py, misc_t1.py, local_log.py, maps_travel.py extended in place
 import service.tools.doc_tools  # noqa: F401         (real .docx/.xlsx via python-docx/openpyxl)
 import service.tools.codex_tools  # noqa: F401       (local Codex task overview)
+import service.tools.behavior_tools  # noqa: F401    (learned routines: describe/predict/correct)
 
 __all__ = ["Tool", "ToolOutcome", "REGISTRY", "tool_schemas", "get_tool",
            "is_tool_error", "classify_tool_outcome", "is_tool_routable",

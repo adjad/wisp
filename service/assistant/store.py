@@ -22,7 +22,7 @@ import uuid
 from pathlib import Path
 
 from service.assistant.recovery import recovery_guidance
-from service.paths import MOE_DIR
+from service.paths import STATE_DIR
 
 # Most undated reminders one native snapshot may carry. The app sends at most this many
 # plus the TRUE total, so the backend can tell a complete list from a truncated one.
@@ -79,7 +79,7 @@ def parse_undated_snapshot(raw, total) -> UndatedSnapshot | None:
     return UndatedSnapshot(kept, max(total, len(rows)),
                            total > len(raw) or len(rows) > UNDATED_MAX)
 
-DB_PATH = MOE_DIR / "assistant.db"
+DB_PATH = STATE_DIR / "assistant.db"
 
 # scripts/wisp_testdata.py seeds fake commitments ("Dentist Follow-up",
 # "Team Standup", "Take the laundry out"…) into this same live DB under this
@@ -536,12 +536,14 @@ class AssistantStore:
             sources = {r["source"]: json.loads(r["payload"]) for r in
                        self._db.execute("SELECT source,payload FROM today_source_sync")}
             # Do not use display dedupe: separate events can share a title/start.
+            # Rows with an unknown end stay in (even all-day ones that started
+            # earlier) so the planner sees them and refuses to call that time free.
             commitments = [dict(r) for r in self._db.execute(
                 "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE status='active' AND when_ts < ? AND "
-                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
+                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR end_ts IS NULL)) "
                 "OR (source IN ('reminders','manual') AND when_ts >= ?))",
-                (hi, lo, lo, lo, lo))]
+                (hi, lo, lo, lo))]
         fixed = [c for c in commitments if c["source"] == "calendar" or
                  (c["source"] == "manual" and c["kind"] in {"event", "meeting"})]
         deadlines = [c for c in commitments if c not in fixed]
@@ -822,6 +824,16 @@ class AssistantStore:
         return ids
 
     def _invalidate_reminders(self) -> None:
+        if os.environ.get("WISP_QA_SEED") != "1":
+            self._db.execute(
+                "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
+                "AND state='pending' AND dedupe_key LIKE 'attention:demo:%'")
+        # Catch notices are useful only before the plan starts. Other durable
+        # event kinds retain their existing expiry/delivery semantics.
+        self._db.execute(
+            "UPDATE assistant_events SET state='superseded' WHERE kind='reminder' "
+            "AND state='pending' AND dedupe_key LIKE 'attention:%' "
+            "AND expires_at IS NOT NULL AND expires_at <= ?", (time.time(),))
         for row in self._db.execute("SELECT id,target,payload FROM assistant_events WHERE kind='reminder' AND state='pending'").fetchall():
             target = json.loads(row["target"])
             if target.get("type") == "reminder" and not self._reminder_targets(target, json.loads(row["payload"])):
@@ -1404,6 +1416,38 @@ class AssistantStore:
         with self._lock:
             return self.undated_view(), self.undated_reminders(query)
 
+    def raw_reminder_list_snapshot(self, *, list_label: str = "", query: str = "",
+                                   limit: int = 500) -> dict:
+        """Native incomplete rows and receipts in one read transaction, without collapse.
+
+        Context is only a list label: this carrier supplies no stable list or
+        account identity. Distinct native IDs with equal titles remain distinct.
+        """
+        if (not isinstance(list_label, str) or not isinstance(query, str)
+                or type(limit) is not int or not 1 <= limit <= 500):
+            raise ValueError("invalid Reminder list filters or bounds")
+        with self.transaction(write=False) as db:
+            receipt_row = db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+            receipt = json.loads(receipt_row["payload"]) if receipt_row else {}
+            dated_total = db.execute("SELECT COUNT(*) FROM commitments WHERE source='reminders' AND status='active'").fetchone()[0]
+            dated = [dict(row) for row in db.execute(
+                "SELECT id,source_id,title,context,when_ts,status FROM commitments "
+                "WHERE source='reminders' AND status='active' ORDER BY when_ts,source_id LIMIT 5000").fetchall()]
+            undated = self.undated_reminders()
+            view = self.undated_view()
+        label, needle = list_label.strip().casefold(), query.strip().casefold()
+        def matches(row):
+            return ((not label or str(row.get("context") or "").strip().casefold() == label)
+                    and (not needle or needle in row["title"].casefold()))
+        rows = [{**row, "due_state": "dated"} for row in dated if matches(row)]
+        rows += [{**row, "due_state": "undated", "when_ts": None, "status": "active"}
+                 for row in undated if matches(row)]
+        return {"receipt": receipt, "undated_view": view, "dated_cached": dated_total,
+                "dated_inspected": len(dated), "scan_omitted": dated_total - len(dated),
+                "undated_cached": len(undated), "matching": len(rows), "shown": min(limit, len(rows)),
+                "omitted": max(0, len(rows) - limit), "records": rows[:limit],
+                "list_label": list_label, "stable_list_id": None, "account_id": None}
+
     def undated_view(self) -> dict:
         """How trustworthy the stored undated list is, read as one coherent unit.
 
@@ -1433,7 +1477,7 @@ class AssistantStore:
                 "total": state["total"], "stored": state["stored"]}
 
     def add_manual(self, title: str, when_ts: float, kind: str = "reminder",
-                   context: str | None = None) -> dict:
+                   context: str | None = None, *, source: str = MANUAL_SOURCE) -> dict:
         cid = uuid.uuid4().hex
         now = time.time()
         with self._lock:
@@ -1441,7 +1485,7 @@ class AssistantStore:
                 "INSERT INTO commitments (id, source, source_id, kind, title, context, "
                 "when_ts, status, confidence, created_at, updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (cid, "manual", cid, kind, title, context, when_ts, "active", 1.0, now, now))
+                (cid, source, cid, kind, title, context, when_ts, "active", 1.0, now, now))
             self._db.commit()
         return self.get(cid)
 

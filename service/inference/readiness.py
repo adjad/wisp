@@ -210,6 +210,8 @@ class TurnInferenceClient:
             target = role_target("fast")
             if not target.endpoint.managed:
                 raise ModelLoadError("Reflex fallback must be local")
+            from service.inference.remote_policy import require_local_models_disabled
+            require_local_models_disabled("Local inference fallback")
             self._fallback_client = OMLXClient(target=target)
             self._fallback_model = target.model
             if self._emit:

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "synthetic": true,
+  "provenance": "Additional fictional contacts; extends the 14 in founder-demo.json (c01..c14).",
+  "contacts": [
+    {
+      "id": "c15",
+      "given_name": "Marisol",
+      "family_name": "Solano",
+      "role": "Mom",
+      "organization": "",
+      "email": "marisol.solano@example.org",
+      "phone": "+1-202-555-0114",
+      "relationship": "family",
+      "context": "Aria's mother. Calls on Sunday evenings around 6pm; checks that Aria is eating real meals. Her husband (Aria's dad) turns 65 on Oct 25 and the family is planning a dinner."
+    },
+    {
+      "id": "c16",
+      "given_name": "Maya",
+      "family_name": "Brandt",
+      "role": "Friend",
+      "organization": "",
+      "email": "maya.brandt@example.org",
+      "phone": "+1-202-555-0115",
+      "relationship": "friend",
+      "context": "Aria's closest friend from college. Gets married in Santa Barbara on Nov 14; Aria is a bridesmaid. Often meets Aria at the Saturday farmers market."
+    },
+    {
+      "id": "c17",
+      "given_name": "Ingrid",
+      "family_name": "Lund",
+      "role": "Board Chair",
+      "organization": "Cedarloop",
+      "email": "ingrid.lund@example.com",
+      "phone": "+1-202-555-0116",
+      "relationship": "board",
+      "context": "Early angel investor and chair of the three-person board. Next board meeting Thursday Oct 22; wants the scorecard deck by Friday Oct 16. Prefers numbers first, narrative second."
+    },
+    {
+      "id": "c18",
+      "given_name": "Hana",
+      "family_name": "Weiss",
+      "role": "Partner",
+      "organization": "Larkspur Legal",
+      "email": "hana.weiss@larkspur-legal.example",
+      "phone": "+1-202-555-0117",
+      "relationship": "advisor",
+      "context": "Cedarloop's outside counsel. Reviewing the seed-extension document template. Insists no document describes nonbinding interest as committed funding."
+    },
+    {
+      "id": "c19",
+      "given_name": "Pilar",
+      "family_name": "Nunez",
+      "role": "Senior Recruiter",
+      "organization": "Alder Search",
+      "email": "pilar.nunez@alder-search.example",
+      "phone": "+1-202-555-0118",
+      "relationship": "vendor",
+      "context": "Recruiter who sourced Jonah West. Pushing for a decision this week; Cedarloop has not approved any offer."
+    }
+  ]
+}

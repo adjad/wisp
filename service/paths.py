@@ -23,3 +23,27 @@ def moe_dir() -> Path:
 
 
 MOE_DIR = moe_dir()
+
+
+# The Aria demo (WISP_ARIA_DEMO=1, Intel v5) and the founder demo
+# (WISP_FOUNDER_DEMO=1) answer from fictional data and learn a synthetic
+# persona. The v5 app switches between real mode and the demo at runtime on
+# the same WISP_HOME, so everything those modes keep — conversations,
+# remembered facts, commitments and assistant events, scheduled sends,
+# standing grants, the brief ledger, behavior learning, the synced-content
+# caches and the Aria demo's synthetic world — lives in its own subdirectory
+# while a demo runs. Only the config overlay and identity stay shared.
+# Resolved once at import, like MOE_DIR.
+DEMO_STATE_SUBDIR = "aria-demo"
+
+
+def state_dir() -> Path:
+    base = moe_dir()
+    if os.environ.get("WISP_ARIA_DEMO") == "1" or os.environ.get("WISP_FOUNDER_DEMO") == "1":
+        return base / DEMO_STATE_SUBDIR
+    return base
+
+
+STATE_DIR = state_dir()
+if STATE_DIR != MOE_DIR:
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)

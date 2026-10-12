@@ -81,7 +81,7 @@ import calendar
 import re
 from datetime import datetime, timedelta
 
-from service.tasks.temporal import DAYPART_HOURS
+from service.tasks.temporal import DAYPART_HOURS, unambiguous_local_time
 
 # Spelled-out counts up to a dozen — "three weeks ago" is at least as common
 # in real speech as "3 weeks ago", and the model is asked to pass the user's
@@ -159,7 +159,7 @@ def resolve_period(period: str, *, now: datetime | None = None
     `now` is injectable so the tests don't depend on today's date.
     """
     now = now or datetime.now()
-    today = datetime(now.year, now.month, now.day)
+    today = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     p = " ".join((period or "").strip().lower().split())
     if not p:
         raise BadPeriod("(period was empty)")
@@ -366,7 +366,7 @@ def _resolve_clock(hour: int, minute: int, ampm: str | None,
     occurrence — the same "next occurrence" convention voice assistants use
     for a bare clock time — rather than guessing a meridiem.
     """
-    today = datetime(now.year, now.month, now.day)
+    today = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     if hour >= 13 or hour == 0:
         if ampm:
             raise BadWhen(f"({hour} isn't a 12-hour clock hour, so am/pm "
@@ -390,7 +390,7 @@ def _resolve_clock(hour: int, minute: int, ampm: str | None,
 def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
     """A day word (today/tonight/tomorrow/a weekday), optionally with a
     time-of-day word or an explicit clock time attached."""
-    today = datetime(now.year, now.month, now.day)
+    today = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     day, modifier = m.group("day"), m.group("modifier")
     timeword, clock = m.group("timeword"), m.group("clock")
 
@@ -443,6 +443,12 @@ def _resolve_day_clock(m: re.Match, now: datetime) -> datetime:
     return dt
 
 
+def _checked_wall_time(value: datetime) -> datetime:
+    if not unambiguous_local_time(value):
+        raise BadWhen("(ambiguous or nonexistent local clock time; choose another time or provide an explicit UTC offset)")
+    return value
+
+
 def resolve_when(when: str, *, now: datetime | None = None
                  ) -> tuple[datetime, str]:
     """(absolute_datetime, human_label) for a spoken delivery-time phrase.
@@ -456,18 +462,21 @@ def resolve_when(when: str, *, now: datetime | None = None
     if (minutes := _parse_duration_minutes(p)) is not None:
         if minutes <= 0:
             raise BadWhen(f"(couldn't understand the duration in {when!r})")
-        dt = now + timedelta(minutes=minutes)
+        # Durations name elapsed time, including through a clock transition.
+        dt = datetime.fromtimestamp(now.timestamp() + minutes * 60, tz=now.tzinfo)
+        if dt.tzinfo is None and not unambiguous_local_time(dt):
+            dt = dt.astimezone()  # retain the selected fold when serialized
         return dt, _describe_duration(minutes)
 
     if (m := _DAY_CLOCK_RE.match(p)):
-        dt = _resolve_day_clock(m, now)
+        dt = _checked_wall_time(_resolve_day_clock(m, now))
         return dt, dt.strftime("%A %b %-d at %-I:%M %p")
 
     if (m := _CLOCK_RE.match(p)):
         hour, minute = int(m.group("hour")), int(m.group("minute") or 0)
         if hour > 23 or minute > 59:
             raise BadWhen(f"(couldn't understand the time {when!r})")
-        dt = _resolve_clock(hour, minute, m.group("ampm"), now)
+        dt = _checked_wall_time(_resolve_clock(hour, minute, m.group("ampm"), now))
         return dt, dt.strftime("%a %b %-d at %-I:%M %p")
 
     try:
@@ -478,6 +487,8 @@ def resolve_when(when: str, *, now: datetime | None = None
             "user did — 'in 10 minutes', 'in 2 hours', 'at 6pm', 'tonight', "
             "'tomorrow morning', 'monday at 9am' — do NOT compute an exact "
             "date/time yourself.)") from None
+    if dt.tzinfo is None:
+        dt = _checked_wall_time(dt)
     return dt, dt.strftime("%a %b %-d at %-I:%M %p")
 
 

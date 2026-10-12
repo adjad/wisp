@@ -39,8 +39,13 @@ only the first account.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
+import hashlib
 import re
+import threading
 import time
+from types import MappingProxyType
+from typing import Mapping
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from functools import wraps
@@ -108,6 +113,11 @@ _raw_emails_at: float = 0.0
 # Reference resolution requires a live, successful scan, unlike display-only
 # caches restored from disk. Empty-but-successful is distinct from cold.
 _raw_reference_scan: dict = {}
+# Reference consumers must read this single publication, never independently
+# combine the compatibility body globals with coverage from another refresh.
+_raw_snapshot_lock = threading.RLock()
+_raw_snapshot_generation = 0
+_raw_mail_snapshot: RawEmailSnapshot | None = None
 # Raw bodies carry real PII (addresses, order numbers, party plans) — purge
 # after a week rather than let it sit in process memory indefinitely.
 # MailReader.swift re-syncs raw content every 15 minutes, so in practice this
@@ -351,19 +361,106 @@ def sender_stats() -> dict[str, dict]:
 _RAW_TTL_SECONDS = 7 * 24 * 3600
 
 
+@dataclass(frozen=True)
+class RawEmailSnapshot:
+    """One live body/identity/coverage generation; all nested values immutable.
+
+    This contains mailbox evidence, not authenticated RFC unsubscribe headers
+    or historical open events. Use raw_email_snapshot(), which fails closed,
+    rather than accessing the internal publication directly.
+    """
+    generation: int
+    synced_at: float
+    rows: tuple[Mapping[str, object], ...]
+    accounts: tuple[str, ...]
+    failed_accounts: tuple[str, ...]
+    complete: bool
+    decode_complete: bool
+    identity_complete: bool
+    failure_reason: str
+    raw_digest: str
+
+
+def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> RawEmailSnapshot:
+    rows = _parse_raw_text(raw)
+    record_count = sum(bool(record.strip()) for record in raw.split(_RAW_RS))
+    scan = coverage if isinstance(coverage, dict) else {}
+    accounts_value, failures_value = scan.get("accounts"), scan.get("failed_accounts")
+    valid_accounts = (isinstance(accounts_value, (list, tuple))
+                      and all(isinstance(value, str) and value.strip() for value in accounts_value))
+    valid_failures = (isinstance(failures_value, (list, tuple))
+                      and all(isinstance(value, str) and value.strip() for value in failures_value))
+    accounts = tuple(accounts_value) if valid_accounts else ()
+    failures = tuple(failures_value) if valid_failures else ()
+    decode_complete = record_count == len(rows) and scan.get("decode_complete", True) is True
+    identities, labels = {}, {}
+    identity_complete = valid_accounts and valid_failures
+    for row in rows:
+        account_id, message_id = row["account_id"], row["message_id"]
+        if not account_id or not message_id or row["account"] not in accounts:
+            identity_complete = False
+        key = (account_id, message_id)
+        if key in identities and identities[key] != row:
+            identity_complete = False
+        if account_id in labels and labels[account_id] != row["account"]:
+            identity_complete = False
+        identities[key], labels[account_id] = row, row["account"]
+    # One display label naming several native accounts cannot demonstrate
+    # per-account coverage with today's label-only coverage envelope.
+    if len(set(labels.values())) != len(labels):
+        identity_complete = False
+    complete = (scan.get("complete") is True and valid_accounts and valid_failures
+                and not failures and decode_complete and identity_complete)
+    return RawEmailSnapshot(0, stamp, tuple(MappingProxyType(dict(row)) for row in rows),
+                            accounts, failures, complete, decode_complete, identity_complete,
+                            str(scan.get("failure_reason") or ""),
+                            hashlib.sha256(raw.encode("utf-8")).hexdigest())
+
+
+def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSnapshot | None:
+    """Read once for coherent provenance, or None for ineligible evidence.
+
+    Coverage describes the native recent body scan, not all mailbox history.
+    Restored/legacy globals alone never create a publication. Callers must use
+    this snapshot's rows and generation together, not reread _parse_raw() or
+    raw_reference_metadata(). Holding an older returned object cannot mutate it.
+    """
+    with _raw_snapshot_lock:
+        snapshot = _raw_mail_snapshot
+        if (snapshot is None or _email_available is not True or not snapshot.complete
+                or not 0 <= time.time() - snapshot.synced_at <= 20 * 60
+                or (expected_generation is not None and expected_generation != snapshot.generation)):
+            return None
+        return snapshot
+
+
 def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     global _raw_emails, _raw_emails_at, _raw_reference_scan
-    if coverage and coverage.get("failed_accounts") and not coverage.get("accounts"):
-        _raw_reference_scan = {**coverage, "synced_at": time.time(), "complete": False}
-        return  # failed scan is not evidence that old display data disappeared
-    _raw_emails = raw or ""
-    _raw_emails_at = time.time()
-    # A skipped record may be another match. A successful native scan cannot
-    # establish uniqueness when its wire representation was not fully decoded.
-    record_count = sum(bool(record.strip()) for record in _raw_emails.split(_RAW_RS))
-    _raw_reference_scan = {**(coverage or {}), "synced_at": _raw_emails_at,
-                           "decode_complete": record_count == len(_parse_raw())}
-    cache_store.save("email_raw", _raw_emails)
+    global _raw_mail_snapshot, _raw_snapshot_generation
+    raw = raw or ""
+    stamp = time.time()
+    scan = dict(coverage or {})
+    for key in ("accounts", "failed_accounts"):
+        if isinstance(scan.get(key), (list, tuple)):
+            scan[key] = list(scan[key])  # Own the mutable caller envelope before parsing.
+    # Prepare from arguments only. A concurrent writer cannot change which
+    # bytes these account/message/coverage checks describe.
+    candidate = _raw_snapshot_candidate(raw, scan, stamp)
+    with _raw_snapshot_lock:
+        _raw_snapshot_generation += 1
+        snapshot = RawEmailSnapshot(_raw_snapshot_generation, candidate.synced_at,
+            candidate.rows, candidate.accounts, candidate.failed_accounts, candidate.complete,
+            candidate.decode_complete, candidate.identity_complete, candidate.failure_reason,
+            candidate.raw_digest)
+        if scan.get("failed_accounts") and not scan.get("accounts"):
+            _raw_reference_scan = {**scan, "synced_at": stamp, "complete": False}
+            _raw_mail_snapshot = snapshot
+            return  # Preserve old display bytes, never their complete provenance.
+        _raw_emails, _raw_emails_at = raw, stamp
+        _raw_reference_scan = {**scan, "synced_at": stamp,
+                               "decode_complete": candidate.decode_complete}
+        _raw_mail_snapshot = snapshot  # Atomic body + identity + coverage publication.
+        cache_store.save("email_raw", raw)
 
 
 def raw_reference_metadata() -> dict:
@@ -396,13 +493,19 @@ def _purge_raw_if_expired() -> None:
     """Drop the raw cache once it's more than a week old (see _RAW_TTL_SECONDS).
     Checked lazily on read rather than via a background task: same effect, no
     extra scheduler needed."""
-    global _raw_emails, _raw_emails_at
-    if _raw_emails_at and (time.time() - _raw_emails_at) > _RAW_TTL_SECONDS:
-        _raw_emails = ""
-        _raw_emails_at = 0.0
+    global _raw_emails, _raw_emails_at, _raw_mail_snapshot
+    with _raw_snapshot_lock:
+        if _raw_emails_at and (time.time() - _raw_emails_at) > _RAW_TTL_SECONDS:
+            _raw_emails = ""
+            _raw_emails_at = 0.0
+            _raw_mail_snapshot = None
 
 
 def _parse_raw() -> list[dict]:
+    return _parse_raw_text(_raw_emails)
+
+
+def _parse_raw_text(raw: str) -> list[dict]:
     """Each raw record -> {ts, account, sender, to, subject, message_id, body}.
     Skips anything that doesn't parse (e.g. a message AppleScript couldn't
     read).
@@ -417,7 +520,7 @@ def _parse_raw() -> list[dict]:
     and can't be replied to/archived until they're re-synced.
     """
     out: list[dict] = []
-    for record in _raw_emails.split(_RAW_RS):
+    for record in raw.split(_RAW_RS):
         record = record.strip()
         if not record:
             continue
@@ -904,6 +1007,62 @@ def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]
     q = _ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()
     return [r for r in rows if q in r["account"].casefold() or
             q in r.get("account_id", "").casefold()]
+
+
+def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict], str]:
+    """Resolve a body lookup to one account identity without widening its scope.
+
+    Header labels can lag behind the body cache, and two native accounts can
+    share one display label. Exact native IDs take precedence over partial
+    label matches; a duplicate label must be clarified before exposing bodies.
+    Unscoped body lookups deliberately retain their cross-account behavior.
+    """
+    if not account or not account.strip():
+        return rows, ""
+    selector = account.strip()
+    q = _ACCOUNT_FILLER_RE.sub("", selector).strip().casefold() or selector.casefold()
+    identities: dict[tuple[str, str], dict] = {}
+    for row in rows:
+        label = str(row.get("account") or "")
+        native_id = str(row.get("account_id") or "")
+        key = ("native", native_id) if native_id else ("legacy", label.casefold())
+        identities.setdefault(key, {"account": label, "account_id": native_id})
+    candidates = list(identities.items())
+    exact_ids = [(key, row) for key, row in candidates
+                 if row["account_id"] and row["account_id"] == selector]
+    exact_labels = [(key, row) for key, row in candidates
+                    if row["account"].casefold() == q]
+    matches = exact_ids or exact_labels or [(key, row) for key, row in candidates
+                                          if q in row["account"].casefold()]
+    if not matches:
+        # Keep the established corrective account names when headers prove
+        # them, while allowing a newer raw-only account to resolve above.
+        problem = _unknown_account_message(account)
+        if problem:
+            return [], problem
+        known = ", ".join(sorted({row["account"] for _, row in candidates if row["account"]}))
+        return [], (f"(error: no cached email account matches {account!r}. "
+                    f"{'Available body-cache accounts: ' + known + '. ' if known else ''}"
+                    "Choose an account from the synced Mail data; no other account was searched.)")
+    if len(matches) != 1:
+        choices = "; ".join(f"{row['account']} (account ID: {row['account_id'] or 'unavailable'})"
+                            for _, row in matches)
+        return [], (f"(error: several email accounts match {account!r}: {choices}. "
+                    "Which one? Use an exact account ID, or rename the accounts in Mail and sync again.)")
+    selected = matches[0][0]
+    return [row for row in rows
+            if (("native", str(row.get("account_id"))) if row.get("account_id")
+                else ("legacy", str(row.get("account") or "").casefold())) == selected], ""
+
+
+def _email_body_block(row: dict) -> str:
+    """Render verbatim evidence with its account and message identities."""
+    when = datetime.fromtimestamp(row["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
+    account = f"Account: {row['account']}\n" if row.get("account") else ""
+    native_id = f"Account-ID: {row['account_id']}\n" if row.get("account_id") else ""
+    message_id = f"Message-ID: {row['message_id']}\n" if row.get("message_id") else ""
+    return (f"{account}{native_id}From: {row['sender']}\nTo: {row['to']}\n"
+            f"Subject: {row['subject']}\nDate: {when}\n{message_id}\n{row['body']}")
 
 
 def _scan_marker_accounts(text: str) -> list[dict]:
@@ -1448,7 +1607,8 @@ def _subject_text(text: str) -> str:
 
 
 @_disclose_mail_freshness
-async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
+async def summarize_inbox_for_day(day: str, account: str | None = None,
+                                  unread: bool = False) -> str:
     """day: 'today' | 'yesterday' | 'YYYY-MM-DD'."""
     # No parseable data at all -> the cache isn't ready (still syncing / no
     # permission), which is different from 'no mail on that specific day'. Only
@@ -1465,12 +1625,18 @@ async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
     history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
     scoped = _filter_account_records(recent + history, account)
     rows = _unique_records(scoped)
-    if not rows:
+    if not rows and not unread:
         return _empty_range_message(label, start, end, account)
     coverage = header_scan_coverage(cached, raw_headers=_headers, account=account)
     history_coverage = header_scan_coverage([], raw_headers=_history, account=account,
                                             fallback_cap=False)
-    return sender_digest(rows, label, scanned=len(scoped),
+    note = ""
+    if unread:
+        rows, note, empty = _dated_unread_filter(rows, label, start, end, coverage, history_coverage)
+        if empty:
+            return empty
+        label = f"UNREAD email for {label}"
+    out = sender_digest(rows, label, scanned=len(scoped),
                          requested=(start, end),
                          scan_cap_accounts=coverage["cap_accounts"],
                          scan_incomplete_accounts=coverage["incomplete_accounts"],
@@ -1480,6 +1646,41 @@ async def summarize_inbox_for_day(day: str, account: str | None = None) -> str:
                          history_incomplete_accounts=history_coverage["incomplete_accounts"],
                          history_skipped=history_coverage["skipped"],
                          history_attempted=history_coverage["attempted"])
+    return f"{out}\n\n{note}" if note else out
+
+
+def _dated_unread_filter(rows: list[dict], label: str, start: float, end: float,
+                         coverage: dict, history_coverage: dict) -> tuple[list[dict], str, str]:
+    """Keep the date/account intersection and disclose missing read evidence."""
+    unknown = sum(row.get("unread") is None for row in rows)
+    read = sum(row.get("unread") is False for row in rows)
+    selected = [row for row in rows if row.get("unread") is True]
+    note = (f"Read-status filter: {read} known read message(s) excluded. "
+            f"{unknown} cached message(s) in the requested range lack read status "
+            "and are excluded; their unread state is unknown.")
+    if selected:
+        return selected, note, ""
+    window = (f"{datetime.fromtimestamp(start).strftime('%b %-d, %Y %-I:%M %p')} to "
+              f"{datetime.fromtimestamp(end).strftime('%b %-d, %Y %-I:%M %p')}")
+    result = (f"No known unread messages found in the available cache for {label} "
+              f"({window}). Scanned {len(rows)} matching cached headers; represented "
+              f"0 unread messages. {note}")
+    incomplete = bool(unknown)
+    for name, scan in (("Recent", coverage), ("History", history_coverage)):
+        if scan["cap_accounts"]:
+            incomplete = True
+            result += f" {name} scan reached its limit for {', '.join(scan['cap_accounts'])}."
+        if scan["incomplete_accounts"]:
+            incomplete = True
+            result += f" {name} scan did not complete for {', '.join(scan['incomplete_accounts'])}."
+        if scan["skipped"]:
+            incomplete = True
+            result += (f" {name} scan attempted {scan['attempted']} headers and skipped "
+                       f"{scan['skipped']} malformed headers with unknown dates/read state.")
+    result += (" Total unread coverage for this range is unknown; this does not "
+               "establish that no unread mail exists." if incomplete else
+               " This result is limited to synced headers in the requested range.")
+    return [], note, result
 
 
 # A wide range can contain thousands of headers. Bound its display input while
@@ -1589,7 +1790,8 @@ def _empty_range_message(label: str, start: float, end: float,
 
 
 @_disclose_mail_freshness
-async def summarize_inbox_for_period(period: str, account: str | None = None) -> str:
+async def summarize_inbox_for_period(period: str, account: str | None = None,
+                                     unread: bool = False) -> str:
     """Summarize every email in a spoken time RANGE — "this month", "last week".
 
     Distinct from summarize_inbox_for_day, which covers one calendar day. The
@@ -1609,13 +1811,19 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
     history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
     scoped = _filter_account_records(recent + history, account)
     rows = _unique_records(scoped)
-    if not rows:
+    if not rows and not unread:
         return _empty_range_message(label, start, end, account)
-    rows, sampled = _sample_for_summary(rows)
     coverage = header_scan_coverage(cached, raw_headers=_headers, account=account)
     history_coverage = header_scan_coverage([], raw_headers=_history, account=account,
                                             fallback_cap=False)
-    return sender_digest(rows, label, scanned=len(scoped),
+    note = ""
+    if unread:
+        rows, note, empty = _dated_unread_filter(rows, label, start, end, coverage, history_coverage)
+        if empty:
+            return empty
+        label = f"UNREAD email for {label}"
+    rows, sampled = _sample_for_summary(rows)
+    out = sender_digest(rows, label, scanned=len(scoped),
                          truncated=(sampled - len(rows)) if sampled else 0,
                          requested=(start, end),
                          scan_cap_accounts=coverage["cap_accounts"],
@@ -1626,6 +1834,7 @@ async def summarize_inbox_for_period(period: str, account: str | None = None) ->
                          history_incomplete_accounts=history_coverage["incomplete_accounts"],
                          history_skipped=history_coverage["skipped"],
                          history_attempted=history_coverage["attempted"])
+    return f"{out}\n\n{note}" if note else out
 
 
 @_disclose_mail_freshness
@@ -1717,8 +1926,9 @@ async def summarize_inbox_recent(count: int = 20, account: str | None = None,
          "count": {"type": "integer",
                    "description": "when `period`/`day` are omitted, how many recent messages to scan (default 20)"},
          "unread": {"type": "boolean",
-                    "description": "true to cover ONLY unread email — use for 'what's unread' "
-                                   "or 'anything I haven't read'"},
+                    "description": "true to cover ONLY known unread email, intersecting "
+                                   "any requested day/period. Missing read status is disclosed. "
+                                   "Use for 'what's unread' or 'anything I haven't read'"},
          "account": {"type": "string",
                      "description": "only include this linked account (only useful when more than one is linked)"},
      }},
@@ -1740,16 +1950,14 @@ async def summarize_emails(day: str | None = None, count: int = 20,
         return msg
     # `period` first: it's the more specific request, and a model that supplies
     # both ("this month", day="today") means the range.
-    # `unread` is a filter on the RECENT inbox, not a date scope — read status
-    # only exists for what's currently cached, and "unread from last March" is
-    # not a question the data can answer. A model that passes both gets the
-    # unread view, which is what it actually asked for.
+    # Unread is an additional filter; it must never discard a named range.
+    # Legacy history without read flags is excluded with an explicit warning.
+    if period:
+        return await summarize_inbox_for_period(period, account, unread=unread)
+    if day:
+        return await summarize_inbox_for_day(day, account, unread=unread)
     if unread:
         return await summarize_inbox_recent(max(count, 50), account, unread=True)
-    if period:
-        return await summarize_inbox_for_period(period, account)
-    if day:
-        return await summarize_inbox_for_day(day, account)
     return await summarize_inbox_recent(count, account)
 
 
@@ -1767,15 +1975,17 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
     # dead-ending on "no raw content cached" and forcing a retry.
     await _ensure_email_cache(want_raw=True)
     _purge_raw_if_expired()
+    if _email_available is False:
+        return _no_inbox_message()
     if not _raw_emails.strip():
         return ("(No raw email content cached right now — either Mail.app hasn't synced "
-                "yet, or the cache expired after a day and is waiting on the next daily "
-                "sync. Try again shortly, or use summarize_emails for a digest in the "
+                "yet, or the cache expired and is waiting on the next body "
+                "sync. Try again shortly, or use summarize_emails for a header digest in the "
                 "meantime.)")
     rows = _parse_raw()
-    if account:
-        q = account.lower()
-        rows = [r for r in rows if q in r["account"].lower()]
+    rows, account_problem = _raw_account_scope(rows, account)
+    if account_problem:
+        return account_problem
     label = "your recent inbox"
     # `period` (a range) wins over `day` (one day) when both are supplied — see
     # summarize_emails for why.
@@ -1791,6 +2001,14 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
         except ValueError:
             return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
         rows = [r for r in rows if start <= r["ts"] < end]
+    # Scope the query before assessing read-status coverage. Unknown flags in
+    # unrelated mail must not inflate the exclusion count for this lookup.
+    if query:
+        rows = [r for r in rows
+                if _matches(query, r["sender"], r["to"], r["subject"], r["body"])]
+        if not rows:
+            return (f"No emails matching “{query}” were found in the recent "
+                    "inbox Wisp searched.")
     note = ""
     if unread:
         # Same rule as summarize_emails: read status only exists for what's
@@ -1798,24 +2016,28 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
         # "read". Reporting zero unread from records that never knew would be a
         # confident wrong answer.
         known = [r for r in rows if r.get("unread") is not None]
-        if not known:
-            return ("(Read/unread status isn't in the raw email cache yet — it "
-                    "arrives on the next Mail sync, usually within 15 minutes. "
-                    "Tell the user you can't check unread just yet rather than "
-                    "saying they have none.)")
+        unknown = len(rows) - len(known)
+        if unknown:
+            note = (
+                f"Read-status coverage: {unknown} "
+                f"{'email was' if unknown == 1 else 'emails were'} excluded from "
+                "the requested raw-cache scope because read/unread "
+                "status is unknown. Unread coverage is incomplete; excluded "
+                "records may also be unread.\n\n"
+            )
+        # An empty date scope does not prove that read flags are unavailable.
+        # Retain the bounded raw-cache absence message below in that case.
+        had_scoped_rows = bool(rows)
         rows = [r for r in known if r["unread"]]
         label = f"UNREAD in {label}" if label != "your recent inbox" else "your UNREAD email"
-        if not rows:
+        if not rows and unknown:
+            return note + "No known unread emails were found in this raw-cache scope."
+        if not rows and had_scoped_rows:
+            if query:
+                return (f"No known unread emails matching “{query}” were found "
+                        "in this raw-cache scope.")
             return f"No unread emails in {label.replace('UNREAD in ', '')}."
     rows.sort(key=lambda r: r["ts"])
-    scoped = rows
-    if query:
-        matched = [r for r in scoped if _matches(query, r["sender"], r["to"], r["subject"], r["body"])]
-        if matched:
-            rows = matched
-        else:
-            return (f"No emails matching “{query}” were found in the recent "
-                    "inbox Wisp searched.")
     if not rows:
         return (f"No emails found for {label} (note: raw content only covers "
                 "roughly the 50 most recent emails — try summarize_emails for older mail).")
@@ -1838,18 +2060,7 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
             f"{omitted} older {'email was' if omitted == 1 else 'emails were'} omitted "
             f"by count={limit}.\n\n"
         )
-    blocks = []
-    for r in rows:
-        when = datetime.fromtimestamp(r["ts"]).strftime("%a %b %-d, %Y %-I:%M %p")
-        acct = f"Account: {r['account']}\n" if r["account"] else ""
-        # message_id is emitted so reply_to_email/mark_email_read/archive_email
-        # have something to act on — it's the only stable handle back to this
-        # exact message (see MailReader.rawScript). Omitted rather than shown
-        # empty for pre-upgrade cached records, so the model doesn't try to
-        # pass a blank id.
-        mid = f"Message-ID: {r['message_id']}\n" if r.get("message_id") else ""
-        blocks.append(f"{acct}From: {r['sender']}\nTo: {r['to']}\nSubject: {r['subject']}\n"
-                      f"Date: {when}\n{mid}\n{r['body']}")
+    blocks = [_email_body_block(r) for r in rows]
     return note + coverage + "\n\n---\n\n".join(blocks)
 
 
@@ -1889,8 +2100,6 @@ async def view_emails_impl(query: str | None = None, day: str | None = None,
 async def view_emails(query: str | None = None, day: str | None = None, count: int = 5,
                       account: str | None = None, period: str | None = None,
                       unread: bool = False, strict_match: bool = False) -> str:
-    if account and (msg := _unknown_account_message(account)):
-        return msg
     return await view_emails_impl(query, day, count, account, period, unread,
                                   strict_match)
 

@@ -1,6 +1,12 @@
 # Release performance benchmark
 
-Every Wisp release is measured before it ships. This document says what is measured, how a result is
+> **Not a publication gate.** As of Wisp 1.2.5 (owner decision) the benchmark is an optional measurement
+> tool. `release` and `release-ad-hoc` no longer require, accept or check a performance receipt, baseline or
+> waiver, and the release workflow has no `performance_*` dispatch inputs. Run it when you want to measure a
+> candidate; no verdict blocks or authorizes publication. Wording below that says a result "gates" or is
+> "required" describes the harness's own pass/fail verdict, not the release process.
+
+This document says what is measured, how a result is
 turned into a verdict, and exactly what a coordinator runs and checks. The harness is
 `scripts/release_performance.py`; the corpus (`release_v2`) and policy (`release_policy_v2`) are one bundle,
 `test_fixtures/performance/release_v1.json` (the file keeps its name; the versions inside it are what bind).
@@ -15,7 +21,7 @@ release look worse, never faster. A metric that was not measured is `UNKNOWN`, n
 |---|---|---|
 | Model | The real resident engine, through Wisp's real attributed transport | A fake model, or saved synthetic requests |
 | Code under test | The candidate's own routing, approval, receipt and publication code, from a clean worktree | Prompt layout only |
-| Release evidence | Yes, once `check` passes it | **No.** `check` refuses its output |
+| Measurement evidence | Yes, once `check` passes it (informational, not a publication gate) | **No.** `check` refuses its output |
 
 The legacy `capture` and `compare` commands are unchanged and remain useful for prompt-layout work. The
 release mode is reached as `scripts/bench_latency_changes.py release ...`, which hands every argument to
@@ -187,7 +193,7 @@ different-cohort baseline is INCONCLUSIVE.
 
 ## Lanes
 
-* **`desktop`**: Desktop qualified inference. This is the release gate.
+* **`desktop`**: Desktop qualified inference. This is the lane the benchmark measures.
 * **`managed_mini`**: the managed or mini path. It is its own cohort, labelled
   `compatibility_measurement_only`. It never inherits Desktop timing and can never satisfy the Desktop gate;
   `check` refuses a lane mismatch, and a managed receipt checked as managed is capped at INCONCLUSIVE. The
@@ -350,7 +356,7 @@ RAM or swap threshold and grants no model load/unload or settings-change authori
 
 Hashing every weight file takes time proportional to the model's size, once before and once after the run.
 
-## Operating procedure for a release
+## Operating procedure for a measurement run
 
 ```bash
 # 1. The values a coordinator binds. Record them; do not read them from the run's own output.
@@ -413,46 +419,10 @@ one machine and engine configuration, so the approval carries to the rerun.
 
 ## Release integration
 
-Both `scripts/wisp-build release` and `release-ad-hoc` call the same mandatory gate (the ad-hoc command alone may instead take a committed, digest-bound [waiver](#waiver)) before any signing,
-GitHub draft, upload or publication step. A missing receipt or approval, missing digest, stale or malformed
-receipt, nonzero checker exit, or any result other than `PASS` with `authorizes_release: true` stops delivery.
-The gate uses Desktop only and derives the candidate SHA, harness, corpus and policy hashes from the tagged
-checkout. It never accepts the offline fixture seam. It writes `release-performance-gate.json` into the
-pipeline diagnostics directory.
-
-Pass these four arguments to either release command:
-
-```bash
---performance-receipt <evidence>/receipt.json \
---performance-receipt-sha256 <digest recorded by measurement owner> \
---performance-baseline <evidence>/approved-baseline.json \
---performance-baseline-sha256 <independently reviewed approval digest>
-```
-
-The GitHub release workflow requires three explicit dispatch inputs: `performance_run_id`,
-`performance_receipt_sha256` and `performance_baseline_sha256`. The selected run in this same repository must
-contain an artifact named `wisp-release-performance-<exact candidate SHA>` with this layout:
-
-```text
-receipt.json
-raw/started.jsonl
-raw/events.jsonl
-raw/samples.jsonl
-raw/instrumentation.candidate.jsonl
-raw/instrumentation.baseline.jsonl
-raw/environment.json
-raw/provenance.json
-approved-baseline.json
-```
-
-The measurement owner uploads this reviewed package through an authorized evidence workflow; this
-release workflow requires that run to be completed successfully, from this repository and its own source
-repository, at the exact candidate SHA. It then downloads it into `.wisp-build/performance` and verifies it. The two digests must be
-copied from the owner's independent run/review record, never calculated from the downloaded package to grant
-it authority. Selecting an artifact run or approving a GitHub environment does not approve a new baseline.
-Measurement production/upload and baseline review are separate procedures; this change does not add an
-engine runner or automate that approval. The receipt's 24-hour freshness rule still applies after the release
-job's rebuild. Release diagnostics retain the raw evidence; public downloads remain the app ZIP only.
+None. The signed `release` and `release-ad-hoc` commands, and the `wisp-build` workflow, do not read or require
+benchmark evidence. The `--performance-*` arguments, the `performance_*` dispatch inputs and the
+per-version waiver mechanism were removed for 1.2.5 by owner decision. The harness and its contract tests
+(the `release-benchmark-contracts` simulation step) remain.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
 pipeline runs its complete pinned set of 361 cases in a separate sandbox using one parent-held reserved
@@ -492,45 +462,11 @@ for that baseline. An explicitly invalid/unapproved document is refused before m
 preflight, environment collection or backend startup. No approval supplied remains a qualification
 run and cannot pass.
 
-## Waiver
+## Historical waiver record
 
-A waiver is an explicit, recorded decision to publish one version without a passing release benchmark. It is
-not a pass and it never produces a `PASS` verdict.
-
-* **Who approves.** Only the project owner. The decision is the reviewed, merged commit that adds the record;
-  nobody can waive from a workflow input alone.
-* **Per version.** The record is `docs/releases/<version>-performance-waiver.json` (schema
-  `wisp.release_performance.waiver/1`) and applies to exactly the version it names. `version` must equal the
-  configured toolchain version, so a record for one version can never authorize another. Wisp 1.2.0 is the only
-  waived version; 1.3.0 must restore a passing benchmark.
-* **Ad-hoc only.** `scope` must be `ad_hoc_release_only`. Only `release-ad-hoc` (the workflow's
-  `publish_ad_hoc` path) accepts `--performance-waiver` and `--performance-waiver-sha256`. The signed,
-  notarized `release` command and the `publish` workflow path refuse any waiver and keep requiring complete
-  evidence.
-* **Committed and digest-bound.** The path must be exactly the record above, a tracked regular file (not a
-  symlink, at most 16 KiB) that is byte-identical to `HEAD` with no staged, unstaged or untracked change. Its
-  SHA-256 must equal the digest passed as the `performance_waiver_sha256` workflow dispatch input, recorded by
-  the owner outside the checkout. The record must be a strict JSON object with exactly the keys `schema`,
-  `version`, `decision` (`waived`), `approved_by`, `approved_on` (`YYYY-MM-DD`), `scope`, `reason` (at least 80
-  characters), `evidence_ref` and `follow_up`. The dispatch ref must be the exact `v<version>` tag, which must
-  already be on `main`.
-* **Mutually exclusive with evidence.** Supplying a waiver together with any receipt, baseline or digest
-  argument (or the `performance_run_id`, `performance_receipt_sha256` or `performance_baseline_sha256`
-  workflow inputs) is refused. With no waiver the evidence gate is unchanged.
-* **What the gate records.** `release-performance-gate.json` in the pipeline diagnostics, uploaded with the
-  other publication diagnostics:
-
-  ```json
-  {"verdict": "WAIVED", "waived": true, "authorizes_release": true, "waiver_sha256": "...",
-   "version": "...", "candidate_sha": "<HEAD>", "approved_by": "...", "approved_on": "..."}
-  ```
-
-  Any failure raises a build error that names the failed check but never echoes file content.
-* **What it weakens.** Anyone who can merge a waiver record and dispatch the workflow can publish an ad-hoc
-  build without benchmark evidence. The control is that the record is committed, reviewed, digest-bound and
-  limited to one version.
-
-Wisp 1.2.0 waiver: `docs/releases/1.2.0-performance-waiver.json` (the benchmark's live path was first
+Before 1.2.5, publication required this benchmark or a committed per-version waiver. That gate was removed
+for 1.2.5 by owner decision and no waiver is needed or accepted. The Wisp 1.2.0 record
+`docs/releases/1.2.0-performance-waiver.json` is kept as history (the benchmark's live path was first
 exercised on 2026-10-06 and its harness guard plus a memory-pressured host produced intermittent engine
 health-check timeouts in the candidate, which the strict candidate rule treats as BLOCK). Equivalent 1.2.0
 evidence is the live diagnostic smoke comparisons and an end-to-end A/B against v1.1.5, published in the GitHub release notes

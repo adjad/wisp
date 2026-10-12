@@ -1286,7 +1286,95 @@ async def get_stock_price(symbols: list[str], period: str = "") -> str:
 # place and returns current conditions plus a real 3-day forecast, and it
 # ECHOES THE AREA wttr.in actually resolved to — so a Dublin/Dublin mixup is
 # visible in the result rather than silently answered.
-_WEATHER_DAYS = ("today", "tomorrow", "the day after tomorrow")
+def _weather_request_dates(period: str) -> set[str] | None:
+    """Validate the full range before contacting the forecast provider."""
+    from datetime import date, datetime, timedelta
+    from service.tools.timeranges import resolve_span
+    if not isinstance(period, str) or len(period) > 200:
+        raise ValueError("range must be a string of at most 200 characters")
+    if not period:
+        return None
+    # The shared range parser also accepts ISO datetimes, then discards their
+    # clocks/offsets. Weather supports whole dates only. Check every component
+    # using the parser's normalization and range delimiters before resolving it.
+    normalized = " ".join(period.strip().lower().split())
+    components = re.split(r"\s+(?:and|to|through|thru|until|\-\-|:)\s+|\s*\.\.\s*", normalized)
+    for component in components:
+        try:
+            datetime.fromisoformat(component)
+        except ValueError:
+            continue  # Words and invalid dates retain the shared validation.
+        try:
+            date.fromisoformat(component)
+        except ValueError:
+            raise ValueError("ISO clock/offset/datetime forecasts are unsupported; use a whole date") from None
+    start, end, _ = resolve_span(period)
+    first, last = datetime.fromtimestamp(start).date(), datetime.fromtimestamp(end).date()
+    days = (last - first).days
+    if days < 1:
+        raise ValueError("a whole forecast date is required; hourly/daypart forecasts are unsupported")
+    if days > 3:
+        # No need to build a large date set or fetch a range the provider cannot cover.
+        raise OverflowError("the provider supports at most three forecast days")
+    return {(first + timedelta(days=i)).isoformat() for i in range(days)}
+
+
+def _weather_location_has_time(place: str) -> bool:
+    """Do not send an unconsumed temporal constraint as part of a city name."""
+    if re.fullmatch(r"\d{8}", place):
+        return False  # Preserve standalone postal codes; no city/time split exists.
+    return bool(re.search(
+        r"\b(?:today|tomorrow|tonight|yesterday)\b|"
+        r"\b(?:this|next|last)\s+(?:morning|afternoon|evening|night|weekend|week|month|year|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|"
+        r"\s(?:now|currently|later|overnight|morning|afternoon|evening|night|noon|midday|midnight|weekend|monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+please)?\s*[.!?]*$|"
+        r"\b\d{4}-\d{1,2}(?:-\d{1,2})?\b|"
+        # Compact and ISO week dates remain temporal even when followed by a
+        # datetime separator or when their calendar/clock fields are invalid.
+        r"\b\d{4}(?:\d{4}|-?w\d{2}(?:-?\d)?)(?=\D|$)|"
+        r"\b\d{1,2}:\d{2}\b|\b\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)\b|"
+        r"\bat\s+\d{1,6}\b", place, re.I))
+
+
+def _weather_number(node: dict, key: str, *, low=None, high=None) -> str:
+    """Missing measurements stay unknown; present measurements must be finite."""
+    if key not in node:
+        return "unknown"
+    value = node[key]
+    if type(value) not in (str, int, float) or len(str(value)) > 64:
+        raise ValueError("invalid weather measurement")
+    if isinstance(value, str) and not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", value.strip()):
+        raise ValueError("invalid weather measurement")
+    number = float(value)
+    if (not math.isfinite(number) or (low is not None and number < low)
+            or (high is not None and number > high)):
+        raise ValueError("invalid weather measurement")
+    return str(value).strip()
+
+
+def _weather_forecast_rows(raw: object) -> list[dict]:
+    """Validate the carrier before any rows or current numbers are displayed."""
+    from datetime import date, timedelta
+    if not isinstance(raw, list) or not 1 <= len(raw) <= 3:
+        raise ValueError("invalid forecast carrier")
+    result, previous = [], None
+    for day in raw:
+        if not isinstance(day, dict) or not isinstance(day.get("date"), str):
+            raise ValueError("invalid forecast date")
+        when = date.fromisoformat(day["date"])
+        if when.isoformat() != day["date"] or previous is not None and when != previous + timedelta(days=1):
+            raise ValueError("forecast dates must be canonical, unique and consecutive in order")
+        previous = when
+        maximum, minimum = _weather_number(day, "maxtempF"), _weather_number(day, "mintempF")
+        if maximum != "unknown" and minimum != "unknown" and float(maximum) < float(minimum):
+            raise ValueError("forecast high is below low")
+        hours = day.get("hourly", [])
+        if not isinstance(hours, list) or len(hours) > 24 or any(not isinstance(hour, dict) for hour in hours):
+            raise ValueError("invalid hourly carrier")
+        rains = [_weather_number(hour, "chanceofrain", low=0, high=100) for hour in hours]
+        index = 4 if len(hours) > 4 else 0
+        result.append({"date": when.isoformat(), "maximum": maximum, "minimum": minimum,
+                       "mid": hours[index] if hours else {}, "rain": rains[index] if rains else "unknown"})
+    return result
 
 
 @register(
@@ -1297,8 +1385,8 @@ _WEATHER_DAYS = ("today", "tomorrow", "the day after tomorrow")
     "need their state ('Dublin,CA' — plain 'Dublin' is Dublin, Ireland). "
     "If you do not know where the user is, ASK them; never guess a city, and "
     "never answer a weather question from memory. The result names the area it "
-    "resolved to — if that is not the place the user meant, say so rather than "
-    "reporting its numbers.",
+    "resolved to. California lookups verify the provider's city, state and "
+    "country before returning numbers; ambiguous city names require clarification.",
     {"type": "object",
      "properties": {
          "location": {"type": "string",
@@ -1311,67 +1399,90 @@ _WEATHER_DAYS = ("today", "tomorrow", "the day after tomorrow")
     category="web_read",
 )
 async def get_weather(location: str, period: str = "") -> str:
+    from service.tools.ca_locations import normalize_weather_location, provider_area_matches
     from service.workflows.compiler import is_temporal_location
-    place = (location or "").strip()
+    if not isinstance(location, str) or len(location) > 200:
+        return "(error: weather location must be a string of at most 200 characters.)"
+    place = location.strip()
     if not place or is_temporal_location(place):
-        return ("(no location given — ask the user which city they want the "
+        return ("(error: no location given — ask the user which city they want the "
                 "weather for; do not guess one)")
-    r = await _yahoo_get(f"https://wttr.in/{quote(place)}?format=j1")
+    if _weather_location_has_time(place):
+        return "(error: weather time constraint was included in the location; ask for a city and a supported whole-date range separately. Hourly/daypart forecasts are unsupported.)"
+    try:
+        required = _weather_request_dates(period)
+    except OverflowError as exc:
+        return f"(error: weather forecast does not cover {period!r}: {exc}.)"
+    except (TypeError, ValueError, OSError) as exc:
+        return f"(error: unsupported weather range: {exc}; hourly/daypart forecasts are unsupported.)"
+    try:
+        requested = normalize_weather_location(place)
+    except ValueError as exc:
+        return f"(error: no unambiguous location — {exc}; do not guess one)"
+    r = await _yahoo_get(f"https://wttr.in/{quote(requested.query)}?format=j1")
     if isinstance(r, str):
-        return r.replace("Yahoo Finance", "the weather service")
+        problem = r.replace("Yahoo Finance", "the weather service")
+        return problem if problem.startswith("(error") else f"(error: weather service lookup failed: {problem})"
     if r.status_code >= 400:
-        return (f"(weather lookup for {place!r} failed: HTTP {r.status_code}. "
+        return (f"(error: weather lookup for {place!r} failed: HTTP {r.status_code}. "
                 "Check the spelling, or add the state/country — "
                 "'Dublin,CA' rather than 'Dublin')")
     try:
         d = r.json()
         cur = d["current_condition"][0]
         area = d["nearest_area"][0]
+        if not isinstance(cur, dict) or not isinstance(area, dict):
+            raise ValueError("invalid weather observation")
     except Exception:  # noqa: BLE001
-        return f"(weather data for {place!r} came back in an unexpected shape)"
+        return f"(error: weather data for {place!r} came back in an unexpected shape)"
+
+    if requested.california_city and (len(d["nearest_area"]) != 1
+            or not provider_area_matches(area, requested.california_city)):
+        return (f"(error: weather lookup could not verify {requested.query!r}: the provider's "
+                "resolved city/state/country is missing or different; no weather "
+                "numbers are available for the requested place)")
 
     def _first(node, key: str) -> str:
         try:
-            return node[key][0]["value"]
+            value = node[key][0]["value"]
+            return value if isinstance(value, str) else ""
         except Exception:  # noqa: BLE001
             return ""
+
+    try:
+        current = {key: _weather_number(cur, key,
+            low=0 if key in {"humidity", "windspeedMiles"} else None,
+            high=100 if key == "humidity" else None)
+            for key in ("temp_F", "temp_C", "FeelsLikeF", "humidity", "windspeedMiles")}
+        forecast = _weather_forecast_rows(d.get("weather"))
+    except (TypeError, ValueError, OverflowError):
+        return f"(error: weather data for {place!r} came back in an unexpected shape or with invalid measurements/dates; no weather numbers are available.)"
+    if required is not None:
+        available = {day["date"] for day in forecast}
+        if not required <= available:
+            return f"(error: weather forecast does not cover {period!r}; available dates: {', '.join(sorted(available))}.)"
+        forecast = [day for day in forecast if day["date"] in required]
 
     resolved = ", ".join(x for x in (_first(area, "areaName"),
                                      _first(area, "region"),
                                      _first(area, "country")) if x)
     out = [f"Weather for {resolved or place} (asked for: {place})",
-           f"  now: {cur.get('temp_F')}°F ({cur.get('temp_C')}°C), "
+           f"  now: {current['temp_F']}°F ({current['temp_C']}°C), "
            f"{_first(cur, 'weatherDesc').strip()}, "
-           f"feels like {cur.get('FeelsLikeF')}°F, "
-           f"humidity {cur.get('humidity')}%, "
-           f"wind {cur.get('windspeedMiles')} mph"]
-    forecast = d.get("weather") or []
+           f"feels like {current['FeelsLikeF']}°F, "
+           f"humidity {current['humidity']}%, "
+           f"wind {current['windspeedMiles']} mph"]
     if period:
-        from datetime import datetime, timedelta
-        from service.tools.timeranges import resolve_span, BadPeriod
-        try:
-            start, end, _ = resolve_span(period)
-        except BadPeriod as exc:
-            return f"(error: unsupported weather range: {exc})"
-        first, last = datetime.fromtimestamp(start), datetime.fromtimestamp(end)
-        required = {(first + timedelta(days=i)).strftime("%Y-%m-%d")
-                    for i in range((last.date() - first.date()).days)}
-        available = {day.get("date") for day in forecast}
-        if not required or not required <= available:
-            return f"(error: weather forecast does not cover {period!r}; available dates: {', '.join(sorted(str(x) for x in available))}.)"
-        forecast = [day for day in forecast if day.get("date") in required]
         out = [out[0] + f" — {period}; forecast only"]
-    for i, day in enumerate(forecast):
-        label = "forecast" if period else (_WEATHER_DAYS[i] if i < len(_WEATHER_DAYS) else day.get("date", ""))
+    for day in forecast:
         # hourly[4] is the midday slot in wttr.in's 3-hourly series — the one
         # that actually describes "what that day is like", rather than the
         # midnight reading hourly[0] would give.
-        hours = day.get("hourly") or []
-        mid = hours[4] if len(hours) > 4 else (hours[0] if hours else {})
-        out.append(f"  {label} ({day.get('date')}): "
-                   f"high {day.get('maxtempF')}°F / low {day.get('mintempF')}°F, "
-                   f"{_first(mid, 'weatherDesc').strip()}, "
-                   f"{mid.get('chanceofrain', '0')}% chance of rain")
+        rain = ("chance of rain unknown" if day["rain"] == "unknown"
+                else f"{day['rain']}% chance of rain")
+        out.append(f"  forecast ({day['date']}): "
+                   f"high {day['maximum']}°F / low {day['minimum']}°F, "
+                   f"{_first(day['mid'], 'weatherDesc').strip()}, {rain}")
     return "\n".join(out)
 
 

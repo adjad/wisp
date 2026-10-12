@@ -15,6 +15,9 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 from __future__ import annotations
 
 import asyncio
+from service.inference.remote_policy import (aria_demo_mode, remote_full_mode, remote_only_profile,
+                                             remote_read_only_mode, require_generation_role,
+                                             require_local_models_disabled)
 import json
 import os
 import re
@@ -256,6 +259,8 @@ def _sync_keep_warm() -> None:
     wasted, never idle-unloaded) while the model actually in use pays a cold
     reload every time it's gone idle for 5+ minutes.
     """
+    if remote_only_profile() is not None:
+        return
     keep = {role_target("fast").model}
     try:
         agent = role_target("agent")
@@ -274,6 +279,16 @@ async def lifespan(app: FastAPI):
     quarantine.check()
     global client
     client = OMLXClient()
+    profile = remote_only_profile()
+    from service.demo.founder import enabled as founder_demo_enabled
+    founder_demo_enabled()  # validate opt-in resource before serving the preview
+    started_tasks = []
+    if profile is not None:
+        try:
+            await _prepare_remote_inference(client)
+        except Exception:
+            await client.aclose()
+            raise
     # Keep the resident chat model warm. Every text role resolves to it now
     # (see config/models.yaml), so this is the model essentially every request
     # needs and there is no second chat model for it to contend with. Warm it
@@ -314,11 +329,12 @@ async def lifespan(app: FastAPI):
     # contribute tools to the registry, so they load before the first request
     # can arrive. Neither is required — a fresh install has zero of each — and
     # a failure in either must not stop the backend from serving.
-    try:
-        skills.load()
-    except Exception:  # noqa: BLE001
-        pass
-    mcp_task = asyncio.create_task(mcp_manager.start())
+    if profile is None:
+        try:
+            skills.load()
+        except Exception:  # noqa: BLE001
+            pass
+        started_tasks.append(asyncio.create_task(mcp_manager.start()))
 
     # Retention: unpinned research jobs keep their evidence/quotes/report
     # forever, but the full fetched page bodies (only needed for re-extraction,
@@ -331,17 +347,45 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
-    warm_task = asyncio.create_task(_warm_summarizer())
-    if cloud_super_model_enabled():
-        start_laya_warmup()
-    unloader_task = asyncio.create_task(idle_unloader.run(client))
-    assistant_task = asyncio.create_task(assistant_scheduler.run())
-    from service import nodes
-    node_task = asyncio.create_task(nodes.run())
-    from service.memory.api import worker as memory_worker
-    memory_task = asyncio.create_task(memory_worker.run(client))
-    recovery_task = asyncio.create_task(quarantine.watch(
-        (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
+    if profile is None:
+        started_tasks.append(asyncio.create_task(_warm_summarizer()))
+        if cloud_super_model_enabled():
+            start_laya_warmup()
+        started_tasks.append(asyncio.create_task(idle_unloader.run(client)))
+        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        from service import nodes
+        started_tasks.append(asyncio.create_task(nodes.run()))
+        from service.memory.api import worker as memory_worker
+        started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    elif remote_full_mode():
+        # The full remote build (Intel v5) runs the assistant scheduler as on a
+        # Mac with local models: due reminders and holds, the daily brief,
+        # user-approved scheduled sends, and behavior ticks (on by default in
+        # this build; WISP_BEHAVIOR=0 still turns them off). The scheduler never
+        # starts or loads oMLX; its only model call is the behavior phraser,
+        # which goes to the pinned GX10 target and stands down while a chat
+        # turn is in flight. Deliberately NOT started here: the oMLX warmup and
+        # idle unloader (local engine only), Super Model warmup, proactive
+        # nodes (other hosts), and conversation-memory capture (local model
+        # only; it would idle anyway since the fast role is unmanaged).
+        if aria_demo_mode():
+            # The Aria demo: open (seeding on first use) the synthetic world
+            # and mirror its calendar/reminders into the demo assistant store
+            # before the scheduler's first tick.
+            from service.demo.aria import tools as aria_tools
+            aria_tools.mirror()
+        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+    else:
+        # The remote-only build starts no assistant scheduler, so behavior
+        # learning (on automatically in the founder demo) runs its own loop.
+        # The flag is read BEFORE importing the runtime: its import chain must
+        # not load while behavior learning is off.
+        from service.behavior.flags import env_enabled as behavior_enabled
+        if behavior_enabled():
+            from service.assistant import behavior_runtime
+            started_tasks.append(asyncio.create_task(
+                behavior_runtime.run_loop(assistant_store, assistant_hub)))
+    recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
     bridge_link = None
@@ -350,21 +394,19 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
-    yield
-    if bridge_link is not None:
-        bridge_link.stop()
-    recovery_task.cancel()
-    await asyncio.gather(recovery_task, return_exceptions=True)
-    memory_task.cancel()
-    await asyncio.gather(memory_task, return_exceptions=True)
-    warm_task.cancel()
-    unloader_task.cancel()
-    assistant_task.cancel()
-    node_task.cancel()
-    await asyncio.gather(node_task, return_exceptions=True)
-    mcp_task.cancel()
-    await mcp_manager.stop()
-    await client.aclose()
+    try:
+        yield
+    finally:
+        if bridge_link is not None:
+            bridge_link.stop()
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+        for task in started_tasks:
+            task.cancel()
+        await asyncio.gather(*started_tasks, return_exceptions=True)
+        if profile is None:
+            await mcp_manager.stop()
+        await client.aclose()
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -374,6 +416,8 @@ from service.memory.api import router as memory_router
 app.include_router(memory_router)
 from service.assistant.today_api import router as today_router
 app.include_router(today_router)
+from service.behavior_api import router as behavior_router
+app.include_router(behavior_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -403,8 +447,17 @@ async def _await_omlx(seconds: float) -> bool:
         return False
 
 
+async def _prepare_remote_inference(active_client) -> None:
+    profile = remote_only_profile()
+    if profile is None:
+        raise ValueError("Remote-only inference is not enabled")
+    async with asyncio.timeout(profile.readiness_timeout):
+        await active_client.health()
+
+
 async def ensure_omlx() -> None:
     """Start only the Pro-owned engine, with bounded readiness."""
+    require_local_models_disabled("Local oMLX lifecycle")
     from service.inference.omlx_client import ModelLoadError
     if not getattr(client, "managed", True):
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
@@ -442,6 +495,22 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": True}
     except FileNotFoundError:
         return {"stopped": False}
+
+
+# Full remote build: history the agent sees per turn. The GX10 contract is a
+# 32k-token window and a 131,072-byte messages+tools aggregate, and the remote
+# fit refuses to trim selected messages, so history must leave room for the
+# system prompt, up to 32 tool schemas, tool results and the output budget.
+# The local formula below would give old turns ~20k tokens (~80 KB); 6k tokens
+# (~24 KB) keeps the last few turns for follow-ups like "reply to that".
+_REMOTE_FULL_HISTORY_TOKENS = 6000
+
+
+def _history_budget(target: Target) -> int:
+    budget = max(1500, target.context_window - 11500)
+    if remote_full_mode():
+        budget = min(budget, _REMOTE_FULL_HISTORY_TOKENS)
+    return budget
 
 
 def _direct_generation_budget(target: Target) -> tuple[int, bool]:
@@ -973,6 +1042,10 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 async def chat(body: dict[str, Any]):
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
     max_tokens = body.get("max_tokens", 8000)
+    profile = remote_only_profile()
+    if profile is not None:
+        require_generation_role(target.role)
+        max_tokens = profile.fit_output(max_tokens)
     local_prompt = None
     if target.endpoint.name == "local_provider":
         local_prompt = body.get("prompt")
@@ -998,6 +1071,8 @@ async def chat(body: dict[str, Any]):
                 body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
+        if profile is not None:
+            await _prepare_remote_inference(active)
         await active.ensure_only(model)
         if body.get("stream"):
             async def gen():
@@ -1356,6 +1431,16 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
+            # Knowledge fields, grocery selectors and bounded queue targets are literal
+            # data. Recognize their envelope before task/workflow/skill
+            # interpreters can mistake those fields for another command. Credential redaction
+            # and current-user capture have already run at the entry boundary.
+            from service.knowledge_intent import knowledge_envelope
+            literal_knowledge = knowledge_envelope(prompt) is not None
+            from service.workflows.workflow20 import grocery_read_attempt
+            from service.router.router import _scheduled_send_review
+            queue_envelope = _scheduled_send_review(prompt) is not None
+            literal_envelope = literal_knowledge or grocery_read_attempt(prompt) or queue_envelope
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []
@@ -1367,22 +1452,26 @@ async def agent(body: dict[str, Any]):
             # their first question. Keep one active skill on the session until
             # the user stops it, switches explicitly, or the skill emits its
             # completion marker.
-            active_skill = skills.select_for_turn(
-                prompt,
-                str((sess or {}).get("active_skill") or ""),
-                last_assistant or "",
-            )
-            if sess and active_skill != str(sess.get("active_skill") or ""):
-                store.set_active_skill(sid, active_skill)
-            # Skills stay on the managed model. Beyond an active conversational
-            # workflow, that covers a turn that invokes ANY enabled skill (an
-            # explicit @name or a trigger phrase) and the follow-up to a turn that
-            # loaded a skill with use_skill or ran a skill-defined tool.
-            skill_turn = ""
-            if active_skill:
-                skill_turn = "active_skill_local"
-            elif skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools):
-                skill_turn = "skill_local"
+            if remote_only_profile() is not None:
+                active_skill = ""
+                skill_turn = ""
+            else:
+                active_skill = "" if literal_envelope else skills.select_for_turn(
+                    prompt,
+                    str((sess or {}).get("active_skill") or ""),
+                    last_assistant or "",
+                )
+                if not literal_envelope and sess and active_skill != str(sess.get("active_skill") or ""):
+                    store.set_active_skill(sid, active_skill)
+                # Skills stay on the managed model. Beyond an active conversational
+                # workflow, that covers a turn that invokes ANY enabled skill (an
+                # explicit @name or a trigger phrase) and the follow-up to a turn that
+                # loaded a skill with use_skill or ran a skill-defined tool.
+                skill_turn = ""
+                if active_skill:
+                    skill_turn = "active_skill_local"
+                elif not literal_envelope and (skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools)):
+                    skill_turn = "skill_local"
 
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
@@ -1399,7 +1488,7 @@ async def agent(body: dict[str, Any]):
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
             from service.workflows.engine import prepare_news_selector_guard
-            news_turn = prepare_news_selector_guard(store, sid, prompt)
+            news_turn = None if literal_envelope else prepare_news_selector_guard(store, sid, prompt)
             if news_turn:
                 await emit({"type": "workflow", "event": news_turn.event,
                             "workflow": news_turn.plan.to_dict()})
@@ -1428,7 +1517,7 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     return
             from service.tasks.reply_engine import prepare_task_turn_async
-            task_turn = await prepare_task_turn_async(
+            task_turn = None if literal_envelope else await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
                 allow_native=not test_mode and not typed_shadow_only)
@@ -1493,7 +1582,7 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = prepare_turn(
+            workflow_turn = None if literal_envelope else prepare_turn(
                 store, sid, prompt, persist=not test_mode)
             # Only a turn that starts execution owns its revision; a response-only
             # turn (e.g. "already running") may describe another request's plan.
@@ -1533,7 +1622,7 @@ async def agent(body: dict[str, Any]):
             from service.workflows.reads import (
                 adjacent_stock_response, compile_read, execute_read,
             )
-            read_plan = compile_read(
+            read_plan = None if literal_envelope else compile_read(
                 prompt, last_user=last_user or "", last_tools=last_tools or "",
                 last_stock_response=adjacent_stock_response(
                     last_assistant or "", last_tools or ""))
@@ -1547,13 +1636,15 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 return
 
-            turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
+            turn_client = TurnInferenceClient(
+                client, (lambda: _prepare_remote_inference(client))
+                if remote_only_profile() is not None else ensure_omlx, emit=emit)
             # Optional embedding/reranker routing needs the engine before it
             # can retrieve a menu. The default lexical provider uses no model;
             # leave it cold until a real generation is needed.
             retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
                 "provider", "embedding")).lower()
-            if retrieval_provider != "lexical":
+            if remote_only_profile() is None and retrieval_provider != "lexical":
                 retrieval_role = "reranker" if retrieval_provider == "reranker" else "embedding"
                 try:
                     if role_target(retrieval_role).endpoint.managed:
@@ -1589,7 +1680,7 @@ async def agent(body: dict[str, Any]):
             # and keep complete greetings/thanks on the tool-free fast path.
             decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
             super_model_cloud = False
-            if cloud_super_model_enabled():
+            if remote_only_profile() is None and cloud_super_model_enabled():
                 if active_skill:
                     super_reason = "an active local skill must remain on this Mac"
                 else:
@@ -1647,11 +1738,14 @@ async def agent(body: dict[str, Any]):
                 decision.model = target.model
                 owned_inference_client = OMLXClient(target=target)
                 async def remote_ready():
-                    async with asyncio.timeout(target.endpoint.readiness_timeout):
-                        await owned_inference_client.health()
+                    if remote_only_profile() is not None:
+                        await _prepare_remote_inference(owned_inference_client)
+                    else:
+                        async with asyncio.timeout(target.endpoint.readiness_timeout):
+                            await owned_inference_client.health()
                 fallback_role = models_config().get("inference", {}).get("bindings", {}).get(decision.role, {}).get("fallback_role")
                 turn_client = TurnInferenceClient(owned_inference_client, remote_ready, emit=emit,
-                    fallback_start=ensure_omlx if fallback_role == "fast" and not decision.needs_tools else None)
+                    fallback_start=ensure_omlx if remote_only_profile() is None and fallback_role == "fast" and not decision.needs_tools else None)
 
 
             await emit({"type": "routed", **decision.as_dict()})
@@ -1660,14 +1754,14 @@ async def agent(body: dict[str, Any]):
 
             user_msg: dict[str, Any] = {
                 "role": "user",
-                "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
+                "content": prompt if super_model_cloud or remote_read_only_mode() else (decision.resolved_request or prompt),
             }
             schedule_read = (not (workflow_turn and workflow_turn.decision)
                              and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
-            messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
-                sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
+            messages = ([user_msg] if super_model_cloud or remote_read_only_mode() else _tool_turn_messages(
+                sid, user_msg, max_tokens=_history_budget(target),
                 test_mode=test_mode,
                 verified_results_only=(decision.verified_results_only or
                                        schedule_read),
@@ -1747,15 +1841,34 @@ async def agent(body: dict[str, Any]):
                              + "".join("\n" + guidance for guidance in synthesis_guidance)
                              + (workflow_turn.plan.prompt_block()
                                 if workflow_turn and workflow_turn.decision else ""))
+                if remote_read_only_mode() and _agent_memory_context_allowed(
+                        decision, cloud=super_model_cloud,
+                        grounded_workflow=bool(workflow_turn and workflow_turn.decision),
+                        schedule_read=schedule_read):
+                    # Remote-only keeps memory context off (include_memory_context
+                    # below); the learned profile card is the one exception, under
+                    # the same gate the memory block uses elsewhere.
+                    from service.memory.prompt_blocks import remote_only_context_block
+                    style_hint += remote_only_context_block()
+                if remote_read_only_mode():
+                    # Read-only remote sends the raw prompt, not decision.resolved_request,
+                    # so a behavior route's "answer only from these results"
+                    # instruction rides in the style hint instead (a few hundred
+                    # bytes, well inside the gateway's budget).
+                    from service.router.router import behavior_guidance
+                    guidance = behavior_guidance(decision)
+                    if guidance:
+                        style_hint += "\n" + guidance
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
+                                        allow_skill_context=remote_only_profile() is None and not literal_envelope,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
-                                        include_memory_context=_agent_memory_context_allowed(
+                                        include_memory_context=not remote_read_only_mode() and _agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),
@@ -1811,7 +1924,13 @@ async def agent(body: dict[str, Any]):
                 # tool-free. Excluded for "coding" too: several of the
                 # style rules (no em/en dashes, no hyphenated compounds) are
                 # prose-specific and could otherwise bleed into code syntax.
-                if super_model_cloud:
+                if remote_read_only_mode():
+                    # Only the learned profile card rides along here; every
+                    # other memory/skill context stays off in this build.
+                    from service.memory.prompt_blocks import remote_only_context_block
+                    msgs = [{"role": "system", "content": ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
+                             + remote_only_context_block()}] + messages
+                elif super_model_cloud:
                     # The privacy decision covers only the literal current prompt.
                     # Do not attach local memory, conversation rewrites, role prompts,
                     # skill files, or timestamps to a cloud Super Model request.
@@ -1824,8 +1943,8 @@ async def agent(body: dict[str, Any]):
                     from service.skills import always_skills_block, selected_skill_block
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
                             + memory_block(query=prompt)
-                            + selected_skill_block(prompt, active_skill)
-                            + (always_skills_block() if decision.role != "coding" else "")
+                            + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
+                            + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
                             + now_line())
                     msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,
@@ -1925,7 +2044,7 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            if not test_mode:
+            if not test_mode and remote_only_profile() is None:
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
@@ -1940,8 +2059,9 @@ async def agent(body: dict[str, Any]):
                 )
         except Exception as e:  # noqa: BLE001
             trace.event("error", error_kind=type(e).__name__)
-            message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
-                                              endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
+            message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
+                                              endpoint_name=(remote_only_profile().endpoint_name if remote_only_profile() is not None
+                                                             else owned_inference_client.endpoint_name if owned_inference_client else "local"))
             await emit({"type": "error", "message": message, "detail": detail})
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
@@ -2130,11 +2250,22 @@ async def delete_session(sid: str) -> dict[str, Any]:
 @app.get("/assistant/next")
 async def assistant_next() -> dict[str, Any]:
     """The single soonest active commitment — data for the notch countdown chip."""
+    from service.demo.founder import enabled, reminder_rows
+    if enabled():
+        now = time.time()
+        rows = assistant_store.calendar_events_overlapping(now, now + 60 * 86400) + reminder_rows(now)
+        rows = sorted((r for r in rows if r["when_ts"] >= now), key=lambda r:r["when_ts"])
+        return {"commitment": rows[0] if rows else None, "demo_reminders": True}
     return {"commitment": assistant_store.next_active()}
 
 
 @app.get("/assistant/upcoming")
 async def assistant_upcoming(days: int = 7) -> dict[str, Any]:
+    from service.demo.founder import enabled, reminder_rows
+    if enabled():
+        now = time.time();end = now + max(1, min(days, 60)) * 86400
+        rows = assistant_store.calendar_events_overlapping(now, end) + [r for r in reminder_rows(now) if now <= r["when_ts"] < end]
+        return {"commitments": sorted(rows, key=lambda r:r["when_ts"]), "demo_reminders": True}
     return {"commitments": assistant_store.upcoming(days=max(1, min(days, 60)))}
 
 
@@ -2154,6 +2285,10 @@ async def assistant_sync_status(sources: str = "calendar,reminders,email,message
     return sources_snapshot(wanted)
 
 
+# _ARIA_SYNC_NOTE: the Aria demo reads nothing from the Mac. Every native
+# sync push below is refused while it runs (the v5 app also stops syncing), so
+# no real Calendar, Reminders, Mail, Messages, Notes, Contacts or browser
+# history reaches it.
 @app.post("/assistant/sync/calendar")
 async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     """Receive calendar events (or, with source='reminders', native
@@ -2161,6 +2296,10 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
     (which holds the TCC grant) and sync into the commitments store. Each
     `source` is a separate replace-set (see AssistantStore.sync_source), so
     Calendar and Reminders syncing independently can't wipe each other out."""
+    from service.inference.remote_policy import aria_demo_mode as _aria_demo
+    if _aria_demo():
+        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     raw_source = body.get("source", "calendar")
     aliases = {"calendar": "calendar", "apple calendar": "calendar", "apple_calendar": "calendar",
                "reminders": "reminders", "apple reminders": "reminders", "apple_reminders": "reminders"}
@@ -2171,6 +2310,9 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
               if isinstance(raw_source, str) and raw_source.isascii() else None)
     if source is None:
         raise HTTPException(status_code=422, detail="source must be Calendar or Reminders")
+    from service.demo.founder import enabled, PROVENANCE
+    if source == "reminders" and enabled():
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": PROVENANCE}
     diagnostics = body.get("diagnostics") or {}
     if (diagnostics.get("syncing") or diagnostics.get("authorized") is False
             or diagnostics.get("available") is False):
@@ -2223,12 +2365,19 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
     await assistant_hub.publish({"type": "changed"})
+    if source == "calendar":
+        # Behavior learning diffs the fresh Calendar now (cancellations/moves)
+        # instead of on its next tick. No-op unless behavior learning is on.
+        from service.assistant import behavior_runtime
+        behavior_runtime.poke(assistant_store, assistant_hub)
     return {"ok": True, "synced": n}
 
 
 @app.post("/assistant/commitments")
 async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
     """Manually add a reminder/event. Accepts when_ts (epoch) or when_iso."""
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     title = str(body.get("title") or "").strip()
     if not title:
         return {"ok": False, "error": "title required"}
@@ -2251,6 +2400,8 @@ async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/assistant/commitments/{cid}")
 async def assistant_update(cid: str, body: dict[str, Any]) -> dict[str, Any]:
     """Mark a commitment done/dismissed (status)."""
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     status = str(body.get("status") or "").strip()
     if status not in {"active", "done", "dismissed"}:
         return {"ok": False, "error": "status must be active|done|dismissed"}
@@ -2300,6 +2451,11 @@ async def assistant_daily_summary(body: dict[str, Any] | None = None) -> dict[st
     from service.assistant.sync_status import ensure_daily_sources
     from datetime import datetime as _dt
     part = "morning" if _dt.now().hour < 12 else "evening"
+    if aria_demo_mode():
+        # Demo: no native sources to wait for; bring the demo's nudges current
+        # so the summary's Heads up section reflects them (cards arrive too).
+        from service.demo.aria.proactive import refresh_behavior
+        await refresh_behavior(assistant_store, assistant_hub)
     # Never present restored caches as current before source readiness. Awaited
     # ONCE, here, and handed to _sections — which used to repeat the same wait.
     snapshot = await ensure_daily_sources(timeout_seconds=_SOURCE_WAIT_S)
@@ -2348,6 +2504,10 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
     only touched when present: MailReader posts them on separate cadences, so
     a headers-only sync must not wipe out the still-fresh raw cache (and
     vice versa)."""
+    from service.inference.remote_policy import aria_demo_mode as _aria_demo
+    if _aria_demo():
+        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.email_tools import (
         cache_emails, cache_history_headers, cache_raw_emails, set_email_availability)
     if "headers" in body:
@@ -2383,6 +2543,16 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
 async def assistant_sync_notes(body: dict[str, Any]) -> dict[str, Any]:
     """Receive raw Notes.app content from the Swift app (which holds Notes
     Automation access) so search_notes can look through it verbatim."""
+    from service.inference.remote_policy import aria_demo_mode as _aria_demo
+    if _aria_demo():
+        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
+    from service.demo.founder import enabled, PROVENANCE
+    if enabled():
+        # The Aria demo answers Notes from fictional fixtures. In the Intel v5
+        # build the app's Notes reader may still be running from real mode, so
+        # real note content is refused here rather than cached.
+        return {"ok": True, "ignored_native_sync": True, "demo": PROVENANCE}
     from service.tools.notes_tools import cache_notes
     diag = body.get("diagnostics") or {}
     cache_notes(str(body.get("raw") or ""), available=bool(diag.get("available", True)),
@@ -2406,6 +2576,10 @@ async def assistant_contacts_privacy_status() -> dict[str, Any]:
 @app.post("/assistant/sync/browser_history")
 async def assistant_sync_browser_history(body: dict[str, Any]) -> dict[str, Any]:
     """Receive an explicit consent state and authoritative browser snapshot."""
+    from service.inference.remote_policy import aria_demo_mode as _aria_demo
+    if _aria_demo():
+        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.browser_history_tools import apply_browser_history_sync, browser_history_privacy_status
     try:
         applied = apply_browser_history_sync(body)
@@ -2419,6 +2593,10 @@ async def assistant_sync_messages(body: dict[str, Any]) -> dict[str, Any]:
     """Receive recent iMessage/SMS lines from the Swift app (which holds the
     Full Disk Access needed to read chat.db directly) so the messages tool
     can summarize them with the summarizer."""
+    from service.inference.remote_policy import aria_demo_mode as _aria_demo
+    if _aria_demo():
+        # The Aria demo reads nothing from the Mac (see _ARIA_SYNC_NOTE).
+        return {"ok": True, "synced": 0, "ignored_native_sync": True, "demo": "Aria demo — fictional data only"}
     from service.tools.imessage_tools import apply_contacts_sync, cache_messages, contacts_privacy_status
     diag = body.get("diagnostics") or {}
     # Contacts arrive on their own (much slower) schedule from ContactsReader,
@@ -2441,9 +2619,24 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
     """Cancel/delete a commitment. For a real calendar event, ask the Swift app
     to remove it from macOS Calendar (it holds the write grant); the re-sync then
     drops it from the store. Manual items are deleted outright."""
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     c = assistant_store.get(cid)
     if not c:
         return {"ok": False, "error": "not found"}
+    from service.inference.remote_policy import aria_demo_mode
+    if aria_demo_mode() and c["source"] in {"calendar", "reminders"}:
+        # Mirrored from the Aria demo's synthetic world: change it there.
+        from service.demo.aria import tools as aria_tools
+        from service.demo.aria.world import get_world
+        world = get_world()
+        if c["source"] == "calendar":
+            world.cancel_event(c.get("source_id") or "")
+        else:
+            world.update_reminder(c.get("source_id") or "", status="deleted")
+        aria_tools.mirror()
+        await assistant_hub.publish({"type": "changed"})
+        return {"ok": True}
     if c["source"] == "calendar":
         from service.assistant.outbox import request as app_request
         if not c.get("source_id") or c.get("when_ts") is None:
@@ -2526,6 +2719,8 @@ async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, 
 
 @app.post("/assistant/events/{event_id}/claim")
 async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     if set(body) != {"kind", "action_id", "payload"}:
         raise HTTPException(status_code=422, detail="kind, action_id and exact payload are required")
     try:
@@ -2564,9 +2759,9 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     """Send the exact editable draft the user approved in Wisp's draft card.
 
     Pressing the card's explicit Send button is the confirmation for this
-    payload. The request still goes through ``send_message`` so recipient
-    resolution, the native Messages bridge, and verified delivery reporting all
-    remain identical to an agent initiated send.
+    payload. Only a literal phone/email recipient is accepted; legacy name-only
+    cards must be prepared again. The native Messages bridge and verified
+    delivery reporting remain those of ``send_message``.
 
     The content heuristics (unfilled placeholders, mid-sentence truncation) are
     the one thing that does NOT apply here: this text is sitting in an editable
@@ -2574,21 +2769,77 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     on it, not a regex. Those checks are for catching the model before a human
     looks — see action_tools.human_reviewed_content.
     """
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     from service.safety.audit import audit
     from service.tools.action_tools import human_reviewed_content, send_message
 
-    to = str(body.get("to") or "").strip()
-    message = str(body.get("text") or "")
-    if not to:
-        return {"ok": False, "result": "Choose a recipient before sending."}
+    from service.tools.registry import _literal_message_recipient
+
+    to = _literal_message_recipient(body.get("to"))
+    message = body.get("text")
+    if to is None:
+        return {"ok": False, "result": "Choose one literal phone number or email address, or create a new draft before sending."}
+    if type(message) is not str:
+        return {"ok": False, "result": "The message must be text."}
     if not message.strip():
         return {"ok": False, "result": "The message is empty."}
-    with human_reviewed_content():
-        result = await send_message(to=to, text=message)
-    ok = result.startswith("Message sent to ")
+    from service.inference.remote_policy import aria_demo_mode
+    if aria_demo_mode():
+        # The Aria demo's draft card sends into the synthetic thread only.
+        from service.demo.aria import tools as aria_tools
+        result = await aria_tools.send_message(to=to, text=message)
+        ok = "Sent (simulated" in result
+    else:
+        with human_reviewed_content():
+            result = await send_message(to=to, text=message)
+        ok = result.startswith("Message sent to ")
     audit("draft_card_send", tool="send_message",
           args={"to": to, "text": message}, result=result, ok=ok)
     return {"ok": ok, "result": result}
+
+
+@app.get("/demo/aria/status")
+async def aria_demo_status() -> dict[str, Any]:
+    """Whether this backend is the Aria demo, and its synthetic-world counts."""
+    if not aria_demo_mode():
+        return {"enabled": False, "counts": None}
+    from service.demo.aria import tools as aria_tools
+    return await asyncio.to_thread(aria_tools.status)
+
+
+@app.get("/demo/aria/topbar")
+async def aria_demo_topbar() -> dict[str, Any]:
+    """The collapsed top bar in the demo: next synthetic event + one proactive
+    chip (from the demo's delivered behavior nudges). Empty outside the demo."""
+    if not aria_demo_mode():
+        return {"enabled": False, "next": None, "chip": None}
+    from service.demo.aria.proactive import topbar
+    return {"enabled": True, **(await asyncio.to_thread(topbar))}
+
+
+@app.post("/demo/aria/reset")
+async def aria_demo_reset() -> dict[str, Any]:
+    """Restore the Aria demo's seeded world and clear its learned behavior.
+
+    Only ever touches demo state (service.paths.state_dir() is the demo
+    directory whenever this is reachable). 409 outside the demo."""
+    if not aria_demo_mode():
+        raise HTTPException(status_code=409, detail="Wisp is not running the Aria demo")
+    from service.demo.aria import tools as aria_tools
+    from service.demo.aria.world import get_world
+    counts = await asyncio.to_thread(get_world().reset)
+    from service.behavior.flags import env_enabled as behavior_enabled
+    if behavior_enabled():
+        from service.assistant import behavior_runtime
+        await asyncio.to_thread(behavior_runtime.clear_demo_state, assistant_store)
+    await asyncio.to_thread(aria_tools.mirror)
+    await assistant_hub.publish({"type": "changed"})
+    # Re-learn the persona and re-fire today's nudges (fresh budget) in the
+    # background, so the reset returns at once.
+    from service.demo.aria.proactive import refresh_behavior
+    asyncio.create_task(refresh_behavior(assistant_store, assistant_hub))
+    return {"ok": True, "counts": counts}
 
 
 @app.get("/assistant/events")
@@ -2604,6 +2855,8 @@ async def assistant_events() -> StreamingResponse:
 
 @app.post("/agent/approve")
 async def approve(body: dict[str, Any]) -> dict[str, Any]:
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
     sid, action_id = body.get("session_id"), body.get("action_id")
     approved, request_id = body.get("approved"), body.get("request_id")
     # A decision authorizes or refuses a real action, so the body is validated
