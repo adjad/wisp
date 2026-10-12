@@ -306,6 +306,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_full_routing.py",
     "tests/test_model_led_effect_ownership.py",
     "tests/test_model_led_1_2_5_boundaries.py",
+    # httpx MockTransport only; redirect and strict-host checks never touch the network.
+    "tests/test_http_request_redirects.py",
+    "tests/test_web_strict_host.py",
     # Synthetic MIME fixtures only; offline parser tests never access real Mail.
     "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
