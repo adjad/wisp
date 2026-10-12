@@ -580,7 +580,12 @@ def test_missing_model_fails_the_same_way(engine, instant_sleep):
     engine.client.ensure_only = quick
     events = endpoint_turn("hello")
     errors = [e["message"] for e in events if e["type"] == "error"]
-    assert errors == ["Inference readiness timed out on local"]
+    # The outer readiness deadline and the inner settle loop share the same 0.2 s
+    # budget, so which one reports first depends on scheduling (loaded CI runners
+    # hit the inner one). Both are the same user-visible failure: one clear error
+    # and no chat call.
+    assert errors in (["Inference readiness timed out on local"],
+                      [f"could not load {MODEL!r}: it is not installed in oMLX."])
     assert "chat" not in engine.fake.sequence()
 
 
