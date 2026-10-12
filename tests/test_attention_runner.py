@@ -518,3 +518,70 @@ async def test_a_long_lead_lets_a_matching_reminder_reach_the_effect_so_reuse_is
     out = await run(mom_thread(), MON_9AM + 60, ledger, f, commitments=[existing], lead_minutes=180)
     assert [o.state for o in out] == ["created"] and len(f.created) == 1
     assert f.created[0].due_ts == event - 180 * 60                    # the very time that reminder already holds
+
+
+# ---- Release Auditor repairs: DST lead time, ledger reads, private settings, purge ----------
+
+def _plan_for(event, lead=30):
+    r = Resolved(start=event, day=event.date(), has_clock=True, quote="Quad", at=0)
+    now = event.timestamp() - 6 * HOUR
+    return live.plan_reminder(Item("msg:x", "messages", now, "incoming", "Mom", "Mom", "Meet at the Quad"),
+                              r, now, Settings(lead_minutes=lead), TZ, who="Mom")
+
+
+def test_spring_forward_lead_is_absolute_not_a_clock_face_subtraction():
+    # 03:15 PDT on 2027-03-14 is 10:15 UTC; thirty minutes earlier is 09:45 UTC = 01:45 PST.
+    event = datetime(2027, 3, 14, 3, 15, tzinfo=ZONE)
+    plan = _plan_for(event)
+    assert plan.event_ts == event.timestamp()
+    assert plan.due_ts == event.timestamp() - 1800
+    due = datetime.fromtimestamp(plan.due_ts, ZONE)
+    assert (due.hour, due.minute) == (1, 45) and due.timestamp() < event.timestamp()
+
+
+def test_fall_back_lead_is_absolute_in_the_repeated_hour():
+    event = datetime(2027, 11, 7, 1, 15, tzinfo=ZONE, fold=1)        # the second 01:15, in PST
+    plan = _plan_for(event)
+    assert plan.event_ts == event.timestamp()
+    assert plan.due_ts == event.timestamp() - 1800                   # 01:45 PDT, not 90 minutes early
+
+
+def test_a_pre_existing_loose_settings_tmp_file_is_tightened(tmp_path):
+    path = live.settings_path(tmp_path)
+    path.parent.mkdir(parents=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text("old")
+    tmp.chmod(0o644)
+    live.save_settings(path, Settings(mode="shadow"))
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+def test_ledger_reads_take_the_lock(ledger):
+    import threading
+    ledger.claim("a", now=MON_9AM)
+    calls = ("get", ("a",)), ("holds_effect", ("a",)), ("known", (["a"],)), ("count_since", (0.0,)), ("recent", ())
+    for name, args in calls:
+        done = threading.Event()
+        with ledger._lock:                                             # a writer is mid-transaction
+            t = threading.Thread(target=lambda: (getattr(ledger, name)(*args), done.set()))
+            t.start()
+            assert not done.wait(0.2), f"{name} did not wait for the lock"
+        t.join(2)
+        assert done.is_set()
+
+
+def test_purge_removes_words_but_keeps_the_id_the_state_and_a_pending_undo(ledger):
+    old = MON_9AM - live.LOOKBACK_S - 100
+    ledger.claim("shadowed", title="T", due_ts=old, now=old)
+    ledger.finish("shadowed", "shadow", {"quote": "q", "why": ["w"], "when": "x"}, old)
+    ledger.claim("done", title="T2", due_ts=old + 50, now=old)
+    ledger.finish("done", "created", {"quote": "q", "result": {"ok": True, "created": {"source": "manual", "id": "1"}}}, old)
+    ledger.claim("pending", title="T3", due_ts=MON_9AM + 5 * 86400, now=old)
+    ledger.finish("pending", "created", {"quote": "q", "result": {"created": {"source": "manual", "id": "2"}}}, old)
+    assert ledger.purge_content(MON_9AM - live.LOOKBACK_S, MON_9AM) == 2
+    assert ledger.purge_content(MON_9AM - live.LOOKBACK_S, MON_9AM) == 0       # idempotent
+    s, d, p = ledger.get("shadowed"), ledger.get("done"), ledger.get("pending")
+    assert s["state"] == "shadow" and s["title"] is None and s["detail"] == {}
+    assert d["state"] == "created" and d["title"] is None and d["detail"]["result"]["created"]["id"] == "1"
+    assert "quote" not in d["detail"]
+    assert p["title"] == "T3" and p["detail"]["quote"] == "q"                 # not yet due: Undo may need it

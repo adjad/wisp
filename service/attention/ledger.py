@@ -60,6 +60,25 @@ class Ledger:
                 "WHERE state='claimed' AND decided_at < ?", (now, now - STALE_CLAIM_S))
             return cur.rowcount
 
+    def purge_content(self, older_than: float, now: float | None = None) -> int:
+        """Drop the message-derived text (title, quote, reasons) from rows decided before
+        `older_than`, keeping `source_id`, state, times and the creation identity.
+
+        The runner never looks at a message older than its lookback again, so the words are of no
+        further use, while the id and state are what keep that message from being acted on twice.
+        A `created` reminder that has not yet come due keeps its title: Undo matches the live
+        reminder against it. Idempotent."""
+        now = now if now is not None else time.time()
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE actions SET title=NULL, "
+                "detail=json_remove(detail,'$.quote','$.why','$.when','$.result.error') "
+                "WHERE decided_at<? AND (state!='created' OR due_ts IS NULL OR due_ts<?) "
+                "AND (title IS NOT NULL OR json_extract(detail,'$.quote') IS NOT NULL "
+                "OR json_extract(detail,'$.why') IS NOT NULL OR json_extract(detail,'$.result.error') IS NOT NULL)",
+                (older_than, now))
+            return cur.rowcount
+
     def claim(self, source_id: str, *, title: str | None = None, due_ts: float | None = None,
               event_ts: float | None = None, now: float | None = None) -> bool:
         """True exactly once per message. False means someone already decided it."""
@@ -81,13 +100,15 @@ class Ledger:
                  json.dumps(detail or {}, sort_keys=True), source_id))
 
     def get(self, source_id: str) -> dict | None:
-        row = self._db.execute("SELECT * FROM actions WHERE source_id=?", (source_id,)).fetchone()
+        with self._lock:
+            row = self._db.execute("SELECT * FROM actions WHERE source_id=?", (source_id,)).fetchone()
         return _row(row) if row else None
 
     def holds_effect(self, source_id: str) -> bool:
         """True when this message was claimed for a real action that may exist (not shadow, not
         a verified failure). The other attention path must leave such a message alone."""
-        row = self._db.execute("SELECT state FROM actions WHERE source_id=?", (source_id,)).fetchone()
+        with self._lock:
+            row = self._db.execute("SELECT state FROM actions WHERE source_id=?", (source_id,)).fetchone()
         return bool(row) and row[0] in ("claimed", "created", "unknown", "undone")
 
     def known(self, source_ids: list[str]) -> set[str]:
@@ -95,8 +116,9 @@ class Ledger:
         for i in range(0, len(source_ids), 500):          # stay under SQLite's variable limit
             chunk = source_ids[i:i + 500]
             marks = ",".join("?" * len(chunk))
-            found.update(r[0] for r in self._db.execute(
-                f"SELECT source_id FROM actions WHERE source_id IN ({marks})", chunk))
+            with self._lock:
+                found.update(r[0] for r in self._db.execute(
+                    f"SELECT source_id FROM actions WHERE source_id IN ({marks})", chunk))
         return found
 
     def count_since(self, since_ts: float, states: tuple[str, ...] = ("created",),
@@ -104,16 +126,20 @@ class Ledger:
         """Rows decided since `since_ts` in any of `states`. `exclude` leaves one message out,
         so a cap check does not count the claim the message under decision has just made."""
         marks = ",".join("?" * len(states))
-        return self._db.execute(
-            f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
-            "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
+        with self._lock:
+            return self._db.execute(
+                f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
+                "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
 
     def recent(self, limit: int = 20) -> list[dict]:
-        return [_row(r) for r in self._db.execute(
-            "SELECT * FROM actions ORDER BY decided_at DESC LIMIT ?", (limit,))]
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM actions ORDER BY decided_at DESC LIMIT ?", (limit,)).fetchall()
+        return [_row(r) for r in rows]
 
     def meta(self, key: str) -> str | None:
-        row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        with self._lock:
+            row = self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row[0] if row else None
 
     def mark_live(self, at: float) -> None:

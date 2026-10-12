@@ -18,7 +18,7 @@ from service.assistant.hub import hub
 from service.assistant.store import assistant_store
 from service.attention.detectors import local_timezone
 from service.attention.ledger import Ledger
-from service.attention.live import Plan, load_settings, local_midnight, settings_path
+from service.attention.live import LOOKBACK_S, Plan, load_settings, local_midnight, settings_path
 from service.attention.runner import process
 from service.paths import MOE_DIR
 
@@ -45,6 +45,41 @@ def reset() -> None:
     if _task is not None and not _task.done():
         _task.cancel()
     _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
+
+
+def _remote_profile_block() -> str | None:
+    """Why this process must not read messages or write reminders at all, or None.
+
+    The Aria demo and the read-only founder build run on synthetic or fixed data; the runner
+    would otherwise read the real Messages feed and write real reminders behind them."""
+    try:
+        from service.inference.remote_policy import aria_demo_mode, remote_read_only_mode
+        if aria_demo_mode():
+            return "the Aria demo build does not run the attention runner"
+        if remote_read_only_mode():
+            return "the read-only remote build does not run the attention runner"
+    except Exception:  # noqa: BLE001 — if the profile cannot be read, assume the restrictive one
+        return "the remote-only profile could not be read"
+    return None
+
+
+def _policy_block(**args) -> str | None:
+    """Why the safety policy forbids a reminder write right now, or None when it is ALLOW.
+
+    The runner writes through the same door as the model's `add_reminder`, so it answers to the
+    same policy: view-only mode, the remote-only profile checks, grants. Anything short of ALLOW
+    (a CONFIRM has nobody to ask here) is a refusal. A policy that cannot be evaluated is one too."""
+    try:
+        from service.safety import Tier, decide
+        dec = decide("assistant_write", args, tool="add_reminder")
+    except Exception as exc:  # noqa: BLE001
+        return f"safety policy unavailable ({type(exc).__name__})"
+    return None if dec.tier is Tier.ALLOW else (dec.reason or dec.tier.value)
+
+
+def _audit(event: str, **fields) -> None:
+    from service.safety import audit
+    audit(event, **fields)
 
 
 def _commitments(now: float) -> list[dict]:
@@ -124,6 +159,11 @@ async def create_reminder(plan: Plan) -> dict:
     carries `created: None` because this call did not make it.
     """
     from service.tools.assistant_tools import add_reminder
+    blocked = _remote_profile_block() or _policy_block(title=plan.title, kind="reminder")
+    if blocked:
+        # Defence in depth: the tick already checked, but view-only can be switched on mid-pass.
+        _audit("deny", tool="add_reminder", source="attention", reason=blocked)
+        return {"ok": False, "status": "failed", "error": f"BLOCKED by safety policy: {blocked}"}
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
     # and a time in a repeated DST hour keeps its meaning.
     when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
@@ -137,6 +177,8 @@ async def create_reminder(plan: Plan) -> dict:
     except Exception:  # noqa: BLE001
         before = set()
     text = await add_reminder(plan.title, when_iso, "reminder")
+    _audit("allow", tool="add_reminder", source="attention",
+           args={"title": plan.title, "when_iso": when_iso, "kind": "reminder"})
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
         return {"ok": True, "status": "succeeded", "where": where,
@@ -183,14 +225,33 @@ async def _publish(event: dict) -> None:
 async def run_tick(now: float | None = None) -> list:
     """One scheduler pass. Cheap when nothing changed; never raises into the scheduler."""
     global _last_fingerprint, _last_run
+    if _remote_profile_block():
+        return []                                     # never read or write on a demo/remote build
     now = now if now is not None else time.time()
     if now - _last_run < MIN_INTERVAL_S:
         return []
     _last_run = now
     settings = load_settings(settings_path(MOE_DIR))
+    ledger = get_ledger()
+    try:
+        # The words of a message are only needed inside the lookback; keep the id and the state.
+        ledger.purge_content(now - LOOKBACK_S, now)
+    except Exception:  # noqa: BLE001 — housekeeping must never stop a pass
+        pass
     if settings.mode == "off":
-        get_ledger().set_meta("last_mode", "off")     # so resuming live re-baselines
+        ledger.set_meta("last_mode", "off")           # so resuming live re-baselines
         return []
+    if settings.mode == "live":
+        blocked = _policy_block()
+        if blocked:
+            # View-only (or a remote profile) forbids the write. Nothing is claimed or recorded:
+            # the pass is treated as "off", so when writes are allowed again the switch back into
+            # live re-baselines at that moment and the messages that arrived meanwhile are never
+            # swept into reminders after the fact.
+            if ledger.meta("last_mode") != "off":
+                _audit("deny", tool="add_reminder", source="attention", reason=blocked)
+            ledger.set_meta("last_mode", "off")
+            return []
     from service.tools import imessage_tools
     feed = imessage_tools.structured_messages_snapshot()
     # Only a read completed in THIS launch is trusted; restored rows are not "new".
@@ -203,7 +264,7 @@ async def run_tick(now: float | None = None) -> list:
         return []
     outcomes = await process(
         records=records, commitments=_commitments(now), now=now, tz=local_timezone(),
-        settings=settings, ledger=get_ledger(), create=create_reminder, publish=_publish,
+        settings=settings, ledger=ledger, create=create_reminder, publish=_publish,
         fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for,
         handled_elsewhere=_handled_by_catch)
     if not getattr(outcomes, "limited", False):
@@ -262,6 +323,10 @@ async def undo(source_id: str) -> dict:
     list view collapses into the same row are not passed to the deletion. The deletion itself is
     the existing verified path (`_retire`), which reads the native item back.
     """
+    blocked = _remote_profile_block() or _policy_block(title=source_id, kind="reminder")
+    if blocked:
+        _audit("deny", tool="add_reminder", source="attention_undo", reason=blocked)
+        return {"ok": False, "error": f"Blocked by the safety policy: {blocked}"}
     ledger = get_ledger()
     row = ledger.get(source_id)
     if not row or row["state"] != "created":
@@ -278,6 +343,7 @@ async def undo(source_id: str) -> dict:
         if error:
             return {"ok": False, "error": error}
         ledger.finish(source_id, "undone", {**row["detail"], "undone": True})
+        _audit("allow", tool="add_reminder", source="attention_undo", args={"source_id": source_id})
     finally:
         _undoing.discard(source_id)
     try:

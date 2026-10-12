@@ -51,6 +51,19 @@ def isolated(tmp_path, monkeypatch):
     wiring.reset()
 
 
+@pytest.fixture(autouse=True)
+def writes_allowed():
+    """The shipped default is view-only; these tests exercise the live path, so allow writes
+    (the view-only behaviour has its own tests below) and put the switch back afterwards."""
+    from service.safety import policy
+    before = (policy.read_only(), policy.full_access())
+    policy.set_read_only(False)
+    policy.set_full_access(False)          # full-access would allow everything and hide a bypass
+    yield
+    policy.set_read_only(before[0])
+    policy.set_full_access(before[1])
+
+
 @pytest.fixture
 def feed(monkeypatch):
     from service.tools import imessage_tools
@@ -634,3 +647,127 @@ async def test_a_change_made_outside_the_endpoint_still_re_baselines(isolated, f
     feed["value"] = {**FEED, "records": FEED["records"] + [rec("x", "Mom", "Lunch today at 12pm", NOW + 5)]}
     assert await wiring.run_tick(NOW + 300) == []                      # conservative fallback
     assert float(wiring.get_ledger().meta("enabled_at")) == NOW + 300
+
+
+# ---- safety policy, audit and remote profiles (Release Auditor H1, L3) ----------------------
+
+def audit_log(monkeypatch):
+    events = []
+    monkeypatch.setattr(wiring, "_audit", lambda event, **f: events.append((event, f)))
+    return events
+
+
+async def test_view_only_mode_creates_nothing_and_claims_nothing(isolated, feed, effects, monkeypatch):
+    from service.safety import policy
+    events = audit_log(monkeypatch)
+    go_live(isolated)
+    policy.set_read_only(True)
+    assert await wiring.run_tick(NOW) == []
+    assert effects["created"] == [] and wiring.get_ledger().get("msg:m") is None
+    assert [e for e, _ in events] == ["deny"]
+    assert "view-only" in events[0][1]["reason"]
+    assert await wiring.run_tick(NOW + 300) == []                 # still denied, and not re-audited
+    assert [e for e, _ in events] == ["deny"]
+
+
+async def test_turning_view_only_off_does_not_sweep_what_arrived_while_it_was_on(isolated, feed, effects):
+    from service.safety import policy
+    go_live(isolated)
+    policy.set_read_only(True)
+    await wiring.run_tick(NOW)
+    policy.set_read_only(False)
+    assert await wiring.run_tick(NOW + 300) == []                 # re-baselined: the old message is not acted on
+    assert effects["created"] == []
+    later = {**FEED, "records": FEED["records"] + [rec("n", "Mom", "Dinner at 7PM tonight", NOW + 400)]}
+    feed["value"] = later
+    out = await wiring.run_tick(NOW + 600)
+    assert [o.source_id for o in out] == ["msg:n"] and len(effects["created"]) == 1
+
+
+async def test_shadow_mode_is_unaffected_by_view_only(isolated, feed, effects):
+    from service.safety import policy
+    policy.set_read_only(True)
+    out = await wiring.run_tick(NOW)                              # default settings: shadow
+    assert [o.state for o in out] == ["shadow"] and effects["created"] == []
+
+
+async def test_create_reminder_itself_refuses_in_view_only_and_never_reaches_the_tool(isolated, monkeypatch):
+    from service.safety import policy
+    from service.tools import assistant_tools
+    events = audit_log(monkeypatch)
+    called = []
+
+    async def tool(*a, **k):
+        called.append(a)
+        return "Reminder set: x"
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    policy.set_read_only(True)
+    got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert got["ok"] is False and got["status"] == "failed" and "BLOCKED" in got["error"]
+    assert called == [] and [e for e, _ in events] == ["deny"]
+
+
+async def test_an_allowed_create_is_audited_like_any_tool_write(isolated, monkeypatch):
+    from service.tools import assistant_tools
+    events = audit_log(monkeypatch)
+
+    async def tool(*a, **k):
+        return "(error: nope)"
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert events and events[0][0] == "allow" and events[0][1]["tool"] == "add_reminder"
+
+
+async def test_undo_refuses_in_view_only_and_deletes_nothing(store, monkeypatch):
+    from service.safety import policy
+    events = audit_log(monkeypatch)
+    created_row()
+    store["heads"] = [native()]
+    policy.set_read_only(True)
+    got = await wiring.undo("msg:m")
+    assert got["ok"] is False and "safety policy" in got["error"]
+    assert store["retired"] == [] and wiring.get_ledger().get("msg:m")["state"] == "created"
+    assert [e for e, _ in events] == ["deny"]
+    policy.set_read_only(False)
+    assert await wiring.undo("msg:m") == {"ok": True}
+
+
+async def test_a_remote_only_profile_blocks_writes_through_the_policy(isolated, feed, effects, monkeypatch):
+    from service.inference import remote_policy
+    go_live(isolated)
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    monkeypatch.setattr(remote_policy, "remote_tool_allowed", lambda tool: False)
+    monkeypatch.setattr(remote_policy, "aria_demo_mode", lambda: False)
+    monkeypatch.setattr(remote_policy, "remote_read_only_mode", lambda: False)
+    assert await wiring.run_tick(NOW) == []
+    assert effects["created"] == [] and wiring.get_ledger().get("msg:m") is None
+    created_row()
+    assert (await wiring.undo("msg:m"))["ok"] is False
+
+
+@pytest.mark.parametrize("which", ["aria_demo_mode", "remote_read_only_mode"])
+async def test_demo_and_founder_builds_never_read_or_write_even_in_shadow(isolated, monkeypatch, which):
+    from service.inference import remote_policy
+    from service.tools import imessage_tools
+    monkeypatch.setattr(remote_policy, which, lambda: True)
+    reads = []
+    monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: reads.append(1) or FEED)
+    assert await wiring.run_tick(NOW) == [] and reads == []
+    assert wiring.get_ledger().recent() == []
+    created_row()
+    assert (await wiring.undo("msg:m"))["ok"] is False
+
+
+async def test_old_message_text_is_purged_from_the_ledger_during_a_tick(isolated, feed, effects):
+    led = wiring.get_ledger()
+    old = NOW - live.LOOKBACK_S - 3600
+    led.claim("msg:old", title="Mom: secret words", due_ts=old + 100, now=old)
+    led.finish("msg:old", "shadow", {"quote": "secret words", "when": "today", "why": ["x"]}, old)
+    led.claim("msg:new", title="Mom: fresh words", due_ts=NOW + 100, now=NOW - 60)
+    led.finish("msg:new", "shadow", {"quote": "fresh words"}, NOW - 60)
+    await wiring.run_tick(NOW)
+    gone = led.get("msg:old")
+    assert gone["state"] == "shadow" and gone["title"] is None
+    assert "quote" not in gone["detail"] and "why" not in gone["detail"]
+    assert led.get("msg:new")["detail"]["quote"] == "fresh words"
+    assert led.known(["msg:old"]) == {"msg:old"}                  # still never acted on again

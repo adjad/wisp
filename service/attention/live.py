@@ -76,6 +76,7 @@ def save_settings(path: Path, settings: Settings) -> Settings:
     os.chmod(path.parent, 0o700)
     tmp = path.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)             # a pre-existing .tmp keeps its old mode through O_CREAT
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         json.dump(asdict(settings), f, indent=1, sort_keys=True)
     tmp.replace(path)
@@ -180,13 +181,15 @@ def plan_reminder(source: Item, r: Resolved, now_ts: float, s: Settings, tz: str
         event = r.start.astimezone(zone)
         if event.timestamp() <= now_ts + 30:
             return None
-        due = max(event - timedelta(minutes=s.lead_minutes), now + timedelta(seconds=MIN_LEAD_S))
-        due = min(due, event)
+        # Absolute time, not wall-clock arithmetic: subtracting a timedelta from an aware datetime
+        # moves the clock face, which across a DST change lands on a nonexistent or repeated hour
+        # and shifts the lead by an hour.
+        due_ts = min(max(event.timestamp() - s.lead_minutes * 60, now_ts + MIN_LEAD_S), event.timestamp())
         label_day = "today" if event.date() == now.date() else (
             "tomorrow" if event.date() == (now + timedelta(days=1)).date() else event.strftime("%a %b %-d"))
         when_label = f"{label_day} at {event.strftime('%-I:%M %p').lstrip('0')}"
         title = _clip(f"{label}: {quote} ({event.strftime('%-I:%M %p').lstrip('0')})", TITLE_MAX)
-        return Plan(title, due.timestamp(), event.timestamp(), when_label, quote)
+        return Plan(title, due_ts, event.timestamp(), when_label, quote)
     if r.day is None:
         return None
     morning = datetime.combine(r.day, dtime(s.default_hour, 0), zone)
