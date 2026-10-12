@@ -1948,6 +1948,119 @@ print('external venv readable; private home and writes denied')
         self.assertNotIn("*.zip", job)
 
 
+    def workflow_job(self, workflow, job):
+        """Text of one top-level job; stdlib only (no YAML parser here)."""
+        marker = f"\n  {job}:\n"
+        self.assertEqual(workflow.count(marker), 1, job)
+        start = workflow.index(marker) + 1
+        following = [workflow.find(f"\n  {name}", start + 1) for name in
+                     ("preview:", "simulation-qa:", "full:", "verify:", "release:", "publish-ad-hoc-release:",
+                      "# ", "python-regressions:")]
+        ends = [value for value in following if value > start]
+        return workflow[start:min(ends) if ends else len(workflow)]
+
+    def test_pull_requests_split_preview_build_from_simulation_qa(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        pr_only = "    if: github.event_name == 'pull_request'\n"
+        preview = self.workflow_job(workflow, "preview")
+        qa = self.workflow_job(workflow, "simulation-qa")
+        for job in (preview, qa):
+            self.assertIn(pr_only, job)
+            self.assertIn("runs-on: macos-15", job)
+            self.assertIn("persist-credentials: false", job)
+            self.assertIn('test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"', job)
+            self.assertIn('echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"', job)
+            self.assertIn("sha: ${{ steps.candidate.outputs.sha }}", job)
+            self.assertIn("pipeline.check_locks()", job)
+            self.assertNotIn("secrets.", job)
+            self.assertNotIn("download-artifact", job)
+            self.assertNotIn("wisp-build all", job)
+        self.assertIn("./scripts/wisp-build preview --strict-toolchain --output dist/preview", preview)
+        self.assertNotIn("wisp-build test", preview)
+        self.assertIn("isolated_acl_fixture.py --ephemeral-macos", preview)
+        self.assertIn("mini_artifact.py --source-sha", preview)
+        self.assertIn("tests/test_primary_runtime_completion.py", preview)
+        self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
+        self.assertNotIn("wisp-build preview", qa)
+
+    def test_main_tags_and_dispatch_keep_the_unchanged_full_gate(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        full = self.workflow_job(workflow, "full")
+        self.assertIn("    if: github.event_name != 'pull_request'\n", full)
+        self.assertIn("./scripts/wisp-build all --strict-toolchain --output dist/candidate", full)
+        for step in ("Qualify isolated signed ACL replacement on disposable macOS", "Upload verified candidate",
+                     "Verify synthetic publisher signatures and provisioning transactions",
+                     "Build and verify exact-candidate offline mini artifact", "Upload diagnostics"):
+            self.workflow_step(full, step)
+        self.assertNotIn("wisp-build preview", full)
+        # Releases rebuild from source and depend on the full gate directly; a
+        # skipped pull-request job can never satisfy or skip them.
+        _, signed, adhoc = self.workflow_jobs()
+        self.assertIn("    needs: full\n", signed)
+        self.assertIn("    needs: full\n", adhoc)
+
+    def test_required_check_aggregates_the_event_gates_on_the_exact_head(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        verify = self.workflow_job(workflow, "verify")
+        self.assertEqual(workflow.count("name: Verified macOS artifact\n"), 1)
+        self.assertIn("    name: Verified macOS artifact\n", verify)
+        self.assertIn("    needs: [preview, simulation-qa, full]\n", verify)
+        self.assertIn("    if: ${{ !cancelled() }}\n", verify)
+        self.assertIn("    permissions: {}\n", verify)
+        self.assertNotIn("actions/checkout", verify)
+        self.assertNotIn("secrets.", verify)
+        for needle in ('for gate in "$PREVIEW_RESULT@$PREVIEW_SHA" "$QA_RESULT@$QA_SHA"; do',
+                       'if [ "$gate" != "success@$CANDIDATE_SHA" ]; then',
+                       '[ "$FULL_RESULT" != "success" ]', "PREVIEW_SHA: ${{ needs.preview.outputs.sha }}",
+                       "QA_SHA: ${{ needs.simulation-qa.outputs.sha }}", "PREVIEW_RESULT: ${{ needs.preview.result }}",
+                       "QA_RESULT: ${{ needs.simulation-qa.result }}", "FULL_RESULT: ${{ needs.full.result }}"):
+            self.assertIn(needle, verify)
+        self.assertEqual(verify.count("exit 1"), 2)
+
+    def test_pull_request_regressions_run_only_modules_outside_simulation_qa(self):
+        workflow = (ROOT / ".github/workflows/regression-gate.yml").read_text()
+        job = self.workflow_job(workflow, "python-regressions")
+        self.assertIn("        if: github.event_name == 'pull_request'\n"
+                      "        run: python scripts/test_replay_failure_fixes.py --only-outside-simulation-qa\n", job)
+        self.assertIn("        if: github.event_name != 'pull_request'\n"
+                      "        run: python scripts/test_replay_failure_fixes.py\n", job)
+
+    def test_jobs_reaches_simulation_qa_only_when_requested(self):
+        import native_peer_gate, browser_bridge_gate, release_performance_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, [str(part) for part in command]))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        for jobs, expected in ((None, None), (1, ["--jobs", "1"]), (3, ["--jobs", "3"])):
+            calls.clear()
+            with self.synthetic_profile_metadata(), \
+                    patch.object(p, "_qa_node_runtime", return_value=Path("/usr/bin/true")), \
+                    patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), \
+                    patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation"):
+                p.simulation_tests(FakeRunner(), Path(sys.executable), jobs=jobs)
+            _, command = next(c for c in calls if c[0] == "simulation-qa")
+            if expected is None:
+                self.assertNotIn("--jobs", command)
+            else:
+                self.assertEqual(command[-2:], expected)
+            # The gate inputs and sandbox are unchanged by concurrency.
+            self.assertEqual(command[:2], ["sandbox-exec", "-p"])
+            self.assertIn("--profile", command)
+            self.assertEqual(command[command.index("--profile") + 1], "full")
+
+    def test_jobs_must_be_positive(self):
+        for value in ("0", "-2"):
+            with patch.object(sys, "argv", ["pipeline.py", "test", "--jobs", value, "--dry-run"]), \
+                    patch.object(p, "Runner") as runner, patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    p.main()
+                runner.assert_not_called()
+
     def test_git_source_list_handles_terminating_nul(self):
         with patch.object(p, "git", return_value="service/main.py\0"):
             self.assertEqual(p.source_files(), [ROOT / "service/main.py"])
