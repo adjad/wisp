@@ -1204,7 +1204,9 @@ async def http_request(url: str, method: str = "POST", body: str = "",
             kwargs["content"] = body
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
+        # Never follow redirects: a 307/308 would re-send the body and custom
+        # headers to a host the user never confirmed.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=20) as c:
             r = await c.request(method, url, **kwargs)
     except httpx.TimeoutException:
         return f"(timed out calling {url} — the request may or may not have gone through)"
@@ -1215,6 +1217,10 @@ async def http_request(url: str, method: str = "POST", body: str = "",
     if len(text) > _MAX_RESPONSE_CHARS:
         text = text[:_MAX_RESPONSE_CHARS] + "…[truncated]"
     status = f"HTTP {r.status_code}"
+    if 300 <= r.status_code < 400:
+        location = r.headers.get("location", "(no Location header)")
+        return (f"(request to {url} was redirected ({status}) to {location}; "
+                "the redirect was NOT followed)")
     if r.status_code >= 400:
         return f"(request failed: {method} {url} returned {status}. Response: {text or '(empty)'})"
     return BuiltinCompletion(f"{method} {url} -> {status}. Response: {text or '(empty)'}",
