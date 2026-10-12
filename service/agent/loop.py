@@ -2935,9 +2935,11 @@ async def run_agent(
         # (one attempt), resolved before any call in the batch runs. Like an
         # explicit schema request, it never widens this step's allowed_names:
         # a sibling call to a just-loaded tool is still rejected this step.
-        stub_results: dict[str, str] = {}
-        stub_calls = [(tc.get("id", ""), _clean_tool_name(tc["function"]["name"]))
-                      for tc in tool_calls
+        # Keyed by position: a streamed call can arrive with an empty or
+        # duplicate id, and a real call must never be mistaken for a stub.
+        stub_results: dict[int, str] = {}
+        stub_calls = [(index, _clean_tool_name(tc["function"]["name"]))
+                      for index, tc in enumerate(tool_calls)
                       if discovery is not None and _clean_tool_name(tc["function"]["name"]) in step_stubs]
         if stub_calls:
             try:
@@ -2960,9 +2962,9 @@ async def run_agent(
                     schemas, stub_names = model_led_offer(capability_catalog, tools)
                     turn_tool_names = {s["function"]["name"] for s in schemas}
                 await emit({"type": "routing_discovery", "status": "rejected", "implicit": True})
-            stub_results = {cid: stub_result for cid, _ in stub_calls}
+            stub_results = {index: stub_result for index, _ in stub_calls}
 
-        for tc in tool_calls:
+        for call_index, tc in enumerate(tool_calls):
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
@@ -2990,10 +2992,10 @@ async def run_agent(
                     await emit({"type": "routing_discovery", "status": "rejected"})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
-            if cid in stub_results:
+            if call_index in stub_results:
                 # A call to a tool offered by name only: nothing ran. Its
                 # (shared) discovery receipt or rejection is the tool result.
-                msgs.append({"role": "tool", "tool_call_id": cid, "content": stub_results[cid]})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": stub_results[call_index]})
                 continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
@@ -3518,10 +3520,12 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = [s for s in _admit(tool_schemas(tools))
-                           if s["function"]["name"] not in forbidden_tools]
-                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
-                    schemas.append(discovery_schema(fresh_capability_catalog()))
+                if discovery is not None:
+                    capability_catalog = fresh_capability_catalog()
+                    schemas, stub_names = model_led_offer(capability_catalog, tools)
+                else:
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound

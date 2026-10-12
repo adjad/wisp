@@ -187,9 +187,35 @@ def test_entrypoint_preload_is_a_fail_safe_lexical_head_start(monkeypatch):
     from service import main
     from service.router import reranker
     from service.router.model_led import MAX_PRELOAD
-    picked = main._model_led_preload("remind me friday to email the landlord")
-    assert 0 < len(picked) <= MAX_PRELOAD and "add_reminder" in picked
+    seen = {}
+
+    def ranked(text, *, writing, k, context_open=False):
+        seen.update(text=text, writing=writing, k=k)
+        return ["add_reminder", "get_upcoming"]
+    monkeypatch.setattr(reranker, "ranked_lexical_candidates", ranked)
+    assert main._model_led_preload('remind me to say "delete everything"') == ["add_reminder", "get_upcoming"]
+    assert seen["k"] == MAX_PRELOAD and "delete everything" not in seen["text"]   # quoted words masked
+
     def boom(*args, **kwargs):
         raise RuntimeError("ranking failed")
     monkeypatch.setattr(reranker, "ranked_lexical_candidates", boom)
     assert main._model_led_preload("anything") == []
+
+
+def test_stub_calls_are_matched_by_position_not_id(synthetic):
+    """A streamed response can carry empty ids: a preloaded real call next to a
+    stub call must still run, and the stub must still not."""
+    effects, _ = synthetic
+    stub = {"id": "", "function": {"name": "view_emails", "arguments": "{}"}}
+    real = {"id": "", "function": {"name": "get_upcoming", "arguments": '{"days": 1}'}}
+    run([[stub, real], "Synthetic answer."], model_led_preload=["get_upcoming"])
+    assert effects == [("get_upcoming", {"days": 1})]
+
+
+def test_preloaded_sibling_of_a_stub_call_runs_in_the_same_step(synthetic):
+    # The preloaded tool was already admitted, so it runs; the stub only loads.
+    effects, _ = synthetic
+    client, _, _ = run([[call("view_emails"), call("get_upcoming", days=2)], "Synthetic answer."],
+                       model_led_preload=["get_upcoming"])
+    assert effects == [("get_upcoming", {"days": 2})]
+    assert "view_emails" in names(client.requests[1])
