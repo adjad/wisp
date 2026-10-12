@@ -250,7 +250,7 @@ def my_patterns(query: str) -> str:
         "text": {"type": "string", "description": "description, used when no id is given"},
         "status": {"type": "string", "enum": ["confirmed", "rejected", "active"]},
     }, "required": ["status"]},
-    category="assistant_read",
+    category="assistant_write",
     unavailable_reason=_unavailable(),
     aliases=["that pattern is wrong", "forget that habit", "yes that's right about me"],
 )

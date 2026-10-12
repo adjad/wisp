@@ -419,7 +419,8 @@ def drop_cleanup_script(container: str = "Wisp Demo") -> str:
     """AppleScript deleting ONLY the events `drop` added to the ``container``
     calendar (description carries a ``[wisp-demo-id:drop-…]`` marker). Seeded
     persona events and every other calendar are left alone. Uids are collected
-    first, so deleting never shifts the list being walked. Uids and descriptions
+    first, so deleting never shifts the list being walked, and each event's marker is
+    re-checked by uid right before it is deleted (the bulk lists are paired by index). Uids and descriptions
     are each fetched in ONE bulk Apple event and walked as plain lists; looping
     ``repeat with ev in (every event … whose …)`` would re-run the filtered query
     for every property read (quadratic, timed out on ~200 events)."""
@@ -446,8 +447,12 @@ def drop_cleanup_script(container: str = "Wisp Demo") -> str:
             "\t\tend repeat\n"
             "\t\trepeat with u in doomed\n"
             "\t\t\ttry\n"
-            "\t\t\t\tdelete (first event of wispCal whose uid is (contents of u))\n"
-            "\t\t\t\tset removedCount to removedCount + 1\n"
+            "\t\t\t\tset ev to first event of wispCal whose uid is (contents of u)\n"
+            "\t\t\t\tset d2 to description of ev\n"
+            "\t\t\t\tif d2 is not missing value and d2 contains " + seed.as_string(DROP_MARKER) + " then\n"
+            "\t\t\t\t\tdelete ev\n"
+            "\t\t\t\t\tset removedCount to removedCount + 1\n"
+            "\t\t\t\tend if\n"
             "\t\t\tend try\n"
             "\t\tend repeat\n"
             "\tend if\n"
