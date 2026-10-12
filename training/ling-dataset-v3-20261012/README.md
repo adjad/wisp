@@ -1,7 +1,7 @@
 # Ling dataset V3: Wisp model-led tool calling
 
 Synthetic supervised data that teaches Ling (base: `Ling-3.0-tiny-Wisp-V2-merged`) the protocol Wisp runs in
-MODEL-LED mode: discover first, then use only the loaded tools, chain in the right order, stop when the question
+MODEL-LED mode, protocol S (Ling chooses from ALL tools itself; no Wisp shortlist): load schemas first (by calling a tool name through its name-only stub, or via `get_tool_schemas`), then use only the loaded tools, chain in the right order, stop when the question
 is answered, handle errors and denials honestly, and ask when the request is ambiguous. It is generated from the
 failure classes of the Ling V2 model-led eval (direct real-tool calls with no schema load, loops, chains that never
 finish, weak send/draft paraphrases, silence on errors). Nothing here executes a Wisp tool, contacts a network or
@@ -33,8 +33,17 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
 ```
 
 - Because the offered tools change each round, each assistant step is its own row (`sK` = step index). Round 0 offers
-  only `get_tool_schemas`; after a successful discovery the offered set is the loaded REAL schemas plus
-  `get_tool_schemas` while fewer than two discovery calls have been made.
+  `get_tool_schemas` plus a name-only stub (`{"name": <tool>, "parameters": {"type": "object"}}`, no description or
+  properties) for every admitted catalog tool (~160). A call to a stub is NOT executed: the host treats it as an implicit
+  discovery and returns the standard receipt as that call's result (several stubs in one message = one discovery; families in
+  call order). Stub arguments are `{}` or a partial best guess. After a receipt the offered set is the loaded REAL schemas
+  plus, while fewer than two discoveries (explicit or implicit) have happened, `get_tool_schemas` and stubs for the rest;
+  the assistant must then re-issue the call with full arguments and never answer from the receipt. About 70% of
+  conversations open with a stub call (typically 1-3 stubs for a chain), about 30% with `get_tool_schemas`.
+  SP variant (Wisp 1.3.2): in ~30% of tool-using conversations round 0 also carries 6-12 preloaded REAL schemas (no discovery
+  attempt consumed; counted toward the 24). Half contain the needed tool, called directly with full args; half are decoys, ignored
+  while the right tool is called via its stub. See `preload`, `preload_contains_needed`, `protocol_variant` in provenance.
+  The catalog preamble uses the host's new discovery wording.
 - Only the LAST message of a row is the target (`training: true`). Every earlier assistant message (history or
   in-turn) is `training: false`. System, user and tool messages carry no flag.
 - Tool-call turns have `content: ""` and OpenAI-style `tool_calls` (id, `type: function`, `function.arguments` as a
@@ -55,8 +64,7 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
    Everything before it is context. Run your preprocessing and inspect the prepared labels BEFORE training: the
    trainer must mask every earlier assistant turn, including earlier tool-call turns. The JSON flags alone are not
    proof that a trainer honours them.
-3. Rows are ~4,000 estimated tokens (chars/4, no tokenizer run) because each carries the full system prompt and the
-   offered schemas; targets are ~50 tokens. 2,914 train rows are about 11.6M estimated tokens per epoch. Check the
+3. Rows are ~8,607 estimated tokens on average (chars/4, no tokenizer run) because each carries the full system prompt, the offered schemas and ~160 stubs; targets are ~50 tokens. 2,776 train rows are about 23.9M estimated tokens per epoch. Check the
    real maximum length against your context cap before launching.
 4. `dev.jsonl` is for development only. The Ling eval corpus stays held out; evaluate with the model-led harness, not
    with these rows. No quality improvement has been measured.
@@ -69,10 +77,11 @@ python3 validate.py --check-repro       # full checks incl. byte-identical regen
 ```
 
 `validate.py` replays every conversation: discovery receipts against the host's cumulative expansion rules, the
-offered set per step, JSON-schema validity of every call against the schema offered at that step (types, required,
+offered set per step (loaded schemas + stubs + `get_tool_schemas` while budget remains), JSON-schema validity of every call against the schema offered at that step (types, required,
 enums, no unknown keys), id pairing, no repeated identical call, protocol order, final answer present, row-prefix
 consistency, family split integrity, held-out overlap, exact category counts, authority cues for sends/destructive
 tools, honest handling of denials and errors, slot consistency (weekday/today/tomorrow/clock time vs arguments),
 synthetic-only PII and tool-result length.
 
 See `DATA_CARD.md` for distribution and limitations.
+

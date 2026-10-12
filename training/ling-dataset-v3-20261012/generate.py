@@ -250,6 +250,24 @@ def _sys1(now, web):
 
 # ---------------------------------------------------------------- conversation recorder
 
+SP_P = 0.30     # share of tool-using conversations that start with preloaded real schemas
+DECOY_FAMILIES = {"messages_contacts": ["notes", "mail"], "mail": ["messages_contacts", "notes"], "calendar": ["notes", "mail"],
+                  "notes": ["calendar", "files"], "public_web": ["files", "device"], "files": ["notes", "public_web"],
+                  "device": ["automation", "apps_media"], "automation": ["device", "calendar"], "compute": ["public_web", "device"],
+                  "memory": ["notes", "calendar"], "apps_media": ["device", "automation"], "wisp_activity": ["calendar", "mail"]}
+STUB_P = 0.72   # tuned so ~70% of tool-using conversations open with a stub call (see DATA_CARD)
+
+
+def stub_schema(name):
+    """Round-0 name-only stub: no description, no properties."""
+    return {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+
+
+def catalog_tool_names(web):
+    fam = FAMILY_TOOLS_WEB if web else FAMILY_TOOLS_NOWEB
+    return sorted({t for f in FAMILY_ORDER for t in fam.get(f, [])})
+
+
 def canon(args):
     return json.dumps(args, sort_keys=True, ensure_ascii=False)
 
@@ -270,6 +288,13 @@ class Conv:
         self.seen = set()
         self.facts = {}
         self.short_receipts = rng.random() < 0.35
+        self.force_explicit = False
+        self.stub_calls = {}        # tool -> (tool_call dict, gold entry) for stub calls whose args may be patched
+        self.modes = []             # per discovery event: "stub" | "explicit" (rejected ones included)
+        self.catalog_tools = catalog_tool_names(web)
+        self.preload = []           # SP: real schemas preloaded at round 0 (do not consume a discovery attempt)
+        self.sp_kind = None         # None (pure S) | "hit" | "decoy"
+        self.sp_need = []
 
     # -- setup
     def hist(self, role, text):
@@ -282,9 +307,12 @@ class Conv:
         return self
 
     def _offered(self):
+        """Protocol S: loaded REAL schemas, then (while discovery budget remains) get_tool_schemas + a name-only stub
+        for every other admitted catalog tool."""
         names = list(self.loaded)
         if self.attempts < 2:
             names.append(DISCOVERY)
+            names.extend(t for t in self.catalog_tools if t not in self.loaded)
         return names
 
     def _assistant(self, calls, content=""):
@@ -302,8 +330,65 @@ class Conv:
         self.turn.append({"role": "tool", "tool_call_id": call_id, "content": text})
 
     # -- steps
-    def discover(self, families, tools=None, reject=None):
-        """One get_tool_schemas call. `reject` forces the real host rejection receipt (no expansion)."""
+    def discover(self, families, tools=None, mode=None):
+        """Load schemas. mode 'stub' = call the needed tool names via their stubs (implicit discovery, several at once
+        for a chain); 'explicit' = get_tool_schemas. Default: ~STUB_P stub-first when <=3 new tools are needed."""
+        if not self.steps and not self.loaded and self.attempts == 0 and tools and not self.force_explicit and mode is None:
+            self._maybe_preload(tools)
+        new = [t for t in (tools or []) if t not in self.loaded]
+        if tools and not new:
+            return self                       # SP hit: everything needed is already loaded, no loading step
+        if self.sp_kind == "decoy" and not self.modes and 1 <= len(new) <= 3:
+            mode = "stub"
+        if mode is None:
+            ok = tools is not None and 1 <= len(new) <= 3 and not self.force_explicit
+            mode = "stub" if ok and self.r.random() < STUB_P else "explicit"
+        if mode == "stub":
+            return self._stub_discover(new)
+        return self._explicit_discover(families, tools)
+
+    def _maybe_preload(self, tools):
+        """SP (Wisp 1.3.2): ~SP_P of tool-using conversations start with 6-12 PRELOADED real schemas. Half contain the
+        needed tool(s) (call directly on round 0); half are plausible-but-wrong decoys (ignore them, call the stub)."""
+        if len(tools) > 8 or self.r.random() >= SP_P:
+            return
+        k = self.r.randint(6, 12)
+        need = list(dict.fromkeys(tools))
+        fams = list(dict.fromkeys(TOOL_FAMILY[t] for t in need))
+        pool_fams = list(dict.fromkeys(f for fa in fams for f in DECOY_FAMILIES.get(fa, ["notes", "files"])))
+        fam = FAMILY_TOOLS_WEB if self.web else FAMILY_TOOLS_NOWEB
+        decoys = [t for f in pool_fams for t in fam.get(f, []) if t not in need]
+        if self.r.random() < 0.5:                                   # hit
+            extra = self.r.sample(decoys, min(len(decoys), max(0, k - len(need))))
+            self.preload = list(dict.fromkeys(need + extra))
+            self.sp_kind = "hit"
+        else:                                                       # decoy
+            self.preload = self.r.sample(decoys, min(len(decoys), k))
+            self.sp_kind = "decoy"
+        self.preload = [t for t in self.catalog_tools if t in set(self.preload)] if self.sp_kind else []
+        assert 6 <= len(self.preload) <= 12 or (self.sp_kind == 'hit' and len(self.preload) <= 12), self.preload
+        self.loaded = list(self.preload)
+        self.sp_need = need
+
+    def _stub_discover(self, new):
+        assert new and self.attempts < 2
+        msg = self._assistant([(t, {}) for t in new])
+        self.attempts += 1
+        self.modes.append("stub")
+        fams = list(dict.fromkeys(TOOL_FAMILY[t] for t in new))
+        names = list(dict.fromkeys([*self.loaded, *new]))
+        assert len(names) <= 24 and len(fams) <= 3
+        self.loaded = names
+        receipt = json.dumps({"schema_discovery": "ready_next_step", "families": fams, "available_tools": names,
+                              "source_tools_executed": False})
+        for tc, t in zip(msg["tool_calls"], new):
+            g = {"name": t, "arguments": {}, "stub": True}
+            self.gold.append(g)
+            self.stub_calls[t] = (tc, g)
+            self._tool_result(tc["id"], receipt)
+        return self
+
+    def _explicit_discover(self, families, tools=None):
         args = {"families": list(families)}
         if tools is not None:
             args["tools"] = list(tools)
@@ -312,16 +397,11 @@ class Conv:
         self.gold.append({"name": DISCOVERY, "arguments": args})
         cid = msg["tool_calls"][0]["id"]
         self.attempts += 1
+        self.modes.append("explicit")
         fam = FAMILY_TOOLS_WEB if self.web else FAMILY_TOOLS_NOWEB
         allowed = {n for f in families for n in fam[f]}
         req = list(tools) if tools is not None else sorted(allowed)
-        ok = set(req) <= allowed and reject is None
-        if reject is not None:
-            assert not ok or reject == "forced"
-        if not ok:
-            self._tool_result(cid, "Schema selection rejected: Requested tools must belong to the selected admitted "
-                                   "families. No source was read or action performed.")
-            return self
+        assert set(req) <= allowed, (families, req)
         names = list(dict.fromkeys([*self.loaded, *req]))
         assert len(names) <= 24
         self.loaded = names
@@ -337,6 +417,8 @@ class Conv:
         assert not set(bad_tools) <= allowed
         msg = self._assistant([(DISCOVERY, args)])
         self.gold.append({"name": DISCOVERY, "arguments": args, "rejected": True})
+        self.modes.append("explicit")
+        self.force_explicit = True
         i, o, l, _ = self.steps[-1]
         self.steps[-1] = (i, o, l, False)
         self.attempts += 1
@@ -355,6 +437,14 @@ class Conv:
             assert key not in self.seen, f"identical repeated call {key}"
             self.seen.add(key)
             self.gold.append({"name": n, "arguments": a})
+            if n in self.stub_calls:
+                tc, g = self.stub_calls.pop(n)
+                if len(a) >= 2 and self.r.random() < 0.35:       # "best guess": a proper, non-empty subset of the real arguments
+                    keys = list(a)
+                    keep = sorted(self.r.sample(range(len(keys)), self.r.randint(1, len(keys) - 1)))
+                    guess = {keys[i]: a[keys[i]] for i in keep}
+                    tc["function"]["arguments"] = json.dumps(guess, ensure_ascii=False)
+                    g["arguments"] = guess
         msg = self._assistant([(n, a) for n, a, _ in specs])
         for tc, (_, _, res) in zip(msg["tool_calls"], specs):
             self._tool_result(tc["id"], res)
@@ -398,7 +488,7 @@ class Conv:
                 if m["role"] == "assistant":
                     m["training"] = False
             rows.append({"id": f"{row_id_base}-s{k}", "conversation_id": self.cid,
-                         "tools": [DISC if n == DISCOVERY else REG[n] for n in offered],
+                         "tools": [DISC if n == DISCOVERY else (REG[n] if n in loaded else stub_schema(n)) for n in offered],
                          "messages": msgs + [tgt]})
         return rows
 
@@ -413,7 +503,8 @@ class Conv:
             turn.append(m)
         msgs = self._sys_msgs(loaded_final) + self._prefix() + turn
         return {"conversation_id": self.cid, "now": now_line(self.now), "messages": msgs,
-                "tools_per_round": [o for _, o, _, _ in self.steps]}
+                "tools_per_round": [{"real_schemas": l, "get_tool_schemas": DISCOVERY in o, "name_only_stubs": sum(1 for n in o if n not in l and n != DISCOVERY)}
+                                    for _, o, l, _ in self.steps]}
 
 
 def _clean(m, keep_flag=False):
@@ -3786,7 +3877,8 @@ def main():
                 "family_id": b["fid"], "scenario_id": f"{b['fid']}-{scen}", "template_id": f"{b['fid']}-t{b['meta'].get('template', 0)}",
                 "gold_calls": gold, "targeted_failure_class": FAMILIES[b["fid"]]["failure"], "reference_now": now_line(c.now),
                 "user_prompt": c.user_text, "user_prompt_clean": c.user_clean, "history_user_prompts": [t for r_, t in c.history if r_ == "user"],
-                "history_turns": len(c.history), "n_steps": len(rws),
+                "discovery_modes": c.modes, "protocol_variant": ("S" if not c.preload else ("SP-hit" if c.sp_kind == "hit" else "SP-decoy")),
+                "preload": c.preload, "preload_contains_needed": (set(c.sp_need) <= set(c.preload)) if c.preload else None, "history_turns": len(c.history), "n_steps": len(rws),
                 "slots": b["meta"].get("slots", {}), "catalog_variant": "web" if c.web else "personal_no_web",
                 "heldout_max_jaccard": round(b["overlap"], 3), "generation_attempt": b["attempt"]})
             cv = c.conversation()
@@ -3818,12 +3910,23 @@ def write_stats(out, rows, prov):
         for p in ps:
             by_cat[p["category"]] = by_cat.get(p["category"], 0) + 1
         for x in rs:
-            k = "final" if not x["messages"][-1].get("tool_calls") else ("discovery" if x["messages"][-1]["tool_calls"][0]["function"]["name"] == DISCOVERY else "tool_call")
+            tcs = x["messages"][-1].get("tool_calls")
+            if not tcs:
+                k = "final"
+            elif tcs[0]["function"]["name"] == DISCOVERY:
+                k = "discovery"
+            elif "properties" not in next(t_ for t_ in x["tools"] if t_["function"]["name"] == tcs[0]["function"]["name"])["function"]["parameters"]:
+                k = "stub_call"
+            else:
+                k = "tool_call"
             by_step[k] = by_step.get(k, 0) + 1
         stats["splits"][split] = {
             "conversations": len(ps), "rows": len(rs), "rows_per_conversation": round(len(rs) / len(ps), 2),
             "by_category": by_cat, "rows_by_target_type": by_step, "rows_by_step_index": dict(sorted(by_idx.items(), key=lambda kv: int(kv[0][1:]))),
-            "families": len({p["family_id"] for p in ps}), "scenarios": len({p["scenario_id"] for p in ps}),
+            "families": len({p["family_id"] for p in ps}),
+            "variants": {v: sum(1 for p in ps if p["protocol_variant"] == v and p["gold_calls"]) for v in ("S", "SP-hit", "SP-decoy")},
+            "first_discovery_stub_first": sum(1 for p in ps if p["discovery_modes"] and p["discovery_modes"][0] == "stub"),
+            "first_discovery_explicit": sum(1 for p in ps if p["discovery_modes"] and p["discovery_modes"][0] == "explicit"), "scenarios": len({p["scenario_id"] for p in ps}),
             "templates": len({p["template_id"] for p in ps}),
             "row_tokens_est_chars_div4": {"mean": round(statistics.mean(toks)), "p50": round(toks[len(toks) // 2]),
                                           "p95": round(toks[int(len(toks) * 0.95)]), "max": round(toks[-1])},
@@ -3836,7 +3939,7 @@ def write_stats(out, rows, prov):
 def write_card(out, stats, prov):
     S = stats["splits"]
     lines = ["# Ling dataset V3 data card (generated by generate.py)", "",
-             f"Version `{VERSION}`, seed {GLOBAL_SEED}. Synthetic; no real data. Task: Wisp MODEL-LED tool calling (discovery -> schemas -> calls -> answer).", "",
+             f"Version `{VERSION}`, seed {GLOBAL_SEED}. Synthetic; no real data. Task: Wisp MODEL-LED tool calling, protocol S (Ling chooses from ALL tools; name-only stubs + get_tool_schemas -> receipt -> real schemas -> calls -> answer).", "",
              "## Counts", "", "| split | conversations | rows (one per assistant step) | rows/conv | families | scenarios | templates |", "|---|---|---|---|---|---|---|"]
     for s in ("train", "dev"):
         d = S[s]
@@ -3845,10 +3948,10 @@ def write_card(out, stats, prov):
     pct = {n: p for _, n, p in CATEGORIES}
     for _, n, _p in CATEGORIES:
         lines.append(f"| {n} | {S['train']['by_category'].get(n, 0)} | {S['dev']['by_category'].get(n, 0)} | {pct[n]} |")
-    lines += ["", "## Rows by target type", "", "| split | discovery | tool_call | final |", "|---|---|---|---|"]
+    lines += ["", "## Rows by target type", "", "| split | discovery (get_tool_schemas) | stub call (implicit discovery) | executed tool call | final |", "|---|---|---|---|---|"]
     for s in ("train", "dev"):
         b = S[s]["rows_by_target_type"]
-        lines.append(f"| {s} | {b.get('discovery', 0)} | {b.get('tool_call', 0)} | {b.get('final', 0)} |")
+        lines.append(f"| {s} | {b.get('discovery', 0)} | {b.get('stub_call', 0)} | {b.get('tool_call', 0)} | {b.get('final', 0)} |")
     lines += ["", "## Length estimates (characters / 4; no tokenizer was run)", "", "| split | row mean | row p50 | row p95 | row max | target mean | target p95 | target max |", "|---|---|---|---|---|---|---|---|"]
     for s in ("train", "dev"):
         a, t = S[s]["row_tokens_est_chars_div4"], S[s]["target_tokens_est_chars_div4"]
@@ -3861,12 +3964,22 @@ def write_card(out, stats, prov):
     lines += ["", "## Targeted failure classes (conversations tagged; a conversation may carry several)", "", "| failure class | conversations |", "|---|---|"]
     for f, n in sorted(fc.items(), key=lambda x: (-x[1], x[0])):
         lines.append(f"| {f} | {n} |")
+    lines += ["", "## Protocol S mix (first discovery of each tool-using conversation)", "", "| split | stub-first | explicit get_tool_schemas first | stub-first share |", "|---|---|---|---|"]
+    for s_ in ("train", "dev"):
+        a_, e_ = S[s_]["first_discovery_stub_first"], S[s_]["first_discovery_explicit"]
+        lines.append(f"| {s_} | {a_} | {e_} | {a_ / max(1, a_ + e_):.0%} |")
+    lines += ["", "## S vs SP (tool-using conversations)", "", "| split | pure S (no preload) | SP-hit (needed tool preloaded, called directly at round 0) | SP-decoy (preload wrong, call the stub) | SP share |", "|---|---|---|---|---|"]
+    for s_ in ("train", "dev"):
+        v_ = S[s_]["variants"]
+        tot_ = max(1, sum(v_.values()))
+        lines.append(f"| {s_} | {v_['S']} | {v_['SP-hit']} | {v_['SP-decoy']} | {(v_['SP-hit'] + v_['SP-decoy']) / tot_:.0%} |")
     lines += ["", "## Rows per step index (s0 = first assistant step of a conversation)", "", "| split | " + " | ".join(f"s{i}" for i in range(8)) + " |", "|---|" + "---|" * 8]
     for s_ in ("train", "dev"):
         b_ = S[s_]["rows_by_step_index"]
         lines.append(f"| {s_} | " + " | ".join(str(b_.get(f"s{i}", 0)) for i in range(8)) + " |")
     lines += ["", "## Design notes", "",
-              "- One training row per ASSISTANT STEP (discovery call, real call(s), final answer). Only the last assistant message of a row has `training:true`; every earlier assistant message (in-turn or history) has `training:false`.",
+              "- Protocol S: round 0 offers `get_tool_schemas` plus a name-only stub (`parameters: {type: object}`, no description/properties) for every admitted catalog tool (the with/without-web catalog variant decides which). Gold either calls the needed tool name(s) through their stubs (an implicit discovery: not executed, the host returns the standard receipt as each stub call's result; two or three stubs in one message for a chain) or calls `get_tool_schemas` for a whole family/tool list. After the receipt the next round offers the loaded REAL schemas, then (while fewer than two discoveries, implicit included, have happened) `get_tool_schemas` and stubs for the remaining tools; the assistant must re-issue the call with full arguments, never answer from the receipt. Stub-call arguments are `{}` or a partial best guess. A multi-stub message is ONE implicit discovery, families listed in call order. Executed-call repeats are checked on real calls only.",
+              "- One training row per ASSISTANT STEP (discovery call, stub call, real call(s), final answer). Only the last assistant message of a row has `training:true`; every earlier assistant message (in-turn or history) has `training:false`.",
               "- Round 0 offers only `get_tool_schemas`; after a successful discovery the offered tools are the loaded real schemas (registry-exact) plus `get_tool_schemas` while fewer than two discovery calls were made. Discovery receipts follow the host's cumulative expansion; a rejected discovery (tools outside the selected families) uses the host's rejection text and is never a training target.",
               "- The scoped system prompt (message 0) is rebuilt per step from the captured model-led prompt plus the tool-specific rule paragraphs triggered by the loaded tools; messages 1-2 are the captured capability catalog + context note. Identity is synthetic (Test User / test.user@example.invalid).",
               "- Send fidelity: send_message / send_email / schedule_send / reply_to_email / draft bodies contain ONLY the user's stated content (quoted text verbatim; otherwise converted to the recipient's point of view, capitalized and punctuated). Emails use exactly `Hi <First>,\\n\\n<content>\\n\\nTest User`. Facts read earlier in the turn (calendar times, note text) may be relayed. After a successful send the final answer quotes the exact body. Reminder/event/note/memory titles and bodies likewise use the user's words. Enforced by validate.py (`send_body_fidelity`, `write_fidelity`, `final_quotes_body`).",
@@ -3874,6 +3987,9 @@ def write_card(out, stats, prov):
               "- Prompts are checked at generation and again in validate.py against hashed shingles of the Ling eval corpus (459 prompts incl. follow-up context; n=min(6,len); this dataset rejects Jaccard >= 0.4, stricter than the required > 0.5). The eval prompts themselves are not stored.",
               "", "## Limitations", "",
               "- Everything is synthetic and author-written. Tool results follow the shapes of Wisp's real tools but are condensed (<400 chars) and cleaner than live output; a model may over-trust these shapes.",
+              "- SP (Wisp 1.3.2): in ~30% of tool-using conversations round 0 also carries 6-12 PRELOADED real schemas from a (fallible) lexical shortlist; they are loaded from the start, consume no discovery attempt and count toward the 24-schema cap (receipts list them in available_tools). Half of those preloads contain the needed tool(s), which gold calls directly with full arguments (no loading step); the other half are plausible-but-wrong decoys from adjacent families, which gold ignores while calling the right tool through its stub. Provenance records `preload`, `preload_contains_needed` and `protocol_variant`.",
+              "- The capability preamble uses the host's new wording (tools arrive with full schemas or by name only; call by name, schema loads, call again next step; two loading steps, 24 schemas).",
+              "- Round-0 and later rows now carry ~160 name-only stubs, which raises row length by roughly 3-4k estimated tokens versus the shortlist protocol.",
               "- The tool-scoped system prompt is reconstructed from captured variants with a hand-written trigger map; it is not produced by running Wisp's `build_system`. The with/without-web catalog variants approximate the host's blocked-tool logic.",
               "- Phrasing comes from a finite template set with rule-based noise (casing, abbreviations, one-letter typos); it is not real user language. Content banks (messages, events, reminders, contacts, cities) are small and partly shared across splits, so dev is not an independent test of generalisation.",
               "- Gold choices encode policy decisions: casual 'tell/let X know' routes to Messages; channel-less 'get in touch with X' asks a question; sends always call the send tool (host confirmation decides) and a denial ends the turn; availability uses `find_free_time` once; independent reads may be parallel or sequential (both appear).",

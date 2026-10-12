@@ -68,6 +68,19 @@ def load_jsonl(path, errors, name):
     return out
 
 
+def stub_schema(name):
+    return {"type": "function", "function": {"name": name, "parameters": {"type": "object"}}}
+
+
+def offered_names(loaded, attempts, all_tools):
+    """Protocol S offered set: loaded REAL schemas; while discovery budget remains also get_tool_schemas + stubs for the rest."""
+    names = list(loaded)
+    if attempts < 2:
+        names.append(DISCOVERY)
+        names.extend(t for t in sorted(all_tools) if t not in loaded)
+    return names
+
+
 def canon(a):
     return json.dumps(a, sort_keys=True, ensure_ascii=False)
 
@@ -267,8 +280,9 @@ def fidelity_problems(turn_msgs, user_text_all):
         if m["role"] == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 fn = tc["function"]["name"]
-                if fn not in ("lookup_contact", DISCOVERY) and fn not in SENDS and fn not in WRITE_FIELDS:
-                    allowed |= content_words(results.get(tc["id"], ""))
+                rtxt = results.get(tc["id"], "")
+                if fn not in ("lookup_contact", DISCOVERY) and fn not in SENDS and fn not in WRITE_FIELDS and not rtxt.startswith('{"schema_discovery"'):
+                    allowed |= content_words(rtxt)
     for m in turn_msgs:
         if not (m["role"] == "assistant" and m.get("tool_calls")):
             continue
@@ -278,6 +292,8 @@ def fidelity_problems(turn_msgs, user_text_all):
                 a = json.loads(tc["function"]["arguments"])
             except Exception:  # noqa: BLE001
                 continue
+            if results.get(tc["id"], "").startswith('{"schema_discovery"'):
+                continue          # stub / discovery call: nothing is executed
             if fn in SENDS and isinstance(a.get(SENDS[fn]), str):
                 body = a[SENDS[fn]]
                 is_email = fn in ("send_email", "reply_to_email", "draft_email") or (fn == "schedule_send" and a.get("channel") == "email")
@@ -371,6 +387,7 @@ def run(d: Path, check_repro=False):
     convs = load_jsonl(d / "conversations.jsonl", load_errors, "conversations.jsonl")
     rep.add("json_valid_all_files", not load_errors, f"{len(load_errors)} errors", load_errors)
     # intent text (typo-free prompt + earlier user turns) used only for the authority-cue check
+    PRELOAD = {p["id"]: p.get("preload", []) for s_ in ("train", "dev") for p in prov[s_]}
     PROV_CUR = {p["id"]: (p.get("user_prompt_clean") or p["user_prompt"]) for s_ in ("train", "dev") for p in prov[s_]}
     PROV_CLEAN = {p["id"]: " ".join(p.get("history_user_prompts", []) + [p.get("user_prompt_clean") or p["user_prompt"]])
                   for s_ in ("train", "dev") for p in prov[s_]}
@@ -424,8 +441,13 @@ def run(d: Path, check_repro=False):
             turn = msgs[ui + 1:-1]
             # --- replay the discovery state
             catalog = parse_catalog(sys1)
+            all_tools = {n for v_ in catalog.values() for n in v_}
+            tool_family = {n: f for f, v_ in catalog.items() for n in v_}
             enum_f = DISC["function"]["parameters"]["properties"]["families"]["items"]["enum"]
-            attempts, loaded = 0, []
+            attempts, loaded = 0, list(PRELOAD.get(row["conversation_id"], []))
+            pre0 = list(loaded)
+            if len(pre0) > 12 or len(set(pre0)) != len(pre0) or not set(pre0) <= all_tools:
+                bad("preload", f"{rid}: preload must be <=12 distinct catalog tools")
             pending = {}
             expect_tool_ids = []
             last_failure_tool = None
@@ -450,24 +472,61 @@ def run(d: Path, check_repro=False):
                 ids = [c_["id"] for c_ in calls]
                 if len(set(ids)) != len(ids) or any(r_["tool_call_id"] != c_["id"] for r_, c_ in zip(results, calls)):
                     bad("call_pairing", f"{rid}: id mismatch/order")
-                offered_now = list(loaded) + ([DISCOVERY] if attempts < 2 else [])
+                offered_now = offered_names(loaded, attempts, all_tools)
+                fnames = [c_["function"]["name"] for c_ in calls]
+                if all(n == DISCOVERY for n in fnames):
+                    kind = "explicit"
+                elif all(n in all_tools and n not in loaded for n in fnames):
+                    kind = "stub"
+                elif all(n in loaded for n in fnames):
+                    kind = "exec"
+                else:
+                    kind = "mixed"
+                    bad("protocol", f"{rid}: message mixes discovery/stub/executed calls {fnames}")
+                if kind == "explicit" and len(calls) != 1:
+                    bad("protocol", f"{rid}: several get_tool_schemas calls in one message")
+                parsed = []
                 for c_, r_ in zip(calls, results):
                     fn = c_["function"]["name"]
                     try:
                         args = json.loads(c_["function"]["arguments"])
                     except Exception:  # noqa: BLE001
                         bad("arguments_json", f"{rid}: non-JSON arguments for {fn}")
-                        continue
+                        args = None
+                    parsed.append((fn, args, r_))
                     if fn not in offered_now:
                         bad("protocol", f"{rid}: in-turn call to unoffered {fn}")
-                    key = (fn, canon(args))
-                    if key in seen_calls:
-                        bad("no_repeat", f"{rid}: repeated call {fn}")
-                    seen_calls.add(key)
+                    if args is None:
+                        continue
+                    if kind == "stub" and not isinstance(args, dict):
+                        bad("arguments_json", f"{rid}: stub arguments must be an object")
+                    if kind in ("exec", "explicit"):   # stub calls are never executed, so they are exempt from the repeat rule
+                        key = (fn, canon(args))
+                        if key in seen_calls:
+                            bad("no_repeat", f"{rid}: repeated call {fn}")
+                        seen_calls.add(key)
                     if len(r_["content"]) >= 400:
                         bad("result_length", f"{rid}: tool result {len(r_['content'])} chars")
-                    if fn == DISCOVERY:
-                        attempts += 1
+                    if kind == "exec":
+                        txt = r_["content"]
+                        if txt.startswith("(") and (txt.endswith(")") or "NOT" in txt):
+                            n_fail_results += 1
+                if kind == "stub":
+                    attempts += 1
+                    fams = list(dict.fromkeys(tool_family[n] for n in fnames if n in tool_family))
+                    names = list(dict.fromkeys([*loaded, *fnames]))
+                    if len(set(fnames)) != len(fnames) or len(fams) > 3 or len(names) > 24:
+                        bad("protocol", f"{rid}: implicit discovery exceeds limits")
+                    loaded = names
+                    exp = json.dumps({"schema_discovery": "ready_next_step", "families": fams, "available_tools": names,
+                                      "source_tools_executed": False})
+                    for _, _, r_ in parsed:
+                        if r_["content"] != exp:
+                            bad("discovery_receipt", f"{rid}: stub receipt != host's implicit discovery receipt")
+                elif kind == "explicit":
+                    attempts += 1
+                    fn, args, r_ = parsed[0]
+                    if args is not None:
                         fams = args.get("families") if isinstance(args, dict) else None
                         tools_req = args.get("tools") if isinstance(args, dict) else None
                         ok = (isinstance(args, dict) and set(args) <= {"families", "tools"} and isinstance(fams, list) and 1 <= len(fams) <= 3
@@ -485,29 +544,29 @@ def run(d: Path, check_repro=False):
                                               "source_tools_executed": False})
                             if r_["content"] != exp:
                                 bad("discovery_receipt", f"{rid}: receipt != host expansion")
-                        else:
-                            if r_["content"] != REJECT:
-                                bad("discovery_receipt", f"{rid}: invalid discovery without rejection receipt")
-                    else:
-                        txt = r_["content"]
-                        if txt.startswith("(") and (txt.endswith(")") or "NOT" in txt):
-                            n_fail_results += 1
+                        elif r_["content"] != REJECT:
+                            bad("discovery_receipt", f"{rid}: invalid discovery without rejection receipt")
                 i += 1 + len(calls)
             if n_fail_results > 2:
                 bad("error_policy", f"{rid}: {n_fail_results} failing results in a turn")
             if not turn_ok:
                 continue
             # --- offered tools equal replayed state
-            offered = loaded + ([DISCOVERY] if attempts < 2 else [])
+            if attempts > 2:
+                bad("protocol", f"{rid}: more than two discoveries (explicit + implicit)")
+            offered = offered_names(loaded, attempts, all_tools)
             names_row = [t_["function"]["name"] for t_ in row["tools"]]
             if names_row != offered:
-                bad("offered_tools", f"{rid}: tools {names_row} != replay {offered}")
+                bad("offered_tools", f"{rid}: tools differ from replayed protocol-S offer ({len(names_row)} vs {len(offered)})")
             for t_ in row["tools"]:
                 n_ = t_["function"]["name"]
-                if (n_ == DISCOVERY and t_ != DISC) or (n_ != DISCOVERY and t_ != REG.get(n_)):
-                    bad("offered_tools", f"{rid}: schema for {n_} differs from registry")
-            if not turn and names_row != [DISCOVERY]:
-                bad("protocol", f"{rid}: round 0 must offer only get_tool_schemas")
+                want = DISC if n_ == DISCOVERY else (REG.get(n_) if n_ in loaded else stub_schema(n_))
+                if t_ != want:
+                    bad("offered_tools", f"{rid}: schema for {n_} is not {'the registry schema' if n_ in loaded else 'a name-only stub'}")
+            if not turn:
+                real0 = [t_["function"]["name"] for t_ in row["tools"] if "properties" in t_["function"]["parameters"] and t_["function"]["name"] != DISCOVERY]
+                if DISCOVERY not in names_row or attempts != 0 or real0 != pre0 or len(names_row) != 1 + len(all_tools):
+                    bad("protocol", f"{rid}: round 0 must offer get_tool_schemas, the preload (if any) as real schemas, and stubs for every other tool")
             # scoped system prompt follows loaded tools
             has_send_rule = "You CAN send things" in sys0
             if has_send_rule != bool({"send_email", "send_message", "reply_to_email", "draft_email", "draft_message", "schedule_send"} & set(loaded)):
@@ -536,6 +595,15 @@ def run(d: Path, check_repro=False):
                         bad("arguments_json", f"{rid}: target arguments not JSON")
                         continue
                     tool_counter[fn] += 1
+                    is_stub = fn != DISCOVERY and fn not in loaded
+                    if is_stub:
+                        if not isinstance(args, dict):
+                            bad("arguments_json", f"{rid}: stub arguments must be an object")
+                        if len({c2["function"]["name"] in loaded or c2["function"]["name"] == DISCOVERY for c2 in tgt["tool_calls"]}) > 1:
+                            bad("protocol", f"{rid}: target mixes stub and executed calls")
+                        if fn in CUES and not re.search(CUES[fn], (PROV_CLEAN.get(row["conversation_id"]) or "").lower()):
+                            bad("explicit_authority", f"{rid}: stub for {fn} without matching user cue")
+                        continue
                     schema = DISC if fn == DISCOVERY else REG[fn]
                     for e in check_schema(args, schema["function"]["parameters"]):
                         bad("schema_valid", f"{rid}: {fn} {e}")
@@ -641,22 +709,36 @@ def run(d: Path, check_repro=False):
         # gold sequence == calls in the last row
         gold = [{"name": c_["function"]["name"], "arguments": json.loads(c_["function"]["arguments"])}
                 for x in msgs_last[ui + 1:] if x.get("tool_calls") for c_ in x["tool_calls"]]
-        pg = [{k: v for k, v in g.items() if k != "rejected"} for g in p["gold_calls"]]
+        pg = [{k: v for k, v in g.items() if k not in ("rejected", "stub")} for g in p["gold_calls"]]
         if gold != pg:
             bad("provenance", f"{cid}: gold_calls differ from conversation")
         if p["n_steps"] != len(lst):
             bad("provenance", f"{cid}: n_steps mismatch")
         # category-level policies
-        tools_called = [g["name"] for g in gold]
+        tools_called = [g["name"] for g in p["gold_calls"] if not g.get("stub") and g["name"] != DISCOVERY]   # executed calls only
         cat = p["category"]
         if cat in READ_ONLY_CATEGORIES and set(tools_called) & WRITE_TOOLS:
             bad("read_only_categories", f"{cid}: {cat} calls write tool {set(tools_called) & WRITE_TOOLS}")
-        if cat == "chat_no_tool" and (tools_called or len(lst) != 1 or [t_["function"]["name"] for t_ in lst[0][1]["tools"]] != [DISCOVERY]):
+        if cat == "chat_no_tool" and (gold or len(lst) != 1):
             bad("chat_no_tool", f"{cid}: chat conversation used tools")
-        if tools_called and tools_called[0] != DISCOVERY:
-            bad("protocol", f"{cid}: first call is not get_tool_schemas")
-        if len([n for n in tools_called if n == DISCOVERY]) > 2:
-            bad("protocol", f"{cid}: more than two discovery calls")
+        g0 = p["gold_calls"][0] if p["gold_calls"] else None
+        if g0 and not (g0["name"] == DISCOVERY or g0.get("stub") or (p.get("protocol_variant") == "SP-hit" and g0["name"] in p.get("preload", []))):
+            bad("protocol", f"{cid}: first call is neither get_tool_schemas nor a name-only stub call")
+        var = p.get("protocol_variant")
+        if var == "S" and p.get("preload"):
+            bad("preload", f"{cid}: pure-S conversation has a preload")
+        if var in ("SP-hit", "SP-decoy"):
+            if not (6 <= len(p["preload"]) <= 12) and var == "SP-decoy":
+                bad("preload", f"{cid}: decoy preload size {len(p['preload'])}")
+            if var == "SP-hit" and not (p["preload_contains_needed"] and g0 and not g0.get("stub") and g0["name"] != DISCOVERY and g0["name"] in p["preload"]):
+                bad("preload", f"{cid}: SP-hit must call a preloaded tool directly at round 0")
+            if var == "SP-decoy" and (p["preload_contains_needed"] or not g0 or not (g0.get("stub") or g0["name"] == DISCOVERY)):
+                bad("preload", f"{cid}: SP-decoy must ignore the decoys and load the right tool by stub/discovery")
+            if var == "SP-decoy" and g0 and g0.get("stub") and g0["name"] in p["preload"]:
+                bad("preload", f"{cid}: stub call for a preloaded tool")
+        modes = p.get("discovery_modes", [])
+        if len(modes) > 2:
+            bad("protocol", f"{cid}: more than two discoveries recorded")
         # send body fidelity + final quotes the exact body
         uall = " ".join([PROV_CLEAN.get(cid, "")] + [x["content"] for x in msgs_last[3:ui + 1] if x["role"] == "user"])
         fprobs, quotes = fidelity_problems(msgs_last[ui + 1:], uall)
@@ -750,9 +832,9 @@ def run(d: Path, check_repro=False):
         "system_messages": "captured model-led system prompts present",
         "synthetic_identity": "identity block is Test User / test.user@example.invalid",
         "masking": "only the last assistant message of a row is training:true",
-        "protocol": "discovery first, no real tool before schema load, <=2 discovery calls, empty content on tool turns",
-        "discovery_receipt": "tool receipts equal the host's cumulative expansion / rejection text",
-        "offered_tools": "row.tools equals replayed offered set with registry-exact schemas",
+        "protocol": "protocol S: stub or get_tool_schemas first; a real tool is executed only after explicit/implicit discovery loaded it; <=2 discoveries (stub messages count); empty content on tool turns",
+        "discovery_receipt": "explicit and implicit (stub) receipts equal the host's cumulative expansion; rejected explicit calls use the rejection text",
+        "offered_tools": "row.tools equals the replayed offer: loaded registry schemas, then get_tool_schemas + name-only stubs for every other catalog tool while budget remains",
         "system_scope": "scoped system rules match loaded tools",
         "arguments_json": "tool-call arguments are JSON strings",
         "schema_valid": "every target call valid against the schema offered at that step (types, required, enum, no extra keys)",
@@ -767,6 +849,7 @@ def run(d: Path, check_repro=False):
         "send_body_fidelity": "send/draft/schedule/reply bodies contain only the user's stated content (email: exact Hi <First>/Test User frame)",
         "write_fidelity": "reminder/event/note/memory/timer titles and bodies use the user's words",
         "final_quotes_body": "after a successful send the final answer quotes the exact body sent",
+        "preload": "SP preload (<=12 distinct catalog tools) equals the real schemas offered at round 0 and consumes no discovery attempt",
         "slot_consistency": "weekday / today / tomorrow / clock time in the user's words match the call arguments",
         "explicit_authority": "send/destructive tools only with a matching user cue",
         "read_only_categories": "read-only categories never call write/send/destructive tools",

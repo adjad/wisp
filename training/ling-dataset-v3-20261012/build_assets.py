@@ -103,6 +103,19 @@ head = head[head.index("MODEL-LED CAPABILITY DISCOVERY:"):]
 tail_marker = "Available capabilities (only currently admitted tools are listed):"
 txt = (EVAL / "system_prompt.txt").read_text()
 ctx_note = txt[txt.index("=== system[2]"):].split("\n", 1)[1].strip()
+# host wording for protocol S / SP (replaces the four captured discovery lines)
+_OLD = """Before using a real tool, call get_tool_schemas with its family and,
+preferably, only the tools you need. Those schemas arrive NEXT step.
+A schema request does not read a source or perform an action. You may
+request another family later, within two discovery calls and 24 schemas."""
+_NEW = """Some tools arrive with full schemas; every other listed tool is offered
+by name only. Call any tool by name: if its schema is not loaded yet,
+nothing runs, its schema loads, and you call it again NEXT step with full
+arguments. Or call get_tool_schemas with a family to load several at once.
+Loading does not read a source or perform an action. You may load tools
+within two loading steps and 24 schemas."""
+assert _OLD in head
+head = head.replace(_OLD, _NEW)
 parts = {"base_lines": base, "rules": rules, "catalog": catalog,
          "discovery_preamble": head.rstrip("\n"), "capabilities_header": tail_marker, "context_note": ctx_note}
 (OUT / "system_parts.json").write_text(json.dumps(parts, indent=1, ensure_ascii=False) + "\n")
