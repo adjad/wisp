@@ -6,7 +6,10 @@ All notable changes to Wisp are documented here.
 
 ### Changed
 
-- Remote inference is now a generic, user-configured mode with no built-in server. It starts only when Wisp is launched with `WISP_REMOTE_ONLY=1` and `~/.moe/config.yaml` has a complete `inference.remote_only` profile (an HTTPS `base_url`, a `model_id`, a `keychain:<name>` credential and every request limit). With the flag set and no valid profile, the backend refuses to start. `WISP_REMOTE_FULL=1` still turns on full tools with normal approvals. Behavior learning no longer turns on by itself in full remote mode; it needs `WISP_BEHAVIOR=1`. See docs/REMOTE_INFERENCE.md.
+- Remote inference is now a generic, user-configured mode with no built-in server. It starts only when Wisp is launched with `WISP_REMOTE_ONLY=1` and `~/.moe/config.yaml` has a complete `inference.remote_only` profile (an HTTPS `base_url`, a `model_id`, a `keychain:<name>` credential and every request limit). With the flag set and no valid profile, the backend refuses to start. See docs/REMOTE_INFERENCE.md.
+- Remote inference is now read/write. Every built-in tool that doesn't need Wisp's on-Mac models (so not `create_tool`, `use_skill`, `wisp_skills`, `wisp_mcp` or skill and MCP tools) runs under the normal safety policy: sends always confirm and can't be granted, writes ask once, always or never. This is what `WISP_REMOTE_FULL=1` used to turn on. The separate read-only remote mode is gone, along with its 403s on the behavior and approval endpoints. For a read-only Mac, use View Only, which still denies writes in remote mode. `WISP_REMOTE_FULL` is now ignored (it logs one deprecation line).
+- Remote inference refuses a `base_url` with spaces, control characters or non-ASCII characters (a leading space or trailing newline used to pass).
+- Behavior learning is now on by default. Turn it off with "Learn my routines" in Settings (Privacy & Access), which takes effect at once and keeps what was already learned, or launch with `WISP_BEHAVIOR=0`. `WISP_BEHAVIOR=1` or `0` overrides the saved setting. It still learns only from your calendar, reminders, message timing (never message text) and how you use Wisp, nudges at most 4 a day, acts automatically only on Wisp's own schedule, and keeps everything on this Mac. New endpoints: `GET/PUT /behavior/settings`.
 
 ### Removed
 
@@ -18,6 +21,8 @@ All notable changes to Wisp are documented here.
   - the behavior engine's synthetic persona mode (`WISP_BEHAVIOR_SYNTHETIC_ONLY`, `POST /behavior/reset`);
   - the Catch demo (`WISP_ATTENTION_DEMO`). The proactive attention runner is unchanged;
   - the `demo/` tooling.
+
+An older install may still have an unused `~/.moe/aria-demo/` folder from the Aria demo. Wisp no longer reads it, so you can delete it.
 
 ## [1.3.0] - 2026-10-11
 

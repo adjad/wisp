@@ -14,12 +14,19 @@ NAMES = ("describe_me", "predict_my_day", "my_patterns", "correct_pattern")
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch):
+def _env(monkeypatch, tmp_path):
+    from service import config
     for key in ("WISP_BEHAVIOR",):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")   # no saved setting
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
     br.set_runtime(None)
     yield
     br.set_runtime(None)
+    bt.sync_availability()      # leave the shared registry as the environment dictates
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
 
 
 @pytest.fixture
@@ -37,12 +44,14 @@ def call(name, args=None):
     return asyncio.run(run_tool(REGISTRY[name], args or {}))
 
 
-def test_registered_read_only_and_hidden_when_off():
+def test_registered_read_only_and_hidden_when_off(monkeypatch):
     from service.tools.registry import is_tool_routable
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    bt.sync_availability()
     for name in NAMES:
         tool = REGISTRY[name]
         assert tool.category == ("assistant_write" if name == "correct_pattern" else "assistant_read")
-        assert not is_tool_routable(name)               # launched without behavior learning
+        assert not is_tool_routable(name)               # behavior learning switched off
         assert "Behavior learning is off" in call(name, {"status": "rejected"} if name == "correct_pattern" else {"query": "x"} if name == "my_patterns" else {})
     from service.safety.policy import Tier, decide
     # correct_pattern changes Wisp's own store, so it is a write category, not auto-allowed.
@@ -108,15 +117,16 @@ def test_correct_pattern_by_id_and_text(on):
     assert "status must be" in call("correct_pattern", {"pattern_id": "p_gym", "status": "deleted"})
 
 
-def test_remote_only_allowlist_tracks_behavior_flag(monkeypatch):
+def test_remote_inference_offers_the_behavior_tools_and_the_switch_tracks_the_flag(monkeypatch):
     from service.inference import remote_policy
-    for name in NAMES:
-        assert not remote_policy.remote_read_tool_allowed(name)
+    # Remote mode is read/write: the registry decides, and these four are ordinary built-ins.
+    assert all(remote_policy.remote_tool_allowed(name) for name in NAMES)
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    assert bt.sync_availability() == bt._OFF
+    assert all(REGISTRY[name].unavailable_reason for name in NAMES)
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    assert all(remote_policy.remote_read_tool_allowed(name) for name in NAMES)
-    assert not remote_policy.remote_read_tool_allowed("send_message")
-    # The pinned read set itself is unchanged.
-    assert "describe_me" not in remote_policy._READ_TOOLS
+    assert bt.sync_availability() == ""
+    assert not any(REGISTRY[name].unavailable_reason for name in NAMES)
 
 
 def test_schemas_fit_remote_profile_budget():

@@ -20,9 +20,26 @@ def on(monkeypatch):
         monkeypatch.setattr(REGISTRY[name], "unavailable_reason", "")
 
 
+@pytest.fixture(autouse=True)
+def _no_saved_setting(monkeypatch, tmp_path):
+    from service import config
+    monkeypatch.delenv("WISP_BEHAVIOR", raising=False)
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    yield
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+
+
 @pytest.fixture
 def off(monkeypatch):
-    monkeypatch.delenv("WISP_BEHAVIOR", raising=False)
+    from service.tools.behavior_tools import sync_availability
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    sync_availability()
+    yield
+    monkeypatch.delenv("WISP_BEHAVIOR")
+    sync_availability()
 
 
 def routed(text, **kw):
@@ -110,22 +127,3 @@ def test_week_questions_keep_their_routes_when_off(off):
         d = routed(text)
         offered = set(d.tool_subset or ()) | {n for n, _ in d.direct_calls}
         assert not d.reason.startswith("behavior ") and not offered & set(NAMES), (text, offered)
-
-
-def test_behavior_guidance_for_paths_that_send_the_raw_prompt(on):
-    """Remote-only sends the raw prompt, not resolved_request; main.py appends
-    behavior_guidance(decision) to the style hint instead."""
-    from service.router.router import behavior_guidance
-    assert "not facts" in behavior_guidance(routed("what do you know about me"))
-    assert "correct_pattern" in behavior_guidance(routed("that pattern is wrong"))
-    assert behavior_guidance(routed("what's on my calendar tomorrow")) == ""
-    assert behavior_guidance(routed("remind me to call mom at 5pm")) == ""
-
-
-def test_main_adds_behavior_guidance_on_remote_only_agent_turns():
-    import ast
-    from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "service/main.py").read_text()
-    agent = next(n for n in ast.parse(src).body if isinstance(n, ast.AsyncFunctionDef) and n.name == "agent")
-    text = ast.unparse(agent)
-    assert "guidance = behavior_guidance(decision)" in text and "style_hint += '\\n' + guidance" in text

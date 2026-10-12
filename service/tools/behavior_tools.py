@@ -2,8 +2,7 @@
 expects next.
 
 All four read (or, for ``correct_pattern``, edit) Wisp-internal learned state
-only — never a native source — so they need no confirmation and are allowed in
-read-only remote inference too (see ``remote_policy``). Every line
+only — never a native source — so they need no confirmation. Every line
 carries its evidence counts so the model can say how sure Wisp is.
 """
 from __future__ import annotations
@@ -14,16 +13,15 @@ from datetime import datetime
 from service.tools.registry import register
 
 BEHAVIOR_TOOL_NAMES = frozenset({"describe_me", "predict_my_day", "my_patterns", "correct_pattern"})
-_OFF = ("Behavior learning is off in this Wisp build, so I haven't learned any routines yet. "
-        "(It turns on with WISP_BEHAVIOR=1.)")
-
+_OFF = ("Behavior learning is off, so I'm not learning your routines. "
+        "(Turn on \"Learn my routines\" in Settings.)")
 
 
 def _unavailable() -> str:
     """Non-routable (hidden from retrieval and dispatch) while behavior
-    learning is off, so builds without it keep their exact tool menus."""
-    from service.behavior.flags import env_enabled
-    return "" if env_enabled() else _OFF
+    learning is off, so the tool menus are unchanged when it is."""
+    from service.behavior_switch import enabled
+    return "" if enabled() else _OFF
 
 
 _EMPTY = ("I haven't learned any reliable routines yet — I need a few more weeks of your calendar "
@@ -277,3 +275,14 @@ def correct_pattern(status: str, pattern_id: str | None = None, text: str | None
     verb = {"confirmed": "Confirmed", "rejected": "Got it — I'll stop using",
             "active": "Restored"}[status]
     return f"{verb}: {updated.statement} [pattern {updated.id}]"
+
+
+def sync_availability() -> str:
+    """Re-apply the on/off switch to the four registered tools, so changing the
+    setting hides or restores them at once without restarting Wisp."""
+    from service.tools.registry import REGISTRY
+    reason = _unavailable()
+    for name in BEHAVIOR_TOOL_NAMES:
+        if name in REGISTRY:
+            REGISTRY[name].unavailable_reason = reason
+    return reason

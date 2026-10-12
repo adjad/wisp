@@ -59,13 +59,11 @@ def profile_block() -> str:
     """The behavior engine's compact profile card (<= 700 bytes), or "".
 
     Rides along with memory_block on every path that already includes the
-    user's remembered facts. Read-only remote inference keeps every other
-    memory context off, so main.py adds ONLY this block there (see
-    remote_only_context_block). Cached for 60 s by the runtime and never
+    user's remembered facts. Cached for 60 s by the runtime and never
     blocks the event loop; any failure is simply no card.
     """
-    from service.behavior.flags import env_enabled
-    if not env_enabled():
+    from service.behavior_switch import enabled
+    if not enabled():
         return ""
     try:
         from service.assistant.behavior_runtime import profile_card
@@ -73,10 +71,3 @@ def profile_block() -> str:
     except Exception:  # noqa: BLE001
         return ""
     return PROFILE_HEADER + card if card else ""
-
-
-def remote_only_context_block() -> str:
-    """Personal context allowed in read-only remote inference: the learned
-    profile card only. Remembered facts, skills and conversation memory stay
-    off there; the card is small enough for any profile's byte budget."""
-    return profile_block()

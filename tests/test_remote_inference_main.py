@@ -26,16 +26,18 @@ class MainChecks(RemoteFixture):
         fake=SimpleNamespace(health=AsyncMock(return_value={'ok':True}),aclose=AsyncMock())
         q=ModuleType('service.config.quarantine');q.check=Mock()
         async def watch(tasks,close):
-            self.assertEqual(tasks,());await asyncio.Event().wait()
+            self.assertEqual(len(tasks),1);await asyncio.Event().wait()  # exactly the assistant scheduler
         q.watch=watch
+        async def scheduler_run():
+            await asyncio.Event().wait()
         identity=ModuleType('service.identity');identity.refuse_sandbox_on_production_port=Mock()
         host=ModuleType('service.browser.host');host.start_from_environment=Mock(return_value=None)
         browser=ModuleType('service.browser');browser.host=host
         bomb=Mock(side_effect=AssertionError('local/background operation forbidden'))
-        ns={'asyncio':asyncio,'asynccontextmanager':asynccontextmanager,'remote_only_profile':policy.remote_only_profile,'remote_full_mode':policy.remote_full_mode,'require_local_models_disabled':policy.require_local_models_disabled,
+        ns={'asyncio':asyncio,'asynccontextmanager':asynccontextmanager,'remote_only_profile':policy.remote_only_profile,'require_local_models_disabled':policy.require_local_models_disabled,
             'OMLXClient':lambda:fake,'role_to_model':lambda role:'example-model','skills':SimpleNamespace(load=bomb),
             'mcp_manager':SimpleNamespace(start=bomb,stop=bomb),'idle_unloader':SimpleNamespace(run=bomb),
-            'assistant_scheduler':SimpleNamespace(run=bomb),'cloud_super_model_enabled':bomb,'start_laya_warmup':bomb,
+            'assistant_scheduler':SimpleNamespace(run=scheduler_run),'cloud_super_model_enabled':bomb,'start_laya_warmup':bomb,
             'research_manager':SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),
             'research_cache':SimpleNamespace(purge_older_than=Mock()),'assistant_store':object()}
         selected({'lifespan','_sync_keep_warm','_prepare_remote_inference'},ns)
@@ -56,16 +58,15 @@ class MainChecks(RemoteFixture):
         selected({'ensure_omlx'},ns)
         with self.assertRaises(ValueError):asyncio.run(ns['ensure_omlx']())
         bomb.assert_not_called()
-    def test_six_ui_write_handlers_deny_before_body(self):
+    def test_ui_write_handlers_have_no_remote_guard(self):
         names={'assistant_add','assistant_update','assistant_delete','assistant_send_message_draft','assistant_event_claim','approve'}
-        ns={'remote_only_profile':policy.remote_only_profile,'remote_read_only_mode':policy.remote_read_only_mode,'HTTPException':HTTPException}
-        selected(names,ns)
-        async def run():
-            for name in names:
-                args=('synthetic-id',{}) if name in {'assistant_update','assistant_event_claim'} else ('synthetic-id',) if name in {'assistant_delete','assistant_event_claim'} else ({},)
-                with self.subTest(name=name),self.assertRaises(HTTPException) as e:await ns[name](*args)
-                self.assertEqual(e.exception.status_code,403)
-        asyncio.run(run())
+        tree=ast.parse(SOURCE.read_text())
+        found=set()
+        for node in tree.body:
+            if isinstance(node,ast.AsyncFunctionDef) and node.name in names:
+                found.add(node.name)
+                self.assertNotIn('remote',ast.unparse(node).lower().replace('remote_only_profile','').replace('remote inference',''),node.name)
+        self.assertEqual(found,names)
     def test_current_context_and_no_summary_source_contract(self):
         # Precise source assertions supplement executable client/read tests:
         # automatic prior-history summarization must stay conditional-off.
@@ -76,8 +77,9 @@ class MainChecks(RemoteFixture):
         calls=[n for n in ast.walk(agent) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='run_agent']
         self.assertEqual(len(calls),1)
         kw={k.arg:ast.unparse(k.value) for k in calls[0].keywords}
-        # Read-only remote keeps memory context off; the full build (WISP_REMOTE_FULL) follows the Mac path.
-        self.assertTrue(kw['include_memory_context'].startswith('not remote_read_only_mode() and'))
+        # Remote inference follows the Mac path for memory context.
+        self.assertTrue(kw['include_memory_context'].startswith('_agent_memory_context_allowed('))
         self.assertTrue(kw['allow_skill_context'].startswith('remote_only_profile() is None and'))
         source=SOURCE.read_text()
-        self.assertIn('messages = ([user_msg] if super_model_cloud or remote_read_only_mode()',source)
+        self.assertIn('messages = ([user_msg] if super_model_cloud else _tool_turn_messages(',source)
+        self.assertNotIn('remote_read_only_mode',source)

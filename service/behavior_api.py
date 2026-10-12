@@ -1,8 +1,9 @@
 """HTTP surface for behavior learning (``/behavior/*``).
 
-Every route answers 409 with a plain explanation while behavior learning is
-off (it is on with ``WISP_BEHAVIOR=1``). Engine work runs off the event loop. Only Wisp-internal state changes
-here: Undo deletes items Wisp itself created on its own schedule, and ``act``
+Behavior learning is on by default ("Learn my routines" in Settings, or
+``WISP_BEHAVIOR=0/1`` at launch). Every route except ``/settings`` answers 409
+with a plain explanation while it is off. Engine work runs off the event loop.
+Only Wisp-internal state changes here: Undo deletes items Wisp itself created on its own schedule, and ``act``
 returns the prefilled request for an ``open_prompt`` action rather than
 sending or changing anything.
 """
@@ -14,11 +15,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from service.assistant import behavior_runtime
-from service.inference.remote_policy import remote_read_only_mode
 
 router = APIRouter(prefix="/behavior", tags=["behavior"])
 
-_DISABLED = "Behavior learning is off. Launch Wisp with WISP_BEHAVIOR=1."
+_DISABLED = "Behavior learning is off. Turn on \"Learn my routines\" in Settings."
 _PATTERN_STATUSES = ("active", "confirmed", "rejected")
 _VERDICTS = ("useful", "not_now", "wrong")
 
@@ -36,19 +36,44 @@ def _store_hub():
     return assistant_store, hub
 
 
-def _writable() -> None:
-    """State-changing routes are refused in read-only remote inference."""
-    if remote_read_only_mode():
-        raise HTTPException(status_code=403,
-                            detail="This action is unavailable in read-only remote inference")
-
-
 def _body(body: Any) -> dict:
     if body is None:
         return {}
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="JSON object body required")
     return body
+
+
+def _settings_payload() -> dict[str, Any]:
+    from service import behavior_switch as flags
+    override = flags.env_override()
+    return {"enabled": flags.enabled(), "setting": flags.setting_enabled(),
+            "env_override": override}
+
+
+@router.get("/settings")
+async def behavior_settings() -> dict[str, Any]:
+    """The "Learn my routines" setting. ``enabled`` is what is in effect: a
+    ``WISP_BEHAVIOR`` launch override beats the saved ``setting``."""
+    return _settings_payload()
+
+
+@router.put("/settings")
+async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Turn behavior learning on or off now, without restarting Wisp. Off stops
+    ingesting, mining and nudging; what was learned is kept (nothing is cleared)."""
+    value = _body(body).get("enabled")
+    if type(value) is not bool:
+        raise HTTPException(status_code=422, detail="enabled must be true or false")
+    from service.config import set_behavior_enabled
+    from service.tools.behavior_tools import sync_availability
+    await asyncio.to_thread(set_behavior_enabled, value)
+    sync_availability()
+    payload = _settings_payload()
+    if payload["enabled"]:
+        store, hub = _store_hub()
+        behavior_runtime.poke(store, hub)
+    return payload
 
 
 @router.get("/status")
@@ -91,7 +116,6 @@ async def behavior_patterns(status: str | None = None, kind: str | None = None) 
 
 @router.post("/patterns/{pattern_id}")
 async def behavior_pattern_status(pattern_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    _writable()
     runtime = _runtime()
     status = _body(body).get("status")
     if status not in _PATTERN_STATUSES:
@@ -143,7 +167,6 @@ def _known_nudge(runtime, nudge_id: str):
 
 @router.post("/nudges/{nudge_id}/feedback")
 async def behavior_feedback(nudge_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
-    _writable()
     runtime = _runtime()
     verdict = _body(body).get("verdict")
     if verdict not in _VERDICTS:
@@ -159,7 +182,6 @@ async def behavior_feedback(nudge_id: str, body: dict[str, Any] | None = None) -
 
 @router.post("/nudges/{nudge_id}/undo")
 async def behavior_undo(nudge_id: str) -> dict[str, Any]:
-    _writable()
     runtime = _runtime()
     await asyncio.to_thread(_known_nudge, runtime, nudge_id)
     store, hub = _store_hub()
@@ -176,7 +198,6 @@ async def behavior_act(nudge_id: str, body: dict[str, Any] | None = None) -> dic
     """The user tapped an offered action. ``open_prompt`` returns the prefilled
     request for the overlay (nothing is sent or changed here); an offered
     reversible ``add_reminder``/``add_hold`` is created on Wisp's schedule."""
-    _writable()
     runtime = _runtime()
     idx = _body(body).get("action_index", 0)
     if type(idx) is not int or idx < 0:

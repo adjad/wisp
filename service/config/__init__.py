@@ -108,6 +108,21 @@ def set_daily_summary_hour(hour: int) -> int:
     return hour
 
 
+def get_behavior_enabled() -> bool:
+    """Whether behavior learning ("Learn my routines") is on. Default True; only
+    an explicit false in the user overlay (``behavior: {enabled: false}``)
+    turns it off. ``WISP_BEHAVIOR`` overrides this (service/behavior_switch.py)."""
+    section = models_config().get("behavior")
+    return not (isinstance(section, dict) and section.get("enabled") is False)
+
+
+def set_behavior_enabled(enabled: bool) -> bool:
+    if type(enabled) is not bool:
+        raise ValueError("behavior enabled must be a boolean")
+    _save_overlay({"behavior": {"enabled": enabled}})
+    return enabled
+
+
 def omlx_base_url() -> str:
     cfg = models_config()["omlx"].get("base_url")
     if cfg:

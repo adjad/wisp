@@ -84,8 +84,8 @@ _behavior_task: asyncio.Task | None = None
 def _start_behavior_tick() -> asyncio.Task | None:
     """Start one behavior tick in the background unless one is still running."""
     global _behavior_task
-    from service.behavior.flags import env_enabled
-    if not env_enabled() or (_behavior_task is not None and not _behavior_task.done()):
+    from service.behavior_switch import enabled
+    if not enabled() or (_behavior_task is not None and not _behavior_task.done()):
         return None
     from service.assistant import behavior_runtime
     # behavior_runtime.tick catches every exception itself, so the task never
@@ -109,7 +109,7 @@ async def run() -> None:
                 await hub.publish(note)
         except Exception:  # noqa: BLE001
             pass
-        # Behavior learning (off unless WISP_BEHAVIOR=1):
+        # Behavior learning (on by default; off via Settings or WISP_BEHAVIOR=0):
         # ingest/mine/nudge on its own internal cadence; never raises. A tick
         # can take seconds (mining, phrasing), so it runs as a background
         # task and never delays reminders, the brief or scheduled sends; at

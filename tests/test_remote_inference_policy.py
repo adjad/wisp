@@ -65,7 +65,7 @@ class PolicyChecks(RemoteFixture):
             self.assertFalse(t.endpoint.managed)
             self.assertEqual((t.endpoint.base_url, t.endpoint.credential_ref, t.endpoint.api_prefix),
                              ('https://inference.example', 'keychain:example', '/v1'))
-            self.assertEqual(t.profile, 'remote-only-read')
+            self.assertEqual(t.profile, 'remote-only')
             policy.validate_remote_target(t)
         for role in ['embedding', 'reranker', 'research', 'vision', 'unknown', None, []]:
             with self.assertRaises(EndpointConfigurationError):
@@ -106,6 +106,12 @@ class PolicyChecks(RemoteFixture):
                ('base_url', 'http://inference.example'), ('base_url', 'https://inference.example/'),
                ('base_url', 'https://inference.example/v1'), ('base_url', 'https://user:pw@inference.example'),
                ('base_url', 'https://inference.example?x=1'), ('base_url', ''),
+               ('base_url', ' https://inference.example'), ('base_url', 'https://inference.example '),
+               ('base_url', 'https://inference.example\n'), ('base_url', '\nhttps://inference.example'),
+               ('base_url', 'https://inference.example\t'), ('base_url', 'https://infer ence.example'),
+               ('base_url', 'https://inference.example\x00'), ('base_url', 'https://inference.example\x7f'),
+               ('base_url', 'https://inference.exämple'), ('base_url', 'https://inference.example\u200b'),
+               ('base_url', 'https://inference.example\u00a0'),
                ('credential_ref', 'env:FAKE'), ('credential_ref', 'keychain:'), ('credential_ref', 'none'),
                ('credential_ref', 'local_omlx'), ('max_tokens', True), ('max_tokens', 9000),
                ('context_window', 100), ('aggregate_bytes', 200000), ('tools', 0), ('tools', 1000),
@@ -149,10 +155,9 @@ class PolicyChecks(RemoteFixture):
             with self.assertRaises(EndpointConfigurationError):
                 p.validate_payload({**body, **extra})
 
-    def test_exact_seven_tool_names(self):
-        names = {'get_upcoming', 'get_past_events', 'search_reminders', 'view_emails', 'summarize_emails', 'view_messages', 'summarize_messages'}
-        self.assertEqual(policy._READ_TOOLS, names)
-        for n in names:
-            self.assertTrue(policy.remote_read_tool_allowed(n))
-        for n in ['lookup_contact', 'list_contacts', 'search_notes', 'send_message', 'read_file', 'get_upcoming_alias', None, []]:
-            self.assertFalse(policy.remote_read_tool_allowed(n))
+    def test_tool_exclusions_are_exactly_the_local_runtime_tools(self):
+        self.assertEqual(policy._REMOTE_EXCLUDED, {'create_tool', 'use_skill', 'wisp_skills', 'wisp_mcp'})
+        for n in [*policy._REMOTE_EXCLUDED, 'mcp_anything', 'not_a_registered_tool', '', None, []]:
+            self.assertFalse(policy.remote_tool_allowed(n), n)
+        self.assertFalse(hasattr(policy, 'remote_read_only_mode'))
+        self.assertFalse(hasattr(policy, 'remote_full_mode'))

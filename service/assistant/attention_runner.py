@@ -47,20 +47,6 @@ def reset() -> None:
     _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
 
 
-def _remote_profile_block() -> str | None:
-    """Why this process must not read messages or write reminders at all, or None.
-
-    Read-only remote inference allows no writes; the runner would otherwise read the real
-    Messages feed and write real reminders behind it."""
-    try:
-        from service.inference.remote_policy import remote_read_only_mode
-        if remote_read_only_mode():
-            return "the read-only remote build does not run the attention runner"
-    except Exception:  # noqa: BLE001 — if the profile cannot be read, assume the restrictive one
-        return "the remote-only profile could not be read"
-    return None
-
-
 def _policy_block(**args) -> str | None:
     """Why the safety policy forbids a reminder write right now, or None when it is ALLOW.
 
@@ -157,7 +143,7 @@ async def create_reminder(plan: Plan) -> dict:
     carries `created: None` because this call did not make it.
     """
     from service.tools.assistant_tools import add_reminder
-    blocked = _remote_profile_block() or _policy_block(title=plan.title, kind="reminder")
+    blocked = _policy_block(title=plan.title, kind="reminder")
     if blocked:
         # Defence in depth: the tick already checked, but view-only can be switched on mid-pass.
         _audit("deny", tool="add_reminder", source="attention", reason=blocked)
@@ -211,8 +197,6 @@ async def _publish(event: dict) -> None:
 async def run_tick(now: float | None = None) -> list:
     """One scheduler pass. Cheap when nothing changed; never raises into the scheduler."""
     global _last_fingerprint, _last_run
-    if _remote_profile_block():
-        return []                                     # never read or write in read-only remote inference
     now = now if now is not None else time.time()
     if now - _last_run < MIN_INTERVAL_S:
         return []
@@ -308,7 +292,7 @@ async def undo(source_id: str) -> dict:
     list view collapses into the same row are not passed to the deletion. The deletion itself is
     the existing verified path (`_retire`), which reads the native item back.
     """
-    blocked = _remote_profile_block() or _policy_block(title=source_id, kind="reminder")
+    blocked = _policy_block(title=source_id, kind="reminder")
     if blocked:
         _audit("deny", tool="add_reminder", source="attention_undo", reason=blocked)
         return {"ok": False, "error": f"Blocked by the safety policy: {blocked}"}

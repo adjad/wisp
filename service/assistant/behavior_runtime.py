@@ -1,6 +1,8 @@
 """Mac-side runtime for the behavior engine: feed it, run it, act on it.
 
-Off unless ``WISP_BEHAVIOR=1`` turns it on.
+On by default; off with Settings -> "Learn my routines" or ``WISP_BEHAVIOR=0``
+(see ``service.behavior_switch``). Turning it off stops ingestion and nudges
+and keeps what was learned.
 
 Engine
     An in-process ``BehaviorEngine`` at ``<WISP_HOME>/behavior.db``.
@@ -63,8 +65,8 @@ ASK_LIMIT = 500
 # --------------------------------------------------------------------------
 
 def enabled() -> bool:
-    from service.behavior.flags import env_enabled
-    return env_enabled()
+    from service.behavior_switch import enabled as flag_enabled
+    return flag_enabled()
 
 
 def _home() -> Path:
@@ -728,13 +730,6 @@ async def tick(store, hub, *, now: float | None = None, force: bool = False) -> 
     except Exception as exc:  # noqa: BLE001
         log.warning("behavior tick failed: %s", type(exc).__name__)
         return []
-
-
-async def run_loop(store, hub) -> None:
-    """Standalone loop for builds without the assistant scheduler (remote-only)."""
-    while True:
-        await tick(store, hub)
-        await asyncio.sleep(TICK_S)
 
 
 def poke(store, hub) -> None:

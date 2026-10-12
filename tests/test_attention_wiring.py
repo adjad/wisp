@@ -737,23 +737,21 @@ async def test_a_remote_only_profile_blocks_writes_through_the_policy(isolated, 
     go_live(isolated)
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
     monkeypatch.setattr(remote_policy, "remote_tool_allowed", lambda tool: False)
-    monkeypatch.setattr(remote_policy, "remote_read_only_mode", lambda: False)
     assert await wiring.run_tick(NOW) == []
     assert effects["created"] == [] and wiring.get_ledger().get("msg:m") is None
     created_row()
     assert (await wiring.undo("msg:m"))["ok"] is False
 
 
-async def test_read_only_remote_build_never_reads_or_writes_even_in_shadow(isolated, monkeypatch):
+async def test_a_remote_only_profile_that_allows_the_tool_does_not_stop_the_runner(isolated, feed, effects, monkeypatch):
+    # Remote inference is read/write: the runner answers to the safety policy (view-only,
+    # grants) exactly as on a Mac with local models, with no remote-specific early return.
     from service.inference import remote_policy
-    from service.tools import imessage_tools
-    monkeypatch.setattr(remote_policy, "remote_read_only_mode", lambda: True)
-    reads = []
-    monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: reads.append(1) or FEED)
-    assert await wiring.run_tick(NOW) == [] and reads == []
-    assert wiring.get_ledger().recent() == []
-    created_row()
-    assert (await wiring.undo("msg:m"))["ok"] is False
+    go_live(isolated)
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: object())
+    monkeypatch.setattr(remote_policy, "remote_tool_allowed", lambda tool: True)
+    assert not hasattr(wiring, "_remote_profile_block")
+    assert await wiring.run_tick(NOW) != [] or effects["created"] != []
 
 
 async def test_old_message_text_is_purged_from_the_ledger_during_a_tick(isolated, feed, effects):

@@ -18,7 +18,7 @@ Policy: `service/inference/remote_policy.py`. Tests:
    ```yaml
    inference:
      remote_only:
-       base_url: https://inference.example   # HTTPS origin only: no path, query or trailing slash
+       base_url: https://inference.example   # HTTPS origin only: no path, query, trailing slash, space or non-ASCII character
        model_id: example-model               # sent unchanged for every role
        credential_ref: keychain:example      # the name of a Keychain item; never the token itself
        context_window: 32000                 # 2048 to 1,048,576 tokens
@@ -47,12 +47,9 @@ Policy: `service/inference/remote_policy.py`. Tests:
    the backend it starts. Quit Wisp first, then do one of the following:
 
    ```sh
-   # Read-only mode
    WISP_REMOTE_ONLY=1 /Applications/Wisp.app/Contents/MacOS/Wisp
-   # Full mode
-   WISP_REMOTE_ONLY=1 WISP_REMOTE_FULL=1 /Applications/Wisp.app/Contents/MacOS/Wisp
    # Or, through Launch Services
-   open -a Wisp --env WISP_REMOTE_ONLY=1 --env WISP_REMOTE_FULL=1
+   open -a Wisp --env WISP_REMOTE_ONLY=1
    ```
 
    For a development backend, set the same variables in the environment of
@@ -67,32 +64,28 @@ remote target while Wisp runs.
 | Launch | Result |
 | --- | --- |
 | no `WISP_REMOTE_ONLY` | Normal local inference. A `remote_only` profile in config is ignored. |
-| `WISP_REMOTE_ONLY=1` with a complete, valid profile | Remote inference, read-only mode. |
-| `WISP_REMOTE_ONLY=1 WISP_REMOTE_FULL=1` with a valid profile | Remote inference, full mode. |
+| `WISP_REMOTE_ONLY=1` with a complete, valid profile | Remote inference (read/write; see Mode). |
 | `WISP_REMOTE_ONLY=1` with no profile, an incomplete one, or an invalid one | The backend refuses to start and names the problem. |
-| `WISP_REMOTE_FULL=1` without `WISP_REMOTE_ONLY=1`, or any value other than `1` | The backend refuses to start. |
+| any `WISP_REMOTE_ONLY` value other than `1` | The backend refuses to start. |
+| `WISP_REMOTE_FULL` set to anything | Ignored, with one deprecation line in the log. It no longer selects a mode. |
 
 The server must answer a health check within `readiness_timeout`, or startup
 fails.
 
-## Modes
+## Mode
 
-- **Read-only** (`WISP_REMOTE_ONLY=1`): the model can call only the seven
-  native reads (`get_upcoming`, `get_past_events`, `search_reminders`,
-  `view_emails`, `summarize_emails`, `view_messages`, `summarize_messages`)
-  and, when `WISP_BEHAVIOR=1`, the four behavior tools. Every write endpoint,
-  approval and other tool is refused, even under full access or a standing
-  grant. The prompt is sent as typed, with no memory facts, history or skill
-  context. The behavior profile card is the only personal context added. No
-  assistant scheduler runs, though behavior learning keeps its own loop.
-- **Full** (`+ WISP_REMOTE_FULL=1`): every built-in tool except those that
-  need Wisp's local models or extension runtimes (`create_tool`, `use_skill`,
-  `wisp_skills`, `wisp_mcp`, skill and MCP tools). Each call goes through the
-  normal safety policy and grants, as on a Mac with local models. The
-  assistant scheduler runs (reminders, the daily brief, scheduled sends,
-  behavior ticks).
+There is one mode, read/write. The model can use every built-in tool except
+those that need Wisp's local models or extension runtimes (`create_tool`,
+`use_skill`, `wisp_skills`, `wisp_mcp`, skill and MCP tools). Each call goes
+through the normal safety policy and grants, as on a Mac with local models:
+sends always confirm and can never be granted, and writes ask once, always or
+never. The assistant scheduler runs (reminders, the daily brief, scheduled
+sends, behavior ticks).
 
-## Safety boundaries (both modes)
+To keep a remote-inference Mac read-only, use Wisp's **View Only** mode in
+Settings. It denies writes here exactly as it does with local models.
+
+## Safety boundaries
 
 - **One pinned origin.** Every role resolves to the profile's `base_url`,
   `model_id` and credential. A request built for another target, model or
@@ -114,10 +107,9 @@ fails.
 ## What leaves the Mac
 
 Everything the model needs to answer goes to your server: your prompt, the
-system prompt and the tool schemas. Read-only mode also sends the results of
-the reads the model calls (calendar, reminders, mail and message text). Full
-mode adds memory facts, recent conversation history (bounded by
-`aggregate_bytes`) and the results of any tool it runs. Choose a server you
-trust with that data.
+system prompt and the tool schemas. It also gets the results of any tool the
+model runs (calendar, reminders, mail and message text), plus memory facts and
+recent conversation history (bounded by `aggregate_bytes`). Choose a server
+you trust with that data.
 
 `wisp_status` ("which model are you using?") names the remote model and host.

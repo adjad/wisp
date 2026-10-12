@@ -10,6 +10,13 @@ are deterministic statistics with evidence ids. An optional LLM (the
 *phraser*) may reword a nudge body and label ambiguous event titles from a
 fixed list. It never decides, and never adds facts.
 
+**On by default; turn off in Settings or with `WISP_BEHAVIOR=0`.** Settings ->
+Privacy & Access -> "Learn my routines" saves `behavior.enabled` in
+`~/.moe/config.yaml` and takes effect at once, without a restart. Off stops
+ingesting, mining and nudging and hides the behavior tools; what was already
+learned stays in `behavior.db` until you delete it. A launch-time
+`WISP_BEHAVIOR=1` or `0` overrides the saved setting.
+
 ## Data flow
 
 ```
@@ -124,14 +131,13 @@ The engine produces an always-on **profile card** of 700 UTF-8 bytes or less:
 confirmed patterns first, then the best of each kind, then today's predictions,
 whole lines only, code-composed. `prompt_blocks.profile_block()` adds it to the
 system prompt with a header that says the patterns "may be wrong, never state
-them as certain facts". It is cached 60 s and never blocks the event loop. In
-**read-only remote inference** ([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)) all
-other memory context is off and `remote_only_context_block()` adds only this
-card.
+them as certain facts". It is cached 60 s and never blocks the event loop.
+It rides along wherever remembered facts do, including remote inference
+([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)).
 
 ## Privacy: what it reads and where it goes
 
-- With `WISP_BEHAVIOR=1` it reads Calendar events, Reminders, **Messages
+- While it is on it reads Calendar events, Reminders, **Messages
   metadata** (direction, contact, time; never text), the topic label of the
   user's Wisp asks (never the text), and approvals/denials.
 - Learned data lives in `<WISP_HOME>/behavior.db` (default `~/.moe/behavior.db`),
@@ -144,38 +150,40 @@ card.
 
 ## What goes to a remote model
 
-Only under remote inference ([REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)):
+Only under remote inference (`WISP_REMOTE_ONLY=1`,
+[REMOTE_INFERENCE.md](REMOTE_INFERENCE.md)): the server receives memory facts,
+the profile card, recent conversation history (bounded by the profile's byte
+budget), full tool results (including mail and message text), and behavior
+phrasing facts (event titles, contact names).
 
-- Read-only mode (`WISP_REMOTE_ONLY=1`): of the learned data, only the profile
-  card (at most 700 bytes) and behavior phrasing facts; no memory facts or
-  history.
-- Full mode (`WISP_REMOTE_FULL=1`): the server also receives memory facts, the
-  profile card, recent conversation history (bounded by the profile's byte
-  budget), full tool results (including mail and message text), and behavior
-  phrasing facts (event titles, contact names).
+## Switches
 
-## Flags
+Precedence, highest first: `WISP_BEHAVIOR` in the launch environment, then the
+saved Settings choice, then the default (on).
 
-| Flag | Meaning |
+| Switch | Meaning |
 | --- | --- |
-| `WISP_BEHAVIOR=1` | Behavior learning on. Off otherwise (including under remote inference). |
-| `WISP_BEHAVIOR=0` | Off (the same as unset). |
+| Settings -> "Learn my routines" | Saved as `behavior.enabled` (default true). Live; no restart. |
+| `WISP_BEHAVIOR=1` | Forced on, whatever Settings says. |
+| `WISP_BEHAVIOR=0` | Forced off (any other non-empty value also means off). Empty or unset defers to Settings. |
 | `WISP_BEHAVIOR_PHRASER=0` | Template text, no phrasing calls. |
 | `WISP_HOME` | Moves all of Wisp's state, including `behavior.db`. |
 
 Tick cadence: runtime tick 30 s, ingest 5 min (and right after a Calendar
 sync, which the app does about once a minute), mine 30 min or on change,
-nudges 60 s. Read-only remote inference has no assistant scheduler, so it
-runs `behavior_runtime.run_loop` itself.
+nudges 60 s. The assistant scheduler starts each tick only while behavior
+learning is on, so turning it off stops the next tick.
 
 ## Endpoints
 
 Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
-`409` while behavior learning is off, except `GET /behavior/status`.
+`409` while behavior learning is off, except `GET /behavior/status` and
+`/behavior/settings`.
 
 | Route | Purpose |
 | --- | --- |
 | `GET /behavior/status` | enabled, last runs, errors, counts |
+| `GET /behavior/settings`, `PUT /behavior/settings` `{"enabled": bool}` | the "Learn my routines" setting; returns `enabled` (in effect), `setting` (saved) and `env_override` |
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
@@ -187,8 +195,7 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 
 ## Tools and routing
 
-Four read-only tools, hidden while behavior is off and allowed in read-only
-remote inference: `describe_me`, `predict_my_day` (today or tomorrow),
+Four tools, hidden while behavior is off: `describe_me`, `predict_my_day` (today or tomorrow),
 `my_patterns` (query) and `correct_pattern` (confirm, reject or restore; only
 changes Wisp's learned profile). The router claims whole-utterance phrases
 before other routes, for example "What do you know about me?", "Predict my
@@ -219,9 +226,6 @@ WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py
 - **Cancellation history starts at install.** Calendar apps do not keep what
   was deleted, so on real data cancel/move patterns only accumulate from the
   day Wisp first saw the calendar.
-- **No scheduler in read-only remote inference.** Wisp-schedule reminders and
-  holds are created (and Undo works), but nothing fires them; the nudge
-  notification and the panel card still appear.
 - **Phrasing can fall back to templates.** The Mac phraser gives each call 6 s,
   allows 4 calls per minute, and skips while the user is waiting on a turn. A
   slow server therefore shows the code-composed text. That is intentional.

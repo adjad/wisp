@@ -162,12 +162,18 @@ def store(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _env(monkeypatch):
+def _env(monkeypatch, tmp_path):
+    from service import config
     for key in ("WISP_BEHAVIOR", "WISP_QA_SEED"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")   # no saved setting
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
     br.set_runtime(None)
     yield
     br.set_runtime(None)
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
 
 
 def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=lambda: NOW):
@@ -197,15 +203,66 @@ def tick(rt, store, hub, now=NOW, force=False):
 # Flags
 # --------------------------------------------------------------------------
 
-def test_off_by_default(monkeypatch, store):
+def test_on_by_default(tmp_path):
+    from service import behavior_switch as flags
+    assert br.enabled() and flags.env_override() is None and flags.setting_enabled()
+    rt, _ = make_runtime(tmp_path)
+    br.set_runtime(rt)
+    assert br.get_runtime() is rt
+
+
+def test_default_runtime_reads_the_real_sources_and_keeps_message_text_out(tmp_path, monkeypatch, store):
+    """On by default means real data: the default collaborators are the real Messages reader,
+    the real Calendar-synced store and the real session history, never a demo feed, and the
+    Messages path keeps who/when only."""
+    from service.tools import imessage_tools
+    engine = FakeEngine()
+    rt = br.BehaviorRuntime(home=tmp_path / "home", local_factory=lambda path: engine)
+    assert rt._messages_fn is br._default_messages
+    assert rt._calendar_sync_fn is br._default_calendar_sync
+    assert rt._session_db_fn is br._default_session_db
+    seen = []
+    secret = "SECRET BODY TEXT"
+    snapshot = {"state": "ready", "records": [
+        {"identity": "m1", "timestamp": NOW - 600, "direction": "incoming", "sender": "Sam", "text": secret},
+        {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "conversation": "Sam", "text": secret}]}
+    monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: seen.append(1) or snapshot)
+    assert rt._ingest_messages(NOW) is True and seen == [1]
+    assert {o.source for o in engine.obs.values()} == {"messages"}
+    assert {o.kind for o in engine.obs.values()} == {"message_in", "message_out"}
+    assert secret not in json.dumps([o.to_dict() if hasattr(o, "to_dict") else vars(o) for o in engine.obs.values()],
+                                    default=str)
+    # Calendar rows come from the store the Swift app syncs into.
+    store.sync_source("calendar", [{"kind": "event", "source_id": "e1", "title": "Standup", "when_ts": NOW + 3600,
+                                    "context": "Work", "all_day": False}])
+    rows = rt._calendar_rows(store, NOW - 86400, NOW + 86400)
+    assert [o.source for o in rt.calendar_observations(rows)] == ["calendar"]
+
+
+def test_explicitly_off_does_nothing(monkeypatch, store):
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert not br.enabled() and br.get_runtime() is None
     assert asyncio.run(br.tick(store, FakeHub())) == []
     br.record_decision("send_message", True)          # no-op, no error
     assert br.profile_card() == ""
 
 
+def test_saved_setting_off_stops_everything_and_env_one_overrides_it(monkeypatch, store, tmp_path):
+    from service import config
+    rt, _ = make_runtime(tmp_path)
+    br.set_runtime(rt)
+    config.set_behavior_enabled(False)
+    assert not br.enabled() and br.get_runtime() is None
+    assert asyncio.run(br.tick(store, FakeHub())) == []
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")           # explicit override beats the saved choice
+    assert br.enabled() and br.get_runtime() is rt
+    monkeypatch.delenv("WISP_BEHAVIOR")
+    config.set_behavior_enabled(True)
+    assert br.enabled()
+
+
 def test_behavior_zero_and_other_values_are_off(monkeypatch):
-    from service.behavior.flags import env_enabled
+    from service.behavior_switch import enabled as env_enabled
     from service.memory.prompt_blocks import profile_block
     from service.tools.behavior_tools import _unavailable
     monkeypatch.setenv("WISP_BEHAVIOR", "yes")
@@ -213,6 +270,10 @@ def test_behavior_zero_and_other_values_are_off(monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert not env_enabled() and not br.enabled()
     assert profile_block() == "" and _unavailable()
+    monkeypatch.setenv("WISP_BEHAVIOR", "")            # empty is "unset": the setting/default decides
+    assert env_enabled()
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    assert env_enabled() and not _unavailable()
 
 
 # --------------------------------------------------------------------------
@@ -503,7 +564,7 @@ def test_scheduler_runs_behavior_tick_in_background_one_at_a_time(monkeypatch):
         await second
     asyncio.run(scenario())
     assert len(started) == 2
-    monkeypatch.delenv("WISP_BEHAVIOR")
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert scheduler._start_behavior_tick() is None           # off: nothing started
 
 
@@ -521,18 +582,18 @@ def test_profile_card_cached_and_bounded(tmp_path):
     assert rt.profile_card() == card                    # cached for 60s
 
 
-def test_profile_block_in_memory_and_remote_only_assembly(monkeypatch, tmp_path):
+def test_profile_block_in_memory_assembly(monkeypatch, tmp_path):
     from service.memory import prompt_blocks
     monkeypatch.setattr("service.memory.facts.memory_context_block", lambda query="": "\nFACT", raising=False)
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
     assert prompt_blocks.profile_block() == ""
-    assert prompt_blocks.remote_only_context_block() == ""
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     rt, eng = make_runtime(tmp_path)
     rt.refresh_card()
     br.set_runtime(rt)
-    block = prompt_blocks.remote_only_context_block()
+    block = prompt_blocks.profile_block()
     assert block.startswith(prompt_blocks.PROFILE_HEADER) and "Gym weekday mornings" in block
-    assert "FACT" not in block                          # only the card in remote-only mode
+    assert "FACT" not in block                          # the card alone, without remembered facts
     assert prompt_blocks.memory_block("x").endswith(block)
     # The card fits a remote profile's byte budget alongside a system prompt.
     from tests.fixtures.remote_inference import example_profile
@@ -542,19 +603,13 @@ def test_profile_block_in_memory_and_remote_only_assembly(monkeypatch, tmp_path)
                      {"role": "user", "content": "plan my morning"}]})
 
 
-def test_main_wires_profile_into_remote_only_paths():
-    """Source contract: remote-only plain chat and agent turns get only the card."""
-    import ast
+def test_main_has_no_remote_only_behavior_special_cases():
+    """Remote inference follows the Mac path: the scheduler runs the behavior tick and the
+    profile card rides in memory_block; main.py has no separate remote-only wiring."""
     from pathlib import Path
     src = (Path(__file__).resolve().parents[1] / "service/main.py").read_text()
-    assert src.count("remote_only_context_block()") == 2
-    tree = ast.parse(src)
-    agent = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "agent")
-    text = ast.unparse(agent)
-    assert "style_hint += remote_only_context_block()" in text
-    # Read-only remote keeps memory off; the full build (WISP_REMOTE_FULL) follows the Mac path.
-    assert "include_memory_context=not remote_read_only_mode() and" in text
-    assert "behavior_router" in src and "behavior_runtime.run_loop(assistant_store, assistant_hub)" in src
+    assert "remote_only_context_block" not in src and "behavior_runtime.run_loop" not in src
+    assert "behavior_router" in src
 
 
 # --------------------------------------------------------------------------
@@ -638,89 +693,6 @@ def test_phraser_returns_none_on_event_loop():
     async def inside():
         return WispPhraser(client_factory=lambda t: FakeClient("hi")).phrase("x", {"a": "hi"})
     assert asyncio.run(inside()) is None
-
-
-# --------------------------------------------------------------------------
-# Read-only remote inference: no assistant scheduler, so main.lifespan
-# starts the behavior loop itself — and only when behavior learning is on.
-# --------------------------------------------------------------------------
-
-from tests.test_remote_inference_policy import RemoteFixture, policy  # noqa: E402
-
-
-class RemoteOnlyLifespan(RemoteFixture):
-    def _run(self):
-        import ast
-        from contextlib import asynccontextmanager
-        from pathlib import Path
-        from types import ModuleType, SimpleNamespace
-        from unittest.mock import AsyncMock, Mock, patch
-        source = Path(__file__).resolve().parents[1] / "service/main.py"
-        tree = ast.parse(source.read_text())
-        nodes = [ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0)]
-        nodes += [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-                  and n.name in {"lifespan", "_sync_keep_warm", "_prepare_remote_inference"}]
-        fake = SimpleNamespace(health=AsyncMock(return_value={"ok": True}), aclose=AsyncMock())
-        watched = []
-        q = ModuleType("service.config.quarantine")
-        q.check = Mock()
-
-        async def watch(tasks, close):
-            watched.append(tasks)
-            await asyncio.Event().wait()
-        q.watch = watch
-        identity = ModuleType("service.identity")
-        identity.refuse_sandbox_on_production_port = Mock()
-        host = ModuleType("service.browser.host")
-        host.start_from_environment = Mock(return_value=None)
-        browser = ModuleType("service.browser")
-        browser.host = host
-        bomb = Mock(side_effect=AssertionError("local/background operation forbidden"))
-        store_obj, hub_obj = object(), object()
-        ns = {"asyncio": asyncio, "asynccontextmanager": asynccontextmanager,
-              "remote_only_profile": policy.remote_only_profile,
-              "remote_full_mode": policy.remote_full_mode,
-              "require_local_models_disabled": policy.require_local_models_disabled,
-              "OMLXClient": lambda: fake, "role_to_model": lambda role: "example-model",
-              "skills": SimpleNamespace(load=bomb), "mcp_manager": SimpleNamespace(start=bomb, stop=bomb),
-              "idle_unloader": SimpleNamespace(run=bomb), "assistant_scheduler": SimpleNamespace(run=bomb),
-              "cloud_super_model_enabled": bomb, "start_laya_warmup": bomb,
-              "research_manager": SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),
-              "research_cache": SimpleNamespace(purge_older_than=Mock()),
-              "assistant_store": store_obj, "assistant_hub": hub_obj}
-        module = ast.fix_missing_locations(ast.Module(body=nodes, type_ignores=[]))
-        exec(compile(module, str(source), "exec"), ns)
-        started = []
-
-        async def fake_loop(store, hub):
-            started.append((store, hub))
-            await asyncio.Event().wait()
-
-        async def run():
-            with patch.dict("sys.modules", {"service.identity": identity, "service.config.quarantine": q,
-                                            "service.browser": browser, "service.browser.host": host}), \
-                    patch("service.config.quarantine", q), patch.object(br, "run_loop", fake_loop):
-                async with ns["lifespan"](None):
-                    await asyncio.sleep(0)
-        asyncio.run(run())
-        bomb.assert_not_called()
-        return watched, started, (store_obj, hub_obj)
-
-    def test_behavior_loop_started_only_when_enabled(self):
-        old = {k: os.environ.pop(k, None) for k in ("WISP_BEHAVIOR",)}
-        try:
-            watched, started, _ = self._run()
-            self.assertEqual(watched, [()])
-            self.assertEqual(started, [])
-            os.environ["WISP_BEHAVIOR"] = "1"
-            watched, started, pair = self._run()
-            self.assertEqual(len(watched[0]), 1)
-            self.assertEqual(started, [pair])
-        finally:
-            for k, v in old.items():
-                os.environ.pop(k, None)
-                if v is not None:
-                    os.environ[k] = v
 
 
 # --------------------------------------------------------------------------

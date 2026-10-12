@@ -25,22 +25,20 @@ Profile (see docs/REMOTE_INFERENCE.md)::
         response_bytes: 4194304
         # optional: api_prefix (/v1), readiness_timeout (5, max 30), enabled (true)
 
-Two modes share the pinned origin, model, Keychain-only credential and payload
-validation:
-
-* read-only (``WISP_REMOTE_ONLY=1`` alone): only the seven native reads and
-  the behavior tools; every other tool, approval and write endpoint is
-  refused, and no memory or history context is sent.
-* full (``WISP_REMOTE_ONLY=1`` + ``WISP_REMOTE_FULL=1``): every built-in tool
-  that does not need a local model or a Wisp-local extension runtime, each
-  decided by the normal safety policy (service/safety/policy.py and
-  grants.py) exactly as on a Mac with local models; sends always confirm.
+The mode is read/write: every built-in tool that does not need a local model
+or a Wisp-local extension runtime is offered, each decided by the normal
+safety policy (service/safety/policy.py and grants.py) exactly as on a Mac
+with local models: sends always confirm and are never grantable, writes are
+once/always/never. Read-only use is Wisp's existing View Only mode, which
+keeps denying writes here. The pinned origin, model, Keychain-only credential
+and payload validation apply throughout.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
 import json
+import logging
 import math
 import os
 import re
@@ -50,19 +48,17 @@ if TYPE_CHECKING:
     from service.config.endpoints import Target
 
 _FORCED_MODE = os.environ.get("WISP_REMOTE_ONLY")
-# Read once at import, like _FORCED_MODE: the mode is a launch decision.
-_FULL_MODE = os.environ.get("WISP_REMOTE_FULL")
-_READ_TOOLS = frozenset({"get_upcoming", "get_past_events", "search_reminders",
-                         "view_emails", "summarize_emails", "view_messages",
-                         "summarize_messages"})
-_BEHAVIOR_TOOLS = frozenset({"describe_me", "predict_my_day", "my_patterns", "correct_pattern"})
-# Built-ins that full remote mode never offers or runs. Each needs something
+# The retired WISP_REMOTE_FULL flag: the mode it selected is now the only one.
+# Read once at import; never fatal, noted once in the log when a profile loads.
+_RETIRED_FULL_FLAG = os.environ.get("WISP_REMOTE_FULL")
+_log = logging.getLogger(__name__)
+# Built-ins that remote mode never offers or runs. Each needs something
 # this build does not have: create_tool generates code with the local coding
 # model and installs it; use_skill/wisp_skills/wisp_mcp serve the Wisp-local
 # skill and MCP runtimes, which never start in a remote-only build (and their
 # content must not leave the Mac). Everything else is left to the normal
 # safety policy, never to this list.
-_REMOTE_FULL_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp"})
+_REMOTE_EXCLUDED = frozenset({"create_tool", "use_skill", "wisp_skills", "wisp_mcp"})
 
 # Every limit the user's profile must state, with the range Wisp accepts.
 LIMITS = {
@@ -77,6 +73,7 @@ LIMITS = {
 REQUIRED_KEYS = frozenset({"base_url", "model_id", "credential_ref", *LIMITS})
 OPTIONAL_KEYS = frozenset({"enabled", "api_prefix", "readiness_timeout"})
 _MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,199}")
+_BASE_URL_CHARS = re.compile(r"[\x21-\x7e]+")
 _CREDENTIAL_REF = re.compile(r"keychain:[A-Za-z][A-Za-z0-9_-]{0,63}")
 
 
@@ -170,6 +167,11 @@ def profile_from_config(raw) -> RemoteOnlyProfile:
     base_url = raw["base_url"]
     if not isinstance(base_url, str) or not base_url or base_url != base_url.rstrip("/"):
         _refuse("Remote-inference base_url must be an https origin without a trailing slash")
+    # Checked before any URL parsing: urlsplit silently strips leading/trailing
+    # whitespace and control characters, which would let a padded or
+    # newline-terminated value pass as a valid origin.
+    if not _BASE_URL_CHARS.fullmatch(base_url):
+        _refuse("Remote-inference base_url must be printable ASCII with no whitespace or control characters")
     model_id = raw["model_id"]
     if not isinstance(model_id, str) or not _MODEL_ID.fullmatch(model_id):
         _refuse("Invalid remote-inference model_id")
@@ -205,22 +207,14 @@ def profile_from_config(raw) -> RemoteOnlyProfile:
     return profile
 
 
-def _full_requested() -> bool:
-    if _FULL_MODE not in {None, "1"}:
-        _refuse("Invalid remote full launch mode")
-    if _FULL_MODE != "1":
-        return False
-    if _FORCED_MODE != "1":
-        _refuse("Remote full mode requires the forced remote-only launch")
-    return True
-
-
 @lru_cache(maxsize=1)
 def remote_only_profile() -> RemoteOnlyProfile | None:
     """Validate one startup snapshot; deliberately not cleared by Settings."""
     if _FORCED_MODE not in {None, "1"}:
         _refuse("Invalid remote-only launch mode")
-    _full_requested()
+    if _RETIRED_FULL_FLAG is not None:
+        _log.warning("WISP_REMOTE_FULL is deprecated and ignored; remote inference is "
+                     "always full read/write mode now")
     # Only the launcher's WISP_REMOTE_ONLY=1 opts in. A profile left in
     # ~/.moe/config.yaml must never move a normal Mac's inference (and its
     # native reads) to a remote server on its own.
@@ -231,16 +225,6 @@ def remote_only_profile() -> RemoteOnlyProfile | None:
     if not isinstance(inference, dict):
         _refuse("Invalid inference configuration")
     return profile_from_config(inference.get("remote_only"))
-
-
-def remote_full_mode() -> bool:
-    """True only in the validated full remote build (WISP_REMOTE_FULL=1)."""
-    return remote_only_profile() is not None and _full_requested()
-
-
-def remote_read_only_mode() -> bool:
-    """True in the validated read-only remote build (WISP_REMOTE_ONLY=1 alone)."""
-    return remote_only_profile() is not None and not _full_requested()
 
 
 def require_generation_role(role: str) -> None:
@@ -260,8 +244,7 @@ def remote_default_target(role: str = "fast") -> Target:
         "managed": False, "provider": profile.provider, "api_prefix": profile.api_prefix,
         "readiness_timeout": profile.readiness_timeout,
     })
-    label = "remote-only-full" if remote_full_mode() else "remote-only-read"
-    return Target(role, ep, profile.model_id, profile=label,
+    return Target(role, ep, profile.model_id, profile="remote-only",
                   context_window=profile.context_window, capabilities=profile.tool_capabilities)
 
 
@@ -284,37 +267,15 @@ def require_local_models_disabled(operation: str) -> None:
 def remote_tool_allowed(tool_name: str | None) -> bool:
     """Whether a remote-only build may offer/run this tool at all.
 
-    Full mode: every built-in except _REMOTE_FULL_EXCLUDED; the normal safety
-    policy then decides allow/confirm/deny for each call. Read-only mode: the
-    fixed read allowlist (remote_read_tool_allowed)."""
+    Every built-in except _REMOTE_EXCLUDED; the normal safety policy then
+    decides allow/confirm/deny for each call."""
     if not isinstance(tool_name, str) or not tool_name:
         return False
-    if remote_full_mode():
-        if tool_name in _REMOTE_FULL_EXCLUDED:
-            return False
-        # Only tools registered by Wisp itself; skill and MCP runtimes never
-        # start in a remote-only build, but refuse their names regardless.
-        from service.tools.registry import REGISTRY
-        tool = REGISTRY.get(tool_name)
-        return (tool is not None and tool.category != "skill_tool"
-                and not tool_name.startswith("mcp_"))
-    return remote_read_tool_allowed(tool_name)
-
-
-def remote_read_tool_allowed(tool_name: str | None) -> bool:
-    """The read-only allowlist. Unchanged by full mode."""
-    if not isinstance(tool_name, str):
+    if tool_name in _REMOTE_EXCLUDED:
         return False
-    if tool_name in _READ_TOOLS:
-        return True
-    # Behavior-learning tools read (or, for correct_pattern, edit) only Wisp's
-    # own learned profile — never a native source. Allowed only while
-    # behavior learning is on, so the pinned read set (_READ_TOOLS) is
-    # unchanged. Their schemas are small; the routes offer them alone (see
-    # router._behavior_request).
-    if tool_name in _BEHAVIOR_TOOLS:
-        # The same import-free switch behavior_runtime.enabled() uses; the
-        # assistant package (which opens stores) is never imported from here.
-        from service.behavior.flags import env_enabled
-        return env_enabled()
-    return False
+    # Only tools registered by Wisp itself; skill and MCP runtimes never start
+    # in a remote-only build, but refuse their names regardless.
+    from service.tools.registry import REGISTRY
+    tool = REGISTRY.get(tool_name)
+    return (tool is not None and tool.category != "skill_tool"
+            and not tool_name.startswith("mcp_"))

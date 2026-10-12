@@ -7283,7 +7283,7 @@ def _guard_scheduled_cancel(decision: RouteDecision, original_text: str) -> Rout
 
 # --------------------------------------------------------------------------
 # Behavior learning: "what do you know about me", "predict my day", "when do I
-# usually work out". Active only while behavior learning is on (WISP_BEHAVIOR=1);
+# usually work out". Active only while behavior learning is on (the default; see behavior_switch.py);
 # otherwise every phrase keeps its existing route (e.g.
 # "what do you know about me" -> recall). Whole-utterance matches only, so a
 # compound request ("... and check my email") keeps the claims router.
@@ -7349,19 +7349,9 @@ _BEHAVIOR_CORRECT_GUIDANCE = (
     "'right'. Only Wisp's learned profile changes; never touch the calendar or reminders.")
 
 
-def behavior_guidance(decision: RouteDecision) -> str:
-    """The behavior routes' instruction ('' for any other route), for paths
-    that send the user's raw prompt instead of ``decision.resolved_request``
-    (read-only remote inference), so it still reaches the model."""
-    names = set(decision.tool_subset or ()) | {name for name, _ in (decision.direct_calls or ())}
-    if not names or not names <= set(_BEHAVIOR_TOOLS_ALL):
-        return ""
-    return (_BEHAVIOR_CORRECT_GUIDANCE if "correct_pattern" in names else _BEHAVIOR_GUIDANCE).strip()
-
-
 def _behavior_request(text: str, last_tools: str | None = None) -> RouteDecision | None:
     # Import-free flag check: routing must never load the behavior runtime.
-    from service.behavior.flags import env_enabled as behavior_enabled
+    from service.behavior_switch import enabled as behavior_enabled
     if not behavior_enabled():
         return None
     value = " ".join(mask_quoted(text).replace("’", "'").split())

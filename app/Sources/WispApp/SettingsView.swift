@@ -211,6 +211,7 @@ final class SettingsLoader: ObservableObject {
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
+    @Published var behaviorEnabled = true
     @Published var cloudPreset = "openrouter"
     @Published var cloudBaseURL = "https://openrouter.ai"
     @Published var cloudAPIPrefix = "/api/v1"
@@ -328,6 +329,7 @@ final class SettingsLoader: ObservableObject {
             self.fullAccess = await client.mode().fullAccess
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
+            if let on = await client.behaviorEnabled() { self.behaviorEnabled = on }
             await self.refreshCloud()
             await self.refreshLocalProvider()
         }
@@ -953,6 +955,19 @@ final class SettingsLoader: ObservableObject {
         Task { self.humanizerEnabled = await client.setHumanizerEnabled(on) }
     }
 
+    func setBehaviorEnabled(_ on: Bool) {
+        behaviorEnabled = on
+        Task {
+            // Re-read the real state on failure so the switch never shows a
+            // position the backend did not accept.
+            if let actual = await client.setBehaviorEnabled(on) {
+                self.behaviorEnabled = actual
+            } else if let actual = await client.behaviorEnabled() {
+                self.behaviorEnabled = actual
+            }
+        }
+    }
+
     func setFullAccess(_ on: Bool) {
         fullAccess = on
         Task { self.fullAccess = await client.setFullAccess(on).fullAccess }
@@ -1506,6 +1521,27 @@ struct SettingsView: View {
                                      ? "Uses permitted contacts to look up names, recipients, and birthdays."
                                      : "Off. Cached contact names, recipients, and birthdays are cleared.")
                                     .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(Theme.accent)
+
+                        Divider()
+
+                        Toggle(isOn: Binding(
+                            get: { loader.behaviorEnabled },
+                            set: { loader.setBehaviorEnabled($0) })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Learn my routines")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text(loader.behaviorEnabled
+                                     ? "Learns from your calendar, reminders, message timing (never "
+                                       + "message text) and how you use Wisp. Nudges at most 4 a day. "
+                                       + "Everything stays on this Mac."
+                                     : "Off. Wisp is not learning your routines or sending nudges. "
+                                       + "What it already learned stays on this Mac.")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .toggleStyle(.switch)

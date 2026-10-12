@@ -1,7 +1,8 @@
-"""Full remote-inference mode (WISP_REMOTE_FULL=1).
+"""Remote-inference mode (WISP_REMOTE_ONLY=1 + a valid profile): read/write.
 
 Synthetic only: a fresh WISP_HOME, sockets forbidden, no app import that
-starts anything. Read-only behavior is covered by the other remote suites.
+starts anything. Every built-in tool except the on-Mac-model ones runs under
+the normal safety policy; View Only still denies writes.
 """
 import ast
 import asyncio
@@ -32,14 +33,11 @@ SENDS = ("send_email", "send_message", "reply_to_email", "forward_email", "sched
 
 
 class FullFixture(RemoteFixture):
-    """RemoteFixture, but launched as the full build with 32k budgets."""
+    """RemoteFixture with 32k budgets."""
     profile_overrides = FULL_LIMITS
 
     def setUp(self):
         super().setUp()
-        for p in (patch.object(policy, '_FULL_MODE', '1'),):
-            p.start()
-            self.addCleanup(p.stop)
         policy.remote_only_profile.cache_clear()
         self.addCleanup(policy.remote_only_profile.cache_clear)
         tmp = Path(os.environ['WISP_HOME']) / f'grants-{id(self)}.json'
@@ -52,13 +50,11 @@ class FullFixture(RemoteFixture):
 class ContractChecks(FullFixture):
     def test_full_profile_values(self):
         p = policy.remote_only_profile()
-        self.assertTrue(policy.remote_full_mode())
-        self.assertFalse(policy.remote_read_only_mode())
         self.assertEqual((p.context_window, p.aggregate_bytes, p.request_bytes, p.messages, p.max_tokens, p.tools),
                          (32000, 131072, 524288, 200, 8192, 32))
         t = policy.remote_default_target('agent')
         self.assertEqual((t.model, t.context_window, t.endpoint.credential_ref, t.profile),
-                         ('example-model', 32000, 'keychain:example', 'remote-only-full'))
+                         ('example-model', 32000, 'keychain:example', 'remote-only'))
         self.assertFalse(t.endpoint.managed)
         policy.validate_remote_target(t)
         self.assertEqual(p.fit_output(20000), 8192)
@@ -68,7 +64,6 @@ class ContractChecks(FullFixture):
         self.cfg = {'inference': {'remote_only': dict(EXAMPLE)}}
         policy.remote_only_profile.cache_clear()
         self.assertEqual(policy.remote_only_profile().context_window, 8000)
-        self.assertTrue(policy.remote_full_mode())
         # ...but a target that drifts from it is refused.
         from dataclasses import replace
         t = policy.remote_default_target('agent')
@@ -77,13 +72,25 @@ class ContractChecks(FullFixture):
             with self.assertRaises(EndpointConfigurationError):
                 policy.validate_remote_target(drift)
 
-    def test_launch_flag_combinations_fail_closed(self):
-        for forced, full in [(None, '1'), ('0', '1'), ('1', 'yes'), ('1', '0')]:
+    def test_invalid_launch_flag_fails_closed(self):
+        for forced in ('0', 'yes', ''):
             policy.remote_only_profile.cache_clear()
-            with self.subTest(forced=forced, full=full), \
-                    patch.object(policy, '_FORCED_MODE', forced), patch.object(policy, '_FULL_MODE', full), \
+            with self.subTest(forced=forced), patch.object(policy, '_FORCED_MODE', forced), \
                     self.assertRaises(EndpointConfigurationError):
                 policy.remote_only_profile()
+
+    def test_retired_full_flag_is_ignored_not_fatal(self):
+        for value in ('1', '0', 'yes', ''):
+            policy.remote_only_profile.cache_clear()
+            with self.subTest(value=value), patch.object(policy, '_RETIRED_FULL_FLAG', value), \
+                    self.assertLogs(policy._log, 'WARNING') as logs:
+                self.assertIsNotNone(policy.remote_only_profile())
+            self.assertEqual(len(logs.records), 1)
+            self.assertIn('WISP_REMOTE_FULL is deprecated', logs.output[0])
+        # Unset: no warning, same mode.
+        policy.remote_only_profile.cache_clear()
+        with patch.object(policy, '_RETIRED_FULL_FLAG', None):
+            self.assertIsNotNone(policy.remote_only_profile())
 
     def test_full_payload_budget(self):
         p = policy.remote_only_profile()
@@ -96,29 +103,13 @@ class ContractChecks(FullFixture):
                 p.validate_payload({**body, **extra})
 
 
-class ReadOnlyContractChecks(RemoteFixture):
-    def test_read_only_allowlist_whatever_the_budgets(self):
-        for overrides in ({}, FULL_LIMITS):
-            self.cfg = {'inference': {'remote_only': {**EXAMPLE, **overrides}}}
-            policy.remote_only_profile.cache_clear()
-            self.assertTrue(policy.remote_read_only_mode())
-            self.assertFalse(policy.remote_full_mode())
-            for name in WRITES_AND_SENDS + ('lookup_contact', 'read_file'):
-                self.assertFalse(policy.remote_tool_allowed(name), name)
-                self.assertIs(safety.decide(REGISTRY[name].category, {}, tool=name).tier, safety.Tier.DENY)
-            for name in policy._READ_TOOLS:
-                self.assertTrue(policy.remote_tool_allowed(name), name)
-
-
 class ToolChecks(FullFixture):
     def test_full_mode_exposes_writes_and_sends(self):
         for name in WRITES_AND_SENDS:
             with self.subTest(tool=name):
                 self.assertIn(name, REGISTRY)
                 self.assertTrue(policy.remote_tool_allowed(name))
-        # Read-only allowlist is NOT what decides full mode.
         self.assertTrue(policy.remote_tool_allowed('lookup_contact'))
-        self.assertFalse(policy.remote_read_tool_allowed('send_email'))
 
     def test_full_mode_excludes_only_local_runtime_tools(self):
         excluded = {n for n in REGISTRY if not policy.remote_tool_allowed(n)}
@@ -146,6 +137,21 @@ class ToolChecks(FullFixture):
         self.assertIs(safety.decide(REGISTRY['add_reminder'].category, args, tool='add_reminder').tier,
                       safety.Tier.DENY)
 
+    def test_view_only_mode_still_denies_writes_in_remote_mode(self):
+        # Read-only use is Wisp's View Only mode, which applies here exactly as
+        # on a Mac with local models.
+        args = {'title': 'synthetic', 'when': 'tomorrow 9am'}
+        with patch.object(safety, 'read_only', return_value=True):
+            for name in ('add_reminder', 'update_reminder', 'complete_reminder', 'create_note', 'append_note',
+                         'add_calendar_event', 'cancel_event'):
+                with self.subTest(tool=name):
+                    d = safety.decide(REGISTRY[name].category, args, tool=name)
+                    self.assertIs(d.tier, safety.Tier.DENY, d.reason)
+            for name in SENDS:
+                with self.subTest(tool=name):
+                    d = safety.decide(REGISTRY[name].category, {'to': 'friend@example.com', 'body': 'b', 'text': 'hi'}, tool=name)
+                    self.assertIsNot(d.tier, safety.Tier.ALLOW)
+
     def test_sends_confirm_every_time_and_cannot_be_standing_granted(self):
         cases = {'send_email': {'to': 'friend@example.com', 'subject': 's', 'body': 'b'},
                  'send_message': {'to': '+15555550100', 'text': 'hi'},
@@ -169,7 +175,7 @@ class ToolChecks(FullFixture):
 class MainChecks(FullFixture):
     def _lifespan_ns(self, fake, scheduler_run, bomb):
         return {'asyncio': asyncio, 'asynccontextmanager': asynccontextmanager,
-                'remote_only_profile': policy.remote_only_profile, 'remote_full_mode': policy.remote_full_mode,
+                'remote_only_profile': policy.remote_only_profile,
                 'require_local_models_disabled': policy.require_local_models_disabled,
                 'OMLXClient': lambda: fake, 'role_to_model': lambda role: 'example-model',
                 'skills': SimpleNamespace(load=bomb), 'mcp_manager': SimpleNamespace(start=bomb, stop=bomb),
@@ -237,16 +243,17 @@ class MainChecks(FullFixture):
         bomb.assert_not_called()
         ensure_bomb.assert_not_called()
 
-    def test_ui_write_handlers_allowed_in_full_mode(self):
+    def test_ui_write_handlers_allowed_in_remote_mode(self):
         names = {'assistant_add', 'assistant_update', 'assistant_delete', 'assistant_send_message_draft',
                  'assistant_event_claim', 'approve'}
         tree = ast.parse((ROOT / 'service/main.py').read_text())
+        seen = set()
         for node in tree.body:
             if isinstance(node, ast.AsyncFunctionDef) and node.name in names:
-                guard = node.body[1] if isinstance(node.body[0], ast.Expr) else node.body[0]
-                self.assertIsInstance(guard, ast.If, node.name)
-                self.assertEqual(ast.unparse(guard.test), 'remote_read_only_mode()', node.name)
-        ns = {'remote_read_only_mode': policy.remote_read_only_mode, 'HTTPException': HTTPException,
+                seen.add(node.name)
+                self.assertNotIn('remote', ast.unparse(node).lower().replace('remote_only_profile', ''), node.name)
+        self.assertEqual(seen, names)
+        ns = {'HTTPException': HTTPException,
               'assistant_store': SimpleNamespace(set_status=Mock(return_value=False)),
               'assistant_hub': SimpleNamespace(publish=AsyncMock())}
         selected({'assistant_update'}, ns)
@@ -254,11 +261,12 @@ class MainChecks(FullFixture):
 
     def test_history_and_memory_follow_the_mac_path(self):
         source = (ROOT / 'service/main.py').read_text()
-        self.assertIn('messages = ([user_msg] if super_model_cloud or remote_read_only_mode() else _tool_turn_messages(', source)
-        self.assertIn('include_memory_context=not remote_read_only_mode() and _agent_memory_context_allowed(', source)
-        ns = {'remote_full_mode': policy.remote_full_mode, 'remote_only_profile': policy.remote_only_profile}
+        self.assertIn('messages = ([user_msg] if super_model_cloud else _tool_turn_messages(', source)
+        self.assertIn('include_memory_context=_agent_memory_context_allowed(', source)
+        self.assertNotIn('remote_read_only_mode', source)
+        ns = {'remote_only_profile': policy.remote_only_profile}
         selected({'_history_budget'}, ns)
-        ns['_REMOTE_FULL_HISTORY_SHARE'] = 20
+        ns['_REMOTE_HISTORY_SHARE'] = 20
         # A fifth of the 131,072-byte aggregate at ~4 bytes per token.
         self.assertEqual(ns['_history_budget'](policy.remote_default_target('agent')), 6553)
 
@@ -270,11 +278,13 @@ class MainChecks(FullFixture):
 
 
 class BehaviorChecks(FullFixture):
-    def test_behavior_follows_only_its_own_flag(self):
-        from service.behavior import flags
-        with patch.dict(os.environ, {'WISP_REMOTE_ONLY': '1', 'WISP_REMOTE_FULL': '1'}, clear=False):
+    def test_behavior_follows_only_its_own_switch(self):
+        from service import behavior_switch as flags
+        with patch.dict(os.environ, {'WISP_REMOTE_ONLY': '1'}, clear=False):
             os.environ.pop('WISP_BEHAVIOR', None)
-            self.assertFalse(flags.env_enabled())   # remote inference does not turn it on
-            self.assertTrue(policy.remote_tool_allowed('describe_me'))  # full mode: the registry decides
+            self.assertTrue(flags.enabled())   # on by default, remote or not
+            self.assertTrue(policy.remote_tool_allowed('describe_me'))  # the registry decides
+            os.environ['WISP_BEHAVIOR'] = '0'
+            self.assertFalse(flags.enabled())
             os.environ['WISP_BEHAVIOR'] = '1'
-            self.assertTrue(flags.env_enabled())
+            self.assertTrue(flags.enabled())

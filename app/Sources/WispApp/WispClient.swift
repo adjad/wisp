@@ -369,6 +369,17 @@ final class WispClient {
         return await behaviorRequest("GET", "behavior/\(endpoint)")
     }
 
+    // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the
+    // state in effect, or nil when the backend can't be reached; a WISP_BEHAVIOR
+    // launch override can make the effective state differ from the request.
+    func behaviorEnabled() async -> Bool? {
+        await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
+    }
+
+    func setBehaviorEnabled(_ on: Bool) async -> Bool? {
+        await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
+    }
+
     // POST /behavior/run -> mine + predict + generate nudges now.
     func behaviorRun() async -> [String: Any]? {
         await behaviorRequest("POST", "behavior/run", body: [:], timeout: 60)
