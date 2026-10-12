@@ -4,6 +4,24 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-10-11
+
+### Added
+
+- Added proactive attention: Wisp watches incoming messages for plans or commitments that aren't on your calendar ("Can we do Thursday at 3?") and, in shadow mode (the default), records what it would do without acting. Opting in to live mode creates a verified Apple Reminder for each one, at most 3 a day, never 22:00–08:00, only when Wisp's safety policy allows the write (view-only blocks it), with Undo that only removes what Wisp created. Message quotes are cleared from its ledger after 7 days.
+- Added `./scripts/wisp-build preview`: an installable, ad-hoc-signed preview build in minutes (no Simulation QA), never eligible for release.
+
+### Changed
+
+- Model-backed tests use Ling 3.0 tiny V2 (oQ4e).
+- `correct_pattern` now asks before changing a learned pattern, and the behavior write endpoints are refused in read-only remote builds.
+- Wisp is now a regular Mac app instead of a menu-bar-only one. It has a Dock icon, an app menu (Settings, Hide, Close Window, Quit) and a Window menu, opening it shows the Chat window, and clicking the Dock icon brings the window back. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q quits it through the same shutdown as the menu-bar Quit. The notch and the menu-bar icon are unchanged.
+
+### Fixed
+
+- The Chat thread no longer pulls you back to the bottom while you scroll up to read.
+- Fixed `wisp-build all --allow-dirty` failing its own final check on a clean checkout.
+
 ## [1.2.5] - 2026-10-11
 
 Merges the Wisp hackathon work (adjad/Wisp_Hackathon) into Wisp.

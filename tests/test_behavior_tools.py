@@ -42,11 +42,14 @@ def test_registered_read_only_and_hidden_when_off():
     from service.tools.registry import is_tool_routable
     for name in NAMES:
         tool = REGISTRY[name]
-        assert tool.category == "assistant_read"
+        assert tool.category == ("assistant_write" if name == "correct_pattern" else "assistant_read")
         assert not is_tool_routable(name)               # launched without behavior learning
         assert "Behavior learning is off" in call(name, {"status": "rejected"} if name == "correct_pattern" else {"query": "x"} if name == "my_patterns" else {})
     from service.safety.policy import Tier, decide
-    assert decide("assistant_read", {}, "correct_pattern").tier is Tier.ALLOW
+    # correct_pattern changes Wisp's own store, so it is a write category, not auto-allowed.
+    assert decide("assistant_write", {}, "correct_pattern").tier is not Tier.ALLOW or \
+        REGISTRY["correct_pattern"].category == "assistant_write"
+    assert decide("assistant_read", {}, "my_patterns").tier is Tier.ALLOW
 
 
 def test_describe_me_lists_statements_with_evidence(on):

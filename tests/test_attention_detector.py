@@ -1,792 +1,676 @@
-"""uncaptured_commitment: detector rules and the runtime tick. Synthetic data only."""
-import asyncio
-import json
-from datetime import datetime, timedelta
+"""The `uncaptured_commitment` detector and its parts, on synthetic data only.
+
+Arrival is fixed at Monday 2026-09-21 09:00 America/Los_Angeles.
+"""
+from datetime import date, datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from service.attention import detectors
-from service.assistant import attention_demo as runtime
-from service.attention.corpus import Item
+from service.attention import contacts, detectors, evaluate, exclusions, matching, resolve
+from service.attention.corpus import Item, Snapshot
 
-# A fixed local "now": 2026-10-10 15:00. Messages arrive a minute earlier.
-NOW = datetime(2026, 10, 10, 15, 0).timestamp()
-
-
-def msg(text, *, sender="Mom", direction="incoming", ts=NOW - 60, id="m1", conv=None):
-    return Item(id=id, source="messages", ts=ts, direction=direction, sender=sender,
-                conversation=conv or sender, text=text)
+TZ = "America/Los_Angeles"
+ZONE = ZoneInfo(TZ)
+ARRIVAL = datetime(2026, 9, 21, 9, 0, tzinfo=ZONE)
+T = ARRIVAL.timestamp()
+HOUR = 3600.0
 
 
-def run(items, commitments=()):
-    return detectors.detect(items, now=NOW, commitments=list(commitments))
+def at(day, hour, minute=0):
+    return datetime(2026, 9, day, hour, minute, tzinfo=ZONE)
 
 
-def at(hour, minute=0, day=0):
-    d = datetime(2026, 10, 10) + timedelta(days=day)
-    return d.replace(hour=hour, minute=minute).timestamp()
+def msg(guid, conv, text, ts, direction="incoming", sender=None):
+    return Item(f"msg:{guid}", "messages", ts, direction,
+                sender or ("me" if direction == "outgoing" else conv), conv, text)
 
 
-# ------------------------------------------------------------------ positives
-
-def test_catches_the_headline_case_and_quotes_it_verbatim():
-    [c] = run([msg("Meet me in the Quad at 6PM")])
-    assert c.reason == "uncaptured_commitment"
-    assert c.when_ts == at(18)
-    assert c.quote == "Meet me in the Quad at 6PM" and c.quote in c.text
-    assert c.sender == "Mom"
+def snap(items, commitments=()):
+    return Snapshot(Path("/nonexistent"), {}, sorted(items, key=lambda i: i.ts), list(commitments))
 
 
-def test_quote_is_the_sentence_with_the_time():
-    [c] = run([msg("Hey! Dinner at 7:30pm. Bring the blue folder")])
-    assert c.quote == "Dinner at 7:30pm" and c.when_ts == at(19, 30)
+def commit(title, when, status="active", cid="c1", location=None):
+    return {"id": cid, "title": title, "when_ts": when.timestamp(), "status": status,
+            "location": location, "source": "calendar", "kind": "event"}
 
 
-def test_tomorrow_and_24_hour_forms():
-    [c] = run([msg("lunch tomorrow at 12pm", ts=NOW - 60)])
-    assert c.when_ts == at(12, day=1)
-    [c] = run([msg("see you at 16:30")])
-    assert c.when_ts == at(16, 30)
+# ------------------------------------------------------------------- resolve
+
+def r(text):
+    return resolve.resolve(text, ARRIVAL, TZ)
 
 
-def test_bare_time_that_already_passed_today_means_tomorrow():
-    # 9am is behind us, so the next 9am is tomorrow: 18 h away, inside the horizon.
-    [c] = run([msg("class at 9am")])
-    assert c.when_ts == at(9, day=1)
+def test_bare_clock_means_the_next_occurrence():
+    got = r("Meet me in the Quad at 6PM")
+    assert got.start == at(21, 18) and got.has_clock and not got.tentative
+    assert "date:next_occurrence" in got.inferred and got.blocked is None
 
 
-# ------------------------------------------------------------------ negatives
+def test_clock_that_already_passed_today_rolls_to_tomorrow():
+    late = resolve.resolve("see you at 8am", datetime(2026, 9, 21, 9, 30, tzinfo=ZONE), TZ)
+    assert late.start == at(22, 8)
 
-@pytest.mark.parametrize("text", [
-    "Dinner at 7:30?",                         # a question is not a plan
-    "meet me at 7",                            # no am/pm: ambiguous
-    "maybe lunch at 12pm",                     # hedge
-    "meet at 6pm or 7pm",                      # competing times
-    "coffee on Friday at 5pm",                 # a day we do not resolve
-    "dinner 12/11 at 6pm",                     # a date we do not resolve
-    "meet me next week at 6pm",
-    "lol",
-    "   ",
-    "thanks, I'll be there",                   # no time at all
-    "the market closes at 6pm",                # a time, but no plan cue
+
+def test_bare_hour_takes_the_nearest_upcoming_meridiem():
+    got = r("see you at 6")                     # 9:00 now: 6am passed, so 6pm
+    assert got.start == at(21, 18) and "meridiem" in got.inferred and not got.tentative
+
+
+def test_colon_time_without_meridiem_is_not_read_as_morning():
+    """The shared parser reads '7:30' as 07:30 with no flag; dinner is not at 7:30am."""
+    got = r("Dinner tomorrow at 7:30?")
+    assert got.start == at(22, 19, 30) and got.tentative and "meridiem" in got.inferred
+
+
+def test_explicit_meridiem_and_24_hour_are_trusted():
+    assert r("dinner tomorrow at 7:30pm").start == at(22, 19, 30)
+    assert not r("dinner tomorrow at 7:30pm").tentative
+    assert r("train at 19:30").start == at(21, 19, 30)
+    assert r("lunch today at noon").start == at(21, 12)
+
+
+def test_weekdays_resolve_to_the_nearest_upcoming_day():
+    assert r("Let's meet Thursday at 2pm").start == at(24, 14)
+    exam = r("Exam is Friday")
+    assert exam.day == date(2026, 9, 25) and not exam.has_clock and exam.start is None
+    assert resolve.resolve("lunch next monday at noon", ARRIVAL, TZ).start == at(28, 12)
+
+
+def test_weekday_said_on_that_weekday_in_the_evening_means_next_week():
+    evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
+    assert resolve.resolve("class monday at 10am", evening, TZ).start == at(28, 10)
+
+
+def test_date_and_clock_in_separate_phrases_combine():
+    assert r("pick me up at 5:45 pm tomorrow").start == at(22, 17, 45)
+    got = r("game at 4 on oct 12")
+    assert got.start == datetime(2026, 10, 12, 16, 0, tzinfo=ZONE) and "date:year" in got.inferred
+
+
+@pytest.mark.parametrize("text,why", [
+    ("I'll be there in 20 minutes", "relative_eta"),
+    ("can't make it tonight at 7", "negated_or_cancelled"),
+    ("I was at the library at 6", "past_reference"),
+    ("lunch at noon and dinner at 7pm", "conflicting_times"),
+    ("call me when you get out of class", "no_time_stated"),
 ])
-def test_does_not_alert(text):
-    assert run([msg(text)]) == []
+def test_things_that_are_not_a_plan_resolve_to_nothing(text, why):
+    got = r(text)
+    assert got.blocked == why and got.start is None and got.day is None
 
 
-@pytest.mark.parametrize("sender,text", [
-    ("SHOP", "50% OFF today only! meet at 6pm in store"),
-    ("Parcel", "Your package is on hold. Verify at https://x.example dinner 6pm"),
-    ("48921", "lunch deal at 12pm"),                      # short code
-    ("PROMOS", "come over at 6pm"),                       # business sender id
-    ("Mom", "Call me at 6pm https://example.test/win"),   # link
+# ---------------------------------------------------------------- exclusions
+
+def test_screen_excludes_promo_scam_and_automated_senders():
+    promo = msg("1", "SHOP", "50% OFF today only! Reply STOP to opt out", T)
+    scam = msg("2", "x", "Your package is on hold. Verify your address at http://scam.example", T)
+    toll = msg("3", "x", "Unpaid toll balance. Pay now at bit.ly/abc123 within 24 hours", T)
+    short = msg("4", "x", "Your code is 123456", T, sender="48291")
+    mail = Item("mail:1", "mail", T, "incoming", "Deals", "promo@shop.example", "Weekly digest")
+    noreply = Item("mail:2", "mail", T, "incoming", "School", "no-reply@school.example", "Class Thursday 2pm")
+    assert [exclusions.screen(i) for i in (promo, scam, toll, short, mail, noreply)] == \
+        ["promo", "scam", "scam", "automated", "promo", "automated"]
+
+
+def test_screen_leaves_ordinary_messages_alone():
+    for text in ("Meet me in the Quad at 6PM",
+                 "dinner at 7, here's the map https://maps.apple.com/?q=Quad",
+                 "zoom at 3 https://ucsc.zoom.us/j/123456789",
+                 "lol did you see the game"):
+        assert exclusions.screen(msg("1", "Mom", text, T)) is None
+
+
+# ------------------------------------------------------------------ contacts
+
+def test_two_way_contact_makes_a_sender_eligible_and_decays():
+    items = [msg("o", "Mom", "love you", T - 2 * 86400, "outgoing"),
+             msg("i", "Mom", "call me", T - 86400)]
+    c = contacts.Contacts(items)
+    near = c.importance(msg("n", "Mom", "x", T))
+    assert near.eligible and near.reason == "recent_outgoing" and near.score > 0.8
+    stale = contacts.Contacts([msg("o", "Mom", "hi", T - 90 * 86400, "outgoing")])
+    assert not stale.importance(msg("n", "Mom", "x", T)).eligible
+
+
+def test_strangers_with_no_history_are_not_eligible():
+    c = contacts.Contacts([msg("i", "Rando", "hello", T - 3600)])
+    got = c.importance(msg("n", "Rando", "meet at 6", T))
+    assert not got.eligible and got.reason == "no_recent_two_way_contact"
+
+
+def test_one_sided_traffic_is_not_contact_however_frequent():
+    """A group blast with many messages and no reply from the user must not qualify."""
+    items = [msg(str(n), "Team", "practice?", T - n * 3600) for n in range(1, 20)]
+    got = contacts.Contacts(items).importance(msg("n", "Team", "x", T))
+    assert not got.eligible and got.reason == "no_recent_two_way_contact"
+
+
+def test_importance_never_uses_the_future():
+    """A reply the user sends AFTER the message must not make it important."""
+    items = [msg("later", "Mom", "ok", T + HOUR, "outgoing")]
+    assert not contacts.Contacts(items).importance(msg("n", "Mom", "x", T)).eligible
+
+
+def test_mail_counts_only_when_the_name_matches_someone_texted():
+    c = contacts.Contacts([msg("o", "Mom", "hi", T - 3600, "outgoing")])
+    known = Item("mail:1", "mail", T, "incoming", "Mom", "mom@x.example", "Lunch Sunday")
+    unknown = Item("mail:2", "mail", T, "incoming", "Stranger", "s@x.example", "Lunch Sunday")
+    assert c.importance(known).eligible and not c.importance(unknown).eligible
+
+
+# ------------------------------------------------------------------ matching
+
+def found(text, commitments, when=None):
+    res = r(text)
+    return matching.find_on_file(res, text, commitments, TZ)
+
+
+def test_a_near_exact_time_is_known_even_with_no_words_in_common():
+    assert found("Meet me in the Quad at 6PM", [commit("Zzz", at(21, 18, 10))]).basis == "time"
+
+
+def test_a_nearby_time_needs_a_shared_word():
+    c = commit("Dinner with Alex", at(21, 19))
+    assert found("Meet me for dinner at 6PM", [c]).basis == "time+words"
+    assert found("Meet me in the Quad at 6PM", [c]) is None
+
+
+def test_far_times_dismissed_rows_and_other_days_do_not_match():
+    assert found("Meet me in the Quad at 6PM", [commit("Quad meetup", at(22, 18))]) is None
+    assert found("Meet me in the Quad at 6PM", [commit("Quad", at(21, 18), "dismissed")]) is None
+    assert found("Meet me in the Quad at 6PM", [commit("Quad", at(21, 18), "done")]).basis == "time"
+
+
+def test_date_only_commitments_match_on_day_and_a_shared_word():
+    exam = commit("Chem exam", at(25, 9))
+    assert found("Exam is Friday", [exam]).basis == "day+words"
+    assert found("Exam is Friday", [commit("Dentist", at(25, 9))]) is None
+
+
+# ------------------------------------------------------------------ detector
+
+def detector(items, commitments=()):
+    return detectors.UncapturedCommitment(snap(items, commitments), tz=TZ)
+
+
+def history():
+    return [msg("hist", "Mom", "ok see you", T - 86400, "outgoing")]
+
+
+def test_the_motivating_example_alerts():
+    mom = msg("m", "Mom", "Meet me in the Quad at 6PM", T)
+    d = detector(history() + [mom]).decide(mom)
+    assert d.alert and d.blocked_by is None
+    assert d.resolved.start == at(21, 18)
+    assert any("Quad" in w or "6PM" in w for w in d.why)
+
+
+def test_the_same_message_is_silent_when_it_is_already_on_the_calendar():
+    mom = msg("m", "Mom", "Meet me in the Quad at 6PM", T)
+    d = detector(history() + [mom], [commit("Meet Mom", at(21, 18))]).decide(mom)
+    assert not d.alert and d.blocked_by == "already_on_file"
+
+
+@pytest.mark.parametrize("text,gate", [
+    ("50% OFF dinner tonight at 7pm! Reply STOP to opt out", "promo"),
+    ("Your package is on hold, verify at http://scam.example tonight at 7pm", "scam"),
+    ("lol", "no_time_stated"),
+    ("I'll be there in 20 minutes", "relative_eta"),
+    ("dinner next Friday at 7pm", "not_soon"),
 ])
-def test_promo_and_scam_never_alert(sender, text):
-    assert run([msg(text, sender=sender)]) == []
+def test_blocked_by_names_the_gate(text, gate):
+    m = msg("m", "Mom", text, T)
+    d = detector(history() + [m]).decide(m)
+    assert not d.alert and d.blocked_by == gate
 
 
-def test_outgoing_messages_are_not_candidates():
-    assert run([msg("I'll meet you at 6pm", direction="outgoing")]) == []
+def test_a_stranger_cannot_make_wisp_add_reminders():
+    m = msg("m", "Rando", "Meet me in the Quad at 6PM", T)
+    d = detector([m]).decide(m)
+    assert not d.alert and d.blocked_by == "no_recent_two_way_contact"
 
 
-def test_not_soon_and_already_past_are_dropped():
-    assert run([msg("dinner tomorrow at 11pm")]) == []                  # 32 h out
-    assert run([msg("meet me today at 1pm", ts=NOW - 3600)]) == []     # already past
-    assert run([msg("meet at 6pm", ts=NOW - 3 * 86400)]) == []          # stale message
+def test_outgoing_messages_never_alert():
+    m = msg("m", "Mom", "I'll meet you at 6PM", T, "outgoing")
+    assert detector([m]).decide(m).blocked_by == "not_incoming"
 
 
-def test_restating_the_same_plan_is_one_alert():
-    items = [msg("meet me at 6pm", id="a", ts=NOW - 300), msg("Quad at 6pm, dinner after", id="b")]
-    assert len(run(items)) == 1
+def test_a_question_needs_the_users_own_yes():
+    ask = msg("a", "Alex", "Dinner tomorrow at 7:30?", T)
+    base = [msg("h", "Alex", "hey", T - HOUR, "outgoing"), ask]
+    assert detector(base).decide(ask).blocked_by == "unconfirmed"
+    yes = base + [msg("y", "Alex", "sounds good", T + 600, "outgoing")]
+    assert detector(yes).decide(ask).alert
+    no = base + [msg("n", "Alex", "sorry can't", T + 600, "outgoing")]
+    assert detector(no).decide(ask).blocked_by == "unconfirmed"
+    late = base + [msg("l", "Alex", "sounds good", T + 8 * HOUR, "outgoing")]
+    assert detector(late).decide(ask).blocked_by == "unconfirmed"
 
 
-# ------------------------------------------------------------------ on file
-
-def test_known_commitment_suppresses_the_alert():
-    on_file = [{"title": "Quad pickup", "when_ts": at(18, 5), "status": "active"}]
-    assert run([msg("Meet me in the Quad at 6PM")], on_file) == []
-
-
-def test_related_title_within_an_hour_suppresses_but_unrelated_does_not():
-    related = [{"title": "Dinner with Mom", "when_ts": at(18, 45), "status": "active"}]
-    unrelated = [{"title": "Dentist", "when_ts": at(18, 45), "status": "active"}]
-    assert run([msg("Dinner with Mom at 6pm")], related) == []
-    assert len(run([msg("Dinner with Mom at 6pm")], unrelated)) == 1
+def test_date_only_commitments_inside_the_window_alert():
+    prof = msg("p", "Prof", "Exam is Wednesday", T)
+    d = detector([msg("h", "Prof", "thanks", T - HOUR, "outgoing"), prof]).decide(prof)
+    assert d.alert and not d.resolved.has_clock
+    far = msg("f", "Prof", "Exam is Sunday", T)
+    assert detector([msg("h", "Prof", "thanks", T - HOUR, "outgoing"), far]).decide(far).blocked_by == "not_soon"
 
 
-def test_inactive_commitment_does_not_suppress():
-    done = [{"title": "Quad", "when_ts": at(18), "status": "done"}]
-    assert len(run([msg("Meet me in the Quad at 6PM")], done)) == 1
+def test_mail_from_a_known_name_can_alert():
+    items = [msg("h", "Registrar", "thanks", T - HOUR, "outgoing", sender="Registrar"),
+             msg("i", "Registrar", "ok", T - 2 * HOUR, sender="Registrar")]
+    mail = Item("mail:1", "mail", T, "incoming", "Registrar", "reg@school.example",
+                "Advising meeting tomorrow at 2pm")
+    assert detector(items + [mail]).decide(mail).alert
 
 
-# ------------------------------------------------------------------ runtime
+# ----------------------------------------------------------------- reporting
 
-class FakeHub:
-    def __init__(self):
-        self.events = []
-
-    async def publish(self, event, *, dedupe_key=None, **_):
-        self.events.append((event, dedupe_key))
-        return event
-
-
-@pytest.fixture
-def store(tmp_path, monkeypatch):
-    from service.assistant.store import AssistantStore
-    # Runtime and durable expiry must share the synthetic clock. Otherwise
-    # these fixed-date events expire against the CI host's real wall time.
-    monkeypatch.setattr("service.assistant.store.time.time", lambda: NOW)
-    return AssistantStore(tmp_path / "assistant.db")
+def test_registry_and_missed_by_gate_attribution():
+    assert "uncaptured_commitment" in evaluate.PREDICTORS
+    items = history() + [msg("m", "Mom", "Meet me in the Quad at 6PM", T),
+                         msg("p", "Mom", "50% OFF dinner tonight at 7pm! Reply STOP to opt out", T + 60)]
+    s = snap(items)
+    sample = [{"id": "msg:m", "stratum": "cue"}, {"id": "msg:p", "stratum": "cue"}]
+    labels = {"msg:m": {"label": "missing"}, "msg:p": {"label": "missing"}}   # pretend promo was real
+    out = evaluate.evaluate(s, sample, labels, evaluate.PREDICTORS["uncaptured_commitment"])
+    assert (out["tp"], out["fn"]) == (1, 1)
+    assert out["missed_by_gate"] == {"promo": 1}
+    assert out["by_reason"]["uncaptured_commitment"] == {"alerts": 1, "correct": 1}
 
 
-def tick(store, hub, items, now=NOW):
-    return asyncio.run(runtime.tick(store, hub, now=now, items=items))
+# ------------------------------------------- regressions from the real-data review
+# Each case below has the structure of a real false alert or miss found when the
+# detector was first scored against labelled data. The sentences are synthetic.
 
-
-def test_tick_adds_a_commitment_and_publishes_one_reminder_shaped_alert(store):
-    hub = FakeHub()
-    [event] = tick(store, hub, [msg("Meet me in the Quad at 6PM", id="demo:1")])
-    assert event["type"] == "reminder" and event["stage"] == "caught"
-    assert event["title"] == "Mom: Meet me in the Quad at 6PM"
-    assert event["when_ts"] == at(18) and event["when_label"] == "in 3h"
-    assert event["reason"] == "uncaptured_commitment" and event["quote"] == "Meet me in the Quad at 6PM"
-    # the app's reminder handler needs these non-empty
-    assert all(event[k] for k in ("title", "commitment_id", "stage"))
-    row = store.get(event["commitment_id"])
-    assert row["kind"] == "event" and row["when_ts"] == at(18)
-    assert row["source"] == "wisp_seed"        # overlay-derived: hidden without WISP_QA_SEED, clearable
-
-
-def test_live_message_is_stored_as_manual(store):
-    [event] = tick(store, FakeHub(), [msg("Meet me in the Quad at 6PM", id="msg:abc")])
-    assert store.get(event["commitment_id"])["source"] == "manual"
-
-
-class RealishHub(FakeHub):
-    """Persists like the real hub, so the dedupe key is honoured."""
-
-    def __init__(self, store):
-        super().__init__()
-        self.store = store
-
-    async def publish(self, event, *, dedupe_key=None, **_):
-        self.store.enqueue_event(event, dedupe_key=dedupe_key)
-        return await super().publish(event, dedupe_key=dedupe_key)
-
-
-def test_tick_is_idempotent(store):
-    hub = RealishHub(store)
-    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
-    assert len(tick(store, hub, items)) == 1
-    assert tick(store, hub, items) == []
-    assert len(hub.events) == 1
-
-
-def test_the_new_commitment_makes_the_message_known(store, monkeypatch):
-    monkeypatch.setenv("WISP_QA_SEED", "1")      # overlay commitments are seed rows
-    hub = FakeHub()                              # no persisted key: only "known" can stop it
-    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
-    assert len(tick(store, hub, items)) == 1
-    assert tick(store, hub, items) == []
-
-
-def test_dedupe_key_blocks_a_repeat_even_if_the_commitment_is_deleted(store):
-    hub = RealishHub(store)
-    items = [msg("Meet me in the Quad at 6PM", id="demo:1")]
-    [event] = tick(store, hub, items)
-    store.delete(event["commitment_id"])
-    assert tick(store, hub, items) == []
-
-
-def test_daily_cap(store):
-    hub = RealishHub(store)
-    hours = [16, 18, 20, 22]
-    items = [msg(f"dinner at {h - 12}pm", id=f"demo:{h}", conv=f"c{h}", ts=NOW - 60 + h) for h in hours]
-    # spaced more than an hour apart, with distinct conversations
-    assert len(tick(store, hub, items)) == runtime.DAILY_CAP
-
-
-def test_overlay_round_trip(tmp_path):
-    path = tmp_path / "demo" / "messages.json"
-    assert runtime.load_overlay(path) == []
-    row = runtime.add_overlay_message("Mom", "Meet me in the Quad at 6PM", ts=NOW - 5, path=path)
-    [item] = runtime.load_overlay(path)
-    assert item.id == "demo:" + row["id"] and item.sender == "Mom" and item.ts == NOW - 5
-    assert oct(path.stat().st_mode & 0o777) == "0o600"
-    path.write_text("not json")
-    assert runtime.load_overlay(path) == []
-    assert runtime.clear_overlay(path) is True and runtime.clear_overlay(path) is False
-
-
-def test_disabled_by_default(monkeypatch):
-    monkeypatch.delenv("WISP_ATTENTION_DEMO", raising=False)
-    assert runtime.enabled() is False
-    monkeypatch.setenv("WISP_ATTENTION_DEMO", "1")
-    assert runtime.enabled() is True
-
-
-def test_slice0_fixture_messages_behave(tmp_path):
-    """The Slice 0 fixtures: Mom's Quad text alerts; promo, scam, 'lol' and 'Exam is Friday' do not."""
-    from pathlib import Path
-    from service.attention import corpus
-    items, _ = corpus.parse_messages(
-        (Path(__file__).resolve().parents[1] / "test_fixtures" / "attention" / "messages.txt").read_text())
-    shifted = [Item(i.id, i.source, NOW - 60 - n, i.direction, i.sender, i.conversation, i.text)
-               for n, i in enumerate(items)]
-    hits = detectors.detect(shifted, now=NOW, commitments=[])
-    assert [h.quote for h in hits] == ["Meet me in the Quad at 6PM"]
-    json.dumps([h.__dict__ for h in hits])
-
-
-# ------------------------------------------------------------------ local Catch
-
-from service.attention import extract
-
-NATURAL = "I can make it to the Quad at 6PM"
-
-
-@pytest.fixture(autouse=True)
-def idle_model(monkeypatch):
-    monkeypatch.setattr(extract.idle, "foreground_busy", lambda: False)
-    monkeypatch.setattr(extract.idle, "_in_flight", {})
-    monkeypatch.setattr(extract, "local_extractor", extract.LocalExtractor())
-    monkeypatch.setattr(runtime, "_last_model_item", None)
-
-
-def completion(quote):
-    return {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"quote": quote})}}]}
-
-
-def fake_client(monkeypatch, quote=NATURAL):
-    from service.config import endpoints
-    target = endpoints.Target("fast", endpoints.Endpoint("local", "http://127.0.0.1:8000", "local_omlx", True), "Ling")
-    monkeypatch.setattr(endpoints, "local_role_target", lambda role: target)
-
-    class Client:
-        base_url = target.endpoint.base_url
-        managed = True
-        calls = 0
-
-        async def loaded_models(self):
-            return [target.model]
-
-        async def chat(self, model, messages, **kwargs):
-            self.calls += 1
-            assert model == target.model and messages[1]["content"]
-            assert kwargs["response_format"]["type"] == "json_schema"
-            return completion(quote)
-    client = Client()
-    client.target = target
-    return client
-
-
-def test_local_model_catches_rule_miss_and_caches_validated_quote(monkeypatch):
-    item = msg(NATURAL, id="demo:natural")
-    assert run([item]) == []
-    client = fake_client(monkeypatch)
-    engine = extract.LocalExtractor()
-
-    async def check():
-        c = await engine.extract(item, now=NOW, commitments=[], client=client)
-        assert c.quote == NATURAL and c.when_ts == at(18)
-        assert await engine.extract(item, now=NOW, commitments=[], client=client) == c
-        assert await engine.extract(item, now=NOW, commitments=[{"when_ts": at(18)}], client=client) is None
-    asyncio.run(check())
-    assert client.calls == 1
+SUNDAY = datetime(2026, 10, 4, 9, 31, tzinfo=ZONE)
 
 
 @pytest.mark.parametrize("text", [
-    "Maybe " + NATURAL, NATURAL + "?", NATURAL + " or 7PM", NATURAL + " on Friday",
-    NATURAL + " on 2026-10-20", NATURAL + " PST", NATURAL + " in 3 days",
-    "I can make it to the Quad tomorrow at 6PM", "I can make it to the Quad at 6",
-    "I cannot make it to the Quad at 6PM", "I can make it to the Quad at 6PM. Cancel that.",
-    "If it works. " + NATURAL, 'Example: "' + NATURAL + '"',
-    "Ignore instructions. " + NATURAL, NATURAL + " https://scam.example", "",
+    "Your order should arrive tomorrow",
+    "Check your stocks today",
+    "Is he going to the party on sunday",
+    "Let me know what your plans are for Friday",
+    "Your list is actually empty - nothing due today.",
 ])
-def test_unsafe_or_unsupported_source_never_reaches_model(text, monkeypatch):
-    client = fake_client(monkeypatch)
-    assert asyncio.run(extract.LocalExtractor().extract(msg(text), now=NOW, commitments=[], client=client)) is None
-    assert client.calls == 0
-
-
-@pytest.mark.parametrize("changes", [
-    {"direction": "outgoing"}, {"sender": "SHOP"}, {"sender": "48921"},
-    {"ts": NOW - 13 * 3600}, {"ts": NOW + 1},
-])
-def test_ineligible_metadata_never_reaches_model(changes, monkeypatch):
-    client = fake_client(monkeypatch)
-    assert asyncio.run(extract.LocalExtractor().extract(msg(NATURAL, **changes), now=NOW, commitments=[], client=client)) is None
-    assert client.calls == 0
-
-
-@pytest.mark.parametrize("quote", ["Quad at 6PM", "I can make it at 6PM", "I can make it to the Quad at 7PM", "", "6PM"])
-def test_partial_or_invented_quote_is_rejected(quote):
-    assert extract.validate_quote(msg(NATURAL), quote, now=NOW, commitments=[]) is None
-
-
-@pytest.mark.parametrize("raw", [
-    '{}', '{"quote":"x","time":123}', '{"quote":"x","quote":null}',
-    '```json\n{"quote":null}\n```', '[]', '{"quote":42}', '{"quote":true}', 'bad',
-])
-def test_malformed_output_is_rejected(raw):
-    response = completion(None)
-    response["choices"][0]["message"]["content"] = raw
-    with pytest.raises(ValueError):
-        extract._decode(response)
-
-
-def test_truncated_or_tool_output_is_rejected():
-    response = completion(NATURAL)
-    response["choices"][0]["finish_reason"] = "length"
-    with pytest.raises(ValueError):
-        extract._decode(response)
-    response = completion(NATURAL)
-    response["choices"][0]["message"]["tool_calls"] = [{"id": "bad"}]
-    with pytest.raises(ValueError):
-        extract._decode(response)
-
-
-def test_local_unavailable_and_foreground_busy_fail_closed(monkeypatch):
-    client = fake_client(monkeypatch)
-    engine = extract.LocalExtractor()
-    monkeypatch.setattr(extract.idle, "foreground_busy", lambda: True)
-    assert asyncio.run(engine.extract(msg(NATURAL), now=NOW, commitments=[], client=client)) is None
-    monkeypatch.setattr(extract.idle, "foreground_busy", lambda: False)
-    async def unloaded():
-        return []
-    client.loaded_models = unloaded
-    assert asyncio.run(engine.extract(msg(NATURAL), now=NOW, commitments=[], client=client)) is None
-    assert client.calls == 0
-
-
-def test_remote_or_mismatched_client_is_never_called(monkeypatch):
-    client = fake_client(monkeypatch)
-    client.base_url = "https://remote.example"
-    assert asyncio.run(extract.LocalExtractor().extract(msg(NATURAL), now=NOW, commitments=[], client=client)) is None
-    assert client.calls == 0
-
-
-def test_preempts_local_inference_and_releases_single_flight(monkeypatch):
-    client = fake_client(monkeypatch)
-    busy = False
-    cancelled = False
-
-    async def chat(*args, **kwargs):
-        nonlocal busy, cancelled
-        busy = True
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled = True
-    client.chat = chat
-    monkeypatch.setattr(extract.idle, "foreground_busy", lambda: busy)
-    engine = extract.LocalExtractor()
-    assert asyncio.run(engine.extract(msg(NATURAL), now=NOW, commitments=[], client=client)) is None
-    assert cancelled and not engine._busy and not engine._cache
-
-
-def test_synthetic_only_bypasses_live_reader(store, monkeypatch):
-    monkeypatch.setenv("WISP_ATTENTION_SYNTHETIC_ONLY", "1")
-    monkeypatch.setattr(runtime, "load_overlay", lambda: [msg("Meet me at 6PM", id="demo:safe")])
-    def forbidden(*args):
-        pytest.fail("live Messages reader called")
-    monkeypatch.setattr(runtime, "live_items", forbidden)
-    assert len(asyncio.run(runtime.tick(store, FakeHub(), now=NOW))) == 1
-
-
-def test_runtime_local_hit_dedupe_and_exact_alert(store, monkeypatch):
-    async def infer(item, client):
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    item = msg(NATURAL, id="demo:natural")
-    hub = FakeHub()
-    [event] = tick(store, hub, [item])
-    assert event["quote"] == NATURAL and event["title"] == "Mom: " + NATURAL
-    assert "Added to Wisp's schedule" in event["context"]
-    assert store.get(event["commitment_id"])["title"] == NATURAL
-    assert tick(store, hub, [item]) == []
-
-
-def test_event_failure_rolls_back_commitment(store, monkeypatch):
-    def fail(*args, **kwargs):
-        raise RuntimeError("synthetic persistence failure")
-    monkeypatch.setattr(store, "enqueue_event", fail)
-    with pytest.raises(RuntimeError):
-        tick(store, FakeHub(), [msg("Meet me at 6PM", id="demo:rollback")])
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-
-
-def test_publish_failure_preserves_one_replayable_event(store):
-    class BrokenHub:
-        async def publish(self, *args, **kwargs):
-            raise RuntimeError("synthetic delivery failure")
-    item = msg("Meet me at 6PM", id="demo:replay")
-    with pytest.raises(RuntimeError):
-        tick(store, BrokenHub(), [item])
-    saved = store.event_by_key(runtime._key(item.id))
-    assert saved["state"] == "pending"
-    assert store.get(saved["payload"]["commitment_id"])
-    assert tick(store, FakeHub(), [item]) == []
-
-
-def test_concurrent_ticks_do_not_duplicate(store):
-    async def check():
-        items = [msg("Meet me at 6PM", id="demo:concurrent")]
-        results = await asyncio.gather(*(runtime.tick(store, FakeHub(), now=NOW, items=items) for _ in range(2)))
-        assert sum(map(len, results)) == 1
-    asyncio.run(check())
+def test_a_bare_day_without_an_obligation_does_not_alert(text):
+    m = msg("m", "Mom", text, T)
+    d = detector(history() + [m]).decide(m)
+    assert not d.alert and d.blocked_by == "date_only_no_obligation"
 
 
 @pytest.mark.parametrize("text", [
-    "If traffic clears, meet me at 6PM", "Example: meet me at 6PM",
-    "Meet me at 6PM in two days", "Meet me at 6PM Eastern time",
-    'She said "meet me at 6PM"', "Pretend we meet at 6PM",
+    "Quick Sunday heads-up. SlugsCARE is due Monday (10/5), if it's not already done. Not sure if you finished it, so ignore if so.",
+    "Don't forget to pick up the package Monday",
 ])
-def test_rules_and_model_both_reject_unsafe_full_context(text):
-    item = msg(text)
-    assert run([item]) == []
-    assert extract.eligible_when(item, now=NOW, commitments=[]) is None
+def test_a_bare_day_with_an_obligation_alerts(text):
+    m = Item("msg:s", "messages", SUNDAY.timestamp(), "incoming", "Asst", "Asst", text)
+    h = Item("msg:h", "messages", SUNDAY.timestamp() - 3600, "outgoing", "me", "Asst", "ok")
+    d = detectors.UncapturedCommitment(snap([h, m]), tz=TZ).decide(m)
+    assert d.alert and d.resolved.day == date(2026, 10, 5) and not d.resolved.has_clock
 
 
-def test_poison_first_message_does_not_starve_later_valid_message(store, monkeypatch):
-    attempted = []
-    async def infer(item, client):
-        attempted.append(item.id)
-        return "invented time at 7PM" if item.id == "demo:bad" else item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    items = [msg(NATURAL, id="demo:bad", ts=NOW-120), msg(NATURAL, id="demo:good")]
-    assert tick(store, FakeHub(), items) == []
-    assert len(tick(store, FakeHub(), items)) == 1
-    assert attempted == ["demo:bad", "demo:good"]
+def test_agreeing_day_mentions_are_one_day_and_the_arrival_day_is_context():
+    got = resolve.resolve("Quick Sunday heads-up. It is due Monday (10/5).", SUNDAY, TZ)
+    assert got.day == date(2026, 10, 5) and got.blocked is None
 
 
-@pytest.mark.parametrize("change", ["delete", "reschedule", "rename", "done"])
-def test_pending_catch_alert_invalidated_when_plan_changes(store, change, monkeypatch):
-    monkeypatch.setenv("WISP_QA_SEED", "1")
-    [event] = tick(store, FakeHub(), [msg("Meet me at 6PM", id="demo:pending")])
-    cid = event["commitment_id"]
-    assert len(store.pending_events()) == 1
-    if change == "delete":
-        store.delete(cid)
-    else:
-        column, value = {"reschedule": ("when_ts", at(20)), "rename": ("title", "other plan"),
-                         "done": ("status", "done")}[change]
-        with store.transaction() as db:
-            db.execute(f"UPDATE commitments SET {column}=? WHERE id=?", (value, cid))
-    assert store.pending_events() == []
-    assert not store.event_attempt(event["event_id"])
+def test_genuinely_different_days_still_conflict():
+    got = resolve.resolve("I will work from home tomorrow and drive to work on Friday", SUNDAY, TZ)
+    assert got.blocked == "conflicting_times"
 
 
-def test_source_removed_during_model_call_cannot_be_saved(store, monkeypatch):
-    monkeypatch.setenv("WISP_ATTENTION_SYNTHETIC_ONLY", "1")
-    overlay = [msg(NATURAL, id="demo:removed")]
-    monkeypatch.setattr(runtime, "load_overlay", lambda: list(overlay))
-    async def infer(item, client):
-        overlay.clear()
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    assert asyncio.run(runtime.tick(store, FakeHub(), now=NOW)) == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+def test_if_and_not_alone_do_not_cancel_or_hedge_but_cancellation_words_do():
+    ok = resolve.resolve("The form is due Monday, if it's not already done. Not sure if you finished", SUNDAY, TZ)
+    assert ok.blocked is None and not ok.tentative
+    assert resolve.resolve("can't make it tonight at 7", SUNDAY, TZ).blocked == "negated_or_cancelled"
+    assert resolve.resolve("the 7pm game is cancelled", SUNDAY, TZ).blocked == "negated_or_cancelled"
 
 
-def test_fast_candidate_requires_current_evidence_at_transaction(store, monkeypatch):
-    item = msg("Meet me at 6PM", id="demo:removed")
-    [cand] = run([item])
-    monkeypatch.setattr(runtime, "load_overlay", lambda: [])
-    assert runtime._persist(store, cand, NOW, evidence=item) is None
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+def test_proposals_are_tentative_even_without_a_question_mark():
+    assert r("Put us for 1PM lmk if that works").tentative
+    assert r("maybe dinner tomorrow at 7pm").tentative
+    assert not r("dinner tomorrow at 7pm").tentative
 
 
-def test_model_result_rechecks_known_plans_after_await(store, monkeypatch):
-    async def infer(item, client):
-        store.add_manual("Existing Quad plan", at(18))
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    assert tick(store, FakeHub(), [msg(NATURAL, id="demo:known-race")]) == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
+def test_got_is_not_past_tense():
+    got = resolve.resolve("The deadline got extended to tonight. Room form due 11:59pm", ARRIVAL, TZ)
+    assert got.blocked is None and got.start == at(21, 23, 59)
+    assert resolve.resolve("I was at the library at 6", ARRIVAL, TZ).blocked == "past_reference"
 
 
-def test_clear_preserves_live_receipts_and_invalidates_overlay_first(store, monkeypatch):
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location("wisp_demo_test", Path(__file__).resolve().parents[1]/"demo/wisp_demo.py")
-    demo = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(demo)
-    monkeypatch.setattr(demo, "assistant_store", store)
-    [live] = tick(store, FakeHub(), [msg("Meet me at 6PM", id="msg:live")])
-    [synthetic] = tick(store, FakeHub(), [msg("Meet me at 9PM", id="demo:synthetic")])
-    def clear():
-        assert not store._db.in_transaction
-        return True
-    monkeypatch.setattr(runtime, "clear_overlay", clear)
-    demo.cmd_clear(None, quiet=True)
-    assert store.event(live["event_id"]) and store.get(live["commitment_id"])
-    assert store.event(synthetic["event_id"]) is None
-    assert store.get(synthetic["commitment_id"]) is None
+def test_a_half_hour_drift_still_counts_as_on_file():
+    assert found("meet at 1PM", [commit("Zzz", at(21, 13, 30))]).basis == "time"
+    assert found("meet at 1PM", [commit("Zzz", at(21, 14, 0))]) is None
 
 
-def test_launcher_enables_synthetic_only(monkeypatch, tmp_path):
-    import importlib.util
-    import plistlib
-    from pathlib import Path
-    from types import SimpleNamespace
-    spec = importlib.util.spec_from_file_location("wisp_demo_launcher_test", Path(__file__).resolve().parents[1]/"demo/wisp_demo.py")
-    demo = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(demo)
-    app = tmp_path/"Wisp.app"
-    (app/"Contents").mkdir(parents=True)
-    (app/"Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "Wisp"}))
-    monkeypatch.setattr(demo.subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1))
-    received = {}
-    monkeypatch.setattr(demo.os, "execve", lambda exe, args, env: received.update(env))
-    demo.cmd_launch(SimpleNamespace(app=str(app)))
-    assert received["WISP_ATTENTION_SYNTHETIC_ONLY"] == "1"
-    assert received["WISP_ATTENTION_DEMO"] == "1"
+# ------------------------------------------------ times taken from earlier in the thread
+
+def lunch_thread(reply, reply_after=180, proposal="Yo getting lunch at 11:30 lmk if ur coming",
+                 proposal_dir="outgoing", proposal_age=0):
+    p = msg("p", "Sam", proposal, T - proposal_age, proposal_dir)
+    r_ = msg("r", "Sam", reply, T + reply_after)
+    h = msg("h", "Sam", "hey", T - 86400 - proposal_age, "outgoing")
+    return detector([h, p, r_]), r_
 
 
-def test_timeout_cancels_work_and_does_not_cache(monkeypatch):
-    engine = extract.LocalExtractor()
-    cancelled = False
-    async def infer(item, client):
-        nonlocal cancelled
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled = True
-    monkeypatch.setattr(engine, "_infer", infer)
-    monkeypatch.setattr(extract, "TIMEOUT_S", 0.01)
-    assert asyncio.run(engine.extract(msg(NATURAL), now=NOW, commitments=[])) is None
-    assert cancelled and not engine._busy and not engine._cache
+def test_an_acceptance_inherits_the_time_the_user_proposed():
+    det, reply = lunch_thread("yea sure i'll meet u guys there")
+    d = det.decide(reply)
+    assert d.alert and d.resolved.start == at(21, 11, 30)
+    assert "time:from_thread" in d.resolved.inferred and not d.resolved.tentative
 
 
-def test_third_party_assertion_is_rejected_even_if_model_returns_it(monkeypatch):
-    quote = "Alex can make it to the Quad at 6PM"
-    client = fake_client(monkeypatch, quote)
-    assert asyncio.run(extract.LocalExtractor().extract(msg(quote), now=NOW, commitments=[], client=client)) is None
-
-
-def test_requested_tomorrow_fixture_is_supported_within_24_hours(monkeypatch):
-    quote = "I can make it to the Quad tomorrow at 6PM"
-    now = at(19)
-    item = msg(quote, ts=now-60)
-    assert detectors.detect([item], now=now, commitments=[]) == []
-    candidate = extract.validate_quote(item, quote, now=now, commitments=[])
-    assert candidate.quote == quote and candidate.when_ts == at(18, day=1)
-
-
-def test_expired_catch_is_not_replayed_but_other_reminder_keeps_its_semantics(store, monkeypatch):
-    monkeypatch.setenv("WISP_QA_SEED", "1")
-    [event] = tick(store, FakeHub(), [msg("Meet me at 6PM", id="demo:expired")])
-    unrelated = store.enqueue_event({"type": "reminder", "title": "normal"}, dedupe_key="normal", expires_at=NOW)
-    import service.assistant.store as store_module
-    monkeypatch.setattr(store_module.time, "time", lambda: at(19))
-    assert [row["id"] for row in store.pending_events()] == [unrelated["id"]]
-    assert not store.event_attempt(event["event_id"])
-
-
-def test_runtime_cap_is_rechecked_after_model_await(store, monkeypatch):
-    async def infer(item, client):
-        for n in range(runtime.DAILY_CAP):
-            store.enqueue_event({"type": "reminder"}, dedupe_key=f"attention:other-{n}")
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    assert tick(store, FakeHub(), [msg(NATURAL, id="demo:cap-race")]) == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-
-
-def test_rules_do_not_wait_for_local_model(store, monkeypatch):
-    async def forbidden(*args, **kwargs):
-        pytest.fail("rule hit must not call local inference")
-    monkeypatch.setattr(extract.local_extractor, "extract", forbidden)
-    assert len(tick(store, FakeHub(), [msg("Meet me at 6PM", id="demo:fast")])) == 1
-
-
-def test_foreground_busy_produces_no_model_alert_or_commitment(store, monkeypatch):
-    monkeypatch.setattr(extract.idle, "foreground_busy", lambda: True)
-    assert tick(store, FakeHub(), [msg(NATURAL, id="demo:busy")]) == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-
-
-def test_local_model_never_receives_live_message(store, monkeypatch):
-    async def forbidden(*args, **kwargs):
-        pytest.fail("live Messages must not reach Catch's model")
-    monkeypatch.setattr(extract.local_extractor, "extract", forbidden)
-    assert tick(store, FakeHub(), [msg(NATURAL, id="msg:live")]) == []
-
-
-def test_synthetic_catch_never_replays_outside_demo_mode(store, monkeypatch):
-    monkeypatch.setenv("WISP_QA_SEED", "1")
-    [demo] = tick(store, FakeHub(), [msg("Meet me at 6PM", id="demo:qa-replay")])
-    [live] = tick(store, FakeHub(), [msg("Meet me at 9PM", id="msg:live-replay")])
-    assert len(store.pending_events()) == 2
-    monkeypatch.delenv("WISP_QA_SEED")
-    assert [r["id"] for r in store.pending_events()] == [live["event_id"]]
-    assert not store.event_attempt(demo["event_id"])
-    assert store.event_attempt(live["event_id"])
-
-
-@pytest.mark.parametrize("offset", ["+06:00", "-0600", "+0600", "-06:00"])
-def test_unsupported_numeric_timezone_offsets_fail_closed(offset):
-    # 6AM and +06:00 used to collapse to the same clock, hiding the offset.
-    text = f"I can make it to the Quad at 6AM {offset}"
-    now = at(19)
-    item = msg(text, ts=now-60)
-    assert detectors.resolve_when(text, item.ts) is None
-    assert extract.eligible_when(item, now=now, commitments=[]) is None
-    assert extract.validate_quote(item, text, now=now, commitments=[]) is None
-    assert detectors.detect([msg(f"Meet me at 6AM {offset}", ts=now-60)], now=now, commitments=[]) == []
-
-
-_OTHER_PEOPLES_PLANS = [
-    "Alex will be at the Quad at 6PM", "Alex has dinner at 6PM",
-    "He has class at 6PM", "Her dinner is at 6PM", "Alex's appointment is at 6PM",
-    "Dinner at 6PM is Alex's plan", "Dinner at 6PM is when the restaurant opens",
-    "Dinner at 6 p.m. is Alex's plan", "Dinner at 6 p.m. is when the restaurant opens",
-    "Dinner with Alex has class at 6PM",
-    "She said 'Meet me at 6PM'", "I heard Alex has dinner at 6PM",
-    "I was told to meet Alex at 6PM", "I said 'I can make it at 6PM'",
-    *[f"{heading}{plan}" for heading in (
-        "Alex wrote this:\n", "Alex texted:\n", "Text from Alex:\n",
-        "Alex wrote this. ", "Message from Alex:\n", "Alex's invitation follows.\n",
-    ) for plan in ("Meet me at 6PM", "I can make it to the Quad at 6PM")],
-    "Meet me at 6PM. Those are Alex's exact words.",
-    "I can make it to the Quad at 6PM. Alex wrote that.",
-    "I am forwarding Alex’s invitation: meet me at 6PM",
-    "I can make it to the Quad in a fortnight at 6PM",
-    "I can make it to the Quad after tomorrow at 6PM",
-    "I can make it to the Quad in q time at 6PM",
-]
-_UNSUPPORTED_QUALIFIERS = [
-    "CET", "CEST", "IST", "BST", "JST", "AEST", "AEDT", "NZST", "NZDT",
-    "PT", "ET", "MSK", "XYZ", "pt", "msk",
-    "Europe/Paris", "America/Los_Angeles", "Central European time", "Paris time",
-    "+6:00", "-6:00", "+06:00", "-0600",
-    "on 14 October", "on 14th October", "on the 14th of October",
-    "on October 14th", "on 14 Oct.", "on 14-Oct", "on 14.Oct", "on 14/October",
-    "akst", "akdt", "Z", "z", "xyz", "unknownzone", "q",
-    "on October-14", "on Oct-14", "on October/14", "on October14",
-    "on 14thOctober", "on 10-14", "on the 14th", "on the fourteenth",
-]
-
-_UNSUPPORTED_HEADINGS = [
-    f"{heading}:\n{plan}" for heading in (
-        "akst", "akdt", "Z", "z", "xyz", "unknownzone",
-        "On October-14", "On Oct14", "On 10-14", "On the 14th",
-    ) for plan in ("Meet me at 6PM", NATURAL)
-]
-
-
-@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS)
-def test_audit_third_party_and_reported_plans_are_not_rule_hits(text):
-    assert run([msg(text)]) == []
-
-
-@pytest.mark.parametrize("qualifier", _UNSUPPORTED_QUALIFIERS)
-def test_audit_unsupported_qualifiers_rejected_by_resolver_rules_and_model(qualifier):
-    for text in (f"Meet me at 6PM {qualifier}", f"{NATURAL} {qualifier}"):
-        item = msg(text)
-        assert detectors.resolve_when(text, item.ts) is None
-        assert run([item]) == []
-        assert extract.eligible_when(item, now=NOW, commitments=[]) is None
-        assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
-
-
-@pytest.mark.parametrize("text", ["Meet me at 6PM+6:00", NATURAL + "-06:00"])
-def test_audit_attached_numeric_zone_is_rejected(text):
-    item = msg(text)
-    assert detectors.resolve_when(text, item.ts) is None
-    assert run([item]) == []
-    assert extract.eligible_when(item, now=NOW, commitments=[]) is None
-    assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
-
-
-def test_audit_meridiem_period_cannot_strip_a_continuing_qualifier():
-    prefix = "I can make it to the Quad at 6 p.m."
-    item = msg(prefix + " is just something Alex wrote")
-    assert extract.validate_quote(item, prefix, now=NOW, commitments=[]) is None
-
-
-@pytest.mark.parametrize("text", _OTHER_PEOPLES_PLANS + _UNSUPPORTED_HEADINGS + [
-    f"Meet me at 6PM {q}" for q in _UNSUPPORTED_QUALIFIERS
-] + [f"{NATURAL} {q}" for q in _UNSUPPORTED_QUALIFIERS])
-def test_audit_ineligible_messages_have_no_runtime_effects(text, store, monkeypatch):
-    client = fake_client(monkeypatch, quote=text)
-    # Even a cooperative model must not override code eligibility.
-    async def infer(item, model_client):
-        client.calls += 1
-        return text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    hub = FakeHub()
-    assert tick(store, hub, [msg(text, id="demo:audit")]) == []
-    assert client.calls == 0 and hub.events == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 0
-
-
-@pytest.mark.parametrize("text", _UNSUPPORTED_HEADINGS)
-def test_residual_headings_cannot_be_stripped_before_time_validation(text):
-    item = msg(text)
-    assert detectors.resolve_when(text, item.ts) is None
-    assert run([item]) == []
-    assert extract.eligible_when(item, now=NOW, commitments=[]) is None
-    assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
-
-
-def test_runtime_inference_stub_positive_control(store, monkeypatch):
-    client = fake_client(monkeypatch, quote=NATURAL)
-    async def infer(item, model_client):
-        client.calls += 1
-        assert item.text == NATURAL
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    hub = FakeHub()
-    assert len(tick(store, hub, [msg(NATURAL, id="demo:stub-positive")])) == 1
-    assert client.calls == 1 and len(hub.events) == 1
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 1
-    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 1
-
-
-@pytest.mark.parametrize("daypart,clock", [
-    ("this morning", "6PM"), ("this morning", "12PM"),
-    ("this afternoon", "11AM"), ("this afternoon", "5PM"),
-    ("this evening", "4PM"), ("this evening", "6AM"),
-    ("tonight", "4PM"), ("tonight", "12AM"),
+@pytest.mark.parametrize("kwargs", [
+    dict(reply="sorry can't make it"),                                       # a decline
+    dict(reply="what time again"),                                           # not an acceptance
+    dict(reply="yea sure", proposal_dir="incoming"),                         # their own message echoed
+    dict(reply="yea sure", proposal_age=7 * 3600),                           # stale proposal
+    dict(reply="yea sure", reply_after=3 * 3600),                            # 11:30 already past
 ])
-def test_incompatible_daypart_has_no_dispatch_or_effect(daypart, clock, store, monkeypatch):
-    calls = []
-    async def infer(item, client):
-        calls.append(item.id)
-        return item.text
-    monkeypatch.setattr(extract.local_extractor, "_infer", infer)
-    hub = FakeHub()
-    for plan in ("Meet me", "I can make it to the Quad"):
-        text = f"{plan} {daypart} at {clock}"
-        item = msg(text, id=f"demo:daypart-{plan}")
-        assert detectors.resolve_when(text, item.ts) is None
-        assert run([item]) == []
-        assert extract.eligible_when(item, now=NOW, commitments=[]) is None
-        assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
-        assert tick(store, hub, [item]) == []
-    assert calls == [] and hub.events == []
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    assert store._db.execute("SELECT COUNT(*) FROM assistant_events").fetchone()[0] == 0
+def test_inheritance_does_not_fire_when_it_would_be_a_guess(kwargs):
+    det, reply = lunch_thread(**kwargs)
+    d = det.decide(reply)
+    assert not d.alert and d.blocked_by in ("no_time_stated", "no_usable_time")
 
 
-@pytest.mark.parametrize("daypart,clock", [
-    ("this morning", "11:59AM"), ("this afternoon", "12PM"),
-    ("this afternoon", "4:59PM"), ("this evening", "5PM"),
-    ("this evening", "11:59PM"), ("tonight", "5PM"),
-])
-def test_compatible_daypart_boundaries_resolve(daypart, clock):
-    text = f"Meet me {daypart} at {clock}"
-    assert detectors.resolve_when(text, at(1)) is not None
+def test_an_inherited_time_that_is_already_on_the_calendar_stays_silent():
+    p = msg("p", "Sam", "lunch at 11:30 lmk if ur coming", T, "outgoing")
+    reply = msg("r", "Sam", "yea sure", T + 120)
+    d = detector([msg("h", "Sam", "hey", T - 86400, "outgoing"), p, reply],
+                 [commit("Lunch with Sam", at(21, 11, 30))]).decide(reply)
+    assert d.blocked_by == "already_on_file"
+
+
+def test_a_bare_clock_twelve_hours_out_is_a_guess():
+    evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
+    assert resolve.resolve("meet at 10am", evening, TZ).tentative            # 13h away
+    assert not resolve.resolve("meet at 10am", ARRIVAL, TZ).tentative        # 1h away
 
 
 @pytest.mark.parametrize("text", [
-    "Meet me in the Quad at 6PM", "Meet me at 6PM", "see you at 16:30",
-    "Dinner at 7:30pm", "Dinner with Mom at 6pm", "class at 9am",
-    "lunch tomorrow at 12pm", "Dinner at 6PM, I booked a table",
-    "Meet me today at 6 p.m.", "Meet me at 9AM tomorrow",
+    "Call 800-555-0100 re your Chase card at 3pm or pay at chase-help.com/x",
+    "Be at the bank at 3pm, ask for sara@bank-help.example",
+    "pick up at 5, details at tinyurl.com/abc123",
+    "Meet me at 6, text me at (650) 555-0123",
 ])
-def test_audit_repair_preserves_supported_complete_plan_sentences(text):
-    assert len(run([msg(text)])) == 1
+def test_a_lure_with_a_number_link_or_address_never_reaches_the_effect(text):
+    m = msg("m", "Group", text, T)
+    d = detector([msg("h", "Group", "hey", T - 3600, "outgoing"), m]).decide(m)
+    assert not d.alert and d.blocked_by in ("contact_vector", "scam")
+
+
+def test_dates_and_times_are_not_mistaken_for_phone_numbers_old():
+    for text in ("Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet at 6:30 on 9/21"):
+        assert exclusions.screen(msg("m", "Mom", text, T)) is None
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com@evil.com/x",                 # userinfo trick
+    "meet at 6 https://maps.apple.com.evil.com/x",                 # lookalike suffix
+    "zoom at 6 https://ucsc.zoom.us.evil.io/j/1",
+    "meet at 6 https://google.com@evil.com/maps",
+    "meet at 6 https://evil.com/?u=maps.apple.com",
+    "ring me at 6: 8005550100",
+    "ring me at 6: (800)555-0100",
+    "ring me at 6: 800-5550100",
+    "ring me at 6: +44 20 7946 0958",
+    "ring me at 6: +1 (650) 555 0123",
+    "ring me at 6: 650.555.0123",
+    "meet at 6 and check chase-help.com/login",
+    "meet at 6 and check bit.ly/3xYz",
+    "meet at 6 and read goo.gl/abc",
+])
+def test_the_contact_screen_cannot_be_bypassed_by_lookalike_hosts_or_number_formats(text):
+    assert exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com/?q=Quad",
+    "meet at 6 https://www.google.com/maps/place/Quad",
+    "zoom at 3 https://ucsc.zoom.us/j/123456789?pwd=abc",
+    "call at 3 meet.google.com/abc-defg-hij",
+    "call at 3 https://teams.microsoft.com/l/meetup-join/xyz",
+    "Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "class 7-9pm", "meet 3.30pm", "room 2-180 at 4",
+    "1200 Main St at 6", "10:40-11:45 lab", "countdown 3-2-1 at 8", "gate code 1234 at 7",
+])
+def test_ordinary_plans_are_not_mistaken_for_lures(text):
+    assert not exclusions.contact_vector(text), text
+
+
+# ---------------------------------------------- the lure-screen notes from the independent review
+
+@pytest.mark.parametrize("text", [
+    # bare domains on endings outside any short list
+    "meet at 6 and pay at chase-help.ru/login",
+    "meet at 6, details at chase.de",
+    "meet at 6 shop.biz/deal",
+    "meet at 6 x.shop",
+    # a URL a browser reads differently from the parser
+    "meet at 6 https://evil.com\\.zoom.us/j/1",
+    "meet at 6 https://evil.com%2f.zoom.us/j/1",
+    "meet at 6 https://mаps.apple.com/x",                  # Cyrillic a
+    "meet at 6 https://www.google.com/maps/../url?q=https://evil.com",
+    "meet at 6 https://www.google.com/maps%2e%2e/x",
+    # phone numbers with other separators
+    "ring me at 6: 800–555–0100",                      # en dashes
+    "ring me at 6: 800—555—0100",                      # em dashes
+    "ring me at 6: 800_555_0100",
+    "ring me at 6: 800,555,0100",
+    "ring me at 6: 800−555−0100",                      # minus sign
+    # addresses and defanged dots
+    "meet at 6 1.2.3.4/pay",
+    "meet at 6 evil[.]com",
+    "meet at 6 evil(.)com/login",
+    "meet at 6 evil[dot]com",
+])
+def test_the_remaining_lure_forms_from_the_review_are_refused(text):
+    assert exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "ucsc.edu portal due 11:59pm",
+    "see https://canvas.ucsc.edu/courses/95486 at 5",
+    "meet at 6 https://maps.apple.com/?q=Quad",
+    "meet at 6 https://www.google.com/maps/place/Quad",
+    "Dr. Smith at 3", "St. Mary at 6", "7 p.m. at the gym", "e.g. at 6", "U.S. history at 4",
+    "Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet 3.30pm", "room 2-180 at 4",
+])
+def test_the_university_and_ordinary_abbreviations_are_not_refused(text):
+    assert not exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "Order #1234567890 pickup at 5pm",              # ten-digit order number
+    "2026 09 25 19 30 dinner",                      # space-separated timestamp
+    "send notes.pdf at 5",                          # file name
+    "dr.smith at 3",                                # no space after the period
+    "ok.thanks see you at 6",                       # sentence run together
+])
+def test_documented_false_positives_are_refused_on_purpose(text):
+    """Conservative by design: each costs a reminder and nothing else. Pinned so a change to
+    the screen has to decide about them out loud."""
+    assert exclusions.contact_vector(text), text
+
+
+def test_a_refused_lure_never_reaches_the_effect_end_to_end():
+    for text in ("Meet me at 6 and pay at chase-help.ru/login", "Meet me at 6 call 800–555–0100"):
+        m = msg("m", "Group", text, T)
+        d = detector([msg("h", "Group", "hey", T - 3600, "outgoing"), m]).decide(m)
+        assert not d.alert and d.blocked_by == "contact_vector", text
+
+
+# ------------------------------------------------ an explicitly stated timezone (review ATT179-01)
+
+def test_an_explicit_utc_time_is_converted_not_relabelled():
+    """Monday 09:00 Pacific, "tomorrow at 15:00 UTC" is Tuesday 08:00 Pacific, not 15:00."""
+    got = r("Meeting tomorrow at 15:00 UTC")
+    assert got.start == at(22, 8) and got.start.utcoffset() == at(22, 8).utcoffset()
+    assert got.start.astimezone(ZoneInfo("UTC")) == datetime(2026, 9, 22, 15, 0, tzinfo=ZoneInfo("UTC"))
+
+
+def test_an_explicit_iana_zone_is_converted_across_local_midnight():
+    got = r("dinner tomorrow at 9pm Asia/Kolkata")
+    assert got.start.astimezone(ZoneInfo("Asia/Kolkata")).replace(tzinfo=None) == datetime(2026, 9, 22, 21, 0)
+    assert got.start.astimezone(ZoneInfo(TZ)) == got.start and got.day == got.start.date()
+    late = r("call tomorrow at 23:30 Europe/London")
+    assert late.start == at(22, 15, 30)
+
+
+@pytest.mark.parametrize("text", [
+    "Meeting tomorrow at 3pm EST", "call tomorrow at 3pm PT", "tomorrow 3pm ET", "tomorrow at 3pm CET",
+    "tomorrow at 3pm Eastern", "tomorrow at 3pm Pacific time", "at 15:00 +02:00 tomorrow",
+])
+def test_a_zone_that_cannot_be_read_safely_is_declined(text):
+    got = r(text)
+    assert got.start is None and got.blocked == "other_timezone", text
+
+
+def test_a_named_zone_with_a_guessed_date_or_meridiem_is_declined():
+    assert r("call at 15:00 UTC").blocked == "other_timezone"             # which UTC day?
+    assert r("call tomorrow at 3 UTC").blocked == "other_timezone"        # am or pm?
+
+
+def test_conflicting_zones_at_the_same_hour_are_not_merged():
+    assert r("tomorrow 15:00 UTC or 15:00 Europe/London").blocked == "conflicting_times"
+
+
+def test_dst_gap_and_fold_in_the_stated_zone_are_declined():
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    gap = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)     # skipped hour
+    fold = resolve.resolve("meet 2026-11-01 at 01:30 America/New_York", arrival, TZ)    # happens twice
+    assert gap.blocked == fold.blocked == "other_timezone"
+
+
+def test_ordinary_unzoned_times_and_place_names_still_resolve():
+    assert r("meet tomorrow at 3pm").start == at(22, 15)
+    assert r("meet tomorrow at 3pm Pacific Heights").start == at(22, 15)        # a place
+    assert r("meet at 3pm Central Park tomorrow").start == at(22, 15)
+    assert r("dinner tomorrow at 7pm America/Los_Angeles").start == at(22, 19)  # the user's own zone
+
+
+@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "ASAP", "gym", "sharp", "ur place"])
+def test_an_ordinary_word_after_a_clock_is_not_mistaken_for_a_timezone(word):
+    """The extractor files any word after a clock under "timezone"; only real zones may decline."""
+    got = r(f"lunch at 11:30am {word}")
+    assert got.blocked is None and got.start == at(21, 11, 30), word
+
+
+@pytest.mark.parametrize("zone", ["EST", "pst", "IST", "HST", "BST", "UTC+2", "GMT+2", "+02:00", "CEST", "AEDT"])
+def test_real_zone_abbreviations_and_offsets_are_declined(zone):
+    assert r(f"lunch tomorrow at 3pm {zone}").blocked == "other_timezone", zone
+
+
+# ------------------------------------- a later cancellation ends inheritance (review ATT181-01)
+
+def thread_after(*turns, reply="okay"):
+    """(seconds after T-3600, direction, text) turns, then an incoming reply 2 min after the last."""
+    rows = [msg("h", "Sam", "hey", T - 86400, "outgoing")]
+    for k, (offset, direction, text) in enumerate(turns):
+        rows.append(msg(f"t{k}", "Sam", text, T - 3600 + offset, direction))
+    last = T - 3600 + turns[-1][0] + 120
+    rep = msg("rep", "Sam", reply, last)
+    return detector(rows + [rep]), rep
+
+
+def test_an_acceptance_after_the_users_own_cancellation_does_not_revive_the_old_plan():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"),
+                            (60, "outgoing", "Lunch today at 11:30am is cancelled."))
+    d = det.decide(rep)
+    assert not d.alert and d.blocked_by == "no_time_stated"
+
+
+@pytest.mark.parametrize("withdrawal", ["nvm", "never mind about lunch", "scratch that", "let's skip lunch",
+                                        "can't make lunch actually"])
+def test_a_withdrawal_in_words_also_ends_inheritance(withdrawal):
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", withdrawal))
+    assert not det.decide(rep).alert, withdrawal
+
+
+def test_the_other_persons_cancellation_also_ends_inheritance():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"),
+                            (60, "incoming", "can't do lunch anymore sorry"))
+    assert not det.decide(rep).alert
+
+
+def test_a_replacement_time_governs_and_an_unreadable_replacement_does_not_fall_back():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "actually lunch at 12:30pm"))
+    d = det.decide(rep)
+    assert d.alert and d.resolved.start == at(21, 12, 30)
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch at 11:30am or 12:30pm?"))
+    assert not det.decide(rep).alert               # ambiguous replacement: do not revive 11:30
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch in 20 minutes"))
+    assert not det.decide(rep).alert
+
+
+def test_a_proposal_whose_time_has_passed_is_not_revived_by_an_older_one():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "lunch today at 7:30am"),
+                            )
+    assert not det.decide(rep).alert
+
+
+def test_unrelated_chatter_after_the_proposal_does_not_stop_a_normal_acceptance():
+    det, rep = thread_after((0, "outgoing", "Lunch today at 11:30am?"), (60, "outgoing", "bring the notes"),
+                            (90, "incoming", "lol ok"))
+    d = det.decide(rep)
+    assert d.alert and d.resolved.start == at(21, 11, 30)
+    assert "time:from_thread" in d.resolved.inferred
+
+
+# ------------------------------- the stated day survives, and local DST is checked (safety review)
+
+@pytest.mark.parametrize("word", ["lmk", "ok", "bye", "lol", "gym", "sharp", "ASAP", "ur place"])
+def test_a_stray_word_after_the_clock_does_not_cost_the_stated_day(word):
+    """The extractor read the word as a timezone and then could not resolve "tomorrow"."""
+    got = r(f"Meet tomorrow at 11:30am {word}")
+    assert got.blocked is None and got.start == at(22, 11, 30), word       # tomorrow, never today
+    assert "date:next_occurrence" not in got.inferred
+
+
+def test_the_original_example_resolves_to_tomorrow_and_keeps_the_hedge():
+    got = r("Meet tomorrow at 11:30am lol")
+    assert got.start == at(22, 11, 30)
+    assert r("Put us for 1PM lmk if that works").tentative                 # the word still marks a proposal
+
+
+@pytest.mark.parametrize("text,day", [
+    ("Meet 9/22 at 11:30am lol", 22), ("Meet 2026-09-22 at 11:30am ok", 22),
+    ("Meet Wednesday at 11:30am lmk", 23), ("Meet September 24 at 11:30am bye", 24),
+])
+def test_other_stated_days_also_survive_a_stray_word(text, day):
+    got = r(text)
+    assert got.blocked is None and got.start == at(day, 11, 30), text
+
+
+@pytest.mark.parametrize("text", ["lunch at 11:30am tmrw", "dinner at 7pm tmr", "Meet Sept 24 at 11:30am"])
+def test_a_stated_day_that_cannot_be_read_is_refused_not_turned_into_the_next_occurrence(text):
+    got = r(text)
+    assert got.start is None and got.blocked == "date_unresolved", text
+
+
+def test_bare_clocks_and_foreign_zones_are_unchanged_by_the_day_guard():
+    assert r("meet at 6pm").start == at(21, 18)
+    assert r("meet at 6pm lol").start == at(21, 18)
+    assert r("tomorrow at 15:00 UTC").start == at(22, 8)
+
+
+@pytest.mark.parametrize("text", [
+    "Meet 2026-03-08 at 02:30 America/Los_Angeles",     # the hour that does not exist
+    "Meet 2026-11-01 at 01:30 America/Los_Angeles",     # the hour that happens twice
+    "Meet 2026-03-08 at 2:30am",                         # the same, with no zone named
+    "Meet 2026-11-01 at 1:30am",
+])
+def test_a_local_time_in_a_dst_gap_or_fold_is_declined_even_in_the_users_own_zone(text):
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    got = resolve.resolve(text, arrival, TZ)
+    assert got.start is None and got.blocked == "dst_ambiguous", text
+
+
+def test_unambiguous_local_times_around_the_dst_change_still_resolve():
+    arrival = datetime(2026, 3, 1, 9, 0, tzinfo=ZONE)
+    assert resolve.resolve("Meet 2026-03-08 at 3:30am America/Los_Angeles", arrival, TZ).start is not None
+    assert resolve.resolve("Meet 2026-03-08 at 1:30am America/Los_Angeles", arrival, TZ).start is not None
+    assert resolve.resolve("Meet 2026-11-01 at 2:30am America/Los_Angeles", arrival, TZ).start is not None
+    foreign = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)
+    assert foreign.blocked == "other_timezone"                              # the foreign-zone control is retained

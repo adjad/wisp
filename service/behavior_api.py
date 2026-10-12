@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 
 from service.assistant import behavior_runtime
+from service.inference.remote_policy import remote_read_only_mode
 
 router = APIRouter(prefix="/behavior", tags=["behavior"])
 
@@ -35,6 +36,13 @@ def _store_hub():
     from service.assistant.hub import hub
     from service.assistant.store import assistant_store
     return assistant_store, hub
+
+
+def _writable() -> None:
+    """State-changing routes are refused in the read-only remote build."""
+    if remote_read_only_mode():
+        raise HTTPException(status_code=403,
+                            detail="This action is unavailable in the four-read remote-only demo")
 
 
 def _body(body: Any) -> dict:
@@ -103,6 +111,7 @@ async def behavior_patterns(status: str | None = None, kind: str | None = None) 
 
 @router.post("/patterns/{pattern_id}")
 async def behavior_pattern_status(pattern_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    _writable()
     runtime = _runtime()
     status = _body(body).get("status")
     if status not in _PATTERN_STATUSES:
@@ -154,6 +163,7 @@ def _known_nudge(runtime, nudge_id: str):
 
 @router.post("/nudges/{nudge_id}/feedback")
 async def behavior_feedback(nudge_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    _writable()
     runtime = _runtime()
     verdict = _body(body).get("verdict")
     if verdict not in _VERDICTS:
@@ -169,6 +179,7 @@ async def behavior_feedback(nudge_id: str, body: dict[str, Any] | None = None) -
 
 @router.post("/nudges/{nudge_id}/undo")
 async def behavior_undo(nudge_id: str) -> dict[str, Any]:
+    _writable()
     runtime = _runtime()
     await asyncio.to_thread(_known_nudge, runtime, nudge_id)
     store, hub = _store_hub()
@@ -185,6 +196,7 @@ async def behavior_act(nudge_id: str, body: dict[str, Any] | None = None) -> dic
     """The user tapped an offered action. ``open_prompt`` returns the prefilled
     request for the overlay (nothing is sent or changed here); an offered
     reversible ``add_reminder``/``add_hold`` is created on Wisp's schedule."""
+    _writable()
     runtime = _runtime()
     idx = _body(body).get("action_index", 0)
     if type(idx) is not int or idx < 0:

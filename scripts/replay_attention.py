@@ -48,7 +48,11 @@ def _sample_path(snap: corpus.Snapshot) -> Path:
     return BASE / f"sample-{snap.snapshot_id}.json"
 
 
-def _labels_path(snap: corpus.Snapshot) -> Path:
+def _labels_path(args, snap: corpus.Snapshot) -> Path:
+    """Your own labels by default; --labels-file selects another set (e.g. an
+    assistant's), so different labellers never overwrite each other."""
+    if args.labels_file:
+        return Path(args.labels_file)
     return BASE / f"labels-{snap.snapshot_id}.jsonl"
 
 
@@ -107,7 +111,7 @@ def _show(snap: corpus.Snapshot, item: corpus.Item, index: int, total: int) -> N
 def cmd_label(args) -> int:
     snap = _snapshot(args.snapshot)
     sample = _load_sample(snap)
-    store = labels.LabelStore(_labels_path(snap))
+    store = labels.LabelStore(_labels_path(args, snap))
     by_id = snap.by_id()
     queue = [e for e in sample if e["id"] in by_id]
     done = store.current()
@@ -150,7 +154,7 @@ def cmd_label(args) -> int:
 def cmd_status(args) -> int:
     snap = _snapshot(args.snapshot)
     sample = _load_sample(snap)
-    done = labels.LabelStore(_labels_path(snap)).current()
+    done = labels.LabelStore(_labels_path(args, snap)).current()
     ids = {e["id"] for e in sample}
     counts: dict[str, int] = {}
     for item_id, rec in done.items():
@@ -163,7 +167,7 @@ def cmd_status(args) -> int:
 def cmd_report(args) -> int:
     snap = _snapshot(args.snapshot)
     sample = _load_sample(snap)
-    done = labels.LabelStore(_labels_path(snap)).current()
+    done = labels.LabelStore(_labels_path(args, snap)).current()
     predictor = evaluate.PREDICTORS[args.predictor]
     result = evaluate.evaluate(snap, sample, done, predictor)
     if not args.errors:
@@ -177,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--snapshot", help="snapshot directory (default: the newest)")
+    ap.add_argument("--labels-file", help="read/write this labels file instead of your own")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("sample", help="choose items to label")
