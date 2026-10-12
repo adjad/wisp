@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
+import contextvars
 import html
 import io
 import ipaddress
@@ -686,9 +688,27 @@ def _extract_feed(data: bytes) -> tuple[str, str]:
     return title, "\n\n".join(lines)[:_MAX_TEXT_CHARS]
 
 
+# Strict-host mode: set by a caller that authorised ONE specific host (the user
+# typed it, or confirmed that URL). The fetch then refuses redirects to any other
+# host and never forwards the URL to a third-party archive. Default is off, so
+# every other caller keeps the old redirect and Wayback behaviour.
+_STRICT_HOST: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "wisp_web_strict_host", default=False)
+
+
+@contextlib.contextmanager
+def strict_host_fetch(enabled: bool = True):
+    token = _STRICT_HOST.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _STRICT_HOST.reset(token)
+
+
 async def _fetch_direct(raw_url: str) -> Page:
     """Fetch one public page with redirect and size limits plus SSRF checks."""
     current = await validate_public_url(raw_url)
+    strict_host = (urlparse(current).hostname or "").lower() if _STRICT_HOST.get() else ""
     data = b""
     ctype = ""
     encoding = "utf-8"
@@ -703,6 +723,9 @@ async def _fetch_direct(raw_url: str) -> Page:
                     if not target:
                         raise WebError("redirect had no destination")
                     current = await validate_public_url(urljoin(current, target))
+                    if strict_host and (urlparse(current).hostname or "").lower() != strict_host:
+                        raise WebError("redirect to a different host refused: the "
+                                       "authorised destination was not followed there")
                     continue
                 if response.status_code >= 400:
                     raise WebError(f"HTTP {response.status_code}")
@@ -876,10 +899,14 @@ async def fetch_page(raw_url: str) -> Page:
     """Fetch a page directly; on failure (blocked, gone, thin, timed out —
     anything except our own SSRF refusal), try the Wayback Machine's own
     snapshot of the same URL before giving up."""
-    openalex = await _fetch_openalex_work(raw_url)
+    strict = _STRICT_HOST.get()
+    # Strict mode talks to the authorised host only: no api.openalex.org detour.
+    openalex = None if strict else await _fetch_openalex_work(raw_url)
     if openalex:
         return openalex
     wiki = _wikipedia_title_from_url(raw_url)
+    if wiki and strict and (urlparse(raw_url).hostname or "").lower() != f"{wiki[0]}.wikipedia.org":
+        wiki = None  # the API host would differ from the authorised host
     if wiki:
         article = await _fetch_wikipedia_article(*wiki)
         if article:
@@ -892,6 +919,8 @@ async def fetch_page(raw_url: str) -> Page:
     except Exception as exc:  # noqa: BLE001
         if isinstance(exc, WebError) and str(exc).startswith(_SSRF_MESSAGE_PREFIXES):
             raise
+        if strict:
+            raise  # never hand the URL to archive.org
         snapshot_url = await _wayback_snapshot_url(raw_url)
         if not snapshot_url:
             raise

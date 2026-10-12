@@ -1,0 +1,315 @@
+{
+  "artifact_type": "independent_revised_static_design_review",
+  "actor": "Wisp Release Auditor",
+  "actor_thread_id": "01a08523-47c7-76e3-be42-aee801a314fd",
+  "parent_and_sole_dispatcher": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+  "recorded_at_utc": "2026-10-07T01:49:59.554925+00:00",
+  "main_sha": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "original_design_sha": "1449ab162c2f92e73162950240054964af636cdf",
+  "proposal_sha256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+  "scope_ack_sha256": "924ce9080b01f014090161d6d515acbca4098b685f08228692331cff2f7a3886",
+  "scope_markdown_sha256": "b057f64c3cc9a2fafae6592a61e7215f75a1f6648999e8e09aad426a824eaa98",
+  "acceptance_sha256": "72b9868efeb13f8bd3c6f2457fa3a10f2a047492065408b92c23467458cbea91",
+  "release_sha256": "4a0a1088ff2a302befecad6ef8ec9fd08fea1ec0072b7d7a7494ffe3685584c1",
+  "formal_verdict": "PASS_WITH_NOTES",
+  "verdict_scope": "Design consistency and guidance for future separately released default-off preparation only",
+  "enabling_verdict": "BLOCKED_UNTIL_EXPLICIT_PROOFS_AND_CHOICES",
+  "all_five_original_design_findings_independently_assessed": true,
+  "per_finding_dispositions": [
+    {
+      "id": "F1",
+      "original_priority": "P1",
+      "design_disposition": "SPECIFICATION_REPAIRED_CONDITIONAL_ON_ENABLING_PROOF",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 19,
+          "end_line": 41
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 79,
+          "end_line": 81
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 154,
+          "end_line": 154
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 165,
+          "end_line": 165
+        }
+      ],
+      "source_refs": [
+        {
+          "path": "inputs/source/ebe8273/service/inference/attributed_transport.py",
+          "lines": [
+            490,
+            507,
+            527,
+            540
+          ]
+        }
+      ],
+      "rationale": "Immutable start-based absolute lease, strict expiry at each nonempty write, own-stream retention and post-await/dispatch checks eliminate load-only freshness rule. LP-W is a sampled authorization requirement, not actual concrete dispatch proof.",
+      "remaining_blocks": [
+        "Actual bundled lower-writer resumed/partial emission seam and LP-R serialization",
+        "N1 deterministic final-submit/revocation race mutant",
+        "Explicit D1 W and sampling/loaded-code residual choice",
+        "Concrete sleep-inclusive clock and expiry/cancellation controls"
+      ],
+      "implementation_or_runtime_closed": false
+    },
+    {
+      "id": "F2",
+      "original_priority": "P1",
+      "design_disposition": "SPECIFICATION_REPAIRED_NATIVE_AUTHORITY_OFF",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 91,
+          "end_line": 110
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 157,
+          "end_line": 157
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 166,
+          "end_line": 168
+        }
+      ],
+      "rationale": "Every consumed authorization field requires independently qualified per-build/profile semantics and mutations; endpoint/size evidence no longer purports to certify all fields. Global latch revokes permits.",
+      "remaining_blocks": [
+        "Complete target socket/process/csops/private-exec profile evidence and numeric caps",
+        "Independently constructed field fixtures and per-field mutants",
+        "Both-end sharing/identity/ABA tests under separate native scope",
+        "Global latch and fallback/refusal behavior at dispatch"
+      ],
+      "implementation_or_runtime_closed": false
+    },
+    {
+      "id": "F3",
+      "original_priority": "P1",
+      "design_disposition": "INVALID_PARITY_CLAIM_REMOVED_BY_RETAINING_COMPLETE_LEGACY_AUTHORITY",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 114,
+          "end_line": 134
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 157,
+          "end_line": 157
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 167,
+          "end_line": 168
+        }
+      ],
+      "source_refs": [
+        {
+          "path": "inputs/source/ebe8273/service/inference/local_peer.py",
+          "lines": [
+            215,
+            262,
+            427,
+            462
+          ]
+        }
+      ],
+      "rationale": "Full global inventories/parser/reasons remain authoritative; per-pair native success cannot override unrelated refusal. No lsof-free native parity proof is supplied.",
+      "remaining_blocks": [
+        "Production global refusal/allowed-churn differential corpus and exact reasons/retries",
+        "Any future native global census complete visibility/error semantics, or independent exact predicate-change review and human acceptance beyond D3",
+        "Legacy visibility limitation and any stricter sharing refusal separately admitted"
+      ],
+      "implementation_or_runtime_closed": false
+    },
+    {
+      "id": "F4",
+      "original_priority": "P2",
+      "design_disposition": "STATE_MACHINE_SPECIFICATION_REPAIRED_REAL_SCHEDULES_UNPROVEN",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 47,
+          "end_line": 87
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 165,
+          "end_line": 165
+        }
+      ],
+      "source_refs": [
+        {
+          "path": "inputs/source/ebe8273/service/inference/attributed_transport.py",
+          "lines": [
+            142,
+            153,
+            490,
+            507,
+            601,
+            606
+          ]
+        }
+      ],
+      "rationale": "Short metadata lock, exact immutable token CAS, replacement/revocation separation, stale strict no-op and two real-job budget remove original conflicting promises. Nonwaiting close retained.",
+      "remaining_blocks": [
+        "Qualified finite numeric T_build and caller/wait budgets",
+        "Actual reserved/queued/running accounting across hangs/cancel/close/executor storms",
+        "CAS stale success/failure and lifetime/manifest/quarantine/fork schedules",
+        "Dispatch/metadata gate lock ordering and cross-client availability effects"
+      ],
+      "implementation_or_runtime_closed": false
+    },
+    {
+      "id": "F5",
+      "original_priority": "P2",
+      "design_disposition": "RESEARCH_OMISSION_AND_CONFLATED_DECISION_REPAIRED_DEPLOYED_INTERFACE_UNQUALIFIED",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 138,
+          "end_line": 146
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 155,
+          "end_line": 156
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 166,
+          "end_line": 166
+        }
+      ],
+      "source_refs": [
+        {
+          "path": "inputs/source/ebe8273/service/inference/local_peer.py",
+          "lines": [
+            108,
+            130
+          ]
+        }
+      ],
+      "rationale": "Exec-version candidate explicitly investigated using primary source; coherent server/current-parent profiles and typed separate helper required. Mutable argv remains a separate predicate choice.",
+      "remaining_blocks": [
+        "Exact deployed private ABI/availability/permissions/translation/coherence/reuse qualification",
+        "Server and parent same-binary/A-B-A/torn/reparenting controls",
+        "Explicit D2a qualification or rejection and D2b predicate choice",
+        "Unchanged four-tuple and expected UID/path/signature/start predicates"
+      ],
+      "implementation_or_runtime_closed": false
+    }
+  ],
+  "new_findings": [
+    {
+      "id": "N1",
+      "priority": "P2",
+      "classification": "MANDATORY_ENABLEMENT_PROOF_GAP_NOT_DEFAULT_OFF_DESIGN_BLOCK",
+      "title": "Frozen matrix does not explicitly kill removal of LP-R/final-submission serialization",
+      "proposal_refs": [
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 37,
+          "end_line": 39
+        },
+        {
+          "path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/inputs/DESIGN_PROPOSAL.md",
+          "start_line": 165,
+          "end_line": 168
+        }
+      ],
+      "matrix_refs": [
+        "L04",
+        "L08",
+        "L09",
+        "L10"
+      ],
+      "static_trace": "Writer compares time/generation, pauses without lower async suspension; another client/thread completes LP-R; writer submits with stale token. A missing-gate mutant may satisfy listed await-race and claim-disclosure expectations unless this ordering is deliberately exercised.",
+      "required_control": "At actual emission seam exercise both LP-R-first and LP-W-first schedules with partial/resumed sends; independently remove shared gate or release gate after sample. LP-R-first forbids later old-token submission; LP-W-first records earlier submission before completed LP-R and forbids all later emissions. Prove no deadlock/await/blocking send under gate.",
+      "measured_reproduction": false,
+      "mutant_executed": false,
+      "blocks": "Authority-changing enablement until concrete LP-W/N1 evidence; no new product writer or safe default-off staging blocked by this coverage note."
+    }
+  ],
+  "prior_BLOCK_history_preserved": true,
+  "inherited_closure": false,
+  "implementation_findings_closed": [],
+  "current_main_qualified": false,
+  "default_policy": "Unchanged full binding/lsof; reuse/replacement/native authority independently off",
+  "safe_staging": [
+    "Resolve actual builder/Claude/base/ownership/final1.2 prerequisites",
+    "Separately released S0 legacy behavior pins and S1 pure default-off scaffold",
+    "Default-off S2 state-machine/actual lower-writer qualification plus N1",
+    "Separately scoped S3 exact exec/native profiles; S4 disposable legacy-authoritative shadow",
+    "Separate S5 authority candidates only after choices and fresh exact-SHA gates",
+    "S6 full release baseline/candidate measurement after protocol threshold reconciliation"
+  ],
+  "mandatory_enablement_blocks": [
+    "Concrete bundled lower dispatch/LP-W resumed-emission and N1 revocation serialization evidence",
+    "Numeric W/T_build/caller budgets and real qualification-job schedules/accounting",
+    "Full target socket/process/csops/private-exec profiles and independent per-field mutants",
+    "Complete global refusal/parity corpus or separately reviewed predicate change; lsof-free authority not specified",
+    "Separate D1,D2a,D2b,D3,D4 human choices; no accepted residual",
+    "Actual exact-head product mechanical/required-CI/Auditor/specialist qualification after latest-main/final1.2 reconciliation",
+    "Authoritative release performance protocol/threshold and full E2E measurements",
+    "Claude exact continuity/baton/unpublished work and actual registered product writer scope/release",
+    "Explicit1.3 no-merge/installed-app/activation/deploy holds"
+  ],
+  "matrix": {
+    "rows": 45,
+    "global_status": "NOT_RUN",
+    "tests_run": 0,
+    "mutants_run": 0,
+    "credit": 0,
+    "complete_enabling_proof": false,
+    "per_row_review": "MATRIX_REVIEW.json"
+  },
+  "artifact_checks": {
+    "proposal_artifact_pins_match": 8,
+    "scope_pins_match": 2,
+    "full_author_manifest_entries_match": 8,
+    "prior_manifest_entries_verified": 34,
+    "exact_git_blobs_verified": 10,
+    "full_file_hash_not_full_semantic_test_file_review": true
+  },
+  "operations": {
+    "product_tests": 0,
+    "candidate_imports": 0,
+    "evidence_scripts_executed": 0,
+    "probes": 0,
+    "native_calls": 0,
+    "sockets": 0,
+    "models_cloud": 0,
+    "benchmarks": 0,
+    "client_status": 0,
+    "installed_app": 0,
+    "private_payload_reads": 0,
+    "product_registry_edits": 0,
+    "other_task_messages": 0,
+    "children_created": 0
+  },
+  "writes_only": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006",
+  "release_candidate_approved": false,
+  "security_risk_accepted": false,
+  "native_runtime_qualified": false,
+  "performance_qualified": false,
+  "product_writer_released": false,
+  "Claude_ownership_transferred": false,
+  "D1_D4_accepted": false,
+  "no_merge_activation_deploy_hold": true,
+  "final1_2_dependency_and1_3_hold_preserved": true,
+  "review_complete": true,
+  "quiescent": true,
+  "narrative_path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/REVIEW.md",
+  "before_hashes_path": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/BEFORE_HASHES.json"
+}

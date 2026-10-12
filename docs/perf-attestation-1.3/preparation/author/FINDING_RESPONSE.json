@@ -1,0 +1,31 @@
+{
+  "artifactType": "author_design_repair_proposal",
+  "actor": "/root/attestation_design_analysis",
+  "status": "PROPOSED_FOR_DISTINCT_INDEPENDENT_REVIEW",
+  "independentApproval": false,
+  "findingsClosed": [],
+  "findings": [
+    {"id": "F1", "response": "Immutable start-based sleep-inclusive absolute lease, strict expiry, own-lease retention for old streams; pre/post inspection, dispatch and post-write checks; no refresh credit, grace or automatic replay.", "proposalSection": "2", "remainingProof": ["Concrete lower asynchronous writer LP-W contract, including resumed emission and preemption/sleep limits", "Synthetic no-byte/header-only controls", "D1 finite window and explicit residual decision"], "status": "REVISED_SPECIFICATION_UNVALIDATED"},
+    {"id": "F2", "response": "Individually qualified OS/build/arch/ABI profiles and all consumed field widths/offsets/constants/semantics; full-field endpoint-preserving mutations; separate process/private-exec profiles; unknown profile remains legacy; global latch.", "proposalSection": "4", "remainingProof": ["Actual target profile matrix and complete layout provenance", "Both-end sharing/identity/ABA qualification", "Independent fixtures and mutation results", "Separate admitted runtime scope"], "status": "REVISED_SPECIFICATION_UNVALIDATED"},
+    {"id": "F3", "response": "Complete production global parser authoritative in every proposed current stage; enumerate all refusal classes; native-per-pair cannot establish full parity. Future lsof removal requires complete global oracle or separately approved predicate change.", "proposalSection": "5", "remainingProof": ["Full global refusal differential corpus", "Decision to retain cost or independently propose changed predicate", "Owning-human acceptance of any newly accepted class"], "status": "REVISED_SPECIFICATION_UNVALIDATED"},
+    {"id": "F4", "response": "Short metadata lock; separate replacement/revocation revisions; exact key/generation/lifetime/build-token CAS; strict stale success/failure no-op; two real qualification-job budget; finite token/waiter deadlines and bounded refusal under hung work; post-await global checks; synchronous nonwaiting close.", "proposalSection": "3", "remainingProof": ["Actual finite T_build qualification on supported healthy installs", "Schedule/worker accounting/cancellation/fork/close proof", "No post-close publication or revoked write", "Cross-client invalidation availability impact"], "status": "REVISED_SPECIFICATION_UNVALIDATED"},
+    {"id": "F5", "response": "Private unique-ID/version candidate investigated using primary source; new helper preserves four-tuple; coherent bracketing for server and current parent; same-binary/A-B-A exec separate from in-place argv; unsupported profile uses current binding.", "proposalSection": "6", "remainingProof": ["Deployed private interface layout/permission/availability/semantics", "Version reuse/wrap and multi-call collection behavior", "Server and parent synthetic exec controls", "Separate D2b argv predicate choice"], "status": "REVISED_SPECIFICATION_UNVALIDATED"}
+  ],
+  "humanChoices": {
+    "D1": "Reuse disabled until immutable lease/dispatch/publication proof and explicit W/residual choice",
+    "D2a": "Keep binding until exec-version mechanism qualified or rejected per supported profile",
+    "D2b": "Keep mutable argv predicate; separate consent required to remove it",
+    "D3": "Native off; later shadow scope only; no native-authoritative parity claim based on per-pair evidence",
+    "D4": "Full connect binding and owner check per connection; no amortization proposal admitted"
+  },
+  "defaultPolicy": "legacy",
+  "actualDecisionAuthority": "Today's full binding/lsof path",
+  "testsOrProbesRun": 0,
+  "performanceQualified": false,
+  "40msPromise": false,
+  "noMergeHold": true,
+  "final12DependencyPreserved": true,
+  "productBuilderReleasedByThisArtifact": false,
+  "ClaudeBatonConfirmed": false,
+  "productOwnershipTransfer": false
+}

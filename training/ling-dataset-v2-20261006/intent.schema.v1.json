@@ -1,0 +1,170 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "excluded_sources": {
+      "items": {
+        "enum": [
+          "calendar",
+          "email",
+          "messages",
+          "notes",
+          "reminders",
+          "web"
+        ],
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "kind": {
+      "enum": [
+        "read",
+        "inline",
+        "none",
+        "unsupported"
+      ],
+      "type": "string"
+    },
+    "sources": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "account": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "conversation": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "count": {
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "domain": {
+            "enum": [
+              "calendar",
+              "email",
+              "messages",
+              "notes",
+              "reminders"
+            ],
+            "type": "string"
+          },
+          "minutes": {
+            "maximum": 1440,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "operation": {
+            "enum": [
+              "overview",
+              "records",
+              "free_time"
+            ],
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "scope": {
+            "enum": [
+              "all",
+              "today",
+              "tomorrow",
+              "overdue",
+              "upcoming"
+            ],
+            "type": "string"
+          },
+          "time": {
+            "additionalProperties": false,
+            "properties": {
+              "date": {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              "end": {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              "last_n_days": {
+                "maximum": 366,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "month": {
+                "pattern": "^\\d{4}-\\d{2}$",
+                "type": "string"
+              },
+              "named": {
+                "enum": [
+                  "today",
+                  "tomorrow",
+                  "yesterday",
+                  "tonight",
+                  "this week",
+                  "next week",
+                  "last week",
+                  "this weekend",
+                  "next weekend",
+                  "this month",
+                  "next month",
+                  "last month"
+                ],
+                "type": "string"
+              },
+              "rolling_days": {
+                "maximum": 60,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "start": {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "unread": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "domain",
+          "operation"
+        ],
+        "type": "object"
+      },
+      "maxItems": 8,
+      "type": "array"
+    },
+    "unsupported_constraints": {
+      "items": {
+        "maxLength": 200,
+        "type": "string"
+      },
+      "maxItems": 8,
+      "type": "array"
+    },
+    "version": {
+      "enum": [
+        1
+      ],
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "kind",
+    "sources",
+    "excluded_sources",
+    "unsupported_constraints"
+  ],
+  "type": "object"
+}

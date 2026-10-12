@@ -512,7 +512,13 @@ async def send_email(to: str, subject: str, body: str, cc: str = "",
         "to": recipients, "cc": _split_recipients(cc),
         "subject": subject or "", "body": body or "",
     })
-    if not res.get("ok"):
+    if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
+        if not (res.get("ok") is False and res.get("status") == "not_attempted"
+                and res.get("dispatch_started") is False):
+            from service.tools.registry import _OutboundUnknownResult
+            return _OutboundUnknownResult(
+                "Email outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
+                operation="send_email", action_id=res.get("action_id") or "")
         return f"(the email was NOT sent: {res.get('error') or 'unknown error'})"
     return f"Email sent to {', '.join(recipients)}."
 
@@ -626,33 +632,100 @@ async def schedule_send(channel: str, to: str, when: str, body: str = "",
 
 @register(
     "list_scheduled_sends",
-    "Show emails and texts the user has scheduled to go out later, with their "
-    "ids. Use when they ask what's queued, or before cancelling something.",
-    {"type": "object", "properties": {}},
+    "Review scheduled emails/texts by exact queue ID and recorded status. "
+    "Default: a bounded pending list with body previews. Use status='all' or "
+    "'history' for recent recorded outcomes; absence from pending is never proof "
+    "of delivery. Pass id for one exact record's full body and status across "
+    "all statuses; id overrides status/count. 'sent' means the app accepted the "
+    "send request, not confirmed recipient delivery. This tool only reads; it "
+    "never sends, retries, marks read or cancels.",
+    {"type": "object", "properties": {
+        "status": {"type": "string",
+                   "enum": ["pending", "sending", "sent", "missed", "cancelled", "failed", "unknown", "all", "history"],
+                   "description": "Default pending; history excludes pending. Recent history uses recorded attempt/creation times, not a complete status-change log."},
+        "count": {"type": "integer", "minimum": 1, "maximum": 100,
+                  "description": "Maximum list rows, default 20; omitted older rows are disclosed."},
+        "id": {"type": "string", "description": "Exact queue ID for full body and current recorded status, ignoring list scope/count. No prefix matching."},
+    }},
     category="assistant_read",
 )
-async def list_scheduled_sends() -> str:
-    from datetime import datetime
-
+async def list_scheduled_sends(status: str = "pending", count: int = 20, id: str = "") -> str:
     from service.assistant.outbound_queue import outbound_queue
 
-    rows = outbound_queue.pending()
+    if not isinstance(id, str):
+        return "(error: scheduled-send id must be an exact string ID.)"
+    if id.strip():
+        row = outbound_queue.get(id.strip())
+        if row is None:
+            return (f"No scheduled-send record matches exact ID {id.strip()!r}. "
+                    "No send, cancellation or delivery outcome can be established from that absence.")
+        return _scheduled_send_record(row, full_body=True)
+    try:
+        rows, truncated = outbound_queue.review(status, count)
+    except ValueError as exc:
+        return f"(error: {exc})"
     if not rows:
-        return "Nothing is scheduled to send."
-    out = []
-    for r in rows:
-        when = datetime.fromtimestamp(r["when_ts"]).strftime("%a %b %-d at %-I:%M %p")
-        kind = "Email" if r["channel"] == "email" else "Text"
-        subj = f" — {r['subject']}" if r["subject"] else ""
-        out.append(f"[{r['id']}] {kind} to {r['display']} on {when}{subj}\n"
-                   f"    {r['body'][:160]}")
-    return "\n".join(out)
+        return (f"No scheduled-send records in status scope {status!r}. "
+                "Absence from this view does not establish recipient delivery.")
+    scope = ("Pending scheduled sends, earliest scheduled first." if status == "pending" else
+             f"Recorded scheduled sends: {status}. Most recent recorded attempt first, "
+             "otherwise creation/scheduled time. Cancellation and missed-window times "
+             "are not separately recorded; this is not a complete status-change history.")
+    coverage = (f"\nList coverage: showing {len(rows)} records; additional matching records "
+                f"are omitted by count={count}. Inspect an exact ID for its full body."
+                if truncated else "")
+    return scope + coverage + "\n\n" + "\n\n".join(
+        _scheduled_send_record(row, full_body=False) for row in rows)
+
+
+_SCHEDULED_STATUS_NOTES = {
+    "pending": "Queued; no send attempt is recorded. Wisp must be running to dispatch it.",
+    "sending": "Claimed for sending; final outcome is not recorded. Cancellation can no longer be guaranteed.",
+    "sent": "The app accepted the send request. Recipient delivery and read receipts are not verified.",
+    "missed": "The scheduled window was missed; this queued item was retired without dispatch.",
+    "cancelled": "Cancelled while pending; Wisp will not dispatch this queued item.",
+    "failed": "A send attempt was recorded as failed. Recipient delivery is not verified; check the app before retrying.",
+    "unknown": "The send outcome is unknown after interruption; it may have been sent. Wisp will not retry automatically. Check the app before retrying.",
+}
+
+
+def _scheduled_time(value) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.fromtimestamp(value).astimezone().strftime("%a %b %-d, %Y %-I:%M %p %Z (%z)")
+    except (TypeError, ValueError, OverflowError, OSError):
+        return "unavailable"
+
+
+def _scheduled_send_record(row, *, full_body: bool) -> str:
+    status = row["status"]
+    note = _SCHEDULED_STATUS_NOTES.get(status, "Unrecognized stored status; no delivery outcome can be established.")
+    kind = {"email": "Email", "message": "Text"}.get(row["channel"], str(row["channel"]))
+    lines = [f"[{row['id']}] {kind} to {row['display'] or row['recipient']}",
+             f"Recipient: {row['recipient']}", f"Scheduled: {_scheduled_time(row['when_ts'])}",
+             f"Recorded status: {status or 'unrecognized'} — {note}"]
+    if row["fired_at"] is not None:
+        lines.append(f"Last recorded send attempt/outcome: {_scheduled_time(row['fired_at'])}")
+    if row["subject"]:
+        lines.append(f"Subject: {row['subject']}")
+    if row["error"]:
+        lines.append(f"Recorded error: {row['error']}")
+    body = row["body"]
+    if full_body:
+        lines.append("Full stored body:\n" + body)
+    else:
+        lines.append("Body preview:\n" + body[:160])
+        if len(body) > 160:
+            lines.append(f"[Body preview truncated; inspect exact ID {row['id']} for the full stored body.]")
+    return "\n".join(lines)
 
 
 @register(
     "cancel_scheduled_send",
-    "Cancel a scheduled email or text so it never goes out. Needs the id from "
-    "list_scheduled_sends — call that first if you don't have it.",
+    "Cancel a scheduled email/text only while it remains pending. A claimed "
+    "or completed send cannot be recalled by this tool. Needs an exact id from "
+    "list_scheduled_sends — inspect that first if you don't have it.",
     {"type": "object",
      "properties": {
          "id": {"type": "string", "description": "id from list_scheduled_sends"},
@@ -663,11 +736,20 @@ async def list_scheduled_sends() -> str:
 async def cancel_scheduled_send(id: str) -> str:
     from service.assistant.outbound_queue import outbound_queue
 
+    if not isinstance(id, str) or not id.strip():
+        return "Ask the user for an exact scheduled-send ID. NOT cancelled: no cancellation was applied."
     row = outbound_queue.cancel((id or "").strip())
     if not row:
-        return ("(no pending scheduled send with that id — call "
-                "list_scheduled_sends to see what's actually queued)")
-    return f"Cancelled the {row['channel']} to {row['display']}."
+        recorded = outbound_queue.get((id or "").strip())
+        if recorded is not None:
+            prefix = ("No matches among pending sends. Already recorded as cancelled; no new cancellation was applied."
+                      if recorded["status"] == "cancelled" else
+                      "(error: NOT cancelled: this item is no longer pending. No cancellation was applied; "
+                      "this tool cannot recall an attempted send.)")
+            return prefix + "\n" + _scheduled_send_record(recorded, full_body=False)
+        return ("No matches for that exact scheduled-send ID. NOT cancelled: no cancellation was applied. "
+                "Absence from pending does not establish delivery; review list_scheduled_sends(status='all').")
+    return f"Cancelled [{row['id']}] {row['channel']} to {row['display']}. It was still pending; Wisp will not dispatch it."
 
 
 @register(
@@ -730,11 +812,19 @@ async def reply_to_email(message_id: str, body: str, reply_all: bool = False,
         "message_id": message_id, "body": body, "reply_all": bool(reply_all),
         "account": account, "expected_reply": expected,
     })
-    if res.get("ok") is not True:
-        return (f"(the reply was not confirmed as sent: {res.get('error') or 'unknown error'}. "
-                "Check Mail before trying again; do not retry automatically.)")
+    if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
+        if (res.get("ok") is False and res.get("status") == "not_attempted"
+                and res.get("dispatch_started") is False):
+            return f"(reply NOT sent: {res.get('error') or 'publication did not start'})"
+        from service.tools.registry import _OutboundUnknownResult
+        return _OutboundUnknownResult(
+            "Reply outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
+            operation="reply_to_email", action_id=res.get("action_id") or "")
     if res.get("accepted") is not True or not envelope_matches(res.get("reply"), expected):
-        return "(reply outcome unknown — the bridge did not confirm the approved reply. Check Mail before trying again; do not retry automatically.)"
+        from service.tools.registry import _OutboundUnknownResult
+        return _OutboundUnknownResult(
+            "Reply outcome unknown — the bridge did not confirm the approved reply. Check Mail before trying again; do not retry automatically.",
+            operation="reply_to_email", action_id=res.get("action_id") or "")
     return make_receipt(expected)
 
 
@@ -839,27 +929,26 @@ async def draft_email(to: str, subject: str, body: str, cc: str = "") -> str:
     category="messages_draft",
 )
 async def draft_message(to: str, text: str) -> str:
-    # No _own_address_guard here — same reasoning as draft_email above: this
-    # is the safe landing spot for an explicit self-send request, and a draft
-    # never sends on its own.
-    to = (to or "").strip()
-    if not to:
+    from service.tools.registry import _literal_message_recipient, _prepared_message_draft
+
+    # Preparation sends nothing. Only this successful host path mints a card.
+    if type(to) is not str or type(text) is not str:
+        return "(error: Draft recipient and body must be strings.)"
+    to = to.strip(" ")
+    if not to or any(ord(c) < 32 or ord(c) == 127 for c in to):
         return "(no recipient — ask the user who to text)"
     text = _degarble(text)
     if not text.strip():
         return "(nothing to draft — the message body is empty)"
-    display = to
-    if not (_EMAIL_RE.match(to) or re.fullmatch(r"[+()\-.\s\d]{7,}", to)):
+    literal = _literal_message_recipient(to)
+    if literal is None:
         handle, problem = _resolve_recipient(to)
         if problem:
             return problem
-        display = f"{to} ({handle})"
-        to = handle
-    # The structured card is emitted by the agent loop after this succeeds.
-    # Do not open Messages or type into its active conversation: the draft now
-    # remains inside Wisp until the user presses the card's Send button.
-    return (f"Message draft prepared in Wisp for {display} — nothing has been "
-            "sent. The user can edit or send it from the draft card.")
+        literal = _literal_message_recipient(handle)
+    if literal is None:
+        return "(error: Choose one supported literal phone number or email address.)"
+    return _prepared_message_draft(literal, text)
 
 
 @register(
@@ -952,7 +1041,13 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
     res = await app_request("forward_email", {
         "message_id": message_id, "to": resolved, "body": note,
     })
-    if not res.get("ok"):
+    if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
+        if not (res.get("ok") is False and res.get("status") == "not_attempted"
+                and res.get("dispatch_started") is False):
+            from service.tools.registry import _OutboundUnknownResult
+            return _OutboundUnknownResult(
+                "Forward outcome unknown — sending was not confirmed. Check Mail before trying again; do not retry automatically.",
+                operation="forward_email", action_id=res.get("action_id") or "")
         return f"(the forward was NOT sent: {res.get('error') or 'unknown error'})"
     return f"Forwarded to {', '.join(resolved)}."
 
@@ -1015,7 +1110,8 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
     to = (to or "").strip()
     if not to:
         return "(no recipient — ask the user who to text)"
-    text = _degarble(text)
+    if _unreviewed():
+        text = _degarble(text)
     if _unreviewed() and _looks_truncated(text):
         return ("(NOT sent — the draft looks cut off mid-sentence rather than "
                 "a complete message. Rewrite the complete text in "
@@ -1044,7 +1140,13 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
         return (f"(NOT sent — the message still has unfilled placeholders: "
                 f"{', '.join(holes[:4])}. Rewrite it with the real values.)")
     res = await app_request("send_message", {"to": to, "text": text})
-    if not res.get("ok"):
+    if res.get("ok") is not True or ("status" in res and res["status"] != "succeeded"):
+        if not (res.get("ok") is False and res.get("status") == "not_attempted"
+                and res.get("dispatch_started") is False):
+            from service.tools.registry import _OutboundUnknownResult
+            return _OutboundUnknownResult(
+                "Message outcome unknown — sending was not confirmed. Check Messages before trying again; do not retry automatically.",
+                operation="send_message", action_id=res.get("action_id") or "")
         return f"(the message was NOT sent: {res.get('error') or 'unknown error'})"
     return f"Message sent to {display}."
 
@@ -1073,6 +1175,7 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
 )
 async def http_request(url: str, method: str = "POST", body: str = "",
                        headers: str = "") -> str:
+    from service.router.model_led import BuiltinCompletion
     url = (url or "").strip()
     if not re.match(r"^https?://", url, re.I):
         return f"(refusing to call {url!r} — only http:// and https:// URLs are allowed)"
@@ -1101,7 +1204,9 @@ async def http_request(url: str, method: str = "POST", body: str = "",
             kwargs["content"] = body
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=20) as c:
+        # Never follow redirects: a 307/308 would re-send the body and custom
+        # headers to a host the user never confirmed.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=20) as c:
             r = await c.request(method, url, **kwargs)
     except httpx.TimeoutException:
         return f"(timed out calling {url} — the request may or may not have gone through)"
@@ -1112,6 +1217,11 @@ async def http_request(url: str, method: str = "POST", body: str = "",
     if len(text) > _MAX_RESPONSE_CHARS:
         text = text[:_MAX_RESPONSE_CHARS] + "…[truncated]"
     status = f"HTTP {r.status_code}"
+    if 300 <= r.status_code < 400:
+        location = r.headers.get("location", "(no Location header)")
+        return (f"(request to {url} was redirected ({status}) to {location}; "
+                "the redirect was NOT followed)")
     if r.status_code >= 400:
         return f"(request failed: {method} {url} returned {status}. Response: {text or '(empty)'})"
-    return f"{method} {url} -> {status}. Response: {text or '(empty)'}"
+    return BuiltinCompletion(f"{method} {url} -> {status}. Response: {text or '(empty)'}",
+                             tool_name="http_request", completion_code=r.status_code)

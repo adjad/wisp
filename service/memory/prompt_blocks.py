@@ -45,6 +45,29 @@ def memory_block(query: str = "") -> str:
     """
     try:
         from service.memory.facts import memory_context_block
-        return memory_context_block(query=query)
+        block = memory_context_block(query=query)
+    except Exception:  # noqa: BLE001
+        block = ""
+    return block + profile_block()
+
+
+PROFILE_HEADER = ("\nWhat Wisp has learned about the user's routines (statistical patterns from "
+                  "their own activity; may be wrong, never state them as certain facts):\n")
+
+
+def profile_block() -> str:
+    """The behavior engine's compact profile card (<= 700 bytes), or "".
+
+    Rides along with memory_block on every path that already includes the
+    user's remembered facts. Cached for 60 s by the runtime and never
+    blocks the event loop; any failure is simply no card.
+    """
+    from service.behavior_switch import enabled
+    if not enabled():
+        return ""
+    try:
+        from service.assistant.behavior_runtime import profile_card
+        card = profile_card().strip()
     except Exception:  # noqa: BLE001
         return ""
+    return PROFILE_HEADER + card if card else ""

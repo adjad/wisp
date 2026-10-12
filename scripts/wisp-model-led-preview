@@ -1,0 +1,33 @@
+#!/bin/bash
+# User-run preview only. Never install, build, change persisted configuration,
+# stop another app, grant permissions or select a different model.
+set -euo pipefail
+mode=1
+if [[ "${1:-}" == "--baseline" ]]; then
+    mode=0
+    shift
+fi
+if [[ $# -ne 1 ]]; then
+    echo "Usage: $0 [--baseline] /absolute/path/to/the/verified/preview/Wisp.app" >&2
+    exit 2
+fi
+app="$1"
+if [[ "$app" != /* || ! -x "$app/Contents/MacOS/Wisp" ]]; then
+    echo "Provide the absolute path to a verified preview Wisp.app." >&2
+    exit 2
+fi
+backend="$app/Contents/Resources/backend/service"
+if [[ ! -f "$backend/router/model_led.py" ]] || ! /usr/bin/grep -q 'model_led_discovery=' "$backend/main.py"; then
+    echo "This artifact has no integrated model-led preview. Integration/build verification is still required." >&2
+    exit 2
+fi
+if /usr/bin/pgrep -x Wisp >/dev/null; then
+    echo "Quit your running Wisp first. This launcher will not stop it or replace the installed app." >&2
+    exit 2
+fi
+if [[ "$mode" == 1 ]]; then
+    echo "Starting the model-led experimental preview; existing typed workflows retain their controlled path."
+else
+    echo "Starting the preview with baseline routing."
+fi
+exec /usr/bin/env WISP_MODEL_LED_ROUTING="$mode" "$app/Contents/MacOS/Wisp"

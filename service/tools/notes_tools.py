@@ -9,9 +9,14 @@ lifecycle rather than sitting in memory indefinitely.
 from __future__ import annotations
 
 import math
+import hashlib
 import re
+import threading
 import time
+from dataclasses import dataclass
 from functools import lru_cache
+from types import MappingProxyType
+from typing import Mapping
 
 from service.tools import cache_store
 from service.tools.registry import register
@@ -23,6 +28,9 @@ _notes: str = ""
 _notes_at: float = 0.0
 _available: bool | None = None
 _reason = ""
+_publication_lock = threading.RLock()
+_notes_generation = 0
+_notes_origin = "none"
 # Notes sync only ONCE A DAY (NotesReader.swift), so before this cache was
 # persisted a backend restart left it empty for up to 24h — long enough that
 # `build_profile` routinely ran with no notes at all. Restoring on import (and
@@ -82,21 +90,23 @@ def cache_notes(raw: str, available: bool = True, reason: str = "",
     global _notes, _notes_at, _available, _reason, _snapshot_at
     global _snapshot_started_at, _received_at, _receipt_started
     global _receipt_available, _receipt_reason
-    now = time.time()
-    started = _clean_stamp(snapshot_started_at, now)
-    if started and _receipt_started and started < _receipt_started:
-        # A read that began earlier than one we already accepted finished late.
-        # Taking it would roll the cache back to an older view of Notes.
-        return
-    _received_at, _receipt_started = now, started or _receipt_started
-    _receipt_available, _receipt_reason = available, reason
-    _available, _reason = available, reason
-    if not available:
-        return
-    _notes = raw or ""
-    _notes_at = _snapshot_at = now
-    _snapshot_started_at = started
-    cache_store.save("notes", _notes)
+    global _notes_generation, _notes_origin
+    with _publication_lock:
+        now = time.time()
+        started = _clean_stamp(snapshot_started_at, now)
+        if started and _receipt_started and started < _receipt_started:
+            return
+        _notes_generation += 1
+        _received_at, _receipt_started = now, started or _receipt_started
+        _receipt_available, _receipt_reason = available, reason
+        _available, _reason = available, reason
+        if not available:
+            return
+        _notes = raw or ""
+        _notes_at = _snapshot_at = now
+        _snapshot_started_at = started
+        _notes_origin = "live"
+        cache_store.save("notes", _notes)
 
 
 def notes_receipt() -> dict:
@@ -123,6 +133,7 @@ def notes_sync_state() -> str:
 
 _notes = cache_store.load("notes")
 if _notes:
+    _notes_origin = "restored"
     _notes_at = time.time()
     try:
         import os
@@ -132,11 +143,74 @@ if _notes:
 
 
 def _purge_if_expired() -> None:
-    global _notes, _notes_at, _available
-    if _notes_at and (time.time() - _notes_at) > _TTL_SECONDS:
-        _notes = ""
-        _notes_at = 0.0
-        _available = None
+    global _notes, _notes_at, _available, _notes_generation, _notes_origin
+    with _publication_lock:
+        if _notes_at and (time.time() - _notes_at) > _TTL_SECONDS:
+            _notes = ""
+            _notes_at = 0.0
+            _available = None
+            _notes_generation += 1
+            _notes_origin = "expired"
+
+
+@dataclass(frozen=True)
+class RawNotesSnapshot:
+    generation: int
+    origin: str
+    body_received_at: float
+    body_started_at: float
+    latest_receipt: Mapping[str, object]
+    records: tuple[Mapping[str, object], ...]
+    raw_records: int
+    malformed: int
+    omitted: int
+    raw_digest: str
+
+
+def raw_notes_snapshot(*, limit: int = 500, byte_limit: int = 100_000) -> RawNotesSnapshot:
+    """One immutable bounded plaintext view, with held-body and latest receipts.
+
+    Content references identify these local bytes, not native Notes objects.
+    The native 500-note carrier cap and unknown checkbox/history coverage mean
+    even a clean parse cannot establish an exhaustive Notes inventory.
+    """
+    if type(limit) is not int or not 1 <= limit <= 500 or type(byte_limit) is not int or not 1 <= byte_limit <= 100_000:
+        raise ValueError("invalid Notes snapshot bounds")
+    with _publication_lock:
+        _purge_if_expired()
+        raw, generation, origin = _notes, _notes_generation, _notes_origin
+        received, started = _snapshot_at, _snapshot_started_at
+        receipt = MappingProxyType({"received_at": _received_at, "started_at": _receipt_started,
+                                    "available": _receipt_available, "reason": _receipt_reason})
+    records, malformed, omitted, used, total = [], 0, 0, 0, 0
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+    for index, record in enumerate(raw.split(_RS)):
+        if not record.strip():
+            continue
+        total += 1
+        parts = record.split(_FS)
+        if len(parts) != 4:
+            malformed += 1
+            continue
+        ts_s, title, folder, body = parts
+        try:
+            stamp = float(ts_s)
+            valid = math.isfinite(stamp)
+        except (ValueError, OverflowError):
+            valid = False
+        if not valid:
+            malformed += 1
+            continue
+        size = len(record.encode("utf-8"))
+        if len(records) >= limit or used + size > byte_limit:
+            omitted += 1
+            continue
+        used += size
+        reference = f"notes-local:{hashlib.sha256(record.encode('utf-8')).hexdigest()}:{index}"
+        records.append(MappingProxyType({"modified_at": stamp, "title": title, "folder": folder,
+                                        "body": body, "reference": reference, "native_id": None}))
+    return RawNotesSnapshot(generation, origin, received, started, receipt, tuple(records),
+                            total, malformed, omitted, digest)
 
 
 def _parse() -> list[dict]:

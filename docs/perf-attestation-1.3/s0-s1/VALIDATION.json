@@ -1,0 +1,52 @@
+{
+  "kind": "PURE_S1_SYNTHETIC_VALIDATION_RECEIPT",
+  "initialBase": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "reconciledBase": "af3a180ba54bc273247d1d05adf5c45da743f29b",
+  "branch": "codex/attestation-lease-1-3",
+  "sourceSha256": "81732b8ad2ca952c35a3ffa45af0d0976c9e7fa0ee0590ea1dee221eba4fd346",
+  "testSha256": "703d6c5e8989336db60817a8de0239dd4f527cb47b1ae532e0160de91f104238",
+  "privateEvidenceDirectory": "/private/tmp/wisp-attestation-pure-s1-builder-20261008",
+  "freeze": {"file": "TEST_FREEZE_ATTEMPT_1.json", "sha256": "316fc9b15f113830ddfa359dea6e6d4e7f34b73749be22fbb3383d81c722e1d1"},
+  "runner": {"file": "guarded_runner.py", "sha256": "df736541169f770b8d22e8e627bf9b53b3b5c7e5b10469dec3f68a9dadc25b1f"},
+  "rawLog": {"file": "attempt-1.log", "sha256": "bf7b6e6246382f0951c1602100c577b2d61f97841f08f4b01e007015970d495c", "bytes": 23002, "includesActualDependencyClosure": true},
+  "interpreter": {
+    "path": "/Users/adijain/Desktop/MOE_Project/.venv/bin/python3.14",
+    "realPath": "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+    "binarySha256": "1192b994fbb50303c9df2cc97c9d63797d454c7f57f20ca682877c9e770429aa",
+    "actualVersion": "3.14.3", "flags": ["-I", "-S", "-B"],
+    "thirdPartyDependenciesUsed": false, "ciVersion": "3.13",
+    "testLockSha256": "5a5e1820cb3651f769371985fc40363e3574dc9c596541239771d7eb525cb585",
+    "ciEquivalenceClaimed": false
+  },
+  "actualResults": {
+    "attempts": 1, "testProcesses": 1, "exitCode": 0,
+    "tests": 28, "subtests": 116, "failures": 0, "errors": 0, "skipped": 0,
+    "targetElapsedSeconds": 0.024001208133995533,
+    "ownedTargetCleanup": "None: no target files, workers, loops, sockets or children created. Raw evidence retained."
+  },
+  "manifest": {
+    "amendmentAcceptSha256": "d51eb49639d157f080d858b927d80f105f7333a4485cf7fff99264d2c756afef",
+    "addedEntry": "tests/test_runtime_attestation_t1t3.py",
+    "gitBlob": "a224b11938c1df89af2cb62217107b7502ee752c",
+    "sha256": "8ab604392add220555cb26c90299da00d91ce08a9e5a2872db548b74bbd083a9",
+    "diff": "Exactly one added classification line; no other runner change.",
+    "windowClosed": true,
+    "closureReceiptSha256": "fbec5f6446bd87b4a12e20930f1370227ee9d087dcbae59d2d0961cfc162b9d9",
+    "fullRunnerExecutedLocally": false
+  },
+  "unchangedProductionAndOracleSha256": {
+    "service/inference/attributed_transport.py": "55e1efcb1ba37cad9100a8b38e993675189275375969c06ae330091f05ffa037",
+    "service/inference/local_peer.py": "75d328dd2272fef5c308d457eb73400fa7d20fe292eef01177f178f4e6e053f1",
+    "tests/test_runtime_attestation_t0.py": "80300d49d77db915b154c3bbbd78ef424a51b4e7bb17d5dd1c848e5589929cbe",
+    "tests/test_runtime_proc_path.py": "1a1f65f856250b33a563688b530af67076f8eaa406103d8c2142d7557cfcb4b1",
+    "tests/test_runtime_peer.py": "b6dbbb3ed3fa788239b1c9c8bb7965c2a05cdf7753e269ba0e0efb91573b47c1",
+    "tests/test_web_response_followup.py": "ffd9301a8b2f8e23ccb1ed6babdfd1d350fd5be68cd7a2e70ee7e534e09e0d14",
+    "scripts/bench_transport_overhead.py": "9de3bc2a56a0ece7c5c1d6ae613a215c49c7fcaf5f184091a350574bcda9e4ad"
+  },
+  "designReferenceSha256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+  "priorPreparationHeadPreserved": "d5e57754c9938e2781e6e13642525f1dff12fbd2",
+  "claimsExcluded": ["Original45 author cases run", "S0 behavior pins", "N1", "Real clock", "Native facts", "Concurrency", "Performance", "Enablement", "Merge readiness"],
+  "independentExactHeadReview": "PENDING_PARENT_DISPATCH",
+  "sameHeadCI": "PENDING_PR_CREATION",
+  "builderSelfApproval": false
+}

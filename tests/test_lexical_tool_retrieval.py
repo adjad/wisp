@@ -115,3 +115,17 @@ def test_silent_file_mutation_gate_and_pins_survive_reuse(monkeypatch):
     writing = reranker.lexical_candidates("quasarneedle", writing=True)
     assert tool.name not in readonly and tool.name in writing
     assert set(_PINNED) <= set(readonly) & set(writing)
+
+
+@pytest.mark.parametrize("query", ["Uninstall Cobalt app", "Please uninstall Cobalt app",
+    "Can you uninstall Cobalt app", "Could you uninstall Cobalt app", "Would you uninstall Cobalt app"])
+def test_explicit_uninstall_survives_normal_legacy_retrieval(query):
+    assert "uninstall_app" in lexical_candidates(query, writing=False, k=20)
+
+
+@pytest.mark.parametrize("query", ["Do not uninstall Cobalt app", "Don't uninstall Cobalt app",
+    "How do I uninstall Cobalt app?", "Explain uninstall", "Show my calendar"])
+def test_uninstall_visibility_fix_does_not_open_on_negation_or_explanation(query):
+    from service.router.semantic import _gate_open
+    assert not _gate_open(query, writing=False)
+    assert "uninstall_app" not in lexical_candidates(query, writing=False, k=20)

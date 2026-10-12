@@ -42,6 +42,7 @@ DB_PATH = MOE_DIR / "assistant.db"
 # common case this protects against is an overnight sleep, and almost anything
 # time-sensitive enough to schedule is wrong to deliver hours late.
 _STALE_AFTER_S = 30 * 60
+REVIEW_STATUSES = ("pending", "sending", "sent", "missed", "cancelled", "failed", "unknown")
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS scheduled_sends (
@@ -186,15 +187,49 @@ class OutboundQueue:
                 "SELECT * FROM scheduled_sends WHERE status='pending' "
                 "ORDER BY when_ts").fetchall()
 
+    def get(self, sid: str) -> sqlite3.Row | None:
+        """Inspect one exact queue ID, across every recorded status."""
+        with self._lock:
+            return self._db.execute(
+                "SELECT * FROM scheduled_sends WHERE id=?", (sid,)).fetchone()
+
+    def review(self, status: str = "pending", limit: int = 20
+               ) -> tuple[list[sqlite3.Row], bool]:
+        """Bounded read only view; never claim, retire, retry or cancel a row.
+
+        Terminal rows have no universal status-change timestamp: cancellation
+        and stale-window retirement do not record one. History therefore sorts
+        by the last recorded attempt, or creation/scheduled time when absent.
+        The extra row discloses truncation without an inconsistent count query.
+        """
+        if status not in (*REVIEW_STATUSES, "all", "history"):
+            raise ValueError("unsupported scheduled-send status scope")
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("scheduled-send review limit must be 1 through 100")
+        where, params = "", []
+        if status == "history":
+            where = " WHERE status != 'pending' OR status IS NULL"
+        elif status != "all":
+            where, params = " WHERE status=?", [status]
+        order = ("when_ts ASC, id ASC" if status == "pending" else
+                 "COALESCE(fired_at, created_at, when_ts) DESC, id ASC")
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT * FROM scheduled_sends" + where + " ORDER BY " + order + " LIMIT ?",
+                (*params, limit + 1)).fetchall()
+        return rows[:limit], len(rows) > limit
+
     def cancel(self, sid: str) -> sqlite3.Row | None:
         with self._lock:
-            row = self._db.execute(
-                "SELECT * FROM scheduled_sends WHERE id=? AND status='pending'",
-                (sid,)).fetchone()
-            if row:
-                self._db.execute(
-                    "UPDATE scheduled_sends SET status='cancelled' WHERE id=?", (sid,))
-                self._db.commit()
+            # One conditional write arbitrates with claim() even when another
+            # queue instance/connection owns the competing worker. A separate
+            # SELECT followed by an unconditional UPDATE could cancel a claim.
+            changed = self._db.execute(
+                "UPDATE scheduled_sends SET status='cancelled' "
+                "WHERE id=? AND status='pending'", (sid,)).rowcount
+            row = (self._db.execute("SELECT * FROM scheduled_sends WHERE id=?", (sid,)).fetchone()
+                   if changed else None)
+            self._db.commit()
         return row
 
 

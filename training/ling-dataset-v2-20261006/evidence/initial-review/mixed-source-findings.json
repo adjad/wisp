@@ -1,0 +1,1078 @@
+[
+  {
+    "family": "zone_handover_with_task",
+    "template": "zone_handover_with_task-surface-0",
+    "missing": [
+      "calendar",
+      "reminders"
+    ],
+    "ids": [
+      "v2-grounded-dev-0001",
+      "v2-grounded-dev-0004"
+    ],
+    "example_gold": "Cedar 1 handover is listed as 2029-04-11 at 23:30 Asia/Kolkata, also 2029-04-12 at 03:00 Asia/Tokyo. Cedar 1 export is open and due 2029-04-11 at 21:00 Asia/Kolkata.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "id": "c1",
+              "other_date": "2029-04-12",
+              "other_time": "03:00",
+              "other_timezone": "Asia/Tokyo",
+              "start": "23:30",
+              "start_date": "2029-04-11",
+              "start_timezone": "Asia/Kolkata",
+              "title": "Cedar 1 handover"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-04-11",
+              "due_time": "21:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "Asia/Kolkata",
+              "title": "Cedar 1 export"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "zone_handover_with_task",
+    "template": "zone_handover_with_task-surface-1",
+    "missing": [
+      "calendar",
+      "reminders"
+    ],
+    "ids": [
+      "v2-grounded-dev-0002",
+      "v2-grounded-dev-0005"
+    ],
+    "example_gold": "- The supplied timestamps for Juniper 2 handover are 2029-04-20, 23:30 Asia/Kolkata, and 2029-04-21, 03:00 Asia/Tokyo.\n- The open task Juniper 2 export is due 21:00 Asia/Kolkata on 2029-04-20.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "id": "c1",
+              "other_date": "2029-04-21",
+              "other_time": "03:00",
+              "other_timezone": "Asia/Tokyo",
+              "start": "23:30",
+              "start_date": "2029-04-20",
+              "start_timezone": "Asia/Kolkata",
+              "title": "Juniper 2 handover"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-04-20",
+              "due_time": "21:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "Asia/Kolkata",
+              "title": "Juniper 2 export"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "zone_handover_with_task",
+    "template": "zone_handover_with_task-surface-2",
+    "missing": [
+      "calendar",
+      "reminders"
+    ],
+    "ids": [
+      "v2-grounded-dev-0003",
+      "v2-grounded-dev-0006"
+    ],
+    "example_gold": "Harbor 3 handover: 2029-04-29 23:30 (Asia/Kolkata), with the other timestamp 2029-04-30 03:00 (Asia/Tokyo). Task Harbor 3 export remains open, due 2029-04-29, 21:00 in Asia/Kolkata.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "id": "c1",
+              "other_date": "2029-04-30",
+              "other_time": "03:00",
+              "other_timezone": "Asia/Tokyo",
+              "start": "23:30",
+              "start_date": "2029-04-29",
+              "start_timezone": "Asia/Kolkata",
+              "title": "Harbor 3 handover"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-04-29",
+              "due_time": "21:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 export"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "travel_draft_overview",
+    "template": "travel_draft_overview-surface-0",
+    "missing": [
+      "calendar",
+      "email",
+      "notes"
+    ],
+    "ids": [
+      "v2-grounded-dev-0043",
+      "v2-grounded-dev-0046"
+    ],
+    "example_gold": "Cedar 1 train is confirmed for 2029-04-11 at 15:10 in America/Los_Angeles. Cedar 1 arrival reply to Mira, dated 2029-04-11, is a draft: “I expect to arrive after 18:00.” Cedar 1 bag list (2029-04-11) says “Pack the charger and sketchbook.”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-11",
+              "id": "c1",
+              "start": "15:10",
+              "status": "confirmed",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 train"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "body": "I expect to arrive after 18:00.",
+              "date": "2029-04-11",
+              "id": "e1",
+              "recipient": "Mira",
+              "status": "draft",
+              "subject": "Cedar 1 arrival reply"
+            }
+          ],
+          "source": "email",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-11",
+              "id": "n1",
+              "text": "Pack the charger and sketchbook.",
+              "title": "Cedar 1 bag list"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "travel_draft_overview",
+    "template": "travel_draft_overview-surface-1",
+    "missing": [
+      "calendar",
+      "email"
+    ],
+    "ids": [
+      "v2-grounded-dev-0044",
+      "v2-grounded-dev-0047"
+    ],
+    "example_gold": "- For 2029-04-20, Juniper 2 train is confirmed at 15:10 (Europe/London); Juniper 2 arrival reply to Ari remains a draft dated 2029-04-20, saying “I expect to arrive after 18:00.”\n- The note Juniper 2 bag list on 2029-04-20 records “Pack the charger and sketchbook.”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-20",
+              "id": "c1",
+              "start": "15:10",
+              "status": "confirmed",
+              "timezone": "Europe/London",
+              "title": "Juniper 2 train"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "body": "I expect to arrive after 18:00.",
+              "date": "2029-04-20",
+              "id": "e1",
+              "recipient": "Ari",
+              "status": "draft",
+              "subject": "Juniper 2 arrival reply"
+            }
+          ],
+          "source": "email",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-20",
+              "id": "n1",
+              "text": "Pack the charger and sketchbook.",
+              "title": "Juniper 2 bag list"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "calendar_note_unlinked",
+    "template": "calendar_note_unlinked-surface-0",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-dev-0055",
+      "v2-grounded-dev-0058"
+    ],
+    "example_gold": "Cedar 1 gallery visit is on 2029-04-11 at 12:20 (America/Los_Angeles). The note Cedar 1 reflection, dated 2029-04-11, says “Consider a quieter color palette.” The fixture does not link the note to the visit.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-11",
+              "id": "c1",
+              "start": "12:20",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 gallery visit"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-11",
+              "id": "n1",
+              "text": "Consider a quieter color palette.",
+              "title": "Cedar 1 reflection"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "calendar_note_unlinked",
+    "template": "calendar_note_unlinked-surface-2",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-dev-0057",
+      "v2-grounded-dev-0060"
+    ],
+    "example_gold": "2029-04-29 includes Harbor 3 gallery visit at 12:20 in Asia/Kolkata. In the separate note Harbor 3 reflection (2029-04-29): “Consider a quieter color palette.” These results do not establish that the note concerns the visit.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-29",
+              "id": "c1",
+              "start": "12:20",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 gallery visit"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-04-29",
+              "id": "n1",
+              "text": "Consider a quieter color palette.",
+              "title": "Harbor 3 reflection"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "calendar_reminder_agenda",
+    "template": "calendar_reminder_agenda-surface-0",
+    "missing": [
+      "reminders"
+    ],
+    "ids": [
+      "v2-grounded-train-0451",
+      "v2-grounded-train-0454",
+      "v2-grounded-train-0457",
+      "v2-grounded-train-0460",
+      "v2-grounded-train-0463",
+      "v2-grounded-train-0466",
+      "v2-grounded-train-0469",
+      "v2-grounded-train-0472",
+      "v2-grounded-train-0475"
+    ],
+    "example_gold": "For 2029-03-05 in America/Los_Angeles, Cedar 1 print packet is open and due 11:00; Cedar 1 review is on the calendar at 13:00.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-05",
+              "id": "c1",
+              "start": "13:00",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 review"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-03-05",
+              "due_time": "11:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 print packet"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "calendar_reminder_agenda",
+    "template": "calendar_reminder_agenda-surface-1",
+    "missing": [
+      "calendar",
+      "reminders"
+    ],
+    "ids": [
+      "v2-grounded-train-0452",
+      "v2-grounded-train-0455",
+      "v2-grounded-train-0458",
+      "v2-grounded-train-0461",
+      "v2-grounded-train-0464",
+      "v2-grounded-train-0467",
+      "v2-grounded-train-0470",
+      "v2-grounded-train-0473"
+    ],
+    "example_gold": "2029-03-14 agenda (Europe/London): the open task Juniper 2 print packet is due 11:00, and Juniper 2 review starts at 13:00.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-14",
+              "id": "c1",
+              "start": "13:00",
+              "timezone": "Europe/London",
+              "title": "Juniper 2 review"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-03-14",
+              "due_time": "11:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "Europe/London",
+              "title": "Juniper 2 print packet"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "calendar_reminder_agenda",
+    "template": "calendar_reminder_agenda-surface-2",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-train-0453",
+      "v2-grounded-train-0456",
+      "v2-grounded-train-0459",
+      "v2-grounded-train-0462",
+      "v2-grounded-train-0465",
+      "v2-grounded-train-0468",
+      "v2-grounded-train-0471",
+      "v2-grounded-train-0474"
+    ],
+    "example_gold": "On 2029-03-23, Harbor 3 review is at 13:00 in Asia/Kolkata. The open reminder Harbor 3 print packet is due that date at 11:00 in Asia/Kolkata.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-23",
+              "id": "c1",
+              "start": "13:00",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 review"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "due_date": "2029-03-23",
+              "due_time": "11:00",
+              "id": "r1",
+              "state": "open",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 print packet"
+            }
+          ],
+          "source": "reminders",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "mail_calendar_disagreement",
+    "template": "mail_calendar_disagreement-surface-2",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-train-0478",
+      "v2-grounded-train-0481",
+      "v2-grounded-train-0484",
+      "v2-grounded-train-0487",
+      "v2-grounded-train-0490",
+      "v2-grounded-train-0493",
+      "v2-grounded-train-0496",
+      "v2-grounded-train-0499"
+    ],
+    "example_gold": "Harbor 3 session is listed at 15:00 on 2029-03-23 in Asia/Kolkata, but Nia’s email dated 2029-03-23 states, “The session starts at 16:00.” (Asia/Kolkata). No authoritative time is identified here.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-23",
+              "id": "c1",
+              "start": "15:00",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 session"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "body": "The session starts at 16:00.",
+              "date": "2029-03-23",
+              "id": "e1",
+              "sender": "Nia",
+              "subject": "Harbor 3 session",
+              "timezone": "Asia/Kolkata"
+            }
+          ],
+          "source": "email",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "note_message_proposal",
+    "template": "note_message_proposal-surface-0",
+    "missing": [
+      "notes",
+      "messages"
+    ],
+    "ids": [
+      "v2-grounded-train-0501",
+      "v2-grounded-train-0504",
+      "v2-grounded-train-0507",
+      "v2-grounded-train-0510",
+      "v2-grounded-train-0513",
+      "v2-grounded-train-0516",
+      "v2-grounded-train-0519",
+      "v2-grounded-train-0522",
+      "v2-grounded-train-0525"
+    ],
+    "example_gold": "Cedar 1 decision on 2029-03-05 is confirmed: “Use the green cover.” On 2029-03-06, Jonah offered a proposed change: “Could we try the blue cover instead?”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-05",
+              "id": "n1",
+              "status": "confirmed",
+              "text": "Use the green cover.",
+              "title": "Cedar 1 decision"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-06",
+              "id": "m1",
+              "speaker": "Jonah",
+              "status": "proposed",
+              "text": "Could we try the blue cover instead?"
+            }
+          ],
+          "source": "messages",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "note_message_proposal",
+    "template": "note_message_proposal-surface-2",
+    "missing": [
+      "notes"
+    ],
+    "ids": [
+      "v2-grounded-train-0503",
+      "v2-grounded-train-0506",
+      "v2-grounded-train-0509",
+      "v2-grounded-train-0512",
+      "v2-grounded-train-0515",
+      "v2-grounded-train-0518",
+      "v2-grounded-train-0521",
+      "v2-grounded-train-0524"
+    ],
+    "example_gold": "A confirmed choice appears in Harbor 3 decision, dated 2029-03-23: “Use the green cover.” The message from Felix on 2029-03-24 is only proposed: “Could we try the blue cover instead?”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-23",
+              "id": "n1",
+              "status": "confirmed",
+              "text": "Use the green cover.",
+              "title": "Harbor 3 decision"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-24",
+              "id": "m1",
+              "speaker": "Felix",
+              "status": "proposed",
+              "text": "Could we try the blue cover instead?"
+            }
+          ],
+          "source": "messages",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "five_source_partial",
+    "template": "five_source_partial-surface-0",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-train-0526",
+      "v2-grounded-train-0529",
+      "v2-grounded-train-0532",
+      "v2-grounded-train-0535",
+      "v2-grounded-train-0538",
+      "v2-grounded-train-0541",
+      "v2-grounded-train-0544",
+      "v2-grounded-train-0547",
+      "v2-grounded-train-0550"
+    ],
+    "example_gold": "Cedar 1 sync is at 09:30 on 2029-03-05 (America/Los_Angeles); Cedar 1 figures is an open reminder. Reminder coverage is partial (1 of 2 lists). Email is denied, messages timeout, and notes missing.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-05",
+              "id": "c1",
+              "start": "09:30",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 sync"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "requested_lists": 2,
+            "returned_count": 1,
+            "returned_lists": 1
+          },
+          "items": [
+            {
+              "id": "r1",
+              "state": "open",
+              "title": "Cedar 1 figures"
+            }
+          ],
+          "source": "reminders",
+          "status": "partial"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "email",
+          "status": "denied"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "messages",
+          "status": "timeout"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "notes",
+          "status": "missing"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "five_source_partial",
+    "template": "five_source_partial-surface-1",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-train-0527",
+      "v2-grounded-train-0530",
+      "v2-grounded-train-0533",
+      "v2-grounded-train-0536",
+      "v2-grounded-train-0539",
+      "v2-grounded-train-0542",
+      "v2-grounded-train-0545",
+      "v2-grounded-train-0548"
+    ],
+    "example_gold": "- Available facts: Juniper 2 sync, 2029-03-14 at 09:30 in Europe/London, and the open reminder Juniper 2 figures.\n- Only 1 of 2 reminder lists returned: partial coverage. Other source statuses: email denied, messages timeout, notes missing.",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-14",
+              "id": "c1",
+              "start": "09:30",
+              "timezone": "Europe/London",
+              "title": "Juniper 2 sync"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "requested_lists": 2,
+            "returned_count": 1,
+            "returned_lists": 1
+          },
+          "items": [
+            {
+              "id": "r1",
+              "state": "open",
+              "title": "Juniper 2 figures"
+            }
+          ],
+          "source": "reminders",
+          "status": "partial"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "email",
+          "status": "denied"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "messages",
+          "status": "timeout"
+        },
+        {
+          "coverage": {
+            "complete": false,
+            "returned_count": 0
+          },
+          "items": [],
+          "source": "notes",
+          "status": "missing"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "three_source_preparation",
+    "template": "three_source_preparation-surface-0",
+    "missing": [
+      "calendar"
+    ],
+    "ids": [
+      "v2-grounded-train-0576",
+      "v2-grounded-train-0579",
+      "v2-grounded-train-0582",
+      "v2-grounded-train-0585",
+      "v2-grounded-train-0588",
+      "v2-grounded-train-0591",
+      "v2-grounded-train-0594",
+      "v2-grounded-train-0597",
+      "v2-grounded-train-0600"
+    ],
+    "example_gold": "Cedar 1 review is on 2029-03-05 at 14:30 (America/Los_Angeles). Mira’s email dated 2029-03-05 says “Please bring the sample board.” The 2029-03-05 note Cedar 1 review adds “Checklist: sample board and ruler.”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-05",
+              "id": "c1",
+              "start": "14:30",
+              "timezone": "America/Los_Angeles",
+              "title": "Cedar 1 review"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "body": "Please bring the sample board.",
+              "date": "2029-03-05",
+              "id": "e1",
+              "sender": "Mira",
+              "subject": "Cedar 1 review"
+            }
+          ],
+          "source": "email",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-05",
+              "id": "n1",
+              "text": "Checklist: sample board and ruler.",
+              "title": "Cedar 1 review"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  },
+  {
+    "family": "three_source_preparation",
+    "template": "three_source_preparation-surface-2",
+    "missing": [
+      "calendar",
+      "email"
+    ],
+    "ids": [
+      "v2-grounded-train-0578",
+      "v2-grounded-train-0581",
+      "v2-grounded-train-0584",
+      "v2-grounded-train-0587",
+      "v2-grounded-train-0590",
+      "v2-grounded-train-0593",
+      "v2-grounded-train-0596",
+      "v2-grounded-train-0599"
+    ],
+    "example_gold": "The 2029-03-23 meeting Harbor 3 review starts at 14:30 in Asia/Kolkata; Nia wrote on 2029-03-23, “Please bring the sample board.” The note titled Harbor 3 review (2029-03-23) records “Checklist: sample board and ruler.”",
+    "example_fixture": {
+      "results": [
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-23",
+              "id": "c1",
+              "start": "14:30",
+              "timezone": "Asia/Kolkata",
+              "title": "Harbor 3 review"
+            }
+          ],
+          "source": "calendar",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "body": "Please bring the sample board.",
+              "date": "2029-03-23",
+              "id": "e1",
+              "sender": "Nia",
+              "subject": "Harbor 3 review"
+            }
+          ],
+          "source": "email",
+          "status": "ok"
+        },
+        {
+          "coverage": {
+            "complete": true,
+            "returned_count": 1
+          },
+          "items": [
+            {
+              "date": "2029-03-23",
+              "id": "n1",
+              "text": "Checklist: sample board and ruler.",
+              "title": "Harbor 3 review"
+            }
+          ],
+          "source": "notes",
+          "status": "ok"
+        }
+      ],
+      "synthetic": true
+    }
+  }
+]

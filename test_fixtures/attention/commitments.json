@@ -1,0 +1,29 @@
+[
+ {
+  "id": "c1",
+  "kind": "event",
+  "location": "Hall 2",
+  "source": "calendar",
+  "status": "active",
+  "title": "Chem exam",
+  "when_ts": 1790179200.0
+ },
+ {
+  "id": "c2",
+  "kind": "reminder",
+  "location": null,
+  "source": "reminders",
+  "status": "active",
+  "title": "Call dentist",
+  "when_ts": 1790014400.0
+ },
+ {
+  "id": "c3",
+  "kind": "event",
+  "location": null,
+  "source": "calendar",
+  "status": "active",
+  "title": "Far away trip",
+  "when_ts": 1792592000.0
+ }
+]

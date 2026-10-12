@@ -36,7 +36,15 @@ struct OverlayView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    if let notice = model.transientNotice {
+                        Text(notice)
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.bad)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.top, 8)
+                    }
                     MemoryReviewNotice()
+                    NudgeStack(model: model)
                     inputRow.padding(.top, 10)
                     Divider().overlay(Theme.hairline).padding(.vertical, 10)
                     content
@@ -181,12 +189,19 @@ struct OverlayView: View {
             if !model.turns.isEmpty {
                 ctrl("square.and.pencil", "New chat", { model.newChat() })
             }
+            ctrl("bubble.left.and.bubble.right", "Open in Wisp Chat", enabled: !generating, { model.openInChat() })
             ctrl("chevron.up", "Collapse", { model.requestCollapse() })
             ctrl("xmark", "Close (stays in menu bar; frees memory)", onDismiss)
         }
     }
 
-    private func ctrl(_ icon: String, _ help: String, _ action: @escaping () -> Void) -> some View {
+    /// True while a turn is in flight. The Chat window reads the saved history,
+    /// which the service writes only at the end of a turn, so hand-off waits.
+    private var generating: Bool {
+        [OverlayModel.Phase.routing, .working, .streaming, .confirming].contains(model.phase)
+    }
+
+    private func ctrl(_ icon: String, _ help: String, enabled: Bool = true, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 9, weight: .bold))
@@ -196,6 +211,8 @@ struct OverlayView: View {
                 .overlay(Circle().stroke(Theme.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
         .help(help)
     }
 

@@ -1,0 +1,11 @@
+{
+  "archive": "ling-train-dev-v2-20261006.zip",
+  "bytes": 1316226,
+  "members": 15,
+  "no_final_payload": true,
+  "no_model_execution": true,
+  "python": "3.14.3",
+  "sha256": "3c2a45238f8cc4669b440e24fa9a18c49990d284eaa005ed238da5db65cb3ded",
+  "static_data_only": true,
+  "zlib": "1.2.12"
+}

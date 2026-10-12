@@ -1,0 +1,10 @@
+{
+  "status": "DATA_PREPARED_AND_ADVISORY_REVIEWED",
+  "authoring_base": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "integration_base": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "all_helpers_quiescent": true,
+  "verdict": "PASS_WITH_NOTES",
+  "snapshot_manifest_sha256": "4fe27d9ec60788a234f857437af244c3c6ed2c935a5080049a126a7e39c2e391",
+  "tokenizer_and_actual_prepared_label_checks_pending": true,
+  "merge_activation_release_authorized": false
+}

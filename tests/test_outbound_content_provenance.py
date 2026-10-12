@@ -57,8 +57,10 @@ def delivery(monkeypatch):
     for name in ('send_message', 'draft_message'):
         async def fake_effect(_name=name, **kwargs):
             state.effects.append(kwargs)
-            return ('Message draft prepared in Wisp for fixture — nothing has been sent.'
-                    if _name == 'draft_message' else 'Message sent to +15555550123.')
+            if _name == 'draft_message':
+                from service.tools import action_tools
+                return await action_tools.draft_message(to=kwargs['to'], text=kwargs['text'])
+            return 'Message sent to +15555550123.'
         monkeypatch.setitem(REGISTRY, name, Tool(name, 'synthetic', {
             'properties': {'to': {'type': 'string'}, 'text': {'type': 'string'}},
             'required': ['to', 'text']}, 'messages_send', fake_effect))

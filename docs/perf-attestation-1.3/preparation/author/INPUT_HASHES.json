@@ -1,0 +1,42 @@
+{
+  "actor": "/root/attestation_design_analysis",
+  "mainSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "designSHA": "1449ab162c2f92e73162950240054964af636cdf",
+  "hashAlgorithm": "SHA256",
+  "readMethod": "Static git show and text reads only; git blobs hashed via shasum; no product imports or execution",
+  "files": [
+    {"path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_DESIGN_BLOCK_AND_ANALYSIS_ACK_2026-10-06.json", "sha256": "0c187fa16bf3f84deed0aa05f96695c4e20b568fe1963f165d2fa943018d2bcc"},
+    {"path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_F1_F5_DESIGN_ANALYSIS_SCOPE_ACK_2026-10-06.md", "sha256": "9d31aaba3319f3288e778b5ee194b1eaf32a2b1ca3fcee5e53017ec9b8155e30"},
+    {"path": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REVIEW.md", "sha256": "c20ebd46bde9f4a2679e7de22b97abc68bcad963c488043df4dfe6b163746756"},
+    {"path": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/FINDINGS.json", "sha256": "3a7cfe21e24c187717ea0bc23e18544308d6c77909481127f1c8c3be3c5ff8e5"},
+    {"path": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/HANDOFF.json", "sha256": "d61be66cd000bf162cdcd88261f83a4fe28782587c56744d753c5d0479944f2d"},
+    {"path": "/Users/adijain/Desktop/MOE_Project/docs/handoffs/2026-10-06-claude-to-codex-attestation-reuse.md", "sha256": "f73a3b77e92d9768f2777b9b06e1fa8f68d676c3177319e97e7254dd17aeafce", "kind": "Read-only filesystem handoff; not presumed present in exact main"},
+    {"path": "/private/tmp/wisp-claude-performance-coordination-20261002/05-transport-t0-hardened-implementation-plan.md", "sha256": "52f5c7d96b7d5ac6aad12b1db3e098cf41bf1e98e539ae857d9f271b21737a28"}
+  ],
+  "gitBlobs": [
+    {"commit": "1449ab162c2f92e73162950240054964af636cdf", "path": "docs/PERF_ATTESTATION_DESIGN.md", "sha256": "75b64fd02687a770527a3aa6ac176a5b2964550fce93ce0f3b0d0ca2af2c353c"},
+    {"commit": "1449ab162c2f92e73162950240054964af636cdf", "path": "docs/perf-attestation-evidence/layout.out", "sha256": "080a872f2a84b4fcaad1c1031c71c3a87881c859b4f27063714a3b4b07de8bba"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "service/inference/attributed_transport.py", "sha256": "55e1efcb1ba37cad9100a8b38e993675189275375969c06ae330091f05ffa037"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "service/inference/local_peer.py", "sha256": "75d328dd2272fef5c308d457eb73400fa7d20fe292eef01177f178f4e6e053f1"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "tests/test_runtime_attestation_t0.py", "sha256": "80300d49d77db915b154c3bbbd78ef424a51b4e7bb17d5dd1c848e5589929cbe"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "tests/test_runtime_proc_path.py", "sha256": "1a1f65f856250b33a563688b530af67076f8eaa406103d8c2142d7557cfcb4b1"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "tests/test_runtime_peer.py", "sha256": "b6dbbb3ed3fa788239b1c9c8bb7965c2a05cdf7753e269ba0e0efb91573b47c1"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "tests/test_web_response_followup.py", "sha256": "ffd9301a8b2f8e23ccb1ed6babdfd1d350fd5be68cd7a2e70ee7e534e09e0d14"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "service/inference/readiness.py", "sha256": "253d3ddaa6bdff76cfc57d97a97ebb264187bfb882e2c15928c371e5f8796c32"},
+    {"commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68", "path": "service/inference/engine_epoch.py", "sha256": "e787ad1eb5b01e1928517986f52dd59460523e3bf0126c5d883bc6ccf3c36067"}
+  ],
+  "primaryReferences": [
+    {"url": "https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info_private.h", "observed": "proc_uniqidentifierinfo size assertion 56, fields including p_idversion/p_uniqueid/p_puniqueid/p_orig_ppidversion, flavors 17 and 18", "qualification": "Upstream mutable main; static research only; not installed-kernel ABI qualification"},
+    {"url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/kern/kern_exec.c", "observed": "Identity version update during exec at currently returned lines 6630-6639", "qualification": "Static research; deployed behavior and version reuse untested"},
+    {"url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/kern/proc_info.c", "observed": "proc_piduniqidentifierinfo fills p_idversion at lines 1417-1425; fill_fileinfo derives PROC_FP_SHARED from fileglob reference count at lines 2469-2478", "qualification": "Sample semantics support research; not atomic exclusivity proof"},
+    {"url": "https://raw.githubusercontent.com/apple-oss-distributions/xnu/main/bsd/sys/proc_info.h", "observed": "Public BSD/process/file record fields and PROC_FP_SHARED constant", "qualification": "Upstream source; one header cannot qualify every supported ABI"}
+  ],
+  "inspectedSections": {
+    "attributed_transport.py": "Main load/constructor; listener/binding/qualified-tree; check/write/connect/invalidate/close; inspection cleanup and retry/command contracts",
+    "local_peer.py": "Main process_identity/process_path/socket_identity/connection_owners and connected_peer",
+    "test_runtime_attestation_t0.py": "Test names plus exact write/epoch, cleanup, and bracket fixtures; no tests executed",
+    "readiness.py": "Residency/epoch reuse markers only; outside scope to edit"
+  },
+  "fullFileHashDoesNotImplyEveryLineReviewed": true,
+  "runtimeTestsProbesOrNativeCalls": 0
+}

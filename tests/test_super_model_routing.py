@@ -106,19 +106,26 @@ def test_public_read_only_tools_can_use_cloud_synthesis(monkeypatch):
 
 
 def test_weather_route_trims_arbitrary_fetchers_before_cloud(monkeypatch):
-    from service.router.router import route
+    from service.router.router import route, RouteDecision
 
     prompt = "What is the weather in Seattle?"
-    routed = asyncio.run(route(prompt))
-    assert "get_weather" in routed.tool_subset
-    assert "web_fetch" in routed.tool_subset
     monkeypatch.setattr(super_model, "_predict_with_laya",
                         lambda _prompt: (0.0015, 0.5275, 0.0055))
+    # Explicit compatibility fixture; this is not the current complete route.
+    legacy = RouteDecision(role='agent', model='synthetic-local', needs_tools=True,
+        source='rules', reason='synthetic unresolved legacy weather', route_source='rules',
+        tool_subset=['get_weather','web_fetch','http_request'], light_read=False)
+    assert classify(prompt, legacy)[0] is True
+    super_model.prepare_cloud_standalone(legacy)
+    assert legacy.tool_subset == ['get_weather']
+    assert not legacy.direct_calls and not legacy.tool_argument_bindings
+    routed = asyncio.run(route(prompt))
+    assert routed.tool_subset == ['get_weather'] and not routed.light_read
+    assert routed.direct_calls == [('get_weather',{'location':'Seattle','period':''})]
+    assert routed.tool_argument_bindings == {'get_weather':{'location':'Seattle','period':''}}
+    assert routed.required_tool_groups == (frozenset({'get_weather'}),)
+    # Only the local risk prediction is synthetic; the eligibility policy is real.
     assert classify(prompt, routed)[0] is True
-    super_model.prepare_cloud_standalone(routed)
-    assert "get_weather" in routed.tool_subset
-    assert "web_fetch" not in routed.tool_subset
-    assert "http_request" not in routed.tool_subset
 
 
 def test_explicit_personal_scope_stays_local_on_public_tool_route(monkeypatch):
@@ -433,7 +440,7 @@ def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
                                                                    monkeypatch):
     from service import main
     from service.memory.store import SessionStore
-    from service.router.router import route
+    from service.router.router import RouteDecision
 
     store = SessionStore(tmp_path / "weather-route.db")
     monkeypatch.setattr(main, "store", store)
@@ -443,8 +450,17 @@ def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
     async def eligible(_prompt, _decision):
         return True, "synthetic public clearance"
 
-    routed = asyncio.run(route("What is the weather in Seattle?"))
+    # No city is supplied: this synthetic public route still needs local
+    # model argument selection, regardless of preliminary privacy clearance.
+    prompt = 'Check the weather.'
+    routed = RouteDecision(role='agent', model='synthetic-local', needs_tools=True,
+        source='rules', reason='synthetic unresolved public weather', route_source='rules',
+        tool_subset=['get_weather'], light_read=False)
     assert routed.needs_tools and not routed.direct_calls
+    monkeypatch.setattr(main, 'models_config', lambda: {'tool_retrieval':{'provider':'lexical'}})
+    async def forbidden_engine(*args, **kwargs):
+        raise AssertionError('No actual inference engine may run in this fixture')
+    monkeypatch.setattr(main, 'ensure_omlx', forbidden_engine)
 
     async def selected_route(*_args, **_kwargs):
         return routed
@@ -465,7 +481,7 @@ def test_public_route_needing_model_selected_arguments_stays_local(tmp_path,
     monkeypatch.setattr(main, "maybe_summarize", no_summary)
 
     async def request():
-        response = await main.agent({"prompt": "What is the weather in Seattle?",
+        response = await main.agent({"prompt": prompt,
                                      "session_id": store.create_session()})
         return [item async for item in response.body_iterator]
 

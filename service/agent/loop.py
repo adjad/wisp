@@ -12,6 +12,7 @@ import hashlib
 import re
 import time
 import uuid
+from functools import wraps
 from collections import Counter
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -31,10 +32,11 @@ Emit = Callable[[dict], Awaitable[None]]
 _EFFECT_TOOLS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
     "draft_message", "draft_email", "add_reminder", "update_reminder",
-    "add_calendar_event", "update_event",
+    "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
     "write_file", "move_path", "delete_path", "trash_file",
+    "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
@@ -68,6 +70,17 @@ def _cloud_public_raw_evidence(value: object) -> str:
         if piece and "[redacted]" not in piece:
             safe.append(piece)
     return "\n".join(safe) if safe else "(no usable public tool evidence found.)"
+
+
+def _note_decision(tool: str, approved: bool) -> bool:
+    """Behavior-learning hook: record that the user approved/denied a
+    confirm-tier action (tool name only). Never raises; returns `approved`."""
+    try:
+        from service.assistant import behavior_runtime
+        behavior_runtime.record_decision(tool, approved)
+    except Exception:  # noqa: BLE001
+        pass
+    return approved
 
 
 async def _finish_denied_outbound(emit: Emit) -> str:
@@ -221,7 +234,11 @@ SYSTEM = (
     "the email rule above). Only when the user names NO channel at all ('did I "
     "hear back from Dan?') should you check both.\n"
     "  Use `view_messages` for a specific detail (an address, a time, a code, exact "
-    "wording) — pass `query` to search by keyword. You CAN read and quote "
+    "wording) — pass `query` to search by keyword. For 'what did <person> say' "
+    "/ 'anything from <person>', pass that name as `conversation` to "
+    "`summarize_messages` (or as `query` to `view_messages`) — a name is how "
+    "you find one person's messages, and the spelling may differ slightly from "
+    "the contact's. You CAN read and quote "
     "their messages through these tools — never claim you cannot and never "
     "give a generic tutorial on how to use the Messages app. If the user "
     "names a specific day, pass it as `day`.\n"
@@ -518,6 +535,39 @@ def _calendar_create_preview(args: dict) -> str:
     return f"Add: {args.get('title', '?')} — {interval}"
 
 
+def _registry():
+    from service.tools.registry import REGISTRY
+    return REGISTRY
+
+
+def _read_categories():
+    from service.router.model_led import READ_CATEGORIES
+    return READ_CATEGORIES
+
+
+# Reads whose answer can change within one turn without any write by Wisp, so
+# an identical repeat ("check again") must still run.
+_VOLATILE_READS = frozenset({
+    "system_status", "get_battery_status", "network_info", "world_time", "get_volume",
+    "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
+    "get_sports_scores", "list_scheduled_sends", "screen_capture", "clipboard_read",
+})
+
+
+def _read_call_key(name: str, args: dict) -> tuple[str, str] | None:
+    """(tool, canonical args) for a registered pure-read tool, else None."""
+    from service.router.model_led import READ_CATEGORIES
+    from service.tools.registry import REGISTRY
+    tool = REGISTRY.get(name)
+    if (tool is None or tool.category not in READ_CATEGORIES or name in _EFFECT_TOOLS
+            or name in _VOLATILE_READS):
+        return None
+    try:
+        return name, json.dumps(args, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clean_tool_name(name: str) -> str:
     """Strip stray header tokens a parser can leave glued onto the parsed
     function name (e.g. 'send_message<|channel|>commentary').
@@ -765,6 +815,19 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
 # the process past its 19GB hard watermark until oMLX aborted the request and
 # unloaded the model.
 _MAX_TOOL_RESULT_CHARS = 12000
+
+# open_app targets: any URI scheme is egress-capable; only a bare path (/ or ~)
+# is a local file. Leading whitespace and case are ignored.
+_URI_SCHEME_RE = re.compile(r"\s*[A-Za-z][A-Za-z0-9+.-]*:")
+_BROWSER_APP_RE = re.compile(
+    r"\b(?:safari|chrome|chromium|firefox|arc|edge|brave|opera|vivaldi|orion)\b", re.I)
+_BROWSER_DOC_RE = re.compile(r"\.(?:html?|xhtml|shtml|svg|webarchive|mht|mhtml)\s*$", re.I)
+
+
+def _opens_in_browser(app_name: str, target: str) -> bool:
+    """A local file that a browser would render (and so could run or fetch)."""
+    return bool(_BROWSER_APP_RE.search(app_name or "") or _BROWSER_DOC_RE.search(target or ""))
+
 
 # Tool names as they're written in the prompt: `send_email`, `get_upcoming`.
 _PROMPT_TOOL_RE = re.compile(r"`([a-z_][a-z0-9_]*)`")
@@ -1104,6 +1167,39 @@ def _merge_results(results: list[tuple[str, str]]) -> str:
     return "\n\n".join(blocks)
 
 
+def _meeting_safe(value):
+    from service.tools.schedule_extras import redact_meeting_capabilities
+    return redact_meeting_capabilities(value)
+
+
+def _meeting_audit(event, **fields):
+    audit(event, **_meeting_safe(fields))
+
+
+def _meeting_local_client(client):
+    from service.config.endpoints import is_loopback
+    try:
+        return getattr(client, "managed", False) is True and is_loopback(client.base_url)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _meeting_redacted_return(function):
+    @wraps(function)
+    async def wrapped(*args, **kwargs):
+        try:
+            return _meeting_safe(await function(*args, **kwargs))
+        except Exception as exc:
+            clean = _meeting_safe(str(exc))
+            if clean != str(exc):
+                # Main translates exceptions into persisted/displayed errors.
+                # Never let reusable meeting authority reach that carrier.
+                raise RuntimeError(clean) from None
+            raise
+    return wrapped
+
+
+@_meeting_redacted_return
 async def run_agent(
     client: OMLXClient,
     model: str,
@@ -1113,6 +1209,7 @@ async def run_agent(
     *,
     tools: list[str] | None = None,
     active_skill: str = "",
+    allow_skill_context: bool = True,
     max_steps: int = 8,
     # Sized to what agent steps ACTUALLY generate, not to a round number.
     # max_tokens is not free: oMLX's prefill guard admits a request against
@@ -1181,6 +1278,14 @@ async def run_agent(
     # below — so callers get the plan for free from the existing event
     # stream, no separate return path needed.
     test_mode: bool = False,
+    model_led_discovery: bool = False,
+    # Host-only negative provenance, computed before session history is trimmed.
+    # HTTP body/model arguments never set this; False cannot clear other inputs.
+    private_shell_history: bool | None = None,
+    claim_effect: Callable[[object, dict], dict] | None = None,
+    finish_effect: Callable[[dict, bool], bool] | None = None,
+    require_fresh_personal: bool = False,
+    fresh_personal_scope: dict | None = None,
     # Whether to emit raw_model_io events (see _run_step) — the full request
     # (messages + every offered tool schema) and response, on every attempt of
     # every step. Real cost: measured up to ~1.6MB for a single session. The
@@ -1244,7 +1349,12 @@ async def run_agent(
     # the full publisher display still reaches only the final UI event.
     # main.py persists our safe return value separately from emitted text.
     news_displays: dict[str, str] = {}
+    # A capability pasted/replayed from a transcript is not a continuation
+    # grant. Only this turn's local planner may put one in ephemeral context.
+    messages = _meeting_safe(messages)
     downstream_emit = emit
+    def audit(event, **fields):
+        _meeting_audit(event, **fields)
 
     async def emit(event: dict):
         if event.get("type") == "text" and news_displays:
@@ -1258,10 +1368,293 @@ async def run_agent(
                 text, model_text=event.get("text", ""),
                 artifact_kind="news" if event.get("text") == DisplayOnlyToolResult.model_text
                 else "mixed")}
-        await downstream_emit(event)
+        await downstream_emit(_meeting_safe(event))
+
+    # Bearer authority never enters a model transcript. The model sees only an
+    # inert, turn-local reference; resolving it still requires exact host intent,
+    # unchanged proposal fields, human approval and the helper's fresh recheck.
+    meeting_refs = {}
+    from service.tools.schedule_extras import _meeting_context
+    try:
+        meeting_origin = _meeting_context()
+    except ValueError:
+        meeting_origin = None
+
+    guarded_meeting = bool(set(tools or ()) & {"plan_meeting", "commit_private_meeting"})
+    if guarded_meeting and (public_web_synthesis or not _meeting_local_client(client)):
+        response = "Private meeting planning requires the local inference path; no Calendar action ran."
+        await emit({"type": "text", "text": response})
+        return response
+    if tools is None and (public_web_synthesis or not _meeting_local_client(client)):
+        from service.tools.registry import routable_tool_names
+        tools = sorted(routable_tool_names() - {"plan_meeting", "commit_private_meeting"})
+
+    # Monotonic negative authority. main supplies actual pre-trimming session
+    # provenance; other callers conservatively retain assistant/tool/system
+    # context. A new invocation in an existing conversation is not a reset.
+    private_shell_read_only = False
+    history_private = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_shell_context
+        history_private = (private_shell_history is not None and private_shell_history is not False
+            or any(
+                not isinstance(m, dict)
+                or m.get("role") in {"assistant", "tool"}
+                or m.get("role") not in {"user", "system"}
+                or (m.get("role") == "system" and private_shell_history is not False)
+                or (m.get("role") == "user" and (
+                    not isinstance(m.get("content"), str)
+                    or classify_shell_context(m["content"]).private))
+                for m in messages))
+        private_shell_read_only = history_private
+
+    # Turn-START private signal for web egress: actual private content in the
+    # history or remembered facts. It is assigned once, after the memory block
+    # is built (below), and never mutated during the turn. Merely offering the
+    # messages tools or carrying the identity block is not private content.
+    private_at_start = False
+    # In-turn latch: set by ANY private read made during this turn. The
+    # explicit-public-lookup exemption never covers it.
+    private_read_in_turn = False
+    confirmed_private_web: set[str] = set()
+    typed_hosts: set[str] = set()
+
+    # The current request's own words decide whether a public lookup was asked
+    # for. Computed once from the incoming messages, never from tool output.
+    current_public_lookup = False
+    if model_led_discovery:
+        from service.router.web_request import classify as classify_public_lookup
+        _last_user = next((m.get("content") for m in reversed(messages)
+                           if isinstance(m, dict) and m.get("role") == "user"
+                           and isinstance(m.get("content"), str)), "")
+        try:
+            current_public_lookup = bool(classify_public_lookup(_last_user).allowed)
+        except Exception:  # noqa: BLE001 — an unclassifiable request is not a lookup request
+            current_public_lookup = False
+        if not current_public_lookup and re.search(r"https?://\S+", _last_user or ""):
+            # A URL the user typed themselves is an explicit public lookup.
+            current_public_lookup = True
+        # Hosts the user typed in this message. In a turn that starts private,
+        # the exemption for fetch-style egress is tied to these hosts only.
+        from urllib.parse import urlsplit as _urlsplit
+        for _m in re.finditer(r"https?://[^\s<>\"'`]+", _last_user or ""):
+            try:
+                _h = _urlsplit(_m.group(0).rstrip(".,;:!?)]}")).hostname
+            except ValueError:
+                _h = None
+            if _h:
+                typed_hosts.add(_h.lower())
+        for _m in re.finditer(r"(?<![@\w./-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})(?![\w@-])",
+                              (_last_user or "").lower()):
+            typed_hosts.add(_m.group(1))
+
+    # Structured "did the tool body actually run" signal. execute_tool sets it
+    # immediately before run_tool and _record_outcome consumes it, so the latch
+    # never has to infer execution from a tool's own output text.
+    _exec_state = {"ran": False}
+
+    def _web_detail(args):
+        detail = args.get("url") or args.get("query") or args.get("target") or ""
+        return str(detail)[:300]
+
+    def private_web_problem(tool):
+        """Turn-start private context: public egress needs explicit intent."""
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        if (private_at_start and not private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS
+                and not current_public_lookup):
+            return ("Private data is in context; web access is unavailable "
+                    "unless the request explicitly asks for a public lookup.")
+        return None
+
+    def _egress_target(tool, args):
+        """The URL a call would contact, for egress-capable tools; else None."""
+        if tool.name in {"web_fetch", "http_request"}:
+            return str(args.get("url") or "")
+        if tool.name == "open_app":
+            target = str(args.get("target") or "").strip()
+            # Any URI scheme is egress-capable (http, mailto, sms, tel, data,
+            # javascript, facetime, imessage, shortcuts, slack, custom://...).
+            # A bare macOS path starts with / or ~ and never matches the scheme.
+            if "://" in target or _URI_SCHEME_RE.match(target):
+                return target
+            # A local file opened in a browser can run its scripts and load
+            # remote content, so it is treated as web egress as well.
+            if target and _opens_in_browser(str(args.get("name") or ""), target):
+                return target
+        return None
+
+    def _typed_host_url(url):
+        """True only for a plain http(s) URL whose host the user typed this turn.
+
+        Default ports only (none, 80, 443) and no userinfo, so the exemption
+        cannot be pointed at a different service on a typed host.
+        """
+        from urllib.parse import urlsplit
+        if not url or re.search(r"[\\\s\x00-\x1f\x7f]", url):
+            return False
+        try:
+            parts = urlsplit(url)
+            host = (parts.hostname or "").lower()
+            port = parts.port
+        except ValueError:
+            return False
+        if "@" in parts.netloc or port not in (None, 80, 443):
+            return False
+        return parts.scheme.lower() in {"http", "https"} and bool(host) and host in typed_hosts
+
+    def in_turn_private_web(tool, args=None):
+        from service.router.model_led import PRIVATE_WEB_TOOLS
+        if not model_led_discovery:
+            return False
+        if tool.name == "open_app":
+            return bool(private_read_in_turn and args is not None and _egress_target(tool, args))
+        return bool(private_read_in_turn and tool.name in PRIVATE_WEB_TOOLS)
+
+    def start_private_egress(tool, args):
+        """Turn started private and this fetch-style call is not to a typed host."""
+        if not (model_led_discovery and private_at_start and not private_read_in_turn):
+            return False
+        url = _egress_target(tool, args)
+        return url is not None and not _typed_host_url(url)
+
+    def tool_policy(tool, args):
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                from service.safety.policy import Decision
+                return Decision(Tier.DENY, problem)
+        if model_led_discovery:
+            from service.safety.policy import Decision
+            if in_turn_private_web(tool, args):
+                # Private data was read during this turn: any later egress is
+                # confirmed with its destination shown, whatever the request said.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data was read earlier in this turn; "
+                                f"this would contact the web ({_web_detail(args)}). "
+                                "Confirm the exact destination or query.")
+            if problem := private_web_problem(tool):
+                return Decision(Tier.DENY, problem)
+            if start_private_egress(tool, args):
+                # Private data was in context at turn start: a public-lookup
+                # exemption keeps web_search, but a fetch/request/open must
+                # name a host the user typed, or the destination is confirmed.
+                dec = decide(tool.category, args, tool=tool.name)
+                if dec.tier is Tier.DENY:
+                    return dec
+                return Decision(Tier.CONFIRM, "Private data is in context; this would contact "
+                                f"{_web_detail(args)}, which is not a host you typed. "
+                                "Confirm the exact destination.")
+        dec = decide(tool.category, args, tool=tool.name)
+        if model_led_discovery and dec.tier is Tier.ALLOW:
+            from service.router.model_led import OPAQUE_OUTBOUND_TOOLS
+            if tool.name in OPAQUE_OUTBOUND_TOOLS and not _validated_shell_read(tool, args):
+                # Full access and standing grants do not cover actions whose
+                # real-world effect the host cannot inspect.
+                from service.safety.policy import Decision
+                return Decision(Tier.CONFIRM, "opaque outbound action chosen by the model: "
+                                "confirmation is always required in model-led routing")
+        return dec
+
+    def _validated_shell_read(tool, args):
+        if tool.name != "run_shell":
+            return False
+        from service.safety.policy import read_only_shell_argv
+        return set(args) == {"cmd"} and read_only_shell_argv(args.get("cmd")) is not None
 
     async def execute_tool(tool, args):
-        result = await run_tool(tool, args)
+        nonlocal guarded_meeting
+        _exec_state["ran"] = False
+        if tool.name in {"plan_meeting", "commit_private_meeting"}:
+            if public_web_synthesis or not _meeting_local_client(client):
+                return "(error: Private meeting capability transport requires local inference; no action ran.)"
+            guarded_meeting = True
+        elif _meeting_safe(args) != args:
+            return "(error: Private meeting capabilities cannot be carried into another tool; no action ran.)"
+        # Recheck after any approval/await or registry mutation, before claims.
+        if private_shell_read_only:
+            from service.tools.registry import private_shell_problem
+            if problem := private_shell_problem(tool, args):
+                return f"(error: {problem} The tool was NOT run.)"
+        if model_led_discovery:
+            if problem := private_web_problem(tool):
+                return f"(error: {problem} The tool was NOT run.)"
+            if in_turn_private_web(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data was read earlier in this turn; web access now "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
+            if start_private_egress(tool, args) and _action_fingerprint(tool.name, args) not in confirmed_private_web:
+                return ("(error: Private data is in context; contacting a host you did not type "
+                        "requires explicit confirmation of its destination. The tool was NOT run.)")
+        claim = None
+        if model_led_discovery:
+            from service.router.model_led import effectful_call, has_effect_contract
+            if effectful_call(tool, args):
+                if not has_effect_contract(tool, classify_tool_outcome(tool.name, "")):
+                    return "(error: This action has no supported completion contract. It was NOT run.)"
+                # This point is reached only AFTER argument validation, policy
+                # and exact confirmation. No metadata request can claim/run an
+                # effect. Durable ownership is mandatory, not an optional hint.
+                if claim_effect is None or finish_effect is None:
+                    return "(error: No durable action owner is available. The action was NOT run.)"
+                claim = claim_effect(tool, args)
+                if not claim.get("admitted"):
+                    return ("(error: An earlier action with this scope is already owned or "
+                            "has an uncertain outcome. The action was NOT run again; "
+                            "check the earlier result/destination before retrying.)")
+        # A fetch that was allowed only because its host was typed (or its exact
+        # URL was confirmed) must stay on that host: no cross-host redirects, no
+        # archive.org fallback carrying the URL.
+        strict_fetch = (model_led_discovery and tool.name == "web_fetch"
+                        and (private_at_start or private_read_in_turn))
+        try:
+            _exec_state["ran"] = True
+            from service.research.web import strict_host_fetch
+            with strict_host_fetch(strict_fetch):
+                if private_shell_read_only:
+                    result = await run_tool(tool, args, private_shell_read_only=True)
+                else:
+                    result = await run_tool(tool, args)
+        except BaseException:
+            if claim is not None:
+                # A failed settlement leaves the persisted running claim in
+                # place. Cancellation cannot turn it into a retryable effect.
+                try:
+                    finish_effect(claim, False)
+                except Exception:
+                    pass
+            raise
+        if claim is not None:
+            outcome = classify_tool_outcome(tool.name, str(result))
+            # Unknown extension actions default to 'read' in the legacy outcome
+            # classifier. That default is not a verified mutation receipt.
+            from service.router.model_led import trusted_effect_receipt
+            verified = trusted_effect_receipt(tool, outcome, result)
+            if not finish_effect(claim, verified):
+                return "(error: Action was attempted but its durable receipt could not be recorded. Do not retry.)"
+            if not verified:
+                return "(error: Action did not return a verified completion receipt; do not retry.)\n" + str(result)
+        if tool.name == "plan_meeting" and isinstance(result, str):
+            prefix = "Private meeting proposal: "
+            try:
+                if result.startswith(prefix):
+                    proposal = json.loads(result[len(prefix):])
+                    raw = proposal.pop("commit_args", None)
+                    if raw is not None:
+                        from service.tools.schedule_extras import private_meeting_review
+                        if meeting_origin is None or _meeting_context() != meeting_origin:
+                            raise ValueError("Private proposal request changed; request a new preview.")
+                        private_args = json.loads(json.dumps(raw, allow_nan=False))
+                        private_meeting_review(private_args)
+                        if len(meeting_refs) >= 64:
+                            raise ValueError("Private proposal budget exhausted; start a new request.")
+                        reference = "wisp_meeting_ref_" + uuid.uuid4().hex
+                        meeting_refs[reference] = private_args
+                        proposal["commit_args"] = {**private_args, "capability_token": reference}
+                    result = prefix + json.dumps(proposal, ensure_ascii=False, allow_nan=False)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                result = "(error: Private proposal could not be bound to this request; request a new preview.)"
+        result = _meeting_safe(result)
         if public_web_synthesis and tool.name not in _CLOUD_PUBLIC_READ_TOOLS:
             return "(tool output withheld from cloud synthesis.)"
         if isinstance(result, PublicSearchToolResult):
@@ -1315,7 +1708,7 @@ async def run_agent(
     # trigger these rules, so paying for them on every step of e.g. "open
     # Safari" or "set the volume" was pure waste. `tools is None` is the
     # unscoped route (the whole registry, messages included).
-    offers_messages = tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
+    offers_messages = model_led_discovery or tools is None or bool(set(tools) & {"view_messages", "summarize_messages"})
     identity_hint = ""
     if not public_web_synthesis:
         try:
@@ -1327,6 +1720,12 @@ async def run_agent(
                                                   messages=offers_messages)
         except Exception:  # noqa: BLE001
             identity_hint = ""
+
+    if model_led_discovery and identity_hint:
+        # Conservatively includes static attribution guidance: the combined
+        # identity builder has no separate provenance result. Never inspect
+        # its prose to decide whether actual personal facts are present.
+        private_shell_read_only = True
 
     # Facts the user explicitly asked Wisp to remember (service/memory/facts.py).
     # NOTE: this is not the last block overall — skills_hint/style_hint follow
@@ -1355,6 +1754,14 @@ async def run_agent(
     memory_hint = (prompt_blocks.memory_block(query=memory_query)
                    if include_memory_context and not public_web_synthesis else "")
 
+    if model_led_discovery and memory_hint:
+        private_shell_read_only = True
+
+    # Web egress treats only real private content as a turn-start signal:
+    # history, or remembered facts. The identity block does not count.
+    if model_led_discovery:
+        private_at_start = bool(history_private or memory_hint)
+
     # Skills stay on the managed model. When this run talks to an external local
     # inference app (the unauthenticated loopback provider), none of their content
     # may reach it: no catalog, no loaded bodies, no use_skill result and no
@@ -1379,7 +1786,15 @@ async def run_agent(
     def _admit(offered: list[dict]) -> list[dict]:
         """Drop every schema the skill boundary protects. Used at every build and rebuild."""
         blocked = _skill_boundary_names()
-        return [s for s in offered if s["function"]["name"] not in blocked]
+        admitted = [s for s in offered if s["function"]["name"] not in blocked]
+        from service.inference.remote_policy import remote_only_profile, remote_tool_allowed
+        if remote_only_profile() is not None:
+            # Remote inference: never offer a tool this build cannot run,
+            # and keep the menu inside the profile's tool-count limit (router
+            # order is relevance order; measured menus stay well under it).
+            admitted = [s for s in admitted if remote_tool_allowed(s["function"]["name"])]
+            admitted = admitted[:remote_only_profile().tools]
+        return admitted
 
     if force_first_tool and _skill_boundary(force_first_tool):
         force_first_tool = None
@@ -1387,7 +1802,7 @@ async def run_agent(
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
-    if not public_web_synthesis and not skills_external:
+    if allow_skill_context and not public_web_synthesis and not skills_external:
         try:
             from service.skills import skills_context_block
             last_user = next((m["content"] for m in reversed(messages)
@@ -1399,8 +1814,39 @@ async def run_agent(
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
     # narrating the user's own calendar/notes/verbatim data expressively.
-    schemas = [s for s in _admit(tool_schemas(tools))
-               if s["function"]["name"] not in forbidden_tools]
+    discovery = None
+    capability_catalog = None
+    if model_led_discovery:
+        # Capability metadata does not authorize execution or new disclosure.
+        if not getattr(client, "managed", True) or public_web_synthesis:
+            raise ValueError("Model-led discovery requires managed local inference")
+        if force_first_tool or direct_calls or required_tool_groups:
+            raise ValueError("An owned execution plan must retain its controlled route")
+        from service.router.model_led import (
+            CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
+            SelectionError, discovery_schema, registry_specs,
+        )
+        from service.tools.registry import REGISTRY
+
+        def fresh_capability_catalog():
+            shell_blocked = set()
+            if private_shell_read_only:
+                from service.tools.registry import private_shell_target, private_shell_implementation
+                shell_blocked = {t.name for t in REGISTRY.values()
+                                 if private_shell_target(t)
+                                 and not private_shell_implementation(t)}
+            return CapabilityCatalog.build(
+                registry_specs(REGISTRY),
+                blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
+
+        discovery = DiscoveryState()
+        capability_catalog = fresh_capability_catalog()
+        tools = []
+        schemas = ([discovery_schema(capability_catalog)]
+                   if capability_catalog.families else [])
+    else:
+        schemas = [s for s in _admit(tool_schemas(tools))
+                   if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
     # this set is premature, not impossible — see the rejection below.
@@ -1413,6 +1859,7 @@ async def run_agent(
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
+                       + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
                        + (_TEST_MODE_SUFFIX if test_mode else ""))
     if reminder_action:
@@ -1508,8 +1955,15 @@ async def run_agent(
     waived_tools: set[str] = set()
     attempted_tools: set[str] = set()
     tool_outcomes: list[tuple[str, object]] = []
+    fresh_personal_evidence = False
     completed_effects: dict[str, str] = {}
     executed_strict_reads: dict[str, int] = {}
+    # Reads that already succeeded this turn, keyed by tool and exact
+    # arguments. An identical repeat returns a pointer to the earlier result
+    # instead of running again (small models loop on a read they already
+    # have). Cleared whenever a non-read succeeds, so a read after a write
+    # still sees fresh data.
+    completed_reads: set[tuple[str, str]] = set()
     contact_receipts: dict[str, str] = {}
     recipient_requirements = {
         name: fixed["_recipient_lookup"] for name, fixed in (tool_argument_bindings or {}).items()
@@ -1519,7 +1973,54 @@ async def run_agent(
 
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
+        nonlocal fresh_personal_evidence, private_shell_read_only, private_read_in_turn
+        # Consume the structured execution flag (set only by execute_tool just
+        # before the tool body runs); a confirmation denial never reaches it.
+        executed = bool(_exec_state["ran"]) and not planned and not denied
+        _exec_state["ran"] = False
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
+        if model_led_discovery and str(result).startswith((
+                "(error: Action was attempted but", "(error: Action did not return a verified")):
+            from dataclasses import replace
+            outcome = replace(outcome, facts={**outcome.facts, "completion_uncertain": True})
+        from service.router.model_led import personal_evidence_matches
+        if (not planned and not denied and outcome.status in {"succeeded", "no_match"}
+                and (registered := get_tool(name))
+                and personal_evidence_matches(fresh_personal_scope or {}, registered, args or {}, contact_receipts, str(result))):
+            fresh_personal_evidence = True
+        if model_led_discovery and (registered := get_tool(name)):
+            # Known local/private reads restrict every subsequent dispatch,
+            # including siblings from this model response. Shell reads retain
+            # category='shell'; recognize the original host builtin and actual
+            # read phase separately from arbitrary model/tool prose.
+            from service.tools.registry import private_shell_implementation
+            # Any returned original shell output can contain local facts,
+            # including a read-phase receipt or an error/path after a failed
+            # command. Phase/prose is not permission to clear the restriction.
+            shell_read = (private_shell_implementation(registered)
+                          and not planned and not denied)
+            if (registered.category.endswith("read")
+                    and registered.category != "web_read"
+                    or registered.category == "screen" or shell_read
+                    or name in {"recall", "search_memory", "search_conversations"}):
+                private_shell_read_only = True
+                private_read_in_turn = True
+            elif (not planned and not denied
+                  and (name in {"run_applescript", "run_shortcut"}
+                       or registered.category in {"mcp_action", "skill_tool"})
+                  and executed):
+                # Output of automation, MCP action and skill tools can carry
+                # private data the host cannot classify: latch egress once the
+                # tool actually ran (even when its receipt was unverified).
+                private_read_in_turn = True
+            from service.router.model_led import needs_effect_owner
+            from service.router.model_led import effectful_call
+            if effectful_call(registered, args or {}) and outcome.effect == "read":
+                from dataclasses import replace
+                outcome = replace(outcome, effect="changed")
+            if effectful_call(registered, args or {}) and not planned and not denied:
+                from service.router.model_led import builtin_completion_outcome
+                outcome = builtin_completion_outcome(registered, result, outcome)
         attempted_tools.add(name)
         tool_outcomes.append((name, outcome))
         if name == "lookup_contact" and args is not None:
@@ -1563,8 +2064,20 @@ async def run_agent(
         return set(group or ()) - (attempted_tools - previews)
 
     def _verified_final(text: str) -> str:
+        uncertain = [outcome for name, outcome in tool_outcomes
+                     if name in {"send_email", "send_message", "forward_email", "reply_to_email"}
+                     and outcome.status == "unknown"]
+        if uncertain:
+            # A missing receipt proves neither sent nor not sent. Stop before
+            # the generic verifier can replace it with a definite negative.
+            return uncertain[-1].text
         from service.agent.verification import verify_delivery_claims
         text = verify_delivery_claims(text, tool_outcomes)
+        if (require_fresh_personal or fresh_personal_scope) and not fresh_personal_evidence and not test_mode:
+            # Preserve reference history, but refuse to promote an old answer,
+            # memory or unrelated public search into a current personal fact.
+            if not re.fullmatch(r"(?:Which (?:source|channel|person|conversation) (?:should I check|do you mean)|Who do you mean|Do you mean Messages or email)\?", text.strip(), re.I):
+                return "I haven't checked a current personal source for that yet. Which source should I check?"
         actions = [(name, outcome) for name, outcome in tool_outcomes
                    if outcome.effect != "read"]
         if test_mode and actions:
@@ -1575,6 +2088,8 @@ async def run_agent(
                if outcome.status in {"denied", "failed", "needs_input", "unsupported"}]
         if bad and not any(outcome.status == "succeeded" for _, outcome in actions):
             name, outcome = bad[-1]
+            if outcome.facts.get("completion_uncertain"):
+                return f"I attempted {name}, but couldn't verify completion. Check the destination before retrying."
             return f"The requested action was not completed ({name}): {outcome.text}"
         if actions and all(name in {"move_path", "organize_files"} for name, _ in actions):
             receipts = [outcome.text for _, outcome in actions
@@ -1687,6 +2202,14 @@ async def run_agent(
         await emit({"type": "text", "text": response})
         return response
     for _name, _args in (direct_calls or []):
+        if _name == "commit_private_meeting":
+            response = "(error: A private meeting commit requires its exact interactive confirmation; direct dispatch refused.)"
+            await emit({"type": "text", "text": response})
+            return response
+        if _meeting_safe(_args) != _args:
+            response = "(error: Private meeting capabilities cannot be carried into another tool; direct dispatch refused.)"
+            await emit({"type": "text", "text": response})
+            return response
         if _skill_boundary(_name):
             audit("reject_skill_boundary", tool=_name, args=_args)
             continue
@@ -1699,7 +2222,7 @@ async def run_agent(
         if _tool is None:  # a roster/registry mismatch must not kill the turn
             continue
         _cid = f"direct_{_name}"
-        _dec = decide(_tool.category, _args, tool=_name)
+        _dec = tool_policy(_tool, _args)
         await emit({"type": "tool_call", "id": _cid, "name": _name, "args": _args,
                     "decision": _dec.tier.value, "reason": _dec.reason,
                     **({"test_mode": True} if test_mode else {})})
@@ -1734,7 +2257,8 @@ async def run_agent(
                     "\n".join(_rows[:60])
                     + (f"\n…and {len(_rows) - 60} more"
                        if len(_rows) > 60 else ""))
-            if await approver.confirm(_action):
+            if _note_decision(_name, await approver.confirm(_action)):
+                confirmed_private_web.add(_action_fingerprint(_name, _args))
                 _result = await execute_tool(_tool, _args)
                 audit("confirm_allow", tool=_name, args=_args)
             else:
@@ -1780,6 +2304,11 @@ async def run_agent(
                 response = "The requested action was not completed because approval was denied."
                 await emit({"type": "text", "text": response})
                 return response
+        elif (_direct_outcome.status == "unknown"
+              and _name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
+            response = _verified_final(_direct_outcome.text)
+            await emit({"type": "text", "text": response})
+            return response
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
@@ -1789,10 +2318,11 @@ async def run_agent(
         elif _direct_outcome.status in {"succeeded", "planned"}:
             tools_answered.add(_name)
         if _direct_outcome.status == "succeeded" and _name == "draft_message":
-            await emit({"type": "message_draft",
-                        "to": str(_args.get("to") or ""),
-                        "text": str(_args.get("text") or "")})
-            return ""
+            from service.tools.registry import _valid_message_draft
+            if _valid_message_draft(_result, _name):
+                await emit({"type": "message_draft",
+                            "to": _result.resolved_to, "text": _result.prepared_text})
+                return ""
         if (_direct_outcome.status == "denied"
                 and _name in _TERMINAL_OUTBOUND_DENIALS):
             return await _finish_denied_outbound(emit)
@@ -1980,6 +2510,7 @@ async def run_agent(
         mode = narration_mode()
         narrating = (
             mode != "off"
+            and not model_led_discovery
             and tools is not None
             and not (forcing_first_step or expecting_tool)
             and (not multi_round or _unmet_group() is None
@@ -2089,9 +2620,15 @@ async def run_agent(
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
             allowed_names = {s["function"]["name"] for s in step_schemas}
+            if model_led_discovery and step_schemas != offered_schemas:
+                raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
             # Verify before publication. Otherwise even a read-only route can
             # stream a false "delivered" before the receipt checker retracts it.
             stream = False
+            if guarded_meeting and not _meeting_local_client(client):
+                response = "Private meeting inference changed away from the local path; no further action ran."
+                await emit({"type": "text", "text": response})
+                return response
             # Retrying an unparseable (empty) response at a GREEDY temperature
             # is pointless — decoding is deterministic, so the retry reproduces
             # the identical unparseable token sequence (verified in oMLX's log,
@@ -2352,7 +2889,7 @@ async def run_agent(
                           "always confirmed",
                 "preview": "\n".join(_lines),
             }
-            _batch_approved = await approver.confirm(_batch_action)
+            _batch_approved = _note_decision("calendar_changes", await approver.confirm(_batch_action))
             if _batch_approved:
                 for _, _batch_name, _batch_args in _batch_calls:
                     if _batch_name == "add_calendar_event" and (
@@ -2366,6 +2903,32 @@ async def run_agent(
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
+            if discovery is not None and name == DISCOVERY_TOOL:
+                # Do not widen this step's allowed_names. A sibling real call
+                # must not gain authority from a schema request in this batch.
+                # Metadata never enters source/effect receipts or tool_digest.
+                try:
+                    capability_catalog = fresh_capability_catalog()
+                    expansion = discovery.expand(
+                        args, capability_catalog, step_offered=frozenset(allowed_names))
+                    tools = list(expansion.names)
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
+                    if discovery.attempts < MAX_DISCOVERIES:
+                        schemas.append(discovery_schema(capability_catalog))
+                    turn_tool_names = {s["function"]["name"] for s in schemas}
+                    msgs[0] = {"role": "system", "content": (
+                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    result = expansion.receipt()
+                    await emit({"type": "routing_discovery", "families": list(expansion.families),
+                                "tools": tools, "status": "ready_next_step"})
+                except SelectionError as error:
+                    result = f"Schema selection rejected: {error}. No source was read or action performed."
+                    if discovery.attempts >= MAX_DISCOVERIES:
+                        schemas = [s for s in schemas if s["function"]["name"] != DISCOVERY_TOOL]
+                    await emit({"type": "routing_discovery", "status": "rejected"})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
             # fixed values before grounding, confirmation previews and tool
@@ -2373,6 +2936,12 @@ async def run_agent(
             if fixed := (tool_argument_bindings or {}).get(name):
                 args = {**args, **{key: value for key, value in fixed.items()
                                   if key != "_recipient_lookup"}}
+            if name != "commit_private_meeting" and _meeting_safe(args) != args:
+                result = "(error: Private meeting capabilities cannot be carried into another tool; no action ran.)"
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                hard_failed.add(name)
+                continue
             if name == "add_calendar_event" and cid in batch_calendar_args:
                 args = batch_calendar_args[cid]
             if name == "add_calendar_event" and (
@@ -2434,6 +3003,16 @@ async def run_agent(
                 result = (f"({name} already succeeded earlier this turn; it was NOT run "
                           "again. Narrate the existing result instead of duplicating the action.)")
                 audit("reject_duplicate_effect", tool=name, args=args)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
+            read_key = _read_call_key(name, args)
+            if read_key is not None and read_key in completed_reads:
+                result = (f"({name} already ran with these exact arguments this turn and its "
+                          "result was returned earlier. It was NOT run again. Answer from that "
+                          "result, or call it with different arguments if you need different data.)")
+                audit("reject_repeated_read", tool=name, args=args)
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -2521,7 +3100,7 @@ async def run_agent(
             # complete every requested step" — a real-execution failure message
             # for a turn in which, by construction, nothing was ever attempted.
             if test_mode:
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 result = _TEST_MODE_STUB
                 await emit({"type": "tool_call", "id": cid, "name": name, "args": args,
                             "decision": dec.tier.value, "reason": dec.reason,
@@ -2609,7 +3188,7 @@ async def run_agent(
                     _OUTBOUND_PREVIEW_TOOLS, human_reviewed_content,
                     outbound_content_problem)
 
-                dec = decide(tool.category, args, tool=name)
+                dec = tool_policy(tool, args)
                 await emit({"type": "tool_call", "id": cid, "name": name,
                             "args": args, "decision": dec.tier.value, "reason": dec.reason})
 
@@ -2671,6 +3250,29 @@ async def run_agent(
                         action["preview"] = f"Cancel: {args.get('title', '?')}"
                     elif name == "add_calendar_event":
                         action["preview"] = _calendar_create_preview(args)
+                    elif name == "commit_private_meeting":
+                        from service.tools.schedule_extras import private_meeting_review
+                        # Consume the inert reference before validation/await.
+                        # Keep all ordinary args/cards/audit/model carriers inert.
+                        try:
+                            args = json.loads(json.dumps(args, allow_nan=False))
+                            reference = args.get("capability_token")
+                            private_args = meeting_refs.pop(reference, None)
+                            if (private_args is None or set(args) != set(private_args)
+                                    or meeting_origin is None or _meeting_context() != meeting_origin
+                                    or json.dumps({k: v for k, v in args.items() if k != "capability_token"}, sort_keys=True, allow_nan=False)
+                                    != json.dumps({k: v for k, v in private_args.items() if k != "capability_token"}, sort_keys=True, allow_nan=False)):
+                                raise ValueError("Private proposal reference is invalid, changed or already used; request a new preview.")
+                            private_args = json.loads(json.dumps(private_args, allow_nan=False))
+                            action["preview"] = private_meeting_review(private_args)
+                        except (ValueError, TypeError) as exc:
+                            result = "(error: " + str(exc) + "; no private block created.)"
+                            await emit({"type": "tool_result", "id": cid, "result": result})
+                            msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                            hard_failed.add(name)
+                            continue
+                        action["args"] = json.loads(json.dumps(args, allow_nan=False))
+                        action["fingerprint"] = _action_fingerprint(name, args)
                     elif name == "clear_past_reminders":
                         # A bulk delete has to show its whole list, not a
                         # count: the user asked for "old reminders" and only
@@ -2724,8 +3326,9 @@ async def run_agent(
                     if cid in batch_verdict:
                         approved = batch_verdict[cid]
                     else:
-                        approved = await approver.confirm(action)
+                        approved = _note_decision(name, await approver.confirm(action))
                     if approved:
+                        confirmed_private_web.add(_action_fingerprint(name, args))
                         # Whether the card actually SHOWED the outgoing text
                         # (confirm_preview populates `preview` for the outbound
                         # tools). Only then has a human read the exact words, and
@@ -2734,8 +3337,16 @@ async def run_agent(
                         # is not a review of anything.
                         _reviewed = (name in _OUTBOUND_PREVIEW_TOOLS
                                      and bool(action.get("preview")))
-                        with human_reviewed_content(_reviewed):
-                            result = await execute_tool(tool, args)
+                        if name == "commit_private_meeting":
+                            from service.tools.schedule_extras import approved_private_meeting
+                            try:
+                                with approved_private_meeting(private_args):
+                                    result = await execute_tool(tool, private_args)
+                            except (ValueError, TypeError) as exc:
+                                result = "(error: " + str(exc) + "; request a new private block preview.)"
+                        else:
+                            with human_reviewed_content(_reviewed):
+                                result = await execute_tool(tool, args)
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -2786,6 +3397,11 @@ async def run_agent(
                     response = "The requested action was not completed because approval was denied."
                     await emit({"type": "text", "text": response})
                     return response
+            elif (outcome.status == "unknown"
+                  and name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
+                response = _verified_final(outcome.text)
+                await emit({"type": "text", "text": response})
+                return response
             elif outcome.status in {"failed", "needs_input", "unsupported"}:
                 failed_tools.add(name)
                 if outcome.effect != "read":
@@ -2796,15 +3412,29 @@ async def run_agent(
                     return response
             elif outcome.status == "succeeded":
                 tools_answered.add(name)
+            ran_tool = _registry().get(name)
+            if read_key is None and (ran_tool is None or ran_tool.category not in _read_categories()):
+                # Any non-read tool that ran (even one that failed part-way) may
+                # have changed what a read returns. Don't trust outcome.effect:
+                # tools outside the effect table default to "read" even when
+                # they write (set_volume, run_shell).
+                completed_reads.clear()
+            elif outcome.status == "succeeded":
+                if (read_key is not None and outcome.effect == "read"
+                        and not str(result).lstrip().startswith("(")):
+                    # A parenthesized notice ("(no public web results found ...)")
+                    # is not a usable answer; leave an identical retry allowed.
+                    completed_reads.add(read_key)
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body
                 # so the model cannot replace the card with a Markdown draft or
                 # ask another "should I send it?" question.
-                await emit({"type": "message_draft",
-                            "to": str(args.get("to") or ""),
-                            "text": str(args.get("text") or "")})
-                return ""
+                from service.tools.registry import _valid_message_draft
+                if _valid_message_draft(result, name):
+                    await emit({"type": "message_draft",
+                                "to": result.resolved_to, "text": result.prepared_text})
+                    return ""
             if outcome.status == "denied" and name in _TERMINAL_OUTBOUND_DENIALS:
                 return await _finish_denied_outbound(emit)
             if name == "create_tool" and get_tool(str(args.get("name", "")).strip().lower()):
@@ -2822,7 +3452,10 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = _admit(tool_schemas(tools))
+                schemas = [s for s in _admit(tool_schemas(tools))
+                           if s["function"]["name"] not in forbidden_tools]
+                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
+                    schemas.append(discovery_schema(fresh_capability_catalog()))
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound

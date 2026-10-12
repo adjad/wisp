@@ -1,0 +1,4 @@
+1790000500.0 | U | Home | Registrar <reg@school.example> | Reminder: advising meeting Thursday at 2pm
+1790000500.0 | U | Home | Registrar <reg@school.example> | Reminder: advising meeting Thursday at 2pm
+1790000900.0 | R | Home | Deals <promo@shop.example> | Flash sale tonight only
+1790001200.0 | R | Home | Newsletter <news@club.example> | Weekly digest

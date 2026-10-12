@@ -1,0 +1,18 @@
+{
+  "artifact_type": "independent_revised_design_review_seal",
+  "formal_verdict": "PASS_WITH_NOTES",
+  "scope": "Design consistency/default-off preparation only",
+  "enabling_verdict": "BLOCKED",
+  "proposal_sha256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+  "main_sha": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "original_design_sha": "1449ab162c2f92e73162950240054964af636cdf",
+  "report_sha256": "7b93fdf4e445924a476f5a48265de8bb91b85dd079bac30d80b22e1cc7a45dde",
+  "handoff_sha256": "85a6c7115532e0503b01eb9206aef2ba7db17e0da2a3bf786793162781cd3d61",
+  "checksums_sha256": "a9be45330faae4c38161da0f363e02f31451d3931d7c241967ad41f9651bff8a",
+  "sealed_entries": 39,
+  "readonly_modes": "files444/directories555",
+  "prior_BLOCK_preserved": true,
+  "no_merge_no_activation_no_deploy_hold": true,
+  "quiescent": true,
+  "recorded_at_utc": "2026-10-07T01:49:59.554925+00:00"
+}

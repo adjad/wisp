@@ -1,5 +1,36 @@
 import SwiftUI
 
+/// The colors and body size MarkdownView draws with. The default is the notch
+/// panel's monochrome look; other surfaces (the Chat window) set their own
+/// through the environment instead of forking the renderer.
+struct MarkdownPalette {
+    var text: Color
+    var secondary: Color
+    var muted: Color
+    var chipFill: Color
+    var chipStroke: Color
+    var hairline: Color
+    var codeFill: Color
+    var tableFill: Color
+    var bodySize: CGFloat = 14
+
+    static let notch = MarkdownPalette(
+        text: Theme.textPrimary, secondary: Theme.textSecondary, muted: Theme.textMuted,
+        chipFill: Theme.chipFill, chipStroke: Theme.chipStroke, hairline: Theme.hairline,
+        codeFill: Color.white.opacity(0.06), tableFill: Color.white.opacity(0.04))
+}
+
+private struct MarkdownPaletteKey: EnvironmentKey {
+    static let defaultValue = MarkdownPalette.notch
+}
+
+extension EnvironmentValues {
+    var markdownPalette: MarkdownPalette {
+        get { self[MarkdownPaletteKey.self] }
+        set { self[MarkdownPaletteKey.self] = newValue }
+    }
+}
+
 // Markdown renderer with real block-level parsing: fenced code blocks become
 // monospaced cards, GFM tables render as an actual grid, lists get proper
 // bullets/numbers, and prose renders inline markdown (bold, italic, inline
@@ -7,6 +38,7 @@ import SwiftUI
 // line breaks instead of literal text.
 struct MarkdownView: View {
     let text: String
+    @Environment(\.markdownPalette) private var palette
 
     private enum Kind { case code, table, list, paragraph }
 
@@ -43,8 +75,8 @@ struct MarkdownView: View {
                     listView(b.listItems)
                 case .paragraph:
                     Text(inline(b.body))
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.textPrimary)
+                        .font(.system(size: palette.bodySize))
+                        .foregroundStyle(palette.text)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -59,7 +91,7 @@ struct MarkdownView: View {
             HStack(spacing: 10) {
                 if !b.codeLang.isEmpty {
                     Text(b.codeLang).font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Theme.textMuted)
+                        .foregroundStyle(palette.muted)
                 }
                 Spacer(minLength: 8)
                 codeActionButton(icon: "doc.on.doc", label: "Copy") {
@@ -76,13 +108,13 @@ struct MarkdownView: View {
             }
             Text(b.body)
                 .font(.system(size: 12.5, design: .monospaced))
-                .foregroundStyle(Theme.textPrimary)
+                .foregroundStyle(palette.text)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.06)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 8).fill(palette.codeFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.chipStroke, lineWidth: 1))
     }
 
     private func codeActionButton(icon: String, label: String, action: @escaping () -> Void) -> some View {
@@ -91,10 +123,10 @@ struct MarkdownView: View {
                 Image(systemName: icon).font(.system(size: 9))
                 Text(label).font(.system(size: 10, weight: .medium))
             }
-            .foregroundStyle(Theme.textSecondary)
+            .foregroundStyle(palette.secondary)
             .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Capsule().fill(Theme.chipFill))
-            .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
+            .background(Capsule().fill(palette.chipFill))
+            .overlay(Capsule().stroke(palette.chipStroke, lineWidth: 1))
         }
         .buttonStyle(.plain)
         .help(label)
@@ -112,20 +144,20 @@ struct MarkdownView: View {
                         let cell = col < row.count ? row[col] : ""
                         Text(inline(cell))
                             .font(.system(size: 13, weight: rowIdx == 0 ? .semibold : .regular))
-                            .foregroundStyle(rowIdx == 0 ? Theme.textPrimary : Theme.textPrimary.opacity(0.9))
+                            .foregroundStyle(rowIdx == 0 ? palette.text : palette.text.opacity(0.9))
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 if rowIdx == 0 {
-                    Divider().overlay(Theme.hairline).gridCellColumns(colCount)
+                    Divider().overlay(palette.hairline).gridCellColumns(colCount)
                 }
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color.white.opacity(0.04)))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.chipStroke, lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: 8).fill(palette.tableFill))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(palette.chipStroke, lineWidth: 1))
     }
 
     private func listView(_ items: [(marker: String, text: String)]) -> some View {
@@ -133,11 +165,11 @@ struct MarkdownView: View {
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .top, spacing: 7) {
                     Text(item.marker)
-                        .font(.system(size: 13)).foregroundStyle(Theme.textMuted)
+                        .font(.system(size: 13)).foregroundStyle(palette.muted)
                         .frame(minWidth: 14, alignment: .trailing)
                     Text(inline(item.text))
-                        .font(.system(size: 14))
-                        .foregroundStyle(Theme.textPrimary)
+                        .font(.system(size: palette.bodySize))
+                        .foregroundStyle(palette.text)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

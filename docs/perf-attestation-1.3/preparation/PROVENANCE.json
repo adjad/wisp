@@ -1,0 +1,385 @@
+{
+  "artifactType": "documentation_preparation_provenance",
+  "status": "DOCS_ONLY_PRODUCT_HELD",
+  "writerThread": "01a11333-ac03-7301-a6fe-6b21f0145c60",
+  "sourceParent": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+  "checkout": "/Users/adijain/.codex/worktrees/ed1a/MOE_Project",
+  "branch": "codex/attestation-perf-1-3",
+  "originalDesignCommit": "1449ab162c2f92e73162950240054964af636cdf",
+  "observedLocalOriginMain": "cbf6bd7a5c0c879e473956c2f365c99043f19ac0",
+  "mainReconciliationPerformed": true,
+  "branchRegistration": {
+    "headMatchedFrozenBase": true,
+    "cleanBeforeDocsWrites": true,
+    "branchUnclaimedLocalRemoteBeforeCreation": true,
+    "sharedGitMetadataSandboxRetryApproved": true,
+    "automaticApprovalRejected": false
+  },
+  "preparationRelease": {
+    "authority": "Explicit source-parent messages in this existing chat",
+    "scope": "Markdown/JSON only docs/perf-attestation-1.3/preparation/**",
+    "condition": "Successful unclaimed normal branch setup and conforming branch/HEAD/clean registration before docs writes",
+    "conditionMetAndReportedBeforeDocsWrites": true,
+    "productOrExecutionRelease": false
+  },
+  "receipts": [
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_BUILDER_IDENTITY_CORRECTION_AND_DOCS_ACK_2026-10-06.json",
+      "sha256": "2262546f69163f7a97e001f9d7745ffd4c3e5084945ce99adc4c4d421a4c850e"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_ACTUAL_BUILDER_DOCS_PREPARATION_REGISTRATION_2026-10-06.md",
+      "sha256": "cf53cab2f79e0113e0fce63f1f9bf5e5cd04b11ec045d907197b56da89941f01"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_MAILBOX_DELIVERY_AND_PREPARATION_ACK_2026-10-06.json",
+      "sha256": "8147c8fb851fc44d1ae61cad85f6c6279930cbddbc3b3b88a1f95d9316f97e80"
+    },
+    {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_ATTESTATION_1_3_ISOLATED_PREPARATION_SCOPE_2026-10-06.md",
+      "sha256": "72f3293c80e4a85ac45cabcd6b9875fe065d9ae0a68a2e4163787d9e5d02a644"
+    }
+  ],
+  "retainedArtifacts": [
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/DESIGN_PROPOSAL.md",
+      "retainedPath": "author/DESIGN_PROPOSAL.md",
+      "expectedSHA256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+      "expectedBytes": 33891,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/TEST_MATRIX.json",
+      "retainedPath": "author/TEST_MATRIX.json",
+      "expectedSHA256": "128143beca2c9e13bfaadd580b7b4f60f4894e7562de8cddc50650cd4e51db25",
+      "expectedBytes": 14838,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/FINDING_RESPONSE.json",
+      "retainedPath": "author/FINDING_RESPONSE.json",
+      "expectedSHA256": "4aa3f0631a6b1983c80b1f7ea1b1dc80dd39c52857503b69763bc9cfe80b69f8",
+      "expectedBytes": 3977,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/INPUT_HASHES.json",
+      "retainedPath": "author/INPUT_HASHES.json",
+      "expectedSHA256": "b460669e1a111abadceb31fb4f0a1cc042028026ae1fbd4698ad3bf91abce276",
+      "expectedBytes": 5479,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/CHECKSUMS.json",
+      "retainedPath": "author/CHECKSUMS.json",
+      "expectedSHA256": "c55a9b85612f9b850675eb017c9de210ec408d0fe76667c756370763cbd6890e",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/SEAL.json",
+      "retainedPath": "author/SEAL.json",
+      "expectedSHA256": "20a2a6d6c735ae21c7fa4d10c1720e4a9265569ba85f9def9a228e803ed5c803",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/HANDOFF.md",
+      "retainedPath": "author/HANDOFF.md",
+      "expectedSHA256": "552cc20c29138b87e08c64990a5868c5a1a3f64ff5830a5c64be2ce474efefc4",
+      "expectedBytes": 3608,
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/FINDINGS.json",
+      "retainedPath": "original-review/FINDINGS.json",
+      "expectedSHA256": "3a7cfe21e24c187717ea0bc23e18544308d6c77909481127f1c8c3be3c5ff8e5",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/HANDOFF.json",
+      "retainedPath": "original-review/HANDOFF.json",
+      "expectedSHA256": "d61be66cd000bf162cdcd88261f83a4fe28782587c56744d753c5d0479944f2d",
+      "copyPolicy": "BYTE_IDENTICAL_NO_AUTHOR_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/REPORT.json",
+      "retainedPath": "revised-review/REPORT.json",
+      "expectedSHA256": "7b93fdf4e445924a476f5a48265de8bb91b85dd079bac30d80b22e1cc7a45dde",
+      "expectedBytes": 14051,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/HANDOFF.json",
+      "retainedPath": "revised-review/HANDOFF.json",
+      "expectedSHA256": "85a6c7115532e0503b01eb9206aef2ba7db17e0da2a3bf786793162781cd3d61",
+      "expectedBytes": 3108,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    },
+    {
+      "source": "/private/tmp/wisp-attestation-revised-design-746dd9c-review-20261006/SEAL.json",
+      "retainedPath": "revised-review/SEAL.json",
+      "expectedSHA256": "519e6de01130cad5a30a428d139606a454b1b1e8a3f83ed1f38c6a7696a4d6db",
+      "expectedBytes": 910,
+      "copyPolicy": "BYTE_IDENTICAL_NO_REVIEW_TEXT_REVISIONS"
+    }
+  ],
+  "originalIndependentEvidence": {
+    "verdict": "BLOCK",
+    "findings": [
+      "F1",
+      "F2",
+      "F3",
+      "F4",
+      "F5"
+    ],
+    "reportPath": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REPORT.json",
+    "reportSHA256": "1d056b646f47a090dfd78373d8669a3868ecd5f1bab84f8b640d3b68c45e93b1",
+    "reviewPath": "/private/tmp/wisp-attestation-design-1449ab1-review-20261006/REVIEW.md",
+    "reviewSHA256": "c20ebd46bde9f4a2679e7de22b97abc68bcad963c488043df4dfe6b163746756",
+    "findingsClosedByThisPacket": [],
+    "revisedDistinctReviewStatus": "PASS_WITH_NOTES_DESIGN_ONLY_ENABLEMENT_BLOCKED"
+  },
+  "caseSpecifications": {
+    "globalStatus": "NOT_RUN",
+    "uniqueRows": 45,
+    "groups": {
+      "L": 10,
+      "C": 16,
+      "N": 7,
+      "P": 5,
+      "E": 5,
+      "B": 2
+    },
+    "executedTests": 0,
+    "executedMutations": 0,
+    "executableDrafts": 0,
+    "supplementalControls": [
+      {
+        "id": "N1-LPR-LPW",
+        "path": "N1_CONTROL.json",
+        "status": "NOT_RUN",
+        "executedTests": 0,
+        "executedMutations": 0
+      }
+    ]
+  },
+  "pinnedValidationContext": [
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
+      "sha256": "cda740d2e115f17de7376fda9949ef205b6adccf38c528588965cbaabb11c826"
+    },
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": "scripts/test_replay_failure_fixes.py",
+      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced"
+    },
+    {
+      "commit": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+      "path": ".github/workflows/regression-gate.yml",
+      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684"
+    }
+  ],
+  "integrityLimits": [
+    "Retained author manifest/seal refer to source-directory artifacts; this packet copies a documented subset only",
+    "Hash equality preserves provenance; it does not prove security claims",
+    "Historical pending-builder setup text preserved unchanged and superseded only by corrected actual identity/branch registration",
+    "Root packet CHECKSUMS.json inventories prepared files except itself",
+    "Current documentation integration base is separate from original source/proposal/review identities; Git reconciliation does not requalify historical artifacts",
+    "Remote CI may execute production checks; local document checks supply no product/native/benchmark or exact-head review pass"
+  ],
+  "preservedHolds": {
+    "humanD1D4Acceptance": false,
+    "productWritesReleased": false,
+    "runtimeExecutionAdmitted": false,
+    "nativeOptimizationsOff": true,
+    "currentLegacyAuthoritative": true,
+    "qualifiedSpeedClaim": false,
+    "final12ReconciliationRequired": true,
+    "noActivationDeployRelease": true,
+    "completedClaudeTransferAsserted": false,
+    "standingGatedMergeAuthorization": true,
+    "builderMayMerge": false,
+    "mergeClearedNow": false
+  },
+  "prepOperations": {
+    "documentIntegrityChecksOnly": true,
+    "productionImports": 0,
+    "testsProbesBenchmarks": 0,
+    "nativeSocketModelCloudCalls": 0,
+    "children": 0,
+    "selfReview": false
+  },
+  "sourceBaseSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "revisedIndependentEvidence": {
+    "formalVerdict": "PASS_WITH_NOTES",
+    "scope": "Design consistency/default-off preparation only",
+    "enablement": "BLOCKED",
+    "reviewerThread": "01a08523-47c7-76e3-be42-aee801a314fd",
+    "proposalSHA256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+    "sourceMainSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+    "specificationDispositions": "F1-F5 adequately revised at specification level; no implementation/runtime closure",
+    "mandatorySupplement": {
+      "id": "N1",
+      "priority": "P2",
+      "specification": "N1_CONTROL.json",
+      "status": "NOT_RUN"
+    },
+    "productWriterReleased": false,
+    "performanceQualified": false
+  },
+  "humanContinuation": {
+    "date": "2026-10-07",
+    "instruction": "ok go ahead",
+    "precedingNextSteps": "Ownership handoff and explicit implementation/testing release",
+    "forwardedToSourceParent": true,
+    "authorityToAdvanceNextSteps": true,
+    "productOwnershipEvidence": false,
+    "D1D4Acceptance": false,
+    "noMergeHoldPreserved": true,
+    "scope": "Historical 2026-10-07 instruction/interpretation; current authority is recorded separately below"
+  },
+  "delivery": {
+    "intended": "Documentation-only commit and non-force branch push; exact commit provided in chat",
+    "sourceMainReconciliation": true,
+    "productCandidate": false,
+    "mergeAllowed": false,
+    "reconciliationScope": "Current documentation-only Root release and five-wrapper correction amendment",
+    "mergeAuthorityQualification": "No builder merge or present merge clearance; designated integrator only after fresh same-head gates"
+  },
+  "reconciliationScope": "Documentation integration only; no product/final-1.2 compatibility proof",
+  "integrationValidationContext": [
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "docs/RELEASE_PERFORMANCE_BENCHMARK.md",
+      "sha256": "46939f9beff00c22c7ce04635962a93d18852ae6bdc951d41264ab8fd628dfdd",
+      "qualification": "Integration-context document only; includes 1.2.0 ad-hoc per-version waiver, not 1.3 approval"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": "scripts/test_replay_failure_fixes.py",
+      "sha256": "befe43f67eb02755fd32cde65198d9a5e6d193f1a9a603db1c0359d0ef547ced",
+      "qualification": "Read/hashes only; not locally executed"
+    },
+    {
+      "commit": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+      "path": ".github/workflows/regression-gate.yml",
+      "sha256": "eef0b964e896ad3deab5ea7d2d67426cafcfd7aaf1eba77cfbd5d649b19dd684",
+      "qualification": "Configured remote CI is separate from local document checks"
+    }
+  ],
+  "ownershipEvidence": {
+    "requestSequence": 68,
+    "correlatedReplySequence": 72,
+    "attributedAuthor": "Claude",
+    "artifact": {
+      "path": "/private/tmp/wisp-pr165-mailbox71-preflight-intake-20261009/MAILBOX72_BODY.json",
+      "sha256": "c766ea070d2a8422b392c7d06b57bdec4f2a5c80b330c2a71dda3f15c35e50a0",
+      "bytes": 3373
+    },
+    "reportedQuiescence": true,
+    "reportedUnpublishedWork": "None on six listed paths; Claude's reported inspection, not re-executed by this documentation writer",
+    "conditionalRecipient": "01a112be-3e4e-7833-99e8-eda89e84c53b",
+    "paths": [
+      "service/inference/attributed_transport.py",
+      "service/inference/local_peer.py",
+      "tests/test_runtime_attestation_t0.py",
+      "tests/test_runtime_proc_path.py",
+      "tests/test_runtime_peer.py",
+      "tests/test_web_response_followup.py"
+    ],
+    "condition": "Effective only when Root records return/accept; delivery alone is not transfer",
+    "completedTransferAssertedByThisPacket": false,
+    "productRuntimeReleaseInferred": false,
+    "humanD1D4AcceptanceInferred": false
+  },
+  "historicalObservedLocalOriginMain": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+  "historicalPreflight20261007": {
+    "scopeReceipt": {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_PR170_PERSISTENT_GOAL_AND_DOCS_PREFLIGHT_SCOPE_2026-10-07.json",
+      "sha256": "d923d94435843f1ef6294d706bb2a69188e4f8ba2aefb4c089fe98ed3f919d3d"
+    },
+    "parentRelease": {
+      "path": "/private/tmp/wisp-pr170-docs-preflight-20261007/PARENT_RELEASE.json",
+      "sha256": "fca4ba9d82a0b750a5d16cec63616a7a5d3b33467812f57a9ae2c1b72fe70701"
+    },
+    "acceptedTurn": "01a11813-921f-7ec2-a383-ea6d369689e3",
+    "checkpointSHA": "cfa69196ac43e215f0374f16b76e63693f88edad",
+    "actualIntegrationBaseSHA": "6ee9e8b76990fb22dbbc46b0be583fa9481da713",
+    "documentationMergeCommitSHA": "b8fbe73a827e847be629eca0863d9fed7086674f",
+    "reconciliationMethod": "git fetch origin main; git merge --no-ff --no-edit origin/main",
+    "conflicts": [],
+    "wrapperWritePaths": [
+      "README.md",
+      "HANDOFF.md",
+      "STAGING.md",
+      "PROVENANCE.json",
+      "CHECKSUMS.json"
+    ],
+    "immutableRetainedFileCount": 13,
+    "immutableVerificationAnchor": "Original cfa6919 packet CHECKSUMS.json; all 13 non-wrapper inputs byte-identical",
+    "entirePacketFileCount": 18,
+    "localChecks": "Metadata, JSON parsing, SHA256/byte sizes, manifest coverage, 45 unique NOT_RUN IDs, N1 NOT_RUN and whitespace only",
+    "localProductionTests": 0,
+    "localNativeModelSocketBenchmarkOperations": 0,
+    "rawCommandExitEvidence": "Reported outside the frozen candidate commit in writer handoff; no self-referential candidate SHA inside packet",
+    "freshExactHeadGates": {
+      "requiredCI": [
+        "python-regressions",
+        "Verified macOS artifact"
+      ],
+      "independentReview": "Distinct document consistency/provenance review after exact-head input registration, acceptance and parent release",
+      "status": "EVIDENCE_RECORDED_EXTERNALLY_AFTER_FREEZE",
+      "priorHeadEvidenceReusable": false
+    },
+    "claimedCIResult": null,
+    "claimedExactHeadDocumentReview": null,
+    "productCandidateQualified": false,
+    "final12CompatibilityProved": false,
+    "publicationAllowed": false
+  },
+  "historicalOwnershipEvidence20261007": {
+    "requestSequence": 68,
+    "correlatedRepliesRecorded": 0,
+    "correlatedAcknowledgmentsRecorded": 0,
+    "evidenceSource": "Source-parent release and registered d923d944 scope; no fresh mailbox execution by this documentation writer",
+    "productTransferConfirmed": false
+  },
+  "documentationQualification20261009": {
+    "rootRelease": {
+      "path": "/Users/adijain/Documents/Codex/2026-10-05/new-chat/WISP_PR170_INDEPENDENT_DOCUMENT_QUALIFICATION_RELEASE_20261009.json",
+      "sha256": "2aad95c9909a458e3b4eaabb191fa82df265f4bb52238e521ffaa3b761bfbee7",
+      "wrapperAmendmentRecordedAtUTC": "2026-10-09T20:01:26.036002+00:00",
+      "snapshotPath": "/private/tmp/wisp-pr170-wrapper-correction-20261009/ROOT_RELEASE_SNAPSHOT.json"
+    },
+    "builderAccept": "/private/tmp/wisp-pr170-wrapper-correction-20261009/ACCEPT.json",
+    "actualIntegrationBaseSHA": "cbf6bd7a5c0c879e473956c2f365c99043f19ac0",
+    "ordinaryMergeCheckpointSHA": "e7612c19792603a201a63ee17651e2817f6de89d",
+    "preCorrectionHistoricalHeadSHA": "b9283fbac826c8f26a2284a32068c8a47dd5a7df",
+    "wrapperWritePaths": [
+      "README.md",
+      "HANDOFF.md",
+      "STAGING.md",
+      "PROVENANCE.json",
+      "CHECKSUMS.json"
+    ],
+    "immutableInputCount": 13,
+    "packetFileCount": 18,
+    "post174DependencyRemovedForPR170Only": true,
+    "historicalProposalReviewIdentityPreserved": true,
+    "earlierE761PushEvidencePreserved": "/private/tmp/wisp-pr170-independent-docs-qualification-20261009/",
+    "localValidation": "Document JSON/hash/byte-size/reference/whitespace only; no target imports/tests/runtime/native/model/benchmark/fullQA",
+    "originalMatrixAndN1": "NOT_RUN",
+    "D1D4Accepted": false,
+    "optimizationOff": true,
+    "pureS1": "PR173 inert foundation merged separately, unused by production; no original45/N1 proof",
+    "requiredCI": [
+      "python-regressions",
+      "Verified macOS artifact"
+    ],
+    "independentReview": "Fresh exact final candidate document/provenance review via Root",
+    "finalCandidateAndGates": "Recorded externally after freeze; no earlier candidate review/CI promoted",
+    "merger": "01a10aef-17bd-7f80-b5c8-f5cc08fe2506",
+    "builderSelfApproval": false,
+    "installActivationDeployPublicationAllowed": false
+  }
+}

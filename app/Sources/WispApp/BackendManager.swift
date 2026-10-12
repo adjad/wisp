@@ -150,6 +150,8 @@ final class BackendManager {
                                                        generation: snapshot.generation)
             proc.environment?["WISP_CREDENTIAL_PIPE"] = try BackendCredentials.pipeMetadata(credentialPipe)
             proc.environment?.merge(extraEnvironment()) { _, new in new }
+            // The launch environment passes through unchanged, so remote inference
+            // is enabled by launching Wisp with WISP_REMOTE_ONLY=1 (see docs/REMOTE_INFERENCE.md).
             // Echoed by /identity; only this launch's receipt carries it.
             proc.environment?[BackendOwnership.nonceEnvironmentKey] = launchNonce
             proc.standardInput = credentialPipe
@@ -284,6 +286,15 @@ final class BackendManager {
     func stopAndWait(timeout: TimeInterval = 5) async {
         guard let process = detachForStop() else { return }
         _ = await Self.terminateAndWait(process, timeout: timeout)
+    }
+
+    /// Stop this manager's own backend (bounded, as on quit) and launch a fresh
+    /// one, which re-reads launch-time choices. Does
+    /// nothing while a stranger holds the port.
+    func restart() async {
+        guard !portConflict else { return }
+        await stopAndWait()
+        await startIfNeeded()
     }
 
     private func detachForStop() -> Process? {

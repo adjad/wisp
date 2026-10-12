@@ -173,15 +173,16 @@ def find_files(query: str, folder: str = "", kind: str = "",
 # (execute it) — four tool calls, ~9s of generation, and a leftover script
 # file on disk to do a glob-and-move. This does the same job in one call, with
 # a dry-run preview by default so a bad glob is visible before anything moves.
-import fnmatch
-import shutil
+import json
 import secrets
 import threading
 import time
 
+from service.file_organization import OrganizationPlan, build_plan, execute_plan
+
 # Preview capabilities are process-local, short-lived, and single-use. A changed
 # source snapshot requires a new preview; a guessed confirm=true is insufficient.
-_MOVE_PREVIEWS: dict[str, tuple[float, tuple]] = {}
+_MOVE_PREVIEWS: dict[str, tuple[float, OrganizationPlan]] = {}
 _MOVE_PREVIEW_LOCK = threading.Lock()
 
 
@@ -190,24 +191,40 @@ def move_preview_text(token: str) -> str:
         prior = _MOVE_PREVIEWS.get(token)
     if not prior or time.monotonic() - prior[0] > 600:
         return "File preview expired or missing; no files will move."
-    source, destination, _, files = prior[1]
-    return f"Move {len(files)} file(s)\nFrom: {source}\nTo: {destination}\n" + "\n".join(row[0] for row in files)
+    plan = prior[1]
+    return (f"Move {len(plan.moves)} file(s)\nFrom: {plan.folder}\nTo: {plan.destination}\n"
+            + "\n".join(f"{json.dumps(move.source)} -> {json.dumps(move.destination)} "
+                        f"(SHA-256: {move.identity.digest})" for move in plan.moves)
+            + ("\nLeft untouched:\n" + "\n".join(f"{json.dumps(path)}: {reason}" for path, reason in plan.skipped)
+               if plan.skipped else "")
+            + ("\nExisting destinations will be skipped; nothing will replace them:\n"
+               + "\n".join(json.dumps(path) for path in plan.existing_targets)
+               if plan.existing_targets else "")
+            + "\nExact-byte moves require source entries to stay stable through execution. "
+              "A late source replacement may be moved and reported unknown; never retry unknown results automatically.")
 
 
 @register(
     "organize_files",
-    "Move every file matching a glob pattern into a destination folder — 'put "
-    "all the screenshots in one place', 'sort these by extension'. Creates the "
-    "destination if needed. DEFAULTS TO A DRY RUN (preview only, nothing "
-    "moves) — call again with `confirm=true` once the preview looks right. "
-    "For moving ONE specific file, use move_path instead.",
+    "Prepare source-to-target moves for immediate regular files matching "
+    "a glob. Optional group_by=extension uses uppercase extension folders "
+    "(NO_EXTENSION otherwise); debug_date uses valid YYYY-MM-DD in debug "
+    "filenames, leaving unclassified files untouched. No semantic/content "
+    "categorization. DEFAULT preview makes no filesystem changes. Confirm "
+    "requires the same inputs and a fresh single-use preview_token. No existing "
+    "target is replaced; cross-volume moves are unsupported. Partial/unknown "
+    "results are disclosed. Exact bytes require stable source entries through "
+    "rename; late replacement may move an unapproved entry and report unknown. "
+    "Never retry unknown results automatically. Limited to 1000 files/512 MiB per preview.",
     {
         "type": "object",
         "properties": {
             "pattern": {"type": "string",
                        "description": "Glob pattern, e.g. '*.png', 'Screenshot*', 'wisp-debug-*.json'."},
             "folder": {"type": "string", "description": "Folder to search in, e.g. '~/Downloads'."},
-            "destination": {"type": "string", "description": "Folder to move matches into."},
+            "destination": {"type": "string", "description": "Target folder; grouping parent when group_by is set. Use '.' to group inside source."},
+            "group_by": {"type": "string", "enum": ["", "extension", "debug_date"],
+                         "description": "Empty (default), extension, or debug_date. Dates come from filenames, never modification time."},
             "confirm": {"type": "boolean",
                         "description": "Set true to actually move the files. False (default) previews only."},
             "preview_token": {"type": "string", "description": "Token returned by the matching preview; required when confirm=true."},
@@ -220,33 +237,7 @@ def move_preview_text(token: str) -> str:
              "move all the wisp logs into a logs folder"],
 )
 def organize_files(pattern: str, folder: str, destination: str,
-                   confirm: bool = False, preview_token: str = "") -> str:
-    src_dir = Path(folder).expanduser().resolve()
-    if not src_dir.is_dir():
-        return f"(error: {folder} is not a folder on this Mac.)"
-    dst_dir = Path(destination).expanduser()
-    if not dst_dir.is_absolute():
-        dst_dir = src_dir / dst_dir
-    dst_dir = dst_dir.resolve()
-    if src_dir == dst_dir:
-        return "(error: source and destination are the same folder.)"
-
-    # Accept a fully qualified glob only when its parent is the named source
-    # folder. fnmatch below matches basenames; silently using a full path would
-    # report zero matches for files that really exist.
-    if '/' in pattern:
-        glob_path = Path(pattern).expanduser()
-        if glob_path.parent.resolve() != src_dir.resolve():
-            return '(error: pattern must be a filename glob inside the source folder.)'
-        pattern = glob_path.name
-
-    matches = sorted(p for p in src_dir.iterdir()
-                     if p.is_file() and fnmatch.fnmatch(p.name, pattern))
-    if not matches:
-        return f"No files in {folder} match {pattern!r}."
-
-    snapshot = (str(src_dir), str(dst_dir), pattern, tuple(
-        (str(p), p.stat().st_ino, p.stat().st_size, p.stat().st_mtime_ns) for p in matches))
+                   confirm: bool = False, preview_token: str = "", group_by: str = "") -> str:
     now = time.monotonic()
     with _MOVE_PREVIEW_LOCK:
         for token, (created, _) in list(_MOVE_PREVIEWS.items()):
@@ -254,40 +245,39 @@ def organize_files(pattern: str, folder: str, destination: str,
                 _MOVE_PREVIEWS.pop(token, None)
         if confirm:
             prior = _MOVE_PREVIEWS.pop(preview_token, None)
-            if not prior or prior[1] != snapshot:
+            if not prior:
                 return "(error: missing, expired or changed file preview. Preview again before moving any files.)"
-        else:
-            preview_token = secrets.token_urlsafe(24)
-            _MOVE_PREVIEWS[preview_token] = (now, snapshot)
-
+    try:
+        plan = build_plan(pattern, folder, destination, group_by)
+    except (OSError, ValueError) as exc:
+        prefix = "missing, expired or changed file preview; " if confirm else ""
+        return f"(error: {prefix}{exc}. No files moved.)"
+    if confirm and prior[1] != plan:
+        return "(error: missing, expired or changed file preview. Preview again before moving any files.)"
+    if not plan.moves:
+        note = ("\nLeft untouched:\n" + "\n".join(f"{json.dumps(path)}: {reason}" for path, reason in plan.skipped)
+                if plan.skipped else "")
+        return f"No files in {folder} match the requested move classification.{note}"
     if not confirm:
-        listed = "\n".join(f"  {p.name}" for p in matches)
-        more = ""
-        return (f"Would move {len(matches)} file(s) from {folder} to "
-                f"{dst_dir}:\n{listed}{more}\n\n"
-                f"Preview token: {preview_token}\n"
-                f"Call again with confirm=true and preview_token to move this exact set.")
-
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    moved, skipped = [], []
-    for p in matches:
-        target = dst_dir / p.name
-        if target.exists():
-            skipped.append(p.name)
-            continue
-        try:
-            shutil.move(str(p), str(target))
-            moved.append(p.name)
-        except OSError as e:
-            skipped.append(f"{p.name} ({e})")
-    out = f"Moved {len(moved)} file(s) to {destination}."
-    if moved:
-        out += "\n" + "\n".join(f"  {name}" for name in moved[:20])
-        if len(moved) > 20:
-            out += f"\n  (+{len(moved) - 20} more)"
-    if skipped:
-        out += f"\nSkipped {len(skipped)} (already exist at destination or errored): " + ", ".join(skipped[:10])
-    return out
+        preview_token = secrets.token_urlsafe(24)
+        with _MOVE_PREVIEW_LOCK:
+            if len(_MOVE_PREVIEWS) >= 1024:
+                oldest = min(_MOVE_PREVIEWS, key=lambda token: _MOVE_PREVIEWS[token][0])
+                _MOVE_PREVIEWS.pop(oldest)
+            _MOVE_PREVIEWS[preview_token] = (now, plan)
+        return (f"Would move {len(plan.moves)} file(s); preview only, no filesystem changes.\n"
+                f"{move_preview_text(preview_token)}\n\nPreview token: {preview_token}\n"
+                "Call again with the same inputs, confirm=true and preview_token to attempt these approved moves.")
+    receipts = execute_plan(plan)
+    moved = sum(row["status"] == "moved" for row in receipts)
+    incomplete = any(row["status"] != "moved" for row in receipts)
+    if incomplete:
+        heading = (f"(error: file organization incomplete; moved {moved} of {len(plan.moves)} planned files. "
+                   "Count includes only verified moves; unknown results may already have changed paths. "
+                   "Read each receipt before retrying; unknown results must not be retried automatically.)")
+    else:
+        heading = f"Moved {moved} file(s) to {plan.destination}."
+    return heading + "\nFile receipts:\n" + "\n".join(json.dumps(row, sort_keys=True) for row in receipts)
 
 
 @register(

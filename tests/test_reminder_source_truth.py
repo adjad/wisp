@@ -306,7 +306,9 @@ def test_pending_reminders_read_does_not_hide_current_calendar() -> None:
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
                       return_value=pending), \
          patch.object(assistant_tools.assistant_store, "upcoming",
-                      return_value=_schedule_rows()):
+                      return_value=_schedule_rows()), \
+         patch.object(assistant_tools.assistant_store, "calendar_events_overlapping",
+                      return_value=[row for row in _schedule_rows() if row["source"] == "calendar"]):
         answer = asyncio.run(assistant_tools.get_upcoming())
     assert "Synthetic calendar event" in answer
     assert "Synthetic stale native reminder" not in answer
@@ -323,7 +325,9 @@ def test_pending_reminders_note_trails_a_calendar_answer_instead_of_leading_it()
     with patch.object(sync_status, "ensure_sources", new_callable=AsyncMock,
                       return_value=pending), \
          patch.object(assistant_tools.assistant_store, "upcoming",
-                      return_value=_schedule_rows()):
+                      return_value=_schedule_rows()), \
+         patch.object(assistant_tools.assistant_store, "calendar_events_overlapping",
+                      return_value=[row for row in _schedule_rows() if row["source"] == "calendar"]):
         answer = asyncio.run(assistant_tools.get_upcoming())
     note = answer.index("has not received a current Reminders read")
     assert answer.index("Synthetic calendar event") < note
@@ -610,7 +614,9 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
          "-module-cache-path", str(tmp_path / "module-cache"),
          str(root / "app/Sources/WispApp/RemindersWriter.swift"),
          str(harness), "-o", str(binary)],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, timeout=300,
     )
-    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    # A freshly compiled binary can stall in dyld while macOS assesses it; fail
+    # with a timeout instead of hanging the whole regression gate.
+    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=120)
     assert "out-of-order reminder snapshot policy passed" in result.stdout

@@ -22,7 +22,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -37,6 +39,14 @@ TRUSTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 TRUSTED_GIT = "/usr/bin/git"
 TRUSTED_BASH = "/bin/bash"
 TRUSTED_SWIFTC = "/usr/bin/swiftc"
+# Parallel workers share one console. Each gate's status line and any failure
+# output are written under this lock so they never interleave mid-gate.
+_OUTPUT_LOCK = threading.Lock()
+
+
+def default_jobs() -> int:
+    """One worker per available CPU; ``--jobs 1`` restores sequential runs."""
+    return max(1, os.cpu_count() or 1)
 
 
 class NodeRuntimeError(RuntimeError):
@@ -195,6 +205,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Inert bounded attestation store; supplied facts and manual interleavings only.
+    "tests/test_attestation_store.py",
     # Synthetic content-free journal, bounded offline planner replay; no external effects.
     "tests/test_diagnostics.py",
     "tests/test_wisp_cowork.py",
@@ -209,6 +221,18 @@ ADDITIONAL_FULL_TESTS = {
     "tests/browser_actions/test_action_executor.py",
     # Synthetic browser/discovery contract payloads; no browser or user-state access.
     "tests/test_browser_contracts.py",
+    # Proactive-attention Slice 0: synthetic fixtures and temp directories only; no
+    # subprocess, network, model, or access to the real caches or assistant.db.
+    "tests/test_attention_slice0.py",
+    # Pure detector, resolver, screen and matcher over in-memory synthetic items;
+    # no I/O, clock, model or live store.
+    "tests/test_attention_detector.py",
+    # Runner, ledger, planner and settings with every effect faked; ledger and settings live
+    # in temp directories. No Reminders, hub, model or real ~/.moe access.
+    "tests/test_attention_runner.py",
+    # Wiring and endpoints with faked feed, reminder tool, hub and store reads, and MOE_DIR
+    # redirected to a temp dir. An in-process TestClient only; no listener or network.
+    "tests/test_attention_wiring.py",
     # Disposable signed AF_UNIX peers; artifact pipeline imports the complete
     # separately sandboxed exact-case report rather than granting network here.
     "tests/test_browser_transport_native.py",
@@ -231,6 +255,7 @@ ADDITIONAL_FULL_TESTS = {
     # Characterization of the desktop oMLX attestation walker and _listener call shape
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
+    "tests/test_runtime_attestation_t1t3.py",
     # Differential of the libproc executable-path lookup against the old lsof one, on disposable
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
@@ -249,6 +274,8 @@ ADDITIONAL_FULL_TESTS = {
     # Environment-variable echo only; no server, socket or process.
     "tests/test_identity_launch_nonce.py",
     "tests/test_backend_ownership_no_disk_receipt.py",
+    # A temporary session database only; lists saved chats for the Chat window. No model, socket or real data.
+    "tests/test_chat_list.py",
     # Pure policy decisions, temporary symlinks and fake MCP specs; nothing is run or contacted.
     "tests/test_policy_floor_and_mcp_trust.py",
     # Pure header classification and string layout; no mail, model or network.
@@ -268,6 +295,18 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_codex_monitor.py",
     "tests/test_fit_window.py",
     "tests/test_lexical_tool_retrieval.py",
+    # Pure capability metadata, scripted inference/fake tool registry, and
+    # in-process /agent with disposable SQLite; no lifespan, model or native tools.
+    "tests/test_model_led_routing.py",
+    "tests/test_model_led_integration.py",
+    "tests/test_repeated_read_guard.py",
+    "tests/test_model_led_entrypoint.py",
+    "tests/test_model_led_full_routing.py",
+    "tests/test_model_led_effect_ownership.py",
+    "tests/test_model_led_1_2_5_boundaries.py",
+    # httpx MockTransport only; redirect and strict-host checks never touch the network.
+    "tests/test_http_request_redirects.py",
+    "tests/test_web_strict_host.py",
     # Synthetic MIME fixtures only; offline parser tests never access real Mail.
     "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
@@ -292,6 +331,57 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_user_reported_regressions_20260903_noon.py",
     "tests/test_user_reported_regressions_20260908.py",
     "tests/test_user_facing_summary_thinking.py",
+    # Reviewed synthetic Workflow20 fixtures: temporary state, fake providers,
+    # and guarded owned Python children; no live inference or personal sources.
+    # Behavior engine: pure SQLite in temp dirs, the fictional test persona, ASGI
+    # TestClient/httpx MockTransport (no listener) and FakeHub; no model, Keychain,
+    # Calendar, Messages or network.
+    "tests/test_behavior_api.py",
+    "tests/test_behavior_boundary.py",
+    "tests/test_behavior_engine.py",
+    "tests/test_behavior_miners.py",
+    "tests/test_behavior_persona.py",
+    "tests/test_behavior_phraser.py",
+    "tests/test_behavior_predict_nudges.py",
+    "tests/test_behavior_privacy.py",
+    "tests/test_behavior_routing.py",
+    "tests/test_behavior_runtime.py",
+    "tests/test_behavior_tools.py",
+    # Remote-inference mode: fictional example profile, patched sockets, mocked
+    # transports and AST-selected main functions; no network, Keychain or model.
+    "tests/test_remote_inference_client.py",
+    "tests/test_remote_inference_full.py",
+    "tests/test_remote_inference_main.py",
+    "tests/test_remote_inference_no_local.py",
+    "tests/test_remote_inference_policy.py",
+    "tests/test_remote_inference_read_boundary.py",
+    # Workflow20 draft/receipt identity: sockets and subprocess forbidden, disposable stores.
+    "tests/test_workflow20_draft_identity.py",
+    "tests/test_workflow20_executor_draft_identity.py",
+    "tests/test_workflow20_outbound_receipts.py",
+    "tests/test_workflow20_availability.py",
+    "tests/test_workflow20_calendar.py",
+    "tests/test_workflow20_calendar_identity.py",
+    "tests/test_workflow20_compiler.py",
+    "tests/test_workflow20_daily.py",
+    "tests/test_workflow20_email_threads.py",
+    "tests/test_workflow20_files.py",
+    "tests/test_workflow20_groceries.py",
+    "tests/test_workflow20_knowledge.py",
+    "tests/test_workflow20_meeting.py",
+    "tests/test_workflow20_meeting_approval.py",
+    "tests/test_workflow20_messages.py",
+    "tests/test_workflow20_model_pilot.py",
+    "tests/test_workflow20_pending_actions.py",
+    "tests/test_workflow20_priorities.py",
+    "tests/test_workflow20_reminder_time.py",
+    "tests/test_workflow20_routing.py",
+    "tests/test_workflow20_schedule_time.py",
+    "tests/test_workflow20_snapshot.py",
+    "tests/test_workflow20_travel.py",
+    "tests/test_workflow20_unsubscribe.py",
+    "tests/test_workflow20_weather.py",
+    "tests/workflow20/test_contract.py",
 }
 # Integrated runtime contracts are mandatory; missing files fail selection.
 MINI_RUNTIME_INTEGRATION_TESTS = {
@@ -333,6 +423,8 @@ _NATIVE_GATE_DEPENDENCIES = {
     "native/port-guard-contract": "native/port-guard-compile",
     "native/backend-trust-contract": "native/backend-trust-compile",
     "native/reminders-policy-contract": "native/reminders-policy-compile",
+    "native/chat-logic-contract": "native/chat-logic-compile",
+    "native/chat-store-contract": "native/chat-store-compile",
 }
 
 
@@ -506,8 +598,9 @@ def _run(
             stderr=error,
             launch_error=error,
         )
-        print(f"[FAIL] {name} (launch error; {duration:.2f}s)", flush=True)
-        print(error, file=sys.stderr)
+        with _OUTPUT_LOCK:
+            print(f"[FAIL] {name} (launch error; {duration:.2f}s)", flush=True)
+            print(error, file=sys.stderr, flush=True)
         return result
     duration = time.monotonic() - started
     passed, failed, skipped = _counts(proc.stdout + "\n" + proc.stderr, proc.returncode)
@@ -530,14 +623,15 @@ def _run(
     state = _gate_status(result)
     rendered = tuple("unreported" if count is None else str(count)
                      for count in (passed, failed, skipped))
-    print(
-        f"[{state}] {name} ({rendered[0]} passed, {rendered[1]} failed, "
-        f"{rendered[2]} skipped; {duration:.2f}s)",
-        flush=True,
-    )
-    if proc.returncode:
-        print(proc.stdout, end="")
-        print(proc.stderr, end="", file=sys.stderr)
+    with _OUTPUT_LOCK:
+        print(
+            f"[{state}] {name} ({rendered[0]} passed, {rendered[1]} failed, "
+            f"{rendered[2]} skipped; {duration:.2f}s)",
+            flush=True,
+        )
+        if proc.returncode:
+            print(proc.stdout, end="", flush=True)
+            print(proc.stderr, end="", file=sys.stderr, flush=True)
     return result
 
 
@@ -555,7 +649,8 @@ def _blocked_result(name: str, command: list[str], dependency: str) -> GateResul
         stderr=message,
         blocked_by=dependency,
     )
-    print(f"[BLOCKED] {name} ({message})", flush=True)
+    with _OUTPUT_LOCK:
+        print(f"[BLOCKED] {name} ({message})", flush=True)
     return result
 
 
@@ -604,6 +699,8 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
     privacy_sync = str(build_dir / "privacy-sync")
     sync_label = str(build_dir / "source-sync-label")
     prompt_queue = str(build_dir / "prompt-queue")
+    chat_logic = str(build_dir / "chat-logic")
+    chat_store = str(build_dir / "chat-store")
     reminders_policy = str(build_dir / "reminders-policy")
     settings_response = str(build_dir / "settings-response")
     port_guard = str(build_dir / "port-guard")
@@ -679,6 +776,27 @@ def _native_gates(build_dir: Path) -> list[tuple[str, list[str]]]:
         ),
         ("native/prompt-queue-contract", [prompt_queue]),
         (
+            "native/chat-logic-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "tests/ChatChecks.swift", "-o", chat_logic,
+            ],
+        ),
+        ("native/chat-logic-contract", [chat_logic]),
+        (
+            "native/chat-store-compile",
+            [
+                TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
+                "-module-cache-path", module_cache,
+                "app/Sources/WispApp/Chat/ChatTypes.swift",
+                "app/Sources/WispApp/Chat/ChatStore.swift",
+                "tests/ChatStoreChecks.swift", "-o", chat_store,
+            ],
+        ),
+        ("native/chat-store-contract", [chat_store]),
+        (
             "native/port-guard-compile",
             [
                 TRUSTED_SWIFTC, "-parse-as-library", "-swift-version", "5",
@@ -735,6 +853,80 @@ def _run_native_gates(build_dir: Path) -> list[GateResult]:
             result = _run(name, command)
         results.append(result)
         by_name[name] = result
+    return results
+
+
+# Scheduling hint for parallel runs only: start the slowest known modules first
+# so one of them does not begin near the end and become the critical path.
+# This never changes selection, the report order or any verdict; a stale or
+# missing entry only costs wall time.
+_START_FIRST = (
+    "tests/test_runtime_attestation_t0.py",
+    "tests/test_outbound_content_provenance.py",
+    "tests/test_fast_path_intent.py",
+    "tests/test_release_performance.py",
+    "tests/build_pipeline/managed_live_qa_checks.py",
+    "tests/build_pipeline/pipeline_checks.py",
+    "tests/test_workflow20_reminder_time.py",
+    "tests/test_runtime_proc_path.py",
+)
+
+
+# Modules with real-socket peer attestation under a fixed wall-clock readiness
+# budget. They run alone, after every concurrent gate has finished, so CPU
+# contention from other gates cannot turn a timing budget into a false failure.
+# (The build pipeline already runs this module in its own native peer gate.)
+RUN_ALONE_TESTS = frozenset({"tests/test_runtime_peer.py"})
+
+
+def _submission_order(tests: list[str]) -> list[str]:
+    selected = set(tests)
+    first = [path for path in _START_FIRST if path in selected]
+    return first + [path for path in tests if path not in first]
+
+
+def _run_python_gate(path: str) -> GateResult:
+    # Resolve _run/_python_command at call time: the build pipeline wrapper
+    # substitutes _run to import separately sandboxed evidence.
+    return _run(
+        path,
+        _python_command(path),
+        require_nonzero_count=path in LEGACY_SCRIPT_TESTS,
+    )
+
+
+def _run_gates(tests: list[str], run_native: bool, jobs: int) -> list[GateResult]:
+    """Run every selected gate; results always follow selection order.
+
+    Each Python module keeps its own process and temporary state (see _run),
+    so modules are independent and may run concurrently. Native gates keep
+    their compile-before-contract dependencies by running as one ordered chain
+    on a single worker, started first because it is the longest serial path.
+    ``jobs == 1`` is exactly the historical sequential schedule.
+    """
+    if jobs <= 1:
+        results = [_run_python_gate(path) for path in tests]
+        if run_native:
+            with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
+                results.extend(_run_native_gates(Path(build)))
+        return results
+    with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build, \
+            ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="simqa") as pool:
+        try:
+            native = pool.submit(_run_native_gates, Path(build)) if run_native else None
+            futures = {path: pool.submit(_run_python_gate, path)
+                       for path in _submission_order(tests) if path not in RUN_ALONE_TESTS}
+            by_path = {path: future.result() for path, future in futures.items()}
+            native_results = native.result() if native is not None else []
+            for path in tests:                                   # pool is idle now
+                if path in RUN_ALONE_TESTS:
+                    by_path[path] = _run_python_gate(path)
+            results = [by_path[path] for path in tests] + native_results
+        except BaseException:
+            # An unexpected runner error aborts the run as it would sequentially;
+            # do not start queued gates while the error propagates.
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
     return results
 
 
@@ -795,6 +987,10 @@ def main() -> int:
         "--allow-dirty", action="store_true",
         help="Infrastructure development only; candidate verdicts must never use this.",
     )
+    parser.add_argument(
+        "--jobs", type=int, default=None, metavar="N",
+        help="Concurrent gate processes (default: one per CPU; 1 runs sequentially).",
+    )
     parser.add_argument("--list", action="store_true", help="List selected gates and exit.")
     args = parser.parse_args()
     if not args.list and args.report is None:
@@ -807,6 +1003,9 @@ def main() -> int:
         else:
             parser.error("--report must be outside the candidate Worktree")
 
+    jobs = default_jobs() if args.jobs is None else args.jobs
+    if jobs < 1:
+        parser.error("--jobs must be at least 1")
     profiles = args.profile or ["full"]
     expected = args.expected_sha.lower()
     if not re.fullmatch(r"[0-9a-f]{40}", expected):
@@ -850,17 +1049,10 @@ def main() -> int:
         if base else []
     )
     started = time.monotonic()
-    results: list[GateResult] = []
-    for path in tests:
-        results.append(_run(
-            path,
-            _python_command(path),
-            require_nonzero_count=path in LEGACY_SCRIPT_TESTS,
-        ))
-
-    if run_native:
-        with tempfile.TemporaryDirectory(prefix="wisp-simqa-native-") as build:
-            results.extend(_run_native_gates(Path(build)))
+    if jobs > 1:
+        print(f"Simulation QA: {len(tests)} modules"
+              f"{' + native gates' if run_native else ''}; {jobs} parallel jobs", flush=True)
+    results = _run_gates(tests, run_native, jobs)
 
     end_sha = _git("rev-parse", "HEAD")
     stable = end_sha == start_sha == expected

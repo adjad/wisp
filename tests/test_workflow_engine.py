@@ -829,9 +829,14 @@ def test_whole_news_references_keep_exact_body_through_endpoint(tmp_path, monkey
         return ('fixture@example.com' if channel == 'email' else '+15555550123'), ''
     monkeypatch.setattr(executor, 'resolve_destination', resolve)
     for name in ('send_message', 'draft_message', 'send_email', 'draft_email'):
-        def effect(_name=name, **args):
+        async def effect(_name=name, **args):
             effects.append((_name, args))
-            return {'send_message': 'Message sent to synthetic recipient.', 'draft_message': 'Message draft prepared in Wisp.',
+            if _name == 'draft_message':
+                # Draft cards require the real host preparation receipt (see
+                # workflows/executor.py); a bare success string is not evidence.
+                from service.tools import action_tools
+                return await action_tools.draft_message(to=args['to'], text=args['text'])
+            return {'send_message': 'Message sent to synthetic recipient.',
                     'send_email': 'Email sent to synthetic recipient.', 'draft_email': 'Draft opened in Mail.'}[_name]
         monkeypatch.setitem(REGISTRY, name, Tool(name=name, description='Synthetic effect',
             category='system_read', parameters={'type': 'object', 'properties': {

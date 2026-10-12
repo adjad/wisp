@@ -1,0 +1,81 @@
+{
+  "artifactType": "supplemental_future_synthetic_control",
+  "id": "N1-LPR-LPW",
+  "status": "NOT_RUN",
+  "executionAuthorizedByThisArtifact": false,
+  "sourceReviewReportSHA256": "7b93fdf4e445924a476f5a48265de8bb91b85dd079bac30d80b22e1cc7a45dde",
+  "sourceFinding": {
+    "id": "N1",
+    "priority": "P2",
+    "classification": "MANDATORY_ENABLEMENT_PROOF_GAP_NOT_DEFAULT_OFF_DESIGN_BLOCK"
+  },
+  "originalMatrixSHA256": "128143beca2c9e13bfaadd580b7b4f60f4894e7562de8cddc50650cd4e51db25",
+  "originalMatrixRowsPreserved": 45,
+  "scope": "Future deterministic offline schedule control at the actual nonblocking emission seam; no production execution or physical-delivery guarantee",
+  "schedules": [
+    {
+      "id": "revocation_first",
+      "steps": [
+        "Writer samples the old generation while lease is unexpired",
+        "Pause writer after sample but before final submission, without relying on a lower async await",
+        "Second client/thread completes LP-R revocation",
+        "Resume writer at final nonblocking emission boundary"
+      ],
+      "expected": [
+        "No old-token submission after completed LP-R",
+        "Stream closes/refuses without renewing lease",
+        "If earlier header/partial bytes were submitted, retain that fact and assert no subsequent emissions"
+      ],
+      "unsafeMutants": [
+        "Remove shared dispatch serialization gate",
+        "Release gate after generation sample and before submission",
+        "Reuse an old dispatch permit"
+      ]
+    },
+    {
+      "id": "submission_first",
+      "steps": [
+        "Writer validates and submits one nonblocking emission at LP-W while serializing against revocation",
+        "Second client/thread attempts LP-R",
+        "Release the short gate and complete LP-R",
+        "Resume subsequent partial/body emissions"
+      ],
+      "expected": [
+        "Record first submission as preceding completed LP-R; bytes cannot be recalled",
+        "Refuse every subsequent old-token emission",
+        "Do not classify post-write refusal or cancellation as zero-byte proof"
+      ],
+      "unsafeMutants": [
+        "Permit later partial/resumed emissions using earlier authorization",
+        "Check revocation only after all lower writes return"
+      ]
+    },
+    {
+      "id": "gate_liveness",
+      "steps": [
+        "Run both ordering schedules with bounded instrumentation",
+        "Observe short critical section and asynchronous lower-writer resumes"
+      ],
+      "expected": [
+        "No await, blocking send, worker/future wait or slow native/filesystem work under the gate",
+        "No deadlock or lock-order inversion",
+        "Real byte submission observer independent of candidate's success flag"
+      ],
+      "unsafeMutants": [
+        "Hold gate across await or blocking I/O",
+        "Acquire metadata/dispatch locks in conflicting order"
+      ]
+    }
+  ],
+  "proofRequirements": [
+    "Exercise actual emission seam; wrapper-only call ordering supplies no credit",
+    "All timings/generation schedules deterministic; sleeps alone do not prove ordering",
+    "Keep current legacy binding/lsof authoritative and optimized admission disabled during separately admitted preparation",
+    "Independent execution and mutation evidence required before enabling",
+    "Preemption/sample-to-syscall and kernel-delivery limits remain explicitly stated"
+  ],
+  "newHumanResidualChoicesAccepted": [],
+  "testsExecuted": 0,
+  "mutantsExecuted": 0,
+  "noMerge": true
+}

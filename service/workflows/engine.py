@@ -107,7 +107,8 @@ def prepare_news_selector_guard(store, sid: str, prompt: str) -> WorkflowTurn | 
     return prepare_turn(store, sid, prompt)
 
 
-def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> WorkflowTurn | None:
+def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True,
+                 owner_only: bool = False) -> WorkflowTurn | None:
     """Compile a new task or advance the current task with this reply."""
     if CAPABILITY_INVENTORY_RE.search(prompt):
         return None
@@ -152,7 +153,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         bound = store.display_artifact(sid, proof.get("turn_idx", -1)) if persist else None
         if bound is not None and bound.provenance == proof:
             prior_display = bound
-    new_plan = compile_new(
+    new_plan = None if owner_only else compile_new(
         prompt, last_user=(store.last_user_turn(sid) or "") if persist else "",
         last_assistant=(store.last_assistant_turn(sid) or "") if persist else "",
         prior_display=prior_display)
@@ -189,6 +190,10 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
         # require an explicit new request; otherwise edit instructions can be
         # mistaken for a two- or three-word contact name.
         simple_reply = simple_reply or bool(re.fullmatch(r"[A-Za-z][A-Za-z'-]*", prompt.strip()))
+    if owner_only and active and not simple_reply and not plain_reference_request(prompt):
+        # Unsupported corrections/new requests belong to Ling. Never silently
+        # allocate/recompile a new payload from a legacy clarification owner.
+        return None
     # Unknown prose in a channel answer can contain an unrecognized content
     # edit. Never consume just the channel and silently discard the rest.
     if (active and active.status in {"waiting_for_channel", "waiting_for_recipient", "ready", "failed"}
@@ -197,7 +202,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
             and not re.fullmatch(r"(?:it(?:'?s| is)\s+)?(?:on|in)\s+contacts[.!]?", prompt.strip(), re.I)):
         new_plan = WorkflowPlan(original_request=prompt, content_error=CONTENT_QUESTION)
         new_plan.recompute_status()
-    if active and scope_correction:
+    if active and scope_correction and not owner_only:
         if new_plan is None:
             new_plan = compile_new(f"send {prompt}")
     if active and new_plan and (scope_correction or not explicit_delivery(prompt)):
@@ -248,7 +253,7 @@ def prepare_turn(store, sid: str, prompt: str, *, persist: bool = True) -> Workf
     # message whose body happens to be our previous clarification question.
     correction = bool(re.search(r"\b(?:send|text|email|message|draft|compose|write|share|forward)"
                                 r"\s+(?:this|that|it)\b", prompt, re.I))
-    if not active and persist and correction and extract_recipient(prompt):
+    if not active and persist and correction and extract_recipient(prompt) and not owner_only:
         raw = store.latest_workflow(sid)
         if raw:
             if store.workflow_effect_claimed(raw["id"]) and not extract_sources(prompt):
@@ -411,16 +416,27 @@ def finish_workflow(store, sid: str, plan: WorkflowPlan, captured: dict) -> str:
     denied = bool(captured.get("denied")) or "denied" in result_text or "not approved" in result_text
     from service.tools.registry import classify_tool_outcome
     expected = compile_decision(plan).tool_subset[-1]
-    verified = [classify_tool_outcome(item.get("name", ""),
-                str(item.get("result") or item.get("content") or ""))
-                for item in results if item.get("name") == expected]
+    def outcome(item: dict) -> str:
+        # A draft is only verified from its typed host-preparation receipt,
+        # which the executor checks in-process against the approved recipient
+        # and text. News deliveries then replace that receipt with display-safe
+        # text, so re-classifying the text here would always fail; trust the
+        # status the executor recorded for its own workflow call instead.
+        if (item.get("name") == "draft_message"
+                and str(item.get("id", "")).startswith(f"workflow_{plan.id}_")
+                and item.get("status") in {"succeeded", "failed", "denied"}):
+            return item["status"]
+        return classify_tool_outcome(item.get("name", ""),
+                                     str(item.get("result") or item.get("content") or "")).status
+
+    verified = [outcome(item) for item in results if item.get("name") == expected]
 
     terminal = WorkflowPlan.from_dict(plan.to_dict())
     if denied:
         terminal.status = "cancelled"
         event = "approval_denied"
     elif (not any(item.get("name") == expected for item in calls)
-          or not verified or verified[-1].status != "succeeded"):
+          or not verified or verified[-1] != "succeeded"):
         terminal.status = "failed"
         terminal.last_error = ("delivery outcome uncertain" if calls else
                                "delivery tool did not return a verified success")

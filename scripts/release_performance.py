@@ -2057,6 +2057,15 @@ class BackendProcess:
                 except ProcessLookupError:
                     result["group_exited"] = True
                     break
+                except PermissionError:
+                    # macOS answers a signal-0 probe of a group whose last member is
+                    # between exit and reap with EPERM, then ESRCH a few ms later.
+                    # Treat it as still exiting and keep probing until the deadline.
+                    if time.monotonic() >= deadline:
+                        result["errors"].append("group_probe:PermissionError")
+                        break
+                    time.sleep(0.02)
+                    continue
                 except OSError as exc:
                     result["errors"].append(f"group_probe:{type(exc).__name__}")
                     break

@@ -1,5 +1,8 @@
 """Study availability and assent regressions; synthetic sources and fixed clocks only."""
 import datetime as dt
+import os
+import time
+from zoneinfo import ZoneInfo
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -13,14 +16,23 @@ from service.tools import schedule_extras as S
 class Saturday(dt.datetime):
     @classmethod
     def now(cls, tz=None):
-        return cls(2026, 10, 3, 22, 57)
+        value = cls(2026, 10, 3, 22, 57, tzinfo=ZoneInfo("America/Los_Angeles"))
+        return value.astimezone(tz) if tz else value.replace(tzinfo=None)
 
 
 @pytest.fixture
 def clock(monkeypatch):
+    previous = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    monkeypatch.setattr(S, "_availability_timezone", lambda: "America/Los_Angeles")
     monkeypatch.setattr(S, "dt", SimpleNamespace(datetime=Saturday, date=dt.date,
         time=dt.time, timedelta=dt.timedelta))
     monkeypatch.setattr("service.tools.timeranges.datetime", Saturday)
+    yield
+    if previous is None: os.environ.pop("TZ", None)
+    else: os.environ["TZ"] = previous
+    time.tzset()
 
 
 @pytest.mark.asyncio
@@ -73,8 +85,18 @@ def stamp(day, hour, minute=0):
     return dt.datetime(2026, 10, day, hour, minute).timestamp()
 
 
+def synthetic_snapshot(rows=(), tasks=()):
+    now = S.dt.datetime.now(ZoneInfo("America/Los_Angeles")).timestamp()
+    copied = [dict(row, **({"id": f"synthetic-{index}"} if row.get("source") == "calendar" and not row.get("id") else {}))
+              for index, row in enumerate(rows)]
+    return {"commitments": copied, "tasks": list(tasks), "sources": {"calendar": {
+        "available": True, "syncing": False, "last_sync": now, "snapshot_started_at": now,
+        "diagnostics": {"coverage_start": dt.datetime(2026,1,1,tzinfo=ZoneInfo("America/Los_Angeles")).timestamp(),
+                        "coverage_end": dt.datetime(2028,1,1,tzinfo=ZoneInfo("America/Los_Angeles")).timestamp()}}}}
+
+
 async def availability(rows, tasks=(), **kwargs):
-    store = SimpleNamespace(today_snapshot=lambda day, timezone: {"commitments": rows, "tasks": tasks})
+    store = SimpleNamespace(today_snapshot=lambda day, timezone: synthetic_snapshot(rows,tasks))
     ready = {"sources": [{"id": "calendar", "label": "Calendar", "state": "ready"},
                          {"id": "reminders", "label": "Reminders", "state": "ready"}],
              "reminders_fresh": True, "syncing": False}
@@ -117,7 +139,7 @@ async def test_overnight_overlap_and_all_day(clock):
     result = await availability([{"when_ts": stamp(3, 22), "end_ts": stamp(4, 11),
                                   "source": "calendar"}])
     assert "11:00 AM–12:30 PM" in result
-    result = await availability([{"when_ts": stamp(4, 0), "all_day": True,
+    result = await availability([{"when_ts": stamp(4, 0), "end_ts": stamp(5,0), "all_day": True,
                                   "source": "calendar"}])
     assert "No gaps" in result
 
@@ -215,11 +237,16 @@ from service.tools import schedule_extras as S
 class Fixed(dt.datetime):
     @classmethod
     def now(cls, tz=None):
-        return cls(2026, {month}, {day}, 22, 57)
+        value = cls(2026, {month}, {day}, 22, 57).astimezone()
+        return value.astimezone(tz) if tz else value.replace(tzinfo=None)
 S.dt = SimpleNamespace(datetime=Fixed, date=dt.date, time=dt.time, timedelta=dt.timedelta)
 tomorrow = Fixed.now().date() + dt.timedelta(days=1)
 start = dt.datetime.combine(tomorrow, dt.time(9)).timestamp()
-S._store.sync_source("calendar", [{{"source_id":"synthetic-event", "kind":"event", "title":"Synthetic busy", "when_ts":start, "end_ts":dt.datetime.combine(tomorrow, dt.time(11)).timestamp()}}])
+from service.assistant import store as store_module
+from service.assistant.today import day_bounds
+store_module.time = SimpleNamespace(time=lambda: Fixed.now().timestamp())
+lo,hi = day_bounds(tomorrow.isoformat(), {zone!r})
+S._store.sync_source("calendar", [{{"source_id":"synthetic-event", "kind":"event", "title":"Synthetic busy", "when_ts":start, "end_ts":dt.datetime.combine(tomorrow, dt.time(11)).timestamp()}}], diagnostics={{"snapshot_started_at":Fixed.now().timestamp(),"coverage_start":lo,"coverage_end":hi}})
 ready = {{"sources":[{{"id":"calendar","label":"Calendar","state":"ready"}}], "reminders_fresh":True}}
 with patch("service.assistant.sync_status.ensure_sources", new=AsyncMock(return_value=ready)):
     result = asyncio.run(S.find_free_time(period="tomorrow", minutes=90))
@@ -235,9 +262,10 @@ S._store._db.close()
 
 @pytest.mark.asyncio
 async def test_unknown_end_duration_is_disclosed(clock):
-    result = await availability([{"when_ts": stamp(4, 9), "source": "manual"}])
-    assert "10:00 AM–11:30 AM" in result
-    assert "assumed to run an hour" in result
+    result = await availability([{"when_ts": stamp(4, 9), "source": "manual", "kind": "event"}])
+    assert result.startswith("(error:") and "missing or invalid ends" in result
+    assert "candidate" not in result and "assumed" not in result
+    assert "10:00 AM" not in result
 
 
 @pytest.mark.asyncio
@@ -255,7 +283,7 @@ async def test_route_date_does_not_drift_when_tool_executes_after_midnight(clock
         def now(cls, tz=None):
             return cls(2026, 10, 4, 0, 1)
     ready = {"sources": [{"id": "calendar", "state": "ready"}], "reminders_fresh": True}
-    store = SimpleNamespace(today_snapshot=lambda day, zone: {"commitments": []})
+    store = SimpleNamespace(today_snapshot=lambda day, zone: synthetic_snapshot())
     with patch.object(S, "dt", SimpleNamespace(datetime=AfterMidnight, date=dt.date,
             time=dt.time, timedelta=dt.timedelta)), patch.object(S, "_store", store), \
          patch("service.assistant.sync_status.ensure_sources", new=AsyncMock(return_value=ready)):
@@ -439,26 +467,27 @@ async def test_bare_assent_cannot_display_unreceipted_write_claim(call_forbidden
 
 
 @pytest.mark.parametrize("minutes", [0, -5, 30])
-def test_legacy_availability_keeps_sync_api_clamping_and_start_only_semantics(minutes, clock):
+def test_legacy_availability_keeps_sync_api_clamping_and_real_end_semantics(minutes, clock):
     rows = [{"when_ts": stamp(4, 9), "end_ts": stamp(4, 12), "source": "calendar"}]
-    store = SimpleNamespace(upcoming=lambda **kwargs: rows)
+    store = SimpleNamespace(today_snapshot=lambda day, zone: synthetic_snapshot(rows))
     with patch.object(S, "_store", store), patch("service.assistant.sync_status.ensure_sources", new=AsyncMock()) as ensure:
         result = S.find_free_time(days=2, minutes=minutes)
     assert isinstance(result, str)
-    assert "tomorrow: 10:00 AM–6:00 PM" in result
-    assert f"Free for {minutes}+ minutes" in result
-    assert "Timed items are assumed to run an hour" in result
-    assert "candidate" not in result
+    assert "tomorrow (2026-10-04): 12:00 PM–6:00 PM" in result
+    assert f"Free for {max(5,minutes)}+ minutes" in result
+    assert "assumed" not in result
+    assert "candidate" in result
     ensure.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_legacy_availability_registered_execution_does_not_wait_for_sources(clock):
     from service.tools.registry import run_tool, REGISTRY
-    with patch.object(S, "_store", SimpleNamespace(upcoming=lambda **kwargs: [])), \
+    with patch.object(S, "_store", SimpleNamespace(today_snapshot=lambda day, zone: synthetic_snapshot())), \
          patch("service.assistant.sync_status.ensure_sources", new=AsyncMock()) as ensure:
         result = await run_tool(REGISTRY["find_free_time"], {"days": 1})
-    assert result == "No gaps of 30+ minutes in the next 1 day(s) between 9:00 and 18:00."
+    assert result.startswith("No matches: No gaps of 30+ minutes")
+    assert "9:00 and 18:00" in result
     ensure.assert_not_awaited()
 
 
@@ -489,9 +518,14 @@ async def test_inactive_pinned_task_does_not_block(clock):
 
 @pytest.mark.asyncio
 async def test_ambiguous_window_is_rejected(clock):
-    with patch("service.tasks.temporal.unambiguous_local_time", return_value=False):
-        result = await availability([])
-    assert "ambiguous or nonexistent" in result
+    class BeforeFold(dt.datetime):
+        @classmethod
+        def now(cls,tz=None):
+            value = cls(2026,10,31,12,tzinfo=ZoneInfo("America/Los_Angeles"))
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    with patch.object(S,"dt",SimpleNamespace(datetime=BeforeFold,time=dt.time,timedelta=dt.timedelta)):
+        result = await availability([],day_start=1,day_end=3)
+    assert "repeated hour" in result and "candidate" not in result
 
 
 @pytest.mark.asyncio
@@ -544,7 +578,7 @@ async def test_confirmed_reminder_real_access_mode_policy(mode, clock):
 @pytest.mark.asyncio
 async def test_exact_day_registered_execution_awaits_period_dispatch(clock):
     from service.tools.registry import run_tool, REGISTRY
-    store = SimpleNamespace(today_snapshot=lambda day, timezone: {"commitments": []})
+    store = SimpleNamespace(today_snapshot=lambda day, timezone: synthetic_snapshot())
     ready = {"sources": [{"id": "calendar", "state": "ready"}], "reminders_fresh": True}
     with patch.object(S, "_store", store), patch("service.assistant.sync_status.ensure_sources",
             new=AsyncMock(return_value=ready)):
@@ -618,12 +652,8 @@ async def test_capability_then_date_question_keeps_generic_route(offer, clock):
 
 @pytest.mark.parametrize("gap,expected", [(4, False), (5, True)])
 def test_legacy_zero_minutes_still_requires_five_minute_gap(gap, expected, clock):
-    rows = [{"when_ts":stamp(4, 9, gap)}, {"when_ts":stamp(4, 10, gap)},
-            {"when_ts":stamp(4, 11, gap)}, {"when_ts":stamp(4, 12, gap)},
-            {"when_ts":stamp(4, 13, gap)}, {"when_ts":stamp(4, 14, gap)},
-            {"when_ts":stamp(4, 15, gap)}, {"when_ts":stamp(4, 16, gap)},
-            {"when_ts":stamp(4, 17, gap)}]
-    with patch.object(S, "_store", SimpleNamespace(upcoming=lambda **kwargs:rows)):
+    rows = [{"when_ts":stamp(4,9,gap), "end_ts":stamp(4,18), "source":"calendar"}]
+    with patch.object(S, "_store", SimpleNamespace(today_snapshot=lambda day, zone:synthetic_snapshot(rows))):
         result = S.find_free_time(days=2, minutes=0)
     assert ("9:00 AM–9:05 AM" in result) is expected
     assert ("No gaps" in result) is not expected
@@ -634,3 +664,10 @@ async def test_explicit_assistant_denial_cannot_grant_confirmed_write(clock):
     d = await R.route("sure, on 2026-10-04", last_user="find time to study tomorrow",
                       last_assistant="Do not set a reminder. " + GOOD_OFFER)
     assert "add_reminder" not in (d.tool_subset or []) and d.tool_argument_bindings == {}
+
+
+@pytest.mark.asyncio
+async def test_all_day_unknown_end_cannot_claim_a_verified_gap(clock):
+    result = await availability([{"when_ts":stamp(3,0), "all_day":True, "source":"calendar"}])
+    assert result.startswith("(error:") and "missing or invalid ends" in result
+    assert "candidate" not in result and "9:00 AM" not in result

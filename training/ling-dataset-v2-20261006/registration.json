@@ -1,0 +1,18 @@
+{
+  "base": "20e256d91bcb0bc34f5eb3a6c506bb9edc90f6fe",
+  "branch": "codex/ling-dataset-v2",
+  "namespace": "training/ling-dataset-v2-20261006",
+  "parent": "/root",
+  "authors": {
+    "arguments": "/root/dataset_v2_arguments",
+    "context": "/root/dataset_v2_context",
+    "grounded": "/root/dataset_v2_grounded"
+  },
+  "all_exact_scopes_accepted": true,
+  "parent_excludes_active_shards": true,
+  "model": "gpt-6.1-sol",
+  "reasoning": "high",
+  "contract_commit": "c313a459f6ab259e55981ffcb1bbe3df11fe9307",
+  "old_payload_reads_allowed": false,
+  "actual_training_or_model_execution_allowed": false
+}

@@ -15,6 +15,9 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 from __future__ import annotations
 
 import asyncio
+from service.inference.remote_policy import (remote_only_profile,
+                                             require_generation_role,
+                                             require_local_models_disabled)
 import json
 import os
 import re
@@ -27,7 +30,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import anyio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
 from service import idle, idle_unloader
@@ -80,7 +83,11 @@ from service.memory import store, build_messages, maybe_summarize
 from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
-from service.router.router import rule_route
+from service.router.router import RouteDecision, routing_guard_contract, rule_route
+from service.router.model_led import (continuation_requires_baseline,
+                                      model_led_enabled, needs_effect_owner,
+                                      fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
+                                      OPAQUE_OUTBOUND_TOOLS, PRIVATE_EGRESS_TOOLS, registry_specs)
 from service.router.pinning import STICKY_ROLES as _STICKY_ROLES, apply_session_pin
 from service.workflows import finish_workflow, prepare_turn
 from service.workflows.compiler import extract_stock_symbols
@@ -256,6 +263,8 @@ def _sync_keep_warm() -> None:
     wasted, never idle-unloaded) while the model actually in use pays a cold
     reload every time it's gone idle for 5+ minutes.
     """
+    if remote_only_profile() is not None:
+        return
     keep = {role_target("fast").model}
     try:
         agent = role_target("agent")
@@ -274,6 +283,14 @@ async def lifespan(app: FastAPI):
     quarantine.check()
     global client
     client = OMLXClient()
+    profile = remote_only_profile()
+    started_tasks = []
+    if profile is not None:
+        try:
+            await _prepare_remote_inference(client)
+        except Exception:
+            await client.aclose()
+            raise
     # Keep the resident chat model warm. Every text role resolves to it now
     # (see config/models.yaml), so this is the model essentially every request
     # needs and there is no second chat model for it to contend with. Warm it
@@ -314,11 +331,12 @@ async def lifespan(app: FastAPI):
     # contribute tools to the registry, so they load before the first request
     # can arrive. Neither is required — a fresh install has zero of each — and
     # a failure in either must not stop the backend from serving.
-    try:
-        skills.load()
-    except Exception:  # noqa: BLE001
-        pass
-    mcp_task = asyncio.create_task(mcp_manager.start())
+    if profile is None:
+        try:
+            skills.load()
+        except Exception:  # noqa: BLE001
+            pass
+        started_tasks.append(asyncio.create_task(mcp_manager.start()))
 
     # Retention: unpinned research jobs keep their evidence/quotes/report
     # forever, but the full fetched page bodies (only needed for re-extraction,
@@ -331,17 +349,29 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa: BLE001
         pass
 
-    warm_task = asyncio.create_task(_warm_summarizer())
-    if cloud_super_model_enabled():
-        start_laya_warmup()
-    unloader_task = asyncio.create_task(idle_unloader.run(client))
-    assistant_task = asyncio.create_task(assistant_scheduler.run())
-    from service import nodes
-    node_task = asyncio.create_task(nodes.run())
-    from service.memory.api import worker as memory_worker
-    memory_task = asyncio.create_task(memory_worker.run(client))
-    recovery_task = asyncio.create_task(quarantine.watch(
-        (warm_task, unloader_task, assistant_task, node_task, memory_task, mcp_task), client.aclose))
+    if profile is None:
+        started_tasks.append(asyncio.create_task(_warm_summarizer()))
+        if cloud_super_model_enabled():
+            start_laya_warmup()
+        started_tasks.append(asyncio.create_task(idle_unloader.run(client)))
+        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        from service import nodes
+        started_tasks.append(asyncio.create_task(nodes.run()))
+        from service.memory.api import worker as memory_worker
+        started_tasks.append(asyncio.create_task(memory_worker.run(client)))
+    else:
+        # Remote inference runs the assistant scheduler as on a Mac with
+        # local models: due reminders and holds, the daily brief, user-approved
+        # scheduled sends, and behavior ticks (unless behavior learning is off). The
+        # scheduler never starts or loads oMLX; its only model call is the
+        # behavior phraser, which goes to the pinned remote target and stands
+        # down while a chat turn is in flight. Deliberately NOT started here:
+        # the oMLX warmup and idle unloader (local engine only), Super Model
+        # warmup, proactive nodes (other hosts), and conversation-memory
+        # capture (local model only; it would idle anyway since the fast role
+        # is unmanaged).
+        started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+    recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
     bridge_link = None
@@ -350,21 +380,19 @@ async def lifespan(app: FastAPI):
         bridge_link = browser_bridge_host.start_from_environment(assistant_store)
     except Exception:  # noqa: BLE001 — an optional bridge never blocks startup
         pass
-    yield
-    if bridge_link is not None:
-        bridge_link.stop()
-    recovery_task.cancel()
-    await asyncio.gather(recovery_task, return_exceptions=True)
-    memory_task.cancel()
-    await asyncio.gather(memory_task, return_exceptions=True)
-    warm_task.cancel()
-    unloader_task.cancel()
-    assistant_task.cancel()
-    node_task.cancel()
-    await asyncio.gather(node_task, return_exceptions=True)
-    mcp_task.cancel()
-    await mcp_manager.stop()
-    await client.aclose()
+    try:
+        yield
+    finally:
+        if bridge_link is not None:
+            bridge_link.stop()
+        recovery_task.cancel()
+        await asyncio.gather(recovery_task, return_exceptions=True)
+        for task in started_tasks:
+            task.cancel()
+        await asyncio.gather(*started_tasks, return_exceptions=True)
+        if profile is None:
+            await mcp_manager.stop()
+        await client.aclose()
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -374,6 +402,10 @@ from service.memory.api import router as memory_router
 app.include_router(memory_router)
 from service.assistant.today_api import router as today_router
 app.include_router(today_router)
+from service.behavior_api import router as behavior_router
+app.include_router(behavior_router)
+from service.assistant.attention_api import router as attention_router
+app.include_router(attention_router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -403,8 +435,17 @@ async def _await_omlx(seconds: float) -> bool:
         return False
 
 
+async def _prepare_remote_inference(active_client) -> None:
+    profile = remote_only_profile()
+    if profile is None:
+        raise ValueError("Remote-only inference is not enabled")
+    async with asyncio.timeout(profile.readiness_timeout):
+        await active_client.health()
+
+
 async def ensure_omlx() -> None:
     """Start only the Pro-owned engine, with bounded readiness."""
+    require_local_models_disabled("Local oMLX lifecycle")
     from service.inference.omlx_client import ModelLoadError
     if not getattr(client, "managed", True):
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
@@ -442,6 +483,23 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": True}
     except FileNotFoundError:
         return {"stopped": False}
+
+
+# Remote inference: history the agent sees per turn. The remote fit
+# refuses to trim selected messages and the profile caps the messages+tools
+# aggregate in bytes, so history must leave room for the system prompt, tool
+# schemas, tool results and the output budget. A fifth of the aggregate byte
+# budget at ~4 bytes per token (6.5k tokens for a 131,072-byte profile) keeps
+# the last few turns for follow-ups like "reply to that".
+_REMOTE_HISTORY_SHARE = 20
+
+
+def _history_budget(target: Target) -> int:
+    budget = max(1500, target.context_window - 11500)
+    if remote_only_profile() is not None:
+        cap = max(1500, remote_only_profile().aggregate_bytes // _REMOTE_HISTORY_SHARE)
+        budget = min(budget, cap)
+    return budget
 
 
 def _direct_generation_budget(target: Target) -> tuple[int, bool]:
@@ -973,6 +1031,10 @@ async def set_idle_timeout(body: dict[str, Any]) -> dict[str, Any]:
 async def chat(body: dict[str, Any]):
     target = role_target(body.get("role") or models_config().get("default_role", "agent"))
     max_tokens = body.get("max_tokens", 8000)
+    profile = remote_only_profile()
+    if profile is not None:
+        require_generation_role(target.role)
+        max_tokens = profile.fit_output(max_tokens)
     local_prompt = None
     if target.endpoint.name == "local_provider":
         local_prompt = body.get("prompt")
@@ -998,6 +1060,8 @@ async def chat(body: dict[str, Any]):
                 body.get("messages") or [{"role": "user", "content": body["prompt"]}])
     streaming_started = False
     try:
+        if profile is not None:
+            await _prepare_remote_inference(active)
         await active.ensure_only(model)
         if body.get("stream"):
             async def gen():
@@ -1164,6 +1228,14 @@ async def agent(body: dict[str, Any]):
         if not sid or store.get_session(sid) is None:
             sid = store.create_session()
         sess = store.get_session(sid)
+
+    # Capture before persist_user_turn/history rendering/budget trimming.
+    # All prior conversation is conservatively unproven, even if its current
+    # rendered window omits a private result or its tool digest. No schema or
+    # mutable model owner flag supplies this authority; a new empty session
+    # starts clean. Summaries/index remain restrictive when turns are trimmed.
+    private_shell_history = bool(not test_mode and sess and (
+        store.turn_count(sid) or sess.get("summary") or sess.get("summarized_idx")))
 
     queue: asyncio.Queue = asyncio.Queue()
     req_id = uuid.uuid4().hex
@@ -1356,10 +1428,89 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
+            # Knowledge fields, grocery selectors and bounded queue targets are literal
+            # data. Recognize their envelope before task/workflow/skill
+            # interpreters can mistake those fields for another command. Credential redaction
+            # and current-user capture have already run at the entry boundary.
+            from service.knowledge_intent import knowledge_envelope
+            literal_knowledge = knowledge_envelope(prompt) is not None
+            from service.workflows.workflow20 import grocery_read_attempt
+            from service.router.router import _scheduled_send_review
+            queue_envelope = _scheduled_send_review(prompt) is not None
+            literal_envelope = literal_knowledge or grocery_read_attempt(prompt) or queue_envelope
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []
             last_tools = store.last_assistant_tools(sid) if sess else None
+
+            # Decide ownership BEFORE any positive rule/typed compiler runs.
+            # Model identity is the configured agent target, not a filename
+            # allowlist that would silently exclude a renamed trained model.
+            model_led_turn = False
+            model_led_target = None
+            # Model-led routing is a local-inference mode. Remote-only mode keeps
+            # the legacy router, whose remote tool contract it was built and tested
+            # against. Deterministic 1.2.5 claims stay deterministic in either
+            # mode: a literal envelope (knowledge fields, grocery selectors,
+            # queued-send review) is data, and a behavior question is answered
+            # only by its exact behavior tool. Those turns use the legacy route.
+            from service.router.router import behavior_route_claim
+            deterministic_claim = literal_envelope or behavior_route_claim(prompt, last_tools)
+            if (remote_only_profile() is None and not deterministic_claim
+                    and model_led_enabled(os.environ.get("WISP_MODEL_LED_ROUTING"))):
+                proposed_target = role_target("agent")
+                if (proposed_target.endpoint.managed
+                        and proposed_target.endpoint.name == "local"
+                        and getattr(client, "managed", False)
+                        and getattr(client, "base_url", "").rstrip("/")
+                            == proposed_target.endpoint.base_url.rstrip("/")):
+                    model_led_turn = True
+                    model_led_target = proposed_target
+                else:
+                    raise ValueError("Model-led routing requires the configured managed local agent connection. "
+                                     "Reconnect it, or explicitly set WISP_MODEL_LED_ROUTING=0 to use legacy routing.")
+
+            # The current source/authority envelope precedes every recovery
+            # reader, contact resolver and native warm-up. An old owner cannot
+            # grant permission for a source this new turn explicitly excludes.
+            model_led_forbidden, model_led_bindings = frozenset(), {}
+            if model_led_turn:
+                model_led_forbidden, model_led_bindings = routing_guard_contract(prompt)
+                if memory_excluded(prompt):
+                    from service.tools.registry import REGISTRY
+                    model_led_forbidden |= frozenset({"recall", "search_memory", "search_conversations", "remember", "forget", "clear_memory"})
+                    model_led_forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                                                     if t.category in {"skill_tool", "mcp_read", "mcp_action"}
+                                                     or t.name in {"run_shell", "run_applescript", "create_tool", "use_skill"})
+                if personal_communication_request(prompt):
+                    model_led_forbidden |= PRIVATE_EGRESS_TOOLS
+            recovery_excluded = model_led_turn and bool(model_led_forbidden)
+
+            # Already persisted actions retain their exact owner/recovery path.
+            # Their existence is not a reason to run a NEW typed compiler on
+            # every ordinary request. In particular, no Mail warming or contact
+            # lookup may happen before Ling selects a capability for a new turn.
+            existing_task = store.active_task(sid) if sess else None
+            if model_led_turn and recovery_excluded and existing_task:
+                # A new source-scoped read leaves the persisted task untouched.
+                # Preserve its stronger negative shell exclusion; the ordinary
+                # private-read exception must not reopen an old owner's escape.
+                model_led_forbidden |= frozenset({"run_shell"})
+            latest_task = store.latest_task(sid) if sess else None
+            latest_workflow = (store.latest_workflow(sid, max_age_seconds=float("inf"))
+                               if sess else None)
+            pending_model_effects = store.pending_model_effects(sid) if sess else []
+            if pending_model_effects and not model_led_turn:
+                # Rollback must not become a second executor for an uncertain
+                # model action. Stop before any legacy preparation/dispatch.
+                await emit({"type": "text", "text": (
+                    "An earlier action has an unverified outcome. Check its destination "
+                    "before continuing; changing routing mode cannot safely retry it.")})
+                await emit({"type": "done"})
+                if not test_mode:
+                    persist_user_turn()
+                    store.add_turn(sid, "assistant", "An earlier action has an unverified outcome; check its destination.")
+                return
 
             # Conversational workflows span turns. A reply like "it's for my
             # team" contains no activation phrase of its own, so trigger-only
@@ -1367,22 +1518,26 @@ async def agent(body: dict[str, Any]):
             # their first question. Keep one active skill on the session until
             # the user stops it, switches explicitly, or the skill emits its
             # completion marker.
-            active_skill = skills.select_for_turn(
-                prompt,
-                str((sess or {}).get("active_skill") or ""),
-                last_assistant or "",
-            )
-            if sess and active_skill != str(sess.get("active_skill") or ""):
-                store.set_active_skill(sid, active_skill)
-            # Skills stay on the managed model. Beyond an active conversational
-            # workflow, that covers a turn that invokes ANY enabled skill (an
-            # explicit @name or a trigger phrase) and the follow-up to a turn that
-            # loaded a skill with use_skill or ran a skill-defined tool.
-            skill_turn = ""
-            if active_skill:
-                skill_turn = "active_skill_local"
-            elif skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools):
-                skill_turn = "skill_local"
+            if remote_only_profile() is not None:
+                active_skill = ""
+                skill_turn = ""
+            else:
+                active_skill = "" if literal_envelope else skills.select_for_turn(
+                    prompt,
+                    str((sess or {}).get("active_skill") or ""),
+                    last_assistant or "",
+                )
+                if not literal_envelope and sess and active_skill != str(sess.get("active_skill") or ""):
+                    store.set_active_skill(sid, active_skill)
+                # Skills stay on the managed model. Beyond an active conversational
+                # workflow, that covers a turn that invokes ANY enabled skill (an
+                # explicit @name or a trigger phrase) and the follow-up to a turn that
+                # loaded a skill with use_skill or ran a skill-defined tool.
+                skill_turn = ""
+                if active_skill:
+                    skill_turn = "active_skill_local"
+                elif not literal_envelope and (skills.turn_skill_names(prompt) or skills.digest_used_skill(last_tools)):
+                    skill_turn = "skill_local"
 
             # Common assistant actions are moving behind a typed task boundary.
             # The compiler owns semantic roles and canonical arguments; the
@@ -1399,7 +1554,11 @@ async def agent(body: dict[str, Any]):
                 "WISP_TYPED_REMINDERS_SHADOW_ONLY", "0").strip().lower() in {
                     "1", "true", "yes", "on"}
             from service.workflows.engine import prepare_news_selector_guard
-            news_turn = prepare_news_selector_guard(store, sid, prompt)
+            # New publisher/display requests also belong to Ling; previously
+            # bound display artifacts remain protected in owner-only recovery.
+            # A literal envelope is data and never reaches the news selector.
+            news_turn = (prepare_news_selector_guard(store, sid, prompt)
+                         if not literal_envelope and not model_led_turn else None)
             if news_turn:
                 await emit({"type": "workflow", "event": news_turn.event,
                             "workflow": news_turn.plan.to_dict()})
@@ -1428,10 +1587,36 @@ async def agent(body: dict[str, Any]):
                     await emit({"type": "done"})
                     return
             from service.tasks.reply_engine import prepare_task_turn_async
-            task_turn = await prepare_task_turn_async(
+            task_owner_admission = None
+            task_owner_verdict = "none"
+            if (model_led_turn and existing_task and not pending_model_effects
+                    and not recovery_excluded):
+                from service.tasks.engine import owner_only_new_request
+                from service.tasks.models import TaskPlan
+                from service.tasks.reply_engine import interpret_owner_continuation
+                owner_plan = TaskPlan.from_dict(existing_task)
+                if (owner_plan.status in {"waiting_for_input", "failed"}
+                        and owner_only_new_request(prompt, owner_plan)):
+                    # Free-form recovery belongs to Ling too. Interpret before
+                    # an old task can warm Mail, resolve a contact or fill a
+                    # slot. Bind the interpretation to the exact stored owner;
+                    # the engine rechecks it against its current snapshot.
+                    owned_inference_client = OMLXClient(target=model_led_target)
+                    turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
+                    task_owner_admission, task_owner_verdict = await interpret_owner_continuation(
+                        turn_client, model_led_target.model, existing_task, prompt,
+                        last_assistant or "", **no_thinking_kwargs(model_led_target.model))
+            task_turn = None if literal_envelope else (await prepare_task_turn_async(
                 store, sid, prompt, assistant_store=assistant_store,
                 persist=not test_mode and not typed_shadow_only,
-                allow_native=not test_mode and not typed_shadow_only)
+                allow_native=not test_mode and not typed_shadow_only,
+                owner_only=model_led_turn, owner_admission=task_owner_admission)
+                if not model_led_turn or ((existing_task or latest_task) and not pending_model_effects and not recovery_excluded) else None)
+            if task_owner_verdict == "continue" and task_turn is None:
+                # Recovery can reject a once-valid decision after an async
+                # task revision change. It grants no authority to the fallback
+                # model either; retain ambiguity's mutation closure.
+                task_owner_verdict = "ambiguous"
             if task_turn:
                 await emit({"type": "task_plan", "event": task_turn.event,
                             "task": task_turn.plan.to_dict(),
@@ -1493,8 +1678,9 @@ async def agent(body: dict[str, Any]):
             # task's source, channel and recipient through clarifications, so a
             # reply like "Messages" or "yes" advances the existing plan
             # instead of being classified as a new isolated request.
-            workflow_turn = prepare_turn(
-                store, sid, prompt, persist=not test_mode)
+            workflow_turn = None if literal_envelope else (prepare_turn(
+                store, sid, prompt, persist=not test_mode, owner_only=model_led_turn)
+                if not model_led_turn or (latest_workflow and not pending_model_effects and not recovery_excluded) else None)
             # Only a turn that starts execution owns its revision; a response-only
             # turn (e.g. "already running") may describe another request's plan.
             workflow_owned = (own_workflow(workflow_turn.plan)
@@ -1533,7 +1719,7 @@ async def agent(body: dict[str, Any]):
             from service.workflows.reads import (
                 adjacent_stock_response, compile_read, execute_read,
             )
-            read_plan = compile_read(
+            read_plan = None if (literal_envelope or model_led_turn) else compile_read(
                 prompt, last_user=last_user or "", last_tools=last_tools or "",
                 last_stock_response=adjacent_stock_response(
                     last_assistant or "", last_tools or ""))
@@ -1547,13 +1733,16 @@ async def agent(body: dict[str, Any]):
                 await emit({"type": "done"})
                 return
 
-            turn_client = TurnInferenceClient(client, ensure_omlx, emit=emit)
+            if owned_inference_client is None:
+                turn_client = TurnInferenceClient(
+                    client, (lambda: _prepare_remote_inference(client))
+                    if remote_only_profile() is not None else ensure_omlx, emit=emit)
             # Optional embedding/reranker routing needs the engine before it
             # can retrieve a menu. The default lexical provider uses no model;
             # leave it cold until a real generation is needed.
             retrieval_provider = str((models_config().get("tool_retrieval") or {}).get(
                 "provider", "embedding")).lower()
-            if retrieval_provider != "lexical":
+            if remote_only_profile() is None and not model_led_turn and retrieval_provider != "lexical":
                 retrieval_role = "reranker" if retrieval_provider == "reranker" else "embedding"
                 try:
                     if role_target(retrieval_role).endpoint.managed:
@@ -1571,6 +1760,23 @@ async def agent(body: dict[str, Any]):
                 decision = workflow_turn.decision
                 await emit({"type": "workflow", "event": workflow_turn.event,
                             "workflow": workflow_turn.plan.to_dict()})
+            elif model_led_turn:
+                forbidden, bindings = model_led_forbidden, model_led_bindings
+                if (task_owner_verdict == "ambiguous"
+                        or continuation_requires_baseline(prompt, last_assistant)
+                        or (sess and store.unresolved_action(sid))):
+                    # A free-form "yes"/channel answer still goes to Ling for
+                    # interpretation. It cannot authorize a new effect merely
+                    # by referring to an old assistant offer with no owned plan.
+                    from service.tools.registry import REGISTRY
+                    forbidden |= frozenset(t.name for t in registry_specs(REGISTRY)
+                                           if needs_effect_owner(t.category))
+                decision = RouteDecision(
+                    role="agent", model=model_led_target.model, needs_tools=True,
+                    source="model_led", route_source="model_led_discovery",
+                    reason="Local model interprets request and selects capabilities/tools",
+                    tool_subset=[], multi_round=True, forbidden_tools=forbidden,
+                    tool_argument_bindings=bindings)
             else:
                 decision = await route(prompt, last_user=last_user,
                                        recent_users=recent_users,
@@ -1587,9 +1793,10 @@ async def agent(body: dict[str, Any]):
 
             # Context/task/assent routing has already run. Preserve scoped tools
             # and keep complete greetings/thanks on the tool-free fast path.
-            decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
+            if not model_led_turn:
+                decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
             super_model_cloud = False
-            if cloud_super_model_enabled():
+            if remote_only_profile() is None and not model_led_turn and cloud_super_model_enabled():
                 if active_skill:
                     super_reason = "an active local skill must remain on this Mac"
                 else:
@@ -1620,7 +1827,7 @@ async def agent(body: dict[str, Any]):
                                          else "super_model_local")
                 decision.reason = f"{decision.reason}; Super Model: {super_reason}"
             else:
-                target = role_target(decision.role)
+                target = model_led_target if model_led_turn else role_target(decision.role)
                 if decision.role in models_config().get("inference", {}).get("bindings", {}):
                     decision.model = target.model
             if not skill_turn:
@@ -1641,17 +1848,26 @@ async def agent(body: dict[str, Any]):
                 decision.route_source = skill_turn
                 decision.reason = (f"{decision.reason}; "
                                    f"{'active skill' if active_skill else 'skill'} stays on this Mac")
+            if model_led_turn:
+                # Capture the admitted local target for every step/context budget.
+                # Existing owned-client cleanup closes this per-turn transport.
+                if owned_inference_client is None:
+                    owned_inference_client = OMLXClient(target=target)
+                    turn_client = TurnInferenceClient(owned_inference_client, ensure_omlx, emit=emit)
             if not target.endpoint.managed and not test_mode:
                 # Pin by role, not historical remote folder name. The target is
                 # captured once and never inferred from its (possibly shared) ID.
                 decision.model = target.model
                 owned_inference_client = OMLXClient(target=target)
                 async def remote_ready():
-                    async with asyncio.timeout(target.endpoint.readiness_timeout):
-                        await owned_inference_client.health()
+                    if remote_only_profile() is not None:
+                        await _prepare_remote_inference(owned_inference_client)
+                    else:
+                        async with asyncio.timeout(target.endpoint.readiness_timeout):
+                            await owned_inference_client.health()
                 fallback_role = models_config().get("inference", {}).get("bindings", {}).get(decision.role, {}).get("fallback_role")
                 turn_client = TurnInferenceClient(owned_inference_client, remote_ready, emit=emit,
-                    fallback_start=ensure_omlx if fallback_role == "fast" and not decision.needs_tools else None)
+                    fallback_start=ensure_omlx if remote_only_profile() is None and fallback_role == "fast" and not decision.needs_tools else None)
 
 
             await emit({"type": "routed", **decision.as_dict()})
@@ -1660,18 +1876,62 @@ async def agent(body: dict[str, Any]):
 
             user_msg: dict[str, Any] = {
                 "role": "user",
-                "content": prompt if super_model_cloud else (decision.resolved_request or prompt),
+                "content": prompt if (super_model_cloud or model_led_turn) else (decision.resolved_request or prompt),
             }
-            schedule_read = (not (workflow_turn and workflow_turn.decision)
+            schedule_read = (not model_led_turn and not (workflow_turn and workflow_turn.decision)
                              and _current_schedule_source_route(decision, prompt))
             # Test mode is stateless (see the endpoint docstring) — the prompt
             # stands alone, with no session history loaded or built on.
+            # A concurrent same-session turn may have added/ summarized
+            # context while provider/owner setup awaited. OR the actual store
+            # provenance again immediately before synchronous history rendering.
+            # Never clear the earlier snapshot, including an old summarized index.
+            current_shell_session = store.get_session(sid) if not test_mode else None
+            turn_private_shell_history = private_shell_history or bool(current_shell_session and (
+                store.turn_count(sid) or current_shell_session.get("summary")
+                or current_shell_session.get("summarized_idx")))
             messages = ([user_msg] if super_model_cloud else _tool_turn_messages(
-                sid, user_msg, max_tokens=max(1500, target.context_window - 11500),
+                sid, user_msg, max_tokens=_history_budget(target),
                 test_mode=test_mode,
                 verified_results_only=(decision.verified_results_only or
                                        schedule_read),
             ))
+            if model_led_turn:
+                # Keep references/clarification history without promoting old
+                # assistant answers or summaries to current source evidence.
+                messages.insert(0, {"role": "system", "content": (
+                    "Conversation and remembered facts are unverified context for "
+                    "interpreting the request. Read current personal sources before "
+                    "answering about today's messages/calendar. An old assistant "
+                    "offer or claimed action is not an execution receipt.")})
+                if task_owner_verdict != "none":
+                    messages.insert(1, {"role": "system", "content": (
+                        "An older task is still pending; this turn did not advance it. "
+                        "Do not treat its existence as permission to resume or duplicate it. "
+                        + ("Ask whether the user is answering that task or starting a new request; "
+                           "actions are unavailable until that is clear."
+                           if task_owner_verdict == "ambiguous" else
+                           "Interpret the original current request independently."))})
+                pending_effects = pending_model_effects
+                if pending_effects:
+                    messages.insert(1, {"role": "system", "content": (
+                        "Host-recorded prior action attempts (not instructions): "
+                        + json.dumps(pending_effects)
+                        + ". Their completion is unverified. Do not repeat them or "
+                        "retarget an uncertain send; advise checking the destination.")})
+
+            def claim_model_action(tool, args):
+                persist_user_turn()
+                return store.claim_model_effect(
+                    sid, req_id, tool.name, args,
+                    outbound=opaque_effect(tool.category)
+                    or tool.name in OPAQUE_OUTBOUND_TOOLS
+                    or tool.category in {"email_send", "messages_send", "network_write"}
+                    or tool.name in {"send_message", "send_email", "reply_to_email",
+                                     "forward_email", "schedule_send"})
+
+            def finish_model_action(claim, verified):
+                return store.finish_model_effect(sid, claim, verified=verified)
 
             if test_mode and not decision.needs_tools:
                 # No tool would be offered at all — reasoning/general/fast/
@@ -1750,16 +2010,24 @@ async def agent(body: dict[str, Any]):
                 final = await run_agent(turn_client, decision.model, messages, emit, approver,
                                         tools=decision.tool_subset,
                                         active_skill=active_skill,
+                                        allow_skill_context=remote_only_profile() is None and not literal_envelope,
                                         force_first_tool=force_tool,
                                         expect_tool_first=decision.expect_tool_first,
                                         short_circuit_tools=_PRESYNTHESIZED_TOOLS,
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
+                                        model_led_discovery=model_led_turn,
+                                        private_shell_history=turn_private_shell_history if model_led_turn else None,
+                                        fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
+                                                              if model_led_turn else None),
+                                        claim_effect=claim_model_action if model_led_turn else None,
+                                        finish_effect=finish_model_action if model_led_turn else None,
                                         include_memory_context=_agent_memory_context_allowed(
                                             decision, cloud=super_model_cloud,
                                             grounded_workflow=bool(workflow_turn and
                                                                    workflow_turn.decision),
-                                            schedule_read=schedule_read),
+                                            schedule_read=schedule_read) if not model_led_turn
+                                            else not ({"recall", "search_memory"} & set(decision.forbidden_tools)),
                                         multi_round=decision.multi_round,
                                         narration_after=decision.narration_after,
                                         direct_calls=decision.direct_calls,
@@ -1824,8 +2092,8 @@ async def agent(body: dict[str, Any]):
                     from service.skills import always_skills_block, selected_skill_block
                     sysp = (ROLE_SYSTEM.get(decision.role, ROLE_SYSTEM["general"])
                             + memory_block(query=prompt)
-                            + selected_skill_block(prompt, active_skill)
-                            + (always_skills_block() if decision.role != "coding" else "")
+                            + ("" if literal_envelope else selected_skill_block(prompt, active_skill))
+                            + (always_skills_block() if not literal_envelope and decision.role != "coding" else "")
                             + now_line())
                     msgs = [{"role": "system", "content": sysp}] + messages
                 # "fast" is TRIVIAL_RE's positive match only (greetings, thanks,
@@ -1925,7 +2193,7 @@ async def agent(body: dict[str, Any]):
                 # Rolling conversation summaries contain prior user turns and
                 # are a local memory operation even when this turn used cloud
                 # inference. Never reuse the remote turn client here.
-            if not test_mode:
+            if not test_mode and remote_only_profile() is None:
                 summary_target = role_target("fast")
 
                 async def prepare_local_summary() -> None:
@@ -1940,8 +2208,9 @@ async def agent(body: dict[str, Any]):
                 )
         except Exception as e:  # noqa: BLE001
             trace.event("error", error_kind=type(e).__name__)
-            message, detail = translate_error(e, retry_omlx=ensure_omlx if owned_inference_client is None else None,
-                                              endpoint_name=owned_inference_client.endpoint_name if owned_inference_client else "local")
+            message, detail = translate_error(e, retry_omlx=ensure_omlx if remote_only_profile() is None and owned_inference_client is None else None,
+                                              endpoint_name=(remote_only_profile().endpoint_name if remote_only_profile() is not None
+                                                             else owned_inference_client.endpoint_name if owned_inference_client else "local"))
             await emit({"type": "error", "message": message, "detail": detail})
             await emit({"type": "done"})
             # Persist the user's prompt even though the turn failed — it was
@@ -2103,6 +2372,11 @@ async def list_sessions() -> dict[str, Any]:
     return {"sessions": store.list_sessions()}
 
 
+@app.get("/chats")
+async def list_chats(limit: int = 100) -> dict[str, Any]:
+    return {"chats": store.list_chats(max(1, min(limit, 200)))}
+
+
 @app.get("/sessions/{sid}")
 async def get_session(sid: str) -> dict[str, Any]:
     sess = store.get_session(sid)
@@ -2117,6 +2391,38 @@ async def delete_session(sid: str) -> dict[str, Any]:
     from service.memory.facts import store as fact_store
     fact_store.remove_session(sid)
     return {"ok": True}
+
+
+@app.post("/sessions/{sid}/effects/resolve")
+async def resolve_session_effects(sid: str, request: Request) -> dict[str, Any]:
+    """The user confirms they checked the outcome of an unverified action.
+
+    Lifts the session barrier left by an uncertain model-proposed effect. It
+    never re-runs anything; the earlier claim stays consumed.
+
+    Requires an explicit JSON body, {"effect_id": "<id>"} or {"all": true},
+    with Content-Type: application/json. A bodiless or form-typed request is
+    rejected, so a cross-site "simple" request cannot lift the barrier (a JSON
+    content type forces a CORS preflight).
+    """
+    media = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
+    if not store.get_session(sid):
+        raise HTTPException(status_code=404, detail="unknown session")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=422, detail="body must be valid JSON") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a JSON object")
+    effect_id, everything = body.get("effect_id"), body.get("all")
+    if isinstance(effect_id, str) and effect_id and everything is None:
+        return {"ok": True, "resolved": store.resolve_model_effects(sid, effect_id)}
+    if everything is True and effect_id is None:
+        return {"ok": True, "resolved": store.resolve_model_effects(sid)}
+    raise HTTPException(status_code=422,
+                        detail='body must be {"effect_id": "<id>"} or {"all": true}')
 
 
 # ---------------------------------------------------------------------------
@@ -2218,6 +2524,11 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(status_code=409 if isinstance(exc, RevisionConflict) else 422, detail=str(exc)) from exc
     assistant_scheduler.record_sync(source, n, diagnostics=body.get("diagnostics") or {})
     await assistant_hub.publish({"type": "changed"})
+    if source == "calendar":
+        # Behavior learning diffs the fresh Calendar now (cancellations/moves)
+        # instead of on its next tick. No-op unless behavior learning is on.
+        from service.assistant import behavior_runtime
+        behavior_runtime.poke(assistant_store, assistant_hub)
     return {"ok": True, "synced": n}
 
 
@@ -2559,9 +2870,9 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     """Send the exact editable draft the user approved in Wisp's draft card.
 
     Pressing the card's explicit Send button is the confirmation for this
-    payload. The request still goes through ``send_message`` so recipient
-    resolution, the native Messages bridge, and verified delivery reporting all
-    remain identical to an agent initiated send.
+    payload. Only a literal phone/email recipient is accepted; legacy name-only
+    cards must be prepared again. The native Messages bridge and verified
+    delivery reporting remain those of ``send_message``.
 
     The content heuristics (unfilled placeholders, mid-sentence truncation) are
     the one thing that does NOT apply here: this text is sitting in an editable
@@ -2572,10 +2883,14 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     from service.safety.audit import audit
     from service.tools.action_tools import human_reviewed_content, send_message
 
-    to = str(body.get("to") or "").strip()
-    message = str(body.get("text") or "")
-    if not to:
-        return {"ok": False, "result": "Choose a recipient before sending."}
+    from service.tools.registry import _literal_message_recipient
+
+    to = _literal_message_recipient(body.get("to"))
+    message = body.get("text")
+    if to is None:
+        return {"ok": False, "result": "Choose one literal phone number or email address, or create a new draft before sending."}
+    if type(message) is not str:
+        return {"ok": False, "result": "The message must be text."}
     if not message.strip():
         return {"ok": False, "result": "The message is empty."}
     with human_reviewed_content():

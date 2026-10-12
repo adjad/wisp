@@ -3,7 +3,6 @@ from __future__ import annotations
 from argparse import Namespace
 from contextlib import ExitStack, contextmanager
 import hashlib
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -501,9 +500,11 @@ class PipelineTests(unittest.TestCase):
         # runner's private Git config when creating disposable fixture repos.
         env = dict(p.clean_env(), TMPDIR=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        # The native contract cold-compiles Swift; slow hosted runners have
+        # needed more than 120 s for it, so allow 300 s.
         def run(profile, args):
             return subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(python), "-B", *args],
-                                  env=env, capture_output=True, text=True, timeout=120)
+                                  env=env, capture_output=True, text=True, timeout=300)
         probe = "import subprocess; subprocess.run(['/usr/bin/codesign','--version'],check=True)"
         self.assertNotEqual(run(normal, ["-c", probe]).returncode, 0)
         result = run(signing, [str(Path(__file__).resolve()),
@@ -1582,6 +1583,108 @@ print('external venv readable; private home and writes denied')
             else:
                 p.validate_native(runner, bundle, self.meta)
 
+    def test_preview_command_is_accepted_and_dry_run_has_no_side_effects(self):
+        with patch.object(sys, "argv", ["pipeline.py", "preview", "--dry-run"]), patch.object(p, "Runner") as runner:
+            self.assertEqual(p.main(), 0)
+            runner.assert_not_called()
+
+    def test_preview_metadata_allows_dirty_tree_and_marks_preview(self):
+        def git(*args):
+            if args[:1] == ("status",):
+                return " M service/x.py"
+            if args == ("rev-parse", "--is-shallow-repository"):
+                return "false"
+            return "1700000000" if args[0] == "show" else "7" if args[0] == "rev-list" else "b" * 40
+        with patch.object(p, "git", side_effect=git):
+            with self.assertRaisesRegex(p.BuildError, "Commit source changes"):
+                p.metadata(False, None)
+            meta = p.metadata(False, None, preview=True)
+        self.assertTrue(meta["preview"])
+        self.assertTrue(meta["dirty"])
+        self.assertTrue(p.plist(meta)["WispPreviewBuild"])
+        self.assertTrue(p.plist(dict(meta, dirty=False))["WispPreviewBuild"])
+        self.assertFalse(p.plist(dict(meta, dirty=False, preview=False))["WispPreviewBuild"])
+
+    def test_preview_skips_qa_stages_and_never_verifies_as_release(self):
+        meta = dict(self.meta, preview=True, tracked_source_sha256="0" * 64)
+        output = p.ROOT / "dist" / "unit-test-preview-output"
+        stages = []
+        class FakeRunner:
+            logs = self.root
+            records = []
+            env = {}
+            def __init__(inner):
+                pass
+            def run(inner, *a, **k):
+                return 0, self.root / "x.log"
+        with patch.object(sys, "argv", ["pipeline.py", "preview"]), \
+                patch.object(p, "Runner", FakeRunner), \
+                patch.object(p, "check_locks"), patch.object(p, "doctor", return_value={}), \
+                patch.object(p, "metadata", return_value=meta) as metadata, \
+                patch.object(p, "source_fingerprint", return_value="0" * 64), \
+                patch.object(p, "bootstrap", return_value=Path(sys.executable)), \
+                patch.object(p, "git", return_value=meta["commit"]), \
+                patch.object(p, "simulation_tests", side_effect=lambda *a, **k: stages.append("simulation")), \
+                patch.object(p, "verify_artifacts", side_effect=lambda *a, **k: stages.append("verify")), \
+                patch.object(p, "build_swift", side_effect=lambda *a, **k: stages.append("swift") or Path("bin")), \
+                patch.object(p, "assemble", side_effect=lambda *a, **k: stages.append("assemble") or self.root / "Wisp.app"), \
+                patch.object(p, "validate_structure", side_effect=lambda *a, **k: stages.append("structure")), \
+                patch.object(p, "prepare_native_for_signing"), \
+                patch.object(p, "validate_native", side_effect=lambda *a, **k: stages.append("native")), \
+                patch.object(p, "sign_adhoc", side_effect=lambda *a, **k: stages.append("sign")), \
+                patch.object(p, "relocation_smoke", side_effect=lambda *a, **k: stages.append("smoke")), \
+                patch.object(p, "finalize", side_effect=lambda *a, **k: stages.append("finalize")), \
+                patch.object(Path, "mkdir"):
+            self.assertEqual(p.main(), 0)
+        metadata.assert_called_once_with(False, None, True)
+        self.assertEqual(stages, ["swift", "assemble", "structure", "native", "sign", "smoke", "finalize"])
+
+    def test_preview_artifact_is_refused_by_release_verification(self):
+        self.artifact()
+        provenance = json.loads((self.root / "provenance.json").read_text())
+        provenance["source"] = dict(self.meta, preview=True)
+        p.json_write(self.root / "provenance.json", provenance)
+        p.checksums(self.root)
+        with self.assertRaisesRegex(p.BuildError, "never release eligible"):
+            p.verify_artifacts(self.root)
+
+    def test_allow_dirty_on_clean_tree_does_not_record_dirty_allowed(self):
+        import native_peer_gate, browser_bridge_gate, release_performance_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, command))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        def git(*args):
+            if args[:1] == ("status",):
+                return ""
+            return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+        for dirty, expected in (("", False), (" M x.py", True)):
+            calls.clear()
+            def git(*args, dirty=dirty):
+                if args[:1] == ("status",):
+                    return dirty
+                return ".git" if args == ("rev-parse", "--git-common-dir") else "a" * 40
+            with self.synthetic_profile_metadata(), patch.object(p, "git", side_effect=git), \
+                    patch.object(p, "_qa_node_runtime", return_value=Path("/usr/bin/true")), \
+                    patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), \
+                    patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation") as validate:
+                p.simulation_tests(FakeRunner(), Path(sys.executable), allow_dirty=True)
+            _, command = next(c for c in calls if c[0] == "simulation-qa")
+            self.assertEqual("--allow-dirty" in command, expected)
+            self.assertEqual(validate.call_args.kwargs["allow_dirty"], expected)
+
+    def test_release_preflights_still_reject_allow_dirty(self):
+        args = Namespace(allow_dirty=True, test_python=None, offline=False, output=self.root)
+        with self.assertRaisesRegex(p.BuildError, "preview"):
+            release.preflight(args, {})
+        with self.assertRaisesRegex(p.BuildError, "preview"):
+            release.ad_hoc_preflight(args, {})
+
     def test_dry_run_does_not_write_or_run_stage(self):
         with patch.object(sys, "argv", ["pipeline.py", "release", "--dry-run"]), patch.object(p, "Runner") as runner:
             self.assertEqual(p.main(), 0)
@@ -1625,84 +1728,36 @@ print('external venv readable; private home and writes denied')
         with self.assertRaisesRegex(p.BuildError, "preview"):
             release.preflight(args, env)
 
-    def performance_args(self):
-        return Namespace(performance_receipt=self.root / "receipt.json",
-                         performance_baseline=self.root / "approval.json",
-                         performance_receipt_sha256="a" * 64, performance_baseline_sha256="b" * 64)
-
-    def test_both_publishers_require_performance_before_any_publication_steps(self):
-        args = Namespace(allow_dirty=False, test_python=None, offline=False, output=self.root)
-        for publisher, preflight in ((release.release, "preflight"), (release.release_ad_hoc, "ad_hoc_preflight")):
-            with self.subTest(publisher=publisher.__name__), patch.object(release, preflight), \
-                    patch.object(release, "verify_artifacts") as artifacts, \
-                    patch.object(release, "secret_run") as secrets, \
-                    patch.object(release, "create_public_draft") as publish:
-                with self.assertRaisesRegex(p.BuildError, "performance receipt"):
-                    publisher(Namespace(logs=self.root), args)
-                artifacts.assert_not_called()
-                secrets.assert_not_called()
-                publish.assert_not_called()
-
-    def test_performance_gate_derives_source_bindings_and_never_accepts_fixture_authority(self):
-        args = self.performance_args()
-        cases = [(0, {"verdict": "PASS", "authorizes_release": True}),
-                 (0, {"verdict": "PASS", "authorizes_release": False}),
-                 (1, {"verdict": "BLOCK", "authorizes_release": False}),
-                 (2, {"verdict": "INCONCLUSIVE", "authorizes_release": False}),
-                 (3, {"verdict": "REFUSED", "authorizes_release": False}),
-                 (4, {"verdict": "PASS", "authorizes_release": True})]
-        observed = []
-        class Checker:
-            def exec_module(inner, module):
-                module.load_bundle = lambda path: {"corpus_sha256": "c" * 64, "policy_sha256": "d" * 64}
-                module.harness_sha256 = lambda: "e" * 64
-                def check(opts):
-                    observed.append(opts)
-                    return cases[index]
-                module.check_receipt = check
-        for index in range(len(cases)):
-            with self.subTest(index=index), patch.object(release, "git", return_value="f" * 40), \
-                    patch.object(importlib.util, "spec_from_file_location", return_value=Namespace(name="synthetic_checker", loader=Checker())), \
-                    patch.object(importlib.util, "module_from_spec", return_value=Namespace()):
-                if index == 0:
-                    release.require_release_performance(Namespace(logs=self.root), args)
-                else:
-                    with self.assertRaisesRegex(p.BuildError, "did not authorize"):
-                        release.require_release_performance(Namespace(logs=self.root), args)
-        opts = observed[0]
-        self.assertEqual(opts.expect_candidate_sha, "f" * 40)
-        self.assertEqual(opts.expect_corpus_sha256, "c" * 64)
-        self.assertEqual(opts.expect_policy_sha256, "d" * 64)
-        self.assertEqual(opts.expect_harness_sha256, "e" * 64)
-        self.assertEqual(opts.expect_receipt_sha256, "a" * 64)
-        self.assertEqual(opts.approved_baseline_sha256, "b" * 64)
-        self.assertEqual(opts.lane, "desktop")
-        self.assertFalse(hasattr(opts, "accept_fixture_source"))
-        self.assertEqual(opts.repo, ROOT)
-
-    def test_actual_performance_checker_refuses_missing_and_scalar_evidence(self):
-        args = self.performance_args()
-        for body in (None, "null", "[]", "7", "{}"):
-            if body is not None:
-                args.performance_receipt.write_text(body)
-                args.performance_receipt_sha256 = p.digest(args.performance_receipt)
-            with self.subTest(body=body), patch.object(release, "git", return_value="f" * 40):
-                with self.assertRaisesRegex(p.BuildError, "did not authorize"):
-                    release.require_release_performance(Namespace(logs=self.root), args)
-        evidence = json.loads((self.root / "release-performance-gate.json").read_text())
-        self.assertFalse(evidence["authorizes_release"])
-
-    def test_release_workflows_require_external_receipt_and_baseline_bindings(self):
+    def workflow_jobs(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
-        for name in ("performance_run_id", "performance_receipt_sha256", "performance_baseline_sha256"):
-            self.assertIn(name + ":", workflow)
-        self.assertEqual(workflow.count("name: wisp-release-performance-${{ github.sha }}"), 2)
-        self.assertEqual(workflow.count('d["status"] == "completed" and d["conclusion"] == "success"'), 2)
-        self.assertEqual(workflow.count('d["head_sha"] == os.environ["PERFORMANCE_CANDIDATE_SHA"]'), 2)
-        self.assertEqual(workflow.count('d["head_repository"]["full_name"] == os.environ["GITHUB_REPOSITORY"]'), 2)
-        self.assertEqual(workflow.count("--performance-receipt .wisp-build/performance/receipt.json"), 2)
-        self.assertEqual(workflow.count('--performance-receipt-sha256 "$PERFORMANCE_RECEIPT_SHA256"'), 2)
-        self.assertEqual(workflow.count('--performance-baseline-sha256 "$PERFORMANCE_BASELINE_SHA256"'), 2)
+        signed = workflow.index("\n  release:\n")
+        adhoc = workflow.index("\n  publish-ad-hoc-release:\n")
+        self.assertLess(signed, adhoc)
+        return workflow, workflow[signed:adhoc], workflow[adhoc:]
+
+    def workflow_step(self, section, name):
+        marker = f"      - name: {name}\n"
+        self.assertEqual(section.count(marker), 1, name)
+        start = section.index(marker)
+        following = section.find("\n      - ", start + 1)
+        comment = section.find("\n      # ", start + 1)
+        end = min(value for value in (following, comment, len(section)) if value > 0)
+        return section[start:end]
+
+    def test_workflow_keeps_pins_permissions_and_diagnostics(self):
+        workflow, signed, adhoc = self.workflow_jobs()
+        for line in workflow.splitlines():
+            if line.strip().startswith(("- uses:", "uses:")):
+                self.assertRegex(line, r"uses: [\w./-]+@[0-9a-f]{40}(\s+#.*)?$")
+        self.assertIn("    permissions:\n      contents: write\n      actions: read\n", adhoc)
+        self.assertIn("    permissions:\n      contents: write\n      actions: read\n", signed)
+        self.assertIn("permissions:\n  contents: read\n\nconcurrency:\n  group: wisp-build-${{ github.ref }}-${{ github.event_name }}\n", workflow)
+        self.assertIn("if: github.event_name == 'workflow_dispatch' && inputs.publish_ad_hoc && !inputs.publish && startsWith(github.ref, 'refs/tags/v')", adhoc)
+        diagnostics = self.workflow_step(adhoc, "Upload ad-hoc publication diagnostics")
+        self.assertIn("if: always()", diagnostics)
+        self.assertIn(".wisp-build/run-*/*.json", diagnostics)
+        self.assertEqual(workflow.count("environment: release"), 1)
+        self.assertNotIn("environment:", adhoc)
 
     def adhoc_fixture(self):
         checkout = self.root
@@ -1757,8 +1812,6 @@ print('external venv readable; private home and writes denied')
         with ExitStack() as stack:
             stack.enter_context(patch.dict(os.environ, environment, clear=True))
             stack.enter_context(patch.object(release, "ROOT", checkout))
-            # This fixture exercises asset publication mechanics. Gate behavior is tested separately.
-            stack.enter_context(patch.object(release, "require_release_performance"))
             stack.enter_context(patch.object(release, "git", side_effect=git))
             stack.enter_context(patch.object(p, "verify_bundle_signature"))
             stack.enter_context(patch.object(release, "distribution_roundtrip"))
@@ -1896,6 +1949,119 @@ print('external venv readable; private home and writes denied')
         self.assertNotIn("gh release create", job)
         self.assertNotIn("*.zip", job)
 
+
+    def workflow_job(self, workflow, job):
+        """Text of one top-level job; stdlib only (no YAML parser here)."""
+        marker = f"\n  {job}:\n"
+        self.assertEqual(workflow.count(marker), 1, job)
+        start = workflow.index(marker) + 1
+        following = [workflow.find(f"\n  {name}", start + 1) for name in
+                     ("preview:", "simulation-qa:", "full:", "verify:", "release:", "publish-ad-hoc-release:",
+                      "# ", "python-regressions:")]
+        ends = [value for value in following if value > start]
+        return workflow[start:min(ends) if ends else len(workflow)]
+
+    def test_pull_requests_split_preview_build_from_simulation_qa(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        pr_only = "    if: github.event_name == 'pull_request'\n"
+        preview = self.workflow_job(workflow, "preview")
+        qa = self.workflow_job(workflow, "simulation-qa")
+        for job in (preview, qa):
+            self.assertIn(pr_only, job)
+            self.assertIn("runs-on: macos-15", job)
+            self.assertIn("persist-credentials: false", job)
+            self.assertIn('test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"', job)
+            self.assertIn('echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"', job)
+            self.assertIn("sha: ${{ steps.candidate.outputs.sha }}", job)
+            self.assertIn("pipeline.check_locks()", job)
+            self.assertNotIn("secrets.", job)
+            self.assertNotIn("download-artifact", job)
+            self.assertNotIn("wisp-build all", job)
+        self.assertIn("./scripts/wisp-build preview --strict-toolchain --output dist/preview", preview)
+        self.assertNotIn("wisp-build test", preview)
+        self.assertIn("isolated_acl_fixture.py --ephemeral-macos", preview)
+        self.assertIn("mini_artifact.py --source-sha", preview)
+        self.assertIn("tests/test_primary_runtime_completion.py", preview)
+        self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
+        self.assertNotIn("wisp-build preview", qa)
+
+    def test_main_tags_and_dispatch_keep_the_unchanged_full_gate(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        full = self.workflow_job(workflow, "full")
+        self.assertIn("    if: github.event_name != 'pull_request'\n", full)
+        self.assertIn("./scripts/wisp-build all --strict-toolchain --output dist/candidate", full)
+        for step in ("Qualify isolated signed ACL replacement on disposable macOS", "Upload verified candidate",
+                     "Verify synthetic publisher signatures and provisioning transactions",
+                     "Build and verify exact-candidate offline mini artifact", "Upload diagnostics"):
+            self.workflow_step(full, step)
+        self.assertNotIn("wisp-build preview", full)
+        # Releases rebuild from source and depend on the full gate directly; a
+        # skipped pull-request job can never satisfy or skip them.
+        _, signed, adhoc = self.workflow_jobs()
+        self.assertIn("    needs: full\n", signed)
+        self.assertIn("    needs: full\n", adhoc)
+
+    def test_required_check_aggregates_the_event_gates_on_the_exact_head(self):
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        verify = self.workflow_job(workflow, "verify")
+        self.assertEqual(workflow.count("name: Verified macOS artifact\n"), 1)
+        self.assertIn("    name: Verified macOS artifact\n", verify)
+        self.assertIn("    needs: [preview, simulation-qa, full]\n", verify)
+        self.assertIn("    if: ${{ !cancelled() }}\n", verify)
+        self.assertIn("    permissions: {}\n", verify)
+        self.assertNotIn("actions/checkout", verify)
+        self.assertNotIn("secrets.", verify)
+        for needle in ('for gate in "$PREVIEW_RESULT@$PREVIEW_SHA" "$QA_RESULT@$QA_SHA"; do',
+                       'if [ "$gate" != "success@$CANDIDATE_SHA" ]; then',
+                       '[ "$FULL_RESULT" != "success" ]', "PREVIEW_SHA: ${{ needs.preview.outputs.sha }}",
+                       "QA_SHA: ${{ needs.simulation-qa.outputs.sha }}", "PREVIEW_RESULT: ${{ needs.preview.result }}",
+                       "QA_RESULT: ${{ needs.simulation-qa.result }}", "FULL_RESULT: ${{ needs.full.result }}"):
+            self.assertIn(needle, verify)
+        self.assertEqual(verify.count("exit 1"), 2)
+
+    def test_pull_request_regressions_run_only_modules_outside_simulation_qa(self):
+        workflow = (ROOT / ".github/workflows/regression-gate.yml").read_text()
+        job = self.workflow_job(workflow, "python-regressions")
+        self.assertIn("        if: github.event_name == 'pull_request'\n"
+                      "        run: python scripts/test_replay_failure_fixes.py --only-outside-simulation-qa\n", job)
+        self.assertIn("        if: github.event_name != 'pull_request'\n"
+                      "        run: python scripts/test_replay_failure_fixes.py\n", job)
+
+    def test_jobs_reaches_simulation_qa_only_when_requested(self):
+        import native_peer_gate, browser_bridge_gate, release_performance_gate
+        calls = []
+        class FakeRunner:
+            logs = self.root
+            env = {"PATH": "/usr/bin:/bin"}
+            def run(inner, label, command, **kwargs):
+                calls.append((label, [str(part) for part in command]))
+                if "--report" in command:
+                    Path(command[command.index("--report") + 1]).write_text("{}")
+                return 0, self.root / "unused.log"
+        for jobs, expected in ((None, None), (1, ["--jobs", "1"]), (3, ["--jobs", "3"])):
+            calls.clear()
+            with self.synthetic_profile_metadata(), \
+                    patch.object(p, "_qa_node_runtime", return_value=Path("/usr/bin/true")), \
+                    patch.object(native_peer_gate, "validate"), patch.object(browser_bridge_gate, "validate"), \
+                    patch.object(release_performance_gate, "validate"), patch.object(p, "validate_simulation"):
+                p.simulation_tests(FakeRunner(), Path(sys.executable), jobs=jobs)
+            _, command = next(c for c in calls if c[0] == "simulation-qa")
+            if expected is None:
+                self.assertNotIn("--jobs", command)
+            else:
+                self.assertEqual(command[-2:], expected)
+            # The gate inputs and sandbox are unchanged by concurrency.
+            self.assertEqual(command[:2], ["sandbox-exec", "-p"])
+            self.assertIn("--profile", command)
+            self.assertEqual(command[command.index("--profile") + 1], "full")
+
+    def test_jobs_must_be_positive(self):
+        for value in ("0", "-2"):
+            with patch.object(sys, "argv", ["pipeline.py", "test", "--jobs", value, "--dry-run"]), \
+                    patch.object(p, "Runner") as runner, patch("sys.stderr"):
+                with self.assertRaises(SystemExit):
+                    p.main()
+                runner.assert_not_called()
 
     def test_git_source_list_handles_terminating_nul(self):
         with patch.object(p, "git", return_value="service/main.py\0"):

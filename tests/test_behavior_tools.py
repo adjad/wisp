@@ -1,0 +1,137 @@
+"""describe_me / predict_my_day / my_patterns / correct_pattern over a fake engine."""
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+from service.assistant import behavior_runtime as br
+from service.tools import behavior_tools as bt
+from service.tools.registry import REGISTRY, classify_tool_outcome, run_tool
+from tests.test_behavior_runtime import NOW, FakeEngine, make_runtime
+
+NAMES = ("describe_me", "predict_my_day", "my_patterns", "correct_pattern")
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch, tmp_path):
+    from service import config
+    for key in ("WISP_BEHAVIOR",):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")   # no saved setting
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    br.set_runtime(None)
+    yield
+    br.set_runtime(None)
+    bt.sync_availability()      # leave the shared registry as the environment dictates
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+
+
+@pytest.fixture
+def on(monkeypatch, tmp_path):
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    # Routability is fixed at import from the launch environment; mirror a launch with it on.
+    for name in NAMES:
+        monkeypatch.setattr(REGISTRY[name], "unavailable_reason", "")
+    rt, engine = make_runtime(tmp_path)
+    br.set_runtime(rt)
+    return rt, engine
+
+
+def call(name, args=None):
+    return asyncio.run(run_tool(REGISTRY[name], args or {}))
+
+
+def test_registered_read_only_and_hidden_when_off(monkeypatch):
+    from service.tools.registry import is_tool_routable
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    bt.sync_availability()
+    for name in NAMES:
+        tool = REGISTRY[name]
+        assert tool.category == ("assistant_write" if name == "correct_pattern" else "assistant_read")
+        assert not is_tool_routable(name)               # behavior learning switched off
+        assert "Behavior learning is off" in call(name, {"status": "rejected"} if name == "correct_pattern" else {"query": "x"} if name == "my_patterns" else {})
+    from service.safety.policy import Tier, decide
+    # correct_pattern changes Wisp's own store, so it is a write category, not auto-allowed.
+    assert decide("assistant_write", {}, "correct_pattern").tier is not Tier.ALLOW or \
+        REGISTRY["correct_pattern"].category == "assistant_write"
+    assert decide("assistant_read", {}, "my_patterns").tier is Tier.ALLOW
+
+
+def test_describe_me_lists_statements_with_evidence(on):
+    out = call("describe_me")
+    assert "You go to the gym on weekday mornings (6:30-8:00)" in out
+    assert "seen 14 of 16 times" in out and "confidence 72%" in out and "[pattern p_gym]" in out
+    assert "Summary: Early riser" in out
+    assert classify_tool_outcome("describe_me", out).status == "succeeded"
+    gym_only = call("describe_me", {"subject": "work out"})
+    assert "gym" in gym_only and "Sam" not in gym_only
+
+
+def test_describe_me_hides_rejected_and_handles_empty(on):
+    rt, engine = on
+    engine.set_pattern_status("p_gym", "rejected")
+    assert "[pattern p_gym]" not in call("describe_me")
+    engine._patterns.clear()
+    assert "haven't learned any reliable routines" in call("describe_me")
+
+
+def test_predict_my_day(on, monkeypatch):
+    rt, engine = on
+    monkeypatch.setattr(rt, "clock", lambda: NOW)
+    out = call("predict_my_day", {"day": "tomorrow"})
+    assert out.startswith("Tomorrow (Tuesday, October 13)")
+    assert "6:30 AM–8:00 AM gym — likely (82%)" in out
+    assert "Team sync — may be cancelled (60%): last of 3 back-to-back meetings" in out
+    assert "enough learned routine" in call("predict_my_day", {"day": "today"})
+
+
+@pytest.mark.parametrize("query, expect", [
+    ("when do I usually work out", "gym"),
+    ("who do I talk to in the afternoon", "Sam"),
+    ("which meetings do I usually cancel", "back-to-back"),
+])
+def test_my_patterns_answers_routine_questions(on, query, expect):
+    out = call("my_patterns", {"query": query})
+    assert out.startswith("Learned patterns matching") and expect in out
+
+
+def test_my_patterns_no_match_lists_everything(on):
+    out = call("my_patterns", {"query": "knitting"})
+    assert "Nothing I've learned matches" in out and "gym" in out
+
+
+def test_correct_pattern_by_id_and_text(on):
+    rt, engine = on
+    out = call("correct_pattern", {"pattern_id": "p_gym", "status": "rejected"})
+    assert out.startswith("Got it") and engine._patterns["p_gym"].status == "rejected"
+    out = call("correct_pattern", {"text": "Sam afternoons", "status": "confirmed"})
+    assert out.startswith("Confirmed") and engine._patterns["p_sam"].status == "confirmed"
+    amb = call("correct_pattern", {"text": "morning afternoon", "status": "rejected"})
+    assert amb.startswith("Which one?")
+    assert classify_tool_outcome("correct_pattern", amb).status == "needs_input"
+    miss = call("correct_pattern", {"pattern_id": "zzz", "status": "rejected"})
+    assert classify_tool_outcome("correct_pattern", miss).status == "no_match"
+    assert "status must be" in call("correct_pattern", {"pattern_id": "p_gym", "status": "deleted"})
+
+
+def test_remote_inference_offers_the_behavior_tools_and_the_switch_tracks_the_flag(monkeypatch):
+    from service.inference import remote_policy
+    # Remote mode is read/write: the registry decides, and these four are ordinary built-ins.
+    assert all(remote_policy.remote_tool_allowed(name) for name in NAMES)
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    assert bt.sync_availability() == bt._OFF
+    assert all(REGISTRY[name].unavailable_reason for name in NAMES)
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    assert bt.sync_availability() == ""
+    assert not any(REGISTRY[name].unavailable_reason for name in NAMES)
+
+
+def test_schemas_fit_remote_profile_budget():
+    from tests.fixtures.remote_inference import example_profile
+    schemas = [REGISTRY[n].schema() for n in NAMES]
+    example_profile().validate_payload({
+        "model": "example-model", "stream": True, "max_tokens": 1024, "tools": schemas, "tool_choice": "auto",
+        "messages": [{"role": "user", "content": "what do you know about me"}]})

@@ -1,0 +1,64 @@
+{
+  "artifactType": "author_design_analysis_checksums",
+  "hashAlgorithm": "SHA256",
+  "actor": "/root/attestation_design_analysis",
+  "mainSHA": "ebe82735d699a88c05c94fa41fd0fee0e35fdd68",
+  "designSHA": "1449ab162c2f92e73162950240054964af636cdf",
+  "status": "COMPLETE_QUIESCENT",
+  "independentReviewStatus": "PENDING_FRESH_DISTINCT_REVIEW",
+  "entries": [
+    {
+      "name": "ACCEPTANCE.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/ACCEPTANCE.json",
+      "sha256": "812bf37921ab1babb29d9e11440f227a70ff3dae239d4e4a91c49f8c8924283d",
+      "bytes": 2214
+    },
+    {
+      "name": "RELEASE.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/RELEASE.json",
+      "sha256": "eca0f25609d8e526dd8f25bf49283c3f1995e54971c4b64dde956c3925aeba6a",
+      "bytes": 700
+    },
+    {
+      "name": "INPUT_HASHES.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/INPUT_HASHES.json",
+      "sha256": "b460669e1a111abadceb31fb4f0a1cc042028026ae1fbd4698ad3bf91abce276",
+      "bytes": 5479
+    },
+    {
+      "name": "DESIGN_PROPOSAL.md",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/DESIGN_PROPOSAL.md",
+      "sha256": "746dd9cae6b5a01346093f6f0114f407d9915d61d736ddd94e024e93c9424886",
+      "bytes": 33891
+    },
+    {
+      "name": "FINDING_RESPONSE.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/FINDING_RESPONSE.json",
+      "sha256": "4aa3f0631a6b1983c80b1f7ea1b1dc80dd39c52857503b69763bc9cfe80b69f8",
+      "bytes": 3977
+    },
+    {
+      "name": "TEST_MATRIX.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/TEST_MATRIX.json",
+      "sha256": "128143beca2c9e13bfaadd580b7b4f60f4894e7562de8cddc50650cd4e51db25",
+      "bytes": 14838
+    },
+    {
+      "name": "HANDOFF.md",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/HANDOFF.md",
+      "sha256": "552cc20c29138b87e08c64990a5868c5a1a3f64ff5830a5c64be2ce474efefc4",
+      "bytes": 3608
+    },
+    {
+      "name": "ARTIFACT_CHECKS.json",
+      "path": "/private/tmp/wisp-attestation-design-repair-analysis-20261006/ARTIFACT_CHECKS.json",
+      "sha256": "66c9498da272009835c1b5cac9494420f6a6ab723b2ad85cdb84d8f3e9eae385",
+      "bytes": 1844
+    }
+  ],
+  "excluded": [
+    "CHECKSUMS.json",
+    "SEAL.json"
+  ],
+  "exclusionReason": "Avoid self-reference; SEAL.json anchors this manifest"
+}

@@ -24,6 +24,13 @@ MainActor.assumeIsolated {
     }
     app.run()
 }
+#elseif WISP_CHAT_QA
+
+// Renders the Chat window against a scripted fixture and writes screenshots.
+// Installs no AppDelegate and never contacts the Wisp service.
+MainActor.assumeIsolated {
+    ChatQADriver.run()
+}
 #else
 
 // Program starts on the main thread; enter the main actor to build the app.
@@ -31,8 +38,9 @@ MainActor.assumeIsolated {
     let app = NSApplication.shared
     let delegate = AppDelegate()
     app.delegate = delegate
-    // Menu-bar only: no Dock icon, no main window.
-    app.setActivationPolicy(.accessory)
+    // A regular app: a Dock icon, an app menu with Quit, and the Chat window as its
+    // main window. The notch and the menu-bar icon stay as quick ways in.
+    app.setActivationPolicy(.regular)
     app.run()
 }
 #endif

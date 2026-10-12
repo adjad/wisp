@@ -49,12 +49,12 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
 
 
-def metadata(allow_dirty=False, build_number=None) -> dict:
+def metadata(allow_dirty=False, build_number=None, preview=False) -> dict:
     version = CONFIG["version"]
     if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
         raise BuildError("toolchain.json version must be a numeric major.minor.patch")
     dirty = bool(git("status", "--porcelain", "--untracked-files=normal"))
-    if dirty and not allow_dirty:
+    if dirty and not (allow_dirty or preview):
         raise BuildError("Commit source changes first, or use --allow-dirty for a local preview.")
     if git("rev-parse", "--is-shallow-repository") == "true":
         raise BuildError("Full Git history is required for build numbers and release notes (fetch-depth: 0).")
@@ -67,7 +67,7 @@ def metadata(allow_dirty=False, build_number=None) -> dict:
         raise BuildError("Release tag must exactly match v + toolchain.json version.")
     return {"version": version, "build_number": number, "commit": commit,
             "source_epoch": int(git("show", "-s", "--format=%ct", "HEAD")),
-            "dirty": dirty, "architecture": CONFIG["architecture"],
+            "dirty": dirty, "preview": bool(preview), "architecture": CONFIG["architecture"],
             "minimum_macos": CONFIG["minimum_macos"]}
 
 
@@ -334,7 +334,10 @@ def simulation_profile(scratch, python, *, local_signing=False, node_runtime=Non
     ])
 
 
-def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
+def simulation_tests(runner, python, *, allow_dirty=False, native_only=False, jobs=None):
+    # Record dirty_allowed only when the tree is really dirty, so the final
+    # distribution check (which derives it from meta["dirty"]) stays consistent.
+    allow_dirty = bool(allow_dirty and git("status", "--porcelain", "--untracked-files=normal"))
     # Only full QA selects the A05 Python wrapper. Native-only qualification
     # must not acquire a JavaScript runtime prerequisite or execution permission.
     node_runtime = None if native_only else str(_qa_node_runtime())
@@ -399,6 +402,9 @@ def simulation_tests(runner, python, *, allow_dirty=False, native_only=False):
             command.append("--allow-dirty")
         if native_only:
             command.append("--only-native")
+        if jobs is not None:
+            # Concurrency only; every gate keeps its own process and state.
+            command.extend(["--jobs", str(jobs)])
         qa_env = dict(runner.env, TMPDIR=str(scratch), WISP_BUILD_FIXTURE_PREFIX="wispqa-" + scratch.name.rsplit("-", 1)[-1],
                       PEER_TEST_GATE_REPORT=str(native_report), PEER_TEST_GATE_SHA256=digest(native_report),
                       BENCHMARK_GATE_REPORT=str(benchmark_report), BENCHMARK_GATE_SHA256=digest(benchmark_report),
@@ -512,14 +518,14 @@ def plist(meta: dict) -> dict:
         "CFBundleName": "Wisp", "CFBundleDisplayName": "Wisp", "CFBundleIdentifier": CONFIG["bundle_identifier"],
         "CFBundleVersion": meta["build_number"], "CFBundleShortVersionString": meta["version"],
         "CFBundleExecutable": "Wisp", "CFBundleIconFile": "AppIcon", "CFBundlePackageType": "APPL",
-        "LSUIElement": True, "LSMinimumSystemVersion": CONFIG["minimum_macos"], "NSHighResolutionCapable": True,
+        "LSMinimumSystemVersion": CONFIG["minimum_macos"], "NSHighResolutionCapable": True,
         "NSCalendarsFullAccessUsageDescription": "Wisp reads your calendar to show upcoming events and remind you before they start.",
         "NSCalendarsUsageDescription": "Wisp reads your calendar to show upcoming events and remind you before they start.",
         "NSRemindersFullAccessUsageDescription": "Wisp mirrors the reminders you set into the macOS Reminders app.",
         "NSRemindersUsageDescription": "Wisp mirrors the reminders you set into the macOS Reminders app.",
         "NSAppleEventsUsageDescription": "Wisp reads Mail and Notes for summaries and runs email, message and Terminal actions you approve.",
         "NSContactsUsageDescription": "Wisp reads your contacts to show names instead of phone numbers in messages.",
-        "WispSourceCommit": meta["commit"], "WispPreviewBuild": meta["dirty"],
+        "WispSourceCommit": meta["commit"], "WispPreviewBuild": bool(meta["dirty"] or meta.get("preview")),
     }
 
 
@@ -797,7 +803,7 @@ def notes(meta):
     previous = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0", "HEAD^"], capture_output=True, text=True)
     base = previous.stdout.strip() if previous.returncode == 0 else None
     history = git("log", "--no-merges", "--format=- %s (%h)", f"{base}..HEAD" if base else "HEAD")
-    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. Requires a separately installed oMLX server and models.\n\n" + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
+    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. Requires a separately installed oMLX server and models.\n\n" + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] or meta.get('preview') else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
 
 
 def finalize(runner, bundle, destination, meta, toolchain):
@@ -808,12 +814,15 @@ def finalize(runner, bundle, destination, meta, toolchain):
     provenance = {"schema": 1, "source": meta, "toolchain": toolchain, "inputs": json.loads((SUPPORT / "locks.json").read_text()),
                   "signature": "ad-hoc", "notarized": False, "tests": runner.records,
                   "reproducibility": "Pinned inputs and normalized archive; bit-for-bit Swift/SDK and signed outputs are not guaranteed."}
-    prefix = f"Wisp-{meta['version']}-{meta['build_number']}-arm64" + ("-preview" if meta["dirty"] else "-candidate")
+    prefix = f"Wisp-{meta['version']}-{meta['build_number']}-arm64" + ("-preview" if meta["dirty"] or meta.get("preview") else "-candidate")
     zip_path = destination / (prefix + ".zip")
     archive(bundle, zip_path, meta["source_epoch"])
     distribution_roundtrip(runner, zip_path, bundle, meta)
-    shutil.copyfile(runner.logs / "simulation-qa.json", destination / "simulation-qa.json")
-    provenance["simulation_sha256"] = digest(destination / "simulation-qa.json")
+    if meta.get("preview"):
+        provenance["preview"] = True
+    else:
+        shutil.copyfile(runner.logs / "simulation-qa.json", destination / "simulation-qa.json")
+        provenance["simulation_sha256"] = digest(destination / "simulation-qa.json")
     json_write(destination / "provenance.json", provenance)
     checksums(destination)
 
@@ -1178,6 +1187,8 @@ def verify_artifacts(destination, bound_assets=None, *, publication_asset_set=Fa
     assets.validate_checksums(allow_unpublished_notes=publication_asset_set)
     provenance = json.loads(assets.read_text("provenance.json"))
     meta = provenance["source"]
+    if meta.get("preview") or provenance.get("preview"):
+        raise BuildError("Preview builds skip Simulation QA and are never release eligible")
     if assets.digests.get("simulation-qa.json") != provenance.get("simulation_sha256"):
         raise BuildError("Missing or mismatched Simulation QA evidence")
     validate_simulation(json.loads(assets.read_text("simulation-qa.json")), meta["commit"],
@@ -1198,27 +1209,27 @@ def main():
         print("Wisp build driver requires Python 3.9 or newer", file=sys.stderr)
         return 2
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "release-ad-hoc", "qa-assemble"))
+    p.add_argument("command", nargs="?", default="all", choices=("all", "doctor", "lock", "bootstrap", "test", "swift", "verify", "release", "release-ad-hoc", "qa-assemble", "preview"))
     p.add_argument("--dry-run", action="store_true", help="Print plan without downloads, writes or external release calls")
     p.add_argument("--offline", action="store_true")
     p.add_argument("--allow-dirty", action="store_true", help="Local preview only; never eligible for publication")
+    # `preview` = fast local install: full build/sign/validate/smoke, no QA gates, never publishable.
     p.add_argument("--strict-toolchain", action="store_true")
     p.add_argument("--build-number")
+    p.add_argument("--jobs", type=int, help="Concurrent Simulation QA gates (default: one per CPU; 1 = sequential)")
     p.add_argument("--output", type=Path)
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
     p.add_argument("--qa-runtime-inventory-sha256",
                    help="Independently reviewed canonical inventory digest for --qa-runtime")
-    p.add_argument("--performance-receipt", type=Path, help="Live Desktop receipt required by both release commands")
-    p.add_argument("--performance-receipt-sha256", help="Receipt digest independently recorded by the measurement owner")
-    p.add_argument("--performance-baseline", type=Path, help="Reviewed baseline approval for the measured cohort")
-    p.add_argument("--performance-baseline-sha256", help="Independently reviewed baseline-approval digest")
     p.add_argument("--production-sha",
                    help="Exact production candidate SHA qualified by managed QA")
     args = p.parse_args()
+    if args.jobs is not None and args.jobs < 1:
+        p.error("--jobs must be at least 1")
     if args.dry_run:
-        print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
+        print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts" if args.command != "preview" else "SKIPPED for preview: Simulation QA, native/browser peer gates, benchmark contracts, distribution evidence", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
         return 0
     if args.command == "qa-assemble":
@@ -1267,7 +1278,7 @@ def main():
             from release import release
             release(runner, args)
             return 0
-        if args.command in ("all", "bootstrap") or (args.command == "test" and not args.test_python):
+        if args.command in ("all", "bootstrap", "preview") or (args.command == "test" and not args.test_python):
             check_locks()
         toolchain = doctor(runner, args.strict_toolchain, args.offline)
         if args.command == "doctor":
@@ -1276,22 +1287,25 @@ def main():
             lock(runner, args.offline)
         elif args.command == "swift":
             python = args.test_python.absolute() if args.test_python else bootstrap(runner, args.offline)
-            simulation_tests(runner, python, allow_dirty=args.allow_dirty, native_only=True)
+            simulation_tests(runner, python, allow_dirty=args.allow_dirty, native_only=True, jobs=args.jobs)
             build_swift(runner)
         else:
             if args.test_python and args.command != "test":
                 raise BuildError("--test-python is only allowed for test auditing, never packaging")
-            meta = metadata(args.allow_dirty, args.build_number) if args.command == "all" else None
+            packaging = args.command in ("all", "preview")
+            preview = args.command == "preview"
+            meta = metadata(args.allow_dirty, args.build_number, preview) if packaging else None
             source_start = source_fingerprint() if meta else None
             if meta:
                 meta["tracked_source_sha256"] = source_start
             python = args.test_python.absolute() if args.test_python else bootstrap(runner, args.offline)
             if args.command == "bootstrap":
                 return 0
-            simulation_tests(runner, python, allow_dirty=args.allow_dirty)
-            if args.command == "all":
+            if not preview:
+                simulation_tests(runner, python, allow_dirty=args.allow_dirty, jobs=args.jobs)
+            if packaging:
                 binary = build_swift(runner)
-                output = (args.output or ROOT / "dist" / f"{meta['version']}-{meta['build_number']}-{meta['commit'][:12]}" ).resolve()
+                output = (args.output or ROOT / "dist" / f"{meta['version']}-{meta['build_number']}-{meta['commit'][:12]}{'-preview' if preview else ''}").resolve()
                 if not output.is_relative_to((ROOT / "dist").resolve()) or output == (ROOT / "dist").resolve():
                     raise BuildError("Output must be a new directory below this checkout's dist/")
                 output.mkdir(parents=True, exist_ok=False)
@@ -1304,8 +1318,11 @@ def main():
                 if git("rev-parse", "HEAD") != meta["commit"] or source_fingerprint() != source_start:
                     raise BuildError("Source changed during build; discard candidate and rerun from a stable checkout")
                 finalize(runner, bundle, output, meta, toolchain)
-                verify_artifacts(output)
-                print(f"Verified candidate: {output}")
+                if preview:
+                    print(f"Built PREVIEW (not release eligible, QA gates skipped): {output}")
+                else:
+                    verify_artifacts(output)
+                    print(f"Verified candidate: {output}")
         print(f"Diagnostics: {runner.logs}")
         return 0
     except (BuildError, OSError, subprocess.CalledProcessError) as exc:
