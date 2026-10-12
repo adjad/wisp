@@ -476,6 +476,22 @@ def child_run(payload, scratch):
     return result
 
 
+
+def _kill_group(child):
+    """SIGKILL the child's process group; tolerate a group that is already exiting.
+
+    macOS can raise EPERM (not ESRCH) for a group whose members are exiting or
+    zombies, so fall back to killing the child itself."""
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        try:
+            child.kill()
+        except ProcessLookupError:
+            pass
+
 def run_offline(payload, *, timeout=MAX_TURN_SECONDS):
     """External monotonic watchdog; kills/reaps only its task-owned process group."""
     validate_input(payload)
@@ -501,10 +517,7 @@ def run_offline(payload, *, timeout=MAX_TURN_SECONDS):
                     elif stdout.stat().st_size + stderr.stat().st_size > MAX_OUTPUT_BYTES:
                         killed = "output_limit"
                     if killed:
-                        try:
-                            os.killpg(child.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
+                        _kill_group(child)
                         break
                     try:
                         child.wait(timeout=min(0.05, timeout - elapsed))
@@ -512,10 +525,7 @@ def run_offline(payload, *, timeout=MAX_TURN_SECONDS):
                         pass
             finally:
                 if child.poll() is None:
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                    _kill_group(child)
                 child.wait()
         if time.monotonic() - started >= timeout:
             killed = killed or "deadline"
