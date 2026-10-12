@@ -614,7 +614,9 @@ enum WispClient { static let baseURL = URL(string: "http://offline.fixture/")! }
          "-module-cache-path", str(tmp_path / "module-cache"),
          str(root / "app/Sources/WispApp/RemindersWriter.swift"),
          str(harness), "-o", str(binary)],
-        check=True, capture_output=True, text=True,
+        check=True, capture_output=True, text=True, timeout=300,
     )
-    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True)
+    # A freshly compiled binary can stall in dyld while macOS assesses it; fail
+    # with a timeout instead of hanging the whole regression gate.
+    result = subprocess.run([str(binary)], check=True, capture_output=True, text=True, timeout=120)
     assert "out-of-order reminder snapshot policy passed" in result.stdout
