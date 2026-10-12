@@ -233,7 +233,7 @@ class BehaviorEngine:
     def nudge_horizon(self, now: float) -> float:
         """Look-ahead for predict()'s default and generate_nudges(): at least 24h,
         and always through the END OF TOMORROW (local). A rolling 24h would hide
-        tomorrow afternoon's meetings from an early-afternoon run (demo at 13:00
+        tomorrow afternoon's meetings from an early-afternoon run (a run at 13:00
         drops a 14:00-16:00 run tomorrow, 25-27h out)."""
         tomorrow = local_dt(now, self._tz).date() + timedelta(days=1)
         return max(float(NUDGE_HORIZON_S), day_end(tomorrow, self._tz) - now)

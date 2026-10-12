@@ -115,13 +115,13 @@ def test_remote_only_allowlist_tracks_behavior_flag(monkeypatch):
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     assert all(remote_policy.remote_read_tool_allowed(name) for name in NAMES)
     assert not remote_policy.remote_read_tool_allowed("send_message")
-    # The pinned four-read set itself is unchanged.
+    # The pinned read set itself is unchanged.
     assert "describe_me" not in remote_policy._READ_TOOLS
 
 
-def test_schemas_fit_remote_gateway_budget():
-    from service.inference.remote_policy import RemoteOnlyProfile
+def test_schemas_fit_remote_profile_budget():
+    from tests.fixtures.remote_inference import example_profile
     schemas = [REGISTRY[n].schema() for n in NAMES]
-    RemoteOnlyProfile().validate_payload({
-        "model": "qwen3.6:35b", "stream": True, "max_tokens": 1024, "tools": schemas, "tool_choice": "auto",
+    example_profile().validate_payload({
+        "model": "example-model", "stream": True, "max_tokens": 1024, "tools": schemas, "tool_choice": "auto",
         "messages": [{"role": "user", "content": "what do you know about me"}]})

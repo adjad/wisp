@@ -534,10 +534,10 @@ def test_profile_block_in_memory_and_remote_only_assembly(monkeypatch, tmp_path)
     assert block.startswith(prompt_blocks.PROFILE_HEADER) and "Gym weekday mornings" in block
     assert "FACT" not in block                          # only the card in remote-only mode
     assert prompt_blocks.memory_block("x").endswith(block)
-    # The card fits the remote-only gateway budget alongside a system prompt.
-    from service.inference.remote_policy import RemoteOnlyProfile
-    RemoteOnlyProfile().validate_payload({
-        "model": "qwen3.6:35b", "stream": True, "max_tokens": 512,
+    # The card fits a remote profile's byte budget alongside a system prompt.
+    from tests.fixtures.remote_inference import example_profile
+    example_profile().validate_payload({
+        "model": "example-model", "stream": True, "max_tokens": 512,
         "messages": [{"role": "system", "content": "You are Wisp." + block},
                      {"role": "user", "content": "plan my morning"}]})
 
@@ -618,17 +618,17 @@ def test_phraser_categorize_and_failure(monkeypatch):
     assert WispPhraser(client_factory=lambda t: Boom("")).phrase("x", {"a": 1}) is None
 
 
-def test_phraser_remote_only_payload_satisfies_gateway(monkeypatch):
+def test_phraser_remote_only_payload_satisfies_remote_profile(monkeypatch):
     from service.assistant.behavior_phraser import WispPhraser
-    from service.inference.remote_policy import RemoteOnlyProfile
-    profile = RemoteOnlyProfile()
+    from tests.fixtures.remote_inference import example_profile
+    profile = example_profile()
     _target(monkeypatch, profile.model_id)
     monkeypatch.setattr("service.inference.remote_policy.remote_only_profile", lambda: profile)
     client = FakeClient("You protect your gym mornings.", managed=False, loaded=())
     ph = WispPhraser(client_factory=lambda t: client)
     assert ph.phrase("day_preview", {"habit": "gym mornings"}) == "You protect your gym mornings."
     model, messages, kw = client.calls[0]
-    assert set(kw) == {"temperature", "max_tokens"}                  # no template kwargs on the gateway
+    assert set(kw) == {"temperature", "max_tokens"}                  # no template kwargs on a remote profile
     profile.validate_payload({"model": model, "messages": messages, "stream": False, **kw})
 
 
@@ -645,7 +645,7 @@ def test_phraser_returns_none_on_event_loop():
 # starts the behavior loop itself — and only when behavior learning is on.
 # --------------------------------------------------------------------------
 
-from tests.test_intel_remote_policy import RemoteFixture, policy  # noqa: E402
+from tests.test_remote_inference_policy import RemoteFixture, policy  # noqa: E402
 
 
 class RemoteOnlyLifespan(RemoteFixture):
@@ -681,7 +681,7 @@ class RemoteOnlyLifespan(RemoteFixture):
               "remote_only_profile": policy.remote_only_profile,
               "remote_full_mode": policy.remote_full_mode,
               "require_local_models_disabled": policy.require_local_models_disabled,
-              "OMLXClient": lambda: fake, "role_to_model": lambda role: "qwen3.6:35b",
+              "OMLXClient": lambda: fake, "role_to_model": lambda role: "example-model",
               "skills": SimpleNamespace(load=bomb), "mcp_manager": SimpleNamespace(start=bomb, stop=bomb),
               "idle_unloader": SimpleNamespace(run=bomb), "assistant_scheduler": SimpleNamespace(run=bomb),
               "cloud_super_model_enabled": bomb, "start_laya_warmup": bomb,

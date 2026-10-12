@@ -30,7 +30,7 @@ import httpx
 __all__ = ["OpenAIPhraser", "TemplatePhraser", "strip_think"]
 
 _ALLOWED_KEYS = frozenset({"model", "messages", "max_tokens", "stream", "temperature"})
-_MAX_FACTS_BYTES = 4000          # keeps us far below the gateway's 24000 aggregate budget
+_MAX_FACTS_BYTES = 4000          # keeps us far below a remote profile's aggregate byte budget
 _MAX_RESPONSE_BYTES = 262144
 _MAX_OUTPUT_CHARS = 320
 _MAX_TITLES_PER_CALL = 40

@@ -559,8 +559,8 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
     given ("always allow this") — see service/safety/grants.py. Optional so
     older call sites keep working; without it, only the category rules apply.
     """
-    # Remote-only builds: the read-only (founder demo) build denies everything
-    # outside its fixed allowlist; the full build (WISP_REMOTE_FULL) denies only
+    # Remote inference: read-only mode denies everything outside its fixed
+    # allowlist; full mode (WISP_REMOTE_FULL) denies only
     # tools that need on-Mac models/extensions and otherwise falls through to
     # the ordinary rules below — floor, always-confirm sends, grants, modes —
     # unchanged.
@@ -569,7 +569,7 @@ def decide(category: str, args: dict, tool: str | None = None) -> Decision:
         if remote_full_mode():
             return Decision(Tier.DENY, "This tool needs on-Mac models or extensions, "
                             "which this remote-inference build does not run")
-        return Decision(Tier.DENY, "This action is unavailable in the four-read remote-only demo")
+        return Decision(Tier.DENY, "This action is unavailable in read-only remote inference")
     # The floor runs before everything, including full_access and grants.
     # `disable_safety_floor` only ever meant "let full_access mean literally
     # everything" — outside full_access these checks have always been

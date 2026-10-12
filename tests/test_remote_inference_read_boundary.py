@@ -1,6 +1,6 @@
 import asyncio
 from unittest.mock import patch,Mock
-from tests.test_intel_remote_policy import RemoteFixture,policy
+from tests.test_remote_inference_policy import RemoteFixture,policy
 from service.safety import policy as safety
 from service.tools.registry import Tool,run_tool
 
@@ -21,9 +21,9 @@ class ReadBoundaryChecks(RemoteFixture):
         self.assertIs(type(result),str);self.assertIn('nothing was executed',result);native.assert_not_called()
     def test_real_read_dispatch_with_fake_reader_and_args_validation(self):
         observed=[]
-        async def reader(query):observed.append(query);return 'synthetic Intel-local read'
+        async def reader(query):observed.append(query);return 'synthetic Mac-local read'
         tool=Tool('view_messages','synthetic',{'type':'object','properties':{'query':{'type':'string'}},'required':['query']},'fs_read',reader)
-        self.assertEqual(asyncio.run(run_tool(tool,{'query':'synthetic'})),'synthetic Intel-local read')
+        self.assertEqual(asyncio.run(run_tool(tool,{'query':'synthetic'})),'synthetic Mac-local read')
         self.assertEqual(observed,['synthetic'])
         self.assertIn('required',asyncio.run(run_tool(tool,{})).lower())
         self.assertEqual(observed,['synthetic'])

@@ -491,19 +491,20 @@ async def shutdown_omlx() -> dict[str, Any]:
         return {"stopped": False}
 
 
-# Full remote build: history the agent sees per turn. The GX10 contract is a
-# 32k-token window and a 131,072-byte messages+tools aggregate, and the remote
-# fit refuses to trim selected messages, so history must leave room for the
-# system prompt, up to 32 tool schemas, tool results and the output budget.
-# The local formula below would give old turns ~20k tokens (~80 KB); 6k tokens
-# (~24 KB) keeps the last few turns for follow-ups like "reply to that".
-_REMOTE_FULL_HISTORY_TOKENS = 6000
+# Full remote inference: history the agent sees per turn. The remote fit
+# refuses to trim selected messages and the profile caps the messages+tools
+# aggregate in bytes, so history must leave room for the system prompt, tool
+# schemas, tool results and the output budget. A fifth of the aggregate byte
+# budget at ~4 bytes per token (6.5k tokens for a 131,072-byte profile) keeps
+# the last few turns for follow-ups like "reply to that".
+_REMOTE_FULL_HISTORY_SHARE = 20
 
 
 def _history_budget(target: Target) -> int:
     budget = max(1500, target.context_window - 11500)
     if remote_full_mode():
-        budget = min(budget, _REMOTE_FULL_HISTORY_TOKENS)
+        cap = max(1500, remote_only_profile().aggregate_bytes // _REMOTE_FULL_HISTORY_SHARE)
+        budget = min(budget, cap)
     return budget
 
 
@@ -1848,7 +1849,7 @@ async def agent(body: dict[str, Any]):
                     # Read-only remote sends the raw prompt, not decision.resolved_request,
                     # so a behavior route's "answer only from these results"
                     # instruction rides in the style hint instead (a few hundred
-                    # bytes, well inside the gateway's budget).
+                    # bytes, well inside a profile's byte budget).
                     from service.router.router import behavior_guidance
                     guidance = behavior_guidance(decision)
                     if guidance:
@@ -2349,7 +2350,7 @@ async def assistant_sync_calendar(body: dict[str, Any]) -> dict[str, Any]:
 async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
     """Manually add a reminder/event. Accepts when_ts (epoch) or when_iso."""
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     title = str(body.get("title") or "").strip()
     if not title:
         return {"ok": False, "error": "title required"}
@@ -2373,7 +2374,7 @@ async def assistant_add(body: dict[str, Any]) -> dict[str, Any]:
 async def assistant_update(cid: str, body: dict[str, Any]) -> dict[str, Any]:
     """Mark a commitment done/dismissed (status)."""
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     status = str(body.get("status") or "").strip()
     if status not in {"active", "done", "dismissed"}:
         return {"ok": False, "error": "status must be active|done|dismissed"}
@@ -2565,7 +2566,7 @@ async def assistant_delete(cid: str) -> dict[str, Any]:
     to remove it from macOS Calendar (it holds the write grant); the re-sync then
     drops it from the store. Manual items are deleted outright."""
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     c = assistant_store.get(cid)
     if not c:
         return {"ok": False, "error": "not found"}
@@ -2652,7 +2653,7 @@ async def assistant_event_ack(event_id: str, body: dict[str, Any]) -> dict[str, 
 @app.post("/assistant/events/{event_id}/claim")
 async def assistant_event_claim(event_id: str, body: dict[str, Any]) -> dict[str, Any]:
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     if set(body) != {"kind", "action_id", "payload"}:
         raise HTTPException(status_code=422, detail="kind, action_id and exact payload are required")
     try:
@@ -2702,7 +2703,7 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     looks — see action_tools.human_reviewed_content.
     """
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     from service.safety.audit import audit
     from service.tools.action_tools import human_reviewed_content, send_message
 
@@ -2738,7 +2739,7 @@ async def assistant_events() -> StreamingResponse:
 @app.post("/agent/approve")
 async def approve(body: dict[str, Any]) -> dict[str, Any]:
     if remote_read_only_mode():
-        raise HTTPException(status_code=403, detail="This action is unavailable in the four-read remote-only demo")
+        raise HTTPException(status_code=403, detail="This action is unavailable in read-only remote inference")
     sid, action_id = body.get("session_id"), body.get("action_id")
     approved, request_id = body.get("approved"), body.get("request_id")
     # A decision authorizes or refuses a real action, so the body is validated

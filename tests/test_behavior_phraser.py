@@ -37,7 +37,7 @@ class Recorder:
 
 
 def make(rec, **kw):
-    kw.setdefault("model", "qwen3.6:35b")
+    kw.setdefault("model", "example-model")
     return OpenAIPhraser("https://phraser.example", "/v1", transport=httpx.MockTransport(rec), **kw)
 
 
@@ -53,19 +53,19 @@ def test_payload_keys_restricted_and_url():
     assert req.headers["authorization"] == "Bearer secret-token"
     body = rec.payloads[0]
     assert set(body) == {"model", "messages", "max_tokens", "stream", "temperature"}
-    assert body["stream"] is False and body["model"] == "qwen3.6:35b" and body["max_tokens"] == 160
+    assert body["stream"] is False and body["model"] == "example-model" and body["max_tokens"] == 160
     assert [m["role"] for m in body["messages"]] == ["system", "user"]
     assert "ONLY the facts" in body["messages"][0]["content"]
 
 
-def test_payload_satisfies_remote_only_gateway_contract():
-    from service.inference.remote_policy import RemoteOnlyProfile
+def test_payload_satisfies_remote_only_profile_contract():
+    from tests.fixtures.remote_inference import example_profile
     rec = Recorder(_reply("ok"), _reply("{}"))
     p = make(rec)
     p.phrase("day_preview", FACTS)
     p.categorize(["Gym", "1:1 Sam"], CATEGORIES)
     for body in rec.payloads:
-        RemoteOnlyProfile().validate_payload(body)  # raises on violation
+        example_profile().validate_payload(body)  # raises on violation
 
 
 def test_callable_token_and_no_token():
@@ -195,11 +195,11 @@ def _stdlib():
     return sys.stdlib_module_names
 
 
-def test_real_engine_uses_phraser_and_payloads_fit_gateway(tmp_path):
+def test_real_engine_uses_phraser_and_payloads_fit_remote_profile(tmp_path):
     """BehaviorEngine + OpenAIPhraser end to end (mock HTTP): phrased bodies
-    land on nudges, and every request passes the remote-only gateway contract."""
+    land on nudges, and every request passes the remote-only profile contract."""
     from service.behavior.engine import BehaviorEngine
-    from service.inference.remote_policy import RemoteOnlyProfile
+    from tests.fixtures.remote_inference import example_profile
     try:
         from tests.fixtures.behavior_persona import generate_persona
         BehaviorEngine(tmp_path / "probe.db").close()
@@ -210,7 +210,7 @@ def test_real_engine_uses_phraser_and_payloads_fit_gateway(tmp_path):
 
     def handler(request):
         body = json.loads(request.content)
-        RemoteOnlyProfile().validate_payload(body)
+        example_profile().validate_payload(body)
         seen.append(body)
         user = body["messages"][1]["content"]
         if user.startswith("Notification kind:"):
@@ -219,7 +219,7 @@ def test_real_engine_uses_phraser_and_payloads_fit_gateway(tmp_path):
         return _reply("{}")
 
     now = 1_791_210_600.0  # Monday 07:30 America/Los_Angeles
-    phraser = OpenAIPhraser("http://127.0.0.1:11434", "/v1", model="qwen3.6:35b",
+    phraser = OpenAIPhraser("http://127.0.0.1:11434", "/v1", model="example-model",
                             transport=httpx.MockTransport(handler))
     eng = BehaviorEngine(tmp_path / "b.db", phraser=phraser, tz="America/Los_Angeles")
     persona = generate_persona(now, tz="America/Los_Angeles")

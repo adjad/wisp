@@ -326,12 +326,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_tools.py",
     # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
-    "tests/test_intel_remote_no_local.py",
-    "tests/test_intel_remote_only_client.py",
-    "tests/test_intel_remote_only_main.py",
-    "tests/test_intel_remote_policy.py",
-    "tests/test_intel_remote_read_boundary.py",
-    "tests/test_intel_remote_full.py",
+    "tests/test_remote_inference_client.py",
+    "tests/test_remote_inference_full.py",
+    "tests/test_remote_inference_main.py",
+    "tests/test_remote_inference_no_local.py",
+    "tests/test_remote_inference_policy.py",
+    "tests/test_remote_inference_read_boundary.py",
     # Workflow20 draft/receipt identity: sockets and subprocess forbidden, disposable stores.
     "tests/test_workflow20_draft_identity.py",
     "tests/test_workflow20_executor_draft_identity.py",

@@ -37,10 +37,10 @@ def _store_hub():
 
 
 def _writable() -> None:
-    """State-changing routes are refused in the read-only remote build."""
+    """State-changing routes are refused in read-only remote inference."""
     if remote_read_only_mode():
         raise HTTPException(status_code=403,
-                            detail="This action is unavailable in the four-read remote-only demo")
+                            detail="This action is unavailable in read-only remote inference")
 
 
 def _body(body: Any) -> dict:

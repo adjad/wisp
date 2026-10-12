@@ -9,7 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace,ModuleType
 from unittest.mock import AsyncMock, Mock, patch
 from fastapi import HTTPException
-from tests.test_intel_remote_policy import RemoteFixture,policy
+from tests.test_remote_inference_policy import RemoteFixture,policy
 
 SOURCE=Path(__file__).resolve().parents[1]/'service/main.py'
 def selected(names,namespace):
@@ -33,7 +33,7 @@ class MainChecks(RemoteFixture):
         browser=ModuleType('service.browser');browser.host=host
         bomb=Mock(side_effect=AssertionError('local/background operation forbidden'))
         ns={'asyncio':asyncio,'asynccontextmanager':asynccontextmanager,'remote_only_profile':policy.remote_only_profile,'remote_full_mode':policy.remote_full_mode,'require_local_models_disabled':policy.require_local_models_disabled,
-            'OMLXClient':lambda:fake,'role_to_model':lambda role:'qwen3.6:35b','skills':SimpleNamespace(load=bomb),
+            'OMLXClient':lambda:fake,'role_to_model':lambda role:'example-model','skills':SimpleNamespace(load=bomb),
             'mcp_manager':SimpleNamespace(start=bomb,stop=bomb),'idle_unloader':SimpleNamespace(run=bomb),
             'assistant_scheduler':SimpleNamespace(run=bomb),'cloud_super_model_enabled':bomb,'start_laya_warmup':bomb,
             'research_manager':SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),

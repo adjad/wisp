@@ -5,16 +5,14 @@ starts anything. Read-only behavior is covered by the other remote suites.
 """
 import ast
 import asyncio
-import copy
 import os
 from pathlib import Path
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 if not os.environ.get('WISP_HOME') or Path(os.environ['WISP_HOME']).resolve() == Path.home() / '.moe':
-    raise RuntimeError('Use a fresh disposable WISP_HOME for Intel synthetic tests')
+    raise RuntimeError('Use a fresh disposable WISP_HOME for remote-inference synthetic tests')
 
 import service.main  # noqa: F401,E402 — registers every built-in tool
 from fastapi import HTTPException  # noqa: E402
@@ -22,8 +20,8 @@ from fastapi import HTTPException  # noqa: E402
 from service.config.endpoints import EndpointConfigurationError  # noqa: E402
 from service.safety import grants, policy as safety  # noqa: E402
 from service.tools.registry import REGISTRY, run_tool  # noqa: E402
-from tests.test_intel_remote_only_main import selected  # noqa: E402
-from tests.test_intel_remote_policy import RemoteFixture, policy  # noqa: E402
+from tests.test_remote_inference_main import selected  # noqa: E402
+from tests.test_remote_inference_policy import EXAMPLE, FULL_LIMITS, RemoteFixture, policy  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 WRITES_AND_SENDS = ("send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
@@ -33,19 +31,12 @@ WRITES_AND_SENDS = ("send_email", "send_message", "reply_to_email", "forward_ema
 SENDS = ("send_email", "send_message", "reply_to_email", "forward_email", "schedule_send")
 
 
-def _profile_dict(profile):
-    raw = asdict(profile)
-    raw['generation_roles'] = list(raw['generation_roles'])
-    raw['tool_capabilities'] = list(raw['tool_capabilities'])
-    return raw
-
-
 class FullFixture(RemoteFixture):
-    """RemoteFixture, but launched as the full build with the 32k contract."""
+    """RemoteFixture, but launched as the full build with 32k budgets."""
+    profile_overrides = FULL_LIMITS
 
     def setUp(self):
         super().setUp()
-        self.cfg = {'inference': {'remote_only': _profile_dict(policy.REMOTE_FULL_PROFILE)}}
         for p in (patch.object(policy, '_FULL_MODE', '1'),):
             p.start()
             self.addCleanup(p.stop)
@@ -59,37 +50,32 @@ class FullFixture(RemoteFixture):
 
 
 class ContractChecks(FullFixture):
-    def test_full_contract_values(self):
+    def test_full_profile_values(self):
         p = policy.remote_only_profile()
-        self.assertIs(p, policy.REMOTE_FULL_PROFILE)
         self.assertTrue(policy.remote_full_mode())
         self.assertFalse(policy.remote_read_only_mode())
         self.assertEqual((p.context_window, p.aggregate_bytes, p.request_bytes, p.messages, p.max_tokens, p.tools),
                          (32000, 131072, 524288, 200, 8192, 32))
-        # Everything that pins the endpoint is identical to the read-only contract.
-        base = policy.RemoteOnlyProfile()
-        for key in ('base_url', 'model_id', 'credential_ref', 'endpoint_name', 'provider', 'api_prefix',
-                    'readiness_timeout', 'response_bytes', 'tools', 'generation_roles', 'tool_capabilities'):
-            self.assertEqual(getattr(p, key), getattr(base, key), key)
         t = policy.remote_default_target('agent')
-        self.assertEqual((t.model, t.context_window, t.endpoint.credential_ref), ('qwen3.6:35b', 32000, 'keychain:gx10demo'))
+        self.assertEqual((t.model, t.context_window, t.endpoint.credential_ref, t.profile),
+                         ('example-model', 32000, 'keychain:example', 'remote-only-full'))
         self.assertFalse(t.endpoint.managed)
         policy.validate_remote_target(t)
         self.assertEqual(p.fit_output(20000), 8192)
 
-    def test_full_mode_refuses_the_8k_contract_and_any_drift(self):
-        self.cfg = {'inference': {'remote_only': _profile_dict(policy.RemoteOnlyProfile())}}
+    def test_any_valid_profile_works_and_targets_stay_pinned(self):
+        # Full mode accepts any complete profile (here the 8k one)...
+        self.cfg = {'inference': {'remote_only': dict(EXAMPLE)}}
         policy.remote_only_profile.cache_clear()
-        with self.assertRaises(EndpointConfigurationError):
-            policy.remote_only_profile()
-        for key, val in [('context_window', 100000), ('model_id', 'other'), ('base_url', 'https://x.invalid'),
-                         ('credential_ref', 'env:X'), ('tools', 64), ('aggregate_bytes', 400000)]:
-            raw = _profile_dict(policy.REMOTE_FULL_PROFILE)
-            raw[key] = val
-            self.cfg = {'inference': {'remote_only': raw}}
-            policy.remote_only_profile.cache_clear()
-            with self.subTest(key=key), self.assertRaises(EndpointConfigurationError):
-                policy.remote_only_profile()
+        self.assertEqual(policy.remote_only_profile().context_window, 8000)
+        self.assertTrue(policy.remote_full_mode())
+        # ...but a target that drifts from it is refused.
+        from dataclasses import replace
+        t = policy.remote_default_target('agent')
+        for drift in (replace(t, model='other'), replace(t, endpoint=replace(t.endpoint, base_url='https://other.example')),
+                      replace(t, endpoint=replace(t.endpoint, credential_ref='keychain:other'))):
+            with self.assertRaises(EndpointConfigurationError):
+                policy.validate_remote_target(drift)
 
     def test_launch_flag_combinations_fail_closed(self):
         for forced, full in [(None, '1'), ('0', '1'), ('1', 'yes'), ('1', '0')]:
@@ -111,22 +97,17 @@ class ContractChecks(FullFixture):
 
 
 class ReadOnlyContractChecks(RemoteFixture):
-    def test_read_only_accepts_either_fixed_contract(self):
-        self.assertIs(policy.remote_only_profile(), policy.remote_only_profile())
-        self.assertEqual(policy.remote_only_profile(), policy.RemoteOnlyProfile())
-        self.assertTrue(policy.remote_read_only_mode())
-        self.assertFalse(policy.remote_full_mode())
-        # The v5 package ships the 32k profile for both runtime modes.
-        self.cfg = {'inference': {'remote_only': _profile_dict(policy.REMOTE_FULL_PROFILE)}}
-        policy.remote_only_profile.cache_clear()
-        self.assertIs(policy.remote_only_profile(), policy.REMOTE_FULL_PROFILE)
-        self.assertTrue(policy.remote_read_only_mode())
-        # ...and the allowlist is the same seven reads either way.
-        for name in WRITES_AND_SENDS + ('lookup_contact', 'read_file'):
-            self.assertFalse(policy.remote_tool_allowed(name), name)
-            self.assertIs(safety.decide(REGISTRY[name].category, {}, tool=name).tier, safety.Tier.DENY)
-        for name in policy._READ_TOOLS:
-            self.assertTrue(policy.remote_tool_allowed(name), name)
+    def test_read_only_allowlist_whatever_the_budgets(self):
+        for overrides in ({}, FULL_LIMITS):
+            self.cfg = {'inference': {'remote_only': {**EXAMPLE, **overrides}}}
+            policy.remote_only_profile.cache_clear()
+            self.assertTrue(policy.remote_read_only_mode())
+            self.assertFalse(policy.remote_full_mode())
+            for name in WRITES_AND_SENDS + ('lookup_contact', 'read_file'):
+                self.assertFalse(policy.remote_tool_allowed(name), name)
+                self.assertIs(safety.decide(REGISTRY[name].category, {}, tool=name).tier, safety.Tier.DENY)
+            for name in policy._READ_TOOLS:
+                self.assertTrue(policy.remote_tool_allowed(name), name)
 
 
 class ToolChecks(FullFixture):
@@ -190,7 +171,7 @@ class MainChecks(FullFixture):
         return {'asyncio': asyncio, 'asynccontextmanager': asynccontextmanager,
                 'remote_only_profile': policy.remote_only_profile, 'remote_full_mode': policy.remote_full_mode,
                 'require_local_models_disabled': policy.require_local_models_disabled,
-                'OMLXClient': lambda: fake, 'role_to_model': lambda role: 'qwen3.6:35b',
+                'OMLXClient': lambda: fake, 'role_to_model': lambda role: 'example-model',
                 'skills': SimpleNamespace(load=bomb), 'mcp_manager': SimpleNamespace(start=bomb, stop=bomb),
                 'idle_unloader': SimpleNamespace(run=bomb), 'assistant_scheduler': SimpleNamespace(run=scheduler_run),
                 'cloud_super_model_enabled': bomb, 'start_laya_warmup': bomb,
@@ -275,15 +256,16 @@ class MainChecks(FullFixture):
         source = (ROOT / 'service/main.py').read_text()
         self.assertIn('messages = ([user_msg] if super_model_cloud or remote_read_only_mode() else _tool_turn_messages(', source)
         self.assertIn('include_memory_context=not remote_read_only_mode() and _agent_memory_context_allowed(', source)
-        ns = {'remote_full_mode': policy.remote_full_mode}
+        ns = {'remote_full_mode': policy.remote_full_mode, 'remote_only_profile': policy.remote_only_profile}
         selected({'_history_budget'}, ns)
-        ns['_REMOTE_FULL_HISTORY_TOKENS'] = 6000
-        self.assertEqual(ns['_history_budget'](policy.remote_default_target('agent')), 6000)
+        ns['_REMOTE_FULL_HISTORY_SHARE'] = 20
+        # A fifth of the 131,072-byte aggregate at ~4 bytes per token.
+        self.assertEqual(ns['_history_budget'](policy.remote_default_target('agent')), 6553)
 
     def test_wisp_status_does_not_claim_local_inference(self):
         text = asyncio.run(REGISTRY['wisp_status'].func())
-        self.assertIn('qwen3.6:35b', text)
-        self.assertIn('GX10', text)
+        self.assertIn('example-model', text)
+        self.assertIn('inference.example', text)
         self.assertNotIn('no request leaves the machine', text)
 
 

@@ -7352,7 +7352,7 @@ _BEHAVIOR_CORRECT_GUIDANCE = (
 def behavior_guidance(decision: RouteDecision) -> str:
     """The behavior routes' instruction ('' for any other route), for paths
     that send the user's raw prompt instead of ``decision.resolved_request``
-    (the Intel remote-only build), so it still reaches the model."""
+    (read-only remote inference), so it still reaches the model."""
     names = set(decision.tool_subset or ()) | {name for name, _ in (decision.direct_calls or ())}
     if not names or not names <= set(_BEHAVIOR_TOOLS_ALL):
         return ""

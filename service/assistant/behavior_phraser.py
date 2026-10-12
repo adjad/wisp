@@ -8,8 +8,8 @@ reword one (``phrase``) or label ambiguous event titles from a fixed list
   or while any generation is in flight, so it cannot contend with foreground
   work for the single resident model;
 - one bounded request (``TIMEOUT_S``) through ``OMLXClient`` bound to
-  ``role_target("fast")``. In the Intel remote-only build that target IS the
-  fixed GX10 gateway profile and ``OMLXClient._payload`` validates the body
+  ``role_target("fast")``. Under remote inference that target IS the pinned
+  remote profile and ``OMLXClient._payload`` validates the body
   against ``RemoteOnlyProfile.validate_payload`` (model/messages/max_tokens/
   stream/temperature only, exact model id). On Apple silicon it is the managed
   local oMLX model and is used only when already resident (never a cold load);
@@ -84,7 +84,8 @@ class WispPhraser:
         try:
             extra: dict = {}
             if remote:
-                # Qwen-family soft switch; the gateway accepts no template kwargs.
+                # Qwen-family soft switch (other models ignore it); remote
+                # payloads accept no template kwargs.
                 user = user + "\n/no_think"
             else:
                 if not getattr(client, "managed", True):

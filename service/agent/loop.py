@@ -1485,8 +1485,8 @@ async def run_agent(
         admitted = [s for s in offered if s["function"]["name"] not in blocked]
         from service.inference.remote_policy import remote_full_mode, remote_only_profile, remote_tool_allowed
         if remote_full_mode():
-            # Full remote build: never offer a tool this build cannot run, and
-            # keep the menu inside the gateway's tool-count contract (router
+            # Full remote inference: never offer a tool this build cannot run,
+            # and keep the menu inside the profile's tool-count limit (router
             # order is relevance order; measured menus stay well under it).
             admitted = [s for s in admitted if remote_tool_allowed(s["function"]["name"])]
             admitted = admitted[:remote_only_profile().tools]

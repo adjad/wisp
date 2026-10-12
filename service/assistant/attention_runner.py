@@ -212,7 +212,7 @@ async def run_tick(now: float | None = None) -> list:
     """One scheduler pass. Cheap when nothing changed; never raises into the scheduler."""
     global _last_fingerprint, _last_run
     if _remote_profile_block():
-        return []                                     # never read or write on a demo/remote build
+        return []                                     # never read or write in read-only remote inference
     now = now if now is not None else time.time()
     if now - _last_run < MIN_INTERVAL_S:
         return []
