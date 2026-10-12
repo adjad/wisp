@@ -36,7 +36,7 @@ from typing import Any
 from service.behavior.timeutil import at_minute, daterange, local_dt, resolve_tz
 from service.behavior.types import Observation
 
-USER = "Aria Solano"
+USER = "Robin Vale"
 CALENDAR = "Wisp Demo"
 GYM = "Morning lift"
 GYM_START, GYM_LEN = 6 * 60 + 45, 60
@@ -325,7 +325,7 @@ def generate_persona(now: float, *, tz: str = "America/Los_Angeles", weeks_back:
             if run_future:
                 forced_b2b_done = True
         if wd == 3:
-            b.event(day, 15 * 60, 30, "Dev / Aria 1:1", "dev-aria-1-1", location="Cedarloop office",
+            b.event(day, 15 * 60, 30, "Dev / Robin 1:1", "dev-robin-1-1", location="Cedarloop office",
                     organizer="Dev Malik", attendees=("Dev Malik", USER),
                     notes="Delivery slots, SSO evidence, Jonah hiring loop.")
         if wd == 2:

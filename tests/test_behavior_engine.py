@@ -55,13 +55,13 @@ def test_first_snapshot_has_nothing_to_diff(eng):
 
 
 def test_vanished_upcoming_event_is_cancelled(eng):
-    snap(eng, [ev("a", T0 + D, attendees=["Aria", "Dev"]), ev("b", T0 + 2 * D)], T0)
+    snap(eng, [ev("a", T0 + D, attendees=["Robin", "Dev"]), ev("b", T0 + 2 * D)], T0)
     out = snap(eng, [ev("b", T0 + 2 * D)], T0 + H)
     assert out["cancelled"] == 1 and out["moved"] == 0
     c = kinds(eng, "event_cancelled")["cancel:a"]
     assert c.ts == T0 + D and c.subject == "Pipeline review" and c.category == "meeting"
     assert c.attrs["start_ts"] == T0 + D and c.attrs["end_ts"] == T0 + D + 1800
-    assert c.attrs["source_id"] == "a" and c.attrs["attendees"] == ["Aria", "Dev"]
+    assert c.attrs["source_id"] == "a" and c.attrs["attendees"] == ["Robin", "Dev"]
     assert "a" not in kinds(eng, "event")                         # no longer part of the plan
 
 

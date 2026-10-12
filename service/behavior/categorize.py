@@ -3,7 +3,7 @@
 Categories are what let "Morning lift", "Spin class" and "Gym" count as the same
 habit, so the rules favour precision: whole-word matches only ("run" must not
 fire on "Cash runway review"), and ordered so the more specific reading wins
-("Dev / Aria 1:1" is a one-on-one, not a meeting; "Hiring sync" is a meeting,
+("Dev / Robin 1:1" is a one-on-one, not a meeting; "Hiring sync" is a meeting,
 "Sync with Dev" a one-on-one). Whatever stays "other" may be labelled by the
 optional Phraser, constrained to the same fixed list and cached by title.
 """
@@ -26,7 +26,7 @@ def _words(*words: str) -> re.Pattern:
 _RULES: tuple[tuple[str, re.Pattern], ...] = (
     ("one_on_one", re.compile(r"(?<![\w])(?:1\s*:\s*1|1\s*on\s*1|one[\s-]on[\s-]one)(?![\w])"
                               r"|\bsync\s+with\b", re.I)),
-    # "Dev / Aria", "Sam Lee / Jo": two capitalised names around a slash (case-sensitive,
+    # "Dev / Robin", "Sam Lee / Jo": two capitalised names around a slash (case-sensitive,
     # so "Q3 planning / budget" stays a meeting).
     ("one_on_one", re.compile(r"^\s*[A-Z][a-z'.-]+(?:\s+[A-Z][a-z'.-]+)?\s*/\s*[A-Z][a-z'.-]+"
                               r"(?:\s+[A-Z][a-z'.-]+)?(?:\s|$)")),
