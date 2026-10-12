@@ -5,8 +5,11 @@ under tmp_path and the repository-root conftest isolates WISP_HOME."""
 from __future__ import annotations
 
 import asyncio
+import os
 import sqlite3
+import threading
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -142,7 +145,7 @@ def test_forget_with_nothing_learned_is_a_no_op(tmp_path, store):
     home = tmp_path / "empty"
     home.mkdir()
     assert br.forget_all(store, home) == {"removed_items": [], "kept_items": 0, "files_deleted": 0,
-                                          "nudge_events_deleted": 0}
+                                          "files_failed": [], "nudge_events_deleted": 0}
 
 
 def test_forget_waits_for_a_pass_in_flight_then_nothing_is_published(tmp_path, store, writes_allowed):
@@ -482,3 +485,247 @@ def test_a_pass_after_stop_does_no_work(tmp_path, store):
     rt.stop()
     assert rt.work(store, NOW, force=True) == ([], "local")
     assert eng.mined == 0 and eng.generated == 0
+
+
+# ----------------------------------------------------------------- Forget vs. concurrent runtime users
+
+def _forget_in_thread(store, **kw):
+    out = {}
+    t = threading.Thread(target=lambda: out.update(result=br.forget_all(store, **kw)), daemon=True)
+    t.start()
+    return t, out
+
+
+def _wait_for(predicate, timeout=5.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_nothing_recreates_a_runtime_while_forget_is_blocked_in_stop(tmp_path, store, monkeypatch, client,
+                                                                     writes_allowed):
+    rt, _ = make_runtime(tmp_path, FakeEngine(nudges=[gym_conflict_nudge()]))
+    monkeypatch.setattr(br, "_home", lambda: rt.home)
+    monkeypatch.setattr(behavior_api, "_store_hub", lambda: (store, FakeHub()))
+    br.set_runtime(rt)
+    rt.kv_set("cursor:local", "42")
+    rt.remember_nudge(gym_conflict_nudge())
+    hold_files(rt.home)
+    rt._work_lock.acquire()                  # a pass in flight: stop() blocks on it
+    t, out = _forget_in_thread(store)
+    try:
+        assert _wait_for(lambda: rt._stopped), "forget never reached stop()"
+        assert br.forgetting() is True
+        # Everything that asks for the runtime gets None; none of it builds a new one on the old files.
+        assert br.get_runtime() is None
+        assert br.profile_card() == ""
+        br.poke(store, FakeHub())
+        br.record_decision("send_email", True)
+        assert asyncio.run(br.tick(store, FakeHub())) == []
+        from service.tools import behavior_tools
+        assert behavior_tools._runtime() is None
+        assert br._runtime is None
+        status = client.get("/behavior/status")
+        assert status.status_code == 200 and status.json()["erasing"] is True
+        assert status.json()["enabled"] is False
+        for path in ("/behavior/patterns", "/behavior/nudges", "/behavior/predict", "/behavior/profile"):
+            resp = client.get(path)
+            assert resp.status_code == 503 and resp.headers["retry-after"], path
+        assert client.post("/behavior/run").status_code == 503
+        # A holder of the stale runtime cannot act on it either.
+        with pytest.raises(br.RuntimeStopped):
+            rt.perform_action(store, "n1", 0, gym_conflict_nudge().actions[0], NOW)
+        assert asyncio.run(rt.deliver(store, FakeHub(), gym_conflict_nudge(), NOW)) is None
+        assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+        assert t.is_alive()                  # still blocked: nothing above got past the flag
+    finally:
+        rt._work_lock.release()
+    t.join(10)
+    assert not t.is_alive() and out["result"]["files_failed"] == []
+    assert br.forgetting() is False and br._runtime is None
+    assert list(rt.home.iterdir()) == []
+    # A fresh runtime starts cleanly on new files, with none of the forgotten state, and can write.
+    fresh = br.get_runtime()
+    assert fresh is not None and fresh is not rt
+    assert fresh.kv_get("cursor:local") is None
+    assert fresh._db.execute("SELECT COUNT(*) FROM nudges").fetchone()[0] == 0
+    fresh.kv_set("x", "y")
+    assert fresh.kv_get("x") == "y" and (rt.home / br.RUNTIME_DB).exists()
+    assert client.get("/behavior/status").json().get("erasing") is None
+
+
+def test_forget_waits_for_a_delivery_in_flight(tmp_path, store, writes_allowed):
+    """stop() waits for a delivery already past its checks, so its write and publish land
+    (and are then erased) before the files go, and none can land afterwards."""
+    rt, _ = make_runtime(tmp_path)
+    br.set_runtime(rt)
+    release = threading.Event()
+    entered = threading.Event()
+
+    class SlowHub(FakeHub):
+        async def publish(self, event, **kw):
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+            return await super().publish(event, **kw)
+
+    result = {}
+    loop_thread = threading.Thread(
+        target=lambda: result.update(row=asyncio.run(rt.deliver(store, SlowHub(), gym_conflict_nudge(), NOW))),
+        daemon=True)
+    loop_thread.start()
+    assert entered.wait(5)
+    t, out = _forget_in_thread(store)
+    assert _wait_for(lambda: rt._stopped)
+    time.sleep(0.3)
+    assert t.is_alive(), "forget must wait for the delivery in flight"
+    release.set()
+    loop_thread.join(10)
+    t.join(10)
+    assert not t.is_alive() and result["row"] is not None
+    assert list(rt.home.iterdir()) == []
+    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0     # auto items removed too
+
+
+def test_a_stale_act_request_gets_a_clean_refusal_not_a_closed_database_500(tmp_path, store, monkeypatch, client,
+                                                                          writes_allowed):
+    rt, _ = make_runtime(tmp_path)
+    offer = Nudge(id="n9", kind="day_preview", title="T", body="B", because="C", created_at=NOW,
+                  expires_at=at(23, 0, 1),
+                  actions=(Action("add_reminder", {"title": "Pack bag", "when_ts": at(21, 0)}, auto=False),))
+    rt.remember_nudge(offer)
+    monkeypatch.setattr(behavior_api.behavior_runtime, "get_runtime", lambda: rt)   # the request already holds it
+    monkeypatch.setattr(behavior_api, "_store_hub", lambda: (store, FakeHub()))
+    rt.stop()
+    with pytest.raises(br.RuntimeStopped):
+        rt.perform_action(store, "n9", 0, offer.actions[0], NOW)
+    resp = client.post("/behavior/nudges/n9/act", json={"action_index": 0})
+    assert resp.status_code == 409 and "erased" in resp.json()["detail"]
+    rt.close()                                                  # and after the files are gone too
+    for call in (lambda: client.post("/behavior/nudges/n9/act", json={"action_index": 0}),
+                 lambda: client.post("/behavior/nudges/n9/undo"),
+                 lambda: client.post("/behavior/nudges/n9/feedback", json={"verdict": "useful"}),
+                 lambda: client.get("/behavior/nudges")):
+        assert call().status_code == 409
+    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+
+
+def test_concurrent_forgets_serialise_and_clear_the_flag_only_at_the_end(tmp_path, store):
+    rt, _ = make_runtime(tmp_path)
+    br.set_runtime(rt)
+    rt._work_lock.acquire()
+    first, _o1 = _forget_in_thread(store)
+    assert _wait_for(lambda: rt._stopped)
+    second, _o2 = _forget_in_thread(store)
+    time.sleep(0.2)
+    rt._work_lock.release()
+    first.join(10)
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive()
+    assert br.forgetting() is False
+
+
+# ----------------------------------------------------------------- Forget with files that cannot be deleted
+
+def test_forget_reports_files_it_could_not_delete_and_deletes_the_rest(tmp_path, store, monkeypatch):
+    home = tmp_path / "h"
+    home.mkdir()
+    hold_files(home)
+    real = Path.unlink
+
+    def flaky(self, *a, **k):
+        if self.name == "behavior.db-wal":
+            raise PermissionError(13, "Operation not permitted")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+    result = br.forget_all(store, home)
+    assert result["files_failed"] == ["behavior.db-wal"]
+    assert sorted(p.name for p in home.iterdir()) == ["behavior.db-wal"]       # everything else is gone
+    assert result["files_deleted"] == 5 and br.forgetting() is False
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory permissions")
+def test_forget_with_a_read_only_directory_answers_200_listing_what_is_left(client, tmp_path, store, monkeypatch):
+    home = tmp_path / "ro"
+    home.mkdir()
+    hold_files(home)
+    monkeypatch.setattr(br, "_home", lambda: home)
+    monkeypatch.setattr(behavior_api, "_store_hub", lambda: (store, FakeHub()))
+    home.chmod(0o500)
+    try:
+        resp = client.request("DELETE", "/behavior/data", json={"confirm": True})
+    finally:
+        home.chmod(0o700)
+    body = resp.json()
+    assert resp.status_code == 200 and body["ok"] is False
+    assert "behavior_profile_card.txt" in body["files_failed"] and body["files_deleted"] == 0
+    assert br.forgetting() is False
+
+
+# ----------------------------------------------------------------- retention while off, through the scheduler
+
+def _scheduler_off_case(tmp_path, monkeypatch):
+    from service.assistant import scheduler
+    monkeypatch.setattr(br, "_home", lambda: tmp_path)
+    monkeypatch.setattr(scheduler, "_behavior_task", None)
+    now = time.time()
+    _seed_engine_db(tmp_path, now)
+
+    async def go():
+        task = scheduler._start_behavior_tick()
+        assert task is not None
+        await task
+        await scheduler._start_behavior_tick()           # inside the interval: runs, but does not rescan
+
+    scans = []
+    real = br.age_out
+    monkeypatch.setattr(br, "age_out", lambda *a, **k: scans.append(1) or real(*a, **k))
+    asyncio.run(go())
+    assert _ids(tmp_path, "observations") == {"new"} and _ids(tmp_path, "nudges") == {"n_new"}
+    assert len(scans) == 1
+    assert br._runtime is None and not (tmp_path / br.RUNTIME_DB).exists()    # no runtime, engine or phraser
+
+
+def test_scheduler_ages_out_while_learning_is_off_by_the_launch_switch(tmp_path, monkeypatch):
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    _scheduler_off_case(tmp_path, monkeypatch)
+
+
+def test_scheduler_ages_out_while_the_saved_setting_is_off(tmp_path, monkeypatch):
+    from service.config import set_behavior_enabled
+    set_behavior_enabled(False)
+    _scheduler_off_case(tmp_path, monkeypatch)
+
+
+def test_scheduler_ages_out_when_the_settings_file_is_corrupt(tmp_path, monkeypatch):
+    from service import config
+    config.USER_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+    config.USER_CONFIG.write_text("behavior: [unclosed\n  : :")
+    config._user_overlay.cache_clear()
+    from service.behavior_switch import enabled
+    assert enabled() is False                                  # fail closed
+    _scheduler_off_case(tmp_path, monkeypatch)
+
+
+def test_scheduler_does_not_age_out_mid_erase(tmp_path, monkeypatch):
+    from service.assistant import scheduler
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    monkeypatch.setattr(br, "_home", lambda: tmp_path)
+    monkeypatch.setattr(scheduler, "_behavior_task", None)
+    scans = []
+    monkeypatch.setattr(br, "age_out", lambda *a, **k: scans.append(1) or {})
+    monkeypatch.setattr(br, "_forgetting", True)
+
+    async def go():
+        await scheduler._start_behavior_tick()
+    asyncio.run(go())
+    assert scans == []
+
+
+def test_age_out_never_creates_a_database_that_is_not_there(tmp_path):
+    assert br.age_out(tmp_path) == {"observations": 0, "nudges": 0, "delivered": 0}
+    assert list(tmp_path.iterdir()) == []

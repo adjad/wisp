@@ -565,7 +565,14 @@ def test_scheduler_runs_behavior_tick_in_background_one_at_a_time(monkeypatch):
     asyncio.run(scenario())
     assert len(started) == 2
     monkeypatch.setenv("WISP_BEHAVIOR", "0")
-    assert scheduler._start_behavior_tick() is None           # off: nothing started
+    ticks_before = len(started)
+
+    async def off():
+        task = scheduler._start_behavior_tick()
+        assert task is not None                                # off: only retention runs ...
+        await task
+    asyncio.run(off())
+    assert len(started) == ticks_before                        # ... never a tick (no engine, no runtime)
 
 
 # --------------------------------------------------------------------------

@@ -209,7 +209,7 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 | --- | --- |
 | `GET /behavior/status` | enabled, last runs, errors, counts |
 | `GET /behavior/settings`, `PUT /behavior/settings` `{"enabled": bool}` | the "Learn my routines" setting; returns `enabled` (in effect), `setting` (saved), `env_override`, `settings_readable` (false when `config.yaml` cannot be read), `remote_active` and `phraser` |
-| `DELETE /behavior/data` `{"confirm": true}` (JSON content type required) | forget what Wisp learned; works while learning is off; returns `removed_items`, `kept_items`, `files_deleted`, `nudge_events_deleted` |
+| `DELETE /behavior/data` `{"confirm": true}` (JSON content type required) | forget what Wisp learned; works while learning is off; returns `removed_items`, `kept_items`, `files_deleted`, `files_failed` (anything that could not be deleted; `ok` is then false), `nudge_events_deleted`. While it runs, other `/behavior/*` routes answer 503 and `GET /behavior/status` reports `erasing` |
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |

@@ -82,16 +82,29 @@ _behavior_task: asyncio.Task | None = None
 
 
 def _start_behavior_tick() -> asyncio.Task | None:
-    """Start one behavior tick in the background unless one is still running."""
+    """Start one behavior tick in the background unless one is still running.
+
+    While learning is off only the rate-limited retention pass runs (data already on
+    disk is still aged out, as Settings says); no engine, phraser or runtime starts."""
     global _behavior_task
     from service.behavior_switch import enabled
-    if not enabled() or (_behavior_task is not None and not _behavior_task.done()):
+    if _behavior_task is not None and not _behavior_task.done():
         return None
     from service.assistant import behavior_runtime
+    if not enabled():
+        _behavior_task = asyncio.get_running_loop().create_task(_age_out_only(behavior_runtime))
+        return _behavior_task
     # behavior_runtime.tick catches every exception itself, so the task never
     # ends with an unretrieved error.
     _behavior_task = asyncio.get_running_loop().create_task(behavior_runtime.tick(assistant_store, hub))
     return _behavior_task
+
+
+async def _age_out_only(behavior_runtime) -> None:
+    try:
+        await behavior_runtime._maybe_age_out()
+    except Exception:  # noqa: BLE001 — retention is best effort and must never break the loop
+        pass
 
 
 async def run() -> None:

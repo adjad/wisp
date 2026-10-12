@@ -989,7 +989,10 @@ final class SettingsLoader: ObservableObject {
             }
             let removed = (result["removed_items"] as? [Any])?.count ?? 0
             let kept = result["kept_items"] as? Int ?? 0
-            var text = "Forgot what Wisp learned."
+            let failed = (result["files_failed"] as? [Any])?.count ?? 0
+            var text = failed > 0
+                ? "Forgot most of what Wisp learned, but \(failed) file\(failed == 1 ? "" : "s") couldn't be deleted. Check the folder permissions and try again."
+                : "Forgot what Wisp learned."
             if removed > 0 { text += " Removed \(removed) reminder\(removed == 1 ? "" : "s") or hold\(removed == 1 ? "" : "s") Wisp had added." }
             if kept > 0 { text += " Kept \(kept) you changed." }
             self.behaviorForgetStatus = text

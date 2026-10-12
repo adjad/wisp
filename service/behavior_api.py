@@ -10,16 +10,38 @@ sending or changing anything.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.routing import APIRoute
 
 from service.assistant import behavior_runtime
 
-router = APIRouter(prefix="/behavior", tags=["behavior"])
+
+class _ErasedAwareRoute(APIRoute):
+    """A request that already holds the runtime when Forget stops it finds a stopped,
+    closed runtime. That is a clean 409, never a "closed database" 500."""
+
+    def get_route_handler(self):
+        original = super().get_route_handler()
+
+        async def handler(request):
+            try:
+                return await original(request)
+            except (behavior_runtime.RuntimeStopped, sqlite3.ProgrammingError) as exc:
+                if isinstance(exc, sqlite3.ProgrammingError) and "closed" not in str(exc).lower():
+                    raise
+                raise HTTPException(status_code=409, detail=_ERASED) from exc
+        return handler
+
+
+router = APIRouter(prefix="/behavior", tags=["behavior"], route_class=_ErasedAwareRoute)
 
 _DISABLED = "Behavior learning is off. Turn on \"Learn my routines\" in Settings."
+_ERASING = "Wisp is erasing what it learned right now. Try again in a moment."
+_ERASED = "What Wisp learned was just erased, so this nudge is gone."
 _PATTERN_STATUSES = ("active", "confirmed", "rejected")
 _VERDICTS = ("useful", "not_now", "wrong")
 
@@ -27,6 +49,8 @@ _VERDICTS = ("useful", "not_now", "wrong")
 def _runtime() -> behavior_runtime.BehaviorRuntime:
     runtime = behavior_runtime.get_runtime()
     if runtime is None:
+        if behavior_runtime.forgetting():
+            raise HTTPException(status_code=503, detail=_ERASING, headers={"Retry-After": "2"})
         raise HTTPException(status_code=409, detail=_DISABLED)
     return runtime
 
@@ -114,13 +138,16 @@ async def behavior_forget(request: Request) -> dict[str, Any]:
         await hub.publish({"type": "changed"}, durable=False)
     except Exception:  # noqa: BLE001 — the data is already gone
         pass
-    return {"ok": True, **result}
+    # ``files_failed`` lists anything that could not be deleted (the rest was); ok is then False.
+    return {"ok": not result.get("files_failed"), **result}
 
 
 @router.get("/status")
 async def behavior_status() -> dict[str, Any]:
     runtime = behavior_runtime.get_runtime()
     if runtime is None:
+        if behavior_runtime.forgetting():
+            return {"enabled": False, "erasing": True, "detail": _ERASING}
         return {"enabled": False, "detail": _DISABLED}
     return await asyncio.to_thread(runtime.status)
 

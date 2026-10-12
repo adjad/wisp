@@ -46,6 +46,7 @@ import sqlite3
 import threading
 import time
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
@@ -65,6 +66,7 @@ INGEST_EVERY_S = 300.0
 MINE_EVERY_S = 1800.0
 NUDGE_EVERY_S = 60.0
 FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
+STOP_WAIT_S = 30.0         # stop() waits this long for a delivery/action already in flight
 CARD_TTL_S = 60.0
 CARD_MAX_BYTES = 700
 HISTORY_S = 56 * 86400
@@ -160,6 +162,11 @@ class TickBusy(RuntimeError):
     """A forced run could not start: another tick held the lock too long."""
 
 
+class RuntimeStopped(RuntimeError):
+    """The runtime was stopped (its learned data is being or was erased): nothing may be
+    written through it any more. Callers holding a stale reference refuse cleanly."""
+
+
 class BehaviorRuntime:
     def __init__(self, home: Path | None = None, *,
                  local_factory: Callable[[Path], Any] | None = None,
@@ -184,6 +191,11 @@ class BehaviorRuntime:
         self.last: dict[str, float] = {}
         self._db_lock = threading.RLock()
         self._stopped = False
+        # Guards ``_stopped`` and the count of deliveries/actions in flight. stop() sets the
+        # flag and waits for the count to reach zero under this one lock, so no write that
+        # began before stop() can land after it returns, and none can begin afterwards.
+        self._gate = threading.Condition()
+        self._inflight = 0
         self.home.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -208,10 +220,29 @@ class BehaviorRuntime:
             self._db.execute("INSERT INTO kv VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                              (key, value))
 
+    @contextmanager
+    def _in_flight(self):
+        """Register one delivery/action/user write. Raises ``RuntimeStopped`` when the
+        runtime is already stopped; otherwise stop() waits for it to finish."""
+        with self._gate:
+            if self._stopped:
+                raise RuntimeStopped("behavior runtime was stopped")
+            self._inflight += 1
+        try:
+            yield
+        finally:
+            with self._gate:
+                self._inflight -= 1
+                self._gate.notify_all()
+
     def stop(self) -> None:
-        """Refuse all further work and wait for a pass already running on the
-        worker thread to finish. Used before the learned data is deleted."""
-        self._stopped = True
+        """Refuse all further work and wait for a pass already running on the worker
+        thread and for any delivery or action already in flight to finish. When it
+        returns nothing can write through this runtime. Used before the learned data
+        is deleted."""
+        with self._gate:
+            self._stopped = True
+            self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
         with self._work_lock:
             pass
 
@@ -235,7 +266,7 @@ class BehaviorRuntime:
     # ---- engine selection ----------------------------------------------------
     def local_engine(self):
         if self._stopped:
-            raise RuntimeError("behavior runtime was stopped")
+            raise RuntimeStopped("behavior runtime was stopped")
         if self._local_engine is None:
             self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
@@ -462,7 +493,12 @@ class BehaviorRuntime:
         return reason
 
     def perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
-        """Create one reversible Wisp-schedule item. Idempotent per (nudge, action)."""
+        """Create one reversible Wisp-schedule item. Idempotent per (nudge, action).
+        Raises ``RuntimeStopped`` (before touching anything) once the runtime is stopped."""
+        with self._in_flight():
+            return self._perform_action(store, nudge_id, idx, action, now)
+
+    def _perform_action(self, store, nudge_id: str, idx: int, action, now: float) -> dict | None:
         with self._db_lock:
             row = self._db.execute("SELECT * FROM actions WHERE nudge_id=? AND idx=?",
                                    (nudge_id, idx)).fetchone()
@@ -531,6 +567,15 @@ class BehaviorRuntime:
         return next((n for n in found if n.id == nudge_id), None)
 
     async def deliver(self, store, hub, nudge, now: float) -> dict | None:
+        """Publish one nudge (and perform its automatic actions). A forget/stop waits for
+        a delivery already in flight, and a stopped runtime delivers nothing."""
+        try:
+            with self._in_flight():
+                return await self._deliver(store, hub, nudge, now)
+        except RuntimeStopped:
+            return None
+
+    async def _deliver(self, store, hub, nudge, now: float) -> dict | None:
         if nudge.expires_at is not None and _finite(nudge.expires_at) and float(nudge.expires_at) <= now:
             return None
         if not self.live():
@@ -637,12 +682,17 @@ class BehaviorRuntime:
     # ---- user verdicts --------------------------------------------------------------
     def feedback(self, store, nudge_id: str, verdict: str) -> None:
         from service.behavior.types import Feedback
-        self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
-        with self._db_lock, self._db:
-            self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
-        self.retire_event(store, nudge_id)
+        with self._in_flight():
+            self.call("feedback", Feedback(nudge_id=nudge_id, verdict=verdict, ts=self.clock()))
+            with self._db_lock, self._db:
+                self._db.execute("UPDATE nudges SET verdict=? WHERE id=?", (verdict, nudge_id))
+            self.retire_event(store, nudge_id)
 
     def undo(self, store, nudge_id: str) -> list[dict]:
+        with self._in_flight():
+            return self._undo(store, nudge_id)
+
+    def _undo(self, store, nudge_id: str) -> list[dict]:
         now = self.clock()
         with self._db_lock:
             rows = [dict(r) for r in self._db.execute(
@@ -807,14 +857,27 @@ class BehaviorRuntime:
 
 _runtime: BehaviorRuntime | None = None
 _runtime_lock = threading.Lock()
+# True from the moment forget_all detaches the runtime until its files are gone. While set,
+# get_runtime() returns None, so nothing (a chat turn's profile card, a Calendar poke,
+# /behavior/status, a tool, an approval) can build a new runtime on the old files mid-erase.
+_forgetting = False
+_forget_lock = threading.Lock()      # one forget at a time
+
+
+def forgetting() -> bool:
+    """Whether Wisp is erasing what it learned right now."""
+    with _runtime_lock:
+        return _forgetting
 
 
 def get_runtime() -> BehaviorRuntime | None:
-    """The process runtime, or None when behavior learning is off."""
+    """The process runtime, or None when behavior learning is off or being erased."""
     global _runtime
     if not enabled():
         return None
     with _runtime_lock:
+        if _forgetting:
+            return None
         if _runtime is None:
             _runtime = BehaviorRuntime()
         return _runtime
@@ -838,10 +901,20 @@ def forget_all(store, home: Path | None = None) -> dict:
     profile card cache, and drops pending nudge events. Items the user edited,
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
-    global _runtime
+    global _runtime, _forgetting
     explicit_home = Path(home) if home is not None else None
-    with _runtime_lock:
-        runtime, _runtime = _runtime, None
+    with _forget_lock:
+        with _runtime_lock:
+            _forgetting = True            # get_runtime() answers None until the files are gone
+            runtime, _runtime = _runtime, None
+        try:
+            return _forget_locked(store, runtime, explicit_home)
+        finally:
+            with _runtime_lock:
+                _forgetting = False
+
+
+def _forget_locked(store, runtime: BehaviorRuntime | None, explicit_home: Path | None) -> dict:
     home = explicit_home or (runtime.home if runtime is not None else _home())
     if runtime is None and (home / RUNTIME_DB).exists():
         try:
@@ -856,19 +929,25 @@ def forget_all(store, home: Path | None = None) -> dict:
         finally:
             runtime.close()
     deleted = 0
+    failed: list[str] = []
     names = [CARD_CACHE]
     for base in (ENGINE_DB, RUNTIME_DB):
         names += [base, base + "-wal", base + "-shm"]
-    names += [p.name for p in home.glob(ENGINE_DB + ".schema-*")]   # moved-aside old-schema copies
+    try:
+        names += [p.name for p in home.glob(ENGINE_DB + ".schema-*")]   # moved-aside old-schema copies
+    except OSError:
+        failed.append(ENGINE_DB + ".schema-*")
     for name in names:
         try:
             (home / name).unlink()
             deleted += 1
         except FileNotFoundError:
             pass
+        except OSError:
+            failed.append(name)    # keep going: delete everything else, then say what is left
     events = _drop_nudge_events(store)
     return {"removed_items": items["removed"], "kept_items": items["kept"],
-            "files_deleted": deleted, "nudge_events_deleted": events}
+            "files_deleted": deleted, "files_failed": failed, "nudge_events_deleted": events}
 
 
 AGE_OUT_EVERY_S = 6 * 3600.0
@@ -890,7 +969,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             return
         conn = None
         try:
-            conn = sqlite3.connect(str(path), timeout=30)
+            # mode=rw: never create the file (an erase may have just removed it).
+            conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30)
             with conn:
                 for key, sql, cutoff in statements:
                     out[key] += int(conn.execute(sql, (cutoff,)).rowcount or 0)
@@ -909,6 +989,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
 async def _maybe_age_out(home: Path | None = None) -> None:
     """Retention, at most about every six hours; the first tick after launch runs it."""
     global _last_age_out
+    if forgetting():
+        return
     mark = time.monotonic()
     if _last_age_out is not None and mark - _last_age_out < AGE_OUT_EVERY_S:
         return
@@ -928,7 +1010,7 @@ async def tick(store, hub, *, now: float | None = None, force: bool = False) -> 
     try:
         runtime = get_runtime()
         if runtime is None:
-            await _maybe_age_out()    # retention does not depend on the switch
+            await _maybe_age_out()    # retention does not depend on the switch (skipped mid-erase)
             return []
         await _maybe_age_out(runtime.home)
         return await runtime.tick(store, hub, now=now, force=force)
