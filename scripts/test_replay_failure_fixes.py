@@ -1,14 +1,24 @@
 """Run the complete isolated Python regression gate.
 
-Usage: .venv/bin/python scripts/test_replay_failure_fixes.py
+Usage: .venv/bin/python scripts/test_replay_failure_fixes.py [--jobs N]
+       [--only-outside-simulation-qa]
 No live prompt replay or external send is part of this runner.
+
+Every module runs in its own process with its own disposable HOME/WISP_HOME.
+``--jobs N`` (default: one per CPU) runs that many modules at once; ``--jobs 1``
+is the historical sequential, streaming run. ``--only-outside-simulation-qa``
+runs only modules that Simulation QA's full profile does not already run under
+its OS sandbox (pull-request CI uses it so the two gates do not repeat work).
 """
 from pathlib import Path
+import argparse
+from concurrent.futures import ThreadPoolExecutor
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import threading
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -176,45 +186,136 @@ def _classify_failures(
     )
 
 
-def main() -> int:
-    tests = _tests()
-    commands = [_command(path) for path in tests]
-    failed: set[str] = set()
-    baseline_mismatches: set[str] = set()
-    for path, command in zip(tests, commands):
-        print("Running:", " ".join(command), flush=True)
-        with tempfile.TemporaryDirectory(prefix="wisp-regression-") as state_dir:
-            env = _environment(state_dir)
-            relative = str(path.relative_to(ROOT))
-            if relative in LEGACY_SCRIPT_TESTS:
-                proc = subprocess.run(
-                    command, cwd=ROOT, env=env, text=True,
-                    capture_output=True, check=False,
+def _outside_simulation_qa(tests: list[Path]) -> list[Path]:
+    """Modules the Simulation QA full profile does not run.
+
+    The full profile refuses manifest drift, so this is normally empty; any
+    module it would miss still runs here, never silently in neither gate.
+    """
+    try:
+        from scripts.run_simulation_qa import SAFE_FULL_TESTS
+    except ModuleNotFoundError:  # Direct execution puts scripts/ first on sys.path.
+        from run_simulation_qa import SAFE_FULL_TESTS
+    return [path for path in tests if str(path.relative_to(ROOT)) not in SAFE_FULL_TESTS]
+
+
+_OUTPUT_LOCK = threading.Lock()
+# Real-socket peer attestation under a fixed wall-clock readiness budget: run
+# alone after the concurrent modules finish (Simulation QA does the same).
+RUN_ALONE_TESTS = frozenset({"tests/test_runtime_peer.py"})
+
+
+def _run_module(path: Path, command: list[str], *, capture: bool) -> tuple[bool, bool]:
+    """Run one isolated module; return (passed, baseline_mismatch).
+
+    With ``capture`` (parallel runs) the module's whole output is printed as
+    one block when it finishes, so concurrent modules never interleave.
+    """
+    relative = str(path.relative_to(ROOT))
+    header = "Running: " + " ".join(command)
+    out, err = [], []
+    if not capture:
+        print(header, flush=True)
+    else:
+        out.append(header + "\n")
+    mismatch = False
+    with tempfile.TemporaryDirectory(prefix="wisp-regression-") as state_dir:
+        env = _environment(state_dir)
+        if relative in LEGACY_SCRIPT_TESTS:
+            proc = subprocess.run(
+                command, cwd=ROOT, env=env, text=True,
+                capture_output=True, check=False,
+            )
+            out.append(proc.stdout)
+            err.append(proc.stderr)
+            output = proc.stdout + "\n" + proc.stderr
+            passed = proc.returncode == 0 and _reports_nonzero_test_count(
+                output
+            )
+            if (
+                relative in KNOWN_BASELINE_FAILURES
+                and not _matches_known_baseline(
+                    relative, proc.returncode, output,
                 )
+            ):
+                mismatch = True
+            if proc.returncode == 0 and not passed:
+                out.append(
+                    f"ERROR: legacy test reported no executed tests: {relative}\n"
+                )
+            if not capture:
                 print(proc.stdout, end="")
                 print(proc.stderr, end="", file=sys.stderr)
-                output = proc.stdout + "\n" + proc.stderr
-                passed = proc.returncode == 0 and _reports_nonzero_test_count(
-                    output
-                )
-                if (
-                    relative in KNOWN_BASELINE_FAILURES
-                    and not _matches_known_baseline(
-                        relative, proc.returncode, output,
-                    )
-                ):
-                    baseline_mismatches.add(relative)
                 if proc.returncode == 0 and not passed:
                     print(
                         f"ERROR: legacy test reported no executed tests: {relative}",
                         flush=True,
                     )
-            else:
-                passed = subprocess.run(
-                    command, cwd=ROOT, env=env, check=False,
-                ).returncode == 0
-            if not passed:
-                failed.add(str(path.relative_to(ROOT)))
+        elif not capture:
+            passed = subprocess.run(
+                command, cwd=ROOT, env=env, check=False,
+            ).returncode == 0
+        else:
+            proc = subprocess.run(
+                command, cwd=ROOT, env=env, text=True,
+                capture_output=True, check=False,
+            )
+            out.append(proc.stdout)
+            err.append(proc.stderr)
+            passed = proc.returncode == 0
+    if capture:
+        with _OUTPUT_LOCK:
+            print("".join(out), end="", flush=True)
+            print("".join(err), end="", file=sys.stderr, flush=True)
+    return passed, mismatch
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--jobs", type=int, default=None, metavar="N",
+        help="Concurrent modules (default: one per CPU; 1 runs sequentially).",
+    )
+    parser.add_argument(
+        "--only-outside-simulation-qa", action="store_true",
+        help="Run only modules Simulation QA's full profile does not run.",
+    )
+    args = parser.parse_args(argv)
+    jobs = max(1, os.cpu_count() or 1) if args.jobs is None else args.jobs
+    if jobs < 1:
+        parser.error("--jobs must be at least 1")
+    tests = _tests()
+    if args.only_outside_simulation_qa:
+        covered = len(tests)
+        tests = _outside_simulation_qa(tests)
+        print(
+            f"Simulation QA's full profile runs {covered - len(tests)} of "
+            f"{covered} modules under its sandbox; running the other {len(tests)} here.",
+            flush=True,
+        )
+    commands = [_command(path) for path in tests]
+    failed: set[str] = set()
+    baseline_mismatches: set[str] = set()
+    if jobs == 1:
+        outcomes = [_run_module(path, command, capture=False)
+                    for path, command in zip(tests, commands)]
+    else:
+        print(f"Regression gate: {len(commands)} modules, {jobs} parallel jobs", flush=True)
+        with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="regression") as pool:
+            futures = {path: pool.submit(_run_module, path, command, capture=True)
+                       for path, command in zip(tests, commands)
+                       if str(path.relative_to(ROOT)) not in RUN_ALONE_TESTS}
+            by_path = {path: future.result() for path, future in futures.items()}
+        for path, command in zip(tests, commands):              # pool is idle now
+            if path not in by_path:
+                by_path[path] = _run_module(path, command, capture=True)
+        outcomes = [by_path[path] for path in tests]
+    for path, (passed, mismatch) in zip(tests, outcomes):
+        relative = str(path.relative_to(ROOT))
+        if mismatch:
+            baseline_mismatches.add(relative)
+        if not passed:
+            failed.add(relative)
     regressions, resolved = _classify_failures(failed, baseline_mismatches)
     print(
         f"Regression gate: {len(commands) - len(failed)}/{len(commands)} "
