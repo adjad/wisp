@@ -536,12 +536,14 @@ class AssistantStore:
             sources = {r["source"]: json.loads(r["payload"]) for r in
                        self._db.execute("SELECT source,payload FROM today_source_sync")}
             # Do not use display dedupe: separate events can share a title/start.
+            # Rows with an unknown end stay in (even all-day ones that started
+            # earlier) so the planner sees them and refuses to call that time free.
             commitments = [dict(r) for r in self._db.execute(
                 "SELECT c.*, e.end_ts FROM commitments c LEFT JOIN calendar_event_ends e ON e.commitment_id=c.id "
                 "WHERE status='active' AND when_ts < ? AND "
-                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR (end_ts IS NULL AND (when_ts >= ? OR all_day=0)))) "
+                "((source='calendar' AND (end_ts > ? OR (end_ts=when_ts AND when_ts >= ?) OR end_ts IS NULL)) "
                 "OR (source IN ('reminders','manual') AND when_ts >= ?))",
-                (hi, lo, lo, lo, lo))]
+                (hi, lo, lo, lo))]
         fixed = [c for c in commitments if c["source"] == "calendar" or
                  (c["source"] == "manual" and c["kind"] in {"event", "meeting"})]
         deadlines = [c for c in commitments if c not in fixed]
