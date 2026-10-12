@@ -114,7 +114,8 @@ def test_compound_self_query_keeps_both_halves(on):
 def test_generic_self_query_stays_recall_when_on(on):
     # describe_me shows only learned patterns; remembered facts live in recall.
     for text in ("what do you know about me", "What do you know about me?",
-                 "tell me about myself"):
+                 "tell me about myself", "what did you remember about me",
+                 "what do you remember about me", "what did you know about me"):
         d = routed(text)
         assert d.force_first_tool == "recall", (text, d.reason)
 

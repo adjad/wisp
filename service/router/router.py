@@ -219,7 +219,7 @@ _MEMORY_TOOLS = ["remember", "recall", "forget"]
 # instead of 'day'. Narrowing to just `recall` removes that ambiguity instead
 # of only telling the model harder not to make it.
 SELF_QUERY_RE = re.compile(
-    r"\bwhat do you know about (?:me\b|myself\b|my\b)|"
+    r"\bwhat (?:do|did) you (?:know|remember) about (?:me\b|myself\b|my\b)|"
     r"\btell me (?:(?:what|everything) you know )?about (?:me|myself)\b", re.I)
 
 # "Who are the people in my life" and its variants — a READ about the user's
