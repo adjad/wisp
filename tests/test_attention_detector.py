@@ -116,7 +116,8 @@ def test_screen_excludes_promo_scam_and_automated_senders():
 
 def test_screen_leaves_ordinary_messages_alone():
     for text in ("Meet me in the Quad at 6PM",
-                 "dinner at 7, here's the map https://maps.example/quad",
+                 "dinner at 7, here's the map https://maps.apple.com/?q=Quad",
+                 "zoom at 3 https://ucsc.zoom.us/j/123456789",
                  "lol did you see the game"):
         assert exclusions.screen(msg("1", "Mom", text, T)) is None
 
@@ -386,6 +387,118 @@ def test_a_bare_clock_twelve_hours_out_is_a_guess():
     evening = datetime(2026, 9, 21, 21, 0, tzinfo=ZONE)
     assert resolve.resolve("meet at 10am", evening, TZ).tentative            # 13h away
     assert not resolve.resolve("meet at 10am", ARRIVAL, TZ).tentative        # 1h away
+
+
+@pytest.mark.parametrize("text", [
+    "Call 800-555-0100 re your Chase card at 3pm or pay at chase-help.com/x",
+    "Be at the bank at 3pm, ask for sara@bank-help.example",
+    "pick up at 5, details at tinyurl.com/abc123",
+    "Meet me at 6, text me at (650) 555-0123",
+])
+def test_a_lure_with_a_number_link_or_address_never_reaches_the_effect(text):
+    m = msg("m", "Group", text, T)
+    d = detector([msg("h", "Group", "hey", T - 3600, "outgoing"), m]).decide(m)
+    assert not d.alert and d.blocked_by in ("contact_vector", "scam")
+
+
+def test_dates_and_times_are_not_mistaken_for_phone_numbers_old():
+    for text in ("Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet at 6:30 on 9/21"):
+        assert exclusions.screen(msg("m", "Mom", text, T)) is None
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com@evil.com/x",                 # userinfo trick
+    "meet at 6 https://maps.apple.com.evil.com/x",                 # lookalike suffix
+    "zoom at 6 https://ucsc.zoom.us.evil.io/j/1",
+    "meet at 6 https://google.com@evil.com/maps",
+    "meet at 6 https://evil.com/?u=maps.apple.com",
+    "ring me at 6: 8005550100",
+    "ring me at 6: (800)555-0100",
+    "ring me at 6: 800-5550100",
+    "ring me at 6: +44 20 7946 0958",
+    "ring me at 6: +1 (650) 555 0123",
+    "ring me at 6: 650.555.0123",
+    "meet at 6 and check chase-help.com/login",
+    "meet at 6 and check bit.ly/3xYz",
+    "meet at 6 and read goo.gl/abc",
+])
+def test_the_contact_screen_cannot_be_bypassed_by_lookalike_hosts_or_number_formats(text):
+    assert exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "meet at 6 https://maps.apple.com/?q=Quad",
+    "meet at 6 https://www.google.com/maps/place/Quad",
+    "zoom at 3 https://ucsc.zoom.us/j/123456789?pwd=abc",
+    "call at 3 meet.google.com/abc-defg-hij",
+    "call at 3 https://teams.microsoft.com/l/meetup-join/xyz",
+    "Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "class 7-9pm", "meet 3.30pm", "room 2-180 at 4",
+    "1200 Main St at 6", "10:40-11:45 lab", "countdown 3-2-1 at 8", "gate code 1234 at 7",
+])
+def test_ordinary_plans_are_not_mistaken_for_lures(text):
+    assert not exclusions.contact_vector(text), text
+
+
+# ---------------------------------------------- the lure-screen notes from the independent review
+
+@pytest.mark.parametrize("text", [
+    # bare domains on endings outside any short list
+    "meet at 6 and pay at chase-help.ru/login",
+    "meet at 6, details at chase.de",
+    "meet at 6 shop.biz/deal",
+    "meet at 6 x.shop",
+    # a URL a browser reads differently from the parser
+    "meet at 6 https://evil.com\\.zoom.us/j/1",
+    "meet at 6 https://evil.com%2f.zoom.us/j/1",
+    "meet at 6 https://mаps.apple.com/x",                  # Cyrillic a
+    "meet at 6 https://www.google.com/maps/../url?q=https://evil.com",
+    "meet at 6 https://www.google.com/maps%2e%2e/x",
+    # phone numbers with other separators
+    "ring me at 6: 800–555–0100",                      # en dashes
+    "ring me at 6: 800—555—0100",                      # em dashes
+    "ring me at 6: 800_555_0100",
+    "ring me at 6: 800,555,0100",
+    "ring me at 6: 800−555−0100",                      # minus sign
+    # addresses and defanged dots
+    "meet at 6 1.2.3.4/pay",
+    "meet at 6 evil[.]com",
+    "meet at 6 evil(.)com/login",
+    "meet at 6 evil[dot]com",
+])
+def test_the_remaining_lure_forms_from_the_review_are_refused(text):
+    assert exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "ucsc.edu portal due 11:59pm",
+    "see https://canvas.ucsc.edu/courses/95486 at 5",
+    "meet at 6 https://maps.apple.com/?q=Quad",
+    "meet at 6 https://www.google.com/maps/place/Quad",
+    "Dr. Smith at 3", "St. Mary at 6", "7 p.m. at the gym", "e.g. at 6", "U.S. history at 4",
+    "Dinner 2026-09-25 at 7pm", "game 10/12 at 4pm", "meet 3.30pm", "room 2-180 at 4",
+])
+def test_the_university_and_ordinary_abbreviations_are_not_refused(text):
+    assert not exclusions.contact_vector(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "Order #1234567890 pickup at 5pm",              # ten-digit order number
+    "2026 09 25 19 30 dinner",                      # space-separated timestamp
+    "send notes.pdf at 5",                          # file name
+    "dr.smith at 3",                                # no space after the period
+    "ok.thanks see you at 6",                       # sentence run together
+])
+def test_documented_false_positives_are_refused_on_purpose(text):
+    """Conservative by design: each costs a reminder and nothing else. Pinned so a change to
+    the screen has to decide about them out loud."""
+    assert exclusions.contact_vector(text), text
+
+
+def test_a_refused_lure_never_reaches_the_effect_end_to_end():
+    for text in ("Meet me at 6 and pay at chase-help.ru/login", "Meet me at 6 call 800–555–0100"):
+        m = msg("m", "Group", text, T)
+        d = detector([msg("h", "Group", "hey", T - 3600, "outgoing"), m]).decide(m)
+        assert not d.alert and d.blocked_by == "contact_vector", text
 
 
 # ------------------------------------------------ an explicitly stated timezone (review ATT179-01)
