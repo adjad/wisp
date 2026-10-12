@@ -148,13 +148,13 @@ def _describe(subject: str | None = None) -> dict:
     "Describe what Wisp has LEARNED about the user's routines from their calendar, reminders and "
     "activity: habits (e.g. gym on weekday mornings), who they talk to and when, which meetings "
     "they tend to cancel, the shape of their day. Each pattern has evidence counts and a pattern "
-    "id. Use for 'what do you know about me', 'describe me', 'what are my habits'. Read-only.",
+    "id. Use for 'what have you learned about me', 'describe me', 'what are my habits'. Read-only.",
     {"type": "object", "properties": {
         "subject": {"type": "string", "description": "optional filter, e.g. 'gym' or 'Sam'"},
     }},
     category="assistant_read",
     unavailable_reason=_unavailable(),
-    aliases=["what do you know about me", "describe me", "what are my habits",
+    aliases=["what have you learned about me", "describe me", "what are my habits",
              "what routines have you noticed", "what have you learned about me"],
 )
 def describe_me(subject: str | None = None) -> str:

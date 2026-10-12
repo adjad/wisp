@@ -7282,7 +7282,7 @@ def _guard_scheduled_cancel(decision: RouteDecision, original_text: str) -> Rout
 
 
 # --------------------------------------------------------------------------
-# Behavior learning: "what do you know about me", "predict my day", "when do I
+# Behavior learning: "what have you learned about me", "predict my day", "when do I
 # usually work out". Active only while behavior learning is on (the default; see behavior_switch.py);
 # otherwise every phrase keeps its existing route (e.g.
 # "what do you know about me" -> recall). Whole-utterance matches only, so a
