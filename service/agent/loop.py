@@ -783,6 +783,19 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
 # unloaded the model.
 _MAX_TOOL_RESULT_CHARS = 12000
 
+# open_app targets: any URI scheme is egress-capable; only a bare path (/ or ~)
+# is a local file. Leading whitespace and case are ignored.
+_URI_SCHEME_RE = re.compile(r"\s*[A-Za-z][A-Za-z0-9+.-]*:")
+_BROWSER_APP_RE = re.compile(
+    r"\b(?:safari|chrome|chromium|firefox|arc|edge|brave|opera|vivaldi|orion)\b", re.I)
+_BROWSER_DOC_RE = re.compile(r"\.(?:html?|xhtml|shtml|svg|webarchive|mht|mhtml)\s*$", re.I)
+
+
+def _opens_in_browser(app_name: str, target: str) -> bool:
+    """A local file that a browser would render (and so could run or fetch)."""
+    return bool(_BROWSER_APP_RE.search(app_name or "") or _BROWSER_DOC_RE.search(target or ""))
+
+
 # Tool names as they're written in the prompt: `send_email`, `get_upcoming`.
 _PROMPT_TOOL_RE = re.compile(r"`([a-z_][a-z0-9_]*)`")
 
@@ -1402,6 +1415,11 @@ async def run_agent(
                               (_last_user or "").lower()):
             typed_hosts.add(_m.group(1))
 
+    # Structured "did the tool body actually run" signal. execute_tool sets it
+    # immediately before run_tool and _record_outcome consumes it, so the latch
+    # never has to infer execution from a tool's own output text.
+    _exec_state = {"ran": False}
+
     def _web_detail(args):
         detail = args.get("url") or args.get("query") or args.get("target") or ""
         return str(detail)[:300]
@@ -1421,19 +1439,33 @@ async def run_agent(
             return str(args.get("url") or "")
         if tool.name == "open_app":
             target = str(args.get("target") or "").strip()
-            if "://" in target or re.match(r"(?i)(?:https?|mailto|sms|tel):", target):
+            # Any URI scheme is egress-capable (http, mailto, sms, tel, data,
+            # javascript, facetime, imessage, shortcuts, slack, custom://...).
+            # A bare macOS path starts with / or ~ and never matches the scheme.
+            if "://" in target or _URI_SCHEME_RE.match(target):
+                return target
+            # A local file opened in a browser can run its scripts and load
+            # remote content, so it is treated as web egress as well.
+            if target and _opens_in_browser(str(args.get("name") or ""), target):
                 return target
         return None
 
     def _typed_host_url(url):
-        """True only for a plain http(s) URL whose host the user typed this turn."""
+        """True only for a plain http(s) URL whose host the user typed this turn.
+
+        Default ports only (none, 80, 443) and no userinfo, so the exemption
+        cannot be pointed at a different service on a typed host.
+        """
         from urllib.parse import urlsplit
         if not url or re.search(r"[\\\s\x00-\x1f\x7f]", url):
             return False
         try:
             parts = urlsplit(url)
             host = (parts.hostname or "").lower()
+            port = parts.port
         except ValueError:
+            return False
+        if "@" in parts.netloc or port not in (None, 80, 443):
             return False
         return parts.scheme.lower() in {"http", "https"} and bool(host) and host in typed_hosts
 
@@ -1500,6 +1532,7 @@ async def run_agent(
 
     async def execute_tool(tool, args):
         nonlocal guarded_meeting
+        _exec_state["ran"] = False
         if tool.name in {"plan_meeting", "commit_private_meeting"}:
             if public_web_synthesis or not _meeting_local_client(client):
                 return "(error: Private meeting capability transport requires local inference; no action ran.)"
@@ -1536,11 +1569,19 @@ async def run_agent(
                     return ("(error: An earlier action with this scope is already owned or "
                             "has an uncertain outcome. The action was NOT run again; "
                             "check the earlier result/destination before retrying.)")
+        # A fetch that was allowed only because its host was typed (or its exact
+        # URL was confirmed) must stay on that host: no cross-host redirects, no
+        # archive.org fallback carrying the URL.
+        strict_fetch = (model_led_discovery and tool.name == "web_fetch"
+                        and (private_at_start or private_read_in_turn))
         try:
-            if private_shell_read_only:
-                result = await run_tool(tool, args, private_shell_read_only=True)
-            else:
-                result = await run_tool(tool, args)
+            _exec_state["ran"] = True
+            from service.research.web import strict_host_fetch
+            with strict_host_fetch(strict_fetch):
+                if private_shell_read_only:
+                    result = await run_tool(tool, args, private_shell_read_only=True)
+                else:
+                    result = await run_tool(tool, args)
         except BaseException:
             if claim is not None:
                 # A failed settlement leaves the persisted running claim in
@@ -1894,6 +1935,10 @@ async def run_agent(
     def _record_outcome(name: str, result: str, *, planned: bool = False,
                         denied: bool = False, args: dict | None = None):
         nonlocal fresh_personal_evidence, private_shell_read_only, private_read_in_turn
+        # Consume the structured execution flag (set only by execute_tool just
+        # before the tool body runs); a confirmation denial never reaches it.
+        executed = bool(_exec_state["ran"]) and not planned and not denied
+        _exec_state["ran"] = False
         outcome = classify_tool_outcome(name, result, planned=planned, denied=denied)
         if model_led_discovery and str(result).startswith((
                 "(error: Action was attempted but", "(error: Action did not return a verified")):
@@ -1924,9 +1969,7 @@ async def run_agent(
             elif (not planned and not denied
                   and (name in {"run_applescript", "run_shortcut"}
                        or registered.category in {"mcp_action", "skill_tool"})
-                  and outcome.status not in {"denied", "planned", "unsupported"}
-                  and not (str(result).startswith("(error:") and "NOT run" in str(result)[:400])
-                  and str(result) != "The user denied this action."):
+                  and executed):
                 # Output of automation, MCP action and skill tools can carry
                 # private data the host cannot classify: latch egress once the
                 # tool actually ran (even when its receipt was unverified).

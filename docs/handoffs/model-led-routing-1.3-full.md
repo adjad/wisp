@@ -265,8 +265,8 @@ Two changes reach the default (routing-off) path and are intentional:
   containing backslashes or whitespace never match. `execute_tool` rechecks that an
   unconfirmed call is not run. After an in-turn private read the stricter rule
   (confirm every web call, typed host or not) still applies.
-- M2: `open_app` with a URL-like `target` (scheme `http`, `https`, `mailto`, `sms`,
-  `tel`, or anything containing `://`) is treated as a private-web tool. After the
+- M2: `open_app` with a URL-like `target` (round 3: scheme `http`, `https`,
+  `mailto`, `sms`, `tel`, or anything containing `://`; widened to any scheme in round 4) is treated as a private-web tool. After the
   in-turn private latch, and in turns that start private (unless the host is one the
   user typed), it requires confirmation showing the target, even under full access
   or a tool-wide grant. File-path targets and turns with no private context are
@@ -275,6 +275,38 @@ Two changes reach the default (routing-off) path and are intentional:
   `skill_tool` tool sets the in-turn private-read latch (their output can carry
   private data), once the tool actually ran, including when its receipt was
   unverified. Denied, planned and not-run results do not latch.
+
+## Audit-repair round 4 (model-led routing only)
+
+- `open_app` URL detection: any `scheme:` prefix (case-insensitive, leading
+  whitespace ignored) is URL-like: `data:`, `javascript:`, `facetime:`, `imessage:`,
+  `shortcuts:`, `slack:` and custom schemes included, not just `http(s)`, `mailto`,
+  `sms`, `tel` and `://`. A bare macOS path starts with `/` or `~` and never matches.
+- Latch: the in-turn private-read latch for `run_applescript`, `run_shortcut`,
+  `mcp_action` and `skill_tool` is set from a structured "the tool body was entered"
+  flag raised by `execute_tool` just before `run_tool`, not from the output text. A
+  tool whose output imitates `(error: ... NOT run)` still latches; a call refused,
+  denied or never dispatched does not.
+- Strict-host fetch: `web_fetch` in a model-led turn that is private (at start or via
+  the latch) runs under `service.research.web.strict_host_fetch()`. It refuses any
+  redirect to a different host and skips the Wayback fallback (and the OpenAlex /
+  non-matching Wikipedia API detours), so an authorised URL is never sent to a third
+  party. Default behaviour for every other caller is unchanged. `http_request` is a
+  network write that is separately gated; its redirect handling is not changed here.
+- Browser-rendered local files: `open_app` of a file path in a browser app (Safari,
+  Chrome, Chromium, Firefox, Arc, Edge, Brave, Opera, Vivaldi, Orion) or of any
+  `.html/.htm/.xhtml/.shtml/.svg/.webarchive/.mht(ml)` file is treated like a URL
+  target: confirmation after the latch and in turns that start private. This closes
+  the write_file then open_app chain.
+- Typed-host exemption (documented trade-off). The exemption for fetch-style calls in
+  a turn that starts private applies only to `http(s)` URLs on default ports (none,
+  80, 443) with no userinfo, whose host equals a host typed in the current message.
+  Typed hosts come from `http(s)://` URLs and from bare domain-like tokens, so a
+  file-like name such as `report.pdf`, `notes.md` or `tool.sh` whose suffix is also a
+  real TLD is accepted as a typed host. That requires the user to have typed it and an
+  attacker to control that exact host, and it is judged acceptable; the strict-host
+  mode above further stops a redirect or archive hop from leaving it. Narrowing it
+  needs a TLD list and would reject legitimate `docs.rs`/`bun.sh` style requests.
 
 ### Known follow-up (N2, not fixed here)
 
