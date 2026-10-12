@@ -129,3 +129,42 @@ def test_uninstall_visibility_fix_does_not_open_on_negation_or_explanation(query
     from service.router.semantic import _gate_open
     assert not _gate_open(query, writing=False)
     assert "uninstall_app" not in lexical_candidates(query, writing=False, k=20)
+
+
+def test_typo_neighbours_do_not_depend_on_vocab_iteration_order():
+    from service.search.chunker import Chunk
+    from service.search.lexical import BM25
+
+    docs = ["meeting at 8am", "gym class at 7 am", "change the contact name",
+            "rename the nam field", "sam called about the ham"]
+    bm25 = BM25([Chunk(i, d, 0, len(d)) for i, d in enumerate(docs)])
+    expected = [(h.chunk_idx, h.score) for h in bm25.search("gym 7am")]
+
+    class Reordered(set):
+        def __iter__(self):
+            return iter(sorted(set.__iter__(self), reverse=True))
+
+    bm25.vocab = Reordered(bm25.vocab)
+    assert [(h.chunk_idx, h.score) for h in bm25.search("gym 7am")] == expected
+
+
+def test_typo_recovery_is_stable_across_hash_seeds():
+    # "7am" is not in the tool vocabulary; its within-one-edit neighbours used
+    # to be taken in set order, so seeds 12/13/35 picked "nam" and dropped
+    # add_calendar_event from the menu (routing-quality calendar_write-006).
+    import os
+    import subprocess
+    import sys
+
+    probe = ("import json, service.tools\n"
+             "from service.router.reranker import lexical_candidates\n"
+             "print(json.dumps(lexical_candidates('can you add gym to my cal tmrw 7am', writing=True)))")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    menus = []
+    for seed in ("0", "12", "13", "35"):
+        proc = subprocess.run([sys.executable, "-c", probe], cwd=root, capture_output=True, text=True,
+                              timeout=120, env={**os.environ, "PYTHONHASHSEED": seed})
+        assert proc.returncode == 0, proc.stderr[-2000:]
+        menus.append(proc.stdout.strip().splitlines()[-1])
+    assert len(set(menus)) == 1, menus
+    assert "add_calendar_event" in menus[0]
