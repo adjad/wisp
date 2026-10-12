@@ -3373,7 +3373,18 @@ def scripted_backend(tmp_path, script):
 
 def test_f10_stop_ends_the_child_and_the_process_group_it_leads_and_reports_the_outcome(tmp_path, monkeypatch):
     # stop() itself retries the EPERM a macOS signal-0 probe returns while the group's last member is
-    # between exit and reap; allow a loaded runner more time to reap.
+    # between exit and reap. Force two EPERM probes so that retry is always exercised; allow a loaded
+    # runner more time to reap. (The case set is pinned by the release benchmark contract, so this
+    # stays one test.)
+    real_killpg, eperm_probes = os.killpg, []
+
+    def killpg(group, sig):
+        if sig == 0 and len(eperm_probes) < 2:
+            eperm_probes.append(group)
+            raise PermissionError(1, "Operation not permitted")
+        return real_killpg(group, sig)
+
+    monkeypatch.setattr(os, "killpg", killpg)
     monkeypatch.setattr(rp, "KILL_WAIT_S", 30.0)                                          # a loaded runner, not a slower harness
     marker = tmp_path / "grandchild.pid"
     backend = scripted_backend(tmp_path, (
@@ -3389,30 +3400,8 @@ def test_f10_stop_ends_the_child_and_the_process_group_it_leads_and_reports_the_
         result = backend.stop()
         assert result["ok"] is True and result["exited"] is True and result["terminated"] is True, result
         assert result["killed"] is False and result["errors"] == [], result
-        assert result["group_exited"] is True, result
+        assert result["group_exited"] is True and len(eperm_probes) == 2, result
         assert wait_for(lambda: not alive(grandchild))                                   # descendants went with it
-    finally:
-        if backend.proc and backend.proc.poll() is None:
-            backend.proc.kill()
-
-
-def test_f10_stop_retries_an_eperm_group_probe_instead_of_failing(tmp_path, monkeypatch):
-    # The first two signal-0 probes answer EPERM (a group between exit and reap); stop() keeps probing.
-    real_killpg, probes = os.killpg, []
-
-    def killpg(group, sig):
-        if sig == 0 and len(probes) < 2:
-            probes.append(group)
-            raise PermissionError(1, "Operation not permitted")
-        return real_killpg(group, sig)
-
-    monkeypatch.setattr(os, "killpg", killpg)
-    backend = scripted_backend(tmp_path, "import time\ntime.sleep(120)\n")
-    backend.start()
-    try:
-        assert wait_for(lambda: backend.proc is not None and alive(backend.proc.pid))
-        result = backend.stop()
-        assert len(probes) == 2 and result["ok"] is True and result["errors"] == [], result
     finally:
         if backend.proc and backend.proc.poll() is None:
             backend.proc.kill()
