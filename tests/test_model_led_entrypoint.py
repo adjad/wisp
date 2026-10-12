@@ -259,7 +259,8 @@ def test_actual_entrypoint_discovers_then_executes_only_synthetic_calendar(endpo
     events = endpoint.request("what is up tommrow")
     client = endpoint.owned[0]
     names = lambda request: [t["function"]["name"] for t in request["tools"]]
-    assert names(client.requests[0]) == ["get_tool_schemas"]
+    real = lambda request: [t["function"]["name"] for t in request["tools"] if "description" in t["function"]]
+    assert real(client.requests[0]) == ["get_tool_schemas"]
     assert "get_upcoming" in names(client.requests[1])
     assert endpoint.effects == [("get_upcoming", {"days": 1, "calendar_only": True})]
     assert client.closed and not endpoint.shared.requests

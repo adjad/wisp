@@ -300,6 +300,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_routing.py",
     "tests/test_model_led_integration.py",
     "tests/test_repeated_read_guard.py",
+    "tests/test_model_led_preload_stubs.py",
     "tests/test_model_led_entrypoint.py",
     "tests/test_model_led_full_routing.py",
     "tests/test_model_led_effect_ownership.py",

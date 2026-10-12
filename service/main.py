@@ -1162,6 +1162,22 @@ def _agent_memory_context_allowed(decision, *, cloud: bool,
     return not schedule_read
 
 
+
+def _model_led_preload(prompt: str) -> list[str]:
+    """Tools whose full schemas a model-led turn starts with: the lexical
+    router's top MAX_PRELOAD for the (quote-masked) prompt. Only a head start:
+    every other admitted tool stays reachable by name, and run_agent drops any
+    name that is forbidden, blocked or unavailable this turn. Lexical only, so
+    it never loads a model or touches the network; any failure means no preload."""
+    try:
+        from service.router import reranker
+        from service.router.model_led import MAX_PRELOAD
+        from service.router.router import has_write_intent, mask_quoted
+        text = mask_quoted(prompt)
+        return reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
+    except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
+        return []
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -2017,6 +2033,8 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
+                                        model_led_preload=(_model_led_preload(prompt)
+                                                           if model_led_turn else ()),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),
