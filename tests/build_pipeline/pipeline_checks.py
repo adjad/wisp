@@ -500,9 +500,11 @@ class PipelineTests(unittest.TestCase):
         # runner's private Git config when creating disposable fixture repos.
         env = dict(p.clean_env(), TMPDIR=str(self.root), PATH="/usr/bin:/bin:/usr/sbin:/sbin",
                    GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1")
+        # The native contract cold-compiles Swift; slow hosted runners have
+        # needed more than 120 s for it, so allow 300 s.
         def run(profile, args):
             return subprocess.run(["/usr/bin/sandbox-exec", "-p", profile, str(python), "-B", *args],
-                                  env=env, capture_output=True, text=True, timeout=120)
+                                  env=env, capture_output=True, text=True, timeout=300)
         probe = "import subprocess; subprocess.run(['/usr/bin/codesign','--version'],check=True)"
         self.assertNotEqual(run(normal, ["-c", probe]).returncode, 0)
         result = run(signing, [str(Path(__file__).resolve()),
