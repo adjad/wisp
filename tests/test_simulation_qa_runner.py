@@ -715,3 +715,35 @@ def test_parallel_start_hint_changes_only_scheduling(monkeypatch) -> None:
     assert sorted(started) == sorted(tests)                                 # nothing added or dropped
     assert [item.name for item in results] == tests                         # report keeps selection order
     assert simqa._submission_order(tests) == ["tests/z.py", "tests/a.py", "tests/m.py"]   # long pole queued first
+
+
+def test_timing_budget_modules_run_alone_after_the_pool(monkeypatch) -> None:
+    events, lock, active = [], threading.Lock(), [0]
+
+    def fake_run(name, command, cwd=simqa.ROOT, *, require_nonzero_count=False):
+        with lock:
+            active[0] += 1
+            events.append((name, active[0]))
+        time.sleep(0.02)
+        with lock:
+            active[0] -= 1
+        return simqa.GateResult(name, command, 0, 0.0, 1, 0, 0, "", "")
+
+    monkeypatch.setattr(simqa, "_run", fake_run)
+    monkeypatch.setattr(simqa, "_native_gates", lambda _build: [("native/x", ["x"])])
+    monkeypatch.setattr(simqa, "RUN_ALONE_TESTS", frozenset({"tests/b.py"}))
+    tests = ["tests/a.py", "tests/b.py", "tests/c.py", "tests/d.py"]
+    results = simqa._run_gates(tests, True, 4)
+
+    assert [item.name for item in results] == [*tests, "native/x"]
+    assert events[-1] == ("tests/b.py", 1)                                  # last, and alone
+
+
+def test_regression_gate_runs_timing_budget_modules_alone(monkeypatch, tmp_path, capfd) -> None:
+    gate, paths = _regression_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(gate, "RUN_ALONE_TESTS", frozenset({"tests/test_case_0.py"}))
+    assert gate.main(["--jobs", "4"]) == 1
+    output = capfd.readouterr().out
+    running = [line for line in output.splitlines() if line.startswith("Running: ")]
+    assert len(running) == 5 and "test_case_0.py" not in " ".join(running[:4])
+    assert _summary(output) == ["Regression gate: 4/5 test modules passed", "REGRESSION: tests/test_case_3.py"]

@@ -862,6 +862,13 @@ _START_FIRST = (
 )
 
 
+# Modules with real-socket peer attestation under a fixed wall-clock readiness
+# budget. They run alone, after every concurrent gate has finished, so CPU
+# contention from other gates cannot turn a timing budget into a false failure.
+# (The build pipeline already runs this module in its own native peer gate.)
+RUN_ALONE_TESTS = frozenset({"tests/test_runtime_peer.py"})
+
+
 def _submission_order(tests: list[str]) -> list[str]:
     selected = set(tests)
     first = [path for path in _START_FIRST if path in selected]
@@ -897,10 +904,14 @@ def _run_gates(tests: list[str], run_native: bool, jobs: int) -> list[GateResult
             ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="simqa") as pool:
         try:
             native = pool.submit(_run_native_gates, Path(build)) if run_native else None
-            futures = {path: pool.submit(_run_python_gate, path) for path in _submission_order(tests)}
-            results = [futures[path].result() for path in tests]
-            if native is not None:
-                results.extend(native.result())
+            futures = {path: pool.submit(_run_python_gate, path)
+                       for path in _submission_order(tests) if path not in RUN_ALONE_TESTS}
+            by_path = {path: future.result() for path, future in futures.items()}
+            native_results = native.result() if native is not None else []
+            for path in tests:                                   # pool is idle now
+                if path in RUN_ALONE_TESTS:
+                    by_path[path] = _run_python_gate(path)
+            results = [by_path[path] for path in tests] + native_results
         except BaseException:
             # An unexpected runner error aborts the run as it would sequentially;
             # do not start queued gates while the error propagates.

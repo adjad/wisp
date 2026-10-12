@@ -200,6 +200,9 @@ def _outside_simulation_qa(tests: list[Path]) -> list[Path]:
 
 
 _OUTPUT_LOCK = threading.Lock()
+# Real-socket peer attestation under a fixed wall-clock readiness budget: run
+# alone after the concurrent modules finish (Simulation QA does the same).
+RUN_ALONE_TESTS = frozenset({"tests/test_runtime_peer.py"})
 
 
 def _run_module(path: Path, command: list[str], *, capture: bool) -> tuple[bool, bool]:
@@ -299,9 +302,14 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"Regression gate: {len(commands)} modules, {jobs} parallel jobs", flush=True)
         with ThreadPoolExecutor(max_workers=jobs, thread_name_prefix="regression") as pool:
-            futures = [pool.submit(_run_module, path, command, capture=True)
-                       for path, command in zip(tests, commands)]
-            outcomes = [future.result() for future in futures]
+            futures = {path: pool.submit(_run_module, path, command, capture=True)
+                       for path, command in zip(tests, commands)
+                       if str(path.relative_to(ROOT)) not in RUN_ALONE_TESTS}
+            by_path = {path: future.result() for path, future in futures.items()}
+        for path, command in zip(tests, commands):              # pool is idle now
+            if path not in by_path:
+                by_path[path] = _run_module(path, command, capture=True)
+        outcomes = [by_path[path] for path in tests]
     for path, (passed, mismatch) in zip(tests, outcomes):
         relative = str(path.relative_to(ROOT))
         if mismatch:

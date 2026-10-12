@@ -45,6 +45,10 @@ keeps its own process, temporary `WISP_HOME`/HOME and the same outer sandbox, so
 concurrency changes neither isolation nor the report: results are listed in
 selection order with the same schema, totals and failure rules at any `--jobs`.
 Native compile-then-contract gates run as one ordered chain on a single worker.
+Modules with real-socket peer attestation under a fixed readiness time budget
+(`RUN_ALONE_TESTS`, currently `tests/test_runtime_peer.py`) run alone after the
+concurrent gates finish, so CPU contention cannot turn that budget into a false
+failure; the slowest known modules are queued first (scheduling only).
 `scripts/run_simulation_qa.py --jobs N` and
 `scripts/test_replay_failure_fixes.py --jobs N` accept the same option.
 
