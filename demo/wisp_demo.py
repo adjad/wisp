@@ -56,7 +56,7 @@ os.environ["WISP_QA_SEED"] = "1"
 
 from service.assistant.store import QA_SEED_SOURCE, assistant_store  # noqa: E402
 from service.assistant import attention_demo  # noqa: E402
-from service.attention import detectors  # noqa: E402
+from service.attention import catch_rules  # noqa: E402
 from service.paths import MOE_DIR  # noqa: E402
 from tests.fixtures import persona  # noqa: E402
 
@@ -181,7 +181,7 @@ def cmd_drop(a: argparse.Namespace) -> None:
     row = attention_demo.add_overlay_message(sender, text,
         direction="outgoing" if a.preset == "outgoing" else "incoming")
     item = [i for i in attention_demo.load_overlay() if i.id == attention_demo.OVERLAY_ID_PREFIX + row["id"]]
-    hits = detectors.detect(item, now=time.time(), commitments=assistant_store.active_future(time.time(), 3))
+    hits = catch_rules.detect(item, now=time.time(), commitments=assistant_store.active_future(time.time(), 3))
     print(f'delivered: {sender}: "{text}"')
     print("expected: " + (f"rule alert within ~30 s ({_fmt_clock(hits[0].when_ts)} added to Wisp's schedule)"
                           if hits else PRESETS[a.preset][2] if not a.text

@@ -1,4 +1,4 @@
-"""Rule-based detector for the one notifying reason code: ``uncaptured_commitment``.
+"""Rule set for the Catch demo: the one notifying reason code, ``uncaptured_commitment``.
 
 A person texts something that is coming up soon ("Meet me in the Quad at 6PM"),
 it is in neither Calendar nor Reminders, and it is not promotional. Pure code, no

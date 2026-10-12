@@ -18,7 +18,7 @@ from urllib.parse import urlsplit
 
 from service import idle
 from service.attention.corpus import Item
-from service.attention.detectors import (
+from service.attention.catch_rules import (
     HORIZON_S, REASON, Candidate, _sentence, already_on_file,
     is_promo_or_scam, resolve_when,
 )

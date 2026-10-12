@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from service.attention import detectors
+from service.attention import catch_rules
 from service.assistant import attention_demo as runtime
 from service.attention.corpus import Item
 
@@ -19,7 +19,7 @@ def msg(text, *, sender="Mom", direction="incoming", ts=NOW - 60, id="m1", conv=
 
 
 def run(items, commitments=()):
-    return detectors.detect(items, now=NOW, commitments=list(commitments))
+    return catch_rules.detect(items, now=NOW, commitments=list(commitments))
 
 
 def at(hour, minute=0, day=0):
@@ -233,7 +233,7 @@ def test_slice0_fixture_messages_behave(tmp_path):
         (Path(__file__).resolve().parents[1] / "test_fixtures" / "attention" / "messages.txt").read_text())
     shifted = [Item(i.id, i.source, NOW - 60 - n, i.direction, i.sender, i.conversation, i.text)
                for n, i in enumerate(items)]
-    hits = detectors.detect(shifted, now=NOW, commitments=[])
+    hits = catch_rules.detect(shifted, now=NOW, commitments=[])
     assert [h.quote for h in hits] == ["Meet me in the Quad at 6PM"]
     json.dumps([h.__dict__ for h in hits])
 
@@ -569,7 +569,7 @@ def test_requested_tomorrow_fixture_is_supported_within_24_hours(monkeypatch):
     quote = "I can make it to the Quad tomorrow at 6PM"
     now = at(19)
     item = msg(quote, ts=now-60)
-    assert detectors.detect([item], now=now, commitments=[]) == []
+    assert catch_rules.detect([item], now=now, commitments=[]) == []
     candidate = extract.validate_quote(item, quote, now=now, commitments=[])
     assert candidate.quote == quote and candidate.when_ts == at(18, day=1)
 
@@ -631,10 +631,10 @@ def test_unsupported_numeric_timezone_offsets_fail_closed(offset):
     text = f"I can make it to the Quad at 6AM {offset}"
     now = at(19)
     item = msg(text, ts=now-60)
-    assert detectors.resolve_when(text, item.ts) is None
+    assert catch_rules.resolve_when(text, item.ts) is None
     assert extract.eligible_when(item, now=now, commitments=[]) is None
     assert extract.validate_quote(item, text, now=now, commitments=[]) is None
-    assert detectors.detect([msg(f"Meet me at 6AM {offset}", ts=now-60)], now=now, commitments=[]) == []
+    assert catch_rules.detect([msg(f"Meet me at 6AM {offset}", ts=now-60)], now=now, commitments=[]) == []
 
 
 _OTHER_PEOPLES_PLANS = [
@@ -685,7 +685,7 @@ def test_audit_third_party_and_reported_plans_are_not_rule_hits(text):
 def test_audit_unsupported_qualifiers_rejected_by_resolver_rules_and_model(qualifier):
     for text in (f"Meet me at 6PM {qualifier}", f"{NATURAL} {qualifier}"):
         item = msg(text)
-        assert detectors.resolve_when(text, item.ts) is None
+        assert catch_rules.resolve_when(text, item.ts) is None
         assert run([item]) == []
         assert extract.eligible_when(item, now=NOW, commitments=[]) is None
         assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
@@ -694,7 +694,7 @@ def test_audit_unsupported_qualifiers_rejected_by_resolver_rules_and_model(quali
 @pytest.mark.parametrize("text", ["Meet me at 6PM+6:00", NATURAL + "-06:00"])
 def test_audit_attached_numeric_zone_is_rejected(text):
     item = msg(text)
-    assert detectors.resolve_when(text, item.ts) is None
+    assert catch_rules.resolve_when(text, item.ts) is None
     assert run([item]) == []
     assert extract.eligible_when(item, now=NOW, commitments=[]) is None
     assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
@@ -726,7 +726,7 @@ def test_audit_ineligible_messages_have_no_runtime_effects(text, store, monkeypa
 @pytest.mark.parametrize("text", _UNSUPPORTED_HEADINGS)
 def test_residual_headings_cannot_be_stripped_before_time_validation(text):
     item = msg(text)
-    assert detectors.resolve_when(text, item.ts) is None
+    assert catch_rules.resolve_when(text, item.ts) is None
     assert run([item]) == []
     assert extract.eligible_when(item, now=NOW, commitments=[]) is None
     assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
@@ -762,7 +762,7 @@ def test_incompatible_daypart_has_no_dispatch_or_effect(daypart, clock, store, m
     for plan in ("Meet me", "I can make it to the Quad"):
         text = f"{plan} {daypart} at {clock}"
         item = msg(text, id=f"demo:daypart-{plan}")
-        assert detectors.resolve_when(text, item.ts) is None
+        assert catch_rules.resolve_when(text, item.ts) is None
         assert run([item]) == []
         assert extract.eligible_when(item, now=NOW, commitments=[]) is None
         assert extract.validate_quote(item, text, now=NOW, commitments=[]) is None
@@ -779,7 +779,7 @@ def test_incompatible_daypart_has_no_dispatch_or_effect(daypart, clock, store, m
 ])
 def test_compatible_daypart_boundaries_resolve(daypart, clock):
     text = f"Meet me {daypart} at {clock}"
-    assert detectors.resolve_when(text, at(1)) is not None
+    assert catch_rules.resolve_when(text, at(1)) is not None
 
 
 @pytest.mark.parametrize("text", [

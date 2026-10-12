@@ -1,6 +1,6 @@
 """Runtime for ``uncaptured_commitment``: read messages, detect, add, alert.
 
-Lives beside the store it writes; the pure detector is ``service.attention.detectors``
+Lives beside the store it writes; the pure detector is ``service.attention.catch_rules``
 (the Slice 0 package may not import ``service.assistant``).
 
 Off unless ``WISP_ATTENTION_DEMO=1``. ``WISP_ATTENTION_SYNTHETIC_ONLY=1`` bypasses
@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 
 from service.attention.corpus import Item
-from service.attention.detectors import HORIZON_S, REASON, Candidate, already_on_file, detect
+from service.attention.catch_rules import HORIZON_S, REASON, Candidate, already_on_file, detect
 from service.paths import MOE_DIR
 
 DAILY_CAP = 3
