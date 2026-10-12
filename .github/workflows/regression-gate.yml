@@ -30,5 +30,14 @@ jobs:
       - name: Install test dependencies
         run: |
           python -m pip install --require-hashes --only-binary=:all: -r build-support/requirements-test.lock
+      # Pull requests: Simulation QA (wisp-build.yml) already runs every module of
+      # its full profile under the OS sandbox on this exact head, so this required
+      # check runs only the modules that profile does not run (normally none) and
+      # never repeats that work. Pushes to main keep the complete run outside the
+      # sandbox as a cross-check. Both run one module per runner CPU at a time.
+      - name: Run regression modules outside Simulation QA
+        if: github.event_name == 'pull_request'
+        run: python scripts/test_replay_failure_fixes.py --only-outside-simulation-qa
       - name: Run complete regression gate
+        if: github.event_name != 'pull_request'
         run: python scripts/test_replay_failure_fixes.py

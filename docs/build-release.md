@@ -39,6 +39,19 @@ validation. It accepts a dirty tree implicitly and writes
 set in Info.plist, and `preview: true` in provenance. `verify`, `release` and
 `release-ad-hoc` refuse preview artifacts. Use `all` for anything that may ship.
 
+`--jobs N` sets how many Simulation QA gates run at once (`test`, `swift`, `all`).
+The default is one per CPU; `--jobs 1` is the original sequential run. Each gate
+keeps its own process, temporary `WISP_HOME`/HOME and the same outer sandbox, so
+concurrency changes neither isolation nor the report: results are listed in
+selection order with the same schema, totals and failure rules at any `--jobs`.
+Native compile-then-contract gates run as one ordered chain on a single worker.
+Modules with real-socket peer attestation under a fixed readiness time budget
+(`RUN_ALONE_TESTS`, currently `tests/test_runtime_peer.py`) run alone after the
+concurrent gates finish, so CPU contention cannot turn that budget into a false
+failure; the slowest known modules are queued first (scheduling only).
+`scripts/run_simulation_qa.py --jobs N` and
+`scripts/test_replay_failure_fixes.py --jobs N` accept the same option.
+
 `./scripts/package_app.sh` delegates to `wisp-build all`. It does not install the
 result. All generated files stay under `.wisp-build/` and `dist/`, except temporary
 QA fixtures and reports that are removed after textual evidence is copied into
@@ -183,8 +196,44 @@ promise bit-identical Swift binaries across SDKs or signed artifacts.
 
 ## CI and explicit release hooks
 
-The workflow builds and uploads candidates on PRs, main/codex branch pushes, tags,
-and manual dispatch. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
+CI splits by event. Branch protection requires two checks, **Verified macOS
+artifact** and **python-regressions**; both names exist on every event.
+
+Pull requests (fast path, `wisp-build.yml`):
+
+- **Preview build (PR)** (`macos-15`): ACL qualification, `wisp-build preview
+  --strict-toolchain` (Swift release build, assembly, native validation, ad-hoc
+  signing, relocated-backend smoke), the synthetic publisher/provisioning tests,
+  and the offline mini artifact. Uploads a `wisp-preview-<sha>` ZIP that every
+  release command refuses.
+- **Simulation QA (PR)** (`macos-15`, in parallel): `wisp-build test
+  --strict-toolchain`, the same `simulation_tests` stage `all` runs (sandbox
+  contracts, native peer, browser bridge and benchmark contract gates, then the
+  sandboxed full profile at one gate per runner CPU). The native/benchmark
+  contract gates stay in this job because their hash-pinned reports are inputs to
+  the same Simulation QA run; splitting them out would repeat them.
+- **Verified macOS artifact** (`ubuntu-latest`, no checkout, no permissions):
+  passes only if both jobs above succeeded and each reported the exact
+  pull-request head SHA it verified.
+- **python-regressions** (`regression-gate.yml`): runs only the modules that
+  Simulation QA's full profile does not run (`--only-outside-simulation-qa`).
+  The full profile refuses manifest drift, so this is normally an empty set and
+  a pull request no longer runs every module twice. The sandboxed Simulation QA
+  is kept because it is the stricter gate (pinned runtime, OS sandbox,
+  reviewed manifest) and is the one release evidence relies on.
+
+Pushes to main, `v*` tags and manual dispatch (full path):
+
+- **Full verified artifact** runs `wisp-build all --strict-toolchain` unchanged:
+  every gate plus distribution evidence, then the provisioning tests and mini
+  artifact, and uploads `wisp-candidate-<sha>`. **Verified macOS artifact**
+  passes only if it succeeded. Release jobs depend on it directly and still
+  rebuild from source.
+- **python-regressions** runs the complete regression gate outside the sandbox
+  as a cross-check, one module per runner CPU at a time.
+
+The full path builds and uploads candidates on main pushes, tags, and manual
+dispatch. [GitHub's runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
 identifies `macos-15` as arm64; `doctor` independently rejects any other host
 architecture. CI selects Xcode 16.4 and requires Swift 6.1.2. A local Command Line
 Tools build records `strict_toolchain: false` and cannot pass release preflight.
