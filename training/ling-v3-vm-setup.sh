@@ -89,6 +89,7 @@ cat > "$WORK/run.sh" <<'RUN'
 # Steps in order: check  unpack  rebuild  preflight  preprocess  labels  smoke  train  status  package
 set -uo pipefail
 WORK="$(cd "$(dirname "$0")" && pwd)"
+export PATH="$WORK/venv/bin:$PATH"   # axolotl train execs `accelerate` from PATH
 PY="$WORK/venv/bin/python"; AX="$WORK/venv/bin/axolotl"
 UP="$WORK/uploads"; DATA="$WORK/ling-v3"; V2="$WORK/Ling-3.0-tiny-Wisp-V2-merged"
 DATA_ZIP=ling-train-dev-v3-20261012.zip
