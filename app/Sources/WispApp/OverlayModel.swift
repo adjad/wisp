@@ -917,7 +917,8 @@ final class OverlayModel: ObservableObject {
                         calendar: { await self.handleCalendarAction($0) },
                         reconcileReminder: { await self.reconcileReminderAction($0) })
                 }
-                // Stream ended (backend restart) — back off, then re-subscribe.
+                // Stream ended (routine server rotation or backend restart) —
+                // back off, then re-subscribe. Backend actions wait out this gap.
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
             }
         }

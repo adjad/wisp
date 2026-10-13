@@ -360,6 +360,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_draft_identity.py",
     "tests/test_workflow20_executor_draft_identity.py",
     "tests/test_workflow20_outbound_receipts.py",
+    "tests/test_native_bridge_reconnect.py",
     "tests/test_workflow20_availability.py",
     "tests/test_workflow20_calendar.py",
     "tests/test_workflow20_calendar_identity.py",

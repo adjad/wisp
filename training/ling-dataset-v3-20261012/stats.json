@@ -1,0 +1,108 @@
+{
+ "seed": 20261012,
+ "splits": {
+  "dev": {
+   "by_category": {
+    "chat_no_tool": 5,
+    "clarify_ambiguity": 6,
+    "compound_read_then_act": 18,
+    "error_handling": 8,
+    "followups_history": 3,
+    "outbound_sends_drafts": 22,
+    "single_tool_reads": 14,
+    "stop_after_success_no_loop": 14,
+    "writes": 10
+   },
+   "conversations": 100,
+   "families": 26,
+   "first_discovery_explicit": 13,
+   "first_discovery_stub_first": 57,
+   "row_tokens_est_chars_div4": {
+    "max": 13316,
+    "mean": 8772,
+    "p50": 8501,
+    "p95": 11987
+   },
+   "rows": 309,
+   "rows_by_step_index": {
+    "s0": 100,
+    "s1": 91,
+    "s2": 77,
+    "s3": 33,
+    "s4": 5,
+    "s5": 3
+   },
+   "rows_by_target_type": {
+    "discovery": 14,
+    "final": 100,
+    "stub_call": 59,
+    "tool_call": 136
+   },
+   "rows_per_conversation": 3.09,
+   "scenarios": 100,
+   "target_tokens_est_chars_div4": {
+    "max": 98.5,
+    "mean": 49.5,
+    "p95": 79.8
+   },
+   "templates": 65,
+   "variants": {
+    "S": 53,
+    "SP-decoy": 17,
+    "SP-hit": 21
+   }
+  },
+  "train": {
+   "by_category": {
+    "chat_no_tool": 45,
+    "clarify_ambiguity": 54,
+    "compound_read_then_act": 162,
+    "error_handling": 72,
+    "followups_history": 27,
+    "outbound_sends_drafts": 198,
+    "single_tool_reads": 126,
+    "stop_after_success_no_loop": 126,
+    "writes": 90
+   },
+   "conversations": 900,
+   "families": 94,
+   "first_discovery_explicit": 181,
+   "first_discovery_stub_first": 515,
+   "row_tokens_est_chars_div4": {
+    "max": 14421,
+    "mean": 8604,
+    "p50": 8357,
+    "p95": 12267
+   },
+   "rows": 2776,
+   "rows_by_step_index": {
+    "s0": 900,
+    "s1": 824,
+    "s2": 743,
+    "s3": 274,
+    "s4": 30,
+    "s5": 5
+   },
+   "rows_by_target_type": {
+    "discovery": 184,
+    "final": 900,
+    "stub_call": 517,
+    "tool_call": 1175
+   },
+   "rows_per_conversation": 3.08,
+   "scenarios": 900,
+   "target_tokens_est_chars_div4": {
+    "max": 113.2,
+    "mean": 51.0,
+    "p95": 81.8
+   },
+   "templates": 415,
+   "variants": {
+    "S": 571,
+    "SP-decoy": 123,
+    "SP-hit": 130
+   }
+  }
+ },
+ "version": "v3-20261012"
+}
