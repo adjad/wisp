@@ -359,6 +359,22 @@ class AttestationStore:
             self._revoke_locked(entry)
             return True
 
+    def revoke_key(self, key: QualificationKey) -> bool:
+        """Unconditional key revocation (invalidate, manifest, detected change).
+
+        Bumps the key generation whatever is current, so a published lease and
+        any in-flight build token of that generation both lose authority at
+        once; there is no snapshot-then-revoke window a publication can slip
+        through. Counter exhaustion disables the store (fails closed).
+        """
+        self._key(key)
+        with self._lock:
+            entry = self._entries.get(key)
+            if self._disabled is not None or entry is None:
+                return False
+            self._revoke_locked(entry)
+            return True
+
     def disable(self, reason: str) -> None:
         if type(reason) is not str or reason not in {"rollback", "quarantine", "manifest-transition"}:
             raise ValueError("disable reason must be rollback, quarantine or manifest-transition")
