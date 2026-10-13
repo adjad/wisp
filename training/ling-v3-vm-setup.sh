@@ -39,6 +39,8 @@ pipi() { "$UV" pip install -q -p "$PY" "$@"; }
 echo "== installing axolotl (pulls torch)"
 pipi -U pip setuptools wheel packaging ninja
 pipi "axolotl" huggingface_hub hf_transfer safetensors datasets || echo "ERROR: axolotl install failed"
+echo "== Ling model code needs fla-core (KDA linear-attention kernels) and einops"
+pipi -U fla-core einops || echo "ERROR: fla-core install failed - the model cannot load without it"
 "$PY" -c "import torch;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available())"
 
 echo "== optional: flash-attn (prebuilt wheel only; skipped if it would compile)"
@@ -89,6 +91,7 @@ check)
   nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader
   "$PY" -c "import torch,axolotl;print('torch',torch.__version__,'cuda ok',torch.cuda.is_available(),'axolotl',axolotl.__version__)"
   "$PY" -c "import flash_attn" 2>/dev/null && echo "flash-attn: yes" || echo "flash-attn: no (sdp fallback)"
+  "$PY" -c "import fla.ops.kda, einops" 2>/dev/null && echo "fla-core: yes" || echo "fla-core: MISSING - model will not load (pip install -U fla-core einops)"
   "$PY" -c "import cut_cross_entropy" 2>/dev/null && echo "cut-CE: yes" || echo "cut-CE: no (plugin dropped)"
   [ -s "$WORK/base_path" ] && echo "base: $(cat "$WORK/base_path") ($(ls "$(cat "$WORK/base_path")"/*.safetensors 2>/dev/null | wc -l) shards)" || echo "base: not downloaded (run: base)"
   sha_ok $DATA_ZIP $DATA_SHA; sha_ok $RB_ZIP $RB_SHA; df -h "$WORK" | tail -1 ;;
