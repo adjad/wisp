@@ -419,3 +419,27 @@ harness.**
   blind pairs file for the eval board. `scripts/eval_core.py` gained a per-call `base` URL.
 - Tests: `tests/test_experiments.py` (parsing, default-off, gate lockstep, wiring);
   `tests/test_narration_thinking.py` still 47/47.
+
+**Finding that reshaped Phase 5 (2026-10-13, smoke run + direct oMLX probes).** V3 emits **zero
+reasoning** under its default template on every prompt shape and still selects tools correctly (14
+tokens, 0.4s). It does think when `enable_thinking=True` is sent explicitly (3–4k chars), at ~10× the
+latency ("explain" 1.4s → 14.7s) and with the classic budget starvation (a planning prompt spent all
+1,200 tokens reasoning, no answer). The V3 dataset README confirms training rows were rendered thinking
+off. Separately, the oMLX admin profile for V3 was switched to `enable_thinking: False` at 13:07 that
+day; because Wisp only ever sent `False` or *nothing*, every "thinking" path had silently inherited that
+toggle. Decision (user, same day): **default off, explicitly; thinking on only where it earns its
+latency; measure the two contested sites.**
+
+**Slice 2: explicit think-block policy.**
+- `models.yaml` `explicit_thinking`: the three Wisp-merged Ling ids. `config.thinking_kwargs(model, on)`
+  sends `enable_thinking` both ways for them; every other model's kwargs are byte-identical to before
+  (pinned by `tests/test_thinking_kwargs.py`).
+- Policy for explicit models: OFF on agent selection and narration steps, plain chat (all roles),
+  background extraction, search, rolling summary; ON for the daily brief and Messages digest
+  (`user_facing_summary_kwargs`) with `user_facing_summary_budget` raising 512/600 → 1,800, and for an
+  agent step after a tool failure that is still outstanding (`step_think_on` in `run_agent`).
+- The two contested sites stay behind the experiment switches (`narration_think_compound`,
+  `search_think`) and are measured by `scripts/eval_arms.py` against baseline: compound prompts × 3
+  reps plus the six search cases.
+- Open item from the smoke run: Smart Search discarded 6/12 correct answers because V3 omitted `[n]`
+  citations and `verify()` drops uncited sentences. Not a thinking problem; belongs with the prompt work.

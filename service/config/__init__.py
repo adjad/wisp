@@ -271,8 +271,49 @@ def no_thinking_kwargs(model: str) -> dict:
     `enable_thinking` form is silently ignored by oMLX, so it has to travel
     inside chat_template_kwargs.
     """
-    return ({"chat_template_kwargs": {"enable_thinking": False}}
-            if model in no_thinking_capable() else {})
+    return thinking_kwargs(model, on=False)
+
+
+def thinking_kwargs(model: str, *, on: bool) -> dict:
+    """`chat_template_kwargs` stating the think block EXPLICITLY, on or off.
+
+    For a model in `explicit_thinking` (models.yaml) the kwarg is sent on
+    every request, both ways. Measured 2026-10-13 on
+    Ling-3.0-tiny-Wisp-V3-merged-oQ4e: it was fine-tuned thinking-off and
+    emits zero reasoning under its default template, but DOES think when
+    `enable_thinking=True` is sent (3-4k chars, ~10x slower). Until then Wisp
+    only ever sent `False` or nothing, so every path that meant "think" was
+    inheriting the oMLX admin profile's toggle — which had been flipped off
+    that afternoon without Wisp knowing. Explicit both ways pins the behavior
+    Wisp was measured with, whatever the profile says.
+
+    For every other model this is exactly `no_thinking_kwargs`: the `False`
+    form for models verified to honor it, nothing otherwise. Their "on" paths
+    keep omitting the kwarg, because their measured behavior depends on the
+    template default and has not been re-measured with an explicit `True`.
+    """
+    if model in explicit_thinking_models():
+        return {"chat_template_kwargs": {"enable_thinking": bool(on)}}
+    if not on and model in no_thinking_capable():
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+    return {}
+
+
+def thinks_explicitly(model: str) -> bool:
+    return model in explicit_thinking_models()
+
+
+# Output budget for a user-facing summary when its think block is on: the
+# block comes out of max_tokens, and 512 cannot hold ~1k tokens of V3
+# reasoning plus the summary (finish_reason=length, then the "did not
+# complete" fallback). 1,800 held every probe on 2026-10-13 with room.
+_THINKING_SUMMARY_MAX_TOKENS = 1800
+
+
+def user_facing_summary_budget(model: str, base: int) -> int:
+    """`base` unless this summary request will carry an explicit think block."""
+    kwargs = user_facing_summary_kwargs(model).get("chat_template_kwargs") or {}
+    return max(base, _THINKING_SUMMARY_MAX_TOKENS) if kwargs.get("enable_thinking") is True else base
 
 
 def user_facing_summary_kwargs(model: str) -> dict:
@@ -285,7 +326,12 @@ def user_facing_summary_kwargs(model: str) -> dict:
     fast narration paths still rely on that lower-latency setting.
 
     Other model families retain the established summary optimization.
+
+    An `explicit_thinking` model says so outright (`enable_thinking: True`)
+    rather than relying on the template default — see thinking_kwargs.
     """
+    if thinks_explicitly(model):
+        return thinking_kwargs(model, on=True)
     if model.casefold().startswith("ling-"):
         return {}
     return no_thinking_kwargs(model)
@@ -461,6 +507,11 @@ def tool_capable_models() -> list[str]:
 
 def no_thinking_capable() -> list[str]:
     return models_config().get("no_thinking_capable", [])
+
+
+def explicit_thinking_models() -> list[str]:
+    """Models whose think block Wisp states explicitly on every request."""
+    return models_config().get("explicit_thinking", [])
 
 
 # Fallback when oMLX has no max_context_window for a model. Deliberately small:
