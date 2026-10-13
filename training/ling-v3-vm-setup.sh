@@ -74,7 +74,7 @@ WORK="$(cd "$(dirname "$0")" && pwd)"
 PY="$WORK/venv/bin/python"; AX="$WORK/venv/bin/axolotl"
 UP="$WORK/uploads"; DATA="$WORK/ling-v3"; V2="$WORK/Ling-3.0-tiny-Wisp-V2-merged"
 DATA_ZIP=ling-train-dev-v3-20261012.zip
-DATA_SHA=db4d2d66600987a0f1995a01bc9c15b33e6a8ea724cc4e0cb0675de51d3acc78
+DATA_SHA=aab24f88fca2dbabb2b89a2ddb2a38026e655921e3f0b5cfec7b69c4f5c2bb18
 RB_ZIP=ling-v2-rebuild.zip
 RB_SHA=5c9410913ece6b9513fee5aea735180eeb59f6f5fa93cd71c71c0f107a83def6
 BASE_REPO="inclusionAI/Ling-3.0-tiny"; BASE_REV="9a98e35fe1c9ee255f78dd64771c7ae15a799481"
@@ -148,7 +148,7 @@ smoke)
   s=$(date +%s); "$AX" train smoke.yaml > smoke.log 2>&1; rc=$?; e=$(date +%s); kill $M 2>/dev/null
   tail -15 smoke.log
   echo "exit $rc; 20 steps in $((e-s))s; peak GPU memory $(sort -n smoke-mem.txt | tail -1) MiB"
-  [ $rc -eq 0 ] && echo "full run estimate: ~$(( (e-s)*87/10/60 )) min (174 steps)" ;;
+  [ $rc -eq 0 ] && echo "full run estimate: ~$(( (e-s)*156/10/60 )) min (312 steps)" ;;
 train)
   need "$DATA/LABELS_OK" labels
   cd "$DATA"

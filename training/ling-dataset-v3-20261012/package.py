@@ -12,6 +12,14 @@ MEMBERS = ["train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance
            "assets/tools.json", "assets/system_parts.json", "assets/heldout_shingles.json",
            "README.md", "DATA_CARD.md", "preflight.py", "check_labels.py", "axolotl-a6000.yaml",
            "validate.py", "validation.json", "preflight.json"]
+# Generator sources: generate.py plus every add-on module it loads (ext_*.py) and v2_replay.py, so the data is reproducible from the zip.
+MEMBERS += ["generate.py"] + sorted(p.name for p in ROOT.glob("ext_*.py")) + (["v2_replay.py"] if (ROOT / "v2_replay.py").exists() else [])
+# V2-replay provenance travels separately from train/dev.provenance.jsonl; required once v2r rows are appended to train/dev.
+if (ROOT / "v2_replay.provenance.jsonl").exists():
+    MEMBERS.append("v2_replay.provenance.jsonl")
+else:
+    assert b'"id":"v2r-' not in (ROOT / "train.jsonl").read_bytes(), "train.jsonl has v2r rows but v2_replay.provenance.jsonl is missing"
+MEMBERS = sorted(dict.fromkeys(MEMBERS))
 
 
 def sha(p):

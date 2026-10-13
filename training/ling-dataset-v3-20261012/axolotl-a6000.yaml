@@ -77,6 +77,7 @@ test_datasets:
     train_on_eos: turn
 val_set_size: 0                         # validation = dev.jsonl via test_datasets
 dataset_prepared_path: ./last_run_prepared
+shuffle_merged_datasets: true          # V2 replay rows sit at the end of train.jsonl; interleave them
 
 sequence_len: 16384                     # real max is 14,521 tokens (preflight.json)
 sample_packing: false                   # rows are long and self-contained; packing would also complicate the mask audit
@@ -85,7 +86,7 @@ eval_sample_packing: false
 
 # ---- optimisation ----------------------------------------------------------
 micro_batch_size: 1
-gradient_accumulation_steps: 16         # effective batch 16 rows -> 174 optimizer steps for 2,776 rows
+gradient_accumulation_steps: 16         # effective batch 16 rows -> 312 optimizer steps for 4,987 rows (4,387 model-led + 600 V2 replay)
 num_epochs: 1
 learning_rate: 0.0001
 lr_scheduler: cosine
@@ -108,4 +109,4 @@ logging_steps: 1
 # ---- TIMED SMOKE RUN (before the full run) ---------------------------------
 # Add `max_steps: 20` and `evals_per_epoch: 0` (or pass --max_steps 20 on the CLI, with a different --output_dir), run
 # `axolotl train`, then tokens/sec = (20 steps x 16 rows x ~9,000 tokens ~= 2.9M tokens) / wall seconds. Read peak GPU memory
-# from nvidia-smi. Full-run time ~= smoke time x 174/20.
+# from nvidia-smi. Full-run time ~= smoke time x 312/20.

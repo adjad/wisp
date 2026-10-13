@@ -3772,11 +3772,11 @@ OVERLAP_LIMIT = 0.4  # stricter than the 0.5 required by the spec; rejection is 
 # ================================================================ allocation
 
 CATEGORIES = [  # (key, name, pct)
-    ("outbound", "outbound_sends_drafts", 22), ("compound", "compound_read_then_act", 18), ("stop", "stop_after_success_no_loop", 14),
-    ("reads", "single_tool_reads", 14), ("writes", "writes", 10), ("errors", "error_handling", 8), ("clarify", "clarify_ambiguity", 6),
-    ("chat", "chat_no_tool", 5), ("followup", "followups_history", 3)]
-N_TOTAL = 1000
-N_DEV = 100
+    ("outbound", "outbound_sends_drafts", 18), ("compound", "compound_read_then_act", 22), ("stop", "stop_after_success_no_loop", 10),
+    ("reads", "single_tool_reads", 11), ("writes", "writes", 8), ("errors", "error_handling", 7), ("clarify", "clarify_ambiguity", 5),
+    ("chat", "chat_no_tool", 8), ("followup", "followups_history", 7), ("guard", "repeated_read_guard", 4)]
+N_TOTAL = 1600
+N_DEV = 160
 
 
 def largest_remainder(weights, total):
@@ -3925,7 +3925,9 @@ def main():
             cv.update({"id": base, "split": split, "category": cat_name[b["cat"]], "family_id": b["fid"]})
             convs[split].append(cv)
     for split in ("train", "dev"):
-        (out / f"{split}.jsonl").write_text("".join(jdump(x) + "\n" for x in rows[split]))
+        # V2 replay rows (v2_replay.py) go last, byte-for-byte, so V3 keeps V2's routing-contract skill.
+        replay = (HERE / f"v2_replay.{split}.jsonl").read_text()
+        (out / f"{split}.jsonl").write_text("".join(jdump(x) + "\n" for x in rows[split]) + replay)
         (out / f"{split}.provenance.jsonl").write_text("".join(jdump(x) + "\n" for x in prov[split]))
     (out / "conversations.jsonl").write_text("".join(jdump(x) + "\n" for s in ("train", "dev") for x in convs[s]))
     write_stats(out, rows, prov)

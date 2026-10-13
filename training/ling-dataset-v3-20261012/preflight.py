@@ -45,7 +45,13 @@ def prepare_messages(row):
     return msgs
 
 
+def is_v2r(row):
+    return str(row.get("id", "")).startswith("v2r-")
+
+
 def render(tok, msgs, tools, generation_prompt):
+    # V2-replay rows carry tools == []. `tools or None` makes that identical to passing NO tools argument; verified that the
+    # Ling template renders tools=[] and tools=None byte-identically (so training/check_labels see the same ids either way).
     return tok.apply_chat_template(msgs, tools=tools or None, tokenize=False,
                                    add_generation_prompt=generation_prompt, enable_thinking=False)
 
@@ -106,8 +112,11 @@ def main():
     template = tok.chat_template or ""
     assert "<role>ASSISTANT</role>" in template, "tokenizer has no Ling chat template"
     result, problems, over = {}, [], []
-    for name in ["train", "dev"]:
+    def load_split(name):
         rows = [json.loads(x) for x in (a.data_dir / (name + ".jsonl")).read_text().splitlines() if x]
+        return rows
+
+    def summarize(rows, name, kind):
         lengths, targets = [], []
         for row in rows:
             try:
@@ -117,28 +126,46 @@ def main():
             n = len(r["ids"]); t = n - r["n_prefix"]
             lengths.append(n); targets.append(t)
             if n > a.max_len:
-                over.append({"split": name, "id": row["id"], "tokens": n})
+                over.append({"split": name, "kind": kind, "id": row["id"], "tokens": n})
+        if not lengths:
+            return {"rows": len(rows), "rows_ok": 0}
         s = sorted(lengths); ts = sorted(targets)
-        result[name] = {
+        return {
             "rows": len(rows), "rows_ok": len(lengths),
             "tokens_total": sum(lengths), "tokens_max": s[-1], "tokens_p95": pct(s, 0.95),
             "tokens_median": int(statistics.median(s)), "tokens_mean": round(statistics.mean(s), 1),
             "labeled_tokens_total": sum(targets), "target_tokens_min": ts[0],
             "target_tokens_median": int(statistics.median(ts)), "target_tokens_p95": pct(ts, 0.95), "target_tokens_max": ts[-1],
-            "rows_over_max_len": sum(1 for o in over if o["split"] == name),
+            "rows_over_max_len": sum(1 for o in over if o["split"] == name and o["kind"] == kind),
         }
+
+    v2_source = "absent"
+    for name in ["train", "dev"]:
+        rows = load_split(name)
+        model_led = [r for r in rows if not is_v2r(r)]
+        v2 = [r for r in rows if is_v2r(r)]
+        if v2:
+            v2_source = "appended to train/dev.jsonl"
+        elif (a.data_dir / ("v2_replay." + name + ".jsonl")).exists():
+            v2 = [json.loads(x) for x in (a.data_dir / ("v2_replay." + name + ".jsonl")).read_text().splitlines() if x]
+            if v2_source == "absent":
+                v2_source = "standalone v2_replay.*.jsonl (not yet appended)"
+        result[name] = summarize(model_led, name, "model_led")
+        if v2:
+            result[name + "_v2_replay"] = summarize(v2, name, "v2_replay")
     status = "PASS" if not problems and not over else "FAIL"
     receipt = {
         "status": status, "max_len": a.max_len, "thinking": "disabled (enable_thinking=False)",
-        "tools_passed_to_template": True, "rows_needing_string_to_dict_workaround": len(STRING_ARG_ROWS),
+        "tools_passed_to_template": True, "v2_replay_tools_arg": "tools=[] -> None (identical render to no tools argument; verified)", "rows_needing_string_to_dict_workaround": len(STRING_ARG_ROWS),
         "label_definition": "tokens after '" + HEADER.replace("\n", "\\n") + "' through '" + END + "' of the final assistant message; everything else -100",
         "checks": ["last message is training:true assistant, no earlier training:true", "full render startswith generation-prompt render",
                    "exactly one trailing " + END + " in target", "final assistant span is the tail (independent regex)",
                    "no token straddles the boundary; prefix tokens identical inside full render", "target non-empty, last token is " + END],
-        "splits": result, "rows_over_max_len": over, "problems": problems[:50], "problem_count": len(problems),
+        "splits": result, "v2_replay_source": v2_source,
+        "note_splits": "keys train/dev = model-led rows only; train_v2_replay/dev_v2_replay = V2 replay rows (tools=[]) reported separately", "rows_over_max_len": over, "problems": problems[:50], "problem_count": len(problems),
         "tokenizer_dir_files_sha256": {f: sha(Path(a.tokenizer_dir) / f) for f in ["tokenizer.json", "tokenizer_config.json", "chat_template.jinja"] if (Path(a.tokenizer_dir) / f).exists()},
         "chat_template_sha256": hashlib.sha256(template.encode()).hexdigest(),
-        "data_sha256": {f: sha(a.data_dir / f) for f in ["train.jsonl", "dev.jsonl"]},
+        "data_sha256": {f: sha(a.data_dir / f) for f in ["train.jsonl", "dev.jsonl", "v2_replay.train.jsonl", "v2_replay.dev.jsonl"] if (a.data_dir / f).exists()},
         "tokenizer_vocab_size": len(tok),
         "actual_axolotl_prepared_label_audit_still_required": True,
     }

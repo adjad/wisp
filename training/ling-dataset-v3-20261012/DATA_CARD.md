@@ -6,108 +6,134 @@ Version `v3-20261012`, seed 20261012. Synthetic; no real data. Task: Wisp MODEL-
 
 | split | conversations | rows (one per assistant step) | rows/conv | families | scenarios | templates |
 |---|---|---|---|---|---|---|
-| train | 900 | 2776 | 3.08 | 94 | 900 | 415 |
-| dev | 100 | 309 | 3.09 | 26 | 100 | 65 |
+| train | 1444 | 4387 | 3.04 | 160 | 1444 | 707 |
+| dev | 156 | 474 | 3.04 | 46 | 156 | 109 |
 
 ## Conversations by category
 
 | category | train | dev | target % |
 |---|---|---|---|
-| outbound_sends_drafts | 198 | 22 | 22 |
-| compound_read_then_act | 162 | 18 | 18 |
-| stop_after_success_no_loop | 126 | 14 | 14 |
-| single_tool_reads | 126 | 14 | 14 |
-| writes | 90 | 10 | 10 |
-| error_handling | 72 | 8 | 8 |
-| clarify_ambiguity | 54 | 6 | 6 |
-| chat_no_tool | 45 | 5 | 5 |
-| followups_history | 27 | 3 | 3 |
+| outbound_sends_drafts | 260 | 28 | 18 |
+| compound_read_then_act | 317 | 35 | 22 |
+| stop_after_success_no_loop | 144 | 16 | 10 |
+| single_tool_reads | 159 | 17 | 11 |
+| writes | 116 | 12 | 8 |
+| error_handling | 101 | 11 | 7 |
+| clarify_ambiguity | 72 | 8 | 5 |
+| chat_no_tool | 116 | 12 | 8 |
+| followups_history | 101 | 11 | 7 |
+| repeated_read_guard | 58 | 6 | 4 |
 
 ## Rows by target type
 
 | split | discovery (get_tool_schemas) | stub call (implicit discovery) | executed tool call | final |
 |---|---|---|---|---|
-| train | 184 | 517 | 1175 | 900 |
-| dev | 14 | 59 | 136 | 100 |
+| train | 288 | 791 | 1864 | 1444 |
+| dev | 24 | 90 | 204 | 156 |
 
 ## Length estimates (characters / 4; no tokenizer was run)
 
 | split | row mean | row p50 | row p95 | row max | target mean | target p95 | target max |
 |---|---|---|---|---|---|---|---|
-| train | 8604 | 8357 | 12267 | 14421 | 51.0 | 81.8 | 113.2 |
-| dev | 8772 | 8501 | 11987 | 13316 | 49.5 | 79.8 | 98.5 |
+| train | 8691 | 8450 | 12225 | 14421 | 51.6 | 83.8 | 133.8 |
+| dev | 8933 | 8579 | 12391 | 13316 | 51.2 | 82.0 | 135.5 |
 
 ## Targeted failure classes (conversations tagged; a conversation may carry several)
 
 | failure class | conversations |
 |---|---|
-| direct_real_tool_without_discovery | 365 |
-| compound_never_completes | 190 |
-| loop_tool | 185 |
-| outbound_paraphrase_miss | 147 |
-| loop_exact | 122 |
-| silent_on_error | 66 |
-| wrong_chain_order | 65 |
-| identical_retry | 64 |
-| multi_source_partial | 64 |
-| tool_on_chat | 54 |
-| availability_wrong_tool | 48 |
-| derived_answer_dumped_raw | 46 |
-| unrequested_change | 40 |
-| false_sent_claim | 37 |
-| draft_vs_send_confusion | 35 |
-| empty_result_retry_loop | 34 |
-| retry_after_denial | 28 |
-| conditional_action_ignored | 27 |
-| followup_context_lost | 26 |
-| tool_on_underspecified | 26 |
-| write_then_verify_loop | 24 |
-| acted_on_chat | 23 |
-| guess_missing_arg | 21 |
-| guess_recipient | 21 |
-| false_success_claim | 19 |
-| loop | 19 |
-| unneeded_lookup | 18 |
-| send_on_ambiguity | 14 |
-| scheduled_send_vs_send | 13 |
-| second_discovery_misuse | 13 |
-| runaway | 12 |
-| guess_channel | 11 |
-| compound_order | 10 |
-| summarize_irrelevant_results | 10 |
-| discovery_rejected | 9 |
-| family_tool_mismatch | 9 |
-| capability_question_tool_call | 8 |
-| destructive_on_ambiguity | 8 |
-| guess_location | 8 |
-| guess_target | 8 |
-| false_saved_claim | 6 |
+| direct_real_tool_without_discovery | 407 |
+| compound_never_completes | 327 |
+| loop_tool | 211 |
+| outbound_paraphrase_miss | 193 |
+| messy_result | 177 |
+| multi_source_partial | 165 |
+| loop_exact | 147 |
+| wrong_chain_order | 141 |
+| derived_answer_dumped_raw | 138 |
+| tool_on_chat | 133 |
+| followup_context_lost | 98 |
+| acted_on_chat | 82 |
+| conditional_action_ignored | 76 |
+| silent_on_error | 75 |
+| identical_retry | 69 |
+| repeated_read_guard | 64 |
+| availability_wrong_tool | 55 |
+| unrequested_change | 51 |
+| false_sent_claim | 49 |
+| empty_result_retry_loop | 46 |
+| draft_vs_send_confusion | 45 |
+| retry_after_denial | 37 |
+| invented_content | 35 |
+| tool_on_underspecified | 34 |
+| stale_fact_from_quote | 32 |
+| write_then_verify_loop | 32 |
+| guess_recipient | 29 |
+| guess_missing_arg | 28 |
+| truncation_ignored | 28 |
+| unneeded_lookup | 24 |
+| loop | 23 |
+| send_on_ambiguity | 20 |
+| conflicting_sources_ignored | 19 |
+| invented_missing_source | 19 |
+| answered_from_partial | 16 |
+| scheduled_send_vs_send | 16 |
+| tool_on_answered_followup | 16 |
+| false_success_claim | 15 |
+| stale_copy_used | 15 |
+| capability_question_tool_call | 14 |
+| guess_channel | 14 |
+| compound_order | 13 |
+| reminders_counted_as_events | 13 |
+| claimed_complete_after_truncation | 12 |
+| empty_result_acted | 12 |
+| invented_recipient | 12 |
+| invented_detail | 11 |
+| second_discovery_misuse | 11 |
+| destructive_on_ambiguity | 10 |
+| first_value_instead_of_final | 10 |
+| guess_target | 10 |
+| irrelevant_items_summarized | 10 |
+| send_on_vague_assent | 10 |
+| guess_location | 9 |
+| runaway | 9 |
+| summarize_irrelevant_results | 9 |
+| wrong_referent | 9 |
+| duplicate_instead_of_update | 8 |
+| resend_after_denial | 8 |
+| discovery_rejected | 7 |
+| false_saved_claim | 7 |
+| family_tool_mismatch | 7 |
+| guess_time | 7 |
+| cancel_wrong_event | 6 |
 | hedging_on_time | 6 |
 | false_done_claim | 5 |
-| send_on_vague_assent | 4 |
-| wrong_tool_future_vs_past | 4 |
-| delete_paraphrase_miss | 3 |
+| stale_history_applied | 5 |
+| delete_paraphrase_miss | 4 |
+| wrong_body | 3 |
+| wrong_slot | 3 |
+| wrong_tool_future_vs_past | 3 |
 
 ## Protocol S mix (first discovery of each tool-using conversation)
 
 | split | stub-first | explicit get_tool_schemas first | stub-first share |
 |---|---|---|---|
-| train | 515 | 181 | 74% |
-| dev | 57 | 13 | 81% |
+| train | 790 | 285 | 73% |
+| dev | 88 | 23 | 79% |
 
 ## S vs SP (tool-using conversations)
 
 | split | pure S (no preload) | SP-hit (needed tool preloaded, called directly at round 0) | SP-decoy (preload wrong, call the stub) | SP share |
 |---|---|---|---|---|
-| train | 571 | 130 | 123 | 31% |
-| dev | 53 | 21 | 17 | 42% |
+| train | 891 | 196 | 182 | 30% |
+| dev | 85 | 26 | 26 | 38% |
 
 ## Rows per step index (s0 = first assistant step of a conversation)
 
 | split | s0 | s1 | s2 | s3 | s4 | s5 | s6 | s7 |
 |---|---|---|---|---|---|---|---|---|
-| train | 900 | 824 | 743 | 274 | 30 | 5 | 0 | 0 |
-| dev | 100 | 91 | 77 | 33 | 5 | 3 | 0 | 0 |
+| train | 1444 | 1269 | 1147 | 457 | 64 | 6 | 0 | 0 |
+| dev | 156 | 137 | 120 | 51 | 7 | 3 | 0 | 0 |
 
 ## Design notes
 
