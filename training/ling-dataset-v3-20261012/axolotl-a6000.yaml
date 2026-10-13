@@ -19,9 +19,8 @@ gradient_checkpointing_kwargs:
 # Alternative: Liger -> plugins: [axolotl.integrations.liger.LigerPlugin] + liger_fused_linear_cross_entropy: true
 # CAVEAT: both plugins patch known model_types; bailing_hybrid is custom remote code and may be UNSUPPORTED.
 # If preprocess/train errors with "model type not supported", delete this block (memory will be higher; watch the smoke run).
-plugins:
-  - axolotl.integrations.cut_cross_entropy.CutCrossEntropyPlugin
-cut_cross_entropy: true
+# Measured on the A6000 (axolotl 0.19.0): CutCrossEntropyPlugin fails with "Could not import ForCausalLM class for
+# model_type: bailing_hybrid" (custom remote code), so it is NOT enabled. Loss uses full logits.
 
 # ---- LoRA ------------------------------------------------------------------
 # V2 adapter: rank 16, attention projections only (MERGE_MANIFEST.json changed_targets; alpha not recorded -> 32 assumed, the

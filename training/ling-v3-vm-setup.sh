@@ -145,8 +145,8 @@ config)
   sed -i "s#^base_model: .*#base_model: $V2#" $Y
   if ! "$PY" -c "import flash_attn" 2>/dev/null; then
     sed -i 's#^flash_attention: true.*#flash_attention: false\nsdp_attention: true#' $Y; echo "config: flash-attn -> sdp_attention"; fi
-  if ! "$PY" -c "import cut_cross_entropy" 2>/dev/null; then
-    sed -i '/^plugins:/d; /CutCrossEntropyPlugin/d; /^cut_cross_entropy:/d' $Y; echo "config: cut-CE plugin removed (more memory)"; fi
+  # cut-CE cannot patch Ling's custom bailing_hybrid model; never enable it for this model.
+  sed -i '/^plugins:/d; /CutCrossEntropyPlugin/d; /^cut_cross_entropy:/d' $Y
   sed -e 's#^output_dir: .*#output_dir: ./smoke-out#' -e 's#^evals_per_epoch: .*#evals_per_epoch: 0#' \
       -e 's#^saves_per_epoch: .*#saves_per_epoch: 0#' $Y > smoke.yaml
   echo "max_steps: 20" >> smoke.yaml
