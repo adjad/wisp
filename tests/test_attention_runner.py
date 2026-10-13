@@ -728,3 +728,32 @@ async def test_the_senders_label_in_a_title_is_not_a_shared_word(ledger):
                  rec("s1", "Sam", "Picking up mom at 7:15pm", MON_9AM + 600)]
     out = await run(sam, MON_9AM + 900, ledger, f)
     assert [o.state for o in out] == ["created"] and len(f.created) == 2
+
+
+# ------------------------------- second re-audit of the dedup (Release Auditor notes on 8ccf268)
+
+async def test_a_row_a_crash_left_behind_still_dedups_a_follow_up(ledger):
+    """The write happened, the process died before `finish`, and `recover` made the row unknown.
+    A same-conversation follow-up at a nearby time must still be a repeat: the reminder may exist."""
+    class Crash(BaseException):
+        pass
+    f = Fakes(raises=Crash())
+    with pytest.raises(Crash):
+        await run(dinner_twice()[:2], MON_9AM + 60, ledger, f)
+    assert ledger.get("msg:d1")["state"] == "claimed"
+    assert ledger.recover(MON_9AM + 60 + ledger_mod.STALE_CLAIM_S + 1) == 1
+    row = ledger.get("msg:d1")
+    assert row["state"] == "unknown" and row["detail"]["thread"] and row["detail"]["quote"]
+    f.raises = None
+    out = await run(dinner_twice("ok 7:15pm then"), MON_9AM + 900, ledger, f)
+    assert [o.state for o in out] == ["already_on_file"] and out[0].detail["duplicate_of"] == "msg:d1"
+    assert len(f.created) == 1
+
+
+def test_the_thread_salt_is_created_once_and_never_replaced(tmp_path):
+    path = tmp_path / "attention" / "ledger.db"
+    a, b = ledger_mod.Ledger(path), ledger_mod.Ledger(path)       # two writers on one file
+    first = runner._thread_salt(a)
+    assert runner._thread_salt(b) == first and runner._thread_salt(a) == first
+    assert b.meta_setdefault("thread_salt", "00" * 16) == first.hex()
+    assert len(first) == 16

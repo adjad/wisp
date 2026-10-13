@@ -119,7 +119,8 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         thread = _thread_key(item.conversation, salt)
         twin = _already_acted(ledger, decision.resolved, context, thread, now, tz, settings.mode)
         if twin is not None:
-            if ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts, event_ts=plan.event_ts, now=now):
+            if ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts, event_ts=plan.event_ts, now=now,
+                            detail={"quote": plan.quote, "thread": thread}):
                 detail = {"quote": plan.quote, "when": plan.when_label, "why": list(decision.why),
                           "thread": thread, "duplicate_of": twin}
                 ledger.finish(item.id, "already_on_file", detail, now)
@@ -128,8 +129,10 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         if settings.mode == "live" and effects >= MAX_EFFECTS_PER_PASS:
             outcomes.limited = True
             break                                         # the rest wait for the next pass, unclaimed
-        if not ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts,
-                            event_ts=plan.event_ts, now=now):
+        # The quote and thread go in with the claim: if the process dies before `finish`, the row
+        # recovered as `unknown` (whose reminder may exist) must still match a follow-up.
+        if not ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts, event_ts=plan.event_ts,
+                            now=now, detail={"quote": plan.quote, "thread": thread}):
             continue
         detail = {"quote": plan.quote, "when": plan.when_label, "why": list(decision.why), "thread": thread}
 
@@ -176,16 +179,18 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
 
 
 def _thread_salt(ledger: Ledger) -> bytes:
-    salt = ledger.meta("thread_salt")
-    if salt is None:
-        ledger.set_meta("thread_salt", secrets.token_hex(16))
-        salt = ledger.meta("thread_salt")
-    return bytes.fromhex(salt)
+    """This ledger's random salt, created once. A second writer can never replace it: rows keyed
+    under a replaced salt would stop matching their own conversation."""
+    return bytes.fromhex(ledger.meta_setdefault("thread_salt", secrets.token_hex(16)))
 
 
 def _thread_key(conversation: str, salt: bytes) -> str:
-    """Which conversation a row came from. It outlives the content purge, so it is a keyed digest
-    under this ledger's own random salt: a bare hash of a phone number could be reversed."""
+    """Which conversation a row came from, as a 16-hex HMAC under the ledger's salt.
+
+    It survives the content purge so that purged rows can still dedup within their conversation.
+    The salt lives in the same file, so this only stops precomputed tables and linking across
+    ledgers: anyone who can read the ledger can still test a guessed handle (a phone number is a
+    small space) and can tell which purged rows share a conversation."""
     return hmac.new(salt, (conversation or "").encode(), hashlib.sha256).hexdigest()[:16]
 
 
