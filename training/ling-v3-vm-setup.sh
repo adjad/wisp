@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Wisp Ling V3 training VM setup (one NVIDIA A6000 48GB, Ubuntu + CUDA driver, Jupyter).
 # Paste into the VM's setup-script field. Runs once at boot, usually as root.
 #  - installs Axolotl into ~/wisp/venv (uv, Python 3.11)
