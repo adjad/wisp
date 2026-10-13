@@ -498,3 +498,12 @@ the results in context. Never while a forced/expected tool is pending. Live re-r
 **4 steps / 13.6s** (was 8 / 34.9s); the refusal fires once, the turn ends on its own.
 `tests/test_loop_repeat_stall.py` covers the stall, the mixed-step exception and the unmet-group
 exception. `scripts/eval_prompt_composition.py` added for the per-step breakdown.
+
+The choice alone was not enough: the `none` steps came back **empty**, and the turn fell through to
+`_merge_results`' raw JSON dump (which is what the app shows today after the 35s loop). oMLX's log had
+the cause: V3 emitted a call to a non-existent `think` tool, dropped as unregistered. Replaying the
+exact request: pointer in context → empty in every configuration (tools on/off, thinking on/off);
+pointer removed → re-calls the tool; **one nudge line** ("Write the answer now from the tool results
+above. Do not call any tool.") → concise grounded answer 2/2; nudge without the pointer → runaway to
+the token cap (70s). Shipped: `tool_choice="none"` + the nudge, pointer kept. Live: a real four-source
+readout in 18.9s instead of a JSON dump after 34.9s.

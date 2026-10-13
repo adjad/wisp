@@ -841,6 +841,11 @@ def _opens_in_browser(app_name: str, target: str) -> bool:
 # Tool names as they're written in the prompt: `send_email`, `get_upcoming`.
 _PROMPT_TOOL_RE = re.compile(r"`([a-z_][a-z0-9_]*)`")
 
+# Appended to the request on a step that follows nothing but refused repeats
+# (see the stall branch at the step head for the measurement behind it).
+_NARRATE_NUDGE = ("Write the answer now from the tool results above. Do not call "
+                  "any tool.")
+
 
 def _system_blocks() -> list[tuple[frozenset, str]]:
     """SYSTEM split into (tools it talks about, text) pairs.
@@ -2506,6 +2511,16 @@ async def run_agent(
         if (choice == "auto" and prev_step_calls > 0
                 and prev_step_refusals == prev_step_calls and _unmet_group() is None):
             choice = "none"
+            # The choice alone is not enough. Replayed the exact stalled
+            # request against oMLX (V3, 2026-10-13): with the refusal pointer
+            # in context the model emitted a call to a `think` tool that does
+            # not exist — tools suppressed or not, thinking on or off — which
+            # oMLX drops, so the step came back empty 4/4 and the turn fell
+            # through to the raw-result dump. With the pointer removed it
+            # simply re-called the tool. This one-line nudge produced a
+            # concise, grounded answer 2/2 (64 tokens, ~2s); the pointer has
+            # to stay, since nudging WITHOUT it ran to the token cap (70s).
+            msgs.append({"role": "user", "content": _NARRATE_NUDGE})
         prev_step_calls = prev_step_refusals = 0
         # NARRATION STEP: the model's only remaining job is to write prose
         # about tool results already in its context, not to select a tool.

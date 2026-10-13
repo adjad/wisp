@@ -35,6 +35,7 @@ class Client:
     async def stream_events(self, model, messages, *, tools=None, **kwargs):
         choice = kwargs.get("tool_choice")
         self.choices.append(choice)
+        self.last_messages = list(messages)
         item = self.script[self.i] if self.i < len(self.script) else None
         self.i += 1
         if item and choice != "none":
@@ -91,6 +92,11 @@ def test_repeat_only_step_forces_a_narration_step():
     assert client.choices[:3] == ["auto", "auto", "none"]
     assert len(client.choices) == 3, client.choices
     assert out == "DONE"
+    # The stalled step also carries the narration nudge, right after the
+    # refusal pointer — V3 produced nothing from the choice alone.
+    tail = client.last_messages[-2:]
+    assert tail[0]["role"] == "tool" and "already ran" in tail[0]["content"]
+    assert tail[1] == {"role": "user", "content": loop._NARRATE_NUDGE}
 
 
 def test_a_new_call_alongside_a_repeat_keeps_choice_open():
@@ -98,6 +104,7 @@ def test_a_new_call_alongside_a_repeat_keeps_choice_open():
     class Mixed(Client):
         async def stream_events(self, model, messages, *, tools=None, **kwargs):
             self.choices.append(kwargs.get("tool_choice"))
+            self.last_messages = list(messages)
             self.i += 1
             if self.i == 1:
                 calls = [("fake_evidence", {})]
@@ -114,6 +121,7 @@ def test_a_new_call_alongside_a_repeat_keeps_choice_open():
     client = Mixed([])
     run(client, tools=["fake_evidence", "fake_other"])
     assert client.choices[2] == "auto"
+    assert all(m.get("content") != loop._NARRATE_NUDGE for m in client.last_messages)
 
 
 def test_unmet_required_group_keeps_choice_open():
