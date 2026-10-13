@@ -1088,3 +1088,41 @@ def test_incarnation_facts_refuse_a_change_while_they_are_read(monkeypatch):
     with pytest.raises(AuthRefused) as caught:
         authority._incarnation_facts(1, 'python3')
     assert str(caught.value) == 'desktop_incarnation_unstable'
+
+
+def test_bundles_without_the_reuse_modules_import_and_stay_legacy(tmp_path, monkeypatch):
+    """The mini bundle and staged live-QA packages ship only these three files."""
+    import importlib
+    import shutil
+    package = tmp_path / 'wisp_mini_copy'
+    package.mkdir()
+    (package / '__init__.py').write_text('')
+    source = os.path.dirname(at.__file__)
+    for name in ('attributed_transport.py', 'local_peer.py', 'inference_errors.py'):
+        shutil.copy(os.path.join(source, name), package / name)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    copy = importlib.import_module('wisp_mini_copy.attributed_transport')
+    try:
+        assert copy.AttestationStore is None and copy._REUSE.legacy() and copy._REUSE.store is None
+        copy._REUSE.invalidate()
+        copy.CredentialTransport('http://127.0.0.1:8000', 'k', managed=True).invalidate()
+    finally:
+        for name in [n for n in sys.modules if n.startswith('wisp_mini_copy')]:
+            del sys.modules[name]
+
+
+def test_store_revoke_key_retires_the_published_lease_and_the_in_flight_build(env):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    key = reuse.key_for(reuse.manifest_path())
+    lease = current_lease(reuse, clock)
+    clock.advance(41)
+    with reuse._lock:
+        token = reuse.store.reserve(key, at._BUILDER, reuse._sample_locked(),
+                                    build_deadline_ns=clock.now + at.T_BUILD_NS).token
+    assert reuse.store.revoke_key(key)
+    with reuse._lock:
+        sample = reuse._sample_locked()
+        assert reuse.store.lookup(key, sample) is None
+        assert not reuse.store.publish(token, lease, sample)        # the old build lost authority
+    assert not reuse.usable(lease)

@@ -26,8 +26,14 @@ import httpx
 import certifi
 from httpcore._backends.auto import AutoBackend
 
-from .attestation_lease import ClockSample, QualificationKey, QualificationLease, lease_usable
-from .attestation_store import AttestationStore, StoreLimits
+try:
+    from .attestation_lease import ClockSample, QualificationKey, QualificationLease, lease_usable
+    from .attestation_store import AttestationStore, StoreLimits
+except ImportError:
+    # The mini bundle and the staged live-QA packages ship only this module,
+    # local_peer and inference_errors: there, attestation reuse is absent and
+    # every connection takes the unchanged legacy path.
+    AttestationStore = StoreLimits = None
 from .local_peer import (AuthRefused, ManagedOmlx, NativeAnomaly, native_connection_owner, process_bsdinfo,
                          process_identity, process_path, read_private, tcp_listeners)
 
@@ -580,8 +586,9 @@ CLOCK_DOMAIN = 'darwin-CLOCK_MONOTONIC-sleep-inclusive'
 QUALIFICATION_RULE = 'desktop-omlx-exec-facts-v1'
 REUSE_POLICY = 'attestation-reuse-p1p2-v1'
 _BUILDER = 'process-qualification-builder'
-_LIMITS = StoreLimits(key_capacity=8, transport_capacity=4, nonce_capacity=2 ** 40,
-                      counter_ceiling=2 ** 40, record_units=16384, fact_depth=6)
+_LIMITS = None if StoreLimits is None else StoreLimits(
+    key_capacity=8, transport_capacity=4, nonce_capacity=2 ** 40,
+    counter_ceiling=2 ** 40, record_units=16384, fact_depth=6)
 _log = logging.getLogger('wisp.attestation')
 
 
@@ -613,14 +620,16 @@ class _DesktopReuse:
     def _reset(self):
         self._lock = threading.Lock()
         self.lifetime = secrets.token_hex(16)
-        self.store = AttestationStore(process_lifetime=self.lifetime, policy_revision=REUSE_POLICY,
-                                      clock_domain_id=CLOCK_DOMAIN, limits=_LIMITS)
-        self.store.register_transport(_BUILDER)
         self._authorities = {}
         self._last_ns = 0
-        self._rolled_back = False
         self._native_latched = False
         self.counters = {}
+        self.store = None
+        self._rolled_back = AttestationStore is None      # reuse not shipped: legacy only
+        if not self._rolled_back:
+            self.store = AttestationStore(process_lifetime=self.lifetime, policy_revision=REUSE_POLICY,
+                                          clock_domain_id=CLOCK_DOMAIN, limits=_LIMITS)
+            self.store.register_transport(_BUILDER)
 
     # -- bookkeeping ------------------------------------------------------
     def _count(self, name):
@@ -682,6 +691,8 @@ class _DesktopReuse:
 
     def invalidate(self):
         """CredentialTransport.invalidate(): conservatively revoke the current lease."""
+        if self.store is None:
+            return
         try:
             self.revoke(self.key_for(self.manifest_path()), 'invalidate')
         except Exception:  # noqa: BLE001 - a failure here must not mask the caller's invalidate
