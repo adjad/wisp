@@ -306,6 +306,11 @@ _LONG_DOC_MAX_PASSAGES = 10
 _GLOBAL_MAX_PASSAGES = 15
 _LONG_DOC_MAX_TOKENS = 700
 _SHORT_DOC_MAX_TOKENS = 400
+# EXPERIMENT search_think budgets: room for a think block AND the answer. The
+# 2026-08-09 empty-answer failure below was thinking into a 400-token
+# ceiling, which is not evidence that thinking itself hurts the answer.
+_LONG_DOC_THINK_MAX_TOKENS = 2400
+_SHORT_DOC_THINK_MAX_TOKENS = 1800
 # Wall-clock ceiling on one synthesis call, model load excluded (that's awaited
 # separately, with its own progress event). Generous enough for a long overview
 # on a big model, short enough that a runaway generation can't hang the panel.
@@ -372,6 +377,13 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
         {"role": "user", "content": f"{passages}\n\nQuestion: {question}"},
     ]
     max_tokens = _LONG_DOC_MAX_TOKENS if long_doc else _SHORT_DOC_MAX_TOKENS
+    # EXPERIMENT search_think (off by default; see config/experiments.py):
+    # thinking on, with the larger budgets above. Measured against the
+    # thinking-off baseline by scripts/eval_arms.py before any default moves.
+    from service.config.experiments import experiment
+    search_think = experiment("search_think")
+    if search_think:
+        max_tokens = _LONG_DOC_THINK_MAX_TOKENS if long_doc else _SHORT_DOC_THINK_MAX_TOKENS
     # THINKING OFF, not reasoning_effort="low".
     #
     # The intent below was always right — reading a dozen passages and
@@ -393,7 +405,7 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
     # produce an error string. Same failure and same fix as the profile MAP
     # pass (memory/profile._map_extract) and the rolling conversation summary
     # (memory/context.maybe_summarize).
-    extra: dict = dict(no_thinking_kwargs(model))
+    extra: dict = {} if search_think else dict(no_thinking_kwargs(model))
     # One retry: oMLX answers 400 while it's mid-load, and search deliberately
     # races the embedder's first load against this call. That transient must
     # not surface as a failed answer when a moment's wait would have worked.

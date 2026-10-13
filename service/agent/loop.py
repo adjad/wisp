@@ -20,6 +20,7 @@ from typing import Awaitable, Callable
 from service import debug_capture
 from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import narration_mode, no_thinking_kwargs, role_to_model
+from service.config.experiments import experiment
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -2531,6 +2532,14 @@ async def run_agent(
             and bool(tools_answered)
             and (mode == "broad"
                  or {s["function"]["name"] for s in step_schemas} <= tools_answered)
+            # EXPERIMENT narration_think_compound: keep the think block when
+            # the model is synthesizing across TWO OR MORE tool results. The
+            # 19.9s -> 3.3s measurement above was a single get_upcoming
+            # read-out; whether a cross-source answer (mail + messages,
+            # calendar + reminders) loses quality without reasoning has not
+            # been measured. Off by default — scripts/eval_arms.py runs it
+            # against baseline on the same prompts.
+            and not (experiment("narration_think_compound") and len(tools_answered) >= 2)
         )
         # Sampling is the model's own (as configured in oMLX) on every step
         # EXCEPT tool-SELECTION, which is pinned greedy. Higher temperature

@@ -81,8 +81,17 @@ class MemoryWorker:
             return 0
         if not any(_SELF.match(part.strip()) for part in re.split(r'(?<=[.!?])\s+|\n+', source)):
             return 0
+        # EXPERIMENT capture_think (off by default; see config/experiments.py):
+        # this worker already runs idle-only (run() checks foreground_busy),
+        # so a think block costs no live latency — the open question is
+        # whether extraction precision improves. The budget must hold the
+        # think block and the output, or the finish_reason guard below
+        # rejects every extraction.
+        from service.config.experiments import experiment
+        think = experiment('capture_think')
         response = await client.chat(model, [{'role': 'system', 'content': EXTRACTION_SYSTEM},
-            {'role': 'user', 'content': source}], max_tokens=650, **no_thinking_kwargs(model))
+            {'role': 'user', 'content': source}], max_tokens=1500 if think else 650,
+            **({} if think else no_thinking_kwargs(model)))
         choice = response['choices'][0]
         if choice.get('finish_reason') in ('length', 'error'):
             raise ValueError('Extraction output incomplete')
