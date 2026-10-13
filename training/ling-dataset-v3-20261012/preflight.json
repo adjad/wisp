@@ -1,0 +1,63 @@
+{
+  "status": "PASS",
+  "max_len": 16384,
+  "thinking": "disabled (enable_thinking=False)",
+  "tools_passed_to_template": true,
+  "rows_needing_string_to_dict_workaround": 0,
+  "label_definition": "tokens after '<role>ASSISTANT</role>\\n<think></think>' through '<|role_end|>' of the final assistant message; everything else -100",
+  "checks": [
+    "last message is training:true assistant, no earlier training:true",
+    "full render startswith generation-prompt render",
+    "exactly one trailing <|role_end|> in target",
+    "final assistant span is the tail (independent regex)",
+    "no token straddles the boundary; prefix tokens identical inside full render",
+    "target non-empty, last token is <|role_end|>"
+  ],
+  "splits": {
+    "train": {
+      "rows": 2776,
+      "rows_ok": 2776,
+      "tokens_total": 24974738,
+      "tokens_max": 14521,
+      "tokens_p95": 12525,
+      "tokens_median": 8768,
+      "tokens_mean": 8996.7,
+      "labeled_tokens_total": 74723,
+      "target_tokens_min": 4,
+      "target_tokens_median": 24,
+      "target_tokens_p95": 54,
+      "target_tokens_max": 93,
+      "rows_over_max_len": 0
+    },
+    "dev": {
+      "rows": 309,
+      "rows_ok": 309,
+      "tokens_total": 2821532,
+      "tokens_max": 13402,
+      "tokens_p95": 12239,
+      "tokens_median": 8869,
+      "tokens_mean": 9131.2,
+      "labeled_tokens_total": 7965,
+      "target_tokens_min": 5,
+      "target_tokens_median": 24,
+      "target_tokens_p95": 54,
+      "target_tokens_max": 61,
+      "rows_over_max_len": 0
+    }
+  },
+  "rows_over_max_len": [],
+  "problems": [],
+  "problem_count": 0,
+  "tokenizer_dir_files_sha256": {
+    "tokenizer.json": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+    "tokenizer_config.json": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74",
+    "chat_template.jinja": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a"
+  },
+  "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
+  "data_sha256": {
+    "train.jsonl": "f9135d69bb36622ce27321e33e7c75f2d3641a9ed50da179c5fd126ca568fa73",
+    "dev.jsonl": "63d70dae882e5bd9eb18f19c52af51bfe11f16284c780570a15baaae6d3cc1ee"
+  },
+  "tokenizer_vocab_size": 157153,
+  "actual_axolotl_prepared_label_audit_still_required": true
+}

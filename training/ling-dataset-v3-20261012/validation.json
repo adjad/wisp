@@ -1,0 +1,328 @@
+{
+ "passed": true,
+ "checks": {
+  "json_valid_all_files": {
+   "passed": true,
+   "detail": "0 errors",
+   "examples": []
+  },
+  "row_schema": {
+   "passed": true,
+   "detail": "row keys, id pattern, conversation_id, 3 system messages",
+   "examples": []
+  },
+  "system_messages": {
+   "passed": true,
+   "detail": "captured model-led system prompts present",
+   "examples": []
+  },
+  "synthetic_identity": {
+   "passed": true,
+   "detail": "identity block is Test User / test.user@example.invalid",
+   "examples": []
+  },
+  "masking": {
+   "passed": true,
+   "detail": "only the last assistant message of a row is training:true",
+   "examples": []
+  },
+  "protocol": {
+   "passed": true,
+   "detail": "protocol S: stub or get_tool_schemas first; a real tool is executed only after explicit/implicit discovery loaded it; <=2 discoveries (stub messages count); empty content on tool turns",
+   "examples": []
+  },
+  "discovery_receipt": {
+   "passed": true,
+   "detail": "explicit and implicit (stub) receipts equal the host's cumulative expansion; rejected explicit calls use the rejection text",
+   "examples": []
+  },
+  "offered_tools": {
+   "passed": true,
+   "detail": "row.tools equals the replayed offer: loaded registry schemas, then get_tool_schemas + name-only stubs for every other catalog tool while budget remains",
+   "examples": []
+  },
+  "system_scope": {
+   "passed": true,
+   "detail": "scoped system rules match loaded tools",
+   "examples": []
+  },
+  "arguments_json": {
+   "passed": true,
+   "detail": "tool-call arguments are JSON objects (dicts), not strings",
+   "examples": []
+  },
+  "schema_valid": {
+   "passed": true,
+   "detail": "every target call valid against the schema offered at that step (types, required, enum, no extra keys)",
+   "examples": []
+  },
+  "call_pairing": {
+   "passed": true,
+   "detail": "tool_call ids unique and paired 1:1 with tool messages in order",
+   "examples": []
+  },
+  "no_repeat": {
+   "passed": true,
+   "detail": "no identical (name,args) call repeated within a turn",
+   "examples": []
+  },
+  "result_length": {
+   "passed": true,
+   "detail": "tool results < 400 chars",
+   "examples": []
+  },
+  "final_present": {
+   "passed": true,
+   "detail": "every conversation ends with non-empty assistant text; only the last step is text",
+   "examples": []
+  },
+  "steps_contiguous": {
+   "passed": true,
+   "detail": "step numbering contiguous per conversation",
+   "examples": []
+  },
+  "prefix_consistency": {
+   "passed": true,
+   "detail": "each step extends the previous step's messages",
+   "examples": []
+  },
+  "date_sanity": {
+   "passed": true,
+   "detail": "when_iso/period/day_start sane relative to the system date",
+   "examples": []
+  },
+  "today_staleness": {
+   "passed": true,
+   "detail": "'today' reads never show items or slots earlier than the reference time",
+   "examples": []
+  },
+  "send_body_fidelity": {
+   "passed": true,
+   "detail": "send/draft/schedule/reply bodies contain only the user's stated content (email: exact Hi <First>/Test User frame)",
+   "examples": []
+  },
+  "write_fidelity": {
+   "passed": true,
+   "detail": "reminder/event/note/memory/timer titles and bodies use the user's words",
+   "examples": []
+  },
+  "final_quotes_body": {
+   "passed": true,
+   "detail": "after a successful send the final answer quotes the exact body sent",
+   "examples": []
+  },
+  "preload": {
+   "passed": true,
+   "detail": "SP preload (<=12 distinct catalog tools) equals the real schemas offered at round 0 and consumes no discovery attempt",
+   "examples": []
+  },
+  "slot_consistency": {
+   "passed": true,
+   "detail": "weekday / today / tomorrow / clock time in the user's words match the call arguments",
+   "examples": []
+  },
+  "explicit_authority": {
+   "passed": true,
+   "detail": "send/destructive tools only with a matching user cue",
+   "examples": []
+  },
+  "read_only_categories": {
+   "passed": true,
+   "detail": "read-only categories never call write/send/destructive tools",
+   "examples": []
+  },
+  "chat_no_tool": {
+   "passed": true,
+   "detail": "chat conversations use no tools",
+   "examples": []
+  },
+  "denial_honesty": {
+   "passed": true,
+   "detail": "declined sends are reported, not claimed",
+   "examples": []
+  },
+  "error_honesty": {
+   "passed": true,
+   "detail": "failed writes/sends are not claimed as done",
+   "examples": []
+  },
+  "error_policy": {
+   "passed": true,
+   "detail": "at most 2 failing tool results per turn",
+   "examples": []
+  },
+  "provenance": {
+   "passed": true,
+   "detail": "provenance complete and consistent with conversations",
+   "examples": []
+  },
+  "family_split": {
+   "passed": true,
+   "detail": "families/templates/scenarios are never shared across splits",
+   "examples": []
+  },
+  "category_counts": {
+   "passed": true,
+   "detail": "exact category counts per split",
+   "examples": []
+  },
+  "duplicate_prompts": {
+   "passed": true,
+   "detail": "no repeated user prompt within or across splits",
+   "examples": []
+  },
+  "heldout_overlap": {
+   "passed": true,
+   "detail": "normalized n-gram Jaccard (n=min(6,len)) < 0.4 vs every held-out eval prompt (spec: <= 0.5)",
+   "examples": []
+  },
+  "synthetic_only": {
+   "passed": true,
+   "detail": "only .invalid emails and +1 555 01xx phones",
+   "examples": []
+  },
+  "conversations_file": {
+   "passed": true,
+   "detail": "conversations.jsonl matches rows",
+   "examples": []
+  },
+  "reproducible": {
+   "passed": true,
+   "detail": "regeneration is byte-identical",
+   "examples": []
+  }
+ },
+ "counts": {
+  "train": {
+   "conversations": 900,
+   "rows": 2776,
+   "by_category": {
+    "writes": 90,
+    "outbound_sends_drafts": 198,
+    "error_handling": 72,
+    "compound_read_then_act": 162,
+    "stop_after_success_no_loop": 126,
+    "single_tool_reads": 126,
+    "clarify_ambiguity": 54,
+    "chat_no_tool": 45,
+    "followups_history": 27
+   },
+   "families": 94
+  },
+  "dev": {
+   "conversations": 100,
+   "rows": 309,
+   "by_category": {
+    "outbound_sends_drafts": 22,
+    "stop_after_success_no_loop": 14,
+    "writes": 10,
+    "compound_read_then_act": 18,
+    "clarify_ambiguity": 6,
+    "single_tool_reads": 14,
+    "error_handling": 8,
+    "chat_no_tool": 5,
+    "followups_history": 3
+   },
+   "families": 26
+  }
+ },
+ "token_estimate_chars_div4": {
+  "train": {
+   "row": {
+    "mean": 8604,
+    "p50": 8357,
+    "p95": 12267,
+    "max": 14421
+   },
+   "target": {
+    "mean": 51,
+    "p50": 48,
+    "p95": 82,
+    "max": 113
+   }
+  },
+  "dev": {
+   "row": {
+    "mean": 8772,
+    "p50": 8501,
+    "p95": 11987,
+    "max": 13316
+   },
+   "target": {
+    "mean": 49,
+    "p50": 47,
+    "p95": 80,
+    "max": 98
+   }
+  }
+ },
+ "heldout_max_jaccard": 0.375,
+ "dev_vs_train_max_4gram_jaccard": 0.217,
+ "target_tool_call_counts": {
+  "lookup_contact": 481,
+  "send_message": 315,
+  "get_upcoming": 291,
+  "get_tool_schemas": 198,
+  "view_emails": 190,
+  "find_free_time": 127,
+  "add_calendar_event": 91,
+  "send_email": 89,
+  "search_notes": 82,
+  "summarize_emails": 73,
+  "add_reminder": 67,
+  "get_weather": 61,
+  "search_reminders": 37,
+  "view_messages": 32,
+  "reply_to_email": 29,
+  "web_search": 29,
+  "draft_message": 24,
+  "draft_email": 22,
+  "schedule_send": 22,
+  "cancel_event": 22,
+  "find_files": 20,
+  "forward_email": 17,
+  "complete_reminder": 14,
+  "create_note": 14,
+  "append_note": 13,
+  "read_file": 13,
+  "calculate": 12,
+  "update_reminder": 11,
+  "recall": 10,
+  "summarize_messages": 10,
+  "place_call": 10,
+  "remember": 9,
+  "list_dir": 8,
+  "get_battery_status": 8,
+  "set_timer": 7,
+  "toggle_setting": 6,
+  "get_stock_price": 6,
+  "manage_timers": 6,
+  "wikipedia_summary": 5,
+  "recipe_lookup": 5,
+  "triage_inbox": 5,
+  "daily_brief": 5,
+  "clear_past_reminders": 5,
+  "music": 4,
+  "convert_currency": 4,
+  "summarize_thread": 4,
+  "forget": 4,
+  "get_past_events": 4,
+  "archive_email": 4,
+  "open_app": 4,
+  "system_status": 4,
+  "network_info": 3,
+  "mark_email_read": 3,
+  "get_recent_activity": 3,
+  "quit_app": 3,
+  "trash_file": 3,
+  "clear_reminders": 2,
+  "set_volume": 2,
+  "set_alarm": 2,
+  "world_time": 2,
+  "list_bluetooth_devices": 2,
+  "flag_email": 2,
+  "get_volume": 2,
+  "set_appearance": 1
+ },
+ "failure_total": 0
+}
