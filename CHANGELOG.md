@@ -4,9 +4,23 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-13
+
+### Added
+
+- Model-led routing (still off by default, `WISP_MODEL_LED_ROUTING=1`) now loads full schemas up front for the 12 tools that best match the request, and offers every other catalog tool by name only. Calling a name-only tool runs nothing: it loads that tool's schema, and the model calls it again on the next step with full arguments. Ling V2 used to call real tools directly and get an empty reply. Name-only tools are dropped first when a request doesn't fit the context window.
+
 ### Changed
 
+- Within one turn, a read the model already made with identical arguments isn't run again. The model gets "already ran with these exact arguments… It was NOT run again" and answers from the earlier result. Status reads (battery, volume, network, running apps, clipboard, screen and similar) still run every time, and any successful write or action clears the record, so a read after a write sees fresh data.
 - Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
+
+### Fixed
+
+- An approved Calendar, Reminders or send action no longer fails with "Wisp app is not connected" when it lands while the app is reconnecting its event stream, which it does every 30–45 seconds. Wisp now waits up to 8 seconds for an app that disconnected within the last minute; an app that never connected, or left long ago, still fails at once with nothing sent.
+- A failed or denied write, and a drafted message, no longer show "The assistant didn't respond." in place of Wisp's actual reply. Every early end of a turn now tells the app the turn is done.
+- "What did you remember about me?" goes to memory recall like "What do you know about me?".
+- Typo-tolerant tool search returns the same matches on every launch; it used to vary with Python's hash seed.
 
 ## [1.3.1] - 2026-10-12
 
