@@ -9,18 +9,23 @@ from email.utils import format_datetime
 import pytest
 
 from service.memory.store import SessionStore
-from service.router.router import _LING_WEB_MODEL
+from service.config import role_to_model
 from service.tools.web_tools import dated_news_digest
 from service.workflows.engine import finish_workflow, prepare_turn
 from service.workflows.reads import adjacent_stock_response, compile_read
 
 
 _STOCK_RESPONSE = "GOOGL, MU, VICOR, and VOO each moved during today's session."
+# Web routes run on the configured agent model, never a literal model id.
+_AGENT_MODEL = role_to_model("agent")
 
 
-def test_current_news_reaches_ling_instead_of_structured_raw_read():
+def test_current_news_reaches_the_agent_model_instead_of_structured_raw_read():
+    import asyncio
+    from service.router.router import route
+
     assert compile_read("What is on the news today?") is None
-    assert _LING_WEB_MODEL == "Ling-3.0-tiny-oQ6e"
+    assert asyncio.run(route("What is on the news today?")).model == _AGENT_MODEL
 
 
 def test_news_digest_carries_bounded_sanitized_cloud_evidence():
@@ -632,16 +637,16 @@ def test_stock_quote_only_prompt_does_not_request_web_citations(prompt, quote_on
     assert _is_stock_quote_only_prompt(prompt) is quote_only
 
 
-def test_topical_without_and_opt_out_note_continuations_stay_on_ling():
+def test_topical_without_and_opt_out_note_continuations_stay_on_the_agent_model():
     import asyncio
     from service.router.router import route
 
     topical = asyncio.run(route("look up cities without internet access online; save it in Notes"))
-    assert topical.model == _LING_WEB_MODEL
+    assert topical.model == _AGENT_MODEL
     assert "web_search" in (topical.tool_subset or ())
 
     opted_out = asyncio.run(route("latest news about Iran; do not browse; save it in Notes"))
-    assert opted_out.model == _LING_WEB_MODEL
+    assert opted_out.model == _AGENT_MODEL
     assert "web_search" not in (opted_out.tool_subset or ())
 
 
@@ -663,13 +668,13 @@ def _route_tools(decision):
     "what is new with {topic}",
 ])
 @pytest.mark.parametrize("continuation", ["; save it in Notes", "; text Mom a summary"])
-def test_not_online_subjects_stay_public_lookup_on_ling(subject, prefix, continuation):
+def test_not_online_subjects_stay_public_lookup_on_the_agent_model(subject, prefix, continuation):
     import asyncio
     from service.router.router import route
 
     topic = f"{subject} not online"
     decision = asyncio.run(route(f"{prefix.format(topic=topic)}{continuation}"))
-    assert decision.model == _LING_WEB_MODEL
+    assert decision.model == _AGENT_MODEL
     assert "web_search" in _route_tools(decision)
     assert "web_search" not in decision.forbidden_tools
 
@@ -684,12 +689,12 @@ def test_not_online_subjects_stay_public_lookup_on_ling(subject, prefix, continu
     "What is new with cities without internet access? Save it in Notes.",
     "Research communities that do not use the web; save it in Notes",
 ])
-def test_topical_network_negation_keeps_public_lookup_on_ling(prompt):
+def test_topical_network_negation_keeps_public_lookup_on_the_agent_model(prompt):
     import asyncio
     from service.router.router import route
 
     decision = asyncio.run(route(prompt))
-    assert decision.model == _LING_WEB_MODEL
+    assert decision.model == _AGENT_MODEL
     assert "web_search" in _route_tools(decision)
     assert "web_search" not in decision.forbidden_tools
 
@@ -704,12 +709,12 @@ def test_topical_network_negation_keeps_public_lookup_on_ling(prompt):
     "latest news about Iran, not online; save it in Notes",
     "find news about communities that do not use the internet; avoid browsing",
 ])
-def test_command_level_opt_out_keeps_ling_and_forbids_web(prompt):
+def test_command_level_opt_out_keeps_the_agent_model_and_forbids_web(prompt):
     import asyncio
     from service.router.router import route
 
     decision = asyncio.run(route(prompt))
-    assert decision.model == _LING_WEB_MODEL
+    assert decision.model == _AGENT_MODEL
     assert "web_search" not in _route_tools(decision)
     assert "web_search" in decision.forbidden_tools
 

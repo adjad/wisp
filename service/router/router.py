@@ -1118,10 +1118,6 @@ _APPS_MEDIA_RE = re.compile(
 
 # Possible external-information domains. These cues offer a small tool menu;
 # they do not prove that a lookup is needed or select a tool for the model.
-_LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
-
-
-
 _WEB_RE = re.compile(
     r"\b(?:stocks?|tickers?|equities|portfolio)\b|"
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
@@ -1546,7 +1542,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
                 for _, child, _ in clause_decisions if child.force_first_tool in writes), None)
         merged.forbidden_tools = frozenset().union(*(
             child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
-        return _pin_ling_web_decision(merged) if web_request and web_request.opted_out else merged
+        return _pin_web_decision(merged) if web_request and web_request.opted_out else merged
     if web_request and web_request.allowed:
         # Finalize local effects only on their own clause. The original public
         # query must never re-enter generic effect recognition at this boundary.
@@ -1556,7 +1552,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             merged.tool_argument_bindings.update(child.tool_argument_bindings)
         merged.forbidden_tools = frozenset().union(*(
             child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
-        return _pin_ling_web_decision(merged)
+        return _pin_web_decision(merged)
     return _finalize(merged, text, web_request=web_request)
 
 
@@ -6423,9 +6419,31 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
 
 
 
-def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
-    """Apply after finalization so execution-contract widening cannot undo it."""
-    decision.model = _LING_WEB_MODEL
+def _web_route_model() -> str:
+    """The model every web-lookup route runs on: the configured agent model.
+
+    Until 2026-10-13 this was a literal Ling id (oQ4e, later oQ6e), pinned
+    so that a user-configured agent model (Ornith at the time) was not
+    swapped in merely to narrate a search result. The roster has since
+    collapsed to one resident model, and the literal drifted out of the
+    installed set: oMLX answered `POST /v1/models/Ling-3.0-tiny-oQ6e/load`
+    with 404, unloaded and reloaded the resident model for a "runtime
+    settings variant", and the next two /agent turns failed with 409. A
+    model id written into the router can only ever go stale, so the role is
+    resolved at route time instead; tests/test_router_roster_models.py keeps
+    router.py free of model literals.
+    """
+    return role_to_model("agent")
+
+
+def _pin_web_decision(decision: RouteDecision) -> RouteDecision:
+    """Apply after finalization so execution-contract widening cannot undo it.
+
+    Keeps the web boundary (no shell, no raw HTTP) and the agent model even
+    when a generic fallback or a later merge would have picked another role's
+    model for the narration.
+    """
+    decision.model = _web_route_model()
     decision.forbidden_tools = frozenset(
         set(decision.forbidden_tools) | {"run_shell", "http_request"})
     if decision.tool_subset is not None:
@@ -6443,11 +6461,11 @@ def _bind_public_web_source(decision: RouteDecision, request: _WebRequest) -> No
     decision.tool_argument_bindings["web_search"] = {"query": request.query}
     decision.required_tool_groups = tuple(dict.fromkeys(
         (*decision.required_tool_groups, frozenset({"web_search"}))))
-    _pin_ling_web_decision(decision)
+    _pin_web_decision(decision)
 
 
 def _direct_web_search(query: str, reason: str) -> RouteDecision:
-    """Run dedicated search first and keep its narration on low-latency Ling."""
+    """Run dedicated search first and narrate it on the configured agent model."""
     decision = _mk_direct([("web_search", {"query": query})], reason, light=False)
     decision.tool_argument_bindings = {"web_search": {"query": query}}
     decision.required_tool_groups = (frozenset({"web_search"}),)
@@ -6552,7 +6570,7 @@ def _is_no_web_public_write(text: str, request: _WebRequest) -> bool:
 def _restrict_no_web_action(decision: RouteDecision, allowed: set[str]) -> RouteDecision:
     from service.tools.registry import REGISTRY
     decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
-    return _pin_ling_web_decision(decision)
+    return _pin_web_decision(decision)
 
 
 _DELIVERY_CONTENT_CUE = (
@@ -6827,7 +6845,7 @@ def _no_web_public_write_decision(
     decision.expect_tool_first = False
     decision.tool_subset = []
     decision.forbidden_tools = frozenset(REGISTRY)
-    return _pin_ling_web_decision(decision)
+    return _pin_web_decision(decision)
 
 
 async def _deliberate_decision(text: str, request: "_WebRequest", why: str) -> RouteDecision:
@@ -7030,7 +7048,7 @@ async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteD
     decision.tool_subset = []
     decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
     decision.forbidden_tools = frozenset(REGISTRY)
-    return _pin_ling_web_decision(decision) if request.opted_out else decision
+    return _pin_web_decision(decision) if request.opted_out else decision
 
 
 def _scheduled_send_review(text: str) -> RouteDecision | None:
@@ -7611,8 +7629,8 @@ async def _route_impl(text: str, *,
     if (no_web := _no_web_public_write_decision(text, request)) is not None:
         return no_web
     if _public_calendar_product_query(text):
-        return _pin_ling_web_decision(_direct_web_search(
-            text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
+        return _pin_web_decision(_direct_web_search(
+            text.strip(), "public Calendar product query -> web_search on the agent model (router-direct)"))
     if (checklist := _checklist_route(text)) is not None:
         return _finalize(checklist, text, web_request=request)
     decision = await _route_request(
@@ -7621,9 +7639,9 @@ async def _route_impl(text: str, *,
     if request.opted_out:
         # An explicit no-browse constraint can still leave a local continuation
         # (for example, save a note). Keep that constrained response on the
-        # dedicated Ling boundary rather than letting a generic fallback select
-        # a pinned Ornith model.
-        decision = _pin_ling_web_decision(decision)
+        # web boundary (agent model, no shell or raw HTTP) rather than letting
+        # a generic fallback pick another role's model.
+        decision = _pin_web_decision(decision)
     if request.allowed and request.presentations:
         decision.resolved_request += " Present the verified findings as requested: " + "; ".join(
             clause.text for clause in request.presentations) + "."
@@ -7963,7 +7981,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     # A topic substitution keeps the preceding operation. "And in biotech?"
     # after news asks for news, even if the new topic has its own data tool.
     web_opt_out = web_request.opted_out
@@ -7990,7 +8008,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 decision = _mk("agent", reason="unresolved mixed public/local request -> clarify without tools")
                 decision.resolved_request = "Please clarify the separate action to perform after the public lookup."
                 decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-                return _pin_ling_web_decision(decision)
+                return _pin_web_decision(decision)
             _bind_public_web_source(decision, web_request)
             # The public source precedes any action depending on its result.
             decision.required_tool_groups = tuple(dict.fromkeys((frozenset({"web_search"}), *(
@@ -8003,7 +8021,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # A prohibited delivery is a constraint, never part of a public query.
         decision = _direct_web_search(web_request.query, "public search with local-action constraints")
         decision.forbidden_tools |= frozenset(_ALL_MUTATING_TOOLS)
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     if live_web_lookup and web_request.delivery:
         return _public_delivery_decision(web_request)
     if web_opt_out and not live_lookup_write:
@@ -8012,12 +8030,12 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             reason="live-information wording with explicit no-web request -> answer without tools",
         )
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     if live_web_lookup and not live_lookup_write:
         query = web_request.query
         decision = _direct_web_search(
-            query, "current public information -> web_search on Ling (router-direct)")
-        return _pin_ling_web_decision(decision)
+            query, "current public information -> web_search on the agent model (router-direct)")
+        return _pin_web_decision(decision)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
     if (args := _dated_messages_summary_args(text)) is not None:
@@ -8067,7 +8085,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             return outbound
         decision = finalize(outbound, text)
         if "web_search" in decision.tool_argument_bindings:
-            return _pin_ling_web_decision(decision)
+            return _pin_web_decision(decision)
         return decision
     if (offered_text := _offered_text_confirmation(text, last_assistant)) is not None:
         return finalize(offered_text, text)
