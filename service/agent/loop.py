@@ -1384,6 +1384,7 @@ async def run_agent(
     if guarded_meeting and (public_web_synthesis or not _meeting_local_client(client)):
         response = "Private meeting planning requires the local inference path; no Calendar action ran."
         await emit({"type": "text", "text": response})
+        await emit({"type": "done"})
         return response
     if tools is None and (public_web_synthesis or not _meeting_local_client(client)):
         from service.tools.registry import routable_tool_names
@@ -2177,6 +2178,7 @@ async def run_agent(
         if unavailable and not available:
             response = _unavailable_response(unavailable)
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
 
     # A legacy forced first call is an execution requirement even when its
@@ -2185,6 +2187,7 @@ async def run_agent(
     if force_first_tool and (forced := get_tool(force_first_tool)) and forced.unavailable_reason:
         response = _unavailable_response([force_first_tool])
         await emit({"type": "text", "text": response})
+        await emit({"type": "done"})
         return response
 
     # A required but unavailable operation cannot become executable through
@@ -2195,20 +2198,24 @@ async def run_agent(
         if required and all(tool and tool.unavailable_reason for tool in required):
             response = _unavailable_response(group)
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
     # Preflight the whole direct batch; an earlier action must not run before
     # discovering that a later requested operation is unavailable.
     if response := _unavailable_response(name for name, _ in (direct_calls or [])):
         await emit({"type": "text", "text": response})
+        await emit({"type": "done"})
         return response
     for _name, _args in (direct_calls or []):
         if _name == "commit_private_meeting":
             response = "(error: A private meeting commit requires its exact interactive confirmation; direct dispatch refused.)"
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
         if _meeting_safe(_args) != _args:
             response = "(error: Private meeting capabilities cannot be carried into another tool; direct dispatch refused.)"
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
         if _skill_boundary(_name):
             audit("reject_skill_boundary", tool=_name, args=_args)
@@ -2303,17 +2310,20 @@ async def run_agent(
                     return await _finish_denied_outbound(emit)
                 response = "The requested action was not completed because approval was denied."
                 await emit({"type": "text", "text": response})
+                await emit({"type": "done"})
                 return response
         elif (_direct_outcome.status == "unknown"
               and _name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
             response = _verified_final(_direct_outcome.text)
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
         elif _direct_outcome.status in {"failed", "needs_input", "no_match", "unsupported"}:
             failed_tools.add(_name)
             if _direct_outcome.effect != "read":
                 response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(_result)
                 await emit({"type": "text", "text": response})
+                await emit({"type": "done"})
                 return response
         elif _direct_outcome.status in {"succeeded", "planned"}:
             tools_answered.add(_name)
@@ -2322,6 +2332,7 @@ async def run_agent(
             if _valid_message_draft(_result, _name):
                 await emit({"type": "message_draft",
                             "to": _result.resolved_to, "text": _result.prepared_text})
+                await emit({"type": "done"})
                 return ""
         if (_direct_outcome.status == "denied"
                 and _name in _TERMINAL_OUTBOUND_DENIALS):
@@ -2628,6 +2639,7 @@ async def run_agent(
             if guarded_meeting and not _meeting_local_client(client):
                 response = "Private meeting inference changed away from the local path; no further action ran."
                 await emit({"type": "text", "text": response})
+                await emit({"type": "done"})
                 return response
             # Retrying an unparseable (empty) response at a GREEDY temperature
             # is pointless — decoding is deterministic, so the retry reproduces
@@ -2852,6 +2864,7 @@ async def run_agent(
                 if (name := _clean_tool_name(tc["function"]["name"])) in allowed_names
                 and name not in forbidden_tools and not _skill_boundary(name)):
             await emit({"type": "text", "text": response})
+            await emit({"type": "done"})
             return response
         batch_verdict: dict[str, bool] = {}
         batch_calendar_args: dict[str, dict] = {}
@@ -3396,11 +3409,13 @@ async def run_agent(
                         return await _finish_denied_outbound(emit)
                     response = "The requested action was not completed because approval was denied."
                     await emit({"type": "text", "text": response})
+                    await emit({"type": "done"})
                     return response
             elif (outcome.status == "unknown"
                   and name in {"send_email", "send_message", "forward_email", "reply_to_email"}):
                 response = _verified_final(outcome.text)
                 await emit({"type": "text", "text": response})
+                await emit({"type": "done"})
                 return response
             elif outcome.status in {"failed", "needs_input", "unsupported"}:
                 failed_tools.add(name)
@@ -3409,6 +3424,7 @@ async def run_agent(
                     # duplicates; let the user correct the arguments first.
                     response = "The action did not return a verified success. I stopped without retrying.\n" + _user_facing_failure(result)
                     await emit({"type": "text", "text": response})
+                    await emit({"type": "done"})
                     return response
             elif outcome.status == "succeeded":
                 tools_answered.add(name)
@@ -3434,6 +3450,7 @@ async def run_agent(
                 if _valid_message_draft(result, name):
                     await emit({"type": "message_draft",
                                 "to": result.resolved_to, "text": result.prepared_text})
+                    await emit({"type": "done"})
                     return ""
             if outcome.status == "denied" and name in _TERMINAL_OUTBOUND_DENIALS:
                 return await _finish_denied_outbound(emit)

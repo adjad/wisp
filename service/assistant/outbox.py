@@ -16,6 +16,11 @@ from service.assistant.hub import hub
 # non-responding app doesn't hold the whole agent turn open.
 DEFAULT_TIMEOUT_S = 45.0
 
+# How long an action waits for the app to finish re-subscribing to its event
+# stream. The app's routine reconnect gap is a 3s back-off plus connect time;
+# an action approved inside that gap used to fail as "not connected".
+RECONNECT_GRACE_S = 8.0
+
 _pending: dict[str, asyncio.Future] = {}
 _pending_waiters: dict[str, int] = {}
 
@@ -68,6 +73,17 @@ def reminder_create_fallback_allowed(payload: dict) -> bool:
     return False
 
 
+async def app_connected(grace: float | None = None, *, via=None) -> bool:
+    """True when the app is subscribed, allowing for its routine reconnect."""
+    channel = hub if via is None else via
+    if channel.has_subscribers:
+        return True
+    wait = getattr(channel, "wait_for_subscriber", None)
+    if wait is None:
+        return False
+    return await wait(RECONNECT_GRACE_S if grace is None else grace)
+
+
 async def request(event_type: str, payload: dict,
                   timeout: float = DEFAULT_TIMEOUT_S) -> dict:
     from service import diagnostics
@@ -95,7 +111,7 @@ async def _request(event_type: str, payload: dict,
     if outbound:
         # Only the host can prove a send never reached publication. Native
         # error text (or an echoed status) cannot supply that proof afterward.
-        if not hub.has_subscribers:
+        if not await app_connected():
             return {"ok": False, "status": "not_attempted", "dispatch_started": False,
                     "error": "Wisp app is not connected; nothing was sent"}
         try:
@@ -105,7 +121,7 @@ async def _request(event_type: str, payload: dict,
         except (TypeError, ValueError, OverflowError):
             return {"ok": False, "status": "not_attempted", "dispatch_started": False,
                     "error": "Invalid outbound action payload; nothing was sent"}
-    if native and not hub.has_subscribers:
+    if native and not await app_connected():
         return {"ok": False, "error": ("Wisp app is not connected; Calendar was not changed"
                                         if calendar else "Wisp app is not connected; Reminders was not changed")}
     if reminder:
