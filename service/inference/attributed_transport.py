@@ -598,6 +598,13 @@ def _sleep_inclusive_ns():
     return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
 
 
+_CS_FLAGS = 10        # index of the CS flags word in an _incarnation_facts tuple
+
+
+def _without_flags(facts):
+    return facts[:_CS_FLAGS] + facts[_CS_FLAGS + 1:]
+
+
 class _FenceUnavailable(Exception):
     """The optimized path cannot decide (expiry, revocation, native error, policy).
 
@@ -812,6 +819,10 @@ class _DesktopReuse:
             self._settle(token, failed=True)
 
     def _run_refresh(self, runtime, key, token, start_ns):
+        # Run this background qualification's inspections serially on this
+        # thread: it never (re)creates the shared wisp-inspect pool, so a
+        # refresh after the last transport closed leaves no idle workers.
+        _worker.inside = True
         failed = True
         try:
             authority = runtime.load()
@@ -872,12 +883,19 @@ class _DesktopReuse:
                                                          lease.parent_facts[9])
         except Exception:  # noqa: BLE001 - cannot read: the full legacy check decides
             raise _FenceUnavailable('facts') from None
-        if server != lease.server_facts or parent != lease.parent_facts:
+        if (_without_flags(server) != _without_flags(lease.server_facts)
+                or _without_flags(parent) != _without_flags(lease.parent_facts)):
             self.revoke(lease.key, 'incarnation_changed')
             raise AuthRefused('desktop_incarnation_changed')
         if not authority._facts_qualified(server, parent):
+            # Includes CS_VALID or CS_RUNTIME cleared: the bits legacy checks stay fail-closed.
             self.revoke(lease.key, 'incarnation_unqualified')
             raise AuthRefused('desktop_incarnation_changed')
+        if server[_CS_FLAGS] != lease.server_facts[_CS_FLAGS] or parent[_CS_FLAGS] != lease.parent_facts[_CS_FLAGS]:
+            # Another CS flag changed (e.g. CS_DEBUGGED) while CS_VALID|CS_RUNTIME still hold:
+            # not a finding legacy would make, so the full legacy check decides.
+            self.revoke(lease.key, 'cs_flags_changed')
+            raise _FenceUnavailable('cs_flags')
         if prints != lease.boundary_fingerprints:
             self.revoke(lease.key, 'fingerprint_changed')
             raise _FenceUnavailable('fingerprint')

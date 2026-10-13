@@ -52,7 +52,7 @@ FIELDS = ['pid', 'ppid', 'uid', 'ruid', 'svuid', 'comm', 'name', 'start_s', 'sta
 # (uid, identifier, team, ppid, ...) the change is refused either way.
 CHANGED = {'pid': 999, 'ppid': 5, 'uid': UID + 1, 'ruid': UID + 1, 'svuid': UID + 1, 'comm': b'bash' + b'\0' * 12,
            'name': b'bash' + b'\0' * 28, 'start_s': 1_800_000_000, 'start_us': 77,
-           'flags': 0x2010311, 'cdhash': b'\x33' * 20, 'identifier': 'com.apple.bash', 'team': 'OTHERTEAM1'}
+           'flags': 0x2010300, 'cdhash': b'\x33' * 20, 'identifier': 'com.apple.bash', 'team': 'OTHERTEAM1'}
 CHANGED_PATH = {'server': str(D.python_root / 'cpython/bin/python3.12'), 'parent': '/Applications/Other.app/x'}
 
 
@@ -70,6 +70,7 @@ class World:
         self.load_gate = None                 # threading.Event that load() waits on
         self.load_advance = None              # (clock, seconds) the fake load takes
         self.on_binding = None                # called inside binding() (e.g. a change mid-qualification)
+        self.on_load = None                   # called inside load()
         self.log = []
         self.lock = threading.Lock()
 
@@ -118,6 +119,8 @@ class FakeRuntime(at.RuntimeAuthority):
         if gate is not None and threading.current_thread().name == 'wisp-attest-refresh':
             assert gate.wait(10)
         self.world.record('load')
+        if self.world.on_load is not None:
+            self.world.on_load()
         if self.world.load_advance is not None:
             clock, seconds = self.world.load_advance
             clock.advance(seconds)
@@ -1126,3 +1129,257 @@ def test_store_revoke_key_retires_the_published_lease_and_the_in_flight_build(en
         assert reuse.store.lookup(key, sample) is None
         assert not reuse.store.publish(token, lease, sample)        # the old build lost authority
     assert not reuse.usable(lease)
+
+
+# ---------------------------------------------------------------------------
+# Audit repairs N2-N5
+# ---------------------------------------------------------------------------
+CS_VALID, CS_RUNTIME, CS_DEBUGGED = 0x1, 0x10000, 0x10000000
+
+
+@pytest.mark.parametrize('side', ['server', 'parent'])
+def test_a_benign_cs_flag_change_falls_back_to_the_full_check(env, side):
+    """N5: CS_DEBUGGED (outside CS_VALID|CS_RUNTIME) is not a legacy finding."""
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+        facts = world.server if side == 'server' else world.parent
+        changed = (server_facts if side == 'server' else parent_facts)(flags=facts[10] | CS_DEBUGGED)
+        setattr(world, side, changed)
+        world.log.clear()
+        await stream.write(b'x')
+    run(scenario())
+    assert 'load' in world.log and wires(world) == [b'x']
+    assert reuse.counters.get('revoke:cs_flags_changed') == 1
+
+
+@pytest.mark.parametrize('side', ['server', 'parent'])
+@pytest.mark.parametrize('cleared', [CS_VALID, CS_RUNTIME])
+def test_clearing_a_cs_bit_legacy_checks_stays_fail_closed(env, side, cleared):
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+        facts = world.server if side == 'server' else world.parent
+        setattr(world, side, (server_facts if side == 'server' else parent_facts)(flags=facts[10] & ~cleared))
+        world.log.clear()
+        with pytest.raises(ModelLoadError):
+            await stream.write(b'x')
+    run(scenario())
+    assert wires(world) == [] and 'load' not in world.log
+
+
+def _revoke_after_fence(monkeypatch, reuse):
+    original = at._FencedPeer.connected_peer
+
+    def revoking(self, sock, pid, incarnation):
+        result = original(self, sock, pid, incarnation)
+        reuse.revoke(self.lease.key, 'test')          # forces the LP-W legacy re-check
+        return result
+    monkeypatch.setattr(at._FencedPeer, 'connected_peer', revoking)
+
+
+def test_epoch_is_recompared_after_the_legacy_recheck(env, monkeypatch):
+    """N3: an invalidate landing during the LP-W legacy re-check stops the write."""
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+        _revoke_after_fence(monkeypatch, reuse)
+        world.on_load = lambda: setattr(backend, 'epoch', backend.epoch + 1)
+        with pytest.raises(ModelLoadError):
+            await stream.write(b'x')
+    run(scenario())
+    assert wires(world) == [] and world.count('load') == 2      # build + the legacy re-check
+
+
+def test_owner_change_during_the_legacy_recheck_stops_the_write(env, monkeypatch):
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+        _revoke_after_fence(monkeypatch, reuse)
+
+        def other_owner(self, sock, pid, incarnation):
+            return incarnation, 10, (7, ('127.0.0.1', 50000), ('127.0.0.1', 8000))   # another server fd
+        world.on_load = lambda: monkeypatch.setattr(ManagedOmlx, 'connected_peer', other_owner)
+        with pytest.raises(ModelLoadError):
+            await stream.write(b'x')
+    run(scenario())
+    assert wires(world) == []
+
+
+def test_socket_change_during_the_legacy_recheck_stops_the_write(env, monkeypatch):
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+        _revoke_after_fence(monkeypatch, reuse)
+        world.on_load = lambda: setattr(stream.stream, 'sock', object())
+        with pytest.raises(ModelLoadError):
+            await stream.write(b'x')
+    run(scenario())
+    assert wires(world) == []
+
+
+def test_background_refresh_never_recreates_the_inspection_pool(env):
+    """N4: after the last transport closed, a refresh leaves no idle wisp-inspect workers."""
+    world, clock, reuse, backend = env
+    seen = []
+
+    def inspecting():
+        with at._Inspections() as inspections:
+            seen.append(inspections.run(lambda: threading.current_thread().name).result())
+    run(request(backend))
+    at._close_inspection_pool()
+    for thread in threading.enumerate():
+        if thread.name.startswith('wisp-inspect'):
+            thread.join(5)
+    clock.advance(41)
+    world.on_load = inspecting
+    run(request(backend))
+    join_refresh()
+    assert seen == ['wisp-attest-refresh']                 # ran serially on the refresh thread
+    assert at._POOL._executor is None
+    assert not [t for t in threading.enumerate() if t.name.startswith(('wisp-inspect', 'wisp-attest-refresh'))]
+
+
+# -- N2: the real collectors ----------------------------------------------------
+@pytest.fixture
+def app_tree(tmp_path, monkeypatch):
+    base = tmp_path.resolve() / 'Applications'
+    app = base / 'oMLX.app'
+    python_root = app / 'Contents/Resources/Python'
+    server_entry = app / 'Contents/Resources/omlx/server.py'
+    parent_exe = app / 'Contents/MacOS/oMLX'
+    real_server = python_root / 'cpython/bin/python3.11'
+    for path in (server_entry, parent_exe, real_server):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'v')
+    server_link = python_root / 'cpython/bin/python3'
+    os.symlink(real_server, server_link)                   # lstat and stat differ for this path
+    for name, value in (('app_root', app), ('app_executable', parent_exe), ('python_root', python_root),
+                        ('server_entry', server_entry)):
+        monkeypatch.setattr(at.DesktopOmlx, name, value)
+    authority = object.__new__(at.DesktopOmlx)
+    return authority, server_link, parent_exe, base
+
+
+def lstat_row(path):
+    info = os.lstat(path)
+    return (str(path), info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid, info.st_nlink,
+            info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def test_fingerprints_cover_exactly_the_reviewed_paths_with_every_lstat_field(app_tree):
+    authority, server_exe, parent_exe, base = app_tree
+    desktop = at.DesktopOmlx
+    expected = [server_exe, parent_exe, desktop.server_entry]
+    for root in (desktop.python_root, desktop.server_entry.parent):
+        node = root
+        while True:
+            if node not in expected:
+                expected.append(node)
+            if node == base:
+                break
+            node = node.parent
+    rows = authority._boundary_fingerprints(str(server_exe), str(parent_exe))
+    assert [row[0] for row in rows] == [str(p) for p in expected]
+    assert rows == tuple(lstat_row(path) for path in expected)          # every field, from lstat
+    assert rows[0][2] == os.lstat(server_exe).st_ino != os.stat(server_exe).st_ino
+
+
+@pytest.mark.parametrize('change', ['touch', 'chmod', 'replace', 'retarget'])
+@pytest.mark.parametrize('which', ['server', 'parent', 'entry', 'python_root', 'entry_dir', 'app', 'base'])
+def test_fingerprints_change_when_any_reviewed_path_changes(app_tree, change, which):
+    authority, server_exe, parent_exe, base = app_tree
+    desktop = at.DesktopOmlx
+    target = {'server': server_exe, 'parent': parent_exe, 'entry': desktop.server_entry,
+              'python_root': desktop.python_root, 'entry_dir': desktop.server_entry.parent,
+              'app': desktop.app_root, 'base': base}[which]
+    before = authority._boundary_fingerprints(str(server_exe), str(parent_exe))
+    if change == 'touch':
+        os.utime(target, ns=(1_000_000_000, 1_000_000_000), follow_symlinks=False)
+    elif change == 'chmod':
+        if target.is_symlink():
+            pytest.skip('link mode')
+        os.chmod(target, (os.lstat(target).st_mode & 0o7777) ^ 0o001)
+    elif change == 'replace':
+        if target.is_dir() and not target.is_symlink():
+            pytest.skip('directories are not replaced here')
+        copy = target.with_name(target.name + '.new')
+        if target.is_symlink():
+            os.symlink(os.readlink(target), copy)
+        else:
+            copy.write_bytes(target.read_bytes())
+        os.replace(copy, target)                              # new inode, same content
+    else:
+        if not target.is_symlink():
+            pytest.skip('only the server link has a target')
+        other = target.with_name('python3.12')
+        other.write_bytes(b'v')
+        os.unlink(target)
+        os.symlink(other, target)
+    assert authority._boundary_fingerprints(str(server_exe), str(parent_exe)) != before
+
+
+def test_ctime_alone_is_fingerprinted(app_tree):
+    authority, server_exe, parent_exe, base = app_tree
+    before = authority._boundary_fingerprints(str(server_exe), str(parent_exe))
+    info = os.lstat(parent_exe)
+    time.sleep(0.02)
+    os.chmod(parent_exe, info.st_mode & 0o7777)             # same mode: only ctime moves
+    os.utime(parent_exe, ns=(info.st_atime_ns, info.st_mtime_ns))
+    after = authority._boundary_fingerprints(str(server_exe), str(parent_exe))
+    assert after[1][8] == before[1][8] and after[1][9] != before[1][9] and after != before
+
+
+def test_incarnation_facts_take_each_field_from_its_own_csops_operation(monkeypatch):
+    bsd = (5, 4, UID, UID, UID, b'c', b'n', 9, 8)
+    calls = []
+    monkeypatch.setattr(at, 'process_bsdinfo', lambda pid: calls.append(('bsd', pid)) or bsd)
+    monkeypatch.setattr(at, 'process_path', lambda pid: calls.append(('path', pid)) or '/p')
+
+    def csops(self, pid, op, size):
+        calls.append(('csops', pid, op, size))
+        return {0: struct.pack('=I', 0x2010301 + pid), 5: bytes(range(op, op + size))}[op]
+
+    def csops_string(self, pid, op):
+        calls.append(('string', pid, op))
+        return {11: f'identifier-{pid}', 14: f'team-{pid}'}[op]
+    monkeypatch.setattr(at.DesktopOmlx, '_csops', csops)
+    monkeypatch.setattr(at.DesktopOmlx, '_csops_string', csops_string)
+    authority = object.__new__(at.DesktopOmlx)
+    facts = authority._incarnation_facts(5, 'python3')
+    assert facts == (*bsd, '/p', 0x2010301 + 5, bytes(range(5, 25)), 'identifier-5', 'team-5')
+    assert calls == [('bsd', 5), ('path', 5), ('csops', 5, 0, 4), ('csops', 5, 5, 20),
+                     ('string', 5, 11), ('string', 5, 14), ('bsd', 5)]
+
+
+class _FakeProcLibrary:
+    def __init__(self, **fields):
+        library = self
+        self.fields = fields
+
+        def proc_pidinfo(pid, flavor, arg, pointer, size):
+            info = pointer._obj
+            for name, value in library.fields.items():
+                setattr(info, name, value)
+            return ctypes.sizeof(info)
+        self.proc_pidinfo = proc_pidinfo
+
+
+@pytest.mark.parametrize('fields,ok', [
+    (dict(pid=77, ppid=1, uid=UID, ruid=UID, svuid=UID, start_seconds=5, start_microseconds=6), True),
+    (dict(pid=78, ppid=1, uid=UID, ruid=UID, svuid=UID, start_seconds=5, start_microseconds=6), False),
+    (dict(pid=77, ppid=1, uid=UID, ruid=UID, svuid=UID, start_seconds=0, start_microseconds=6), False),
+    (dict(pid=77, ppid=1, uid=UID, ruid=UID, svuid=UID, start_seconds=5, start_microseconds=1_000_000), False),
+])
+def test_process_bsdinfo_refuses_a_record_for_another_pid(monkeypatch, fields, ok):
+    monkeypatch.setattr(local_peer.ctypes, 'CDLL', lambda *a, **k: _FakeProcLibrary(**fields))
+    if ok:
+        assert local_peer.process_bsdinfo(77)[:2] == (77, 1)
+    else:
+        with pytest.raises(AuthRefused):
+            local_peer.process_bsdinfo(77)
