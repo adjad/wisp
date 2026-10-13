@@ -10,6 +10,7 @@ The default is "shadow": decisions are recorded in the ledger and nothing else h
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -160,16 +161,32 @@ async def create_reminder(plan: Plan) -> dict:
         before = set(_rows_near(plan.due_ts))
     except Exception:  # noqa: BLE001
         before = set()
-    text = await add_reminder(plan.title, when_iso, "reminder")
-    _audit("allow", tool="add_reminder", source="attention",
-           args={"title": plan.title, "when_iso": when_iso, "kind": "reminder"})
+    try:
+        text = await add_reminder(plan.title, when_iso, "reminder")
+    except BaseException:
+        _audit_create(plan, base, when_iso, "unknown")
+        raise
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
+        _audit_create(plan, base, when_iso, "succeeded")
         return {"ok": True, "status": "succeeded", "where": where,
                 "created": _created_identity(plan, base, actions_before, before, where)}
     lowered = text.lower()
     unknown = any(k in lowered for k in ("unconfirmed", "not verified", "nothing was confirmed"))
-    return {"ok": False, "status": "unknown" if unknown else "failed", "error": text[:300]}
+    status = "unknown" if unknown else "failed"
+    _audit_create(plan, base, when_iso, status)
+    return {"ok": False, "status": status, "error": text[:300]}
+
+
+def _audit_create(plan: Plan, action_id: str | None, when_iso: str, status: str) -> None:
+    """Audit one reminder write by reference, never by content.
+
+    The title quotes the message, and the audit log is append-only and kept forever, which
+    would outlive the ledger's purge of that text. The action id and a short digest of the
+    title are enough to tie this line to the reminder and the ledger row while they exist."""
+    _audit("allow", tool="add_reminder", source="attention", status=status,
+           args={"action_id": action_id, "title_sha256": hashlib.sha256(plan.title.encode()).hexdigest()[:16],
+                 "when_iso": when_iso, "kind": "reminder"})
 
 
 def _name_for(handle: str) -> str | None:

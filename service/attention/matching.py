@@ -7,7 +7,10 @@ already on file. Missing a real reminder is recoverable (the message is still in
 Messages); a redundant interruption teaches the user to ignore Wisp.
 
 Only `active` and `done` rows count. A `dismissed` row is something the user
-cleared, not something they have on file.
+cleared, not something they have on file: dropping one of their own reminders says
+nothing about a new plan. (The live path only ever passes active rows.) A reminder
+the attention runner made and the user then removed is different, and is kept from
+being re-created by the runner's ledger check, which matches on the event time.
 """
 from __future__ import annotations
 

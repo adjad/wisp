@@ -102,7 +102,8 @@ class UncapturedCommitment:
         USER wrote in the same thread within six hours. The user proposing and the other
         person accepting is a plan; the user answering a proposal is `_user_confirmed`'s
         job, and an incoming message echoing an incoming one is nobody's plan.
-        The inherited time must still be ahead of the reply, and must have a clock.
+        The inherited time must still be ahead of the reply, and must have a clock. A guessed
+        am/pm stays tentative: the other person agreed to the plan, not to our reading of it.
         """
         words = item.text.split()
         if item.source != "messages" or len(words) > 12 or not _AFFIRM.search(item.text) \
@@ -123,8 +124,11 @@ class UncapturedCommitment:
                 continue                          # ordinary chatter, not about the plan
             if got.blocked or not got.has_clock or got.start is None or got.start <= arrival:
                 return None
+            # The acceptance settles the proposal's question mark, not our reading of its clock:
+            # "dinner tomorrow at 9?" -> "sure" agrees to a 9 nobody said was PM. A guess stays
+            # tentative and needs the user's own confirmation like any other.
             return Resolved(got.start, got.day, True, got.quote, got.inferred + ("time:from_thread",),
-                            tentative=False, at=got.at), prev
+                            tentative=got.guessed, at=got.at, guessed=got.guessed), prev
         return None
 
     def decide(self, item: Item, as_of: datetime | None = None) -> Decision:

@@ -20,6 +20,10 @@ The order of operations is the safety argument:
      burst of writes.
   5. The effect's outcome is recorded whatever it is. Unknown and failed outcomes are
      final: nothing retries, because the reminder may exist.
+  6. The ledger key is the message, but the thing reminded about is the EVENT: a second
+     message about a plan this runner already acted on is matched against the ledger's own
+     rows by event time and recorded as `already_on_file`. The store cannot answer that
+     alone, because the reminder it holds is due `lead_minutes` BEFORE the event.
 """
 from __future__ import annotations
 
@@ -41,6 +45,12 @@ MAX_EFFECTS_PER_PASS = 1
 # Every attempt that is not a verified failure counts: an unknown write may exist, and an undone
 # creation still happened. The cap bounds what can be created in a day, not what is still active.
 CAP_STATES = ("created", "unknown", "claimed", "undone")
+# A plan already acted on. `undone` counts: the user removed that reminder, and a second message
+# about the same plan re-creating it would undo their undo. A verified failure or a capped row
+# made nothing, so it does not. Shadow rows only count in shadow, so that switching to live does
+# not leave plans first seen in shadow without a reminder.
+DEDUP_STATES = {"live": ("created", "unknown", "claimed", "undone"),
+                "shadow": ("created", "unknown", "claimed", "undone", "shadow")}
 
 class Outcomes(list):
     """The outcomes of one pass. `limited` is True when it stopped at the per-pass effect limit
@@ -101,6 +111,15 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
         plan = plan_reminder(decision.source or item, decision.resolved, now, settings, tz, who=who)
         if plan is None:                                  # too late to be useful; not recorded
             continue
+        context = f"{decision.source.text} {item.text}" if decision.source else item.text
+        twin = _already_acted(ledger, decision.resolved, context, now, tz, settings.mode)
+        if twin is not None:
+            if ledger.claim(item.id, title=plan.title, due_ts=plan.due_ts, event_ts=plan.event_ts, now=now):
+                detail = {"quote": plan.quote, "when": plan.when_label, "why": list(decision.why),
+                          "duplicate_of": twin}
+                ledger.finish(item.id, "already_on_file", detail, now)
+                outcomes.append(Outcome(item.id, "already_on_file", plan.title, detail))
+            continue
         if settings.mode == "live" and effects >= MAX_EFFECTS_PER_PASS:
             outcomes.limited = True
             break                                         # the rest wait for the next pass, unclaimed
@@ -120,7 +139,6 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
             continue
 
         # The calendar may have changed since the tick began (the user may have just added it).
-        context = f"{decision.source.text} {item.text}" if decision.source else item.text
         if find_on_file(decision.resolved, context, fresh_commitments(), tz):
             ledger.finish(item.id, "already_on_file", detail, now)
             outcomes.append(Outcome(item.id, "already_on_file", plan.title, detail))
@@ -150,3 +168,17 @@ async def process(*, records: list[dict], commitments: list[dict], now: float, t
             except Exception:                             # noqa: BLE001 — the reminder exists regardless
                 pass
     return outcomes
+
+
+def _already_acted(ledger: Ledger, resolved, context: str, now: float, tz: str, mode: str) -> str | None:
+    """The source id of an earlier row for this same plan, matched on its EVENT time.
+
+    The ledger's rows go through the same matcher as the calendar, with the event time (or, for
+    a date with no clock, the due time, which falls on that day) standing in for `when_ts`. A
+    row whose words were purged still matches on time alone."""
+    rows = ledger.rows_since(now - LOOKBACK_S, DEDUP_STATES.get(mode, DEDUP_STATES["live"]))
+    pseudo = [{"id": r["source_id"], "title": r["title"], "status": "active",
+               "when_ts": r["event_ts"] if r["event_ts"] is not None else r["due_ts"]}
+              for r in rows]
+    match = find_on_file(resolved, context, pseudo, tz)
+    return match.commitment_id if match else None
