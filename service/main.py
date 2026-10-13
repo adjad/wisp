@@ -2901,12 +2901,16 @@ async def assistant_send_message_draft(body: dict[str, Any]) -> dict[str, Any]:
     return {"ok": ok, "result": result}
 
 
+# The server, not the app, ends each /assistant/events stream (see Hub.events).
+ASSISTANT_EVENTS_ROTATE_S = 25.0
+
+
 @app.get("/assistant/events")
 async def assistant_events() -> StreamingResponse:
     """SSE stream of reminders + `changed` pings for the Swift app."""
     async def stream():
         yield _sse({"type": "hello"})
-        async for ev in assistant_hub.events():
+        async for ev in assistant_hub.events(rotate_after=ASSISTANT_EVENTS_ROTATE_S):
             yield _sse(ev)
 
     return StreamingResponse(stream(), media_type="text/event-stream")

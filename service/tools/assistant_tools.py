@@ -631,10 +631,10 @@ async def add_reminder(title: str, when_iso: str, kind: str = "reminder") -> str
         return "(error: a reminder title is required; nothing was added.)"
     if not isinstance(kind, str) or kind not in {"reminder", "assignment", "exam", "meeting", "event"}:
         return "(error: unsupported reminder kind; nothing was added.)"
-    from service.assistant.outbox import request as app_request
+    from service.assistant.outbox import app_connected, request as app_request
     from service.assistant.hub import hub
     payload = {"title": clean_title, "due_ts": ts, "commitment_kind": kind}
-    if not hub.has_subscribers:
+    if not await app_connected(via=hub):
         # Nothing is sent now, but an earlier attempt at this exact reminder
         # may already exist natively (unknown outcome or verified success). A
         # local twin would alert twice, so fall back only when none can exist.
