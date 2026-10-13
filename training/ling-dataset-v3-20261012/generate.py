@@ -12,6 +12,7 @@ Outputs: train.jsonl dev.jsonl (one row per assistant step), train.provenance.js
 import argparse
 import datetime as dt
 import hashlib
+import copy
 import json
 import random
 import re
@@ -319,7 +320,7 @@ class Conv:
         msg = {"role": "assistant", "content": content, "training": False}
         if calls:
             msg["tool_calls"] = [{"id": cid_for(self.r), "type": "function",
-                                  "function": {"name": n, "arguments": json.dumps(a, ensure_ascii=False)}}
+                                  "function": {"name": n, "arguments": copy.deepcopy(a)}}
                                  for n, a in calls]
         self.turn.append(msg)
         self.steps.append((len(self.turn) - 1, self._offered(), list(self.loaded), True))
@@ -443,7 +444,7 @@ class Conv:
                     keys = list(a)
                     keep = sorted(self.r.sample(range(len(keys)), self.r.randint(1, len(keys) - 1)))
                     guess = {keys[i]: a[keys[i]] for i in keep}
-                    tc["function"]["arguments"] = json.dumps(guess, ensure_ascii=False)
+                    tc["function"]["arguments"] = copy.deepcopy(guess)
                     g["arguments"] = guess
         msg = self._assistant([(n, a) for n, a, _ in specs])
         for tc, (_, _, res) in zip(msg["tool_calls"], specs):
@@ -3796,7 +3797,7 @@ def stale_today(c):
     for m in c.turn:
         if m["role"] == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
-                a = json.loads(tc["function"]["arguments"])
+                a = tc["function"]["arguments"]
                 if tc["function"]["name"] == "find_free_time" and a.get("period") == "today" and a.get("day_start", 0) * 60 < now_min:
                     return True
         if m["role"] == "tool" and m["content"].startswith("Schedule - today"):

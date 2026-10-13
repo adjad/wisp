@@ -48,7 +48,7 @@
   },
   "arguments_json": {
    "passed": true,
-   "detail": "tool-call arguments are JSON strings",
+   "detail": "tool-call arguments are JSON objects (dicts), not strings",
    "examples": []
   },
   "schema_valid": {
@@ -185,6 +185,11 @@
    "passed": true,
    "detail": "conversations.jsonl matches rows",
    "examples": []
+  },
+  "reproducible": {
+   "passed": true,
+   "detail": "regeneration is byte-identical",
+   "examples": []
   }
  },
  "counts": {
@@ -224,30 +229,30 @@
  "token_estimate_chars_div4": {
   "train": {
    "row": {
-    "mean": 8607,
-    "p50": 8363,
-    "p95": 12270,
-    "max": 14428
-   },
-   "target": {
-    "mean": 52,
-    "p50": 50,
-    "p95": 86,
-    "max": 117
-   }
-  },
-  "dev": {
-   "row": {
-    "mean": 8775,
-    "p50": 8506,
-    "p95": 11989,
-    "max": 13325
+    "mean": 8604,
+    "p50": 8357,
+    "p95": 12267,
+    "max": 14421
    },
    "target": {
     "mean": 51,
     "p50": 48,
-    "p95": 83,
-    "max": 101
+    "p95": 82,
+    "max": 113
+   }
+  },
+  "dev": {
+   "row": {
+    "mean": 8772,
+    "p50": 8501,
+    "p95": 11987,
+    "max": 13316
+   },
+   "target": {
+    "mean": 49,
+    "p50": 47,
+    "p95": 80,
+    "max": 98
    }
   }
  },

@@ -34,8 +34,8 @@ Version `v3-20261012`, seed 20261012. Synthetic; no real data. Task: Wisp MODEL-
 
 | split | row mean | row p50 | row p95 | row max | target mean | target p95 | target max |
 |---|---|---|---|---|---|---|---|
-| train | 8607 | 8363 | 12270 | 14428 | 52.5 | 85.5 | 117.0 |
-| dev | 8775 | 8506 | 11989 | 13325 | 50.8 | 83.0 | 101.0 |
+| train | 8604 | 8357 | 12267 | 14421 | 51.0 | 81.8 | 113.2 |
+| dev | 8772 | 8501 | 11987 | 13316 | 49.5 | 79.8 | 98.5 |
 
 ## Targeted failure classes (conversations tagged; a conversation may carry several)
 

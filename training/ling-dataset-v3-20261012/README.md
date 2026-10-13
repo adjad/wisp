@@ -22,6 +22,10 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
 | `validate.py`, `validation.json` | independent validator and its last output |
 | `assets/` | `tools.json` (165 real schemas + the step-0 discovery schema), `system_parts.json` (captured system prompts, catalog, tool-scoped rule paragraphs), `heldout_shingles.json` (hashed n-grams of the eval prompts; the prompts themselves are not stored) |
 | `build_assets.py` | optional: how `assets/` was derived from the read-only eval artifacts |
+| `preflight.py`, `preflight.json` | real-tokenizer length + intended-label-mask check, and its saved result |
+| `check_labels.py` | audits Axolotl's prepared arrow labels against the intended mask |
+| `axolotl-a6000.yaml` | LoRA config for one A6000 48GB |
+| `package.py`, `upload-zip.json` | builds the upload ZIP; its sha256/size |
 | `DATA_CARD.md`, `stats.json` | counts, lengths, failure classes, limitations (generated) |
 
 ## Row format
@@ -65,9 +69,22 @@ not mix the V2 rows into the same run without a deliberate mixing plan.
    trainer must mask every earlier assistant turn, including earlier tool-call turns. The JSON flags alone are not
    proof that a trainer honours them.
 3. Rows are ~8,607 estimated tokens on average (chars/4, no tokenizer run) because each carries the full system prompt, the offered schemas and ~160 stubs; targets are ~50 tokens. 2,776 train rows are about 23.9M estimated tokens per epoch. Check the
-   real maximum length against your context cap before launching.
+   real maximum length against your context cap before launching. Measured with the real tokenizer (`preflight.json`): mean 8,997, max 14,521 tokens (train); see "Train on an A6000".
 4. `dev.jsonl` is for development only. The Ling eval corpus stays held out; evaluate with the model-led harness, not
    with these rows. No quality improvement has been measured.
+
+## Train on an A6000
+
+One NVIDIA A6000 48GB, LoRA, `sequence_len` 16384. Real token counts (Ling tokenizer + template, tools rendered, thinking off; see `preflight.json`): train 2,776 rows, max 14,521 / p95 12,525 / median 8,768 (24.97M tokens per epoch); dev 309 rows, max 13,402; no row exceeds 16,384. Labeled tokens are only ~75k per epoch (median 24 per row).
+
+1. Upload `ling-train-dev-v3-20261012.zip`. Verify `sha256sum` against `upload-zip.json`, then extract into a NEW directory (keep V2 data and adapters untouched).
+2. `python preflight.py --local-files-only --tokenizer-dir /path/to/Ling-3.0-tiny-Wisp-V2-merged` (tokenizer + template only; no weights). Must print `"status": "PASS"`. Optionally `python validate.py` for the CPU dataset checks.
+3. Edit `base_model` in `axolotl-a6000.yaml` (V2 merged weights; V3 trains on top of V2). Run `axolotl preprocess axolotl-a6000.yaml` (writes `./last_run_prepared`).
+4. **Gate:** `python check_labels.py ./last_run_prepared --tokenizer-dir /path/to/Ling-3.0-tiny-Wisp-V2-merged --local-files-only` (add `--sample 200` for a quick pass). It matches each prepared row to its source row by exact `input_ids`, then requires labels != -100 only on the final assistant span (tool-call serialization + `<|role_end|>`). Any FAIL (earlier turns trained, target masked, ids not matching the template/tools/thinking setting) means do not train; fix the config. The YAML's masking keys are assumptions about this Axolotl version, and this gate is the proof. The template needs tool-call `arguments` as dicts, and the shipped rows store them as JSON objects, so no parsing is required of Axolotl.
+5. Timed smoke run: add `max_steps: 20` and `evals_per_epoch: 0` (separate `output_dir`), run `axolotl train axolotl-a6000.yaml`. tokens/sec = (20 x 16 rows x ~9,000 tokens) / seconds; record peak memory with `nvidia-smi`. Full epoch = 174 optimizer steps (~25M tokens), so estimate time as smoke time x 8.7.
+6. Full run: remove the smoke overrides and run `axolotl train axolotl-a6000.yaml`; the adapter lands in `ling-v3-lora-out`.
+
+Expected memory (estimate, unmeasured): ~16GB bf16 weights + LoRA/optimizer state (small, rank 16 attention only) + activations with gradient checkpointing at 9-14k tokens; roughly 20-30GB if chunked cross-entropy works, noticeably more without it (full logits at 16k x 157k vocab are ~5GB bf16 and ~10GB fp32). Caveats: the HF MoE implementation of this custom model (`trust_remote_code`) may loop over experts and be SLOW, so judge feasibility from the smoke run, not from FLOPs; flash attention and the cut-cross-entropy/Liger plugins may not support `bailing_hybrid` (fallbacks are in the YAML comments). Nothing here has been run against Axolotl or the model weights.
 
 ## Reproduce and validate
 

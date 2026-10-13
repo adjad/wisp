@@ -57,6 +57,13 @@ PERIOD_WORDS = {"today", "tomorrow", "yesterday", "this week", "next week", "thi
 
 # ----------------------------------------------------------------------------- helpers
 
+def _args_obj(tc):
+    a = tc["function"]["arguments"]
+    if not isinstance(a, dict):
+        raise TypeError("tool-call arguments must be a JSON object, got " + type(a).__name__)
+    return a
+
+
 def load_jsonl(path, errors, name):
     out = []
     with open(path, encoding="utf-8") as f:
@@ -163,7 +170,7 @@ def stale_today_problems(msgs_after_user, now):
         if m["role"] == "assistant" and m.get("tool_calls"):
             for tc in m["tool_calls"]:
                 if tc["function"]["name"] == "find_free_time":
-                    a = json.loads(tc["function"]["arguments"])
+                    a = _args_obj(tc)
                     if a.get("period") == "today" and a.get("day_start", 0) * 60 < now_min:
                         probs.append("find_free_time today window starts before now")
         if m["role"] == "tool" and m["content"].startswith("Schedule - today"):
@@ -289,7 +296,7 @@ def fidelity_problems(turn_msgs, user_text_all):
         for tc in m["tool_calls"]:
             fn = tc["function"]["name"]
             try:
-                a = json.loads(tc["function"]["arguments"])
+                a = _args_obj(tc)
             except Exception:  # noqa: BLE001
                 continue
             if results.get(tc["id"], "").startswith('{"schema_discovery"'):
@@ -489,7 +496,7 @@ def run(d: Path, check_repro=False):
                 for c_, r_ in zip(calls, results):
                     fn = c_["function"]["name"]
                     try:
-                        args = json.loads(c_["function"]["arguments"])
+                        args = _args_obj(c_)
                     except Exception:  # noqa: BLE001
                         bad("arguments_json", f"{rid}: non-JSON arguments for {fn}")
                         args = None
@@ -590,7 +597,7 @@ def run(d: Path, check_repro=False):
                         bad("protocol", f"{rid}: target calls {fn} which is not offered (real tool before schema load?)")
                         continue
                     try:
-                        args = json.loads(c_["function"]["arguments"])
+                        args = _args_obj(c_)
                     except Exception:  # noqa: BLE001
                         bad("arguments_json", f"{rid}: target arguments not JSON")
                         continue
@@ -655,7 +662,7 @@ def run(d: Path, check_repro=False):
                     bad("final_present", f"{rid}: empty final")
             # --- identity / PII scan on all message text
             blob = "\n".join(x.get("content", "") or "" for x in msgs) + "\n".join(
-                c_["function"]["arguments"] for x in msgs if x.get("tool_calls") for c_ in x["tool_calls"])
+                json.dumps(c_["function"]["arguments"], ensure_ascii=False) for x in msgs if x.get("tool_calls") for c_ in x["tool_calls"])
             for em in re.findall(r"[\w.+-]+@[\w.-]+\.[a-z]+", blob):
                 if not em.endswith(".invalid"):
                     email_domains_bad.append(f"{rid}: {em}")
@@ -707,7 +714,7 @@ def run(d: Path, check_repro=False):
         if psplit != split or p.get("split") != split:
             bad("provenance", f"{cid}: split mismatch")
         # gold sequence == calls in the last row
-        gold = [{"name": c_["function"]["name"], "arguments": json.loads(c_["function"]["arguments"])}
+        gold = [{"name": c_["function"]["name"], "arguments": _args_obj(c_)}
                 for x in msgs_last[ui + 1:] if x.get("tool_calls") for c_ in x["tool_calls"]]
         pg = [{k: v for k, v in g.items() if k not in ("rejected", "stub")} for g in p["gold_calls"]]
         if gold != pg:
@@ -836,7 +843,7 @@ def run(d: Path, check_repro=False):
         "discovery_receipt": "explicit and implicit (stub) receipts equal the host's cumulative expansion; rejected explicit calls use the rejection text",
         "offered_tools": "row.tools equals the replayed offer: loaded registry schemas, then get_tool_schemas + name-only stubs for every other catalog tool while budget remains",
         "system_scope": "scoped system rules match loaded tools",
-        "arguments_json": "tool-call arguments are JSON strings",
+        "arguments_json": "tool-call arguments are JSON objects (dicts), not strings",
         "schema_valid": "every target call valid against the schema offered at that step (types, required, enum, no extra keys)",
         "call_pairing": "tool_call ids unique and paired 1:1 with tool messages in order",
         "no_repeat": "no identical (name,args) call repeated within a turn",

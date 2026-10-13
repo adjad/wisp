@@ -18,10 +18,10 @@
    "first_discovery_explicit": 13,
    "first_discovery_stub_first": 57,
    "row_tokens_est_chars_div4": {
-    "max": 13325,
-    "mean": 8775,
-    "p50": 8506,
-    "p95": 11989
+    "max": 13316,
+    "mean": 8772,
+    "p50": 8501,
+    "p95": 11987
    },
    "rows": 309,
    "rows_by_step_index": {
@@ -41,9 +41,9 @@
    "rows_per_conversation": 3.09,
    "scenarios": 100,
    "target_tokens_est_chars_div4": {
-    "max": 101.0,
-    "mean": 50.8,
-    "p95": 83.0
+    "max": 98.5,
+    "mean": 49.5,
+    "p95": 79.8
    },
    "templates": 65,
    "variants": {
@@ -69,10 +69,10 @@
    "first_discovery_explicit": 181,
    "first_discovery_stub_first": 515,
    "row_tokens_est_chars_div4": {
-    "max": 14428,
-    "mean": 8607,
-    "p50": 8363,
-    "p95": 12270
+    "max": 14421,
+    "mean": 8604,
+    "p50": 8357,
+    "p95": 12267
    },
    "rows": 2776,
    "rows_by_step_index": {
@@ -92,9 +92,9 @@
    "rows_per_conversation": 3.08,
    "scenarios": 900,
    "target_tokens_est_chars_div4": {
-    "max": 117.0,
-    "mean": 52.5,
-    "p95": 85.5
+    "max": 113.2,
+    "mean": 51.0,
+    "p95": 81.8
    },
    "templates": 415,
    "variants": {
