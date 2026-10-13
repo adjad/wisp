@@ -7,10 +7,12 @@
 # Log: ~/wisp/setup.log. Done when ~/wisp/SETUP_DONE exists.
 set -uo pipefail
 
-# The Jupyter user's home (uid 1000) so files show up in the notebook file browser.
-JUSER="$(getent passwd 1000 | cut -d: -f1 || true)"
-JHOME="$(getent passwd 1000 | cut -d: -f6 || true)"
-[ -n "$JHOME" ] || { JUSER="$(id -un)"; JHOME="$HOME"; }
+# Whose home: WISP_USER if set, else the sudo caller, else a non-root caller, else uid 1000 (boot-time run as root).
+JUSER="${WISP_USER:-${SUDO_USER:-}}"
+[ -n "$JUSER" ] || { [ "$(id -u)" != 0 ] && JUSER="$(id -un)"; }
+[ -n "$JUSER" ] || JUSER="$(getent passwd 1000 | cut -d: -f1 || true)"
+[ -n "$JUSER" ] || JUSER="$(id -un)"
+JHOME="$(getent passwd "$JUSER" | cut -d: -f6)"; [ -n "$JHOME" ] || JHOME="$HOME"
 WORK="$JHOME/wisp"
 mkdir -p "$WORK/uploads" "$WORK/hf"
 exec > >(tee -a "$WORK/setup.log") 2>&1
