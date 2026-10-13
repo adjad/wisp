@@ -410,18 +410,17 @@ final class WispClient {
     // GET /assistant/events (SSE) -> reminders + `changed` pings.
     func assistantEvents(onEvent: @escaping (Event) async -> Bool) async {
         let req = URLRequest(url: deliveryURL.appendingPathComponent("assistant/events"))
-        let started = Date()
         do {
             let (bytes, response) = try await deliverySession.bytes(for: req)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return }
             for try await line in bytes.lines {
                 guard let event = Event.decodeAssistantLine(line) else { continue }
                 _ = await onEvent(event)
-                // Retry failed/undecodable events on a fresh replay without
-                // starving healthy events behind them. Server heartbeats make
-                // this bound apply even when there are no live publications.
-                if Date().timeIntervalSince(started) >= 30 { return }
             }
+            // The server ends each stream (~25s) so failed/undecodable events
+            // are retried on a fresh replay. Never cut it from this side: the
+            // server would still count this stream as subscribed while nothing
+            // reads it, and a send published into that gap was lost.
         } catch {
             // Stream dropped (backend restart, etc.) — the caller re-subscribes.
         }
