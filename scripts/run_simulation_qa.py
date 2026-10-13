@@ -256,6 +256,9 @@ ADDITIONAL_FULL_TESTS = {
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
     "tests/test_runtime_attestation_t1t3.py",
+    # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
+    # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
+    "tests/test_attestation_reuse.py",
     # Differential of the libproc executable-path lookup against the old lsof one, on disposable
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
