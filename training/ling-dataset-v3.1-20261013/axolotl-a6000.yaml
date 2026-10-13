@@ -1,0 +1,111 @@
+# Ling V3 LoRA on one NVIDIA A6000 48GB.  Run from the extracted dataset directory.
+# Placeholder to edit: base_model (path to Ling-3.0-tiny-Wisp-V2-merged, i.e. V2 weights; V3 trains ON TOP of V2).
+# Validate EVERY change with: axolotl preprocess -> python check_labels.py (README "Train on an A6000").
+
+base_model: /PATH/TO/Ling-3.0-tiny-Wisp-V2-merged   # PLACEHOLDER
+trust_remote_code: true          # bailing_hybrid is custom modeling code (modeling_bailing_moe_v3.py)
+tokenizer_use_fast: true
+
+# ---- precision / memory ----------------------------------------------------
+bf16: true
+tf32: true
+flash_attention: true            # if the custom attention rejects it, try `sdp_attention: true` instead
+gradient_checkpointing: true
+gradient_checkpointing_kwargs:
+  use_reentrant: false
+
+# Chunked cross-entropy: vocab is 157,184, so full fp32 logits at 16k tokens are ~10GB.
+# Chosen: Cut Cross Entropy (documented Axolotl plugin; install the axolotl cut-cross-entropy extra).
+# Alternative: Liger -> plugins: [axolotl.integrations.liger.LigerPlugin] + liger_fused_linear_cross_entropy: true
+# CAVEAT: both plugins patch known model_types; bailing_hybrid is custom remote code and may be UNSUPPORTED.
+# If preprocess/train errors with "model type not supported", delete this block (memory will be higher; watch the smoke run).
+# Measured on the A6000 (axolotl 0.19.0): CutCrossEntropyPlugin fails with "Could not import ForCausalLM class for
+# model_type: bailing_hybrid" (custom remote code), so it is NOT enabled. Loss uses full logits.
+
+# ---- LoRA ------------------------------------------------------------------
+# V2 adapter: rank 16, attention projections only (MERGE_MANIFEST.json changed_targets; alpha not recorded -> 32 assumed, the
+# standard 2x). Same here: V3 is a behaviour change on the same layers.
+adapter: lora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:             # suffix match; names verified against model.safetensors.index.json
+  - q_proj                       # 18 linear-attention layers
+  - k_proj
+  - v_proj
+  - o_proj
+  - q_a_proj                     # 6 MLA layers (3,7,11,15,19,23)
+  - q_b_proj
+  - kv_a_proj_with_mqa
+  - kv_b_proj
+  - dense
+# NOT targeted: routed experts (128 x 23 layers x 3 = 8,832 tiny Linear modules: large LoRA overhead, and HF may fuse them),
+# router (mlp.gate), shared_experts, g/b/f_proj, conv1d, lm_head/embeddings.
+# Optional extra capacity if loss plateaus: also target shared_experts gate/up/down_proj.
+lora_target_linear: false
+
+# ---- data ------------------------------------------------------------------
+chat_template: tokenizer_default        # the model's own chat_template.jinja (sha256 eb6226c9...); do not substitute
+chat_template_kwargs:                   # ASSUMPTION: this Axolotl version forwards these to apply_chat_template. Thinking must be OFF.
+  enable_thinking: false
+datasets:
+  - path: ./train.jsonl
+    type: chat_template
+    field_messages: messages
+    field_tools: tools                  # per-row tool schemas rendered by the template (they change every step)
+    message_property_mappings:
+      role: role
+      content: content
+    message_field_training: training    # ASSUMPTION (Axolotl chat_template docs): a per-message boolean that, when present, decides
+                                        # whether that turn is trained, overriding roles_to_train. Rows flag only the LAST assistant turn.
+    roles_to_train: []                  # no role trained by default; only turns with training:true.
+                                        # If Axolotl treats [] as "default [assistant]", check_labels.py FAILS (earlier turns labeled);
+                                        # then keep message_field_training and use roles_to_train: ["__none__"].
+    train_on_eos: turn                  # label the end-of-turn token (<|role_end|>) of trained turns
+test_datasets:
+  - path: ./dev.jsonl
+    split: train
+    type: chat_template
+    field_messages: messages
+    field_tools: tools
+    message_property_mappings:
+      role: role
+      content: content
+    message_field_training: training
+    roles_to_train: []
+    train_on_eos: turn
+val_set_size: 0                         # validation = dev.jsonl via test_datasets
+dataset_prepared_path: ./last_run_prepared
+shuffle_merged_datasets: true          # V2 replay rows sit at the end of train.jsonl; interleave them
+
+sequence_len: 16384                     # real max is 14,521 tokens (preflight.json)
+sample_packing: false                   # rows are long and self-contained; packing would also complicate the mask audit
+pad_to_sequence_len: false
+eval_sample_packing: false
+
+# ---- optimisation ----------------------------------------------------------
+micro_batch_size: 1
+gradient_accumulation_steps: 16         # effective batch 16 rows -> 312 optimizer steps for 4,987 rows (4,387 model-led + 600 V2 replay)
+num_epochs: 1
+learning_rate: 0.0001
+lr_scheduler: cosine
+warmup_ratio: 0.03
+optimizer: adamw_torch_fused
+weight_decay: 0.0
+max_grad_norm: 1.0
+seed: 20261012
+
+# ---- logging / saving ------------------------------------------------------
+output_dir: ./ling-v3-lora-out
+eval_batch_size: 1
+evals_per_epoch: 4
+saves_per_epoch: 4
+save_total_limit: 3
+save_safetensors: true
+logging_steps: 1
+# The saved adapter is in output_dir; merge into the V2 weights separately (same CPU FP32 B@A*alpha/r procedure as V2).
+
+# ---- TIMED SMOKE RUN (before the full run) ---------------------------------
+# Add `max_steps: 20` and `evals_per_epoch: 0` (or pass --max_steps 20 on the CLI, with a different --output_dir), run
+# `axolotl train`, then tokens/sec = (20 steps x 16 rows x ~9,000 tokens ~= 2.9M tokens) / wall seconds. Read peak GPU memory
+# from nvidia-smi. Full-run time ~= smoke time x 312/20.

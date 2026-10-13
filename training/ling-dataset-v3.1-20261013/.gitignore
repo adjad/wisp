@@ -1,0 +1,5 @@
+*.zip
+# Too large for GitHub (148MB); regenerate byte-identically with: python3 generate.py (sha256 in preflight.json)
+train.jsonl
+dev.jsonl
+__pycache__/

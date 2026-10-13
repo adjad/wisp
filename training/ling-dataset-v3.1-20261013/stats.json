@@ -1,0 +1,110 @@
+{
+ "seed": 20261012,
+ "splits": {
+  "dev": {
+   "by_category": {
+    "chat_no_tool": 12,
+    "clarify_ambiguity": 8,
+    "compound_read_then_act": 35,
+    "error_handling": 11,
+    "followups_history": 11,
+    "outbound_sends_drafts": 28,
+    "repeated_read_guard": 6,
+    "single_tool_reads": 17,
+    "stop_after_success_no_loop": 16,
+    "writes": 12
+   },
+   "conversations": 156,
+   "families": 46,
+   "first_discovery_explicit": 23,
+   "first_discovery_stub_first": 88,
+   "row_tokens_est_chars_div4": {
+    "max": 13316,
+    "mean": 8933,
+    "p50": 8579,
+    "p95": 12391
+   },
+   "rows": 474,
+   "rows_by_step_index": {
+    "s0": 156,
+    "s1": 137,
+    "s2": 120,
+    "s3": 51,
+    "s4": 7,
+    "s5": 3
+   },
+   "rows_by_target_type": {
+    "discovery": 24,
+    "final": 156,
+    "stub_call": 90,
+    "tool_call": 204
+   },
+   "rows_per_conversation": 3.04,
+   "scenarios": 156,
+   "target_tokens_est_chars_div4": {
+    "max": 135.5,
+    "mean": 51.2,
+    "p95": 82.0
+   },
+   "templates": 109,
+   "variants": {
+    "S": 85,
+    "SP-decoy": 26,
+    "SP-hit": 26
+   }
+  },
+  "train": {
+   "by_category": {
+    "chat_no_tool": 116,
+    "clarify_ambiguity": 72,
+    "compound_read_then_act": 317,
+    "error_handling": 101,
+    "followups_history": 101,
+    "outbound_sends_drafts": 260,
+    "repeated_read_guard": 58,
+    "single_tool_reads": 159,
+    "stop_after_success_no_loop": 144,
+    "writes": 116
+   },
+   "conversations": 1444,
+   "families": 160,
+   "first_discovery_explicit": 285,
+   "first_discovery_stub_first": 790,
+   "row_tokens_est_chars_div4": {
+    "max": 14421,
+    "mean": 8691,
+    "p50": 8450,
+    "p95": 12225
+   },
+   "rows": 4387,
+   "rows_by_step_index": {
+    "s0": 1444,
+    "s1": 1269,
+    "s2": 1147,
+    "s3": 457,
+    "s4": 64,
+    "s5": 6
+   },
+   "rows_by_target_type": {
+    "discovery": 288,
+    "final": 1444,
+    "stub_call": 791,
+    "tool_call": 1864
+   },
+   "rows_per_conversation": 3.04,
+   "scenarios": 1444,
+   "target_tokens_est_chars_div4": {
+    "max": 133.8,
+    "mean": 51.6,
+    "p95": 83.8
+   },
+   "templates": 707,
+   "variants": {
+    "S": 891,
+    "SP-decoy": 182,
+    "SP-hit": 196
+   }
+  }
+ },
+ "version": "v3-20261012"
+}
