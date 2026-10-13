@@ -101,6 +101,52 @@ async def test_calendar_request_waits_out_the_gap(monkeypatch):
     assert [event["type"] for event in published] == ["create_calendar_event"]
 
 
+# --- server-owned stream rotation ----------------------------------------------
+
+def _store():
+    from types import SimpleNamespace
+    return SimpleNamespace(pending_events=lambda: [])
+
+
+@pytest.mark.asyncio
+async def test_server_rotation_hands_over_queued_sends_then_unsubscribes():
+    """A send queued when the rotation deadline passes is delivered, not lost."""
+    hub = Hub(store=_store())
+    stream = hub.events(rotate_after=0.1)
+    first_read = asyncio.create_task(anext(stream))
+    await asyncio.sleep(0)
+    assert hub.has_subscribers
+    await hub.publish({"type": "send_message", "action_id": "a"}, durable=False)
+    await hub.publish({"type": "send_message", "action_id": "b"}, durable=False)
+    assert (await first_read)["action_id"] == "a"
+    await asyncio.sleep(0.15)  # deadline passes while "c" is still queued
+    await hub.publish({"type": "send_message", "action_id": "c"}, durable=False)
+    assert (await anext(stream))["action_id"] == "b"
+    assert not hub.has_subscribers  # new publishers wait for the reconnect
+    assert (await anext(stream))["action_id"] == "c"
+    with pytest.raises(StopAsyncIteration):
+        await anext(stream)
+    assert await outbox.app_connected(grace=0.05, via=hub) is False
+
+
+@pytest.mark.asyncio
+async def test_rotation_ends_an_idle_stream_without_waiting_for_a_heartbeat():
+    hub = Hub(store=_store())
+    started = time.monotonic()
+    assert [event async for event in hub.events(rotate_after=0.1)] == []
+    assert time.monotonic() - started < 1
+    assert not hub.has_subscribers
+
+
+def test_app_does_not_cut_the_event_stream_itself():
+    from pathlib import Path
+    source = (Path(__file__).resolve().parents[1]
+              / "app/Sources/WispApp/WispClient.swift").read_text()
+    body = source[source.index("func assistantEvents("):]
+    body = body[:body.index("\n    }\n")]
+    assert "timeIntervalSince" not in body and "return }" not in body.split("for try await")[1]
+
+
 # --- terminal `done` on early write exits -------------------------------------
 
 WHEN_ISO = datetime(2036, 9, 28, 12, 0).astimezone().isoformat(timespec="seconds")
