@@ -26,9 +26,16 @@ FREE_GB=$(df -BG --output=avail "$WORK" | tail -1 | tr -dc 0-9)
 echo "free disk: ${FREE_GB}GB (need ~60GB: base 16 + merged V2 16 + prepared data + checkpoints)"
 [ "${FREE_GB:-0}" -ge 60 ] || echo "WARN: less than 60GB free on $WORK"
 
-if command -v apt-get >/dev/null; then
+if [ -z "${WISP_NO_APT:-}" ] && command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
   apt-get update -qq && apt-get install -y -qq unzip zip git curl ca-certificates build-essential >/dev/null || echo "WARN: apt install failed"
+fi
+
+# Everything below must belong to $JUSER (uv keeps the Python interpreter in the installing user's home),
+# so a root/sudo run hands over to $JUSER after the system packages.
+if [ "$(id -u)" = 0 ] && [ "$JUSER" != root ]; then
+  chown -R "$JUSER" "$WORK"
+  exec sudo -u "$JUSER" -H env WISP_USER="$JUSER" WISP_NO_APT=1 bash "$(readlink -f "$0")"
 fi
 
 export UV_INSTALL_DIR="$WORK/bin" PATH="$WORK/bin:$PATH"
