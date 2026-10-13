@@ -19,15 +19,16 @@ from __future__ import annotations
 import os
 
 KNOWN: frozenset[str] = frozenset({
-    # agent/loop.py — keep the narration step's think block when the model is
-    # synthesizing across two or more tool results.
-    "narration_think_compound",
-    # search/synth.py — Smart Search synthesis thinks, with a budget that can
-    # hold the think block and the answer (1800 short / 2400 long-doc).
-    "search_think",
     # memory/capture.py — fact extraction thinks (the worker is idle-only, so
-    # this costs no live latency); budget 650 -> 1500.
+    # this costs no live latency); budget 650 -> 1500. UNMEASURED: needs a
+    # replay of stored self-fact turns through the extractor, not /agent.
     "capture_think",
+    # Retired 2026-10-13 after measurement on Ling-3.0-tiny-Wisp-V3-merged-oQ4e
+    # (scripts/eval_arms.py runs 20261013-140051 and -142918):
+    #   search_think — correct 33% vs 33% baseline, same cases, slower; the
+    #     failures were uncited answers dropped by verify() (fixed there).
+    #   narration_think_compound — its condition (two or more tools answered
+    #     in one turn) fired on 2 of 177 live turns; nothing to measure.
 })
 
 

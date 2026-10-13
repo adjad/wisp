@@ -79,8 +79,8 @@ def test_loop_step_kwargs_follow_the_policy():
     assert loop._template_kwargs(OTHER, no_thinking=True) == {}
 
 
-def test_loop_turns_thinking_on_only_after_a_failure_or_under_the_experiment():
+def test_loop_turns_thinking_on_only_after_an_outstanding_failure():
     src = inspect.getsource(loop.run_agent)
-    assert "step_think_on = (bool(hard_failed) or bool(failed_tools - tools_answered)" in src
-    assert 'experiment("narration_think_compound")' in src
+    assert "step_think_on = bool(hard_failed) or bool(failed_tools - tools_answered)" in src
     assert "think_on=step_think_on" in src
+    assert "experiment(" not in src

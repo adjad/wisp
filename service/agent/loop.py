@@ -21,7 +21,6 @@ from service import debug_capture
 from service.user_text import user_facing_failure as _user_facing_failure
 from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
                             thinking_kwargs, thinks_explicitly)
-from service.config.experiments import experiment
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -687,8 +686,7 @@ def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -
     An `explicit_thinking` model (config.thinking_kwargs) gets `think_on`
     stated outright, both ways, and `no_thinking` is ignored for it: its
     default is OFF on every step, and the loop passes True only after a tool
-    failure this turn (the step where a corrected retry needs reasoning) or
-    under the narration_think_compound experiment.
+    failure this turn (the step where a corrected retry needs reasoning).
 
     Otherwise, just `no_thinking_kwargs` (enable_thinking, qwen3 lineage — what the
     current roster uses) when narrating; {} otherwise. This used to also merge
@@ -2545,18 +2543,14 @@ async def run_agent(
         )
         # EXPLICIT-THINKING models (config.thinking_kwargs): the think block is
         # stated on every step and defaults to OFF — V3 selects tools fine
-        # without it and runs ~10x faster. ON only when the model has
-        # something to reason ABOUT that a single pass gets wrong:
-        #   - a tool failed this turn and is still outstanding (the corrected
-        #     retry; same reason `narrating` refuses to fire on an error), or
-        #   - EXPERIMENT narration_think_compound: it is synthesizing across
-        #     two or more results. The 19.9s -> 3.3s narration measurement was
-        #     a single read-out; whether cross-source synthesis loses quality
-        #     without reasoning is what scripts/eval_arms.py measures.
+        # without it and runs ~10x faster. ON only when a tool failed this
+        # turn and is still outstanding: the corrected retry is the one step
+        # with something to reason about (the same reason `narrating` refuses
+        # to fire on an error). A "think when synthesizing across two or more
+        # results" variant was measured 2026-10-13 and retired: that condition
+        # fired on 2 of 177 live V3 turns, so there was nothing to gain.
         # `narrating` keeps governing the non-explicit models unchanged.
-        step_think_on = (bool(hard_failed) or bool(failed_tools - tools_answered)
-                         or (experiment("narration_think_compound")
-                             and len(tools_answered) >= 2))
+        step_think_on = bool(hard_failed) or bool(failed_tools - tools_answered)
         # Sampling is the model's own (as configured in oMLX) on every step
         # EXCEPT tool-SELECTION, which is pinned greedy. Higher temperature
         # increases variance away from the single most-likely — structured,

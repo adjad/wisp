@@ -443,3 +443,28 @@ latency; measure the two contested sites.**
   reps plus the six search cases.
 - Open item from the smoke run: Smart Search discarded 6/12 correct answers because V3 omitted `[n]`
   citations and `verify()` drops uncited sentences. Not a thinking problem; belongs with the prompt work.
+
+**Measurement 1 (run `20261013-140051`): baseline / `narration_think_compound` / `search_think`,
+12 "compound" prompts × 3 reps + 6 search cases × 3 reps, V3 on isolated backends.**
+- `search_think`: **no effect — delete.** Search correct 33% / 33% / 33%, the same two cases pass in
+  every arm and every rep; the thinking arm was slower (search p50 6.2s vs 3.6s). The failures are
+  deterministic per question (uncited answer → `verify()` drops it), so reasoning cannot fix them.
+- `narration_think_compound`: **inconclusive.** The "compound" eval tasks are mostly plan-mode or
+  deterministic turns; only `agentic_compose` reached two answered tools (2 samples, ~75 chars of
+  reasoning, same answer). Re-measured on live multi-source prompts in Measurement 2.
+- Harness lesson: arm-level p50 drifted 2.3 → 4.3 → 7.1s on code paths identical across arms, so
+  arm-major ordering confounds with time. Bracket runs with a second baseline; trust per-task pairs.
+- Incidental: every web route 404s because `router.py:6428` pins `decision.model` to the uninstalled
+  `Ling-3.0-tiny-oQ6e` (`_LING_WEB_MODEL`), and the 404 triggers an oMLX variant reload that 409s the
+  next ~3s of requests. Affects the installed app. Spun out as its own task (`task_a8ee6fa1`).
+
+**Measurement 2 (run `20261013-142918`): baseline / `narration_think_compound` / baseline, the brief +
+personal prompt categories × 2 reps (60 live turns).** Zero turns answered two or more tools. With
+Measurement 1 that is 2 of 177 live V3 turns for the condition the switch gates, so it was retired.
+Error-retry thinking stays as policy (`step_think_on`).
+
+**Citation probe (same day).** V3 with synth's real prompt on the six search cases: 6/6 answers
+correct, 3/6 cited. `verify()` dropped the uncited three. Fix (slice 3): an uncited span-scope
+sentence is grounded by content-token overlap against the retrieved passages — full match for
+answers under three tokens, 60% otherwise — and cited to that passage; anything that cannot be
+traced is still dropped. `search_think` retired with its numbers; `capture_think` kept, unmeasured.

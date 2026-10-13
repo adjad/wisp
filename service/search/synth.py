@@ -223,6 +223,47 @@ def _render_passages(chunks: list[Chunk], picks: list[int]) -> str:
     return "\n\n".join(out)
 
 
+# Grounding for an uncited sentence (see verify). Content tokens are words of
+# three or more letters or any number; the stop list keeps "the open risk is
+# that" from counting as evidence. A short answer ("37 C.") must match every
+# token; a longer one must match 60% — enough to survive the model's
+# paraphrase while a sentence about something else still fails.
+_TOKEN_RE = re.compile(r"[a-z]{3,}|\d[\d.,%]*")
+_STOP = frozenset("""
+the and that this with for was not has have are were from into onto its they
+them their there which what when where who will would could should about
+because been being also than then more most some such only very just over
+under after before between through during each both does did done his her
+him she you your our out off per via any all one two can may might must
+""".split())
+_GROUND_RATIO = 0.6
+
+
+def _ground(sentence: str, passages: list[str]) -> int | None:
+    """1-based index of the single passage that accounts for the sentence's
+    content tokens, or None. Both sides already folded by the caller."""
+    tokens = {t for t in _TOKEN_RE.findall(sentence) if t not in _STOP}
+    if not tokens:
+        return None
+    need = 1.0 if len(tokens) < 3 else _GROUND_RATIO
+    best, best_hit = None, 0.0
+    for i, passage in enumerate(passages, start=1):
+        words = set(_TOKEN_RE.findall(passage))
+        hit = len(tokens & words) / len(tokens)
+        if hit > best_hit:
+            best, best_hit = i, hit
+    return best if best_hit >= need else None
+
+
+def _attach_citation(sentence: str, n: int) -> str:
+    """'... 37 C.' -> '... 37 C [n].' — before the closing punctuation, the
+    way the model itself writes citations, so renumbering treats it alike."""
+    m = re.search(r"[.!?]+$", sentence)
+    if m:
+        return f"{sentence[:m.start()].rstrip()} [{n}]{m.group(0)}"
+    return f"{sentence} [{n}]"
+
+
 def verify(answer: str, chunks: list[Chunk], picks: list[int], *,
            scope: str = "span") -> tuple[str, list[int]]:
     """Drop every sentence we can't trace back to the retrieved text.
@@ -259,7 +300,21 @@ def verify(answer: str, chunks: list[Chunk], picks: list[int], *,
         cites = [int(n) for grp in _CITE_RE.findall(s) for n in _NUM_RE.findall(grp)]
         valid = [n for n in cites if 1 <= n <= len(picks)]
         if not valid and scope != "global":
-            continue  # uncited claim — no provenance, no place in the answer
+            # An uncited sentence still gets ONE chance at provenance: if its
+            # content words all come from a single retrieved passage, cite
+            # that passage for it. Measured 2026-10-13 on
+            # Ling-3.0-tiny-Wisp-V3-merged-oQ4e, six questions whose answers
+            # were in the text: 6/6 answers correct, 3/6 carried a [n] — the
+            # other three were dropped here as "uncited", so Smart Search
+            # showed "not found" for a right answer half the time. The
+            # guarantee is unchanged: a sentence is kept only when it can be
+            # traced to a passage; the model's citation habit just stops
+            # being the only way to trace it.
+            n = _ground(_src(s), [_src(chunks[i].text) for i in picks])
+            if n is None:
+                continue  # uncited claim — no provenance, no place in the answer
+            valid = [n]
+            s = _attach_citation(s, n)
 
         # Quotes are checked against the cited passages when there are any,
         # else against the whole retrieved set (global summary sentences may
@@ -306,11 +361,6 @@ _LONG_DOC_MAX_PASSAGES = 10
 _GLOBAL_MAX_PASSAGES = 15
 _LONG_DOC_MAX_TOKENS = 700
 _SHORT_DOC_MAX_TOKENS = 400
-# EXPERIMENT search_think budgets: room for a think block AND the answer. The
-# 2026-08-09 empty-answer failure below was thinking into a 400-token
-# ceiling, which is not evidence that thinking itself hurts the answer.
-_LONG_DOC_THINK_MAX_TOKENS = 2400
-_SHORT_DOC_THINK_MAX_TOKENS = 1800
 # Wall-clock ceiling on one synthesis call, model load excluded (that's awaited
 # separately, with its own progress event). Generous enough for a long overview
 # on a big model, short enough that a runaway generation can't hang the panel.
@@ -377,14 +427,13 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
         {"role": "user", "content": f"{passages}\n\nQuestion: {question}"},
     ]
     max_tokens = _LONG_DOC_MAX_TOKENS if long_doc else _SHORT_DOC_MAX_TOKENS
-    # EXPERIMENT search_think (off by default; see config/experiments.py):
-    # thinking on, with the larger budgets above. Measured against the
-    # thinking-off baseline by scripts/eval_arms.py before any default moves.
-    from service.config.experiments import experiment
-    search_think = experiment("search_think")
-    if search_think:
-        max_tokens = _LONG_DOC_THINK_MAX_TOKENS if long_doc else _SHORT_DOC_THINK_MAX_TOKENS
     # THINKING OFF, not reasoning_effort="low".
+    #
+    # Re-measured 2026-10-13 on Ling-3.0-tiny-Wisp-V3-merged-oQ4e with
+    # thinking ON and an 1,800/2,400 budget (scripts/eval_arms.py, 6 cases x
+    # 3 reps): correct 33% vs 33%, the same cases in every arm, and slower
+    # (p50 6.2s vs 3.6s). The failures were uncited correct answers dropped by
+    # verify(), which reasoning cannot fix — see _ground. Thinking stays off.
     #
     # The intent below was always right — reading a dozen passages and
     # reporting what they say needs no deliberation — but the mechanism was
@@ -405,7 +454,7 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
     # produce an error string. Same failure and same fix as the profile MAP
     # pass (memory/profile._map_extract) and the rolling conversation summary
     # (memory/context.maybe_summarize).
-    extra: dict = {} if search_think else dict(no_thinking_kwargs(model))
+    extra: dict = dict(no_thinking_kwargs(model))
     # One retry: oMLX answers 400 while it's mid-load, and search deliberately
     # races the embedder's first load against this call. That transient must
     # not surface as a failed answer when a moment's wait would have worked.
