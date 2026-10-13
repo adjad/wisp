@@ -43,6 +43,17 @@ pipi -U pip setuptools wheel packaging ninja
 pipi "axolotl" huggingface_hub hf_transfer safetensors datasets || echo "ERROR: axolotl install failed"
 echo "== Ling model code needs fla-core (KDA linear-attention kernels) and einops"
 pipi -U fla-core einops || echo "ERROR: fla-core install failed - the model cannot load without it"
+# PyPI's default torch wheel may target a newer CUDA than this VM's driver; reinstall the build that matches it.
+DRV_CUDA="$(nvidia-smi 2>/dev/null | sed -n 's/.*CUDA Version: *\([0-9]*\)\.\([0-9]*\).*/\1\2/p' | head -1)"
+if [ -n "$DRV_CUDA" ] && ! "$PY" -c "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+  TV="$("$PY" -c "import torch;print(torch.__version__.split('+')[0])")"
+  for TAG in cu$DRV_CUDA cu128 cu126 cu124; do
+    [ "${TAG#cu}" -le "$DRV_CUDA" ] || continue
+    echo "== torch $TV does not see the GPU (driver CUDA $DRV_CUDA); trying $TAG build"
+    "$UV" pip install -q -p "$PY" --reinstall-package torch "torch==$TV" --index-url "https://download.pytorch.org/whl/$TAG" \
+      && "$PY" -c "import torch,sys;sys.exit(0 if torch.cuda.is_available() else 1)" && break
+  done
+fi
 "$PY" -c "import torch;print('torch',torch.__version__,'cuda',torch.version.cuda,'gpu',torch.cuda.is_available())"
 
 echo "== optional: flash-attn (prebuilt wheel only; skipped if it would compile)"
