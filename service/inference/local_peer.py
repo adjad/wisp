@@ -130,6 +130,160 @@ def process_identity(pid, uid):
         raise AuthRefused('process_identity_unsupported') from None
 
 
+class _BSDInfo(ctypes.Structure):
+    # struct proc_bsdinfo (<sys/proc_info.h>), 136 bytes; same layout process_identity uses.
+    _fields_ = [(name, ctypes.c_uint32) for name in
+        ('flags', 'status', 'xstatus', 'pid', 'ppid', 'uid', 'gid', 'ruid', 'rgid', 'svuid', 'svgid', 'reserved')]
+    _fields_ += [('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32)]
+    _fields_ += [(name, ctypes.c_uint32) for name in ('nfiles', 'pgid', 'jobc', 'tdev', 'tpgid', 'nice')]
+    _fields_ += [('start_seconds', ctypes.c_uint64), ('start_microseconds', ctypes.c_uint64)]
+
+
+def process_bsdinfo(pid):
+    """Exec-sensitive PROC_PIDTBSDINFO facts for the attestation incarnation compare.
+
+    Returns ``(pid, ppid, uid, ruid, svuid, comm, name, start_seconds,
+    start_microseconds)`` with ``comm``/``name`` as raw bytes. ``(pid, start)``
+    alone is NOT an incarnation (exec keeps both); ``comm``/``name`` change on
+    exec into another executable. Any failure raises; it never returns a guess.
+    ``process_identity`` is deliberately left unchanged.
+    """
+    if type(pid) is not int or not 0 < pid <= 2 ** 31 - 1:
+        raise AuthRefused('native_inspection_unavailable')
+    try:
+        if ctypes.sizeof(_BSDInfo) != 136:
+            raise AuthRefused('process_identity_unsupported')
+        library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        query = library.proc_pidinfo
+        query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+        query.restype = ctypes.c_int
+        info = _BSDInfo()
+        if (query(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) != ctypes.sizeof(info)
+                or info.pid != pid or not info.start_seconds or info.start_microseconds >= 1000000):
+            raise AuthRefused('process_identity_unqualified')
+        return (pid, int(info.ppid), int(info.uid), int(info.ruid), int(info.svuid),
+                bytes(info.comm), bytes(info.name), int(info.start_seconds), int(info.start_microseconds))
+    except (OSError, AttributeError):
+        raise AuthRefused('process_identity_unsupported') from None
+
+
+# ---------------------------------------------------------------------------
+# P3 native socket-owner lookup (SHADOW ONLY, decision D3).
+#
+# Never authorizes or refuses anything: the complete lsof inventory and parser
+# in ManagedOmlx.connected_peer stay the only decision. This reads the same
+# connection through libproc so the two can be compared, and every anomaly is
+# reported as a reason class. Layout: struct socket_fdinfo as measured on
+# Darwin 27.0 / CLT SDK 26.0 (docs/perf-attestation-evidence/layout.out on
+# the design branch). The per-use oracle (own-end parsed endpoints must equal
+# getsockname/getpeername) re-proves offsets and byte order on every call.
+# ---------------------------------------------------------------------------
+SOCKET_FDINFO_SIZE = 792
+_FI_STATUS, _SOI_SO, _SOI_TYPE, _SOI_PROTOCOL, _SOI_FAMILY = 4, 160, 176, 180, 184
+_SOI_KIND, _INSI_FPORT, _INSI_LPORT, _INSI_GENCNT, _INSI_VFLAG = 256, 264, 268, 272, 288
+_INSI_FADDR4, _INSI_LADDR4, _TCPSI_STATE = 308, 324, 344
+PROC_FP_SHARED, INI_IPV4, SOCKINFO_TCP, TSI_S_ESTABLISHED = 1, 0x1, 2, 4
+PROC_PIDLISTFDS, PROC_PIDFDSOCKETINFO, PROX_FDTYPE_SOCKET = 1, 3, 2
+_MAX_FDS = 16384
+
+
+class NativeAnomaly(Exception):
+    """A shadow-lookup result that cannot be interpreted; carries a reason class only."""
+
+
+def _libproc():
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    library.proc_pidinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_pidfdinfo.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+    library.proc_pidfdinfo.restype = ctypes.c_int
+    return library
+
+
+def parse_socket_fdinfo(raw):
+    """Decode the consumed fields of one 792-byte struct socket_fdinfo."""
+    import struct
+    if type(raw) is not bytes or len(raw) != SOCKET_FDINFO_SIZE:
+        raise NativeAnomaly('size')
+    status, = struct.unpack_from('=I', raw, _FI_STATUS)
+    so, = struct.unpack_from('=Q', raw, _SOI_SO)
+    kind_type, protocol, family = struct.unpack_from('=iii', raw, _SOI_TYPE)
+    kind, = struct.unpack_from('=i', raw, _SOI_KIND)
+    row = {'status': status, 'so': so, 'type': kind_type, 'protocol': protocol,
+           'family': family, 'kind': kind}
+    if kind != SOCKINFO_TCP:
+        return row
+    fport, lport = struct.unpack_from('=ii', raw, _INSI_FPORT)
+    if fport & ~0xffff or lport & ~0xffff:
+        raise NativeAnomaly('port_high_bits')
+    gencnt, = struct.unpack_from('=Q', raw, _INSI_GENCNT)
+    state, = struct.unpack_from('=i', raw, _TCPSI_STATE)
+    row.update(fport=int.from_bytes(struct.pack('=H', fport), 'big'),
+               lport=int.from_bytes(struct.pack('=H', lport), 'big'),
+               gencnt=gencnt, vflag=raw[_INSI_VFLAG], state=state,
+               faddr=str(ipaddress.IPv4Address(raw[_INSI_FADDR4:_INSI_FADDR4 + 4])),
+               laddr=str(ipaddress.IPv4Address(raw[_INSI_LADDR4:_INSI_LADDR4 + 4])))
+    return row
+
+
+def _socket_row(library, pid, fd):
+    buffer = ctypes.create_string_buffer(SOCKET_FDINFO_SIZE + 256)
+    returned = library.proc_pidfdinfo(pid, fd, PROC_PIDFDSOCKETINFO, buffer, len(buffer))
+    if returned != SOCKET_FDINFO_SIZE:
+        raise NativeAnomaly('fdinfo_return')
+    return parse_socket_fdinfo(buffer.raw[:SOCKET_FDINFO_SIZE])
+
+
+def _established(row, local, remote):
+    return (row.get('kind') == SOCKINFO_TCP and row['type'] == 1 and row['protocol'] == 6
+            and row['family'] == 2 and row['vflag'] & INI_IPV4 and row['state'] == TSI_S_ESTABLISHED
+            and (row['laddr'], row['lport']) == tuple(local) and (row['faddr'], row['fport']) == tuple(remote))
+
+
+def native_connection_owner(pid, client_fd, local, remote, *, library=None):
+    """Shadow: the server fd of ``pid`` holding the far end of our ``client_fd``.
+
+    Returns ``(server_fd, server_so, server_gencnt, client_so, client_gencnt)``
+    or raises ``NativeAnomaly(reason_class)``. Never consulted for a decision.
+    """
+    import struct
+    library = library or _libproc()
+    own = _socket_row(library, os.getpid(), client_fd)
+    # Per-use layout oracle: our own end must decode to exactly getsockname/getpeername.
+    if (own.get('kind') != SOCKINFO_TCP or (own['laddr'], own['lport']) != tuple(local)
+            or (own['faddr'], own['fport']) != tuple(remote)):
+        raise NativeAnomaly('oracle')
+    if not _established(own, local, remote):
+        raise NativeAnomaly('client_state')
+    if own['status'] & PROC_FP_SHARED:
+        raise NativeAnomaly('client_shared')
+    buffer = ctypes.create_string_buffer(8 * _MAX_FDS)
+    returned = library.proc_pidinfo(pid, PROC_PIDLISTFDS, 0, buffer, len(buffer))
+    if returned <= 0 or returned % 8 or returned >= len(buffer):
+        raise NativeAnomaly('listfds')
+    matches = []
+    for offset in range(0, returned, 8):
+        fd, fdtype = struct.unpack_from('=iI', buffer.raw, offset)
+        if fdtype != PROX_FDTYPE_SOCKET:
+            continue
+        if fd < 0:
+            raise NativeAnomaly('listfds')
+        try:
+            row = _socket_row(library, pid, fd)
+        except NativeAnomaly:
+            if ctypes.get_errno() == errno.EBADF:
+                continue        # closed between the list and the lookup
+            raise
+        if row.get('kind') == SOCKINFO_TCP and _established(row, remote, local):
+            matches.append((fd, row))
+    if len(matches) != 1:
+        raise NativeAnomaly('server_match')
+    fd, row = matches[0]
+    if row['status'] & PROC_FP_SHARED:
+        raise NativeAnomaly('server_shared')
+    return fd, row['so'], row['gencnt'], own['so'], own['gencnt']
+
+
 PROC_PIDPATHINFO_MAXSIZE = 4 * 1024      # <sys/proc_info.h>: 4 * MAXPATHLEN
 
 # An executable path as `lsof -d txt` used to print it unescaped: absolute, printable
