@@ -84,6 +84,9 @@ from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
 from service.router.router import RouteDecision, routing_guard_contract, rule_route
+# Imported here, not lazily in _model_led_preload: reranker binds the tool
+# registry at import time, so it must load with the real registry.
+from service.router import reranker as _reranker
 from service.router.model_led import (continuation_requires_baseline,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
@@ -1170,11 +1173,10 @@ def _model_led_preload(prompt: str) -> list[str]:
     name that is forbidden, blocked or unavailable this turn. Lexical only, so
     it never loads a model or touches the network; any failure means no preload."""
     try:
-        from service.router import reranker
         from service.router.model_led import MAX_PRELOAD
         from service.router.router import has_write_intent, mask_quoted
         text = mask_quoted(prompt)
-        return reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
+        return _reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
     except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
         return []
 

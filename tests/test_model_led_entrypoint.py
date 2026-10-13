@@ -63,6 +63,9 @@ def endpoint(monkeypatch, tmp_path):
                             agent_calls=[], baseline_calls=[], effects=[], script=[],
                             starts=0, summaries=0, active_skill="")
     monkeypatch.setenv("WISP_MODEL_LED_ROUTING", "1")
+    # These tests pin routing and discovery; the preload head start has its
+    # own tests (test_model_led_preload_stubs.py).
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: [])
     monkeypatch.setattr(main, "store", store)
     monkeypatch.setattr(context, "store", store)
     monkeypatch.setattr(main, "client", state.shared, raising=False)
@@ -499,3 +502,10 @@ def test_actual_concurrent_summary_added_during_provider_setup_remains_private(e
     assert not io
     assert not any(json.loads(r[0]).get("kind") == "model_led_effect" for r in
                    endpoint.store._db.execute("SELECT state_json FROM workflows WHERE session_id=?", (sid,)))
+
+
+def test_model_led_turn_passes_the_preload_to_the_agent_loop(endpoint, monkeypatch):
+    monkeypatch.setattr(main, "_model_led_preload", lambda prompt: ["get_upcoming"])
+    endpoint.request("what is up this week")
+    model_led = [call for call in endpoint.agent_calls if call["model_led_discovery"]]
+    assert model_led and model_led[0]["model_led_preload"] == ["get_upcoming"]
