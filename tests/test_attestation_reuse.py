@@ -68,6 +68,8 @@ class World:
         self.observe_error = None
         self.load_error = None
         self.load_gate = None                 # threading.Event that load() waits on
+        self.load_advance = None              # (clock, seconds) the fake load takes
+        self.on_binding = None                # called inside binding() (e.g. a change mid-qualification)
         self.log = []
         self.lock = threading.Lock()
 
@@ -91,6 +93,8 @@ class FakeDesktop(at.DesktopOmlx):
 
     def binding(self, expected_pid=None):
         self.world.record('binding')
+        if self.world.on_binding is not None:
+            self.world.on_binding()
         self._manifest_absent()
         if self.world.command != 'omlx-server':
             raise AuthRefused('desktop_process_unqualified')
@@ -114,6 +118,9 @@ class FakeRuntime(at.RuntimeAuthority):
         if gate is not None and threading.current_thread().name == 'wisp-attest-refresh':
             assert gate.wait(10)
         self.world.record('load')
+        if self.world.load_advance is not None:
+            clock, seconds = self.world.load_advance
+            clock.advance(seconds)
         if self.world.load_error is not None:
             raise self.world.load_error
         return FakeDesktop(self.world)
@@ -932,3 +939,152 @@ def test_real_exec_keeps_pid_and_start_but_changes_the_native_facts():
     finally:
         child.kill()
         child.wait()
+
+
+# ---------------------------------------------------------------------------
+# Additional controls added for the section 5.2 mutation set
+# ---------------------------------------------------------------------------
+def current_lease(reuse, clock):
+    return reuse.store.lookup(reuse.key_for(reuse.manifest_path()), at.ClockSample(at.CLOCK_DOMAIN, clock.now, 0))
+
+
+def test_unqualified_facts_are_never_published(env):
+    world, clock, reuse, backend = env
+    world.server = server_facts(identifier='com.example.other')      # fails the signing predicate
+    run(request(backend, b'a'))
+    run(request(backend, b'b'))
+    assert world.count('load') == 2 and current_lease(reuse, clock) is None
+
+
+def test_facts_changing_inside_the_qualification_bracket_are_not_published(env):
+    world, clock, reuse, backend = env
+    world.on_binding = lambda: setattr(world, 'server', server_facts(cdhash=b'\x44' * 20))
+    run(request(backend))
+    assert reuse.counters.get('build_unpublished') == 1 and 'build' not in reuse.counters
+
+
+def test_facts_must_agree_with_the_constructor_identity(env):
+    world, clock, reuse, backend = env
+    world.server = server_facts(path=str(D.python_root / 'cpython/bin/python3.12'))   # qualified, but not _identity
+    run(request(backend))
+    assert current_lease(reuse, clock) is None
+
+
+def test_lease_starts_before_the_qualification_reads_anything(env):
+    world, clock, reuse, backend = env
+    started = clock.now
+    world.load_advance = (clock, 5)
+    run(request(backend))
+    lease = current_lease(reuse, clock)
+    assert lease.qualification_start_ns == started and lease.expiry_ns == started + at.W_HARD_NS
+
+
+def test_refresh_starts_exactly_at_W_soft(env):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    clock.now += at.W_SOFT_NS - 1
+    run(request(backend))
+    assert reuse.store.status().outstanding_refreshes == 0
+    world.load_gate = threading.Event()
+    clock.now += 1
+    run(request(backend))
+    assert reuse.store.status().outstanding_refreshes == 1
+    world.load_gate.set()
+    join_refresh()
+
+
+def test_fence_rechecks_the_lease_after_the_inventories(env, monkeypatch):
+    """Expiry inside the peer check: the closing fence itself refuses to vouch."""
+    world, clock, reuse, backend = env
+
+    async def scenario():
+        stream = await backend.connect_tcp('127.0.0.1', 8000)
+
+        def expiring(self, sock, pid, incarnation):
+            self.binding(pid)
+            world.record('lsof')
+            clock.advance(61)
+            world.record('lsof')
+            self.binding(pid)
+            return incarnation, 9, (7, ('127.0.0.1', 50000), ('127.0.0.1', 8000))
+        monkeypatch.setattr(ManagedOmlx, 'connected_peer', expiring)
+        world.log.clear()
+        await stream.write(b'x')
+    run(scenario())
+    assert world.log[:4] == ['observe', 'lsof', 'lsof', 'load']
+
+
+def test_fence_refuses_a_pid_other_than_the_leased_server(env):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    lease = current_lease(reuse, clock)
+    with pytest.raises(AuthRefused):
+        reuse.fence(FakeDesktop(world), lease, SERVER_PID + 1)
+
+
+def test_connect_binds_the_process_identity_to_the_leased_incarnation(env, monkeypatch):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    monkeypatch.setattr(at, 'process_identity', lambda pid, uid: (pid, uid, world.server[7], 999))
+    world.log.clear()
+    run(request(backend))
+    assert world.count('load') == 1           # refused on the lease, decided by the legacy path
+
+
+def test_revocation_during_the_connect_check_falls_back_to_legacy(env, monkeypatch):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    original = at._FencedPeer.connected_peer
+
+    def revoking(self, sock, pid, incarnation):
+        result = original(self, sock, pid, incarnation)
+        reuse.revoke(self.lease.key, 'test')
+        return result
+    monkeypatch.setattr(at._FencedPeer, 'connected_peer', revoking)
+    world.log.clear()
+    stream = run(request(backend))
+    assert world.count('load') == 1 and stream.lease is None     # decided before connect returned
+
+
+def test_an_optimized_connect_refusal_is_redecided_by_the_full_legacy_check(env, monkeypatch):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    calls = []
+
+    def refusing_once(self, sock, pid, incarnation):
+        calls.append(1)
+        raise AuthRefused('connected_peer_unqualified')
+    monkeypatch.setattr(at._FencedPeer, 'connected_peer', refusing_once)
+    world.log.clear()
+    run(request(backend, b'x'))
+    assert calls == [1] and world.count('load') == 1 and wires(world) == [b'x']
+    assert current_lease(reuse, clock) is None                       # and the lease was revoked
+
+
+@pytest.mark.parametrize('change,counter', [
+    (lambda world: setattr(world, 'server', server_facts(cdhash=b'\x55' * 20)), 'revoke:revalidate_changed'),
+    (lambda world: setattr(world, 'observe_error', AuthRefused('process_identity_unqualified')),
+     'revoke:revalidate_unavailable'),
+])
+def test_connect_revalidates_natively_before_serving_the_lease(env, change, counter):
+    world, clock, reuse, backend = env
+    run(request(backend))
+    change(world)
+    world.log.clear()
+    try:
+        run(request(backend))
+    except ModelLoadError:
+        pass
+    assert reuse.counters.get(counter) == 1 and world.log[:2] == ['observe', 'load']
+
+
+def test_incarnation_facts_refuse_a_change_while_they_are_read(monkeypatch):
+    rows = iter([(1, 2, UID, UID, UID, b'a', b'a', 5, 6), (1, 2, UID, UID, UID, b'b', b'b', 5, 6)])
+    monkeypatch.setattr(at, 'process_bsdinfo', lambda pid: next(rows))
+    monkeypatch.setattr(at, 'process_path', lambda pid: '/x')
+    authority = object.__new__(at.DesktopOmlx)
+    monkeypatch.setattr(at.DesktopOmlx, '_csops', lambda self, pid, op, size: b'\x01' * size)
+    monkeypatch.setattr(at.DesktopOmlx, '_csops_string', lambda self, pid, op: 'v')
+    with pytest.raises(AuthRefused) as caught:
+        authority._incarnation_facts(1, 'python3')
+    assert str(caught.value) == 'desktop_incarnation_unstable'
