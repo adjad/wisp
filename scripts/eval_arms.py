@@ -9,9 +9,13 @@ set through the real /agent endpoint, tears both down, and moves to the next
 arm. Mechanical metrics come out as a Markdown table; answers are paired per
 prompt in a JSONL file for blind grading on the eval board.
 
-    .venv/bin/python scripts/eval_arms.py --arms baseline,search_think
-    .venv/bin/python scripts/eval_arms.py --arms baseline,narration_think_compound --tasks compound --reps 2
+    .venv/bin/python scripts/eval_arms.py --arms baseline --search --reps 3
+    .venv/bin/python scripts/eval_arms.py --arms baseline,<experiment>,baseline --tasks cat:brief,personal --reps 2
     .venv/bin/python scripts/eval_arms.py --report ~/.moe/evals/arms/<run>.jsonl
+
+Bracket an experiment with a second baseline: arm-level latency drifts with
+time (measured 2.3 -> 4.3 -> 7.1s p50 across three identical-code arms), so
+the per-task pairs are the signal and the merged baseline averages the drift.
 
 SAFETY. Same rules as scripts/eval_core.py: `plan` tasks run under test_mode,
 every confirmation is denied, nothing writes or sends. The backend is NEVER the
@@ -26,7 +30,11 @@ still read the real disk. Both are read-only.
 
 What is NOT measured here: `capture_think` runs in an idle-only background
 worker and needs a session plus idle time; it is measured separately by
-replaying stored turns through service/memory/capture.py.
+replaying stored turns through service/memory/capture.py. It is still a valid
+arm name (the switch exists), but an /agent run under it measures nothing.
+
+The isolated backend shares the real oMLX engine on :8000, so a run contends
+with — and can idle-unload or swap — the live model. Run it when Wisp is idle.
 """
 from __future__ import annotations
 
@@ -486,7 +494,7 @@ def main() -> None:
                     help="all | quick | compound | ids:a,b | cat:news,weather")
     ap.add_argument("--reps", type=int, default=1)
     ap.add_argument("--search", action="store_true",
-                    help="also run the built-in Smart Search cases (for search_think)")
+                    help="also run the built-in Smart Search cases")
     ap.add_argument("--port", type=int, default=BACKEND_PORT)
     ap.add_argument("--sandbox-port", type=int, default=SANDBOX_PORT)
     ap.add_argument("--python", default=sys.executable)
@@ -513,13 +521,18 @@ def main() -> None:
     if bad:
         sys.exit(f"unknown arms {bad}; known experiments: {sorted(KNOWN)}")
     tasks = select_tasks(args.tasks)
-    search = args.search or "search_think" in arm_names
+    search = args.search
 
     run = time.strftime("%Y%m%d-%H%M%S")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     log = OUT_DIR / f"{run}.jsonl"
     scratch = Path(args.scratch) if args.scratch else Path(
         os.environ.get("TMPDIR", "/tmp")) / f"wisp-arms-{run}"
+    # Same refusal as sandbox/run.sh: the arm homes are deleted and recreated,
+    # so they must never resolve inside the real ~/.moe.
+    real_home = (Path.home() / ".moe").resolve()
+    if scratch.resolve() == real_home or real_home in scratch.resolve().parents:
+        sys.exit(f"refusing --scratch {scratch}: it is inside the real ~/.moe")
     print(f"run {run}: arms={arm_names} tasks={len(tasks)} reps={args.reps} "
           f"search={search}\nlog {log}\nscratch {scratch}")
 

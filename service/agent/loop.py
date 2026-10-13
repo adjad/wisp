@@ -2543,14 +2543,17 @@ async def run_agent(
         )
         # EXPLICIT-THINKING models (config.thinking_kwargs): the think block is
         # stated on every step and defaults to OFF — V3 selects tools fine
-        # without it and runs ~10x faster. ON only when a tool failed this
-        # turn and is still outstanding: the corrected retry is the one step
+        # without it and runs ~10x faster. ON only when a RECOVERABLE tool
+        # failure is still outstanding: the corrected retry is the one step
         # with something to reason about (the same reason `narrating` refuses
-        # to fire on an error). A "think when synthesizing across two or more
-        # results" variant was measured 2026-10-13 and retired: that condition
-        # fired on 2 of 177 live V3 turns, so there was nothing to gain.
-        # `narrating` keeps governing the non-explicit models unchanged.
-        step_think_on = bool(hard_failed) or bool(failed_tools - tools_answered)
+        # to fire on an error). Not `hard_failed`: that set also holds safety
+        # blocks and user denials, which never clear, and would have kept
+        # thinking on for the rest of a turn after a single "no". A "think
+        # when synthesizing across two or more results" variant was measured
+        # 2026-10-13 and retired: that condition fired on 2 of 177 live V3
+        # turns, so there was nothing to gain. `narrating` keeps governing the
+        # non-explicit models unchanged.
+        step_think_on = bool(failed_tools - tools_answered)
         # Sampling is the model's own (as configured in oMLX) on every step
         # EXCEPT tool-SELECTION, which is pinned greedy. Higher temperature
         # increases variance away from the single most-likely — structured,

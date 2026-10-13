@@ -56,6 +56,41 @@ def test_mixed_answer_keeps_grounded_sentences_and_drops_the_rest():
     assert used == [2]
 
 
+def test_wrong_figure_is_never_cited():
+    # Audit case: a changed date or percentage must not come back cited.
+    assert verify("They switched to Prairie Grain on March 19.", CHUNKS, PICKS) == (NOT_FOUND, [])
+    assert verify("Flour costs rose 40 percent after the March supplier change.", CHUNKS, PICKS) == (NOT_FOUND, [])
+    # The true figures still ground.
+    text, used = verify("Flour costs rose 14 percent after the March supplier change.", CHUNKS, PICKS)
+    assert used == [0] and text.endswith("[1].")
+
+
+def test_inverted_negation_is_never_cited():
+    # Audit case: "has confirmed" against "has not confirmed".
+    assert verify("The landlord has confirmed renewal terms.", CHUNKS, PICKS) == (NOT_FOUND, [])
+    text, used = verify("The landlord has not confirmed renewal terms.", CHUNKS, PICKS)
+    assert used == [1]
+
+
+def test_true_clause_with_an_invented_one_is_dropped():
+    # Audit case: scored 75% under the first version's 60% threshold.
+    assert verify("They switched to Prairie Grain on March 18 and the CEO resigned in disgrace.",
+                  CHUNKS, PICKS) == (NOT_FOUND, [])
+
+
+def test_trailing_period_on_a_figure_does_not_break_matching():
+    text, used = verify("The lease on the Elm Avenue kitchen expires on September 30.", CHUNKS, PICKS)
+    assert used == [1]
+
+
+def test_known_limit_entity_swap_is_documented():
+    """Two entities both present in the passage, swapped, still ground: this
+    is lexical overlap's blind spot and the same gap the model's own citations
+    have always had. Recorded here so a future semantic check has a target."""
+    text, used = verify("They switched from Prairie Grain to Harvest Mills on March 18.", CHUNKS, PICKS)
+    assert used == [0]
+
+
 def test_global_scope_behavior_is_unchanged():
     # Global scope already kept uncited sentences; grounding must not start
     # adding citations there.
