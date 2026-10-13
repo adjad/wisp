@@ -85,7 +85,7 @@ def _expand(terms: list[str]) -> list[str]:
         if t in _STOPWORDS:
             continue
         out.append(stem(t))
-        for syn in _SYN_INDEX.get(t, ()):
+        for syn in sorted(_SYN_INDEX.get(t, ())):  # stable float-sum order
             out.append(stem(syn))
     return out or [stem(t) for t in terms]
 
@@ -169,12 +169,18 @@ class BM25:
             return []
         # Typo recovery: a query term absent from the document's vocabulary is
         # allowed to stand in for a within-one-edit term that IS present.
+        # Neighbours are ordered rarest-first (then alphabetically) before the
+        # cut to two. `self.vocab` is a set, and taking the first two in set
+        # order made the pick depend on PYTHONHASHSEED: "7am" became "am"/"sam"
+        # in one process and "nam" (from "name", in 14 tool docs) in another,
+        # which dropped add_calendar_event from the router's retrieved menu.
         resolved: list[str] = []
         for t in terms:
             if t in self.vocab:
                 resolved.append(t)
                 continue
-            near = [v for v in self.vocab if _within_edit1(t, v)]
+            near = sorted((v for v in self.vocab if _within_edit1(t, v)),
+                          key=lambda v: (-self.idf[v], v))
             resolved.extend(near[:2] or [t])
 
         scored: list[tuple[float, int]] = []
