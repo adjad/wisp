@@ -1974,6 +1974,17 @@ async def run_agent(
     # have). Cleared whenever a non-read succeeds, so a read after a write
     # still sees fresh data.
     completed_reads: set[tuple[str, str]] = set()
+    # Calls the PREVIOUS step made, and how many of them the loop refused as
+    # repeats (identical read, duplicate effect). When every call a step made
+    # was a refusal, the model has nothing new to fetch, and the next step is
+    # a narration step with tool_choice="none" — see the step head. The
+    # pointer text alone does not stop a small model: measured 2026-10-13 on
+    # Ling-3.0-tiny-Wisp-V3-merged-oQ4e, "What do I need to do today?"
+    # re-called collect_task_evidence on seven further steps after the first
+    # refusal (34.9s, the same ~1,800-token result re-sent eight times) and
+    # only stopped at max_steps.
+    prev_step_calls = 0
+    prev_step_refusals = 0
     contact_receipts: dict[str, str] = {}
     recipient_requirements = {
         name: fixed["_recipient_lookup"] for name, fixed in (tool_argument_bindings or {}).items()
@@ -2485,6 +2496,17 @@ async def run_agent(
         else:
             step_schemas = schemas
         choice = "required" if (forcing_first_step or expecting_tool) else "auto"
+        # STALLED ON REFUSED REPEATS: last step the model only asked for what it
+        # already has, and no required group is still unmet, so this step may
+        # not call anything — it must answer from the results in context.
+        # Never while a forced/expected tool is pending (those steps are
+        # selection by definition) and never while the route still needs a
+        # tool the model has not called. The schemas stay in the request so
+        # the prompt-cache prefix survives; only the choice changes.
+        if (choice == "auto" and prev_step_calls > 0
+                and prev_step_refusals == prev_step_calls and _unmet_group() is None):
+            choice = "none"
+        prev_step_calls = prev_step_refusals = 0
         # NARRATION STEP: the model's only remaining job is to write prose
         # about tool results already in its context, not to select a tool.
         # Skip the think block for it — measured 19.9s -> 3.3s for the same
@@ -2756,6 +2778,7 @@ async def run_agent(
                          "from memory and do NOT say you can't.")
             msgs.append({"role": "user", "content": nudge})
         tool_calls = msg.get("tool_calls")
+        prev_step_calls = len(tool_calls or [])
 
         # Correct a specific failure mode: oMLX can return content AND
         # tool_calls in the SAME response (verified live — the summarizer/the agent model both
@@ -3035,6 +3058,7 @@ async def run_agent(
                 result = (f"({name} already succeeded earlier this turn; it was NOT run "
                           "again. Narrate the existing result instead of duplicating the action.)")
                 audit("reject_duplicate_effect", tool=name, args=args)
+                prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -3045,6 +3069,7 @@ async def run_agent(
                           "result was returned earlier. It was NOT run again. Answer from that "
                           "result, or call it with different arguments if you need different data.)")
                 audit("reject_repeated_read", tool=name, args=args)
+                prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
