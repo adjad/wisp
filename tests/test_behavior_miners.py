@@ -1,6 +1,6 @@
-"""Miners recover the routines planted in the fictional demo persona.
+"""Miners recover the routines planted in the fictional test persona.
 
-Synthetic data only: ``generate_persona`` (Aria Solano, fictional) and small
+Synthetic data only: ``generate_persona`` (tests/fixtures, fictional) and small
 hand-built timelines. The engine runs on a temp SQLite file.
 """
 import time
@@ -11,7 +11,7 @@ import pytest
 
 from service.behavior import miners
 from service.behavior.engine import BehaviorEngine
-from service.behavior.persona import generate_persona
+from tests.fixtures.behavior_persona import generate_persona
 from service.behavior.types import Observation
 
 TZ = ZoneInfo("America/Los_Angeles")
@@ -61,7 +61,7 @@ def test_dev_afternoon_contact_rhythm(mined):
     assert 13 * 60 <= dev.window.start_minute <= 15 * 60 and dev.window.end_minute <= 18 * 60
     assert "Dev Malik most weekday afternoons" in dev.statement
     assert dev.stats["reply_latency_s"] is not None and dev.stats["reply_latency_s"] < 3600
-    assert dev.stats["calls"] >= 4                              # the Thursday "Dev / Aria 1:1"
+    assert dev.stats["calls"] >= 4                              # the Thursday "Dev / Robin 1:1"
 
 
 def test_mom_sunday_evenings(mined):
@@ -188,7 +188,7 @@ def test_categories_from_titles():
     from service.behavior.categorize import categorize
     assert categorize("Morning lift") == "fitness"
     assert categorize("Cash runway review") == "meeting"          # "run" is a whole word only
-    assert categorize("Dev / Aria 1:1") == "one_on_one"
+    assert categorize("Dev / Robin 1:1") == "one_on_one"
     assert categorize("Sync with Dev") == "one_on_one"
     assert categorize("Hiring sync") == "meeting"
     assert categorize("Call Mom") == "call"

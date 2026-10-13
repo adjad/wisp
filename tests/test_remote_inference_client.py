@@ -3,7 +3,7 @@ import json
 from dataclasses import replace
 from unittest.mock import patch
 import httpx
-from tests.test_intel_remote_policy import RemoteFixture, policy, EndpointConfigurationError
+from tests.test_remote_inference_policy import RemoteFixture, policy, EndpointConfigurationError
 from service.inference.omlx_client import OMLXClient
 
 TOOL={'type':'function','function':{'name':'view_messages','parameters':{'type':'object','properties':{}}}}

@@ -7,7 +7,7 @@ import pytest
 
 from service.behavior import nudges as N
 from service.behavior.engine import BehaviorEngine
-from service.behavior.persona import generate_persona
+from tests.fixtures.behavior_persona import generate_persona
 from service.behavior.types import Action, Feedback, Nudge, Observation
 
 TZ = ZoneInfo("America/Los_Angeles")
@@ -244,10 +244,9 @@ def test_free_slot_skips_busy_time():
     assert timedelta(seconds=N.COOLDOWN_S) == timedelta(hours=3)
 
 
-# ------------------------------------------ demo day (Sunday 2026-10-11) regressions
-# The demo runs at 13:00 PT Sunday and uses ``demo/wisp_demo.py drop --preset``:
-# gym-conflict = "Foundry export check-in" 07:00-07:45 on the next gym day
-# (Monday), backtoback = four 30-minute meetings tomorrow 14:00-16:00.
+# ------------------------------------------ Sunday-afternoon regressions (2026-10-11 13:00 PT)
+# A late-week run with two planted plans: a "Foundry export check-in" 07:00-07:45
+# on the next gym day (Monday), and four 30-minute meetings tomorrow 14:00-16:00.
 
 SUN = datetime(2026, 10, 11, 13, 0, tzinfo=TZ).timestamp()
 

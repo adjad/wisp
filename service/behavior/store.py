@@ -1,6 +1,6 @@
 """SQLite persistence for the behavior engine.
 
-One file per engine (``db_path``), WAL so the GX10's HTTP threads can read while
+One file per engine (``db_path``), WAL so readers on other threads can read while
 a mine/snapshot writes. Everything the engine knows lives here: the observation
 timeline, the last snapshot per source (for cancel/move diffing), mined patterns
 with the user's verdict on each, nudges with a monotonically increasing ``seq``
@@ -76,8 +76,8 @@ def _row_obs(r: sqlite3.Row) -> Observation:
 
 
 class Store:
-    """Thread-safe: a single connection guarded by an RLock (the GX10 serves
-    HTTP from a thread pool; SQLite connections are not safe to share without it)."""
+    """Thread-safe: a single connection guarded by an RLock (the runtime calls it
+    from worker threads; SQLite connections are not safe to share without it)."""
 
     def __init__(self, db_path: str | Path) -> None:
         self.path = Path(db_path)

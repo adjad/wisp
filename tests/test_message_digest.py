@@ -162,9 +162,9 @@ def test_synthetic_sqlite_wire_preserves_backend_link_boundaries(monkeypatch):
                "WISP_MESSAGES_WIRE_OUTPUT": str(wire)}
         subprocess.run(["swiftc", "app/Sources/WispApp/MessagesReader.swift",
                         "tests/MessagesReaderRegression.swift", "-lsqlite3", "-o", str(binary)],
-                       cwd=root, env=env, check=True, capture_output=True, text=True)
+                       cwd=root, env=env, check=True, capture_output=True, text=True, timeout=300)
         executed = subprocess.run([str(binary)], cwd=root, env=env,
-                                  capture_output=True, text=True)
+                                  capture_output=True, text=True, timeout=120)
         assert executed.returncode == 0, (executed.stdout, executed.stderr)
         M.cache_messages(wire.read_text(), available=True)
     snapshot = M.structured_messages_snapshot()

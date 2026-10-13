@@ -326,7 +326,7 @@ def mine_habits(items: list[Local], spans: dict[str, date], now_dt: datetime) ->
 
 def _contact_index(names: Iterable[str]) -> list[tuple[str, re.Pattern]]:
     """Regexes that find a contact in an event title: full name, or a first
-    name that belongs to only one contact ("Dev / Aria 1:1" -> Dev Malik)."""
+    name that belongs to only one contact ("Dev / Robin 1:1" -> Dev Malik)."""
     names = sorted({n for n in names if n})
     firsts = Counter(n.split()[0].lower() for n in names)
     index = []

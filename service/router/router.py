@@ -219,7 +219,7 @@ _MEMORY_TOOLS = ["remember", "recall", "forget"]
 # instead of 'day'. Narrowing to just `recall` removes that ambiguity instead
 # of only telling the model harder not to make it.
 SELF_QUERY_RE = re.compile(
-    r"\bwhat do you know about (?:me\b|myself\b|my\b)|"
+    r"\bwhat (?:do|did) you (?:know|remember) about (?:me\b|myself\b|my\b)|"
     r"\btell me (?:(?:what|everything) you know )?about (?:me|myself)\b", re.I)
 
 # "Who are the people in my life" and its variants — a READ about the user's
@@ -7354,9 +7354,9 @@ def _guard_scheduled_cancel(decision: RouteDecision, original_text: str) -> Rout
 
 
 # --------------------------------------------------------------------------
-# Behavior learning: "what do you know about me", "predict my day", "when do I
-# usually work out". Active only while behavior learning is on (WISP_BEHAVIOR=1
-# or the founder demo); otherwise every phrase keeps its existing route (e.g.
+# Behavior learning: "what have you learned about me", "predict my day", "when do I
+# usually work out". Active only while behavior learning is on (the default; see behavior_switch.py);
+# otherwise every phrase keeps its existing route (e.g.
 # "what do you know about me" -> recall). Whole-utterance matches only, so a
 # compound request ("... and check my email") keeps the claims router.
 _BEHAVIOR_LEAD = (r"^\s*(?:(?:hey|ok|okay)\s+)?(?:wisp[,:]?\s+)?(?:so\s+)?"
@@ -7365,7 +7365,10 @@ _BEHAVIOR_TAIL = (r"(?:\s+(?:so\s+far|by\s+now|yet|please|then|again|lately|rece
                   r"from\s+my\s+(?:calendar|activity|routine)))?\s*[?.!]*\s*$")
 _BEHAVIOR_DESCRIBE_RE = re.compile(
     _BEHAVIOR_LEAD + r"(?:"
-    r"what\s+(?:do|did)\s+you\s+(?:know|think|remember)\s+about\s+me|"
+    # "What do you know about me" stays memory recall even with learning on:
+    # describe_me lists only learned patterns, which would hide the facts the
+    # user asked Wisp to remember. "What have you learned about me" answers here.
+    r"what\s+(?:do|did)\s+you\s+think\s+about\s+me|"
     # The week: predict_my_day covers only today/tomorrow, so the learned
     # weekly shape (habits, rhythms) answers. Without behavior learning these
     # fall to recall / ambiguous retrieval; no calendar rule claims them.
@@ -7375,7 +7378,6 @@ _BEHAVIOR_DESCRIBE_RE = re.compile(
     r"what\s+(?:have|did)\s+you\s+(?:learn(?:ed|t)?|notice[d]?|figure[d]?\s+out|pick(?:ed)?\s+up)"
     r"(?:\s+about\s+me)?|"
     r"describe\s+me|describe\s+my\s+(?:habits|routines?|patterns|week|life)|"
-    r"tell\s+me\s+(?:what\s+you\s+know\s+)?about\s+(?:me|myself)|"
     r"what\s+are\s+my\s+(?:usual\s+)?(?:habits|routines?|patterns)|"
     r"(?:show|list|tell)\s+(?:me\s+)?(?:about\s+)?my\s+(?:habits|routines?|patterns)|"
     r"what\s+(?:habits|routines?|patterns)\s+(?:do\s+i\s+have|have\s+you\s+(?:noticed|learned|learnt|seen|found)"
@@ -7421,19 +7423,9 @@ _BEHAVIOR_CORRECT_GUIDANCE = (
     "'right'. Only Wisp's learned profile changes; never touch the calendar or reminders.")
 
 
-def behavior_guidance(decision: RouteDecision) -> str:
-    """The behavior routes' instruction ('' for any other route), for paths
-    that send the user's raw prompt instead of ``decision.resolved_request``
-    (the Intel remote-only build), so it still reaches the model."""
-    names = set(decision.tool_subset or ()) | {name for name, _ in (decision.direct_calls or ())}
-    if not names or not names <= set(_BEHAVIOR_TOOLS_ALL):
-        return ""
-    return (_BEHAVIOR_CORRECT_GUIDANCE if "correct_pattern" in names else _BEHAVIOR_GUIDANCE).strip()
-
-
 def _behavior_request(text: str, last_tools: str | None = None) -> RouteDecision | None:
     # Import-free flag check: routing must never load the behavior runtime.
-    from service.behavior.flags import env_enabled as behavior_enabled
+    from service.behavior_switch import enabled as behavior_enabled
     if not behavior_enabled():
         return None
     value = " ".join(mask_quoted(text).replace("’", "'").split())

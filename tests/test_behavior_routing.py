@@ -15,16 +15,31 @@ NAMES = ("describe_me", "predict_my_day", "my_patterns", "correct_pattern")
 
 @pytest.fixture
 def on(monkeypatch):
-    monkeypatch.delenv("WISP_FOUNDER_DEMO", raising=False)
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     for name in NAMES:   # routability follows the launch environment
         monkeypatch.setattr(REGISTRY[name], "unavailable_reason", "")
 
 
+@pytest.fixture(autouse=True)
+def _no_saved_setting(monkeypatch, tmp_path):
+    from service import config
+    monkeypatch.delenv("WISP_BEHAVIOR", raising=False)
+    monkeypatch.setattr(config, "USER_CONFIG", tmp_path / "cfg" / "config.yaml")
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+    yield
+    config._user_overlay.cache_clear()
+    config.models_config.cache_clear()
+
+
 @pytest.fixture
 def off(monkeypatch):
-    monkeypatch.delenv("WISP_BEHAVIOR", raising=False)
-    monkeypatch.delenv("WISP_FOUNDER_DEMO", raising=False)
+    from service.tools.behavior_tools import sync_availability
+    monkeypatch.setenv("WISP_BEHAVIOR", "0")
+    sync_availability()
+    yield
+    monkeypatch.delenv("WISP_BEHAVIOR")
+    sync_availability()
 
 
 def routed(text, **kw):
@@ -32,8 +47,8 @@ def routed(text, **kw):
 
 
 @pytest.mark.parametrize("text, tool, args", [
-    ("what do you know about me", "describe_me", {}),
-    ("What do you know about me?", "describe_me", {}),
+    ("what have you learned about me", "describe_me", {}),
+    ("What have you noticed about me?", "describe_me", {}),
     ("describe me", "describe_me", {}),
     ("what are my habits", "describe_me", {}),
     ("What have you learned about me so far?", "describe_me", {}),
@@ -96,6 +111,15 @@ def test_compound_self_query_keeps_both_halves(on):
     assert "recall" in tools and "summarize_emails" in tools
 
 
+def test_generic_self_query_stays_recall_when_on(on):
+    # describe_me shows only learned patterns; remembered facts live in recall.
+    for text in ("what do you know about me", "What do you know about me?",
+                 "tell me about myself", "what did you remember about me",
+                 "what do you remember about me", "what did you know about me"):
+        d = routed(text)
+        assert d.force_first_tool == "recall", (text, d.reason)
+
+
 def test_off_keeps_original_routes(off):
     d = routed("what do you know about me")
     assert d.reason == "self query -> recall" and d.force_first_tool == "recall"
@@ -112,22 +136,3 @@ def test_week_questions_keep_their_routes_when_off(off):
         d = routed(text)
         offered = set(d.tool_subset or ()) | {n for n, _ in d.direct_calls}
         assert not d.reason.startswith("behavior ") and not offered & set(NAMES), (text, offered)
-
-
-def test_behavior_guidance_for_paths_that_send_the_raw_prompt(on):
-    """Remote-only sends the raw prompt, not resolved_request; main.py appends
-    behavior_guidance(decision) to the style hint instead."""
-    from service.router.router import behavior_guidance
-    assert "not facts" in behavior_guidance(routed("what do you know about me"))
-    assert "correct_pattern" in behavior_guidance(routed("that pattern is wrong"))
-    assert behavior_guidance(routed("what's on my calendar tomorrow")) == ""
-    assert behavior_guidance(routed("remind me to call mom at 5pm")) == ""
-
-
-def test_main_adds_behavior_guidance_on_remote_only_agent_turns():
-    import ast
-    from pathlib import Path
-    src = (Path(__file__).resolve().parents[1] / "service/main.py").read_text()
-    agent = next(n for n in ast.parse(src).body if isinstance(n, ast.AsyncFunctionDef) and n.name == "agent")
-    text = ast.unparse(agent)
-    assert "guidance = behavior_guidance(decision)" in text and "style_hint += '\\n' + guidance" in text

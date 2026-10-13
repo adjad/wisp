@@ -1,11 +1,6 @@
-"""BehaviorEngine: the single facade used by both deployments.
+"""BehaviorEngine: the single facade over the behavior package.
 
-- GX10: ``brain_server`` wraps one engine instance behind HTTP.
-- Mac (local mode): ``service.assistant.behavior_runtime`` calls it in-process.
-
-The Mac runtime never needs to know which one it talks to:
-``service.behavior.client.RemoteEngine`` implements the same public methods
-over HTTP (same names, same argument/return types, via ``types`` to_dict/from_dict).
+``service.assistant.behavior_runtime`` calls it in-process on the Mac.
 
 CONTRACT (implemented by the engine workstream; signatures are fixed):
 see each method's docstring. Internals live in sibling modules: ``store``
@@ -35,7 +30,7 @@ MOVE_PAIR_MAX_S = 7 * 86400
 # across an integer boundary changes the id. A "move" smaller than this is the
 # same event re-read: no event_moved, and no event_cancelled either.
 MOVE_MIN_S = 60
-# Phrasing runs under the engine lock and the brain server gives each call 30s:
+# Phrasing runs under the engine lock, so it must stay bounded:
 # per generate pass, phrase at most this many nudges, and start no phrase call
 # once this much wall time has passed since the pass began (mining included).
 # Worst case is ~budget + one phraser timeout; the rest keep their template text.
@@ -58,12 +53,8 @@ class Phraser(Protocol):
 
 class BehaviorEngine:
     def __init__(self, db_path: str | Path, *, phraser: Phraser | None = None,
-                 clock=None, tz: str | None = None, min_horizon_s: float | None = None) -> None:
+                 clock=None, tz: str | None = None) -> None:
         self._store = Store(db_path)
-        # Optional longer look-ahead (the Aria demo uses a week so its planted
-        # gym conflict and back-to-back run are always in view, whatever day it
-        # is shown). None keeps the normal horizon below.
-        self._min_horizon_s = float(min_horizon_s) if min_horizon_s else 0.0
         self._phraser = phraser
         self._clock = clock or time.time
         self._tz = resolve_tz(tz)
@@ -242,10 +233,10 @@ class BehaviorEngine:
     def nudge_horizon(self, now: float) -> float:
         """Look-ahead for predict()'s default and generate_nudges(): at least 24h,
         and always through the END OF TOMORROW (local). A rolling 24h would hide
-        tomorrow afternoon's meetings from an early-afternoon run (demo at 13:00
+        tomorrow afternoon's meetings from an early-afternoon run (a run at 13:00
         drops a 14:00-16:00 run tomorrow, 25-27h out)."""
         tomorrow = local_dt(now, self._tz).date() + timedelta(days=1)
-        return max(float(NUDGE_HORIZON_S), day_end(tomorrow, self._tz) - now, self._min_horizon_s)
+        return max(float(NUDGE_HORIZON_S), day_end(tomorrow, self._tz) - now)
 
     def _events_for(self, now: float, horizon_s: float) -> list[Observation]:
         """Events from local midnight today to the end of the horizon's last day,

@@ -31,20 +31,6 @@ final class WispClient {
     private let deliverySession: URLSession
     private let deliveryURL: URL
 
-    struct AriaDemoResetResponse {
-        let counts: [String: Int]
-    }
-
-    enum AriaDemoResetError: LocalizedError {
-        case request(String)
-
-        var errorDescription: String? {
-            switch self {
-            case .request(let detail): return detail
-            }
-        }
-    }
-
     init(deliverySession: URLSession = .shared, deliveryURL: URL = WispClient.baseURL) {
         self.deliverySession = deliverySession
         self.deliveryURL = deliveryURL
@@ -61,37 +47,6 @@ final class WispClient {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else { return nil }
         return object
-    }
-
-    func resetAriaDemoData() async throws -> AriaDemoResetResponse {
-        var request = URLRequest(url: deliveryURL.appendingPathComponent("demo/aria/reset"))
-        request.httpMethod = "POST"
-        request.timeoutInterval = 10
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("{}".utf8)
-
-        let data: Data
-        let response: URLResponse
-        do {
-            (data, response) = try await deliverySession.data(for: request)
-        } catch {
-            throw AriaDemoResetError.request("Couldn't reach the Wisp service. Try again in a moment.")
-        }
-        guard let http = response as? HTTPURLResponse else {
-            throw AriaDemoResetError.request("The Wisp service returned an invalid response.")
-        }
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
-        if http.statusCode == 409 {
-            let detail = object?["detail"] as? String
-                ?? "The backend is not running in Aria demo mode."
-            throw AriaDemoResetError.request(detail)
-        }
-        guard (200..<300).contains(http.statusCode),
-              object?["ok"] as? Bool == true,
-              let counts = object?["counts"] as? [String: Int] else {
-            throw AriaDemoResetError.request("The Wisp service couldn't reset Aria demo data.")
-        }
-        return AriaDemoResetResponse(counts: counts)
     }
 
     struct Event {
@@ -206,31 +161,6 @@ final class WispClient {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let c = obj["commitment"] as? [String: Any] else { return nil }
         return Commitment.parse(c)
-    }
-
-    // GET /demo/aria/topbar -> the Aria demo's collapsed-bar data: the next
-    // synthetic event and at most one proactive chip carrying the nudge's hub
-    // payload (so a tap can show the same card). nil outside the demo.
-    struct AriaTopBar: Equatable {
-        let nextTitle: String
-        let nextLabel: String
-        let chipLabel: String
-        let chipEvent: NSDictionary?
-    }
-
-    func ariaTopBar() async -> AriaTopBar? {
-        var request = URLRequest(url: Self.baseURL.appendingPathComponent("demo/aria/topbar"))
-        request.timeoutInterval = 5
-        guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              obj["enabled"] as? Bool == true else { return nil }
-        let next = obj["next"] as? [String: Any]
-        let chip = obj["chip"] as? [String: Any]
-        return AriaTopBar(nextTitle: next?["title"] as? String ?? "",
-                          nextLabel: next?["label"] as? String ?? "",
-                          chipLabel: chip?["label"] as? String ?? "",
-                          chipEvent: (chip?["event"] as? [String: Any]).map { NSDictionary(dictionary: $0) })
     }
 
     // GET /assistant/upcoming -> next N days.
@@ -437,6 +367,30 @@ final class WispClient {
     func behaviorGet(_ endpoint: String) async -> [String: Any]? {
         guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
         return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the
+    // state in effect, or nil when the backend can't be reached; a WISP_BEHAVIOR
+    // launch override can make the effective state differ from the request.
+    func behaviorEnabled() async -> Bool? {
+        await behaviorRequest("GET", "behavior/settings")?["enabled"] as? Bool
+    }
+
+    func setBehaviorEnabled(_ on: Bool) async -> Bool? {
+        await behaviorRequest("PUT", "behavior/settings", body: ["enabled": on])?["enabled"] as? Bool
+    }
+
+    // GET /behavior/settings, whole payload: "enabled", "remote_active" (a remote
+    // inference profile is pinned) and "phraser" (nudge wording / event labeling
+    // requests are allowed to leave the Mac's local model).
+    func behaviorSettings() async -> [String: Any]? {
+        await behaviorRequest("GET", "behavior/settings")
+    }
+
+    // DELETE /behavior/data {"confirm": true} -> deletes what Wisp learned and the
+    // untouched reminders/holds it created. Returns the counts, or nil on failure.
+    func forgetBehaviorData() async -> [String: Any]? {
+        await behaviorRequest("DELETE", "behavior/data", body: ["confirm": true], timeout: 60)
     }
 
     // POST /behavior/run -> mine + predict + generate nudges now.

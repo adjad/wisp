@@ -3372,22 +3372,17 @@ def scripted_backend(tmp_path, script):
 
 
 def test_f10_stop_ends_the_child_and_the_process_group_it_leads_and_reports_the_outcome(tmp_path, monkeypatch):
-    # macOS answers a liveness probe (signal 0) of a group whose last member is between exit and reap
-    # with EPERM, not ESRCH; the next probe a few milliseconds later reports ESRCH. Under CI load the
-    # reparented grandchild hits that window often enough to fail this test intermittently. Retry only
-    # that probe, only on EPERM, within a bounded deadline: every real signal and every other error still
-    # reaches stop() unchanged, and stop() must still confirm the group gone and report ok on its own.
-    real_killpg = os.killpg
+    # stop() itself retries the EPERM a macOS signal-0 probe returns while the group's last member is
+    # between exit and reap. Force two EPERM probes so that retry is always exercised; allow a loaded
+    # runner more time to reap. (The case set is pinned by the release benchmark contract, so this
+    # stays one test.)
+    real_killpg, eperm_probes = os.killpg, []
 
     def killpg(group, sig):
-        deadline = time.monotonic() + 10.0
-        while True:
-            try:
-                return real_killpg(group, sig)
-            except PermissionError:
-                if sig != 0 or time.monotonic() >= deadline:
-                    raise
-                time.sleep(0.01)
+        if sig == 0 and len(eperm_probes) < 2:
+            eperm_probes.append(group)
+            raise PermissionError(1, "Operation not permitted")
+        return real_killpg(group, sig)
 
     monkeypatch.setattr(os, "killpg", killpg)
     monkeypatch.setattr(rp, "KILL_WAIT_S", 30.0)                                          # a loaded runner, not a slower harness
@@ -3405,7 +3400,7 @@ def test_f10_stop_ends_the_child_and_the_process_group_it_leads_and_reports_the_
         result = backend.stop()
         assert result["ok"] is True and result["exited"] is True and result["terminated"] is True, result
         assert result["killed"] is False and result["errors"] == [], result
-        assert result["group_exited"] is True, result
+        assert result["group_exited"] is True and len(eperm_probes) == 2, result
         assert wait_for(lambda: not alive(grandchild))                                   # descendants went with it
     finally:
         if backend.proc and backend.proc.poll() is None:

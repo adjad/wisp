@@ -211,6 +211,10 @@ final class SettingsLoader: ObservableObject {
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
+    @Published var behaviorEnabled = true
+    @Published var behaviorRemote = false
+    @Published var behaviorPhraser = true
+    @Published var behaviorForgetStatus: String?
     @Published var cloudPreset = "openrouter"
     @Published var cloudBaseURL = "https://openrouter.ai"
     @Published var cloudAPIPrefix = "/api/v1"
@@ -328,6 +332,7 @@ final class SettingsLoader: ObservableObject {
             self.fullAccess = await client.mode().fullAccess
             self.idleMinutes = await client.idleTimeout()
             self.humanizerEnabled = await client.humanizerEnabled()
+            await self.refreshBehavior()
             await self.refreshCloud()
             await self.refreshLocalProvider()
         }
@@ -953,6 +958,47 @@ final class SettingsLoader: ObservableObject {
         Task { self.humanizerEnabled = await client.setHumanizerEnabled(on) }
     }
 
+    func refreshBehavior() async {
+        guard let settings = await client.behaviorSettings() else { return }
+        if let on = settings["enabled"] as? Bool { behaviorEnabled = on }
+        behaviorRemote = settings["remote_active"] as? Bool ?? false
+        behaviorPhraser = settings["phraser"] as? Bool ?? true
+    }
+
+    func setBehaviorEnabled(_ on: Bool) {
+        behaviorEnabled = on
+        Task {
+            // Re-read the real state on failure so the switch never shows a
+            // position the backend did not accept.
+            if let actual = await client.setBehaviorEnabled(on) {
+                self.behaviorEnabled = actual
+            } else {
+                await self.refreshBehavior()
+            }
+        }
+    }
+
+    /// Deletes everything Wisp learned about the user's routines, plus the
+    /// untouched reminders and holds it created on its own.
+    func forgetBehaviorData() {
+        behaviorForgetStatus = "Forgetting…"
+        Task {
+            guard let result = await client.forgetBehaviorData() else {
+                self.behaviorForgetStatus = "Couldn't forget what Wisp learned. Try again."
+                return
+            }
+            let removed = (result["removed_items"] as? [Any])?.count ?? 0
+            let kept = result["kept_items"] as? Int ?? 0
+            let failed = (result["files_failed"] as? [Any])?.count ?? 0
+            var text = failed > 0
+                ? "Forgot most of what Wisp learned, but \(failed) file\(failed == 1 ? "" : "s") couldn't be deleted. Check the folder permissions and try again."
+                : "Forgot what Wisp learned."
+            if removed > 0 { text += " Removed \(removed) reminder\(removed == 1 ? "" : "s") or hold\(removed == 1 ? "" : "s") Wisp had added." }
+            if kept > 0 { text += " Kept \(kept) you changed." }
+            self.behaviorForgetStatus = text
+        }
+    }
+
     func setFullAccess(_ on: Bool) {
         fullAccess = on
         Task { self.fullAccess = await client.setFullAccess(on).fullAccess }
@@ -984,6 +1030,31 @@ struct SettingsView: View {
         let id: String
         let title: String
         let symbol: String
+    }
+
+    /// What "Learn my routines" does with data, which differs when a remote
+    /// inference server is configured (the learned summary is part of the prompt,
+    /// and wording / event labeling would send calendar titles to that server).
+    private var behaviorExplanation: String {
+        let sources = "Learns from your calendar, reminders, message timing (never message text) "
+            + "and how you use Wisp. Nudges at most 4 a day. "
+        guard loader.behaviorEnabled else {
+            return "Off. Wisp is not learning your routines or sending nudges. What it already "
+                + "learned stays on this Mac and is still deleted automatically as it ages; "
+                + "use Forget to erase it now."
+        }
+        guard loader.behaviorRemote else {
+            return sources + "What it learns stays on this Mac, and old data is deleted automatically."
+        }
+        if loader.behaviorPhraser {
+            return sources + "Learned data is stored on this Mac, but you use a remote inference "
+                + "server: nudge wording and event categorization send calendar titles and nudge "
+                + "details to your configured server, and a short summary of your routines is part "
+                + "of the prompts it receives."
+        }
+        return sources + "Learned data is stored on this Mac, but you use a remote inference server: "
+            + "a short summary of your routines is part of the prompts it receives. Nudge wording "
+            + "and event categorization are off, so calendar titles are not sent for them."
     }
 
     private var panes: [Pane] {
@@ -1018,6 +1089,7 @@ struct SettingsView: View {
     @AppStorage(ContactsReader.enabledKey) private var contactsEnabled = true
     @ObservedObject private var browserPrivacySync = BrowserHistoryReader.delivery
     @ObservedObject private var contactsPrivacySync = ContactsReader.delivery
+    @State private var confirmForgetBehavior = false
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1510,6 +1582,42 @@ struct SettingsView: View {
                         }
                         .toggleStyle(.switch)
                         .tint(Theme.accent)
+
+                        Divider()
+
+                        Toggle(isOn: Binding(
+                            get: { loader.behaviorEnabled },
+                            set: { loader.setBehaviorEnabled($0) })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Learn my routines")
+                                    .font(.system(size: 14, weight: .medium))
+                                Text(behaviorExplanation)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .toggleStyle(.switch)
+                        .tint(Theme.accent)
+
+                        HStack(spacing: 10) {
+                            Button("Forget what Wisp learned…", role: .destructive) {
+                                confirmForgetBehavior = true
+                            }
+                            if let status = loader.behaviorForgetStatus {
+                                Text(status)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .alert("Forget what Wisp learned?", isPresented: $confirmForgetBehavior) {
+                            Button("Forget", role: .destructive) { loader.forgetBehaviorData() }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("This deletes your learned routines, patterns and nudge history, and "
+                                 + "removes the reminders and holds Wisp added on its own that you haven't "
+                                 + "changed. Anything you edited or completed stays. If \"Learn my "
+                                 + "routines\" is on, Wisp starts learning again from scratch.")
+                        }
 
                         Divider()
 
