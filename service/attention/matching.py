@@ -38,6 +38,11 @@ def _tokens(text: str) -> set[str]:
     return {w for w in _WORD.findall((text or "").casefold()) if w not in _STOP and not w.isdigit()}
 
 
+def shares_words(text: str, commitment: dict) -> bool:
+    """`text` and the commitment's title or location have a meaningful word in common."""
+    return bool(_tokens(text) & _tokens(f"{commitment.get('title') or ''} {commitment.get('location') or ''}"))
+
+
 @dataclass(frozen=True)
 class OnFile:
     commitment_id: str
@@ -49,12 +54,11 @@ def find_on_file(resolved: Resolved, text: str, commitments: list[dict], tz: str
     if resolved.day is None:
         return None
     zone = ZoneInfo(tz)
-    words = _tokens(text)
     for c in commitments:
         if c.get("status") not in ("active", "done") or c.get("when_ts") is None:
             continue
         when = datetime.fromtimestamp(float(c["when_ts"]), zone)
-        shared = bool(words & _tokens(f"{c.get('title') or ''} {c.get('location') or ''}"))
+        shared = shares_words(text, c)
         if resolved.has_clock and resolved.start is not None:
             gap = abs(when.timestamp() - resolved.start.timestamp())
             if gap <= CLOCK_EXACT_S:

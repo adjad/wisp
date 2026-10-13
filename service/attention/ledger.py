@@ -124,13 +124,15 @@ class Ledger:
                 f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
                 "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
 
-    def rows_since(self, since_ts: float, states: tuple[str, ...]) -> list[dict]:
-        """Rows decided since `since_ts` in any of `states`, oldest first."""
+    def rows_relevant(self, since_ts: float, upcoming_from: float, states: tuple[str, ...]) -> list[dict]:
+        """Rows in any of `states` decided since `since_ts`, or whose event (or, with no clock,
+        due time) is still at or after `upcoming_from`, however long ago they were decided.
+        Oldest first."""
         marks = ",".join("?" * len(states))
         with self._lock:
             rows = self._db.execute(
-                f"SELECT * FROM actions WHERE decided_at>=? AND state IN ({marks}) "
-                "ORDER BY decided_at", (since_ts, *states)).fetchall()
+                f"SELECT * FROM actions WHERE (decided_at>=? OR COALESCE(event_ts,due_ts)>=?) "
+                f"AND state IN ({marks}) ORDER BY decided_at", (since_ts, upcoming_from, *states)).fetchall()
         return [_row(r) for r in rows]
 
     def recent(self, limit: int = 20) -> list[dict]:

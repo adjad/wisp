@@ -621,7 +621,8 @@ async def test_two_messages_in_one_shadow_pass_record_one_would_be_reminder(ledg
 async def test_a_reminder_the_user_undid_is_not_re_created_by_a_later_message(ledger):
     f = Fakes()
     await run(dinner_twice()[:2], MON_9AM + 60, ledger, f)
-    ledger.finish("msg:d1", "undone", {"undone": True}, MON_9AM + 120)
+    row = ledger.get("msg:d1")
+    ledger.finish("msg:d1", "undone", {**row["detail"], "undone": True}, MON_9AM + 120)   # as undo() does
     out = await run(dinner_twice(), MON_9AM + 900, ledger, f)
     assert [o.state for o in out] == ["already_on_file"] and len(f.created) == 1
 
@@ -655,4 +656,75 @@ async def test_a_different_plan_the_same_evening_is_not_a_duplicate(ledger):
     await run(dinner_twice()[:2], MON_9AM + 60, ledger, f, lead_minutes=180)
     # 90 minutes apart and no word in common: a second plan, not a repeat of the first.
     out = await run(dinner_twice("Movie tonight at 8:30pm"), MON_9AM + 900, ledger, f, lead_minutes=180)
+    assert [o.state for o in out] == ["created"] and len(f.created) == 2
+
+
+
+# ---------------------------------------------- re-audit of the dedup (Release Auditor notes 1, 2)
+
+async def test_another_persons_plan_at_a_nearby_time_is_not_a_duplicate(ledger):
+    """Mom's dentist at 7pm and Sam's movie at 7:15pm share nothing but the hour: two plans."""
+    f = Fakes()
+    mom = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing"), rec("d1", "Mom", "Dentist today at 7pm", MON_9AM)]
+    await run(mom, MON_9AM + 60, ledger, f)
+    sam = mom + [rec("hs", "Sam", "hey", MON_9AM - 3600, "outgoing"),
+                 rec("s1", "Sam", "Movie tonight at 7:15pm", MON_9AM + 600)]
+    out = await run(sam, MON_9AM + 900, ledger, f)
+    assert [o.state for o in out] == ["created"] and len(f.created) == 2
+
+
+async def test_the_same_conversation_still_dedups_on_time_alone(ledger):
+    f = Fakes()
+    await run(dinner_twice()[:2], MON_9AM + 60, ledger, f)
+    out = await run(dinner_twice("ok 7:15pm then"), MON_9AM + 900, ledger, f)
+    assert [o.state for o in out] == ["already_on_file"] and len(f.created) == 1
+
+
+async def test_another_conversation_about_the_same_plan_by_name_still_dedups(ledger):
+    f = Fakes()
+    await run(dinner_twice()[:2], MON_9AM + 60, ledger, f, lead_minutes=180)
+    group = dinner_twice()[:2] + [rec("hg", "Family", "hey", MON_9AM - 3600, "outgoing"),
+                                  rec("g1", "Family", "Dinner tonight at 7pm, bring dessert", MON_9AM + 600,
+                                      sender="Dad")]
+    out = await run(group, MON_9AM + 900, ledger, f, lead_minutes=180)
+    assert [o.state for o in out] == ["already_on_file"] and len(f.created) == 1
+
+
+async def test_the_thread_key_holds_no_conversation_handle(ledger):
+    await run([rec("h", "+16505550123", "hi", MON_9AM - 3600, "outgoing"),
+               rec("d1", "+16505550123", "Dinner tonight at 7pm", MON_9AM)], MON_9AM + 60, ledger, Fakes())
+    thread = ledger.get("msg:d1")["detail"]["thread"]
+    import hashlib
+    assert len(thread) == 16 and "6505550123" not in thread
+    assert thread != hashlib.sha256(b"+16505550123").hexdigest()[:16]        # salted, not a bare hash
+
+
+async def test_a_plan_acted_on_long_before_its_event_is_still_found(ledger):
+    """Today the 48h soon gate keeps decisions near the event; this guards a wider window."""
+    event = MON_9AM + 10 * 3600                                             # 7pm tonight
+    ledger.claim("msg:old", title="Mom: Dinner tonight at 7pm (7:00 PM)", due_ts=event - 3 * 3600,
+                 event_ts=event, now=MON_9AM - 20 * 86400)
+    ledger.finish("msg:old", "created", {}, MON_9AM - 20 * 86400)          # no thread key: a time-only
+    f = Fakes()                                                              # match needs a shared word
+    out = await run(dinner_twice()[:2], MON_9AM + 60, ledger, f, lead_minutes=180)
+    assert [o.state for o in out] == ["already_on_file"] and out[0].detail["duplicate_of"] == "msg:old"
+    assert f.created == []
+
+
+async def test_a_long_past_event_does_not_suppress_a_new_one(ledger):
+    ledger.claim("msg:old", title="Mom: Dinner at 7pm (7:00 PM)", due_ts=MON_9AM - 20 * 86400,
+                 event_ts=MON_9AM - 20 * 86400 + 3 * 3600, now=MON_9AM - 21 * 86400)
+    ledger.finish("msg:old", "created", {}, MON_9AM - 21 * 86400)
+    out = await run(dinner_twice()[:2], MON_9AM + 60, ledger, Fakes())
+    assert [o.state for o in out] == ["created"]
+
+
+async def test_the_senders_label_in_a_title_is_not_a_shared_word(ledger):
+    f = Fakes()
+    mom = [rec("h", "Mom", "hi", MON_9AM - 3600, "outgoing"), rec("d1", "Mom", "Dentist today at 7pm", MON_9AM)]
+    await run(mom, MON_9AM + 60, ledger, f)
+    assert f.created[0].title.startswith("Mom:")
+    sam = mom + [rec("hs", "Sam", "hey", MON_9AM - 3600, "outgoing"),
+                 rec("s1", "Sam", "Picking up mom at 7:15pm", MON_9AM + 600)]
+    out = await run(sam, MON_9AM + 900, ledger, f)
     assert [o.state for o in out] == ["created"] and len(f.created) == 2
