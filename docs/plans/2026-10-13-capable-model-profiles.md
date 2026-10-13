@@ -468,3 +468,5 @@ correct, 3/6 cited. `verify()` dropped the uncited three. Fix (slice 3): an unci
 sentence is grounded by content-token overlap against the retrieved passages — full match for
 answers under three tokens, 60% otherwise — and cited to that passage; anything that cannot be
 traced is still dropped. `search_think` retired with its numbers; `capture_think` kept, unmeasured.
+Confirmed live (run `20261013-143849`, V3, 6 cases × 3 reps): **18/18 correct**, p50 5.2s, versus
+33% in every run before the fix.
