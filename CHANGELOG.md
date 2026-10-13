@@ -4,6 +4,10 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
+
 ## [1.3.1] - 2026-10-12
 
 ### Added
