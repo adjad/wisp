@@ -43,7 +43,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(attention_api, "MOE_DIR", tmp_path)
     monkeypatch.setattr(wiring, "local_timezone", lambda: TZ)
     monkeypatch.setattr(attention_api, "local_timezone", lambda: TZ)
-    monkeypatch.setattr(wiring, "_commitments", lambda now: [])
+    monkeypatch.setattr(wiring, "_commitments", lambda now, tz: [])
     wiring.reset()
     wiring.get_ledger().set_meta("enabled_at", repr(NOW - 86400))
     wiring.get_ledger().set_meta("last_mode", "live")        # already live: no re-baseline
@@ -399,10 +399,9 @@ def test_the_scheduler_does_not_wait_for_the_pass():
 def test_all_day_events_earlier_today_are_visible_to_the_on_file_check(monkeypatch):
     seen = {}
     monkeypatch.undo()                                       # use the real _commitments for this one
-    monkeypatch.setattr(wiring, "local_timezone", lambda: TZ)
     monkeypatch.setattr(wiring.assistant_store, "upcoming",
                         lambda now, days=7: seen.update(now=now, days=days) or [])
-    wiring._commitments(NOW)
+    wiring._commitments(NOW, TZ)
     midnight = datetime(2026, 9, 21, 0, 0, tzinfo=ZoneInfo(TZ)).timestamp()
     assert seen["now"] == midnight and seen["days"] >= 5
 
@@ -817,3 +816,44 @@ async def test_old_message_text_is_purged_from_the_ledger_during_a_tick(isolated
     assert "quote" not in gone["detail"] and "why" not in gone["detail"]
     assert led.get("msg:new")["detail"]["quote"] == "fresh words"
     assert led.known(["msg:old"]) == {"msg:old"}                  # still never acted on again
+
+
+# ---- no guessed time zone: an unknown zone stops the pass (post-merge audit, low note) ----------
+
+async def test_an_unknown_time_zone_reads_nothing_and_acts_on_nothing(isolated, feed, effects, monkeypatch):
+    from service.tools import imessage_tools
+    go_live(isolated)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    reads = []
+    monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: reads.append(1) or FEED)
+    assert await wiring.run_tick(NOW) == []
+    assert reads == [] and effects["created"] == [] and wiring.get_ledger().get("msg:m") is None
+    assert wiring.get_ledger().meta("last_mode") == "off"            # resuming re-baselines, no sweep
+
+
+async def test_once_the_zone_is_known_again_the_old_message_is_not_swept_up(isolated, feed, effects, monkeypatch):
+    go_live(isolated)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    await wiring.run_tick(NOW)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: TZ)
+    assert await wiring.run_tick(NOW + 300) == [] and effects["created"] == []
+
+
+async def test_create_reminder_refuses_without_a_zone_and_never_reaches_the_tool(isolated, monkeypatch):
+    from service.tools import assistant_tools
+    called = []
+
+    async def tool(*a, **k):
+        called.append(a)
+        return "Reminder set: x"
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    got = await wiring.create_reminder(live.Plan("t", NOW + 3600, None, "today", "q"))
+    assert got == {"ok": False, "status": "failed", "error": "The local time zone cannot be determined."}
+    assert called == []
+
+
+def test_status_still_answers_without_a_zone(isolated, client, monkeypatch):
+    monkeypatch.setattr(attention_api, "local_timezone", lambda: None)
+    body = client.get("/assistant/attention").json()
+    assert "created_today" in body and body["settings"]["mode"] == "shadow"
