@@ -140,3 +140,16 @@ def test_retrieval_text_is_identical_with_flag_on(monkeypatch):
     # and the indexed text is the full prose, not the one-liner
     assert REGISTRY["view_emails"].description in docs_off["view_emails"][0]
     assert SHORT["view_emails"] not in docs_off["view_emails"][0]
+
+
+def test_model_led_discovery_schemas_follow_terse_mode(monkeypatch):
+    # Discovery hands schemas to the model through ToolSpec.schema(), not
+    # tool_schemas(); a full schema there would show the model a mix of styles.
+    from service.router.model_led import registry_specs
+    from service.tools.registry import REGISTRY, tool_schemas
+    spec = {s.name: s for s in registry_specs(REGISTRY)}["send_email"]
+    monkeypatch.setenv("WISP_TERSE_TOOL_SCHEMAS", "0")
+    assert spec.schema() == REGISTRY["send_email"].schema()
+    monkeypatch.setenv("WISP_TERSE_TOOL_SCHEMAS", "1")
+    assert spec.schema() == tool_schemas(["send_email"])[0]
+    assert spec.schema()["function"]["description"] != REGISTRY["send_email"].description

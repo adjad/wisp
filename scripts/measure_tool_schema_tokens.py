@@ -15,14 +15,24 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import service.tools  # noqa: E402,F401  (registers every tool)
-from service.tools.registry import REGISTRY, Tool, _terse_schema  # noqa: E402
+import os  # noqa: E402
+
+from service.tools.registry import REGISTRY, model_schema  # noqa: E402
 
 
 def _sizes(terse: bool) -> dict[str, int]:
     # Render straight from the registry so the unavailable update_event is
     # counted too; tool_schemas() would skip it.
-    render = _terse_schema if terse else Tool.schema
-    return {n: len(json.dumps(render(t), separators=(",", ":"))) for n, t in REGISTRY.items()}
+    previous = os.environ.get("WISP_TERSE_TOOL_SCHEMAS")
+    os.environ["WISP_TERSE_TOOL_SCHEMAS"] = "1" if terse else "0"
+    try:
+        return {n: len(json.dumps(model_schema(t.name, t.description, t.parameters),
+                                  separators=(",", ":"))) for n, t in REGISTRY.items()}
+    finally:
+        if previous is None:
+            os.environ.pop("WISP_TERSE_TOOL_SCHEMAS", None)
+        else:
+            os.environ["WISP_TERSE_TOOL_SCHEMAS"] = previous
 
 
 def main(argv: list[str]) -> int:

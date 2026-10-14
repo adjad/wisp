@@ -375,27 +375,28 @@ def _strip_parameter_descriptions(node: Any) -> Any:
     return out
 
 
-def _terse_schema(tool: Tool) -> dict:
-    """Model-facing schema with the one-line description and bare parameters.
-    Built from copies; the registry's stored objects are never touched, and
-    retrieval keeps indexing the full description."""
-    from service.tools.short_descriptions import short_description
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            # skill/MCP/user-authored tools have no entry and keep their prose
-            "description": short_description(tool.name, tool.description),
-            "parameters": _strip_parameter_descriptions(tool.parameters),
-        },
-    }
+def model_schema(name: str, description: str, parameters: dict) -> dict:
+    """The schema the MODEL is shown for one tool.
+
+    Full by default. With terse mode on: the one-line description and bare
+    parameters, built from copies so the registry's stored objects are never
+    touched and retrieval keeps indexing the full description. Every path that
+    hands schemas to the model goes through here, including model-led schema
+    discovery, so the model never sees a mix it was not trained on."""
+    from service.config import terse_tool_schemas_enabled
+    if terse_tool_schemas_enabled():
+        from service.tools.short_descriptions import short_description
+        # skill/MCP/user-authored tools have no entry and keep their prose
+        description = short_description(name, description)
+        parameters = _strip_parameter_descriptions(parameters)
+    return {"type": "function",
+            "function": {"name": name, "description": description, "parameters": parameters}}
 
 
 def tool_schemas(names: list[str] | None = None) -> list[dict]:
-    from service.config import terse_tool_schemas_enabled
     tools = REGISTRY.values() if names is None else [REGISTRY[n] for n in names if n in REGISTRY]
-    render = _terse_schema if terse_tool_schemas_enabled() else Tool.schema
-    return [render(t) for t in tools if not t.unavailable_reason]
+    return [model_schema(t.name, t.description, t.parameters)
+            for t in tools if not t.unavailable_reason]
 
 
 def _arg_hint(tool: Tool) -> str:
