@@ -1,12 +1,4 @@
-"""Text-to-speech via `say` (real, built into every Mac) — and two honest
-non-implementations.
-
-`transcribe_audio` needs Apple's Speech framework (SFSpeechRecognizer), which
-has no CLI and no Python binding — it would need a new Swift bridge (record ->
-recognize -> return text) that does not exist yet. `live_captions` is a
-system-wide Accessibility overlay with no API surface at all, scriptable or
-otherwise. Both say so rather than pretending.
-"""
+"""Text-to-speech via `say` (real, built into every Mac)."""
 from __future__ import annotations
 
 import subprocess
@@ -53,33 +45,3 @@ def text_to_speech(text: str, voice: str = "", save_to: str = "") -> str:
     return f"Saved speech to {out_path.name}." if out_path else "Spoken."
 
 
-@register(
-    "transcribe_audio",
-    "Transcribe speech from an audio file to text. NOT YET AVAILABLE — this "
-    "needs a native Speech-framework bridge (SFSpeechRecognizer) in the Swift "
-    "app that doesn't exist yet. Says so rather than guessing at content.",
-    {"type": "object",
-     "properties": {"path": {"type": "string", "description": "Audio file to transcribe."}}},
-    category="app_control",
-    aliases=["transcribe this voice memo", "what does this recording say",
-             "convert this recording into a written transcript"],
-)
-def transcribe_audio(path: str = "") -> str:
-    return ("Audio transcription isn't built yet — it needs a native Speech "
-            "framework bridge in the Swift app that doesn't exist today. I "
-            "can't guess at what an audio file says, so I'm telling you "
-            "rather than making something up.")
-
-
-@register(
-    "live_captions",
-    "Turn on system-wide Live Captions. NOT AVAILABLE — Live Captions is a "
-    "system accessibility overlay with no scriptable API at all on macOS. "
-    "Says so rather than pretending to toggle it.",
-    {"type": "object", "properties": {}},
-    category="app_control",
-    aliases=["turn on live captions", "enable captions for what's playing"],
-)
-def live_captions() -> str:
-    return ("Live Captions has no API — turn it on in System Settings > "
-            "Accessibility > Live Captions.")

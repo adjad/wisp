@@ -109,37 +109,8 @@ def clipboard_write(text: str) -> str:
     return f"copied {len(text)} chars to the clipboard"
 
 
-@register(
-    "clear_clipboard",
-    "Empty the clipboard — for after copying something sensitive (a "
-    "password, a card number).",
-    {"type": "object", "properties": {}},
-    category="system_write",
-    aliases=["clear my clipboard", "empty the clipboard",
-             "wipe what I just copied", "clear that from my clipboard"],
-)
-def clear_clipboard() -> str:
-    p = _run(["pbcopy"], input_text="")
-    if p.returncode != 0:
-        return f"(could not clear clipboard: {p.stderr.strip() or 'unknown error'})"
-    return "Clipboard cleared."
-
-
-@register(
-    "get_battery_status",
-    "Get real battery info: charge %, charging/plugged-in state, time remaining, "
-    "charge cycle count, and battery HEALTH (current max capacity vs. original "
-    "design capacity, as a percentage). Use this for ANY question about battery "
-    "charge, degradation, wear, or whether the battery needs replacing. Do NOT "
-    "use run_shell/pmset for this: `pmset -g log`'s 'BatteryHealth Warning "
-    "level'/'cap:' lines are just low-charge UI-warning events tied to the "
-    "charge percent at that moment (10 = 10% charge remaining, not 10% health) "
-    "— they are not a wear/capacity metric, and reading them as one produces "
-    "confidently wrong health/degradation claims.",
-    {"type": "object", "properties": {}},
-    category="system_read",
-)
-def get_battery_status() -> str:
+def battery_status() -> str:
+    """Charge, power state, cycle count and design-capacity health (system_status section)."""
     p = _run(["ioreg", "-rn", "AppleSmartBattery"])
     if p.returncode != 0 or not p.stdout.strip():
         return "(no battery data — this Mac may not have a battery)"
@@ -186,17 +157,8 @@ def get_battery_status() -> str:
     return "; ".join(parts)
 
 
-@register(
-    "list_bluetooth_devices",
-    "List the user's Bluetooth devices — what's currently CONNECTED (name, "
-    "signal strength) and the controller's on/off state. Use for 'what's on my "
-    "bluetooth', 'is my AirPods connected', 'is Bluetooth on'. Read-only: this "
-    "cannot pair, connect, disconnect, or turn Bluetooth on/off — no tool here "
-    "does, so say that plainly rather than claiming to have changed anything.",
-    {"type": "object", "properties": {}},
-    category="system_read",
-)
-def list_bluetooth_devices() -> str:
+def bluetooth_devices() -> str:
+    """Connected Bluetooth devices and controller state (system_status section)."""
     # MEASURED FAILURE (2026-08-18): asked "what devices are on my bluetooth",
     # with no dedicated tool the model called get_volume and reported it could
     # not answer. `system_profiler SPBluetoothDataType -json` is fast (~50ms
@@ -229,79 +191,8 @@ def list_bluetooth_devices() -> str:
     return "\n".join(lines)
 
 
-@register(
-    "set_keyboard_backlight",
-    "Call this for ANY request to change keyboard lighting/backlight — do NOT "
-    "use run_shell for this (there's no shell command, `defaults` key, or "
-    "`hidutil property` that actually works; both were tried and confirmed "
-    "to silently no-op on this hardware, not just guessed). This tool does "
-    "NOT change the backlight — on this Mac (M2-and-later keyboard layout), "
-    "keyboard backlight is fully automatic (ambient light + typing activity) "
-    "with no manual software override, confirmed via ioreg and defaults. "
-    "Tell the user this directly instead of claiming to have set it.",
-    {"type": "object", "properties": {}},
-    category="system_read",
-)
-def set_keyboard_backlight() -> str:
-    return ("Keyboard backlight can't be set from here — on this Mac's "
-            "keyboard (the M2-and-later layout, where F5/F6 are Mic Mute/DND "
-            "instead of illumination), the backlight is fully automatic "
-            "based on ambient light and typing activity, with no manual "
-            "override exposed to software. This was confirmed, not assumed: "
-            "no KeyboardBacklight service in ioreg, no related `defaults` "
-            "key, and simulating the old illumination hotkeys has no effect.")
-
-
-@register(
-    "run_speed_test",
-    "Run a real internet (Wi-Fi/Ethernet) speed test using macOS's built-in "
-    "`networkQuality` tool — no install needed. Returns download/upload Mbps, "
-    "latency, and responsiveness. Takes ~15-20 seconds and uses real bandwidth "
-    "(several hundred MB), so it asks for confirmation first rather than "
-    "running silently. Use this for ANY 'run a speed test' / 'check my "
-    "internet speed' request — do NOT use run_shell/`speedtest` for this, "
-    "that command isn't installed on this Mac and there is no built-in "
-    "`speedtest` binary; `networkQuality` is the real, working equivalent.",
-    {"type": "object", "properties": {}},
-    category="network_active",
-)
-def run_speed_test() -> str:
-    try:
-        p = subprocess.run(["networkQuality", "-c", "-M", "30"],
-                           capture_output=True, text=True, timeout=45)
-    except subprocess.TimeoutExpired:
-        return "(speed test timed out after 45s)"
-    except FileNotFoundError:
-        return "(networkQuality is not available on this Mac — needs macOS 12 Monterey or later)"
-    if p.returncode != 0 or not p.stdout.strip():
-        return f"(speed test failed: {p.stderr.strip() or 'no output'})"
-    try:
-        data = json.loads(p.stdout)
-    except json.JSONDecodeError:
-        return "(could not parse speed test output)"
-
-    dl_mbps = data.get("dl_throughput", 0) / 1_000_000
-    ul_mbps = data.get("ul_throughput", 0) / 1_000_000
-    rtt_ms = data.get("base_rtt")
-    interface = next(iter(data.get("other", {}).get("interface-type", {})), None)
-
-    parts = [f"download: {dl_mbps:.1f} Mbps", f"upload: {ul_mbps:.1f} Mbps"]
-    if rtt_ms is not None:
-        parts.append(f"latency: {rtt_ms:.0f} ms")
-    if interface:
-        parts.append(f"via {interface}")
-    return "; ".join(parts)
-
-
-@register(
-    "set_wifi",
-    "Turn the Mac's Wi-Fi on or off.",
-    {"type": "object",
-     "properties": {"on": {"type": "boolean", "description": "true to enable, false to disable"}},
-     "required": ["on"]},
-    category="system_write",
-)
-def set_wifi(on: bool) -> str:
+def wifi_power(on: bool) -> str:
+    """Wi-Fi radio on/off (toggle_setting setting='wifi')."""
     # en0 is the Wi-Fi interface on virtually all Macs; networksetup -listallhardwareports
     # could confirm it, but adds a second subprocess for a case that basically never varies.
     p = _run(["networksetup", "-setairportpower", "en0", "on" if on else "off"])

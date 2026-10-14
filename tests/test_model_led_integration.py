@@ -559,7 +559,8 @@ def test_explicit_public_lookup_request_keeps_web_without_confirmation_before_an
 @pytest.mark.parametrize("model_led", [True, False])
 def test_opaque_outbound_always_confirms_in_model_led_even_with_full_access(synthetic, monkeypatch, name, model_led):
     effects, register = synthetic
-    register(name, "shortcuts_bridge", "app_control", parameters={"type": "object", "properties": {
+    # Synthetic stand-ins: the opaque-outbound rule outlives the retired tools.
+    register(name, "automation_tools", "app_control", parameters={"type": "object", "properties": {
         "name": {"type": "string"}}})
     monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
     monkeypatch.setattr("service.safety.grants.check", lambda *args: "allow")

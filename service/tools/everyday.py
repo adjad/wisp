@@ -293,35 +293,3 @@ async def daily_brief(location: str = "", days: int = 1,
     return "\n".join(out)
 
 
-@register(
-    "find_my_device",
-    "Open Find My so the user can locate a device or see where someone is. "
-    "This OPENS the app — it cannot read locations back, because macOS exposes "
-    "no API for Find My data. Say that plainly rather than implying a location "
-    "was retrieved.",
-    {
-        "type": "object",
-        "properties": {
-            "target": {"type": "string",
-                       "description": "What they're looking for — 'iPhone', 'AirPods', or a person's name."},
-        },
-    },
-    category="app_control",
-    aliases=["where's my phone", "I can't find my airpods", "find my iphone",
-             "ping my phone", "where did I leave my laptop",
-             "where is my daughter right now"],
-)
-def find_my_device(target: str = "") -> str:
-    import subprocess
-
-    p = subprocess.run(["open", "-a", "FindMy"], capture_output=True,
-                       text=True, timeout=15)
-    if p.returncode != 0:
-        return f"(could not open Find My: {(p.stderr or '').strip()})"
-    what = f" Look for {target.strip()}." if target.strip() else ""
-    # Deliberately explicit about the limit. Implying Wisp had READ the location
-    # would be a fabricated fact, which is the one thing the tool layer exists
-    # to prevent.
-    return ("Opened Find My." + what +
-            " I can't read locations back — macOS has no API for Find My data, "
-            "so you'll need to look at the window.")

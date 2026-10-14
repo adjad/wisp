@@ -70,7 +70,7 @@ def test_a_parenthesized_notice_does_not_block_an_identical_retry(synthetic, mon
 
 def test_volatile_status_reads_can_be_checked_again(synthetic):
     effects, register = synthetic
-    register("get_battery_status", "system_tools", "system_read")
-    run([[call("get_battery_status")], [call("get_battery_status")], "Synthetic answer."],
-        model_led_discovery=False, tools=["get_battery_status"])
-    assert [name for name, _ in effects] == ["get_battery_status", "get_battery_status"]
+    register("system_status", "system_tools", "system_read")
+    run([[call("system_status")], [call("system_status")], "Synthetic answer."],
+        model_led_discovery=False, tools=["system_status"])
+    assert [name for name, _ in effects] == ["system_status", "system_status"]

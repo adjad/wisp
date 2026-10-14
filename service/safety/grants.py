@@ -55,6 +55,45 @@ _NEVER_GRANTABLE = {"send_email", "send_message", "create_tool",
                     # user agreeing to every future cancel_event call.
                     "cancel_event", "add_calendar_event"}
 
+# Tools that absorbed several single-purpose tools in the 100-tool
+# consolidation: (argument that selects the behaviour, its default, the
+# behaviours one tool-wide grant covered before the merge). A grant is scoped
+# to the behaviour, so "always allow Do Not Disturb" cannot silently become
+# "always turn Wi-Fi off". A tool-wide rule stored before the merge keeps
+# covering only what the tool did then; grant(scoped=False) now records
+# "all_behaviours" when the user deliberately widens it.
+_MERGED_SCOPES = {
+    "toggle_setting": ("setting", "", frozenset({
+        "bluetooth", "do_not_disturb", "low_power_mode", "firewall", "airdrop"})),
+    "email_triage": ("action", "", frozenset()),
+    "set_timer": ("kind", "timer", frozenset({"timer"})),
+    "manage_timers": ("action", "list", frozenset({"list", "cancel", "cancel_all"})),
+    "music": ("app", "music", frozenset({"music"})),
+    "play_audio": ("kind", "", frozenset()),
+}
+
+# Retired tool -> (the merged tool, the behaviours it became). A DENY the user
+# stored on the old name still applies to those behaviours. A stored ALLOW is
+# deliberately not carried over: Wisp asks again rather than guessing.
+_RETIRED_INTO = {
+    "set_wifi": ("toggle_setting", frozenset({"wifi"})),
+    "accessibility_toggle": ("toggle_setting", frozenset({"voiceover"})),
+    "set_appearance": ("toggle_setting", frozenset({"dark_mode", "auto_appearance"})),
+    "archive_email": ("email_triage", frozenset({"archive"})),
+    "mark_email_read": ("email_triage", frozenset({"mark_read", "mark_unread"})),
+    "flag_email": ("email_triage", frozenset({"flag", "unflag"})),
+    "set_alarm": ("set_timer", frozenset({"alarm"})),
+    "set_sleep_timer": ("set_timer", frozenset({"sleep"})),
+    "stopwatch": ("manage_timers", frozenset({
+        "stopwatch_start", "stopwatch_lap", "stopwatch_read", "stopwatch_stop"})),
+    "spotify": ("music", frozenset({"spotify"})),
+    "play_podcast": ("play_audio", frozenset({"podcast"})),
+    "play_audiobook": ("play_audio", frozenset({"audiobook"})),
+    "play_radio": ("play_audio", frozenset({"radio"})),
+    "stop_radio": ("play_audio", frozenset({"stop"})),
+    "play_ambient": ("play_audio", frozenset({"ambient"})),
+}
+
 _lock = threading.Lock()
 
 
@@ -89,6 +128,13 @@ def scope_for(tool: str, args: dict) -> str:
     file write (not the exact filename).
     """
     try:
+        if tool in _MERGED_SCOPES:
+            arg, default, _ = _MERGED_SCOPES[tool]
+            value = str(args.get(arg) or default)
+            if tool == "toggle_setting":
+                from service.tools.system_extras import setting_key
+                return setting_key(value)
+            return value.strip().lower()
         if tool in ("web_fetch", "http_request"):
             from urllib.parse import urlparse
             return (urlparse(str(args.get("url", ""))).hostname or "").lower()
@@ -129,22 +175,63 @@ def _entry(tool: str) -> dict:
     return _CACHE.setdefault(tool, {"allow": [], "deny": []})
 
 
+def _retired_deny(tool: str, scope: str) -> bool:
+    """Whether a deny stored under a retired name covers this merged call."""
+    for old, (merged, behaviours) in _RETIRED_INTO.items():
+        if merged == tool and scope in behaviours and _CACHE.get(old, {}).get("deny"):
+            return True
+    return False
+
+
+def _split_retired_denies(tool: str, scope: str) -> None:
+    """Move retired-name denies onto the merged tool, minus what is now allowed.
+
+    Called with _lock held when the user allows `scope`. The other behaviours
+    the old name covered stay denied explicitly. A tool-wide allow ("") lifts
+    none of them, the same as an explicit per-behaviour deny on the merged tool.
+    """
+    for old, (merged, behaviours) in _RETIRED_INTO.items():
+        if merged != tool or not _CACHE.get(old, {}).get("deny"):
+            continue
+        if scope and scope not in behaviours:
+            continue
+        _CACHE.pop(old)
+        deny = _entry(tool).setdefault("deny", [])
+        for kept in sorted(behaviours - {scope}):
+            if not any(r.get("scope", "") == kept for r in deny):
+                deny.append({"scope": kept, "granted_at": time.time()})
+
+
+def _allow_covers(tool: str, rule: dict, scope: str) -> bool:
+    stored = rule.get("scope", "")
+    if stored == scope:
+        return True
+    if stored != "":
+        return False
+    if tool not in _MERGED_SCOPES or rule.get("all_behaviours"):
+        return True
+    return scope in _MERGED_SCOPES[tool][2]
+
+
 def check(tool: str, args: dict) -> str | None:
     """"allow" / "deny" if a standing grant covers this call, else None.
 
-    A stored scope of "" is tool-wide and matches any call.
+    A stored scope of "" is tool-wide. A tool-wide deny matches any call; a
+    tool-wide allow on a merged tool matches only what it covered when stored.
     """
-    entry = _CACHE.get(tool)
+    entry = _CACHE.get(tool) or {}
+    scope = scope_for(tool, args)
+    if tool in _MERGED_SCOPES and _retired_deny(tool, scope):
+        return "deny"
     if not entry:
         return None
-    scope = scope_for(tool, args)
     for rule in entry.get("deny", []):
         if rule.get("scope", "") in ("", scope):
             return "deny"
     if not _may_hold_allow(tool):
         return None
     for rule in entry.get("allow", []):
-        if rule.get("scope", "") in ("", scope):
+        if _allow_covers(tool, rule, scope):
             return "allow"
     return None
 
@@ -173,11 +260,21 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
     if decision == "allow" and not is_grantable(tool, args):
         return {"ok": False, "error": f"{tool} always asks — it can't be pre-approved"}
     scope = scope_for(tool, args or {}) if scoped else ""
+    if scoped and scope == "" and tool in _MERGED_SCOPES:
+        # No behaviour named (a malformed call): a scoped answer has nothing
+        # to attach to, and storing "" would silently widen it to every one.
+        return {"ok": False, "error": f"{tool} needs a {_MERGED_SCOPES[tool][0]} to remember this"}
     with _lock:
+        if decision == "allow" and tool in _MERGED_SCOPES:
+            _split_retired_denies(tool, scope)
         entry = _entry(tool)
         bucket = entry.setdefault(decision, [])
-        if not any(r.get("scope", "") == scope for r in bucket):
-            bucket.append({"scope": scope, "granted_at": time.time()})
+        existing = next((r for r in bucket if r.get("scope", "") == scope), None)
+        if existing is None:
+            existing = {"scope": scope, "granted_at": time.time()}
+            bucket.append(existing)
+        if tool in _MERGED_SCOPES and not scoped:
+            existing["all_behaviours"] = True
         # A tool can't be both allowed and denied for the same scope — the new
         # answer replaces the old one rather than sitting alongside it.
         other = "deny" if decision == "allow" else "allow"

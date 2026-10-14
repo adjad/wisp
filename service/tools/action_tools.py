@@ -15,25 +15,20 @@ stronger gate than a card in Wisp. They exist because the natural flow — "writ
 this, let me look, then send" — otherwise had to be modelled as a send, which
 is the one thing that can't be taken back.
 
-The TRIAGE tools (mark_email_read, archive_email) act only on the user's own
+The TRIAGE tool (email_triage) acts only on the user's own
 mailbox and nothing leaves the machine. Archive is reversible (the message
 moves to Archive, it is not deleted), so neither is treated as outbound.
 
-Everything except http_request goes through the app bridge (service/assistant/
-outbox.py) because Mail and Messages Automation is granted to Wisp.app, not to
-this Python process. http_request runs here since outbound HTTP needs no OS
-grant.
+Everything goes through the app bridge (service/assistant/outbox.py) because
+Mail and Messages Automation is granted to Wisp.app, not to this Python process.
 """
 from __future__ import annotations
 
-import json
 import re
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Iterator
-
-import httpx
 
 from service.assistant.outbox import request as app_request
 from service.tools.registry import register
@@ -951,56 +946,50 @@ async def draft_message(to: str, text: str) -> str:
     return _prepared_message_draft(literal, text)
 
 
+# action -> (app-bridge operation, its arguments, success receipt). The bridge
+# operations predate the merge and keep their names on the Swift side.
+_TRIAGE_ACTIONS = {
+    "archive": ("archive_email", {}, "Moved to Archive."),
+    "mark_read": ("mark_email_read", {"read": True}, "Marked as read."),
+    "mark_unread": ("mark_email_read", {"read": False}, "Marked as unread."),
+    "flag": ("flag_email", {"flagged": True}, "Flagged."),
+    "unflag": ("flag_email", {"flagged": False}, "Unflagged."),
+}
+
+
 @register(
-    "mark_email_read",
-    "Mark a specific email as read (or unread) in Mail. Needs the message's "
-    "Message-ID, which view_emails prints for each email. Use when the user "
-    "says they've dealt with something, or asks to flag it to come back to.",
+    "email_triage",
+    "Tidy one email in the user's own Mail: archive it (moves it out of the "
+    "inbox into Archive — NOT a delete, it can be found again), mark it read or "
+    "unread, or flag/unflag it for follow-up. Needs the message's Message-ID, "
+    "which view_emails prints for each email. Nothing leaves the Mac.",
     {"type": "object",
      "properties": {
          "message_id": {"type": "string",
                         "description": "Message-ID of the email, from view_emails"},
-         "read": {"type": "boolean",
-                  "description": "true to mark read (default), false to mark unread"},
+         "action": {"type": "string", "enum": list(_TRIAGE_ACTIONS),
+                    "description": "archive, mark_read, mark_unread, flag, or unflag"},
      },
-     "required": ["message_id"]},
+     "required": ["message_id", "action"]},
     category="email_triage",
+    aliases=["get that out of my inbox", "file away the Walgreens email",
+             "clear that one out", "mark those as read",
+             "I've seen it, clear the unread badge", "mark that unread",
+             "flag this email for follow-up", "mark this important",
+             "remove the flag from that email"],
 )
-async def mark_email_read(message_id: str, read: bool = True) -> str:
+async def email_triage(message_id: str, action: str) -> str:
     message_id = (message_id or "").strip()
     if not message_id:
         return ("(no message_id — call view_emails first and use the Message-ID "
                 "it prints for the email you mean)")
-    res = await app_request("mark_email_read",
-                            {"message_id": message_id, "read": bool(read)})
+    if action not in _TRIAGE_ACTIONS:
+        return f"(error: unknown action {action!r}. Use {', '.join(_TRIAGE_ACTIONS)}.)"
+    operation, extra, receipt = _TRIAGE_ACTIONS[action]
+    res = await app_request(operation, {"message_id": message_id, **extra})
     if not res.get("ok"):
         return f"(couldn't update the message: {res.get('error') or 'unknown error'})"
-    return f"Marked as {'read' if read else 'unread'}."
-
-
-@register(
-    "archive_email",
-    "Move a specific email out of the inbox into the Archive mailbox. Needs the "
-    "message's Message-ID, which view_emails prints for each email. This is NOT "
-    "a delete — the message stays in Archive and can be found again. Use when "
-    "the user asks to clear something out of their inbox.",
-    {"type": "object",
-     "properties": {
-         "message_id": {"type": "string",
-                        "description": "Message-ID of the email to archive, from view_emails"},
-     },
-     "required": ["message_id"]},
-    category="email_triage",
-)
-async def archive_email(message_id: str) -> str:
-    message_id = (message_id or "").strip()
-    if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you mean)")
-    res = await app_request("archive_email", {"message_id": message_id})
-    if not res.get("ok"):
-        return f"(couldn't archive the message: {res.get('error') or 'unknown error'})"
-    return "Moved to Archive."
+    return receipt
 
 
 @register(
@@ -1050,31 +1039,6 @@ async def forward_email(message_id: str, to: str, note: str = "") -> str:
                 operation="forward_email", action_id=res.get("action_id") or "")
         return f"(the forward was NOT sent: {res.get('error') or 'unknown error'})"
     return f"Forwarded to {', '.join(resolved)}."
-
-
-@register(
-    "flag_email",
-    "Flag or unflag a specific email for follow-up (the same flag Mail.app's "
-    "UI shows). Needs the Message-ID from view_emails.",
-    {"type": "object",
-     "properties": {
-         "message_id": {"type": "string", "description": "Message-ID of the email, from view_emails"},
-         "flagged": {"type": "boolean", "description": "true to flag, false to unflag. Default true."},
-     },
-     "required": ["message_id"]},
-    category="email_triage",
-    aliases=["flag this email for follow-up", "mark this important",
-             "remove the flag from that email", "flag it for follow-up"],
-)
-async def flag_email(message_id: str, flagged: bool = True) -> str:
-    message_id = (message_id or "").strip()
-    if not message_id:
-        return ("(no message_id — call view_emails first and use the Message-ID "
-                "it prints for the email you mean)")
-    res = await app_request("flag_email", {"message_id": message_id, "flagged": bool(flagged)})
-    if not res.get("ok"):
-        return f"(couldn't update the flag: {res.get('error') or 'unknown error'})"
-    return f"{'Flagged' if flagged else 'Unflagged'}."
 
 
 @register(
@@ -1151,77 +1115,3 @@ async def send_message(to: str, text: str, confirmed_self_send: bool = False) ->
     return f"Message sent to {display}."
 
 
-@register(
-    "http_request",
-    "Make an HTTP request that CHANGES something on a remote service — POST, "
-    "PUT, PATCH, or DELETE. Use for webhooks (Slack/Discord incoming webhooks, "
-    "IFTTT, home automation), and for APIs the user has given you a URL and "
-    "token for. For plain reading, use web_fetch instead — it's a GET and "
-    "doesn't interrupt the user for approval. Pass `body` as a JSON string for "
-    "JSON APIs. Only include auth headers the user actually gave you; never "
-    "invent a token.",
-    {"type": "object",
-     "properties": {
-         "url": {"type": "string", "description": "the https URL to call"},
-         "method": {"type": "string",
-                    "description": "POST, PUT, PATCH, or DELETE (default POST)"},
-         "body": {"type": "string",
-                  "description": "request body; a JSON string for JSON APIs"},
-         "headers": {"type": "string",
-                     "description": "optional headers as a JSON object string"},
-     },
-     "required": ["url"]},
-    category="network_write",
-)
-async def http_request(url: str, method: str = "POST", body: str = "",
-                       headers: str = "") -> str:
-    from service.router.model_led import BuiltinCompletion
-    url = (url or "").strip()
-    if not re.match(r"^https?://", url, re.I):
-        return f"(refusing to call {url!r} — only http:// and https:// URLs are allowed)"
-    method = (method or "POST").strip().upper()
-    if method not in ("POST", "PUT", "PATCH", "DELETE"):
-        return (f"({method} isn't a state-changing method. Use web_fetch for "
-                "GET requests.)")
-
-    hdrs: dict[str, str] = {}
-    if headers:
-        try:
-            parsed = json.loads(headers)
-            if not isinstance(parsed, dict):
-                raise ValueError("headers must be a JSON object")
-            hdrs = {str(k): str(v) for k, v in parsed.items()}
-        except Exception as e:  # noqa: BLE001
-            return f"(couldn't parse headers as a JSON object: {e})"
-
-    kwargs: dict = {"headers": hdrs}
-    if body:
-        # Send a valid JSON body as JSON (so the Content-Type is right without
-        # the model having to remember to set it), anything else as raw content.
-        try:
-            kwargs["json"] = json.loads(body)
-        except Exception:  # noqa: BLE001
-            kwargs["content"] = body
-
-    try:
-        # Never follow redirects: a 307/308 would re-send the body and custom
-        # headers to a host the user never confirmed.
-        async with httpx.AsyncClient(follow_redirects=False, timeout=20) as c:
-            r = await c.request(method, url, **kwargs)
-    except httpx.TimeoutException:
-        return f"(timed out calling {url} — the request may or may not have gone through)"
-    except Exception as e:  # noqa: BLE001
-        return f"(error calling {url}: {type(e).__name__}: {e})"
-
-    text = (r.text or "").strip()
-    if len(text) > _MAX_RESPONSE_CHARS:
-        text = text[:_MAX_RESPONSE_CHARS] + "…[truncated]"
-    status = f"HTTP {r.status_code}"
-    if 300 <= r.status_code < 400:
-        location = r.headers.get("location", "(no Location header)")
-        return (f"(request to {url} was redirected ({status}) to {location}; "
-                "the redirect was NOT followed)")
-    if r.status_code >= 400:
-        return f"(request failed: {method} {url} returned {status}. Response: {text or '(empty)'})"
-    return BuiltinCompletion(f"{method} {url} -> {status}. Response: {text or '(empty)'}",
-                             tool_name="http_request", completion_code=r.status_code)

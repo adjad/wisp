@@ -29,7 +29,7 @@ from service.search.chunker import Chunk
 from service.search.embedder import embedding_model
 from service.config.endpoints import role_target, EndpointConfigurationError
 from service.search.lexical import BM25
-from service.tools.registry import REGISTRY, is_tool_routable
+from service.tools.registry import REGISTRY, is_tool_routable, is_tool_searchable
 
 DEFAULT_SHORTLIST = 60
 DEFAULT_K = 12
@@ -104,7 +104,7 @@ _LEXICAL: _LexicalIndex | None = None
 
 def _signature() -> tuple[tuple[str, tuple[str, ...], str], ...]:
     return tuple((name, tuple(tool.aliases), tool.effective_retrieval_description)
-                 for name, tool in REGISTRY.items() if is_tool_routable(name))
+                 for name, tool in REGISTRY.items() if is_tool_searchable(name))
 
 
 def _lexical_index() -> _LexicalIndex:
@@ -113,7 +113,7 @@ def _lexical_index() -> _LexicalIndex:
     sig = _signature()
     if _LEXICAL is not None and _LEXICAL.signature == sig:
         return _LEXICAL
-    names = [name for name in REGISTRY if is_tool_routable(name)]
+    names = [name for name in REGISTRY if is_tool_searchable(name)]
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
     chunks = [Chunk(i, doc, 0, len(doc)) for i, doc in enumerate(docs)]
     _LEXICAL = _LexicalIndex(names, docs, BM25(chunks), sig)
