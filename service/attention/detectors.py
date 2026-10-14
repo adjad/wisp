@@ -76,20 +76,37 @@ def _zone_candidates() -> list[str]:
     return names
 
 
+def matches_clock(name: str, at: float | None = None, days: int = 0) -> bool:
+    """`name` is a zone that loads and gives the same UTC offset as the system clock, both read
+    at one instant (so a DST change between two reads cannot split them).
+
+    With `days`, the offsets must also agree at the same time of day on each of the next `days`
+    days. The system clock applies its own zone's rules to future instants even when that zone
+    cannot be named, so this tells apart two zones that merely share today's offset: Los Angeles
+    and Phoenix agree for most of the year and split an hour apart across a DST change."""
+    at = time.time() if at is None else at
+    try:
+        zone = ZoneInfo(name)
+    except (KeyError, ValueError, OSError):      # ZoneInfoNotFoundError is a KeyError
+        return False
+    for day in range(days + 1):
+        t = at + day * 86400
+        if datetime.fromtimestamp(t, zone).utcoffset() != timedelta(seconds=time.localtime(t).tm_gmtoff):
+            return False
+    return True
+
+
 def local_timezone() -> str | None:
     """The Mac's IANA zone, or None when it cannot be named with confidence.
 
     A candidate counts only if it loads and agrees with the offset the system clock is using
-    right now. There is deliberately no fallback: a guessed zone (UTC used to be the guess)
+    right now. There is deliberately no blind fallback: a guessed zone (UTC used to be the guess)
     reads "dinner at 7" seven or eight hours off and files the reminder at that wrong time.
-    Callers that act must stop instead; tools that replay can pass a zone explicitly."""
-    offset = time.localtime().tm_gmtoff
+    Callers that act must stop, or use a zone they saw before that still matches the clock
+    (`attention_runner.current_zone`); tools that replay can pass a zone explicitly."""
+    at = time.time()
     for name in _zone_candidates():
-        try:
-            zone = ZoneInfo(name)
-        except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
-            continue
-        if datetime.now(zone).utcoffset() == timedelta(seconds=offset):
+        if matches_clock(name, at):
             return name
     return None
 

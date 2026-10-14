@@ -42,7 +42,6 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(wiring, "MOE_DIR", tmp_path)
     monkeypatch.setattr(attention_api, "MOE_DIR", tmp_path)
     monkeypatch.setattr(wiring, "local_timezone", lambda: TZ)
-    monkeypatch.setattr(attention_api, "local_timezone", lambda: TZ)
     monkeypatch.setattr(wiring, "_commitments", lambda now, tz: [])
     wiring.reset()
     wiring.get_ledger().set_meta("enabled_at", repr(NOW - 86400))
@@ -854,6 +853,79 @@ async def test_create_reminder_refuses_without_a_zone_and_never_reaches_the_tool
 
 
 def test_status_still_answers_without_a_zone(isolated, client, monkeypatch):
-    monkeypatch.setattr(attention_api, "local_timezone", lambda: None)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
     body = client.get("/assistant/attention").json()
     assert "created_today" in body and body["settings"]["mode"] == "shadow"
+
+
+# ---- a remembered zone stands in while it still matches the Mac clock --------------------------
+
+def clock_matches(monkeypatch, *zones):
+    monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None, days=0: name in zones)
+
+
+def test_a_zone_read_from_the_mac_is_remembered(isolated):
+    assert wiring.current_zone() == TZ
+    assert wiring.get_ledger().meta("last_zone") == TZ
+
+
+def test_the_remembered_zone_stands_in_while_the_clock_agrees(isolated, monkeypatch):
+    wiring.current_zone()                                          # remembers TZ
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)    # the name can no longer be read
+    clock_matches(monkeypatch, TZ)
+    assert wiring.current_zone() == TZ
+
+
+def test_a_remembered_zone_the_clock_disagrees_with_is_not_used(isolated, monkeypatch):
+    """The user moved: the clock is now on another offset, so the old zone would be a guess."""
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    clock_matches(monkeypatch, "Asia/Tokyo")
+    assert wiring.current_zone() is None
+
+
+def test_a_newly_read_zone_replaces_the_remembered_one(isolated, monkeypatch):
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: "Asia/Tokyo")
+    assert wiring.current_zone() == "Asia/Tokyo"
+    assert wiring.get_ledger().meta("last_zone") == "Asia/Tokyo"
+
+
+async def test_a_pass_runs_on_the_remembered_zone(isolated, feed, effects, monkeypatch):
+    go_live(isolated)
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    clock_matches(monkeypatch, TZ)
+    out = await wiring.run_tick(NOW)
+    assert [o.state for o in out] == ["created"] and len(effects["created"]) == 1
+
+
+async def test_a_pass_with_no_zone_and_nothing_remembered_still_stops(isolated, feed, effects, monkeypatch):
+    go_live(isolated)
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    clock_matches(monkeypatch, TZ)
+    assert await wiring.run_tick(NOW) == [] and effects["created"] == []
+
+
+async def test_create_reminder_files_in_the_remembered_zone(isolated, monkeypatch):
+    from service.tools import assistant_tools
+    seen = []
+
+    async def tool(title, when_iso, kind):
+        seen.append(when_iso)
+        return "Reminder set: x"
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    clock_matches(monkeypatch, TZ)
+    due = datetime(2026, 9, 21, 17, 30, tzinfo=ZoneInfo(TZ)).timestamp()
+    got = await wiring.create_reminder(live.Plan("t", due, None, "today", "q"))
+    assert got["ok"] is True and seen == ["2026-09-21T17:30-07:00"]
+
+
+def test_a_remembered_zone_must_match_the_clock_for_a_whole_year(isolated, monkeypatch):
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    asked = []
+    monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None, days=0: asked.append(days) or True)
+    assert wiring.current_zone() == TZ and asked == [wiring.REMEMBERED_ZONE_DAYS] and asked[0] >= 365
