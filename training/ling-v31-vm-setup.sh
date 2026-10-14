@@ -24,7 +24,7 @@ BASE_REV="9a98e35fe1c9ee255f78dd64771c7ae15a799481"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader || echo "WARN: nvidia-smi failed"
 FREE_GB=$(df -BG --output=avail "$WORK" | tail -1 | tr -dc 0-9)
 echo "free disk: ${FREE_GB}GB (need ~80GB: base 16 + merged V2 16 + merged V3 16 + prepared data + checkpoints)"
-[ "${FREE_GB:-0}" -ge 60 ] || echo "WARN: less than 60GB free on $WORK"
+[ "${FREE_GB:-0}" -ge 80 ] || echo "WARN: less than 80GB free on $WORK"
 
 if [ -z "${WISP_NO_APT:-}" ] && command -v apt-get >/dev/null; then
   export DEBIAN_FRONTEND=noninteractive
