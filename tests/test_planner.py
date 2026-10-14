@@ -721,3 +721,17 @@ def test_an_identical_volatile_read_runs_at_most_twice(_fake_tools, monkeypatch)
     run(client, planner=True)
     assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
     assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_a_turn_forced_to_look_can_still_look_wider_once(_fake_tools, _fake_families):
+    client = PlanClient([plan("clarify"), plan("call_tools", ("fake_search", {"query": "bike lock"})),
+                         plan("not_found"), plan("call_tools", ("fake_open", {"path": "lock.txt"})),
+                         plan("not_found")])
+    run(client, tools=("fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert [n for n, _ in _fake_tools] == ["fake_search", "fake_open"]
+    plans = [r for r in client.requests if "response_format" in r]
+    # first, forced look, after the search, widened look, final; no third
+    # re-plan. fake_open returned content, so not_found narrates as answer.
+    assert len(plans) == 5
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]

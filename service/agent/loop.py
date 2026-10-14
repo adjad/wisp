@@ -2582,6 +2582,9 @@ async def run_agent(
     budget_reads = planner
     # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
     replan_left = [planner]
+    # One "look wider" re-plan per turn, separate from the above so a turn
+    # that was forced to look can still widen once (at most two re-plans).
+    widen_left = [planner]
 
     async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
                          temperature, think_on, *, last_attempt):
@@ -2604,8 +2607,8 @@ async def run_agent(
                                             searched=searched))
         plan = _plan.parse_plan(raw.get("content"), allowed)
 
-        async def _replan(reason: str, only=None):
-            replan_left[0] = False
+        async def _replan(reason: str, only=None, *, budget=replan_left):
+            budget[0] = False
             audit("plan_replan", reason=reason, tools=sorted(only) if only else None)
             return await _plan_step(step_msgs, step_schemas, set(only or allowed), True, max_out,
                                     temperature, think_on, last_attempt=last_attempt)
@@ -2706,7 +2709,7 @@ async def run_agent(
         # only unrelated notes, re-planned the same search and answered "I
         # couldn't find anything" without checking memory. Re-plan once over
         # the untried families.
-        if (not plan.calls and searched and not require_call and replan_left[0] and act_first
+        if (not plan.calls and searched and not require_call and widen_left[0] and act_first
                 and not succeeded_writes and (plan.status == "not_found" or wanted_more
                      or (plan.status in ("answer", "clarify") and read_misses and not read_hits))):
             from service.router.menu import family_of
@@ -2714,7 +2717,7 @@ async def run_agent(
             if untried := {n for n in act_first & set(allowed)
                            if family_of(n) not in tried
                            and (t := get_tool(n)) is not None and t.category in _read_categories()}:
-                return await _replan("nothing_found_untried_family", untried)
+                return await _replan("nothing_found_untried_family", untried, budget=widen_left)
         # NOT FOUND NEEDS A MISS. not_found narrates "nothing was found", so
         # it stands only when every read this turn came back empty or failed;
         # otherwise the answer narration works from what did come back.
