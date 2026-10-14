@@ -1522,16 +1522,15 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
-            # Knowledge fields, grocery selectors and bounded queue targets are literal
+            # Knowledge fields and bounded queue targets are literal
             # data. Recognize their envelope before task/workflow/skill
             # interpreters can mistake those fields for another command. Credential redaction
             # and current-user capture have already run at the entry boundary.
             from service.knowledge_intent import knowledge_envelope
             literal_knowledge = knowledge_envelope(prompt) is not None
-            from service.workflows.workflow20 import grocery_read_attempt
             from service.router.router import _scheduled_send_review
             queue_envelope = _scheduled_send_review(prompt) is not None
-            literal_envelope = literal_knowledge or grocery_read_attempt(prompt) or queue_envelope
+            literal_envelope = literal_knowledge or queue_envelope
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []

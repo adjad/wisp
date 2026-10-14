@@ -26,13 +26,11 @@ import service.tools.window_tools  # noqa: F401    (windows, app switching, reve
 import service.tools.maps_travel  # noqa: F401     (places, drive time, directions)
 import service.tools.everyday  # noqa: F401        (daily_brief)
 import service.tools.task_evidence  # noqa: F401   (bounded priority evidence)
-import service.tools.grocery_lists  # noqa: F401   (separate shopping source evidence)
 import service.tools.schedule_extras  # noqa: F401 (complete_reminder, find_free_time)
 import service.tools.misc_t1  # noqa: F401         (alerts, definitions, calls, status)
 import service.tools.search_coverage  # noqa: F401 (deterministic "how far back" answers)
 # --- Capability Atlas, Phase 2 (T2) ---
 import service.tools.web_extras  # noqa: F401       (air quality, wikipedia, sports, recipes)
-import service.tools.media_tools  # noqa: F401      (podcasts, ambient sound, internet radio)
 import service.tools.system_extras2  # noqa: F401   (appearance, wifi join, power, updates)
 import service.tools.email_extras  # noqa: F401     (subscriptions, triage, thread summary)
 import service.tools.contacts_tools  # noqa: F401   (birthdays, contact create/update)

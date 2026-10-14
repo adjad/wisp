@@ -214,36 +214,11 @@ ALIASES: dict[str, list[str]] = {
         "file those away somewhere else",
         "reorganize my desktop",
     ],
-    "delete_path": [
-        "get rid of that file",
-        "throw away the old installer",
-    ],
     # ---- system ----
-    "set_volume": [
-        "turn it down",
-        "make it louder",
-        "mute the sound",
-    ],
-    "get_volume": ["how loud is it right now", "is the sound muted"],
-    "lock_screen": ["lock my screen", "I'm stepping away, lock it"],
     # ---- apps & media ----
     "open_app": ["open Spotify", "launch Xcode", "bring up Safari",
                  "open netflix", "launch hulu", "open the apple tv app"],
     "quit_app": ["close Chrome", "quit Slack", "shut down Photoshop"],
-    "music": [
-        "play some jazz",
-        "put on my focus playlist",
-        "skip this track",
-        "pause the music",
-        "play something upbeat",
-        # "put something on" is how people ask for background music without
-        # naming music at all — measured as the one held-out probe that missed
-        # entirely (music ranked 12th) before this line existed.
-        "put something on in the background",
-        "throw on some music while I work",
-        "play that album on Spotify",
-        "next song on Spotify",
-    ],
     # ---- clipboard ----
     "clipboard_read": ["what did I just copy", "what's on my clipboard"],
     "clipboard_write": ["copy that for me", "put that on my clipboard"],

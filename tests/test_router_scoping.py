@@ -15,9 +15,8 @@ Two facts drive this file.
    worst selection accuracy available.
 
 What must keep holding:
-  * every registered tool is reachable through SOME scoped route, except
-    delete_path, which is deliberately left to the unscoped route because it is
-    destructive and must not ride along in a broad subset;
+  * every registered tool is reachable through SOME scoped route, a
+    demonstrated final route, or retrieval aliases;
   * the ambiguous fallback offers the core set, not the whole registry, and
     still includes installed SKILL tools — those are directly callable, so a
     static core silently breaks skill invocation;
@@ -133,8 +132,6 @@ def test_every_tool_has_a_scoped_home() -> None:
     # by a final route, not every incidental tool in the returned menu.
     for prompt, target in (
             ("What should I work on tomorrow?", "collect_task_evidence"),
-            ("What should I get for groceries without reminders", "grocery_note_evidence"),
-            ("What should I get for groceries without notes", "grocery_reminder_evidence"),
             ("search my chat history for an old project", "search_conversations"),
             ("Save a knowledge note titled Project:\nBring blue folder.", "save_knowledge"),
             ("Read my saved knowledge notes.", "read_knowledge"),
@@ -198,25 +195,19 @@ def test_every_tool_has_a_scoped_home() -> None:
     # Capability Atlas rollout order): they surface through retrieval, and only
     # the ones measured to be hot or to miss get promoted to a hand-tuned route.
     # Asserting the old invariant would forbid exactly that.
-    unreachable = {n for n in orphans
-                   if n != "delete_path" and not REGISTRY[n].aliases}
+    unreachable = {n for n in orphans if not REGISTRY[n].aliases}
     check("every tool has a scoped route, demonstrated route, or retrieval aliases",
           not unreachable, f"no demonstrated route or aliases: {sorted(unreachable)}")
-    check("delete_path stays out of the regex subsets (destructive, deliberate)",
-          "delete_path" in orphans)
 
 
 def test_device_apps_and_web_are_scoped() -> None:
     print("\nthe three clusters that used to fall through are now scoped")
-    for prompt, tool in (("what's the current volume?", "get_volume"),
-                         ("how much battery do I have", "system_status"),
+    for prompt, tool in (("how much battery do I have", "system_status"),
                          ("turn off my wifi", "toggle_setting"),
-                         ("lock my screen", "lock_screen"),
                          ("what's on my clipboard", "clipboard_read"),
                          ("open safari", "open_app"),
                          ("open Safari", "open_app"),
                          ("quit spotify", "quit_app"),
-                         ("play some music", "music"),
                          ("what's the weather in Tokyo", "get_weather"),
                          ("what's the price of bitcoin", "web_fetch")):
         s = subset(prompt)
@@ -253,7 +244,7 @@ def test_ambiguous_gets_core_not_everything() -> None:
     # run_shell is the deliberate escape hatch; destructive tools are not here.
     core = subset("tell me a joke")
     check("run_shell is offered as the escape hatch", "run_shell" in core)
-    for banned in ("delete_path", "send_email", "send_message", "create_tool"):
+    for banned in ("send_email", "send_message", "create_tool"):
         check(f"{banned} is NOT in the core set", banned not in core)
 
 
@@ -301,8 +292,8 @@ def test_light_read_voice_is_only_for_personal_data() -> None:
                    "what's in my notes"):
         check(f"{prompt!r} keeps the warm voice", dec(prompt).light_read,
               "light_read=False")
-    for prompt in ("what's the current volume?", "how much battery do I have",
-                   "play some music", "what's the weather in Tokyo",
+    for prompt in ("turn off my wifi", "how much battery do I have",
+                   "open safari", "what's the weather in Tokyo",
                    "tell me a joke", "what?"):
         check(f"{prompt!r} does NOT get the warm voice",
               not dec(prompt).light_read, "light_read=True")
@@ -473,7 +464,7 @@ def test_narration_after_names_each_multi_round_route_requirement() -> None:
     for prompt in ("what's on my calendar", "summarize my messages",
                    "what's in my inbox", "how much battery do I have",
                    "what do you remember about me", "look up dan's contact",
-                   "play some music", "what's the weather in tokyo"):
+                   "open safari", "what's the weather in tokyo"):
         d = dec(prompt)
         check(f"{prompt!r} is NOT multi_round", not d.multi_round,
               f"subset={d.tool_subset}")

@@ -241,7 +241,7 @@ _TOOL_EFFECTS = {
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
     "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
-    "delete_path": "deleted", "organize_files": "moved",
+    "organize_files": "moved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
 }

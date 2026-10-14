@@ -39,10 +39,10 @@ CORE: dict[str, tuple[str, ...]] = {
                           "draft_message", "search_conversations"),
     "notes": ("search_notes", "create_note", "append_note"),
     "memory": ("remember", "recall", "search_conversations", "forget"),
-    "files": ("find_files", "list_dir", "read_file", "move_path", "delete_path"),
+    "files": ("find_files", "list_dir", "read_file", "move_path"),
     "public_web": ("web_search", "web_fetch", "get_weather", "travel_time", "find_place"),
-    "apps_media": ("open_app", "music"),
-    "device": ("set_volume", "system_status", "toggle_setting"),
+    "apps_media": ("open_app", "quit_app"),
+    "device": ("system_status", "toggle_setting", "clipboard_read"),
     "automation": ("set_timer", "manage_timers", "run_shell"),
     "compute": ("calculate", "convert_units", "world_time"),
 }
@@ -68,8 +68,8 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
         (r"\b(?:weather|forecast|rain|news|look up|search the web|google|price|stock|hours|"
          r"open(?:s|ing)? (?:at|time)|directions|drive|traffic|how far|near(?:by| me)|restaurant|"
          r"who is|ceo|right now|latest|define|definition|meaning of|what does \S+ mean)\b", ("public_web",)),
-        (r"\b(?:open|launch|play|pause|music|song|spotify|podcast)\b", ("apps_media",)),
-        (r"\b(?:volume|louder|quieter|mute|crank it|turn it (?:up|down)|wi-?fi|bluetooth|battery|"
+        (r"\b(?:open|launch|quit|close)\b", ("apps_media",)),
+        (r"\b(?:wi-?fi|bluetooth|battery|"
          r"brightness|dark mode|settings?)\b", ("device",)),
         (r"\b(?:timer|alarm|stopwatch|countdown|shortcut)\b", ("automation",)),
         (r"\b(?:calculate|convert|what time is it in|percent|\d+\s*[x*/+-]\s*\d+)\b", ("compute",)),

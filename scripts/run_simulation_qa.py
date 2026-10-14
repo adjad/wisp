@@ -403,7 +403,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_compiler.py",
     "tests/test_workflow20_daily.py",
     "tests/test_workflow20_files.py",
-    "tests/test_workflow20_groceries.py",
     "tests/test_workflow20_knowledge.py",
     "tests/test_workflow20_meeting.py",
     "tests/test_workflow20_meeting_approval.py",
