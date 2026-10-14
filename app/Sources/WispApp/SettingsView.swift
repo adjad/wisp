@@ -1600,6 +1600,7 @@ struct SettingsView: View {
                         .tint(Theme.accent)
 
                         HStack(spacing: 10) {
+                            Button("See what Wisp learned") { LearnedWindow.shared.show() }
                             Button("Forget what Wisp learned…", role: .destructive) {
                                 confirmForgetBehavior = true
                             }

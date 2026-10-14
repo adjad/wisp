@@ -731,6 +731,28 @@ def test_swift_refired_nudge_resets_card_and_banner():
     assert "let info = info" in notes.split("didReceive response")[1]
 
 
+def test_swift_learned_view_covers_every_pattern_kind_and_status():
+    """The "What Wisp has learned" window maps each engine pattern kind to a
+    section and only sends statuses the API accepts, through the safe-id guard."""
+    import re
+    from service.behavior.types import PATTERN_KINDS
+    from service.behavior_api import _PATTERN_STATUSES
+    src = _swift("LearnedView.swift")
+    mapping = src.split("static func of(_ kind: String)")[1].split("default:")[0]
+    for kind in PATTERN_KINDS:
+        assert f'"{kind}"' in mapping, kind
+    sent = set(re.findall(r'model\.set\(p, to: "(\w+)"\)', src))
+    assert sent and sent <= set(_PATTERN_STATUSES)
+    client = _swift("WispClient.swift")
+    setter = client.split("func setBehaviorPatternStatus")[1].split("}")[0]
+    assert "behaviorSafeID(patternID)" in setter
+    assert 'launchers.learned' in _swift("Chat/ChatViews.swift")
+    assert "LearnedWindow.shared.show()" in _swift("SettingsView.swift")
+    from service.behavior.predict import _USAGE_PHRASES
+    table = src.split("static let usagePhrases")[1].split("= [", 1)[1].split("]")[0]
+    assert dict(re.findall(r'"(\w+)": "([^"]+)"', table)) == _USAGE_PHRASES
+
+
 def _feed_line(item):
     return "V3 | " + json.dumps(item, separators=(",", ":"))
 

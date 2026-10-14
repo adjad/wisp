@@ -7,6 +7,7 @@ All notable changes to Wisp are documented here.
 ### Added
 
 - The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
+- "What Wisp has learned": a window listing every routine Wisp learned from your calendar, messages and Wisp use, grouped by kind, with the counts behind each one and today's predictions. Mark a routine "That's right" or "Not true" (a rejected routine stops shaping predictions, nudges and answers, and can be restored). Open it from Settings → Privacy & Access → "See what Wisp learned", or from the Chat sidebar.
 
 ### Fixed
 
@@ -16,6 +17,7 @@ All notable changes to Wisp are documented here.
 ### Changed
 
 - Behavior learning picks up routines from sparser calendars. A habit now needs 3 occurrences in at least 3 separate weeks (was 4), and a recurring event, note or reminder is judged from when it first appeared, so office hours that started three weeks ago count as three for three instead of three of seven. Category routines (gym, focus time) still count every week of history, and Wisp-usage routines still need 4 asks.
+- Wisp-usage routines read naturally: "You usually use Wisp around 12:15pm" and "You look things up with Wisp around 5pm" instead of "You ask Wisp about general / web".
 - Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
 
 ## [1.3.1] - 2026-10-12
