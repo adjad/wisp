@@ -1781,9 +1781,16 @@ _WRITE_INTENT_RE = re.compile(
     # but only when what leaves is a message: "get the tracking number out of
     # my inbox" is a read and must not gain write tools.
     r"\b(?:archive|file\s+away|mark)\b|"
+    # The filler may not cross "of/from/in" ("the info from that email"), and
+    # a plural needs these/those: "get the newest emails out of my inbox" is
+    # usually a read, and the router tests it as its own clause, so a
+    # following "and summarize them" cannot be relied on to say so.
     r"\b(?:get|move|take)\s+(?:it|that|this|these|those|them|"
-    r"(?:the|that|this|these|those)\s+(?:[\w'-]+\s+){0,3}?"
-    r"(?:e-?mails?|messages?|mail|newsletters?))\s+out\s+of\s+(?:my|the)\s+inbox\b", re.I)
+    r"(?:the|that|this)\s+(?:(?!(?:of|from|in|that|this|these|those)\b)[\w'-]+\s+){0,3}?"
+    r"(?:e-?mail|message|newsletter)|"
+    r"(?:these|those)\s+(?:(?!(?:of|from|in)\b)[\w'-]+\s+){0,3}?"
+    r"(?:e-?mails|messages|newsletters))\s+out\s+of\s+(?:my|the)\s+inbox\b"
+    r"(?!\s+(?:and\s+(?:then\s+)?)?(?:summari[sz]e|read|tell|show|list|give)\b)", re.I)
 
 # The "schedule" half of that NOTE, made good. The note above says bare
 # "schedule" is excluded because it is usually the NOUN, and that real

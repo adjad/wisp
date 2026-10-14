@@ -70,6 +70,7 @@ def test_device_reads_dispatch_the_merged_tool_with_its_section(prompt, tool, ar
 @pytest.mark.parametrize("prompt", [
     "get that out of my inbox",
     "move the Walgreens email out of my inbox",
+    "take those newsletters out of the inbox",
 ])
 def test_inbox_removal_phrasing_offers_email_triage(prompt):
     assert "email_triage" in (_route(prompt).tool_subset or [])
@@ -94,6 +95,10 @@ def test_txt_file_request_ranks_read_file_first_without_outbound_tools():
     "get the tracking number out of my inbox",
     "get the receipts out of my inbox and summarize them",
     "get my flight info out of my inbox",
+    "get the info from that email out of my inbox",
+    "take the text of that email out of my inbox and read it to me",
+    "get the newest emails out of my inbox and summarize them",
+    "get this week's mail out of my inbox and summarize it",
 ])
 def test_extracting_information_from_the_inbox_stays_a_read(prompt):
     offered = set(_route(prompt).tool_subset or [])
@@ -168,3 +173,35 @@ def test_retired_deny_does_not_spill_onto_other_behaviours(isolated_grants):
     assert grants.check("email_triage", {"message_id": "<a@x>", "action": "mark_read"}) == "allow"
     assert grants.check("email_triage", {"message_id": "<a@x>", "action": "mark_unread"}) == "deny"
     assert grants.check("email_triage", {"message_id": "<a@x>", "action": "archive"}) == "deny"
+
+
+@pytest.mark.parametrize("tool, args", [
+    ("toggle_setting", {"on": False}),
+    ("email_triage", {"message_id": "<a@x>"}),
+    ("play_audio", {"query": "kexp"}),
+])
+def test_always_allow_without_a_behaviour_is_refused(isolated_grants, tool, args):
+    grants = isolated_grants
+    assert grants.grant(tool, args, decision="allow")["ok"] is False
+    assert grants._CACHE.get(tool, {}).get("allow", []) == []
+
+
+def test_malformed_always_allow_cannot_erase_a_retired_deny(isolated_grants):
+    from service.safety import policy
+    grants = isolated_grants
+    grants._CACHE["set_wifi"] = {"allow": [], "deny": [{"scope": ""}]}
+    grants.grant("toggle_setting", {"on": False}, decision="allow")
+    wifi_off = {"setting": "wifi", "on": False}
+    assert grants.check("toggle_setting", wifi_off) == "deny"
+    assert policy.decide(REGISTRY["toggle_setting"].category, wifi_off,
+                         tool="toggle_setting").tier is policy.Tier.DENY
+
+
+def test_tool_wide_allow_keeps_retired_denies_like_explicit_ones(isolated_grants):
+    grants = isolated_grants
+    grants._CACHE["set_wifi"] = {"allow": [], "deny": [{"scope": ""}]}
+    grants.grant("toggle_setting", {"setting": "firewall"}, decision="deny")
+    grants.grant("toggle_setting", {}, decision="allow", scoped=False)
+    assert grants.check("toggle_setting", {"setting": "wifi", "on": False}) == "deny"
+    assert grants.check("toggle_setting", {"setting": "firewall", "on": False}) == "deny"
+    assert grants.check("toggle_setting", {"setting": "bluetooth", "on": False}) == "allow"

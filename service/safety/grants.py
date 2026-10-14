@@ -186,8 +186,9 @@ def _retired_deny(tool: str, scope: str) -> bool:
 def _split_retired_denies(tool: str, scope: str) -> None:
     """Move retired-name denies onto the merged tool, minus what is now allowed.
 
-    Called with _lock held when the user allows `scope` (or everything, for
-    ""). The other behaviours the old name covered stay denied explicitly.
+    Called with _lock held when the user allows `scope`. The other behaviours
+    the old name covered stay denied explicitly. A tool-wide allow ("") lifts
+    none of them, the same as an explicit per-behaviour deny on the merged tool.
     """
     for old, (merged, behaviours) in _RETIRED_INTO.items():
         if merged != tool or not _CACHE.get(old, {}).get("deny"):
@@ -196,7 +197,7 @@ def _split_retired_denies(tool: str, scope: str) -> None:
             continue
         _CACHE.pop(old)
         deny = _entry(tool).setdefault("deny", [])
-        for kept in sorted(behaviours - {scope}) if scope else ():
+        for kept in sorted(behaviours - {scope}):
             if not any(r.get("scope", "") == kept for r in deny):
                 deny.append({"scope": kept, "granted_at": time.time()})
 
@@ -259,6 +260,10 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
     if decision == "allow" and not is_grantable(tool, args):
         return {"ok": False, "error": f"{tool} always asks — it can't be pre-approved"}
     scope = scope_for(tool, args or {}) if scoped else ""
+    if scoped and scope == "" and tool in _MERGED_SCOPES:
+        # No behaviour named (a malformed call): a scoped answer has nothing
+        # to attach to, and storing "" would silently widen it to every one.
+        return {"ok": False, "error": f"{tool} needs a {_MERGED_SCOPES[tool][0]} to remember this"}
     with _lock:
         if decision == "allow" and tool in _MERGED_SCOPES:
             _split_retired_denies(tool, scope)
@@ -268,7 +273,7 @@ def grant(tool: str, args: dict | None = None, *, decision: str = "allow",
         if existing is None:
             existing = {"scope": scope, "granted_at": time.time()}
             bucket.append(existing)
-        if tool in _MERGED_SCOPES and scope == "":
+        if tool in _MERGED_SCOPES and not scoped:
             existing["all_behaviours"] = True
         # A tool can't be both allowed and denied for the same scope — the new
         # answer replaces the old one rather than sitting alongside it.
