@@ -600,6 +600,8 @@ def test_act_first_tools_cover_the_measured_no_call_failures(prompt, routed, for
 @pytest.mark.parametrize("prompt", [
     "tell me a joke", "thanks!", "what's the capital of france",
     "don't search the web, just tell me what you know about rome",
+    "write a regex that matches email addresses", "draft a speech for my dad's retirement",
+    "how should i word a message asking for a raise", "give me a polite way to say no to a meeting",
 ])
 def test_act_first_tools_leave_chat_and_prohibitions_alone(prompt):
     from service.router.menu import act_first_tools, build_menu
@@ -690,3 +692,23 @@ def test_an_identical_read_that_never_came_back_usable_runs_at_most_twice(_fake_
     client = PlanClient([plan("call_tools", ("fake_read", {})) for _ in range(5)] + [plan("answer")])
     run(client, planner=True)
     assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
+
+
+def test_an_identical_write_refused_by_a_guard_is_not_planned_again(_fake_tools):
+    # The user declines the confirmation; the model re-plans the same write.
+    class Decliner:
+        async def confirm(self, action):
+            return False
+    send = {"to": "+15550100"}
+    client = PlanClient([plan("call_tools", ("fake_send", send)) for _ in range(3)])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "text +15550100"}],
+                               emit, Decliner(), tools=["fake_send", "fake_read"], planner=True))
+    plans = [r for r in client.requests if "response_format" in r]
+    assert _fake_tools == [] and len(plans) <= 2  # the repeat is dropped, then narrated
+
+
+def test_a_write_deferred_behind_its_reads_still_runs(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {}), ("fake_send", {"to": "+15550100"})),
+                         plan("call_tools", ("fake_send", {"to": "+15550100"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_send"), planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_send", {"to": "+15550100"})]

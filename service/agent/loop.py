@@ -2575,6 +2575,8 @@ async def run_agent(
     # calls that already succeeded, for the plan step's checks below.
     read_hits: Counter = Counter()
     succeeded_writes: set[str] = set()
+    # Exact non-read calls a plan already issued this turn (after deferral).
+    issued_writes: set[str] = set()
     # Identical read calls run this turn, by _read_call_key.
     read_attempts: Counter = Counter()
     budget_reads = planner
@@ -2669,11 +2671,16 @@ async def run_agent(
                 dropped.append(n)
                 exhausted = True
                 continue
-            if key in succeeded_writes:
-                # The identical write already SUCCEEDED this turn. The effect
-                # guard only knows _EFFECT_TOOLS by name; measured 2026-10-14,
-                # Ling V3: "remember that my wife's birthday is march 3" saved
-                # the same fact three times. A different write still runs.
+            if key in issued_writes:
+                # The identical write was already issued this turn: it either
+                # succeeded (a repeat duplicates it), failed (the turn ended)
+                # or was refused by a guard (it would be refused again). The
+                # effect guard only knows _EFFECT_TOOLS by name. Measured
+                # 2026-10-14, Ling V3: "remember that my wife's birthday is
+                # march 3" saved the same fact three times; a reply_to_email
+                # whose Mail check refused it was planned four times. A
+                # different write still runs; a deferred write was never
+                # issued, so it still runs after its reads.
                 dropped.append(n)
                 continue
             if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
@@ -2727,6 +2734,12 @@ async def run_agent(
         if reads and len(reads) < len(plan.calls):
             audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
             plan.calls = reads
+        for n, a in plan.calls:
+            if _read_call_key(n, a) is None and not ((t := get_tool(n)) is not None
+                                                      and t.category in _read_categories()):
+                if fixed := (tool_argument_bindings or {}).get(n):
+                    a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+                issued_writes.add(_plan.call_key(n, a))
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
             return {}, plan.thought, False

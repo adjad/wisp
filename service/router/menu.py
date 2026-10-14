@@ -222,6 +222,17 @@ def build_menu(text: str, *, last_assistant: str | None = None,
 # first-person reference: "define ephemeral", "who is the ceo of X".
 _PERSONAL_FAMILIES = frozenset({"calendar", "mail", "messages_contacts", "notes", "memory", "files"})
 _FIRST_PERSON_RE = re.compile(r"\b(?:my|me|mine|i|i'?m|i've|am\s+i)\b", re.I)
+# A writing request is answered with the writing itself. Measured 2026-10-14,
+# Ling V3, all 55 chat/clarify corpus cases: the only forced lookups were
+# writing requests ("write a regex ...", "draft a speech for my dad's
+# retirement", "how should i word a message asking for a raise"). The corpus
+# writing requests that ARE actions ("draft an email to Sam") need a write
+# tool, which this gate never forces anyway.
+_WRITING_RE = re.compile(
+    r"^\s*(?:(?:please|pls|can\s+you|could\s+you|would\s+you|help\s+me|i\s+need\s+you\s+to|"
+    r"i\s+want\s+you\s+to)\s+)*(?:write|draft|compose|rewrite|reword|rephrase|translate|explain|"
+    r"give\s+me\s+(?:a|an|some)\s+(?:\w+\s+)?(?:ways?|versions?|examples?)\b|"
+    r"how\s+(?:should|do|can|would)\s+i\s+(?:word|phrase|say)|make\s+this)\b", re.I)
 
 
 def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None = None) -> frozenset[str]:
@@ -240,15 +251,15 @@ def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None
     Only READ tools are returned, so a forced re-plan never invents a write,
     except the one write the rules router itself forced (`forced`: "remember
     that ..." -> remember). Prohibitions and mentions ("don't search the web,
-    just tell me ...") never qualify.
+    just tell me ...") and writing requests never qualify.
     """
     from service.router.model_led import READ_CATEGORIES
     from service.tools.registry import REGISTRY
     from service.utterance_shape import deliberate, mask_quoted
 
-    if deliberate(text or ""):
-        return frozenset()
     masked = mask_quoted(text or "")
+    if deliberate(text or "") or _WRITING_RE.search(masked):
+        return frozenset()
     offered = set(menu)
     pool = set(routed) & offered
     families = set(hinted_families(masked))
