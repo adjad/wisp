@@ -7,7 +7,7 @@ The engine is oMLX's own signed release, pruned to the text/embedding/rerank ser
     engine/py/        CPython 3.11 (oMLX's interpreter: py/bin/python3 -> python3.11, no re-exec)
     engine/sp/        site-packages minus build-support/engine-prune.json
     engine/omlx/      the oMLX server package
-    engine/omlx_web/  admin UI
+    engine/omlx_web/  admin UI (oMLX 0.7.1 and later; 0.7.0 keeps it in omlx/admin)
     engine/ENGINE.json  provenance and the engine's own minimum macOS
 
 Design: docs/plans/2026-10-13-bundled-omlx-engine.md and ...-attribution-design.md.
@@ -119,14 +119,31 @@ def _unwanted(path: Path, prune: dict) -> bool:
             or path.suffix in prune["always_remove_suffixes"])
 
 
+def _admin_ui_location(resources: Path) -> str:
+    """Where this oMLX release keeps its admin UI: a separate omlx_web package (0.7.1 and later) or
+    omlx/admin/templates inside the server package (0.7.0). A release with neither is refused."""
+    if (resources / "omlx_web").is_dir():
+        return "omlx_web"
+    if (resources / "omlx" / "admin" / "templates").is_dir():
+        return "omlx/admin"
+    raise EngineBuildError("oMLX source is missing omlx_web")
+
+
+def _tree_layout(resources: Path) -> list[tuple[str, Path, bool]]:
+    layout = [("py", resources / INTERPRETER, False), ("sp", resources / SITE_PACKAGES, True),
+              ("omlx", resources / "omlx", False)]
+    if _admin_ui_location(resources) == "omlx_web":
+        layout.append(("omlx_web", resources / "omlx_web", False))
+    return layout
+
+
 def select_files(app: Path, prune: dict | None = None) -> list[tuple[str, Path]]:
     """Every (destination relative to engine/, source file) pair, sorted, no symlinks followed
     out of the source. Raises if a symlink escapes or a required piece is missing."""
     prune = prune or load_prune()
     resources = _resources(app).resolve(strict=True)
     dropped = set(prune["drop"])
-    layout = [("py", resources / INTERPRETER, False), ("sp", resources / SITE_PACKAGES, True),
-              ("omlx", resources / "omlx", False), ("omlx_web", resources / "omlx_web", False)]
+    layout = _tree_layout(resources)
     pairs: list[tuple[str, Path]] = []
     for dest, root, is_site in layout:
         if not root.is_dir():
@@ -158,8 +175,7 @@ def link_entries(app: Path, prune: dict | None = None) -> list[tuple[str, str]]:
     resources = _resources(app).resolve(strict=True)
     dropped = set(prune["drop"])
     links = []
-    for dest, root in (("py", resources / INTERPRETER), ("sp", resources / SITE_PACKAGES),
-                       ("omlx", resources / "omlx"), ("omlx_web", resources / "omlx_web")):
+    for dest, root, _ in _tree_layout(resources):
         for current, directories, files in os.walk(root):
             here = Path(current)
             directories[:] = [d for d in directories if not _unwanted(here / d, prune)]
@@ -374,10 +390,12 @@ def validate_structure(bundle: Path, expected: dict | None = None) -> dict:
     if expected is not None and document != expected:
         raise EngineBuildError("ENGINE.json differs from what was staged")
     engine = bundle / ENGINE_DIR
-    for name in ("py/bin/python3", "py/bin/python3.11", "omlx/server.py", "omlx/cli.py", "omlx_web",
+    for name in ("py/bin/python3", "py/bin/python3.11", "omlx/server.py", "omlx/cli.py",
                  "sp/mlx/core.cpython-311-darwin.so", "sp/mlx/lib/mlx.metallib"):
         if not (engine / name).exists():
             raise EngineBuildError(f"Engine is missing {name}")
+    if not ((engine / "omlx_web").is_dir() or (engine / "omlx/admin/templates").is_dir()):
+        raise EngineBuildError("Engine is missing omlx_web")
     python = engine / "py/bin/python3.11"
     if python.is_symlink() or not os.access(python, os.X_OK) or not _is_macho(python):
         raise EngineBuildError("Engine interpreter must be one real executable (attribution refuses a re-exec)")

@@ -3,7 +3,7 @@
   "omlx": {
     "url": "https://github.com/jundot/omlx",
     "license": "Apache-2.0",
-    "licence_text": "engine-licenses/Apache-2.0.txt"
+    "licence_text": "engine-licenses/oMLX-LICENSE.txt"
   },
   "packages": {
     "mlx-embeddings": {

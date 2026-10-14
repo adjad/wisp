@@ -287,6 +287,18 @@ def test_structural_refusals() -> None:
             check("missing piece refused", False)
         except engine.EngineBuildError:
             check("missing piece refused", True)
+        # oMLX 0.7.0 keeps the admin UI inside the server package instead of a separate omlx_web
+        write(app / "Contents/Resources/omlx/admin/templates/index.html", "<html>")
+        shutil.rmtree(tmp / "out", ignore_errors=True)
+        try:
+            staged_070, _ = stage(tmp, app)
+            check("an admin UI inside omlx/admin (oMLX 0.7.0 layout) is accepted without omlx_web",
+                  not (staged_070 / "Contents/Resources/engine/omlx_web").exists()
+                  and (staged_070 / "Contents/Resources/engine/omlx/admin/templates/index.html").is_file())
+            engine.validate_structure(staged_070, None)
+            check("and the staged 0.7.0-layout engine validates", True)
+        except engine.EngineBuildError as exc:
+            check("an admin UI inside omlx/admin (oMLX 0.7.0 layout) is accepted without omlx_web", False, str(exc))
         shutil.rmtree(tmp / "out", ignore_errors=True)
         app2 = make_app(tmp / "second" if (tmp / "second").mkdir() is None else tmp)
         bundle, _ = stage(tmp / "second", app2)

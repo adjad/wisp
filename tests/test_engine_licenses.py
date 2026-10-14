@@ -61,7 +61,7 @@ def bundle(tmp: Path, packages: list[tuple]) -> Path:
 
 def reviewed(**packages) -> dict:
     return {"schema": 1, "omlx": {"url": "https://example.test/omlx", "license": "Apache-2.0",
-                                   "licence_text": "engine-licenses/Apache-2.0.txt"},
+                                   "licence_text": "engine-licenses/oMLX-LICENSE.txt"},
             "packages": {name: {"note": "reviewed in test", **entry} for name, entry in packages.items()}}
 
 

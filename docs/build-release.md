@@ -112,9 +112,12 @@ the licence files), recognises `GPLv3`/`LGPLv2+` spellings and a GPL title or th
 "free software" notice in any licence file, and never auto-passes Commons Clause, Business
 Source or non-commercial terms. The CPython interpreter and the oMLX DeepSeek patch are listed
 under `components` in `engine-licenses.json`; their licence files must exist at the named path.
-oMLX's own Apache-2.0 text is `build-support/engine-licenses/Apache-2.0.txt`: the oMLX
-app carries no top-level LICENSE, so replace it with the LICENSE file from the pinned
-upstream release when pinning `engine.lock.json`.
+oMLX's own Apache-2.0 text is `build-support/engine-licenses/oMLX-LICENSE.txt`: the oMLX
+app carries no top-level LICENSE, so it is the LICENSE file from the `v0.7.0` tag of
+github.com/jundot/omlx (the repository has no NOTICE file). When `engine.lock.json` moves to
+a new oMLX release, refresh it from that release's tag. The pinned release is 0.7.0
+(`oMLX-0.7.0-macos26-27.dmg`, sha256 2e3bb06a…e3bce0, Developer ID team PSK5Q5T46L); its
+admin UI lives in `omlx/admin`, so the staged engine has no `omlx_web` folder.
 
 To exercise an already staged engine with a downloaded model, run the smoke on a
 machine with compatible Apple Silicon and macOS:
