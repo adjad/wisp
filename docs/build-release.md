@@ -94,6 +94,23 @@ Nested engine code is signed with identifier
 `build-support/engine.entitlements` (JIT, unsigned executable memory, and
 disabled library validation).
 
+### Licence review and notices
+
+Every build that stages the engine also reviews the licences of the packages it kept
+(`build-support/engine_licenses.py`). Each package is classified from its declared
+licence and the title of its licence files. Permissive licences pass. A weak-copyleft
+(LGPL, MPL), strong-copyleft (GPL, AGPL) or unrecognised licence fails the build unless
+`build-support/engine-licenses.json` has an entry for that package with the same class
+and a written reason, so a package update that changes a licence cannot slip through. A
+package with no licence file in its wheel also fails until it is listed with
+`no_licence_file`. A passing build writes `Documentation/THIRD-PARTY-NOTICES.md` (oMLX,
+the copyleft packages with their source addresses, and a table of every package) and
+copies each package's licence files to `Documentation/licenses/<name>-<version>/`; the
+structure check refuses a bundle whose notice does not list every shipped package.
+oMLX's own Apache-2.0 text is `build-support/engine-licenses/Apache-2.0.txt`: the oMLX
+app carries no top-level LICENSE, so replace it with the LICENSE file from the pinned
+upstream release when pinning `engine.lock.json`.
+
 To exercise an already staged engine with a downloaded model, run the smoke on a
 machine with compatible Apple Silicon and macOS:
 

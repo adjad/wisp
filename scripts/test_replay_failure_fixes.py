@@ -61,6 +61,7 @@ LEGACY_SCRIPT_TESTS = frozenset({
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     "tests/test_engine_packaging.py",
+    "tests/test_engine_licenses.py",
     "tests/test_paths_override.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",

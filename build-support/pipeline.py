@@ -23,6 +23,7 @@ from urllib.parse import quote, urlencode
 import zipfile
 
 import engine as engine_build
+import engine_licenses
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT = ROOT / "build-support"
@@ -594,6 +595,10 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
             meta["engine"] = engine_build.stage(bundle, engine_app, lock=engine_build.load_lock(), release=release)
         except engine_build.EngineBuildError as exc:
             raise BuildError(str(exc)) from None
+        try:
+            engine_licenses.write_notices(bundle)
+        except engine_licenses.LicenseError as exc:
+            raise BuildError(str(exc)) from None
     json_write(resources / "build-info.json", meta)
     # Normalize modes before signing so umask does not change candidate archives.
     for path in bundle.rglob("*"):
@@ -642,7 +647,8 @@ def validate_structure(bundle: Path, meta: dict):
     if engine_build.read_engine_json(bundle) is not None or meta.get("engine"):
         try:
             engine_build.validate_structure(bundle, meta.get("engine"))
-        except engine_build.EngineBuildError as exc:
+            engine_licenses.validate(bundle)
+        except (engine_build.EngineBuildError, engine_licenses.LicenseError) as exc:
             raise BuildError(str(exc)) from None
 
 

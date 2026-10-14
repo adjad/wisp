@@ -19,6 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build-support"))
 import pipeline as p
+import engine_licenses
 import release
 
 
@@ -91,10 +92,40 @@ class PipelineTests(unittest.TestCase):
         with self.assertRaisesRegex(p.BuildError, "Engine is missing omlx/server.py"):
             p.validate_structure(bundle, self.meta)
 
+    def add_engine_package(self, engine, name, version, licence, text):
+        dist_info = engine / "sp" / f"{name}-{version}.dist-info"
+        dist_info.mkdir(parents=True)
+        (dist_info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n"
+                                            f"License-Expression: {licence}\n")
+        (dist_info / "LICENSE").write_text(text)
+
     def test_engine_json_accepts_complete_engine(self):
         bundle = self.fixture()
-        self.engine_fixture(bundle)
+        engine = self.engine_fixture(bundle)
+        self.add_engine_package(engine, "fixturepkg", "1.0", "MIT", "Permission is hereby granted, free of charge")
+        engine_licenses.write_notices(bundle)
         p.validate_structure(bundle, self.meta)
+
+    def test_engine_bundle_requires_third_party_notices(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+        with self.assertRaisesRegex(p.BuildError, "Missing third-party notice"):
+            p.validate_structure(bundle, self.meta)
+
+    def test_engine_notice_must_list_every_shipped_package(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        engine_licenses.write_notices(bundle)
+        self.add_engine_package(engine, "latecomer", "2.0", "MIT", "Permission is hereby granted, free of charge")
+        with self.assertRaisesRegex(p.BuildError, "does not list latecomer"):
+            p.validate_structure(bundle, self.meta)
+
+    def test_unreviewed_copyleft_package_fails_the_licence_gate(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        self.add_engine_package(engine, "newgpl", "1.0", "GPL-3.0-only", "GNU GENERAL PUBLIC LICENSE\nVersion 3")
+        with self.assertRaisesRegex(engine_licenses.LicenseError, "Unreviewed strong-copyleft licence: newgpl"):
+            engine_licenses.write_notices(bundle)
 
     def test_missing_resource(self):
         bundle = self.fixture()
@@ -963,6 +994,35 @@ print('external venv readable; private home and writes denied')
             p.prepare_native_for_signing(runner, bundle)
         self.assertEqual(runner.calls[0][:2], ["/usr/bin/strip", "-S"])
         self.assertFalse(any("--sign" in command or "-delete_rpath" in command for command in runner.calls))
+
+    def rpath_runner(self, loads):
+        runner = self.signing_runner()
+        original = runner.run
+        def run(label, command):
+            code, log = original(label, command)
+            if "signing-load-commands" in label and p.engine_build.ENGINE_DIR in str(command[-1]):
+                log.write_text("cmd LC_RPATH\ncmdsize 40\npath /build/deps (offset 12)\n"
+                               + "".join(f"cmd LC_LOAD_DYLIB\ncmdsize 40\nname {name} (offset 24)\n" for name in loads))
+            return code, log
+        runner.run = run
+        return runner
+
+    def test_engine_kernel_with_only_rpath_dependencies_loses_its_dead_absolute_rpath(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.rpath_runner(["@rpath/libmlx.dylib", "/usr/lib/libc++.1.dylib"])
+        p.prepare_native_for_signing(runner, bundle)
+        deletes = [command for command in runner.calls if "-delete_rpath" in command]
+        self.assertTrue(any(command[-1] == engine / "sp/mlx/core.cpython-311-darwin.so" for command in deletes))
+        self.assertTrue(all(command[-2] == "/build/deps" for command in deletes))
+
+    def test_engine_kernel_with_an_absolute_library_keeps_the_refusal(self):
+        bundle = self.signing_fixture()
+        self.engine_fixture(bundle)
+        runner = self.rpath_runner(["@rpath/libmlx.dylib", "/opt/homebrew/lib/libfoo.dylib"])
+        with self.assertRaisesRegex(p.BuildError, "non-system dependencies"):
+            p.prepare_native_for_signing(runner, bundle)
+        self.assertFalse(any("-delete_rpath" in command for command in runner.calls))
 
     def test_native_cleanup_skips_engine_but_strips_app_machos(self):
         bundle = self.signing_fixture()

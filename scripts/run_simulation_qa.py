@@ -267,6 +267,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
     "tests/test_engine_packaging.py",
+    "tests/test_engine_licenses.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
     "tests/test_attestation_reuse.py",

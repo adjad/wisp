@@ -6,6 +6,7 @@ All notable changes to Wisp are documented here.
 
 ### Added
 
+- Wisp can include its own copy of the oMLX AI engine. A Mac with no oMLX installed uses it automatically; one that already has oMLX keeps using it unless you switch in Settings > Models > Engine. The built-in engine runs privately on port 8791 with its own models folder (`~/.moe/engine`), so it never touches your oMLX settings or models, and Wisp refuses to send anything to a process on that port that isn't the engine it started. It needs macOS 26.2 or newer; older Macs keep using an installed oMLX. The download includes `Documentation/THIRD-PARTY-NOTICES.md` with the licences of everything the engine ships, including the copyleft ones and where to get their source.
 - The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
 
 ### Fixed
