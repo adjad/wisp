@@ -319,8 +319,14 @@ final class WispClient {
     }
 
     private func behaviorRequest(_ method: String, _ path: String, body: [String: Any]? = nil,
+                                 query: [URLQueryItem] = [],
                                  timeout: TimeInterval = 15) async -> [String: Any]? {
-        var req = URLRequest(url: Self.baseURL.appendingPathComponent(path))
+        var url = Self.baseURL.appendingPathComponent(path)
+        if !query.isEmpty, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            parts.queryItems = query
+            url = parts.url ?? url
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = timeout
         if let body {
@@ -367,6 +373,12 @@ final class WispClient {
     func behaviorGet(_ endpoint: String) async -> [String: Any]? {
         guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
         return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    // GET /behavior/predict?day=today|tomorrow -> {"predictions": [...]}
+    func behaviorPredictions(day: String) async -> [String: Any]? {
+        guard ["today", "tomorrow"].contains(day) else { return nil }
+        return await behaviorRequest("GET", "behavior/predict", query: [URLQueryItem(name: "day", value: day)])
     }
 
     // GET/PUT /behavior/settings -> "Learn my routines" (on by default). Returns the

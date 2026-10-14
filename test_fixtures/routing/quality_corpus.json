@@ -3390,8 +3390,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3431,8 +3430,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3472,8 +3470,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3515,8 +3512,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3556,8 +3552,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3597,8 +3592,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3640,8 +3634,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3683,8 +3676,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3724,8 +3716,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3767,8 +3758,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3811,8 +3801,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3852,8 +3841,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3895,8 +3883,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3938,8 +3925,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -3979,8 +3965,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4022,8 +4007,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4066,8 +4050,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4109,8 +4092,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4150,8 +4132,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4191,8 +4172,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4234,8 +4214,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4277,8 +4256,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4318,8 +4296,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4359,8 +4336,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -4402,8 +4378,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -7929,7 +7904,6 @@
    "need": [
     [
      "get_weather",
-     "rain_radar",
      "web_search"
     ]
    ],
@@ -8007,7 +7981,6 @@
    "expect": "action",
    "need": [
     [
-     "get_sports_scores",
      "web_search"
     ]
    ],
@@ -8082,7 +8055,7 @@
    "expect": "action",
    "need": [
     [
-     "convert_currency"
+     "web_search"
     ]
    ],
    "force": null,
@@ -8231,7 +8204,8 @@
    "expect": "action",
    "need": [
     [
-     "define_word"
+     "wikipedia_summary",
+     "web_search"
     ]
    ],
    "force": null,
@@ -8269,7 +8243,7 @@
    "need": [
     [
      "travel_time",
-     "get_directions"
+     "open_app"
     ]
    ],
    "force": null,
@@ -8383,7 +8357,7 @@
    "expect": "action",
    "need": [
     [
-     "air_quality"
+     "get_weather"
     ]
    ],
    "force": null,
@@ -8458,7 +8432,6 @@
    "expect": "action",
    "need": [
     [
-     "weather_alerts",
      "get_weather"
     ]
    ],
@@ -8496,7 +8469,6 @@
    "expect": "action",
    "need": [
     [
-     "recipe_lookup",
      "web_search"
     ]
    ],
@@ -8613,7 +8585,6 @@
    "expect": "action",
    "need": [
     [
-     "astronomy",
      "web_search"
     ]
    ],
@@ -8693,8 +8664,7 @@
    "need": [
     [
      "get_stock_price",
-     "web_search",
-     "convert_currency"
+     "web_search"
     ]
    ],
    "force": null,
@@ -8814,7 +8784,6 @@
    "expect": "action",
    "need": [
     [
-     "set_wifi",
      "toggle_setting"
     ]
    ],
@@ -8844,7 +8813,6 @@
    "expect": "action",
    "need": [
     [
-     "get_battery_status",
      "system_status"
     ]
    ],
@@ -8873,7 +8841,7 @@
    "need": [
     [
      "open_app",
-     "spotify"
+     "music"
     ]
    ],
    "force": null,
@@ -8900,8 +8868,7 @@
    "expect": "action",
    "need": [
     [
-     "quit_app",
-     "force_quit_app"
+     "quit_app"
     ]
    ],
    "force": null,
@@ -8955,7 +8922,6 @@
    "expect": "action",
    "need": [
     [
-     "set_appearance",
      "toggle_setting"
     ]
    ],
@@ -9011,7 +8977,7 @@
    "expect": "action",
    "need": [
     [
-     "set_alarm"
+     "set_timer"
     ]
    ],
    "force": null,
@@ -9039,9 +9005,8 @@
    "need": [
     [
      "music",
-     "spotify",
-     "play_streaming",
-     "play_radio"
+     "open_app",
+     "play_audio"
     ]
    ],
    "force": null,
@@ -9068,8 +9033,7 @@
    "expect": "action",
    "need": [
     [
-     "music",
-     "spotify"
+     "music"
     ]
    ],
    "force": null,
@@ -9125,7 +9089,8 @@
    "expect": "action",
    "need": [
     [
-     "set_display",
+     "run_applescript",
+     "run_shell",
      "toggle_setting"
     ]
    ],
@@ -9153,9 +9118,8 @@
    "expect": "action",
    "need": [
     [
-     "list_bluetooth_devices",
-     "toggle_setting",
-     "system_status"
+     "system_status",
+     "toggle_setting"
     ]
    ],
    "force": null,
@@ -9383,14 +9347,11 @@
    "expect": "action",
    "need": [
     [
-     "network_info",
      "system_status",
-     "toggle_setting",
-     "set_wifi"
+     "toggle_setting"
     ]
    ],
    "force": [
-    "network_info",
     "system_status"
    ],
    "forbid": [
@@ -11201,7 +11162,6 @@
    "expect": "action",
    "need": [
     [
-     "set_wifi",
      "toggle_setting"
     ],
     [
@@ -11334,9 +11294,7 @@
    "need": [
     [
      "open_app",
-     "spotify",
-     "music",
-     "play_streaming"
+     "music"
     ]
    ],
    "force": null,
@@ -11417,7 +11375,7 @@
     ],
     [
      "travel_time",
-     "get_directions"
+     "open_app"
     ]
    ],
    "force": null,
@@ -11603,7 +11561,6 @@
     [
      "open_app",
      "read_file",
-     "reveal_in_finder",
      "find_files"
     ]
    ],
@@ -11969,7 +11926,6 @@
    "need": [
     [
      "view_emails",
-     "summarize_thread",
      "summarize_emails"
     ]
    ],
@@ -12002,7 +11958,7 @@
    "expect": "action",
    "need": [
     [
-     "archive_email"
+     "email_triage"
     ]
    ],
    "force": null,
@@ -12757,8 +12713,7 @@
     [
      "view_emails",
      "summarize_emails",
-     "triage_inbox",
-     "summarize_thread"
+     "triage_inbox"
     ]
    ],
    "force": null,
@@ -13042,7 +12997,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13072,7 +13026,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13102,7 +13055,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13132,7 +13084,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13162,7 +13113,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13192,7 +13142,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13222,7 +13171,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13252,7 +13200,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13282,7 +13229,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13312,7 +13258,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13342,7 +13287,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13372,7 +13316,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13402,7 +13345,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13432,7 +13374,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13462,7 +13403,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13492,7 +13432,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13522,7 +13461,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13552,7 +13490,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13582,7 +13519,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13612,7 +13548,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13642,7 +13577,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13672,7 +13606,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13702,7 +13635,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13732,7 +13664,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13762,7 +13693,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13792,7 +13722,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13822,7 +13751,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13852,7 +13780,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13882,7 +13809,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13912,7 +13838,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13942,7 +13867,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -13972,7 +13896,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14002,7 +13925,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14032,7 +13954,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14062,7 +13983,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14092,7 +14012,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14122,7 +14041,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14152,7 +14070,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14182,7 +14099,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14212,7 +14128,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14242,7 +14157,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14272,7 +14186,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14302,7 +14215,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14332,7 +14244,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14362,7 +14273,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14392,7 +14302,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14422,7 +14331,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14452,7 +14360,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14482,7 +14389,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14512,7 +14418,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14542,7 +14447,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14572,7 +14476,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14602,7 +14505,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14632,7 +14534,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14662,7 +14563,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14692,7 +14592,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14722,7 +14621,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14752,7 +14650,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14782,7 +14679,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14812,7 +14708,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14842,7 +14737,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14872,7 +14766,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14902,7 +14795,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14932,7 +14824,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14962,7 +14853,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -14992,7 +14882,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -15022,7 +14911,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -15053,7 +14941,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -15084,7 +14971,6 @@
      "send_email",
      "reply_to_email",
      "forward_email",
-     "place_call",
      "draft_message",
      "draft_email",
      "schedule_send"
@@ -15112,10 +14998,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15141,10 +15025,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15170,10 +15052,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15199,10 +15079,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15228,10 +15106,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15257,10 +15133,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15286,10 +15160,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15315,10 +15187,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],
@@ -15344,10 +15214,8 @@
     [
      "clear_reminders",
      "clear_past_reminders",
-     "clear_memory",
-     "delete_path",
-     "trash_file",
      "forget",
+     "delete_path",
      "complete_reminder"
     ]
    ],

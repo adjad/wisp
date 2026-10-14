@@ -172,32 +172,3 @@ def append_note(title: str, text: str) -> str:
     return f"Added it to \"{name}\"."
 
 
-@register(
-    "scan_to_note",
-    "Open Notes' document scanner (Continuity Camera) to scan a physical "
-    "document into a new note. REQUIRES a paired iPhone or iPad nearby with "
-    "Continuity Camera enabled — without one this just opens an empty "
-    "scanner with nothing to capture.",
-    {"type": "object", "properties": {}},
-    category="notes_write",
-    aliases=["scan this document into notes", "use my phone to scan this",
-             "scan a document with continuity camera"],
-)
-def scan_to_note() -> str:
-    script = (
-        'tell application "Notes" to activate\n'
-        'delay 0.3\n'
-        'tell application "System Events" to tell process "Notes"\n'
-        '  click menu item "Scan Documents…" of menu "File" of menu bar 1\n'
-        'end tell')
-    p = _osa(script)
-    if p.returncode != 0:
-        msg = (p.stderr or "").strip()
-        if "-1719" in msg or "assistive" in msg.lower():
-            return ("(Wisp needs Accessibility access to open the scanner. "
-                    "Grant it in System Settings > Privacy & Security > "
-                    "Accessibility, then try again.)")
-        return f"(could not open the scanner: {msg})"
-    return ("Opened the document scanner in Notes. This needs an iPhone or "
-            "iPad nearby with Continuity Camera enabled — hold the document "
-            "up to it to scan.")

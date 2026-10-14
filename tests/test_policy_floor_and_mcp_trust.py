@@ -456,7 +456,7 @@ def _filesystem_mode(monkeypatch, tool, args, mode):
         assert grants.check(tool, args) == "allow"
 
 
-@pytest.mark.parametrize("tool", ["backup_folder", "archive_files"])
+@pytest.mark.parametrize("tool", ["move_path"])
 @pytest.mark.parametrize("mode", ["normal", "full", "grant"])
 @pytest.mark.parametrize("spelling", ["", ".", " "])
 def test_empty_and_whitespace_operands_follow_actual_paths(
@@ -468,55 +468,18 @@ def test_empty_and_whitespace_operands_follow_actual_paths(
         (source / spelling).symlink_to(protected, target_is_directory=True)
     else:
         monkeypatch.chdir(protected)
-    args = ({"source": spelling, "destination": str(source / "backup")}
-            if tool == "backup_folder" else {"paths": [spelling], "archive_path": str(source / "copy.zip")})
+    args = {"source": spelling, "destination": str(source / "backup")}
     _filesystem_mode(monkeypatch, tool, args, mode)
     assert _schema_decision(tool, args).tier == policy.Tier.DENY
 
 
-@pytest.mark.parametrize("default", [None, "", "   "])
-@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
-def test_archive_optional_empty_output_keeps_source_parent_default(
-        organize_policy_paths, monkeypatch, default, mode):
-    source, protected = organize_policy_paths
-    monkeypatch.chdir(protected)
-    args = {"paths": [str(source / "notes.txt")]}
-    if default is not None:
-        args["archive_path"] = default
-    _filesystem_mode(monkeypatch, "archive_files", args, mode)
-    expected = policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW
-    assert _schema_decision("archive_files", args).tier == expected
-
-
-@pytest.mark.parametrize("tool", ["backup_folder", "archive_files"])
+@pytest.mark.parametrize("tool", ["move_path"])
 def test_empty_required_path_in_ordinary_cwd_keeps_path_semantics(organize_policy_paths, monkeypatch, tool):
     source, _ = organize_policy_paths
     monkeypatch.chdir(source)
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
-    args = ({"source": "", "destination": str(source / "backup")}
-            if tool == "backup_folder" else {"paths": [""], "archive_path": str(source / "copy.zip")})
+    args = {"source": "", "destination": str(source / "backup")}
     assert _schema_decision(tool, args).tier == policy.Tier.CONFIRM
-
-
-@pytest.mark.parametrize("mode", ["normal", "full", "grant", "view"])
-@pytest.mark.parametrize("relative", [False, True])
-def test_uninstall_path_bearing_name_cannot_escape_applications(
-        organize_policy_paths, monkeypatch, mode, relative):
-    source, protected = organize_policy_paths
-    target = protected / "Example.app"
-    target.mkdir()
-    name = str(target) if not relative else ".." + str(target)
-    args = {"name": name}
-    _filesystem_mode(monkeypatch, "uninstall_app", args, mode)
-    assert _schema_decision("uninstall_app", args).tier == policy.Tier.DENY
-
-
-@pytest.mark.parametrize("name", ["Example", "Example.app", "  Example App.app  "])
-@pytest.mark.parametrize("mode", ["normal", "full", "grant"])
-def test_uninstall_ordinary_basename_keeps_existing_authority(organize_policy_paths, monkeypatch, name, mode):
-    args = {"name": name}
-    _filesystem_mode(monkeypatch, "uninstall_app", args, mode)
-    assert _schema_decision("uninstall_app", args).tier == (policy.Tier.CONFIRM if mode == "normal" else policy.Tier.ALLOW)
 
 
 @pytest.mark.parametrize("mode", ["normal", "full", "grant"])
@@ -535,16 +498,6 @@ def test_unrelated_name_is_not_a_filesystem_operand(organize_policy_paths, monke
     assert policy.decide("fs_write", {"name": str(protected)}, "synthetic_unrelated").tier == policy.Tier.CONFIRM
 
 
-def test_uninstall_basename_canonical_target_is_still_checked(organize_policy_paths, monkeypatch):
-    from pathlib import Path
-    _, protected = organize_policy_paths
-    apps = Path.home() / "Applications"
-    apps.mkdir()
-    (apps / "Example.app").symlink_to(protected, target_is_directory=True)
-    monkeypatch.setattr(policy, "_FULL_ACCESS", True)
-    assert _schema_decision("uninstall_app", {"name": "Example"}).tier == policy.Tier.DENY
-
-
 def test_canonicalization_value_error_is_a_deny_not_an_allow(organize_policy_paths, monkeypatch):
     def invalid(_operand):
         raise ValueError("synthetic invalid path")
@@ -560,10 +513,10 @@ def test_explicit_full_access_floor_override_is_unchanged(organize_policy_paths,
     assert _schema_decision("write_file", {"path": str(protected / "x"), "content": "x"}).tier == policy.Tier.ALLOW
 
 
+# archive_files, convert_file and encrypt_file were retired; policy.py keeps
+# their output-naming branches, but there is no registered schema left to drive.
 _DERIVED_CASES = [
-    "archive_omitted", "archive_empty", "archive_spaces", "archive_replace", "archive_upper",
-    "convert_docx", "convert_jpeg", "convert_jpg", "document", "document_upper",
-    "sheet", "sheet_upper", "encrypt", "decrypt", "move_directory", "move_slash",
+    "document", "document_upper", "sheet", "sheet_upper", "move_directory", "move_slash",
     "organize_relative", "organize_absolute", "organize_glob",
 ]
 
@@ -572,29 +525,12 @@ def _derived_fixture(source, case):
     """Pure transcription of reviewed output naming; never invoke an action."""
     path = source / "input.txt"
     path.touch()
-    if case.startswith("archive"):
-        args = {"paths": [str(path)]}
-        output = source / "input.zip"
-        if case in {"archive_empty", "archive_spaces"}:
-            args["archive_path"] = "" if case == "archive_empty" else "   "
-        if case in {"archive_replace", "archive_upper"}:
-            args["archive_path"] = str(source / ("archive.raw" if case == "archive_replace" else "archive.ZIP"))
-            output = source / "archive.zip"
-        return "archive_files", args, output
-    if case.startswith("convert"):
-        fmt = {"convert_docx": " .DOCX ", "convert_jpeg": "JPEG", "convert_jpg": ".JPG"}[case]
-        return "convert_file", {"path": str(path), "to_format": fmt}, path.with_suffix("." + fmt.strip().lower().lstrip("."))
     if case.startswith("document"):
         path = source / ("new.DOCX" if case.endswith("upper") else "new.raw")
         return "write_document", {"path": str(path), "title": "Synthetic"}, path if case.endswith("upper") else path.with_suffix(".docx")
     if case.startswith("sheet"):
         path = source / ("new.XLSX" if case.endswith("upper") else "new.raw")
         return "spreadsheet_ops", {"path": str(path), "headers": ["Synthetic"]}, path if case.endswith("upper") else path.with_suffix(".xlsx")
-    if case in {"encrypt", "decrypt"}:
-        args = {"path": str(path), "password": "synthetic-not-used"}
-        if case == "decrypt":
-            args["decrypt"] = True
-        return "encrypt_file", args, path.with_suffix(path.suffix + (".dec" if case == "decrypt" else ".enc"))
     destination = source / "sorted"
     destination.mkdir()
     if case.startswith("move"):
@@ -640,7 +576,7 @@ def test_organize_child_floor_precedes_independent_preview_contract(
 def test_derived_resolution_failure_denies_and_next_request_recovers(
         organize_policy_paths, monkeypatch, error):
     source, _ = organize_policy_paths
-    tool, args, _ = _derived_fixture(source, "archive_omitted")
+    tool, args, _ = _derived_fixture(source, "document")
     monkeypatch.setattr(policy, "_FULL_ACCESS", False)
     original = policy._derived_path_operands
 
@@ -666,7 +602,7 @@ def test_organize_checks_only_immediate_matching_children(organize_policy_paths,
 
 def test_derived_output_floor_override_remains_explicit(organize_policy_paths, monkeypatch):
     source, protected = organize_policy_paths
-    tool, args, output = _derived_fixture(source, "archive_empty")
+    tool, args, output = _derived_fixture(source, "document")
     output.symlink_to(protected / "not-created")
     monkeypatch.setattr(policy, "_FULL_ACCESS", True)
     monkeypatch.setattr(policy, "_KEEP_FLOOR", False)

@@ -31,7 +31,7 @@ def isolated_grants(monkeypatch, tmp_path):
 def test_the_registry_has_always_confirm_tools_to_check():
     # Guards the test itself: if the category sets were renamed, the loop below would pass vacuously.
     assert {"update_event", "clear_reminders", "clear_past_reminders", "forward_email",
-            "http_request", "send_email", "cancel_event", "create_tool"} <= set(ALWAYS)
+            "send_email", "cancel_event", "create_tool"} <= set(ALWAYS)
 
 
 @pytest.mark.parametrize("tool,args", CASES)

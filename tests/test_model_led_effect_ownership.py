@@ -11,17 +11,11 @@ from service.router.model_led import BuiltinCompletion, builtin_completion_verif
 BUILTIN_ARGS = {
     "run_shell": {"cmd": "touch fixture.txt"},
     "run_applescript": {"script": "return 1"},
-    "software_update": {"action": "install", "confirm": True},
-    "uninstall_app": {"name": "FixtureApp"},
-    "http_request": {"url": "https://fixture.example.invalid", "method": "POST", "body": "{}"},
     "manage_contacts": {"action": "create", "name": "Fixture"},
 }
 BUILTIN_PROMPTS = {
     "run_shell": "Run this exact shell command: touch fixture.txt",
     "run_applescript": "Run this exact AppleScript: return 1",
-    "software_update": "Install the pending macOS updates",
-    "uninstall_app": "Uninstall FixtureApp",
-    "http_request": "POST {} to https://fixture.example.invalid",
     "manage_contacts": "Create a contact named Fixture",
 }
 AUTHORITATIVE_BUILTINS = {name: registry.get_tool(name) for name in BUILTIN_ARGS}
@@ -50,7 +44,7 @@ def fake_builtin(name, effects, result, monkeypatch, *, sync=False):
 def test_working_builtin_mutation_parity_dispatches_once_with_explicit_receipt(synthetic, owned_store, monkeypatch, name, model_led):
     effects, _ = synthetic
     receipt = BuiltinCompletion("Unchanged synthetic completion text.", tool_name=name,
-                                completion_code=204 if name == "http_request" else 0)
+                                completion_code=0)
     _, family = fake_builtin(name, effects, receipt, monkeypatch)
     store, sid = owned_store
     script = [[discover(family, name)], [call(name, **BUILTIN_ARGS[name])], "Completed."] if model_led else [[call(name, **BUILTIN_ARGS[name])], "Completed."]
@@ -67,11 +61,11 @@ def test_working_builtin_mutation_parity_dispatches_once_with_explicit_receipt(s
 @pytest.mark.parametrize("kind", ["failed", "missing", "malformed", "wrong_phase"])
 def test_unverified_builtin_attempt_is_consumed_and_cannot_retry(synthetic, owned_store, monkeypatch, name, kind):
     effects, _ = synthetic
-    code = 503 if name == "http_request" else 17
+    code = 17
     if kind == "malformed":
         code = "0"
     if kind == "wrong_phase":
-        code = 204 if name == "http_request" else 0
+        code = 0
     receipt = ("Arbitrary nonempty stdout: SUCCESS" if kind == "missing" else
                BuiltinCompletion("Arbitrary body: SUCCESS", tool_name=name, completion_code=code,
                                  phase="read" if kind == "wrong_phase" else "mutation"))
@@ -127,10 +121,10 @@ def test_actual_registry_preserves_host_carrier_but_not_extension_attributes(syn
         receipt.completion_code = 1
 
 
-@pytest.mark.parametrize("name", ["run_shell", "software_update"])
+@pytest.mark.parametrize("name", ["run_shell"])
 def test_supported_builtin_read_phases_dispatch_without_action_claim(synthetic, owned_store, monkeypatch, name):
     effects, _ = synthetic
-    args = {"cmd": "pwd"} if name == "run_shell" else {"action": "check"}
+    args = {"cmd": "pwd"}
     _, family = fake_builtin(name, effects, "Synthetic read result.", monkeypatch)
     store, sid = owned_store
     run([[discover(family, name)], [call(name, **args)], "Read result."], approval=Approval(True),
@@ -140,8 +134,7 @@ def test_supported_builtin_read_phases_dispatch_without_action_claim(synthetic, 
 
 @pytest.mark.parametrize("name", list(BUILTIN_ARGS))
 def test_actual_builtin_emitter_uses_host_status_not_stdout_or_body(monkeypatch, name):
-    import asyncio, sys
-    from pathlib import Path
+    import sys
     from types import SimpleNamespace
     from service.safety.policy import Decision, Tier
     tool = AUTHORITATIVE_BUILTINS[name]
@@ -152,28 +145,13 @@ def test_actual_builtin_emitter_uses_host_status_not_stdout_or_body(monkeypatch,
         monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: native)
     elif name == "run_applescript":
         monkeypatch.setattr(module.subprocess, "run", lambda *a, **k: native)
-    elif name == "software_update":
-        monkeypatch.setattr(module, "_run", lambda *a, **k: native)
-    elif name == "uninstall_app":
-        monkeypatch.setattr(Path, "exists", lambda p: str(p) == "/Applications/FixtureApp.app")
-        monkeypatch.setattr(module, "_osa", lambda *a, **k: native)
     elif name == "manage_contacts":
         monkeypatch.setattr(module, "_osa", lambda *a, **k: native)
-    else:
-        class FakeHTTP:
-            async def __aenter__(self): return self
-            async def __aexit__(self, *args): pass
-            async def request(self, *args, **kwargs):
-                return SimpleNamespace(status_code=native.returncode, text=native.stdout)
-        native.returncode = 204
-        monkeypatch.setattr(module.httpx, "AsyncClient", lambda **kwargs: FakeHTTP())
-    result = (asyncio.run(tool.func(**BUILTIN_ARGS[name])) if name == "http_request"
-              else tool.func(**BUILTIN_ARGS[name]))
+    result = tool.func(**BUILTIN_ARGS[name])
     assert builtin_completion_verified(tool, result)
     displayed = str(result)
-    native.returncode = 503 if name == "http_request" else 17
-    failed = (asyncio.run(tool.func(**BUILTIN_ARGS[name])) if name == "http_request"
-              else tool.func(**BUILTIN_ARGS[name]))
+    native.returncode = 17
+    failed = tool.func(**BUILTIN_ARGS[name])
     assert not builtin_completion_verified(tool, failed)
     assert displayed  # Existing UI output remains a regular nonempty string.
 
@@ -440,8 +418,8 @@ def test_preview_is_read_phase_and_failed_automation_is_not_receipt():
     tool = SimpleNamespace(name="organize_files", category="fs_write")
     assert not effectful_call(tool, {"confirm": False})
     assert effectful_call(tool, {"confirm": True})
-    for name, text in [("run_shortcut", "(the Shortcut ran into a problem: fixture)"),
-                       ("convert_file", "(no such file: fixture)")]:
+    for name, text in [("music", "(music error: fixture)"),
+                       ("open_app", "(could not open 'Fixture': fixture)")]:
         assert not trusted_effect_receipt(SimpleNamespace(name=name),
             SimpleNamespace(status="succeeded", effect="read", text=text))
 
@@ -460,24 +438,12 @@ def test_read_only_shell_executes_without_mutation_claim(synthetic, owned_store)
     assert not store.pending_model_effects(sid)
 
 
-def test_power_receipts_match_actual_builtin_verbs():
+def test_known_memory_receipts_have_correct_phases():
     from types import SimpleNamespace
-    from service.router.model_led import trusted_effect_receipt
-    for text in ("Restart initiated.", "Shut down initiated.", "Sleep initiated.", "Log out initiated."):
-        assert trusted_effect_receipt(SimpleNamespace(name="power_control"),
-            SimpleNamespace(status="succeeded", effect="read", text=text))
-
-
-def test_known_memory_receipts_and_clear_preview_have_correct_phases():
-    from types import SimpleNamespace
-    from service.router.model_led import effectful_call, has_effect_contract, trusted_effect_receipt
-    tool = SimpleNamespace(name="clear_memory", category="fs_delete")
-    assert not effectful_call(tool, {"confirm": False})
-    assert effectful_call(tool, {"confirm": True})
+    from service.router.model_led import has_effect_contract, trusted_effect_receipt
     for name, text in (("remember", "Saved memory 1: fixture"),
                        ("forget", "Forgot 1 matching memory record(s), including correction history."),
-                       ("forget", "No exact matching memories were forgotten. Use recall to identify the statement to forget."),
-                       ("clear_memory", "Forgot 0 memory record(s), including their correction history. Conversations were retained.")):
+                       ("forget", "No exact matching memories were forgotten. Use recall to identify the statement to forget.")):
         t = SimpleNamespace(name=name)
         result = SimpleNamespace(status="succeeded", effect="read", text=text)
         assert has_effect_contract(t, result) and trusted_effect_receipt(t, result)

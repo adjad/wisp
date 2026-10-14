@@ -16,11 +16,8 @@ LAYA_MODEL_REVISION = "8139e9089273319512c730218903784074133187"
 # Laya's computer-access score is noisy for explicitly scoped public tools;
 # those routes still require low private-content and context-risk scores.
 _CLOUD_RISK_CEILING = 0.05
-_PUBLIC_CLOUD_TOOLS = frozenset({
-    "air_quality", "get_stock_price", "get_weather", "rain_radar",
-    "weather_alerts", "web_search",
-})
-_WEATHER_ROUTE_MENU = _PUBLIC_CLOUD_TOOLS | {"http_request", "web_fetch"}
+_PUBLIC_CLOUD_TOOLS = frozenset({"get_stock_price", "get_weather", "web_search"})
+_WEATHER_ROUTE_MENU = _PUBLIC_CLOUD_TOOLS | {"web_fetch"}
 _PAGE_SEPARATORS = str.maketrans({
     "。": ".", "．": ".", "｡": ".", "․": ".", "﹒": ".",
     "／": "/", "∕": "/", "⁄": "/",

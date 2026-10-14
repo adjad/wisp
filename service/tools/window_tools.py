@@ -69,42 +69,6 @@ def list_running_apps() -> str:
 
 
 @register(
-    "switch_app",
-    "Bring a running application to the front, or hide everything except it. "
-    "Unlike open_app this does not launch anything — use it to move between "
-    "things already open.",
-    {
-        "type": "object",
-        "properties": {
-            "name": {"type": "string", "description": "The application to bring forward."},
-            "hide_others": {"type": "boolean",
-                            "description": "Also hide every other app, for focus."},
-        },
-        "required": ["name"],
-    },
-    category="app_control",
-    aliases=["switch over to safari", "bring chrome to the front",
-             "go back to my editor", "hide everything except slack",
-             "put xcode in front"],
-)
-def switch_app(name: str, hide_others: bool = False) -> str:
-    name = (name or "").strip()
-    if not name:
-        return "(error: switch_app needs the app `name`.)"
-    p = _osa(f'tell application {_as_str(name)} to activate')
-    if (e := _guard(p)) is not None:
-        return e
-    if hide_others:
-        h = _osa('tell application "System Events" to set visible of '
-                 f'(every process whose name is not {_as_str(name)} '
-                 'and background only is false) to false')
-        if h.returncode != 0:
-            return f"Switched to {name}, but couldn't hide the others."
-        return f"Switched to {name} and hid everything else."
-    return f"Switched to {name}."
-
-
-@register(
     "window_control",
     "Act on the frontmost window: close, minimize, zoom (maximize), enter or "
     "exit full screen, or tile it to the left or right half of the screen.",
@@ -170,30 +134,3 @@ def window_control(action: str, app: str = "") -> str:
     return f"{said[action]} the {'front' if not app.strip() else app.strip()} window."
 
 
-@register(
-    "reveal_in_finder",
-    "Show a file or folder in Finder, selected and ready to drag — as opposed "
-    "to opening it. Use after find_files when the user wants to SEE where "
-    "something lives.",
-    {
-        "type": "object",
-        "properties": {
-            "path": {"type": "string", "description": "The file or folder to reveal."},
-        },
-        "required": ["path"],
-    },
-    category="app_control",
-    aliases=["show me where that file lives", "open the folder that's in",
-             "reveal this in finder", "take me to that file"],
-)
-def reveal_in_finder(path: str) -> str:
-    from pathlib import Path
-
-    target = Path((path or "").strip()).expanduser()
-    if not target.exists():
-        return f"(error: {path} doesn't exist on this Mac.)"
-    p = subprocess.run(["open", "-R", str(target)], capture_output=True,
-                       text=True, timeout=_TIMEOUT)
-    if p.returncode != 0:
-        return f"(could not reveal it: {(p.stderr or '').strip()})"
-    return f"Showing {target.name} in Finder."

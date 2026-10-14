@@ -1263,35 +1263,3 @@ async def clear_reminders(scope: str, query: str = "",
             + (f" matching {query!r}" if query else "") + ".")
 
 
-@register(
-    "join_video_call",
-    "Open the video-call link for an upcoming event, matched by part of its "
-    "title (or the next event if title is omitted). Reads the URL stored "
-    "with the event — does not guess a link.",
-    {"type": "object",
-     "properties": {"title": {"type": "string", "description": "Part of the event's title. Omit for the next event."}}},
-    category="assistant_read",
-    aliases=["join my next meeting", "get me into the standup call",
-             "join today's video call", "let me into the call"],
-)
-async def join_video_call(title: str = "") -> str:
-    import subprocess
-
-    q = (title or "").strip().lower()
-    items = assistant_store.upcoming(days=1) or assistant_store.upcoming(days=7)
-    if q:
-        items = [c for c in items if q in c["title"].lower()]
-    if not items:
-        return (f"No upcoming event matches {title!r}." if q
-                else "Nothing upcoming in the next 7 days.")
-    items = sorted(items, key=lambda c: c["when_ts"])
-    for c in items:
-        if c.get("url"):
-            p = subprocess.run(["open", c["url"]], capture_output=True,
-                               text=True, timeout=15)
-            if p.returncode != 0:
-                return f"(could not open the link for “{c['title']}”: {(p.stderr or '').strip()})"
-            return f"Opened the call link for “{c['title']}”."
-    named = items[0]["title"]
-    return (f"“{named}” doesn't have a call link stored on it. Check the "
-            f"invite in Mail or Calendar directly.")

@@ -7,6 +7,7 @@ struct ChatLaunchers {
     var today: () -> Void = {}
     var research: () -> Void = {}
     var memory: () -> Void = {}
+    var learned: () -> Void = {}
     var settings: () -> Void = {}
     var searchEverything: () -> Void = {}
 }
@@ -106,6 +107,7 @@ struct ChatSidebar: View {
                 ChatNavRow(symbol: "sun.max", title: "Today", action: launchers.today)
                 ChatNavRow(symbol: "books.vertical", title: "Research", action: launchers.research)
                 ChatNavRow(symbol: "brain", title: "Memory", action: launchers.memory)
+                ChatNavRow(symbol: "repeat", title: "What Wisp learned", action: launchers.learned)
                 ChatNavRow(symbol: "sparkle.magnifyingglass", title: "Search everything", hint: "⇧⌘F", action: launchers.searchEverything)
             }
             .padding(.horizontal, 8)

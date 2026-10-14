@@ -213,6 +213,8 @@ SKIP = {
     "reveal_in_finder": "opens a real Finder window — low risk but disruptive to the desktop mid-run",
     "join_video_call": "would open a real meeting URL if one exists on an upcoming event",
     "play_streaming": "would launch a real installed streaming app",
+    "play_audio": "opens Podcasts/Books or starts real audio playback",
+    "music": "would start or skip real playback in Music/Spotify",
     "play_podcast": "opens Podcasts and performs a real search",
     "play_audiobook": "opens Books.app",
     "play_radio": "starts real audio playback (tested separately, already verified)",
@@ -244,6 +246,7 @@ SKIP = {
     "flag_email": "needs a real message id — tested separately",
     "mark_email_read": "needs a real message id — tested separately",
     "archive_email": "needs a real message id, and archiving is a real inbox change",
+    "email_triage": "needs a real message id, and archive/flag/read are real inbox changes",
     "cancel_scheduled_send": "no scheduled send exists to cancel in this run",
     "list_scheduled_sends": "trivially safe but depends on prior schedule_send test",
     "add_calendar_event": "writes a REAL event to the user's live Calendar",
@@ -314,16 +317,9 @@ async def _setup_fixtures() -> None:
     here instead)."""
     SCRATCH.mkdir(parents=True, exist_ok=True)
     (SCRATCH / "move_src_fixture.txt").write_text("wisp tool test fixture — safe to delete")
-    (SCRATCH / "convert_src.txt").write_text("wisp tool test fixture — safe to delete")
-    (SCRATCH / "encrypt_src.txt").write_text("wisp tool test fixture — safe to delete")
-    (SCRATCH / "backup_src").mkdir(exist_ok=True)
-    (SCRATCH / "backup_src" / "f.txt").write_text("wisp tool test fixture")
 
     from service.tools.notes_write import create_note
     create_note("Wisp Tool Test Fixture", "Created by scripts/test_all_tools.py setup — safe to delete.")
-
-    from service.tools.security_privacy import keychain_store
-    keychain_store("WispToolTestFixture", "tester", "fixture-secret")
 
 
 async def main() -> int:
