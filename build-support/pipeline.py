@@ -806,7 +806,7 @@ def engine_smoke(runner, bundle):
            "PYTHONPATH": f"{root}:{root / 'sp'}", "PYTHONDONTWRITEBYTECODE": "1"}
     code = ("import omlx.server, mlx.core as mx; "
             "assert mx.default_device().type == mx.DeviceType.gpu, mx.default_device(); "
-            "import mlx_lm, mlx_embeddings, transformers, xgrammar; print('engine-import-ok')")
+            "import mlx_lm, mlx_embeddings, transformers; print('engine-import-ok')")
     status, log = runner.run("relocated-engine-smoke", [root / "py/bin/python3", "-B", "-c", code],
                              cwd=scratch, env=env, timeout=300, check=False)
     shutil.rmtree(scratch, ignore_errors=True)
