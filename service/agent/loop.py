@@ -19,7 +19,8 @@ from typing import Awaitable, Callable, Sequence
 
 from service import debug_capture
 from service.user_text import user_facing_failure as _user_facing_failure
-from service.config import narration_mode, no_thinking_kwargs, role_to_model
+from service.config import (narration_mode, no_thinking_kwargs, role_to_model,
+                            thinking_kwargs, thinks_explicitly)
 from service.inference.omlx_client import OMLXClient
 from service.memory import prompt_blocks
 from service.safety import Tier, audit, decide
@@ -679,10 +680,15 @@ def _is_looping(reasoning_text: str, min_count: int = 4, min_len: int = 20) -> b
     return Counter(paragraphs).most_common(1)[0][1] >= min_count
 
 
-def _template_kwargs(model: str, *, no_thinking: bool) -> dict:
+def _template_kwargs(model: str, *, no_thinking: bool, think_on: bool = False) -> dict:
     """chat_template_kwargs for one step.
 
-    Just `no_thinking_kwargs` (enable_thinking, qwen3 lineage — what the
+    An `explicit_thinking` model (config.thinking_kwargs) gets `think_on`
+    stated outright, both ways, and `no_thinking` is ignored for it: its
+    default is OFF on every step, and the loop passes True only after a tool
+    failure this turn (the step where a corrected retry needs reasoning).
+
+    Otherwise, just `no_thinking_kwargs` (enable_thinking, qwen3 lineage — what the
     current roster uses) when narrating; {} otherwise. This used to also merge
     in `effort_kwargs` (reasoning_effort, gpt-oss lineage) — removed with
     gpt-oss's retirement, since it always returned {} for every model on this
@@ -690,6 +696,8 @@ def _template_kwargs(model: str, *, no_thinking: bool) -> dict:
     merging again rather than clobbering (each returns a whole
     `{"chat_template_kwargs": {...}}` dict).
     """
+    if thinks_explicitly(model):
+        return thinking_kwargs(model, on=think_on)
     return no_thinking_kwargs(model) if no_thinking else {}
 
 
@@ -697,6 +705,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                     *, stream_content: bool,
                     temperature: float | None = None,
                     no_thinking: bool = False,
+                    think_on: bool = False,
                     debug: bool = True) -> tuple[dict, str, bool]:
     """One model turn, streamed. Emits live answer tokens (as `delta` events) and
     throttled `heartbeat`s during silent reasoning so the agent path is never a
@@ -726,7 +735,7 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     events = client.stream_events(
             model, msgs, tools=schemas, tool_choice=choice, max_tokens=max_tokens,
             temperature=temperature,
-            **_template_kwargs(model, no_thinking=no_thinking))
+            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on))
     async for ev in events:
         kind = ev["kind"]
         if kind == "reasoning":
@@ -2551,6 +2560,19 @@ async def run_agent(
             and (mode == "broad"
                  or {s["function"]["name"] for s in step_schemas} <= tools_answered)
         )
+        # EXPLICIT-THINKING models (config.thinking_kwargs): the think block is
+        # stated on every step and defaults to OFF — V3 selects tools fine
+        # without it and runs ~10x faster. ON only when a RECOVERABLE tool
+        # failure is still outstanding: the corrected retry is the one step
+        # with something to reason about (the same reason `narrating` refuses
+        # to fire on an error). Not `hard_failed`: that set also holds safety
+        # blocks and user denials, which never clear, and would have kept
+        # thinking on for the rest of a turn after a single "no". A "think
+        # when synthesizing across two or more results" variant was measured
+        # 2026-10-13 and retired: that condition fired on 2 of 177 live V3
+        # turns, so there was nothing to gain. `narrating` keeps governing the
+        # non-explicit models unchanged.
+        step_think_on = bool(failed_tools - tools_answered)
         # Sampling is the model's own (as configured in oMLX) on every step
         # EXCEPT tool-SELECTION, which is pinned greedy. Higher temperature
         # increases variance away from the single most-likely — structured,
@@ -2688,7 +2710,7 @@ async def run_agent(
             msg, reasoning, content_streamed = await _run_step(
                 client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
                 stream_content=stream, temperature=attempt_temperature,
-                no_thinking=narrating, debug=debug)
+                no_thinking=narrating, think_on=step_think_on, debug=debug)
 
             # A completely empty response — no content, no reasoning, no tool
             # calls — is not the model deciding to say nothing. It means oMLX's
