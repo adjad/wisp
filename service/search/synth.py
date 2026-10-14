@@ -223,6 +223,113 @@ def _render_passages(chunks: list[Chunk], picks: list[int]) -> str:
     return "\n\n".join(out)
 
 
+# Grounding for an uncited sentence (see verify). Content tokens are words of
+# three or more letters or any number; the stop list keeps "the open risk is
+# that" from counting as evidence. Negations are deliberately NOT stop words:
+# the audit of the first version showed "the landlord has confirmed renewal
+# terms" grounding at 100% against "has not confirmed", because `not` was
+# ignored on both sides.
+#
+# Three checks, each conservative (a miss means the sentence is dropped, which
+# is what happened to every uncited sentence before grounding existed):
+#   - every FIGURE in the sentence must appear in the passage exactly — a
+#     wrong date or percentage is the likely damage in a document search, and
+#     it must never come back wearing a citation Wisp attached itself;
+#   - the sentence's negation polarity must agree with the passage sentence
+#     it matches best, so an inverted claim fails even when every other
+#     token lines up;
+#   - the remaining content tokens must mostly come from that passage: all
+#     of them for a short answer ("37 C."), 80% otherwise — a true clause
+#     with an invented one bolted on scored 75% in the audit and must fail,
+#     while the model's real paraphrases measured at or near 100%.
+# What this cannot catch is a swap of two entities both present in the
+# passage ("from Prairie Grain to Harvest Mills"); neither can the model's own
+# citations, which were never content-checked. That limit is documented in
+# tests/test_search_verify_grounding.py rather than hidden.
+_TOKEN_RE = re.compile(r"[a-z]{3,}|\d[\d.,%]*")
+_NEGATIONS = frozenset({"not", "never", "nothing", "none", "cannot", "without"})
+_STOP = frozenset("""
+the and that this with for was has have are were from into onto its they
+them their there which what when where who will would could should about
+because been being also than then more most some such only very just over
+under after before between through during each both does did done his her
+him she you your our out off per via any all one two can may might must
+""".split())
+_GROUND_RATIO = 0.8
+
+
+def _content_tokens(text: str) -> set[str]:
+    return set(_content_sequence(text))
+
+
+def _content_sequence(text: str) -> list[str]:
+    out: list[str] = []
+    for t in _TOKEN_RE.findall(text):
+        t = t.rstrip(".,")          # "September 30." carries the period
+        if t and t not in _STOP:
+            out.append(t)
+    return out
+
+
+def _negation_scope(text: str, reach: int = 6) -> set[str]:
+    """Content tokens in the `reach` raw tokens AFTER a negation — the clause
+    it governs, near enough for English. "the lease expires on September 30
+    and the landlord has not confirmed renewal terms" yields {confirmed,
+    renewal, terms}; the lease clause stays out of it. Measured over the raw
+    stream, stop words included, so the reach cannot bridge a clause boundary
+    the way a count over content tokens alone did."""
+    raw = [t.rstrip(".,") for t in _TOKEN_RE.findall(text)]
+    scope: set[str] = set()
+    for i, t in enumerate(raw):
+        if t in _NEGATIONS:
+            scope.update(w for w in raw[i + 1:i + 1 + reach] if w and w not in _STOP)
+    return scope - _NEGATIONS
+
+
+def _ground(sentence: str, passages: list[str]) -> int | None:
+    """1-based index of the single passage that accounts for the sentence's
+    content tokens, or None. Both sides already folded by the caller."""
+    tokens = _content_tokens(sentence)
+    if not tokens:
+        return None
+    figures = {t for t in tokens if t[0].isdigit()}
+    negated = bool(tokens & _NEGATIONS)
+    need = 1.0 if len(tokens) < 3 else _GROUND_RATIO
+    best, best_hit = None, 0.0
+    for i, passage in enumerate(passages, start=1):
+        words = _content_tokens(passage)
+        if figures - words:
+            continue                 # a figure the passage never states
+        # Polarity is judged against the passage SENTENCE the claim matches
+        # best, not the whole passage — one "not" elsewhere in a long passage
+        # must not veto every positive claim drawn from it.
+        segments = [s for s in _SENT_RE.split(passage) if s.strip()] or [passage]
+        seg = max(segments, key=lambda s: len(tokens & _content_tokens(s)))
+        seg_negated = bool(_content_tokens(seg) & _NEGATIONS)
+        if negated and not seg_negated:
+            continue                 # the claim negates what the passage asserts
+        if seg_negated and not negated and tokens & _negation_scope(seg):
+            # The passage sentence negates a clause and the claim restates that
+            # clause positively ("has confirmed renewal terms"). A positive
+            # claim about a DIFFERENT clause of the same sentence ("expires on
+            # September 30") shares no token with the negated clause and is
+            # allowed through.
+            continue
+        hit = len(tokens & words) / len(tokens)
+        if hit > best_hit:
+            best, best_hit = i, hit
+    return best if best_hit >= need else None
+
+
+def _attach_citation(sentence: str, n: int) -> str:
+    """'... 37 C.' -> '... 37 C [n].' — before the closing punctuation, the
+    way the model itself writes citations, so renumbering treats it alike."""
+    m = re.search(r"[.!?]+$", sentence)
+    if m:
+        return f"{sentence[:m.start()].rstrip()} [{n}]{m.group(0)}"
+    return f"{sentence} [{n}]"
+
+
 def verify(answer: str, chunks: list[Chunk], picks: list[int], *,
            scope: str = "span") -> tuple[str, list[int]]:
     """Drop every sentence we can't trace back to the retrieved text.
@@ -259,7 +366,21 @@ def verify(answer: str, chunks: list[Chunk], picks: list[int], *,
         cites = [int(n) for grp in _CITE_RE.findall(s) for n in _NUM_RE.findall(grp)]
         valid = [n for n in cites if 1 <= n <= len(picks)]
         if not valid and scope != "global":
-            continue  # uncited claim — no provenance, no place in the answer
+            # An uncited sentence still gets ONE chance at provenance: if its
+            # content words all come from a single retrieved passage, cite
+            # that passage for it. Measured 2026-10-13 on
+            # Ling-3.0-tiny-Wisp-V3-merged-oQ4e, six questions whose answers
+            # were in the text: 6/6 answers correct, 3/6 carried a [n] — the
+            # other three were dropped here as "uncited", so Smart Search
+            # showed "not found" for a right answer half the time. The
+            # guarantee is unchanged: a sentence is kept only when it can be
+            # traced to a passage; the model's citation habit just stops
+            # being the only way to trace it.
+            n = _ground(_src(s), [_src(chunks[i].text) for i in picks])
+            if n is None:
+                continue  # uncited claim — no provenance, no place in the answer
+            valid = [n]
+            s = _attach_citation(s, n)
 
         # Quotes are checked against the cited passages when there are any,
         # else against the whole retrieved set (global summary sentences may
@@ -373,6 +494,12 @@ async def _answer(client: OMLXClient, question: str, chunks: list[Chunk],
     ]
     max_tokens = _LONG_DOC_MAX_TOKENS if long_doc else _SHORT_DOC_MAX_TOKENS
     # THINKING OFF, not reasoning_effort="low".
+    #
+    # Re-measured 2026-10-13 on Ling-3.0-tiny-Wisp-V3-merged-oQ4e with
+    # thinking ON and an 1,800/2,400 budget (scripts/eval_arms.py, 6 cases x
+    # 3 reps): correct 33% vs 33%, the same cases in every arm, and slower
+    # (p50 6.2s vs 3.6s). The failures were uncited correct answers dropped by
+    # verify(), which reasoning cannot fix — see _ground. Thinking stays off.
     #
     # The intent below was always right — reading a dozen passages and
     # reporting what they say needs no deliberation — but the mechanism was

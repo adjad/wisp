@@ -153,8 +153,12 @@ def signals(turn: Turn, expect: tuple[str, ...] | list[str]) -> list[dict]:
 # ---------------------------------------------------------------- running
 async def stream_turn(client: httpx.AsyncClient, task: Task, prompt: str,
                       session_id: str | None = None,
-                      live_writes: bool = False) -> AsyncIterator[dict]:
+                      live_writes: bool = False,
+                      base: str | None = None) -> AsyncIterator[dict]:
     """Drive one prompt through Wisp's real /agent endpoint.
+
+    `base` overrides BASE for one call — scripts/eval_arms.py drives isolated
+    backends on other ports, never the real one.
 
     Yields normalized events. Safety: a task marked `plan` goes through
     test_mode (tool calls are intercepted before executing), and any
@@ -162,6 +166,7 @@ async def stream_turn(client: httpx.AsyncClient, task: Task, prompt: str,
     — so even live_writes cannot wander outside what the task declared.
     """
     plan_mode = task.mode == "plan" and not live_writes
+    base = base or BASE
     body: dict = {"prompt": prompt}
     if plan_mode:
         body["test_mode"] = True          # stateless by design; carries no session
@@ -173,7 +178,7 @@ async def stream_turn(client: httpx.AsyncClient, task: Task, prompt: str,
     yield {"kind": "start", "prompt": prompt, "plan_mode": plan_mode}
 
     try:
-        async with client.stream("POST", f"{BASE}/agent", json=body,
+        async with client.stream("POST", f"{base}/agent", json=body,
                                  timeout=TURN_TIMEOUT) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():
@@ -224,7 +229,7 @@ async def stream_turn(client: httpx.AsyncClient, task: Task, prompt: str,
                     ok = live_writes and name in task.expect
                     if not ok:
                         yield {"kind": "denied", "name": name}
-                    await client.post(f"{BASE}/agent/approve", json={
+                    await client.post(f"{base}/agent/approve", json={
                         "session_id": session_id or "", "action_id": ev.get("id"),
                         "approved": bool(ok), "scope": "once"}, timeout=20)
                 elif kind == "error":
@@ -245,10 +250,11 @@ async def stream_turn(client: httpx.AsyncClient, task: Task, prompt: str,
 
 async def run_turn(client: httpx.AsyncClient, task: Task, prompt: str,
                    session_id: str | None = None,
-                   live_writes: bool = False) -> Turn:
+                   live_writes: bool = False,
+                   base: str | None = None) -> Turn:
     """Collect a whole turn — the terminal runner's view of stream_turn."""
     turn = Turn(prompt=prompt, session_id=session_id)
-    async for ev in stream_turn(client, task, prompt, session_id, live_writes):
+    async for ev in stream_turn(client, task, prompt, session_id, live_writes, base=base):
         turn.apply(ev)
     return turn
 

@@ -2126,8 +2126,18 @@ async def agent(body: dict[str, Any]):
                 # suppressed on a selection step (see no_thinking_kwargs's
                 # docstring) — this path never drives tools, so that risk
                 # doesn't apply here.
-                think_kwargs = (no_thinking_kwargs(decision.model)
-                                if decision.role == "fast" else {})
+                #
+                # An explicit-thinking model (config.thinking_kwargs) states
+                # OFF here for every role: V3 was trained thinking-off, and
+                # omitting the kwarg would hand the decision to the oMLX
+                # profile toggle. "reasoning" is the one role that may earn an
+                # explicit ON later; it has not been measured on V3 yet.
+                from service.config import thinking_kwargs, thinks_explicitly
+                if thinks_explicitly(decision.model):
+                    think_kwargs = thinking_kwargs(decision.model, on=False)
+                else:
+                    think_kwargs = (no_thinking_kwargs(decision.model)
+                                    if decision.role == "fast" else {})
                 # Load before entering the per-chunk timeout: a legitimate cold
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.

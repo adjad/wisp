@@ -316,6 +316,12 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
     "tests/test_narration_thinking.py",
+    # Explicit think-block policy, experiment-switch parsing, and verify()
+    # grounding: pure functions over in-memory strings and the packaged
+    # models.yaml; no model, network, subprocess, or user state.
+    "tests/test_experiments.py",
+    "tests/test_search_verify_grounding.py",
+    "tests/test_thinking_kwargs.py",
     "tests/test_notes_defaults.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",
