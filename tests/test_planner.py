@@ -130,7 +130,10 @@ async def emit(_event):
 
 
 @pytest.fixture(autouse=True)
-def _fake_tools():
+def _fake_tools(monkeypatch):
+    # The fakes' own empty notices, as real tools register theirs.
+    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_search", ("(no notes matched",))
+    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_open", ("(no file named",))
     calls: list[tuple[str, dict]] = []
     saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read", "fake_send", "fake_open", "fake_write")}
 
@@ -398,21 +401,25 @@ def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
     assert _fake_tools == [("fake_open", {"path": "a"}), ("fake_write", {"path": "a", "text": "new"})]
 
 
-@pytest.mark.parametrize("text", ["", "   ", "No matching memory or user conversation passage.",
-                                  "(no notes matched x)", "(no public web results found for x)"])
-def test_empty_results_count_as_misses(text):
-    assert planner.looks_empty(text)
+@pytest.mark.parametrize("name,text", [
+    ("search_notes", ""), ("search_notes", "   "),
+    ("recall", "No matching memory or user conversation passage. Try another query."),
+    ("web_search", "(no public web results found; do not answer from memory.)"),
+    ("read_file", "(no such file: ~/a.txt)"), ("search_notes", "No notes found."),
+    ("manage_contacts", "No contact matches 'Sammy'. Use action='create' to add one.")])
+def test_tools_own_empty_notices_count_as_misses(name, text):
+    assert planner.looks_empty(name, text)
 
 
-@pytest.mark.parametrize("text", [
-    "note about alpha", "Notes: gate code 4512", "Nobody emailed",
-    "No significant results were observed in trial A. Participants: 40. Adverse events: 0.",
-    "No unexpected matches occurred in the validation set. Rows: 12.",
-    "(c) 2024 Acme. Quarterly report: revenue up 4%.",
-    "No significant results were observed in trial A.\n" + "Table 1: enrollment and outcomes. " * 20,
-    "No unexpected matches occurred in the validation set.\n" + "Section 2 data rows. " * 20])
-def test_real_results_are_not_misses(text):
-    assert not planner.looks_empty(text)
+@pytest.mark.parametrize("name,text", [
+    ("search_notes", "note about alpha"), ("search_notes", "Notes: gate code 4512"),
+    ("read_file", "No significant results were observed in trial A. Participants: 40."),
+    ("read_file", "No unexpected matches occurred in the validation set. Rows: 12."),
+    ("read_file", "(define tax-rate 0.08)"), ("read_file", "(c) 2024 Acme. Revenue up 4%."),
+    ("web_fetch", "(no public web results found)"),  # another tool's notice is content here
+    ("search_notes", "Nobody emailed")])
+def test_content_is_never_a_miss(name, text):
+    assert not planner.looks_empty(name, text)
 
 
 def test_an_exhausted_read_never_takes_a_fresh_write_down_with_it(_fake_tools):

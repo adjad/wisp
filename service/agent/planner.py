@@ -226,26 +226,29 @@ def plan_message(plan: Plan) -> dict:
                            for i, (name, args) in enumerate(plan.calls)]}
 
 
-# Wisp's parenthesized notices are one short line.
-EMPTY_NOTICE_MAX_CHARS = 300
+# Each read tool's own "found nothing" notice, matched as a prefix for THAT
+# tool only (source in parentheses). Content is never inspected: the
+# fifth-seventh independent reviews of #211 showed that any content rule
+# ("No significant results...", a length cap, "(define tax-rate 0.08)" in a
+# Scheme file) misreads a successful read as a miss. A tool missing here just
+# never counts toward the budget, which costs at most extra reads. Outcomes
+# the classifier already calls no_match/failed count on their own.
+EMPTY_NOTICES: dict[str, tuple[str, ...]] = {
+    "web_search": ("(no public web results found",),          # tools/web_tools.py
+    "search_notes": ("No notes found", "No notes modified in"),  # tools/notes_tools.py
+    "recall": ("No matching memory or user conversation passage.",),  # tools/memory_tools._NO_MATCH
+    "read_file": ("(no such file:",),                          # tools/builtin.read_file
+    "list_dir": ("(no such path:",),                           # tools/builtin.py
+    "manage_contacts": ("No contact matches",),                # tools/contacts_tools.py
+    "lookup_contact": ("(No contacts are synced yet",),        # tools/imessage_tools.py
+}
 
 
-def looks_empty(result) -> bool:
-    """A read that found nothing, judged ONLY by signals Wisp itself emits:
-    a blank result, a short notice wrapped entirely in parentheses (Wisp's
-    notice convention, e.g. "(no public web results found ...)"), or a tool's
-    exact no-match sentence. Free text is never guessed at: a report that
-    merely begins "No significant results were observed..." is content, and
-    reading it as a miss skipped the third requested report (fifth and sixth
-    independent reviews of #211). Non-succeeded outcomes are counted by the
-    caller from classify_tool_outcome."""
+def looks_empty(name: str, result) -> bool:
+    """A read that found nothing, judged only by signals Wisp itself emits:
+    a blank result or the tool's own exact empty-result notice."""
     text = str(result or "").strip()
-    if not text:
-        return True
-    if len(text) <= EMPTY_NOTICE_MAX_CHARS and text.startswith("(") and text.endswith(")"):
-        return True
-    from service.tools.memory_tools import _NO_MATCH as _RECALL_NO_MATCH
-    return text == _RECALL_NO_MATCH
+    return not text or text.startswith(EMPTY_NOTICES.get(name, ()))
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:

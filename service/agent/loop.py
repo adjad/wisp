@@ -3786,7 +3786,7 @@ async def run_agent(
                     completed_reads.add(read_key)
             if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
                     and name not in _EFFECT_TOOLS
-                    and (outcome.status != "succeeded" or _plan.looks_empty(result))):
+                    and (outcome.status != "succeeded" or _plan.looks_empty(name, result))):
                 read_misses[name] += 1
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
