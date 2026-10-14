@@ -542,12 +542,13 @@ def _read_categories():
 
 # Reads whose answer can change within one turn without any write by Wisp, so
 # an identical repeat ("check again") must still run.
-# Device and media controls repeat legitimately with identical arguments:
+# Device and media controls repeat legitimately with identical arguments
+# (not shell or timers: an identical shell append or alarm is a duplicate):
 # "skip two tracks" is music(next) twice, and volume 10 -> 50 -> 10 sets 10
 # again (independent review of #221). Only these are exempt from the planner's
 # re-issued identical write check; a repeated save, note or message is not.
 # Keyed by category (not menu family, which derives from the module).
-_REPEATABLE_WRITE_CATEGORIES = frozenset({"app_control", "system_write", "shell", "timer_write"})
+_REPEATABLE_WRITE_CATEGORIES = frozenset({"app_control", "system_write"})
 
 _VOLATILE_READS = frozenset({
     "system_status", "world_time", "get_volume",

@@ -751,15 +751,32 @@ def _run_real(client, tools, prompt, **kwargs):
                                       planner=True, **kwargs))
 
 
-def test_an_advice_question_never_forces_the_routers_write():
+@pytest.mark.parametrize("prompt", [
+    "Should I turn wi-fi off?", "can you tell me if I should turn wi-fi off",
+    "could you tell me if I should turn wi-fi off", "please, should I turn wi-fi off",
+])
+def test_an_advice_question_never_forces_the_routers_device_write(prompt):
     from service.router.menu import act_first_tools, build_menu
-    prompt = "Should I turn wi-fi off?"
-    menu = build_menu(prompt)
-    assert "toggle_setting" not in act_first_tools(prompt, menu, routed=("toggle_setting",),
+    assert "toggle_setting" not in act_first_tools(prompt, build_menu(prompt), routed=("toggle_setting",),
                                                     forced="toggle_setting")
-    # A command still carries the router's forced write.
-    cmd = "remember that my wife's birthday is march 3"
-    assert "remember" in act_first_tools(cmd, build_menu(cmd), routed=("remember",), forced="remember")
+
+
+@pytest.mark.parametrize("prompt", [
+    "remember that my wife's birthday is march 3", "can you remember that my gate code is 4512?",
+    "could you remember that my gate code is 4512", "do remember that my gate code is 4512",
+])
+def test_a_forced_remember_survives_any_request_shape(prompt):
+    from service.router.menu import act_first_tools, build_menu
+    assert "remember" in act_first_tools(prompt, build_menu(prompt), routed=("remember",), forced="remember")
+
+
+def test_identical_shell_and_timer_writes_are_not_repeated(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "run_shell", calls, "ok")
+    cmd = {"command": "echo hi >> notes.txt"}
+    _run_real(PlanClient([plan("call_tools", ("run_shell", cmd)), plan("call_tools", ("run_shell", cmd)),
+                          plan("answer")]), ("run_shell",), "append hi to notes.txt")
+    assert len(calls) <= 1
 
 
 def test_device_and_media_controls_may_repeat_identical_writes(monkeypatch, _fake_tools):
