@@ -1,4 +1,8 @@
-"""Current public-information prompts use Ling's dedicated web-search path."""
+"""Current public-information prompts use the dedicated web-search path.
+
+Every web route runs on whatever model the `agent` role resolves to; the
+router never names a model id of its own (see router._web_route_model).
+"""
 from __future__ import annotations
 
 import os
@@ -14,19 +18,25 @@ _scratch = tempfile.TemporaryDirectory()
 os.environ["WISP_HOME"] = _scratch.name
 
 from service.router.pinning import apply_session_pin  # noqa: E402
-from service.router.router import _LING_WEB_MODEL, _classify_web_request, route  # noqa: E402
+from service.config import role_to_model  # noqa: E402
+from service.router.router import _classify_web_request, route  # noqa: E402
+
+# `_AGENT_MODEL` is the real roster's answer for the agent role; `_CONFIGURED_AGENT`
+# stands in for a user-configured one and must be honored, not overridden.
+_AGENT_MODEL = role_to_model("agent")
+_CONFIGURED_AGENT = "Configured-Agent-test"
 
 
 class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
-    async def assert_direct_ling_search(self, prompt: str, *,
+    async def assert_direct_web_search(self, prompt: str, *,
                                         last_user: str | None = None,
                                         query: str | None = None) -> None:
-        with patch("service.router.router.role_to_model", return_value="Huihui-Ornith-test"):
+        with patch("service.router.router.role_to_model", return_value=_CONFIGURED_AGENT):
             decision = await route(prompt, last_user=last_user)
         query = query if query is not None else prompt
 
         self.assertEqual(decision.role, "agent")
-        self.assertEqual(decision.model, _LING_WEB_MODEL)
+        self.assertEqual(decision.model, _CONFIGURED_AGENT)
         self.assertTrue(decision.needs_tools)
         self.assertEqual(decision.tool_subset, ["web_search"])
         self.assertEqual(decision.direct_calls, [("web_search", {"query": query})])
@@ -69,9 +79,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "any updates on Iran today?",
         ):
             with self.subTest(prompt=prompt):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
 
-    async def test_explicit_web_and_news_requests_also_stay_on_ling(self) -> None:
+    async def test_explicit_web_and_news_requests_also_search_directly(self) -> None:
         for prompt in (
             "search the web for the latest Python release",
             "research online using the web",
@@ -111,9 +121,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "search the web for how to text and send messages in Python",
         ):
             with self.subTest(prompt=prompt):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
 
-    async def test_session_pin_cannot_replace_ling_on_direct_web_route(self) -> None:
+    async def test_session_pin_cannot_replace_agent_model_on_direct_web_route(self) -> None:
         prompt = "what's happening in Iran"
         decision = await route(prompt)
         pinned = apply_session_pin(
@@ -122,15 +132,17 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             prompt,
         )
         self.assertIs(pinned, decision)
-        self.assertEqual(pinned.model, _LING_WEB_MODEL)
+        self.assertEqual(pinned.model, _AGENT_MODEL)
         self.assertEqual(pinned.direct_calls,
                          [("web_search", {"query": prompt})])
 
-    async def test_configured_agent_model_cannot_replace_ling(self) -> None:
+    async def test_web_route_runs_on_the_configured_agent_model(self) -> None:
+        # Regression for 2026-10-13: a literal model id here went stale and
+        # oMLX returned 404 on load, then 409 on the next turns.
         with patch("service.router.router.role_to_model",
-                   return_value="Huihui-Ornith-test"):
+                   return_value=_CONFIGURED_AGENT):
             decision = await route("what's happening in Iran")
-        self.assertEqual(decision.model, _LING_WEB_MODEL)
+        self.assertEqual(decision.model, _CONFIGURED_AGENT)
         self.assertEqual(decision.direct_calls,
                          [("web_search", {"query": "what's happening in Iran"})])
 
@@ -168,7 +180,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 decision = await route(prompt)
                 self.assertFalse(decision.needs_tools)
                 self.assertEqual(decision.role, "agent")
-                self.assertEqual(decision.model, _LING_WEB_MODEL)
+                self.assertEqual(decision.model, _AGENT_MODEL)
                 self.assertEqual(decision.direct_calls, [])
                 self.assertIsNone(decision.tool_subset)
                 self.assertTrue(
@@ -184,7 +196,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             {"pinned_role": "agent", "pinned_model": "Huihui-Ornith-stale"},
             prompt,
         )
-        self.assertEqual(pinned.model, _LING_WEB_MODEL)
+        self.assertEqual(pinned.model, _AGENT_MODEL)
         self.assertFalse(pinned.needs_tools)
         self.assertIsNone(pinned.tool_subset)
         self.assertIn("run_shell", pinned.forbidden_tools)
@@ -193,7 +205,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         prompt = "what is happening in Iran and text Mom a summary"
         decision = await route(prompt)
         offered = set(decision.tool_subset or ())
-        self.assertEqual(decision.model, _LING_WEB_MODEL)
+        self.assertEqual(decision.model, _AGENT_MODEL)
         self.assertIn("web_search", offered)
         self.assertIn("lookup_contact", offered)
         self.assertIn("send_message", offered)
@@ -248,13 +260,13 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
              "what happened in Taiwan yesterday?"),
         ):
             with self.subTest(prior=prior, prompt=prompt):
-                await self.assert_direct_ling_search(prompt, last_user=prior, query=query)
+                await self.assert_direct_web_search(prompt, last_user=prior, query=query)
 
     async def test_offline_followup_overrides_public_context(self) -> None:
         for prompt in ("what about Ukraine without any web search?", "cancel the web search"):
             with self.subTest(prompt=prompt):
                 d = await route(prompt, last_user="what happened in Iran today?")
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _AGENT_MODEL)
                 self.assertFalse(d.needs_tools)
                 self.assertEqual(d.direct_calls, [])
                 self.assertTrue({"web_search", "web_fetch", "http_request", "run_shell"}
@@ -285,9 +297,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(request.source, source)
                 self.assertFalse(request.private)
                 self.assertEqual(request.delivery.text, delivery)
-                with patch("service.router.router.role_to_model", return_value="Ornith-test"):
+                with patch("service.router.router.role_to_model", return_value=_CONFIGURED_AGENT):
                     d = await route(prompt)
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _CONFIGURED_AGENT)
                 self.assertEqual(d.tool_argument_bindings["web_search"], {"query": source})
                 self.assertEqual(d.required_tool_groups[0], frozenset({"web_search"}))
                 self.assertIn(frozenset({effect}), d.required_tool_groups)
@@ -306,7 +318,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         ):
             with self.subTest(prompt=prompt):
                 d = await route(prompt, last_user=prior)
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _AGENT_MODEL)
                 self.assertEqual(d.tool_argument_bindings["web_search"], {"query": query})
                 self.assertEqual(d.required_tool_groups[0], frozenset({"web_search"}))
                 self.assertIn(frozenset({effect}), d.required_tool_groups)
@@ -337,17 +349,13 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 decision = await route(prompt)
                 self.assertNotIn("web_search",
                                  {name for name, _ in decision.direct_calls})
-                self.assertFalse(
-                    decision.model == _LING_WEB_MODEL
-                    and decision.tool_subset == ["web_search"],
-                    decision.reason,
-                )
+                self.assertNotEqual(decision.tool_subset, ["web_search"], decision.reason)
 
     async def assert_offline(self, prompt: str) -> None:
-        with patch("service.router.router.role_to_model", return_value="Ornith-test"):
+        with patch("service.router.router.role_to_model", return_value=_CONFIGURED_AGENT):
             d = await route(prompt)
         self.assertFalse(d.needs_tools)
-        self.assertEqual(d.model, _LING_WEB_MODEL)
+        self.assertEqual(d.model, _CONFIGURED_AGENT)
         self.assertFalse(d.direct_calls)
         self.assertFalse(d.required_tool_groups)
         self.assertFalse(d.tool_argument_bindings)
@@ -358,7 +366,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         commands = ("search Google for", "go online and find", "use the internet to check", "look online for")
         for command, subject in product(commands, subjects):
             with self.subTest(command=command, subject=subject):
-                await self.assert_direct_ling_search(f"{command} {subject}")
+                await self.assert_direct_web_search(f"{command} {subject}")
         for negative, verb in product(
                 ("I don't want you to", "I do not want you to", "don't", "do not", "never"),
                 ("search the web for", "look online for", "do an online search for")):
@@ -383,7 +391,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         for topic in topics:
             prompt = f"search the web for {topic}"
             with self.subTest(topic=topic):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
                 await self.assert_offline(prompt + "; don't browse")
 
     async def test_private_source_family_matrix(self) -> None:
@@ -403,7 +411,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
         for subject in ("GitHub's source code", "Google's Calendar API", "NASA's public project roadmap",
                         "Anthropic's latest release", "Kotlin's public documentation"):
-            await self.assert_direct_ling_search(f"search the web for {subject}")
+            await self.assert_direct_web_search(f"search the web for {subject}")
 
     async def test_current_fact_family_and_order_matrix(self) -> None:
         for prompt in (
@@ -415,7 +423,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             "what is the latest Python version?",
         ):
             with self.subTest(prompt=prompt):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
 
     async def test_independent_followup_family_matrix(self) -> None:
         fragments = ("Downloads folder", "an explanation of recursion", "explain recursion",
@@ -451,14 +459,14 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             prompt = source + separator + action
             with self.subTest(prompt=prompt):
                 d = await route(prompt)
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _AGENT_MODEL)
                 self.assertFalse(d.direct_calls)
                 self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
                 self.assertEqual(d.required_tool_groups[0], frozenset({"web_search"}))
                 self.assertTrue(any(tool in group for group in d.required_tool_groups[1:]))
                 self.assertIn(tool, d.tool_subset)
                 self.assertTrue({"run_shell", "http_request"} <= d.forbidden_tools)
-        await self.assert_direct_ling_search(source + "; do not email it to Mom", query=source)
+        await self.assert_direct_web_search(source + "; do not email it to Mom", query=source)
 
     async def test_delivery_separator_matrix(self) -> None:
         source = "look up the latest Python release online"
@@ -469,7 +477,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             prompt = source + separator + destination
             with self.subTest(prompt=prompt):
                 d = await route(prompt)
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _AGENT_MODEL)
                 self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
                 self.assertEqual(d.required_tool_groups,
                                  (frozenset({"web_search"}), frozenset({"lookup_contact"}), frozenset({effect})))
@@ -481,9 +489,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         for previous, current in product(scopes, scopes):
             prompt = f"what about Ukraine {current}?"
             with self.subTest(previous=previous, current=current):
-                await self.assert_direct_ling_search(prompt, last_user=f"news in Iran {previous}",
+                await self.assert_direct_web_search(prompt, last_user=f"news in Iran {previous}",
                                                      query=f"Ukraine {current} news")
-        await self.assert_direct_ling_search("what about yesterday?", last_user="show me today's headlines",
+        await self.assert_direct_web_search("what about yesterday?", last_user="show me today's headlines",
                                              query="show me headlines yesterday")
 
     async def test_lookup_lexeme_source_and_politeness_matrix(self) -> None:
@@ -493,10 +501,10 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 ("", "could you please ", "please can you kindly ")):
             prompt = f"{polite}{verb} the Zorvian treaty {cue}"
             with self.subTest(prompt=prompt):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
         for prompt in ("use the web for the Zorvian treaty", "perform an internet search for the Zorvian treaty",
                        "please do an online lookup for the Zorvian treaty", "Google the Zorvian treaty"):
-            await self.assert_direct_ling_search(prompt)
+            await self.assert_direct_web_search(prompt)
 
     async def test_normalized_negative_operator_lookup_matrix(self) -> None:
         for operator, lookup in product(
@@ -512,7 +520,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_offline(source + " " + constraint)
         for topic in ("why people don't Google", "tools that work without browsing", "communities that avoid fetching data",
                       '"no searching; email me" signs', "why people never use an online lookup"):
-            await self.assert_direct_ling_search("search the web for " + topic)
+            await self.assert_direct_web_search("search the web for " + topic)
 
     async def test_owner_and_sensitive_source_head_matrix(self) -> None:
         for owner, head, template in product(
@@ -529,7 +537,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue({"web_search", "web_fetch", "http_request"} <= d.forbidden_tools)
         for source in ("Meta Llama source code", "Meta's public Llama source code", "Frametek's public documentation",
                        "a public project roadmap", "Rust's source code", "Google's Calendar API"):
-            await self.assert_direct_ling_search("search the web for " + source)
+            await self.assert_direct_web_search("search the web for " + source)
 
     async def test_external_current_question_cue_order_matrix(self) -> None:
         for subject, template in product(
@@ -538,7 +546,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                  "what is the current position of {}?", "today, what did {} announce?", "right now, how is {} developing?")):
             prompt = template.format(subject)
             with self.subTest(prompt=prompt):
-                await self.assert_direct_ling_search(prompt)
+                await self.assert_direct_web_search(prompt)
 
     async def test_external_followup_case_and_explanation_matrix(self) -> None:
         for topic, intro in product(("iran", "south korea", "quantum computing", "catalonia", "Beijing"),
@@ -546,7 +554,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             for variant in (topic.lower(), topic.title(), topic.upper()):
                 prompt = f"{intro} {variant}?"
                 with self.subTest(prompt=prompt):
-                    await self.assert_direct_ling_search(prompt, last_user="news in Iran today", query=f"{variant} news today")
+                    await self.assert_direct_web_search(prompt, last_user="news in Iran today", query=f"{variant} news today")
         for prompt in ("and tell me how Python recursion works", "and teach me Python recursion",
                        "what about an explanation of the earthquake?", "how about explaining the Fed?",
                        "what happened in the film Dune today?"):
@@ -558,17 +566,17 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("web_search", {n for n, _ in d.direct_calls})
             self.assertNotIn("web_search", d.tool_argument_bindings)
         for prompt in ("Ukraine too?", "same for Ukraine?", "Ukraine as well?"):
-            await self.assert_direct_ling_search(prompt, last_user="news in Iran today", query="Ukraine news today")
+            await self.assert_direct_web_search(prompt, last_user="news in Iran today", query="Ukraine news today")
 
     async def assert_public_delivery(self, prompt: str, query: str, *, prior: str | None = None,
                                      effect: str = "send_email", address: str | None = None,
                                      contact: bool = True) -> None:
         with patch("service.router.router._classify_web_request", wraps=_classify_web_request) as classify_spy:
-            with patch("service.router.router.role_to_model", return_value="Ornith-test"):
+            with patch("service.router.router.role_to_model", return_value=_CONFIGURED_AGENT):
                 d = await route(prompt, last_user=prior)
         self.assertEqual(classify_spy.call_count, 1)
         expected = ["web_search"] + (["lookup_contact"] if contact else []) + [effect]
-        self.assertEqual(d.model, _LING_WEB_MODEL)
+        self.assertEqual(d.model, _CONFIGURED_AGENT)
         self.assertEqual(d.tool_subset, expected)
         self.assertEqual(d.required_tool_groups, tuple(frozenset({name}) for name in expected))
         self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": query})
@@ -607,7 +615,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                     with patch("service.router.router._classify_web_request", wraps=_classify_web_request) as classify_spy:
                         d = await route(prompt)
                     self.assertEqual(classify_spy.call_count, 1)
-                    self.assertEqual(d.model, _LING_WEB_MODEL)
+                    self.assertEqual(d.model, _AGENT_MODEL)
                     self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
                     self.assertEqual(d.required_tool_groups, tuple(frozenset({n}) for n in ("web_search", *expected)))
                     self.assertFalse(d.direct_calls)
@@ -618,8 +626,8 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         for previous, new in product(scopes, scopes):
             prompt = "what about " + new + "?"
             with self.subTest(previous=previous, new=new):
-                await self.assert_direct_ling_search(prompt, last_user="news in Iran " + previous, query="news in Iran " + new)
-        await self.assert_direct_ling_search("what about yesterday?", last_user="show me today’s headlines", query="show me headlines yesterday")
+                await self.assert_direct_web_search(prompt, last_user="news in Iran " + previous, query="news in Iran " + new)
+        await self.assert_direct_web_search("what about yesterday?", last_user="show me today’s headlines", query="show me headlines yesterday")
 
 
     async def test_fifth_audit_consent_and_topical_negative_matrix(self) -> None:
@@ -639,7 +647,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_offline(source + " " + constraint)
         for topic in ("no internet connection fixes", "no browsing mode in Chrome", "“Don't Browse” campaign",
                       "why people don't access the internet", '"do not visit any websites" signs'):
-            await self.assert_direct_ling_search("search the web for " + topic)
+            await self.assert_direct_web_search("search the web for " + topic)
 
     async def test_fifth_audit_structural_ownership_is_name_and_noun_independent(self) -> None:
         for owner, noun in product(("my", "our", "your", "their", "Alice's", "Acme's", "the team's"),
@@ -665,10 +673,10 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         # to a familiar company, a person's name, and an invented identifier.
         for owner, head in product(("Meta", "John", "Qorblax"),
                                    ("Llama source code", "API", "SDK", "public documentation", "open-source documentation")):
-            await self.assert_direct_ling_search(f"search the web for {owner}'s {head}")
+            await self.assert_direct_web_search(f"search the web for {owner}'s {head}")
         for subject in ("Python's email library", "Rust's calendar crate"):
-            await self.assert_direct_ling_search("search the web for " + subject)
-        await self.assert_direct_ling_search('search the web for "Python\'s email library"')
+            await self.assert_direct_web_search("search the web for " + subject)
+        await self.assert_direct_web_search('search the web for "Python\'s email library"')
         for subject in ("Google's projects", "NASA's project roadmap", "Iran's political history",
                         "Frametek's documentation"):
             d = await route("search the web for " + subject)
@@ -687,7 +695,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 with self.subTest(prompt=prompt), patch("service.router.router._classify_web_request", wraps=_classify_web_request) as classify:
                     d = await route(prompt)
                     self.assertEqual(classify.call_count, 1)
-                    self.assertEqual(d.model, _LING_WEB_MODEL)
+                    self.assertEqual(d.model, _AGENT_MODEL)
                     self.assertEqual(d.tool_subset, ["web_search", "create_note"])
                     self.assertEqual(d.required_tool_groups, (frozenset({"web_search"}), frozenset({"create_note"})))
                     self.assertEqual(d.tool_argument_bindings, {"web_search": {"query": source}})
@@ -708,7 +716,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
             with self.subTest(prompt=prompt):
                 d = await route(prompt)
                 expected = ["web_search"] + ([] if address else ["lookup_contact"]) + ["send_email"]
-                self.assertEqual(d.model, _LING_WEB_MODEL)
+                self.assertEqual(d.model, _AGENT_MODEL)
                 self.assertEqual(d.tool_subset, expected)
                 self.assertEqual(d.required_tool_groups, tuple(frozenset({t}) for t in expected))
                 self.assertEqual(d.tool_argument_bindings.get("web_search"), {"query": source})
@@ -735,20 +743,20 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         for command, topic in product(("web search for", "look on the web for", "query the web for",
                                        "query the internet for", "search websites for"),
                                       ("capybara habitats", "the Zorvian treaty")):
-            await self.assert_direct_ling_search(command + " " + topic)
+            await self.assert_direct_web_search(command + " " + topic)
         for prompt in ("which candidate won the election today?", "name the current president of France",
                        "will the ceasefire continue tomorrow?", "which cities are under evacuation orders today?"):
-            await self.assert_direct_ling_search(prompt)
+            await self.assert_direct_web_search(prompt)
         for prompt in ("and check CI", "and define recursion", "what about an analysis of recursion?"):
             with patch("service.router.router._semantic_core", return_value=[]):
                 d = await route(prompt, last_user="news in Iran today")
                 self.assertFalse(_classify_web_request(prompt, "news in Iran today").allowed)
                 self.assertNotIn("web_search", d.tool_argument_bindings)
         for product_name in ("Slack", "GitHub Issues", "Google Calendar"):
-            await self.assert_direct_ling_search("what about " + product_name + "?", last_user="news in Iran today",
+            await self.assert_direct_web_search("what about " + product_name + "?", last_user="news in Iran today",
                                                   query=product_name + " news today")
         for source in ("search the web for Iran", "look up the latest Python release online"):
-            await self.assert_direct_ling_search(source + " and summarize it", query=source)
+            await self.assert_direct_web_search(source + " and summarize it", query=source)
 
     async def test_fifth_audit_acknowledgement_requires_a_pending_offer(self) -> None:
         source = "search the web for Zorvia news"
@@ -773,9 +781,9 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
     async def test_fifth_audit_time_scopes_and_literal_phone(self) -> None:
         for old, new, prefix in product(("yesterday", "last quarter", "over the weekend"),
                                         ("last quarter", "a day ago", "over the weekend"), ("what about ", "")):
-            await self.assert_direct_ling_search(prefix + new + "?", last_user="news in Iran " + old,
+            await self.assert_direct_web_search(prefix + new + "?", last_user="news in Iran " + old,
                                                   query="news in Iran " + new)
-        await self.assert_direct_ling_search("what about yesterday’s news?", last_user="news in Iran today", query="news in Iran yesterday")
+        await self.assert_direct_web_search("what about yesterday’s news?", last_user="news in Iran today", query="news in Iran yesterday")
         source = "search the web for Zorvia news"
         for prompt, prior in (("send it to 415-555-1212", source), (source + "; send it to 415-555-1212", None)):
             d = await route(prompt, last_user=prior)
@@ -798,11 +806,11 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 await self.assert_offline("search the web for Zorvia news" + separator + constraint)
         for operator, quotes in product(operators, (('"', '"'), ('“', '”'), ("'", "'"))):
             topic = quotes[0] + operator + quotes[1] + " campaign"
-            await self.assert_direct_ling_search("search the web for " + topic)
+            await self.assert_direct_web_search("search the web for " + topic)
         for title, transform in product(("Never Search Alone book", "Never Browse Alone lyrics",
                                          "life without internet documentary", "the phrase no web access"),
                                         (str, str.upper, str.lower)):
-            await self.assert_direct_ling_search("search the web for " + transform(title))
+            await self.assert_direct_web_search("search the web for " + transform(title))
 
     async def test_sixth_device_and_technical_head_pairwise_matrix(self) -> None:
         for noun, determiner, transform in product(("laptop", "phone", "iPad", "computer", "Mac", "device", "workstation", "quorblax"),
@@ -819,7 +827,7 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn("web_search", d.tool_argument_bindings)
         for owner, head in product(("John", "Frametek", "Zorvia", "Qorblax"),
                                     ("CLI documentation", "developer docs", "command-line tool", "changelog", "technical specification")):
-            await self.assert_direct_ling_search(f"search the web for {owner}'s {head}")
+            await self.assert_direct_web_search(f"search the web for {owner}'s {head}")
             with patch("service.router.router._semantic_core", return_value=[]):
                 d = await route(f"search the web for {owner}'s private {head}")
                 self.assertIn("web_search", d.forbidden_tools)
@@ -894,10 +902,10 @@ class CurrentWebRoutingTests(unittest.IsolatedAsyncioTestCase):
         for old, new in product(("yesterday", "the previous week", "this past week"),
                                  ("this past week", "the past week", "the previous week")):
             for prefix in ("what about ", ""):
-                await self.assert_direct_ling_search(prefix + new + "?", last_user="news in Iran " + old,
+                await self.assert_direct_web_search(prefix + new + "?", last_user="news in Iran " + old,
                                                       query="news in Iran " + new)
         for phrase in ("Ukraine next?", "Ukraine then?", "Ukraine now?", "then Ukraine?", "now Ukraine?"):
-            await self.assert_direct_ling_search(phrase, last_user="news in Iran today", query="Ukraine news today")
+            await self.assert_direct_web_search(phrase, last_user="news in Iran today", query="Ukraine news today")
         for verb, preposition, destination in product(("record", "save", "log", "store"), ("in", "to", "into"), ("Notes", "Apple Notes")):
             source = "search the web for Zorvia news"
             d = await route(f"{source}; {verb} it {preposition} {destination}")
