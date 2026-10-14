@@ -220,3 +220,16 @@ def test_fmt_range_midnight_end():
     assert fmt_range(1380, 1440) == "11pm–12am"
     assert fmt_range(14 * 60, 17 * 60) == "2–5pm" and fmt_range(405, 465) == "6:45–7:45am"
     assert fmt_range(690, 780) == "11:30am–1pm" and fmt_range(0, 60) == "12–1am"
+
+
+def test_wisp_usage_statements_read_naturally():
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=TZ).timestamp()
+    asks = []
+    for topic, hour in (("general", 9), ("web", 15), ("email", 18)):
+        for w in range(1, 6):
+            ts = (datetime(2026, 10, 13, hour, tzinfo=TZ) - timedelta(weeks=w)).timestamp()
+            asks.append(Observation(id=f"ask:{topic}{w}", kind="wisp_ask", ts=ts, subject=topic, source="wisp"))
+    stmts = {p.subject: p.statement for p in miners.mine_all(asks, now, TZ) if p.kind == "wisp_usage"}
+    assert stmts["general"].startswith("You usually use Wisp around 9")
+    assert stmts["web"].startswith("You look things up with Wisp around 3")
+    assert stmts["email"].startswith("You ask Wisp about email around 6")

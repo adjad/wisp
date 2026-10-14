@@ -4,6 +4,10 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- "What Wisp has learned": a window listing every routine Wisp learned from your calendar, messages and Wisp use, grouped by kind, with the counts behind each one and today's predictions. Mark a routine "That's right" or "Not true" (a rejected routine stops shaping predictions, nudges and answers, and can be restored). Open it from Settings → Privacy & Access → "See what Wisp learned", or from the Chat sidebar.
+
 ### Fixed
 
 - Behavior learning now sees Messages. Every message was dropped on ingest (the Messages feed sends RFC 3339 timestamps and the runtime parsed them as numbers), so no contact rhythm could ever form. Replies now count toward the same person as their texts, named by Contacts, and automated senders (short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped.
@@ -11,6 +15,7 @@ All notable changes to Wisp are documented here.
 
 ### Changed
 
+- Wisp-usage routines read naturally: "You usually use Wisp around 12:15pm" and "You look things up with Wisp around 5pm" instead of "You ask Wisp about general / web".
 - Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
 
 ## [1.3.1] - 2026-10-12

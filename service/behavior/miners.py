@@ -697,6 +697,12 @@ def _largest_gap(busy: list[tuple[int, int]], lo: int, hi: int) -> tuple[int, in
 
 # ----------------------------------------------------------------- wisp usage
 
+# Topic labels (behavior_runtime._TOPICS) that don't read after "ask Wisp about".
+_USAGE_LEADS = {"general": "You usually use Wisp", "web": "You look things up with Wisp",
+                "music": "You play music with Wisp", "news": "You check the news with Wisp",
+                "weather": "You check the weather with Wisp"}
+
+
 def mine_wisp_usage(asks: list[Local], first: date | None, now_dt: datetime) -> list[Pattern]:
     groups: dict[str, list[Local]] = defaultdict(list)
     for a in asks:
@@ -710,10 +716,9 @@ def mine_wisp_usage(asks: list[Local], first: date | None, now_dt: datetime) -> 
         for c in find_windows(items, first or min(i.day for i in items), now_dt, step=5):
             around = round_to(c.median_minute, 5)
             label = _label(c.members)
-            if "brief" in key:
-                statement = f"You check your brief with Wisp around {fmt_clock(around)} {on_days(c.weekdays)}"
-            else:
-                statement = f"You ask Wisp about {label} around {fmt_clock(around)} {on_days(c.weekdays)}"
+            lead = ("You check your brief with Wisp" if "brief" in key
+                    else _USAGE_LEADS.get(key, f"You ask Wisp about {label}"))
+            statement = f"{lead} around {fmt_clock(around)} {on_days(c.weekdays)}"
             window = Window(c.weekdays, c.start_minute, c.end_minute)
             nxt = next_occurrence(window, now_dt.timestamp(), now_dt.tzinfo)
             out.append(Pattern(
