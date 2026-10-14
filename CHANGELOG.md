@@ -22,13 +22,14 @@ All notable changes to Wisp are documented here.
 
 ### Removed
 
-- Directions, currency conversion, app uninstall, AirDrop, unsubscribe, raw HTTP requests, display brightness and a few other low-use or duplicate tools. Currency, definition, recipe and sunset questions now go to web search or Wikipedia. Placeholder tools that did nothing are gone.
+- Directions, currency conversion, app uninstall, sending files by AirDrop (the AirDrop on/off setting stays), unsubscribe, raw HTTP requests, display brightness and a few other low-use or duplicate tools. Currency, definition, recipe and sunset questions now go to web search or Wikipedia. Placeholder tools that did nothing are gone.
 
 ### Fixed
 
+- Smart Search no longer answers "not found" when the model's answer is correct but has no [n] citation. A sentence grounded in a retrieved passage keeps its place and gets that passage cited, if its figures match exactly, its negation matches, and at least 80% of its content words appear in the passage.
 - Behavior learning now sees Messages. Every message was dropped on ingest (the Messages feed sends RFC 3339 timestamps and the runtime parsed them as numbers), so no contact rhythm could ever form. Replies now count toward the same person as their texts, named by Contacts, and automated senders (short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped.
 - Web lookups (news, weather, stock and crypto prices, "search the web for…") now run on the model configured for the `agent` role instead of a model id written into the router. The written id (`Ling-3.0-tiny-oQ6e`) was no longer installed, so oMLX answered its load with 404, reloaded the resident model, and the next turns failed with "The local AI engine returned an error (409)".
-- An approved Calendar, Reminders or send action no longer fails with "Wisp app is not connected" when it lands while the app is reconnecting its event stream, which it does every 30–45 seconds. Wisp now waits up to 8 seconds for an app that disconnected within the last minute; an app that never connected, or left long ago, still fails at once with nothing sent.
+- An approved Calendar, Reminders or send action no longer fails with "Wisp app is not connected" when it lands while the app is reconnecting its event stream, which happens about every 25 seconds. Wisp now waits up to 8 seconds for an app that disconnected within the last minute; an app that never connected, or left long ago, still fails at once with nothing sent.
 - A failed or denied write, and a drafted message, no longer show "The assistant didn't respond." in place of Wisp's actual reply. Every early end of a turn now tells the app the turn is done.
 - "What did you remember about me?" goes to memory recall like "What do you know about me?".
 - Typo-tolerant tool search returns the same matches on every launch; it used to vary with Python's hash seed.
