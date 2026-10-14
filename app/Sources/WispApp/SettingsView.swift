@@ -1063,6 +1063,7 @@ struct SettingsView: View {
         #else
         [Pane(id: "general", title: "General", symbol: "slider.horizontal.3"),
          Pane(id: "models", title: "Models", symbol: "cpu"),
+         Pane(id: "google", title: "Google", symbol: "envelope.badge.shield.half.filled"),
          Pane(id: "activity", title: "Activity", symbol: "clock.arrow.circlepath"),
          Pane(id: "privacy", title: "Privacy", symbol: "hand.raised")]
         #endif
@@ -1500,6 +1501,9 @@ struct SettingsView: View {
                 // Background/scheduled work — currently just the mail history
                 // scan. Backed by SyncProgress.shared for the live bar, which
                 // MailReader's batch loop updates directly (same process).
+                if selectedPane == "google" {
+                    GoogleSettingsPane()
+                }
                 if selectedPane == "activity" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Activity").font(.title2.weight(.medium))

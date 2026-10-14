@@ -91,6 +91,8 @@ def is_connected() -> bool:
 def status() -> dict:
     cfg = load_config()
     return {"connected": is_connected(), "email": cfg.get("email", ""),
+            "client_id": cfg.get("client_id", ""),   # never the secret
+            "has_secret": bool(cfg.get("client_secret")),
             "last_headers_sync": _last["headers"] or None,
             "last_error": _last_error,
             "authorizing": _pending_flow is not None}
