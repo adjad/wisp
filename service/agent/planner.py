@@ -16,7 +16,7 @@ name cannot be produced, and a step that must call a tool really must
 policy, confirmation, receipt and repeat guards unchanged. Nothing here grants
 authority or executes anything.
 
-Statuses other than `call_tools` end tool use for the turn: the loop runs one
+A plan with no calls ends tool use for the turn: the loop runs one
 unconstrained narration step with a short instruction for that status (for
 example "say plainly it was not found"), with no tools offered.
 
@@ -128,9 +128,9 @@ def plan_schema(names: list[str], *, require_call: bool) -> dict:
         statuses = [s for s in statuses if s != "call_tools"] or ["answer"]
     return {"type": "object",
             "properties": {"thought": {"type": "string", "maxLength": THOUGHT_MAX_CHARS},
-                           "status": {"type": "string", "enum": statuses},
-                           "calls": calls},
-            "required": ["thought", "status", "calls"]}
+                           "calls": calls,
+                           "status": {"type": "string", "enum": statuses}},
+            "required": ["thought", "calls", "status"]}
 
 
 def plan_request_kwargs(names: list[str], *, require_call: bool) -> dict:
@@ -179,9 +179,16 @@ def parse_plan(content: str | None, allowed: set[str]) -> Plan:
             continue
         calls.append((name, args if isinstance(args, dict) else {}))
     calls = calls[:MAX_CALLS_PER_PLAN]
-    if status != "call_tools":
-        calls = []
-    elif not calls:
+    # Listed calls win over the status. `calls` precedes `status` in the
+    # schema, so the status is written after the model has already committed
+    # to (or declined) concrete calls. Measured 2026-10-13, LFM2.5-24B with
+    # status before calls: "whats on my todo list" and "i think i saved the
+    # gate code somewhere in notes" each wrote a thought naming the right tool
+    # (search_reminders, search_notes) and then status not_found, so nothing
+    # was searched. Repeats stay bounded by the read budget and repeat guards.
+    if calls:
+        status = "call_tools"
+    elif status == "call_tools":
         status = "answer"
     return Plan(status=status, thought=str(data.get("thought") or "")[:THOUGHT_MAX_CHARS],
                 calls=calls)

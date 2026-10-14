@@ -24,8 +24,8 @@ def test_plan_schema_enumerates_offered_names_and_requires_a_call_when_asked():
     schema = planner.plan_schema(["b_tool", "a_tool"], require_call=False)
     item = schema["properties"]["calls"]["items"]
     assert item["properties"]["tool"]["enum"] == ["a_tool", "b_tool"]
-    assert schema["required"][0] == "thought"
-    assert list(schema["properties"])[0] == "thought"  # reasoning precedes the choice
+    assert schema["required"] == ["thought", "calls", "status"]
+    assert list(schema["properties"]) == ["thought", "calls", "status"]  # reason, commit, then label
     assert "not_found" in schema["properties"]["status"]["enum"]
     forced = planner.plan_schema(["a_tool"], require_call=True)
     assert forced["properties"]["calls"]["minItems"] == 1
@@ -41,7 +41,9 @@ def test_plan_schema_with_no_tools_cannot_plan_a_call():
 @pytest.mark.parametrize("raw,status,calls", [
     ('{"thought":"t","status":"call_tools","calls":[{"tool":"a","arguments":{"x":1}}]}',
      "call_tools", [("a", {"x": 1})]),
-    ('{"thought":"t","status":"not_found","calls":[{"tool":"a","arguments":{}}]}', "not_found", []),
+    # calls are written before status; listed calls win
+    ('{"thought":"t","calls":[{"tool":"a","arguments":{}}],"status":"not_found"}', "call_tools", [("a", {})]),
+    ('{"thought":"t","calls":[],"status":"not_found"}', "not_found", []),
     ('{"thought":"t","status":"call_tools","calls":[]}', "answer", []),
     ('{"thought":"t","status":"call_tools","calls":[{"tool":"zzz","arguments":{}}]}', "answer", []),
     ('{"thought":"t","status":"call_tools","calls":[{"tool":"a","arguments":"oops"}]}',
