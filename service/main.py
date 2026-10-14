@@ -286,6 +286,10 @@ async def lifespan(app: FastAPI):
     from service.config import quarantine
     quarantine.check()
     global client
+    if remote_only_profile() is None:
+        # Make the first-launch engine choice sticky now, not when Settings is first opened.
+        from service.engine.api import persist_default as persist_engine_default
+        await asyncio.to_thread(persist_engine_default)
     if is_bundled() and remote_only_profile() is None:
         # The client reads the engine's key from its settings file at construction.
         from service.engine.runtime import manager
@@ -417,6 +421,7 @@ from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 

@@ -57,6 +57,7 @@ LEGACY_SCRIPT_TESTS = frozenset({
     "tests/test_narration_thinking.py",
     "tests/test_notes_defaults.py",
     "tests/test_bundled_attribution.py",
+    "tests/test_bundled_engine_api.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     "tests/test_engine_packaging.py",

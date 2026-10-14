@@ -91,6 +91,7 @@ def test_builders() -> None:
         check("key never on argv", KEY not in " ".join(argv))
         check("loopback only", argv[argv.index("--host") + 1] == "127.0.0.1")
         check("own base path", argv[argv.index("--base-path") + 1] == str(m.layout.base_path))
+        check("model dirs come from settings, not argv (a CLI dir would hide the extra ones)", "--model-dir" not in argv)
         check("default python is the bundled one",
               EngineManager(m.layout).command()[0] == str(m.layout.root / "py/bin/python3"))
 

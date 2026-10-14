@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from service.config.endpoints import is_local_provider_origin
+from service.engine.manager import BUNDLED_PORT
 
 _MAX_BODY = 256 * 1024
 _MAX_MODELS = 200
@@ -39,6 +40,17 @@ OMLX = EngineProfile(
     "Runs everything in Wisp, including tools and Smart Search.",
     "Open the oMLX menu-bar app; it starts its server on port 8000.",
     "https://github.com/jundot/omlx")
+
+BUNDLED = EngineProfile(
+    "omlx", "Wisp's built-in engine", BUNDLED_PORT, True,
+    "Runs everything in Wisp, including tools and Smart Search.",
+    "Wisp starts its built-in engine when needed.", None)
+
+
+def main_engine_profile() -> EngineProfile:
+    from service.engine.mode import engine_present, is_bundled
+    return BUNDLED if is_bundled() and engine_present() else OMLX
+
 
 EXTERNAL_ENGINES = (
     EngineProfile("ollama", "Ollama", 11434, False,

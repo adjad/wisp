@@ -262,6 +262,7 @@ ADDITIONAL_FULL_TESTS = {
     # processes on random loopback ports (never 8000, 8765 or 8791 for real traffic), in
     # disposable temp directories with a private HOME; no oMLX, user data or network.
     "tests/test_bundled_attribution.py",
+    "tests/test_bundled_engine_api.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.

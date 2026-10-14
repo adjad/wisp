@@ -184,8 +184,7 @@ class EngineManager:
         prefix = list(self.launcher) if self.launcher else [
             str(self.layout.python), "-m", "omlx.cli", "serve"]
         return [*prefix, "--host", "127.0.0.1", "--port", str(self.port),
-                "--base-path", str(self.layout.base_path),
-                "--model-dir", str(self.layout.models_dir)]
+                "--base-path", str(self.layout.base_path)]   # model dirs come from settings.json
 
     def environment(self) -> dict[str, str]:
         return {"HOME": str(self.layout.home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",

@@ -34,6 +34,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-dir", type=Path, required=True,
                         help="directory containing at least one downloaded model")
     parser.add_argument("--model", help="optional model id to require in the model listing")
+    parser.add_argument("--embedding-model", help="model id for the /v1/embeddings check (skipped when absent)")
+    parser.add_argument("--rerank-model", help="model id for the /v1/rerank check (skipped when absent)")
     return parser
 
 
@@ -124,7 +126,8 @@ def _embedding_dimensions(payload: dict) -> int:
     return len(vector)
 
 
-def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None) -> dict:
+def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None,
+              embedding_model: str | None = None, rerank_model: str | None = None) -> dict:
     engine_root = Path(engine_root).resolve(strict=True)
     model_dir = Path(model_dir).resolve(strict=True)
     if not engine_root.is_dir() or not model_dir.is_dir():
@@ -149,7 +152,13 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None) -> d
                 models = model_payload.get("data") if isinstance(model_payload, dict) else None
                 if not isinstance(models, list) or not models:
                     raise SmokeError("Engine listed no models")
-                selected_model, model_bytes = choose_smallest_model(models, model_dir, model)
+                listed = {_model_id(item) for item in models}
+                for wanted in (embedding_model, rerank_model):
+                    if wanted is not None and wanted not in listed:
+                        raise SmokeError(f"Engine did not list {wanted!r}")
+                chat_candidates = [item for item in models
+                                   if _model_id(item) not in (embedding_model, rerank_model)]
+                selected_model, model_bytes = choose_smallest_model(chat_candidates, model_dir, model)
 
                 chat_response = client.post(f"{base}/v1/chat/completions", json={
                     "model": selected_model,
@@ -163,12 +172,25 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None) -> d
                 if not isinstance(choices, list) or not choices:
                     raise SmokeError("Chat completion response has no choices")
 
-                embedding_response = client.post(f"{base}/v1/embeddings", json={
-                    "model": selected_model,
-                    "input": "Wisp bundled engine smoke test.",
-                })
-                embedding_response.raise_for_status()
-                embedding_dimensions = _embedding_dimensions(embedding_response.json())
+                embedding_dimensions = None
+                if embedding_model is not None:
+                    embedding_response = client.post(f"{base}/v1/embeddings", json={
+                        "model": embedding_model,
+                        "input": "Wisp bundled engine smoke test.",
+                    })
+                    embedding_response.raise_for_status()
+                    embedding_dimensions = _embedding_dimensions(embedding_response.json())
+                rerank_results = None
+                if rerank_model is not None:
+                    rerank_response = client.post(f"{base}/v1/rerank", json={
+                        "model": rerank_model,
+                        "query": "capital of France",
+                        "documents": ["Paris is the capital of France.", "Bananas are yellow."],
+                    })
+                    rerank_response.raise_for_status()
+                    rerank_results = rerank_response.json().get("results")
+                    if not isinstance(rerank_results, list) or len(rerank_results) != 2:
+                        raise SmokeError("Rerank response does not score both documents")
                 return {
                     "ok": True,
                     "port": port,
@@ -177,6 +199,8 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None) -> d
                     "model_bytes": model_bytes,
                     "chat_completion": "passed",
                     "embedding_dimensions": embedding_dimensions,
+                    "rerank_results": rerank_results,
+                    "chat_text": (choices[0].get("message") or {}).get("content"),
                 }
         finally:
             manager.stop()
@@ -186,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        result = run_smoke(args.engine_root, args.model_dir, args.model)
+        result = run_smoke(args.engine_root, args.model_dir, args.model,
+                           args.embedding_model, args.rerank_model)
     except Exception as exc:  # keep a single machine-readable result on every failure path
         print(json.dumps({"ok": False, "error": f"{type(exc).__name__}: {exc}"}, sort_keys=True))
         return 1
