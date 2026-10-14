@@ -117,7 +117,7 @@ async def emit(_event):
 @pytest.fixture(autouse=True)
 def _fake_tools():
     calls: list[tuple[str, dict]] = []
-    saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read")}
+    saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read", "fake_send")}
 
     def search(query: str = "") -> str:
         calls.append(("fake_search", {"query": query}))
@@ -130,6 +130,12 @@ def _fake_tools():
         "type": "object", "properties": {"query": {"type": "string"}}}, "notes_read", search)
     REGISTRY["fake_read"] = Tool("fake_read", "read", {"type": "object", "properties": {}},
                                  "system_read", read)
+
+    def send(to: str = "") -> str:
+        calls.append(("fake_send", {"to": to}))
+        return f"sent to {to}"
+    REGISTRY["fake_send"] = Tool("fake_send", "send", {
+        "type": "object", "properties": {"to": {"type": "string"}}}, "messages_send", send)
     try:
         yield calls
     finally:
@@ -140,10 +146,10 @@ def _fake_tools():
                 REGISTRY[k] = v
 
 
-def run(client, **kwargs):
+def run(client, tools=("fake_search", "fake_read"), **kwargs):
     return asyncio.run(loop.run_agent(
         client, MODEL, [{"role": "user", "content": "find my gate code"}], emit, Approver(),
-        tools=["fake_search", "fake_read"], **kwargs))
+        tools=list(tools), **kwargs))
 
 
 def plan(status="call_tools", *calls):
@@ -181,6 +187,13 @@ def test_read_budget_stops_the_third_rephrasing(_fake_tools):
     assert "fake_search has already run 2 times" in budget_result
 
 
+def test_a_plan_mixing_reads_and_effects_runs_only_the_reads(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {}), ("fake_send", {"to": "<contact>"})),
+                         plan("call_tools", ("fake_send", {"to": "+15550100"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_send"), planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_send", {"to": "+15550100"})]
+
+
 def test_unparseable_plan_is_resampled_not_executed(_fake_tools):
     client = PlanClient(['{"thought": "cut off', plan("call_tools", ("fake_read", {})), plan("answer")])
     assert run(client, planner=True) == "DONE"
@@ -211,6 +224,13 @@ def test_unmanaged_client_never_plans(_fake_tools):
 def test_menu_covers_the_measured_router_misses(prompt, must):
     from service.router.menu import build_menu
     assert must in build_menu(prompt)
+
+
+def test_a_hinted_request_does_not_import_unrelated_families():
+    from service.router.menu import build_menu
+    menu = build_menu("whats on my todo list")
+    assert {"get_upcoming", "search_reminders"} <= set(menu)
+    assert not {"wisp_mcp", "set_display", "list_bluetooth_devices"} & set(menu)
 
 
 def test_menu_respects_forbidden_and_cap():

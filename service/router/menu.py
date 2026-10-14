@@ -26,6 +26,7 @@ import re
 
 MAX_MENU = 20
 LEXICAL_K = 8
+LEXICAL_K_HINTED = 4
 
 CORE: dict[str, tuple[str, ...]] = {
     # Order matters: the first CORE_HEAD of each touched family survive the cap.
@@ -54,8 +55,9 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
          r"next (?:week|month)|calendar|schedule|agenda|meeting|appointment|event|busy|free\b|"
          r"plans?|to-?do|todo|task|due|deadline|remind|reminder|ping me|nudge me|at \d{1,2}(?::\d\d)?\s*(?:am|pm)?)\b",
          ("calendar",)),
-        (r"\b(?:e-?mail\w*|emial|inbox|mail|repl(?:y|ied)|respond|forward|newsletter|unsubscribe)\b", ("mail",)),
-        (r"\b(?:text|txt|message|messages|imessage|sms|tell\s+(?!me\b)\w+|let\s+(?!me\b)\S+(?:\s+\S+)?\s+know|"
+        (r"\b(?:e-?mail\w*|emials?|emals?|inbox|g?mail|repl(?:y|ied)|respond|forward|newsletter|unsubscribe)\b",
+         ("mail",)),
+        (r"\b(?:texts?|txts?|messages?|imessages?|sms|tell\s+(?!me\b)\w+|let\s+(?!me\b)\S+(?:\s+\S+)?\s+know|"
          r"ping\s+(?!me\b)\w+|contact|phone|call\s+(?!me\b)\w+|what did \w+ (?:say|send)|wish \w+|"
          r"(?:get back|write) to \w+)\b", ("messages_contacts",)),
         (r"\b(?:notes?|wrote down|jotted|code|password|combo|combination|membership|member id|"
@@ -135,10 +137,19 @@ def build_menu(text: str, *, last_assistant: str | None = None,
     families = hinted_families(masked)
     if followup:
         families += [f for f in hinted_families(last_assistant or "") if f not in families]
-    for name in ranked[:3]:
-        fam = family_of(name)
-        if fam in CORE and fam not in families:
-            families.append(fam)
+    if families:
+        # The request named its domains: retrieval keeps its top two (typos
+        # and synonyms the hints miss: "chek my texts", "wether") plus a few
+        # tools from those families, but imports no whole family. Measured on "whats on my todo list": the lexical
+        # top-3 pulled in the automation and device families, and the menu
+        # carried list_shortcuts, wisp_mcp and set_display next to the
+        # calendar tools; the model then planned cannot_do.
+        ranked = list(dict.fromkeys(ranked[:2] + [n for n in ranked if family_of(n) in families][:LEXICAL_K_HINTED]))
+    else:
+        for name in ranked[:2]:
+            fam = family_of(name)
+            if fam in CORE and fam not in families:
+                families.append(fam)
 
     menu: list[str] = []
 

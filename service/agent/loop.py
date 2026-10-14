@@ -2591,6 +2591,17 @@ async def run_agent(
             think_on=think_on, debug=debug,
             extra=_plan.plan_request_kwargs(sorted(allowed), require_call=require_call))
         plan = _plan.parse_plan(raw.get("content"), allowed)
+        # READS BEFORE WRITES. A plan that mixes reads with effect calls runs
+        # only the reads; the model re-plans with their results in hand.
+        # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
+        # lookup_contact AND send_message(to="<Mom's contact>") together, and
+        # the confirmation card would have shown the placeholder.
+        reads = [(n, a) for n, a in plan.calls
+                 if n not in _EFFECT_TOOLS and (t := get_tool(n)) is not None
+                 and t.category in _read_categories()]
+        if reads and len(reads) < len(plan.calls):
+            audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
+            plan.calls = reads
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
             return {}, plan.thought, False
