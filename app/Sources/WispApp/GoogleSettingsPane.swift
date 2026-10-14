@@ -17,7 +17,18 @@ final class GoogleAccountModel: ObservableObject {
     @Published var clientSecret = ""
     @Published var hasSavedSecret = false
 
+    // Google Workspace MCP server (Gmail, Calendar, Drive as tools)
+    @Published var wsConfigured = false
+    @Published var wsRunning = false
+    @Published var wsTools = 0
+    @Published var wsError = ""
+    @Published var wsPreparing = false
+    @Published var wsNeedsUV = false
+    @Published var wsMessage = ""
+    @Published var googleEmail = ""
+
     private var polling: Task<Void, Never>?
+    private var wsPolling: Task<Void, Never>?
 
     func refresh() async {
         guard let s = await request("GET", "assistant/gmail/status") else {
@@ -31,6 +42,83 @@ final class GoogleAccountModel: ObservableObject {
         hasSavedSecret = s["has_secret"] as? Bool ?? false
         if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
         if let t = s["last_headers_sync"] as? Double { lastSync = Date(timeIntervalSince1970: t) }
+    }
+
+    func refreshWorkspace() async {
+        guard let s = await request("GET", "assistant/google/workspace/status") else { return }
+        wsConfigured = s["configured"] as? Bool ?? false
+        wsRunning = s["running"] as? Bool ?? false
+        wsTools = s["tools"] as? Int ?? 0
+        wsError = s["error"] as? String ?? ""
+        wsNeedsUV = !(s["uvx"] as? Bool ?? true)
+        let prep = s["prepare"] as? [String: Any]
+        wsPreparing = (prep?["state"] as? String) == "preparing"
+        if (prep?["state"] as? String) == "failed" { wsError = prep?["detail"] as? String ?? wsError }
+        if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
+        if googleEmail.isEmpty { googleEmail = s["email"] as? String ?? "" }
+        if let has = s["has_secret"] as? Bool, has { hasSavedSecret = true }
+    }
+
+    func enableWorkspace() {
+        let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { wsMessage = "Enter your OAuth client ID first."; return }
+        wsMessage = ""
+        Task {
+            let body: [String: Any] = ["client_id": id,
+                                       "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       "email": googleEmail.trimmingCharacters(in: .whitespacesAndNewlines)]
+            guard let r = await request("POST", "assistant/google/workspace/enable", body: body,
+                                        timeout: 20) else {
+                wsMessage = "Wisp's service isn't responding."
+                return
+            }
+            if r["ok"] as? Bool != true {
+                wsMessage = r["error"] as? String ?? "Couldn't set up the Google Workspace server."
+                return
+            }
+            clientSecret = ""
+            wsMessage = "Setting up the Google Workspace server — the first run downloads it."
+            wsPreparing = true
+            watchWorkspace()
+        }
+    }
+
+    func disableWorkspace() {
+        Task {
+            _ = await request("POST", "assistant/google/workspace/disable", timeout: 30)
+            wsMessage = "Google Workspace removed."
+            await refreshWorkspace()
+        }
+    }
+
+    func signInWorkspace() {
+        Task {
+            let body: [String: Any] = ["email": googleEmail.trimmingCharacters(in: .whitespacesAndNewlines)]
+            guard let r = await request("POST", "assistant/google/workspace/signin", body: body,
+                                        timeout: 60) else {
+                wsMessage = "Wisp's service isn't responding."
+                return
+            }
+            if r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
+               let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" {
+                NSWorkspace.shared.open(url)
+                wsMessage = "Finish signing in with Google in your browser, then ask Wisp about your mail."
+            } else {
+                wsMessage = r["error"] as? String ?? "Couldn't start Google sign-in."
+            }
+        }
+    }
+
+    private func watchWorkspace() {
+        wsPolling?.cancel()
+        wsPolling = Task { [weak self] in
+            for _ in 0..<150 {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                await self.refreshWorkspace()
+                if !self.wsPreparing && (self.wsRunning || !self.wsError.isEmpty) { return }
+            }
+        }
     }
 
     func connect() {
@@ -75,10 +163,11 @@ final class GoogleAccountModel: ObservableObject {
         }
     }
 
-    private func request(_ method: String, _ path: String, body: [String: Any]? = nil) async -> [String: Any]? {
+    private func request(_ method: String, _ path: String, body: [String: Any]? = nil,
+                         timeout: TimeInterval = 10) async -> [String: Any]? {
         var req = URLRequest(url: WispClient.baseURL.appendingPathComponent(path))
         req.httpMethod = method
-        req.timeoutInterval = 10
+        req.timeoutInterval = timeout
         if let body {
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -97,63 +186,100 @@ struct GoogleSettingsPane: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Google").font(.title2.weight(.medium))
             VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 8) {
-                    Image(systemName: model.connected ? "checkmark.circle.fill" : "circle.dashed")
-                        .foregroundStyle(model.connected ? Color.green : Theme.textMuted)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Gmail").font(.system(size: 14, weight: .medium))
-                        Text(model.connected
-                             ? "Connected as \(model.email). Mail syncs directly from Google, so Mail.app doesn't need to be open."
-                             : "Not connected. Wisp reads mail through Mail.app, which has to be open to stay current.")
-                            .font(.caption).foregroundStyle(.secondary)
+                // Shared credentials: the user's own Google Cloud "Desktop app" OAuth client.
+                Text("Your Google OAuth client")
+                    .font(.system(size: 13, weight: .medium))
+                Text("In Google Cloud Console enable the APIs you want (Gmail, Calendar, Drive), add yourself as a "
+                     + "test user on the consent screen, and create an OAuth client of type \"Desktop app\".")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextField("OAuth client ID", text: $model.clientID).textFieldStyle(.roundedBorder)
+                SecureField(model.hasSavedSecret ? "Client secret (saved — leave blank to keep)" : "Client secret",
+                            text: $model.clientSecret).textFieldStyle(.roundedBorder)
+                TextField("Your Google email", text: $model.googleEmail).textFieldStyle(.roundedBorder)
+                Button("Open Google Cloud Console") {
+                    if let u = URL(string: "https://console.cloud.google.com/apis/credentials") {
+                        NSWorkspace.shared.open(u)
                     }
-                    Spacer()
-                    if model.connected {
-                        Button("Disconnect") { model.disconnect() }
-                    }
-                }
-                if model.connected, let last = model.lastSync {
-                    Text("Last synced \(last.formatted(.relative(presentation: .named)))")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
-                if !model.lastError.isEmpty {
-                    Text("Last sync problem: \(model.lastError). If Google revoked access, reconnect below.")
-                        .font(.caption).foregroundStyle(.orange)
                 }
 
                 Divider()
 
-                Text(model.connected ? "Reconnect with a different client" : "Connect Gmail")
-                    .font(.system(size: 13, weight: .medium))
-                Text("Read-only: Wisp can read your mail but never send, delete or change it. Mail goes from Google to this Mac only. "
-                     + "In Google Cloud Console, enable the Gmail API, add yourself as a test user on the consent screen, "
-                     + "and create an OAuth client of type \"Desktop app\". Paste its details here.")
-                    .font(.caption).foregroundStyle(.secondary)
-                TextField("OAuth client ID", text: $model.clientID)
-                    .textFieldStyle(.roundedBorder)
-                SecureField(model.hasSavedSecret ? "Client secret (saved — leave blank to keep)" : "Client secret",
-                            text: $model.clientSecret)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button(model.authorizing ? "Waiting for Google…" : "Connect with Google") { model.connect() }
-                        .disabled(model.authorizing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
-                        .buttonStyle(.borderedProminent)
-                        .tint(Theme.accent)
-                    Button("Open Google Cloud Console") {
-                        if let u = URL(string: "https://console.cloud.google.com/apis/credentials") {
-                            NSWorkspace.shared.open(u)
-                        }
+                // Google Workspace MCP server
+                HStack(spacing: 8) {
+                    Image(systemName: model.wsRunning ? "checkmark.circle.fill" : "circle.dashed")
+                        .foregroundStyle(model.wsRunning ? Color.green : Theme.textMuted)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Google Workspace (Gmail, Calendar, Drive)")
+                            .font(.system(size: 14, weight: .medium))
+                        Text(model.wsRunning
+                             ? "Running — \(model.wsTools) Google tools available to Wisp. Each one asks before it runs, except plain read-only lookups."
+                             : model.wsPreparing ? "Setting up…"
+                             : model.wsConfigured ? "Configured but not running."
+                             : "Not set up. Runs Google's tools locally on this Mac through an MCP server.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
+                    Spacer()
+                    if model.wsConfigured { Button("Remove") { model.disableWorkspace() } }
                 }
-                if !model.message.isEmpty {
-                    Text(model.message).font(.caption).foregroundStyle(.secondary)
+                if model.wsNeedsUV {
+                    Text("This needs uv. Install it in Terminal with: brew install uv")
+                        .font(.caption).foregroundStyle(.orange)
                 }
-                Text("If your Google app is in \"Testing\" mode, Google expires the sign-in after 7 days and you'll need to reconnect.")
+                if !model.wsError.isEmpty {
+                    Text(model.wsError).font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    Button(model.wsPreparing ? "Setting up…" : model.wsConfigured ? "Update settings" : "Set up Google Workspace") {
+                        model.enableWorkspace()
+                    }
+                    .disabled(model.wsPreparing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .buttonStyle(.borderedProminent).tint(Theme.accent)
+                    Button("Sign in with Google") { model.signInWorkspace() }
+                        .disabled(!model.wsRunning)
+                }
+                if !model.wsMessage.isEmpty {
+                    Text(model.wsMessage).font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Sign-in expires after 7 days while your Google app is in \"Testing\" mode.")
                     .font(.caption2).foregroundStyle(.secondary)
-                Text("Only Gmail is supported so far. Google Calendar and Drive aren't connected.")
-                    .font(.caption2).foregroundStyle(.secondary)
+
+                Divider()
+
+                // Direct Gmail inbox sync (feeds summaries and the daily brief)
+                DisclosureGroup("Inbox sync (direct Gmail, optional)") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(spacing: 8) {
+                            Image(systemName: model.connected ? "checkmark.circle.fill" : "circle.dashed")
+                                .foregroundStyle(model.connected ? Color.green : Theme.textMuted)
+                            Text(model.connected
+                                 ? "Connected as \(model.email). Mail syncs straight from Google into summaries and the daily brief."
+                                 : "Not connected. Summaries use Mail.app, which has to be open to stay current.")
+                                .font(.caption).foregroundStyle(.secondary)
+                            Spacer()
+                            if model.connected { Button("Disconnect") { model.disconnect() } }
+                        }
+                        if model.connected, let last = model.lastSync {
+                            Text("Last synced \(last.formatted(.relative(presentation: .named)))")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                        if !model.lastError.isEmpty {
+                            Text("Last sync problem: \(model.lastError)").font(.caption).foregroundStyle(.orange)
+                        }
+                        Button(model.authorizing ? "Waiting for Google…" : "Connect Gmail inbox sync") { model.connect() }
+                            .disabled(model.authorizing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
+                        if !model.message.isEmpty {
+                            Text(model.message).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text("Read-only. Uses the same OAuth client and needs the Gmail API enabled.")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 6)
+                }
             }
         }
-        .task { await model.refresh() }
+        .task {
+            await model.refresh()
+            await model.refreshWorkspace()
+        }
     }
 }

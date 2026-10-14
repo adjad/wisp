@@ -3096,6 +3096,32 @@ async def list_mcp_servers() -> dict[str, Any]:
     return mcp_manager.status()
 
 
+@app.get("/assistant/google/workspace/status")
+async def google_workspace_status() -> dict[str, Any]:
+    from service import google_workspace
+    return google_workspace.status()
+
+
+@app.post("/assistant/google/workspace/enable")
+async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
+    from service import google_workspace
+    return await google_workspace.enable(
+        str(body.get("client_id") or ""), str(body.get("client_secret") or ""),
+        str(body.get("email") or ""), str(body.get("tier") or "core"))
+
+
+@app.post("/assistant/google/workspace/disable")
+async def google_workspace_disable() -> dict[str, Any]:
+    from service import google_workspace
+    return await google_workspace.disable()
+
+
+@app.post("/assistant/google/workspace/signin")
+async def google_workspace_signin(body: dict[str, Any]) -> dict[str, Any]:
+    from service import google_workspace
+    return await google_workspace.signin(str(body.get("email") or ""))
+
+
 @app.post("/mcp/reload")
 async def reload_mcp() -> dict[str, Any]:
     """Restart every MCP server from the current mcp.json. Needed after editing
