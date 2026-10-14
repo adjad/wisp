@@ -107,6 +107,41 @@ def _default_messages() -> dict:
     return structured_messages_snapshot()
 
 
+def _default_contact_name(handle: str) -> str:
+    """The Contacts name for a phone/email handle, or the handle itself when unknown."""
+    from service.tools.imessage_tools import resolve_contact
+    return resolve_contact(handle)
+
+
+def _message_ts(value) -> float | None:
+    """Epoch seconds from a structured Messages record. The normalized feed sends UTC RFC 3339
+    strings ("2026-10-14T03:54:22.027827Z"); plain numbers are accepted too."""
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed.timestamp() if parsed.tzinfo is not None else None
+    return float(value) if _finite(value) else None
+
+
+_SHORT_CODE = re.compile(r"\+?\d{3,6}")   # SMS short codes (bank, delivery, 2FA senders), not people
+
+
+def _counterpart(record: dict) -> str:
+    """Who the user exchanged a message with: the sender of an incoming message, the other side
+    of a 1:1 chat for an outgoing one. chat.db names a chat "<service>;-;<handle>" (1:1) or
+    "<service>;+;<id>" (group); an outgoing group message has no single counterpart."""
+    if record.get("direction") == "incoming":
+        who = str(record.get("sender") or "").strip()
+    else:
+        chat = str(record.get("conversation") or "").strip()
+        if ";+;" in chat:
+            return ""
+        who = chat.split(";-;", 1)[1].strip() if ";-;" in chat else (chat or str(record.get("sender") or "").strip())
+    return "" if _SHORT_CODE.fullmatch(who) else who
+
+
 def _default_calendar_sync() -> dict:
     from service.assistant.scheduler import connectors_status
     return dict(connectors_status().get("calendar") or {})
@@ -171,12 +206,14 @@ class BehaviorRuntime:
     def __init__(self, home: Path | None = None, *,
                  local_factory: Callable[[Path], Any] | None = None,
                  messages_fn: Callable[[], dict] | None = None,
+                 contact_name_fn: Callable[[str], str] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
                  clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
         self._local_factory = local_factory or _default_local_factory
         self._messages_fn = messages_fn or _default_messages
+        self._contact_name_fn = contact_name_fn or _default_contact_name
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
         self._session_db_fn = session_db_fn or _default_session_db
         self.clock = clock
@@ -401,13 +438,16 @@ class BehaviorRuntime:
         obs = []
         for r in snap.get("records") or ():
             try:
-                ts = float(r["timestamp"])
-                if not 0 <= now - ts <= HISTORY_S:
+                ts = _message_ts(r.get("timestamp"))
+                if ts is None or not 0 <= now - ts <= HISTORY_S:
                     continue
                 incoming = r.get("direction") == "incoming"
-                who = str((r.get("sender") if incoming else (r.get("conversation") or r.get("sender"))) or "").strip()
-                if not who:
+                handle = _counterpart(r)
+                if not handle:
                     continue
+                # One subject per person: the Contacts name when known, so texts, replies and
+                # calendar 1:1s that name them count toward the same rhythm.
+                who = (self._contact_name_fn(handle) or handle).strip()
                 # Metadata only: who and when. Message text never leaves the reader.
                 obs.append(Observation(id="msg:" + str(r["identity"]),
                                        kind="message_in" if incoming else "message_out",

@@ -726,3 +726,60 @@ def test_swift_refired_nudge_resets_card_and_banner():
     assert "center.removeDeliveredNotifications(withIdentifiers: [id])" in notes
     # Swift 6: the Task captures an immutable copy of the userInfo dictionary.
     assert "let info = info" in notes.split("didReceive response")[1]
+
+
+def _feed_line(item):
+    return "V3 | " + json.dumps(item, separators=(",", ":"))
+
+
+def _feed_record(guid, conversation, sender, direction, ts):
+    return {"version": 1, "kind": "record",
+            "record": {"guid": guid, "conversation": conversation, "sender": sender,
+                       "direction": direction, "timestamp": ts, "text": "private body", "links": []},
+            "source": {"kind": "messages", "message_guid": guid, "chat_guid": conversation,
+                       "navigation_url": None},
+            "coverage": {"text": "complete", "links": "complete"}}
+
+
+def test_real_messages_feed_reaches_the_engine_as_one_subject_per_person(tmp_path, monkeypatch):
+    """Regression: the structured feed sends RFC 3339 timestamps and chat GUIDs. float() on the
+    timestamp raised for every record and the except-continue dropped all of them, so the engine
+    saw 0 messages; outgoing messages also used the chat GUID ("any;-;+1...") as the person."""
+    from service.tools import imessage_tools as M
+    for name, value in (("_lines", ""), ("_available", False), ("_unavailable_reason", ""),
+                        ("_sync_completed", False), ("_contacts", {M._norm_handle("+1 (555) 555-0100"): "Sam Lee"})):
+        monkeypatch.setattr(M, name, value)
+    monkeypatch.setattr(M.cache_store, "save", lambda *_: None)
+    t = int(NOW)
+    rows = [_feed_record("g1", "any;-;+15555550100", "+15555550100", "incoming", t - 3600),
+            _feed_record("g2", "any;-;+15555550100", "", "outgoing", t - 1800),
+            _feed_record("g3", "any;-;priya@example.invalid", "priya@example.invalid", "incoming", t - 900),
+            _feed_record("g4", "any;+;chat123456", "+15555550100", "incoming", t - 600),
+            _feed_record("g5", "any;+;chat123456", "", "outgoing", t - 300),
+            _feed_record("g6", "any;-;+15555550100", "+15555550100", "incoming", t - br.HISTORY_S - 60),
+            _feed_record("g7", "any;-;36726", "36726", "incoming", t - 200)]
+    coverage = {"version": 1, "kind": "coverage", "attempted": len(rows), "emitted": len(rows),
+                "skipped": 0, "truncated": 0, "limit": 2000, "byte_limit": 4000000,
+                "window_days": 365, "row_limit": 20000, "reached_row_limit": False}
+    M.cache_messages("\n".join([_feed_line(coverage)] + [_feed_line(r) for r in rows]), available=True)
+    snapshot = M.structured_messages_snapshot()
+    assert isinstance(snapshot["records"][0]["timestamp"], str)        # the shape that used to be dropped
+    engine = FakeEngine()
+    rt = br.BehaviorRuntime(home=tmp_path / "home", local_factory=lambda path: engine)
+    assert rt._ingest_messages(NOW) is True
+    got = sorted((round(o.ts), o.kind, o.subject) for o in engine.obs.values())
+    assert got == [(t - 3600, "message_in", "Sam Lee"),
+                   (t - 1800, "message_out", "Sam Lee"),                # same person as their texts
+                   (t - 900, "message_in", "priya@example.invalid"),
+                   (t - 600, "message_in", "Sam Lee")]                  # group: the sender counts
+    assert all(k.startswith("msg:") for k in engine.obs)
+    # g5 (outgoing to a group) has no single counterpart; g6 is older than the mining window;
+    # g7 is an SMS short code (an automated sender), not a person to have a rhythm with.
+    assert "private body" not in json.dumps([o.to_dict() for o in engine.obs.values()])
+
+
+def test_message_timestamps_accept_rfc3339_and_numbers():
+    assert br._message_ts("2026-10-14T03:54:22.027827Z") == pytest.approx(1791950062.027827)
+    assert br._message_ts(1791950062) == 1791950062.0
+    assert br._message_ts("2026-10-14T03:54:22") is None              # no zone: ambiguous, skipped
+    assert br._message_ts("not a time") is None and br._message_ts(None) is None
