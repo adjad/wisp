@@ -34,11 +34,12 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from service import skills  # noqa: E402
 from service.skills import load as load_skills  # noqa: E402
-
-load_skills()  # register use_skill + the user's installed skill tools
 
 import service.router.router as R  # noqa: E402
 from service.router.router import route  # noqa: E402
@@ -46,14 +47,42 @@ from service.router.tool_aliases import apply as apply_aliases  # noqa: E402
 from service.tools import tool_schemas  # noqa: E402
 from service.tools.registry import REGISTRY  # noqa: E402
 
-# The real runtime always attaches tool_aliases.py's table before retrieval
-# ever runs (ToolIndex.build() calls this first thing — see semantic.py) — a
-# retrofitted tool's aliases exist in that table from the moment it's added,
-# but REGISTRY[name].aliases stays empty until something actually calls
-# apply(). Without this, "does it have aliases" below would test the
-# freshly-imported REGISTRY (always aliases=[]) instead of what a real turn
-# ever sees, and wrongly flag every alias-only tool as unreachable.
-apply_aliases()
+
+@pytest.fixture(scope="module", autouse=True)
+def isolated_skill_registry():
+    """Load skill tools for these routes without leaking them into other files."""
+    original_registry = REGISTRY.copy()
+    original_aliases = {name: list(tool.aliases)
+                        for name, tool in original_registry.items()}
+    original_skills = skills._skills
+    original_tools_module = sys.modules.get("service.skills.tools")
+    original_registered = (set(original_tools_module._registered)
+                           if original_tools_module else set())
+    had_tools_attribute = hasattr(skills, "tools")
+    original_tools_attribute = getattr(skills, "tools", None)
+
+    try:
+        load_skills()  # register use_skill + the user's installed skill tools
+        # The runtime applies this table before retrieval. Alias-only tools
+        # would otherwise appear unreachable in this registry-level check.
+        apply_aliases()
+        yield
+    finally:
+        REGISTRY.clear()
+        REGISTRY.update(original_registry)
+        for name, tool in original_registry.items():
+            tool.aliases = original_aliases[name]
+        skills._skills = original_skills
+
+        if original_tools_module is None:
+            sys.modules.pop("service.skills.tools", None)
+        else:
+            original_tools_module._registered.clear()
+            original_tools_module._registered.update(original_registered)
+        if had_tools_attribute:
+            skills.tools = original_tools_attribute
+        else:
+            skills.__dict__.pop("tools", None)
 
 PASS, FAIL = 0, 0
 
