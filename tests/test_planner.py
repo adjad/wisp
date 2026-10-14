@@ -865,3 +865,35 @@ def test_the_restriction_lifts_once_the_forced_lookup_ran(_fake_tools):
                          plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
     run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
     assert _fake_tools == [("fake_read", {}), ("fake_write", {"path": "a.txt", "text": "hi"})]
+
+
+@pytest.mark.parametrize("guard", ["deny", "decline"])
+def test_a_forced_lookup_that_never_ran_keeps_writes_refused(guard, _fake_tools, monkeypatch):
+    from service.safety import Decision, Tier
+    monkeypatch.setattr(loop, "decide", lambda category, args, *, tool: Decision(
+        (Tier.DENY if guard == "deny" else Tier.CONFIRM) if tool == "fake_read" else Tier.ALLOW,
+        "synthetic guard"))
+
+    class Decline:
+        async def confirm(self, action):
+            return False
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "find my gate code"}], emit,
+                               Decline(), tools=["fake_read", "fake_write"], planner=True, max_steps=3,
+                               act_first=frozenset({"fake_read"})))
+    assert _fake_tools == []
+
+
+def test_a_dry_run_lookup_satisfies_the_restriction(_fake_tools):
+    events = []
+
+    async def capture(ev):
+        events.append(ev)
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "find my gate code"}], capture,
+                               Approver(), tools=["fake_read", "fake_write"], planner=True, test_mode=True,
+                               act_first=frozenset({"fake_read"})))
+    assert [e["name"] for e in events if e.get("type") == "tool_call"] == ["fake_read", "fake_write"]
+    assert _fake_tools == []  # a dry run executes nothing

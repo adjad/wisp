@@ -3365,6 +3365,7 @@ async def run_agent(
 
         for call_index, tc in enumerate(tool_calls):
             cid = tc.get("id", "")
+            tool_executed = False  # the tool body ran (not denied/declined/refused)
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
             if discovery is not None and name == DISCOVERY_TOOL:
@@ -3598,6 +3599,9 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
+                if restricted[0] is not None:
+                    # A dry run's planned lookup stands in for the real one.
+                    restricted_ran[0] = True
                 continue
 
             if recipient_requirements and name != "lookup_contact":
@@ -3831,11 +3835,13 @@ async def run_agent(
                             try:
                                 with approved_private_meeting(private_args):
                                     result = await execute_tool(tool, private_args)
+                                    tool_executed = True
                             except (ValueError, TypeError) as exc:
                                 result = "(error: " + str(exc) + "; request a new private block preview.)"
                         else:
                             with human_reviewed_content(_reviewed):
                                 result = await execute_tool(tool, args)
+                            tool_executed = True
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -3846,6 +3852,7 @@ async def run_agent(
                         hard_failed.add(name)
                 else:  # ALLOW
                     result = await execute_tool(tool, args)
+                    tool_executed = True
                     audit("allow", tool=name, args=args)
 
             # DISPLAY ONLY — the model always gets the full result on the next
@@ -3920,7 +3927,10 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
-            if restricted[0] is not None:
+            if restricted[0] is not None and tool_executed:
+                # Only a lookup that actually RAN satisfies the restriction; a
+                # denied or declined one leaves writes refused for the turn
+                # (sixth independent review of #221).
                 restricted_ran[0] = True
             if budget_reads:
                 is_read = (ran_tool is not None and ran_tool.category in _read_categories()
