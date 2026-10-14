@@ -379,3 +379,98 @@ def test_weak_contact_rhythm_never_nudges():
                                 today_events=[])
     assert N._contact_windows(inp([mk(0.39)])) == []
     assert len(N._contact_windows(inp([mk(0.41)]))) == 1
+
+
+# ------------------------------------------------------- usage -> day preview
+
+def usage_pattern(pid, topic, weekdays=(1,), start=13 * 60, end=14 * 60, around=13 * 60 + 35,
+                  conf=0.3, status="active"):
+    from service.behavior.types import Pattern, Window
+    return Pattern(id=pid, kind="wisp_usage", subject=topic, statement="s",
+                   window=Window(tuple(weekdays), start, end), support=6, opportunities=15,
+                   confidence=conf, status=status,
+                   stats={"key": topic, "around_minute": around, "days": "Tue"})
+
+
+def test_usage_predictions_skip_general_weak_and_rejected():
+    from service.behavior import predict as P
+    pats = [usage_pattern("e", "email"), usage_pattern("g", "general"),
+            usage_pattern("w", "weather", conf=0.19), usage_pattern("r", "news", status="rejected")]
+    preds = [p for p in P.predict(pats, [], NOW, 20 * 3600, TZ) if p.kind == "usage"]
+    assert [(p.subject, p.ts, p.probability) for p in preds] == [("email", at(13, 13, 35), 0.3)]
+    assert preds[0].because == "You asked Wisp about email on 6 of the last 15 Tue (1–2pm)"
+    assert preds[0].pattern_id == "e"
+
+
+def test_usage_window_already_started_is_not_predicted():
+    from service.behavior import predict as P
+    later = at(13, 13, 10)
+    assert [p for p in P.predict([usage_pattern("e", "email")], [], later, 6 * 3600, TZ)
+            if p.kind == "usage"] == []
+
+
+def preview(preds):
+    inp = N.Inputs(now=NOW, tz=TZ, patterns=[], predictions=preds, events={}, today_events=[])
+    return N._day_preview(inp)
+
+
+def pred(kind, subject, hour, prob=0.5, pid=None):
+    from service.behavior.types import Prediction
+    return Prediction(kind=kind, subject=subject, ts=at(13, hour), probability=prob,
+                      pattern_id=pid or f"{kind}:{subject}:{hour}")
+
+
+def test_usage_alone_feeds_the_morning_preview():
+    [n] = preview([pred("usage", "email", 13), pred("usage", "web", 17)])
+    assert n.body == "Likely today: checking email with Wisp around 1pm; a web lookup with Wisp around 5pm."
+    assert n.kind == "day_preview" and len(n.pattern_ids) == 2
+
+
+def test_usage_keeps_one_window_per_topic_and_at_most_two():
+    [n] = preview([pred("usage", "web", 13, 0.3), pred("usage", "web", 17, 0.36),
+                   pred("usage", "email", 14, 0.25), pred("usage", "news", 15, 0.2)])
+    assert n.body == ("Likely today: checking email with Wisp around 2pm; "
+                      "a web lookup with Wisp around 5pm.")
+
+
+def test_usage_only_fills_slots_the_other_kinds_leave():
+    [n] = preview([pred("activity", "gym", 18), pred("contact", "Mom", 19), pred("activity", "run", 12),
+                   pred("usage", "email", 13, 0.9), pred("usage", "web", 17, 0.9)])
+    assert n.body.count("with Wisp") == 1 and "checking email with Wisp around 1pm" in n.body
+    assert "web lookup" not in n.body
+
+
+def test_profile_card_leaves_usage_predictions_out():
+    from service.behavior import profile
+    p = usage_pattern("e", "email")
+    card = profile.profile_card([p], [pred("usage", "email", 13, pid="e")], NOW, TZ)
+    assert "asks Wisp" not in card
+
+
+def test_engine_morning_preview_from_wisp_asks_alone(tmp_path):
+    """Three weeks of asks about email around 1:30pm on Tuesdays, nothing else:
+    the 8am pass now produces a preview (it used to produce none)."""
+    e = BehaviorEngine(tmp_path / "u.db", tz="America/Los_Angeles")
+    try:
+        obs = []
+        for week in range(1, 7):
+            day = datetime(2026, 10, 13, 13, 30, tzinfo=TZ) - timedelta(weeks=week)
+            for i, minute in enumerate((0, 4)):
+                obs.append(Observation(id=f"ask:s{week}:{i}", kind="wisp_ask",
+                                       ts=(day + timedelta(minutes=minute)).timestamp(),
+                                       subject="email", source="wisp"))
+        e.observe(obs)
+        e.mine(NOW)
+        made = e.generate_nudges(NOW)
+        [n] = [n for n in made if n.kind == "day_preview"]
+        assert "checking email with Wisp around 1:" in n.body
+    finally:
+        e.close()
+
+
+def test_usage_phrases_cover_every_runtime_topic():
+    from service.assistant.behavior_runtime import _TOPICS
+    from service.behavior import predict as P
+    for name, _ in _TOPICS:
+        assert not P.usage_phrase(name).startswith("asking about"), name
+    assert P.usage_phrase("cooking") == "asking about cooking"
