@@ -502,7 +502,7 @@ _COMPOUND = dict(last_user="what's on tomorrow", last_assistant=RELATIVE_OFFER, 
 def test_compound_assent_routes_through_the_guarded_clarify_time_path():
     decision = _route("yes and also text mom", **_COMPOUND)
     assert decision.reminder_action == "clarify_time"
-    assert {"add_reminder", "set_alarm"} <= set(decision.forbidden_tools)
+    assert {"add_reminder", "set_timer"} <= set(decision.forbidden_tools)
     assert "send_message" in _reachable(decision)  # the text-mom half keeps its own path
 
 

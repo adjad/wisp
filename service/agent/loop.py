@@ -36,15 +36,14 @@ _EFFECT_TOOLS = frozenset({
     "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
-    "write_file", "move_path", "delete_path", "trash_file",
+    "write_file", "move_path", "delete_path",
     "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
     "send_message", "send_email", "reply_to_email", "forward_email", "schedule_send",
 })
 _CLOUD_PUBLIC_READ_TOOLS = frozenset({
-    "web_search", "get_weather", "get_stock_price", "weather_alerts",
-    "air_quality", "rain_radar",
+    "web_search", "get_weather", "get_stock_price",
 })
 _DENIED_OUTBOUND_TEXT = "Okay — I didn’t send it."
 
@@ -376,9 +375,9 @@ SYSTEM = (
     "or the result is genuinely ambiguous between more than one real "
     "candidate — and when you do ask, name the candidates you already found "
     "rather than asking as if you found nothing.\n"
-    "- Mailbox upkeep: `archive_email` moves a message out of the inbox (it is "
-    "NOT a delete — it stays in Archive), `mark_email_read` marks one read or "
-    "unread. Both need the Message-ID from `view_emails`.\n"
+    "- Mailbox upkeep: `email_triage` archives a message (moves it out of the "
+    "inbox — NOT a delete, it stays in Archive), marks it read/unread, or "
+    "flags/unflags it. It needs the Message-ID from `view_emails`.\n"
     "- MEMORY — call `remember` whenever the user reveals something durable "
     "about themselves, EVEN IN PASSING and even when they never ask you to "
     "remember it. You are building a long-term picture of this person, not "
@@ -441,9 +440,8 @@ SYSTEM = (
     "  `forget` removes one. Things you were already told are injected into "
     "your context automatically each turn — call `recall` only when you need "
     "something that isn't there.\n"
-    "- To change something on a remote service — a webhook, an API the user "
-    "gave you a URL for — call `http_request` (POST/PUT/PATCH/DELETE). Use "
-    "`web_fetch` for plain reads; it's a GET and doesn't interrupt the user.\n"
+    "- `web_fetch` reads a URL (GET only). Wisp cannot POST/PUT/PATCH/DELETE "
+    "to remote services; say so instead of improvising a shell command.\n"
     "- THINGS YOU CANNOT DO IN YOUR HEAD — you must RUN CODE (`run_shell`, or "
     "`create_tool` if they'll want it again) for these, and "
     "writing the answer yourself is always wrong, no matter how easy it looks:\n"
@@ -492,27 +490,23 @@ SYSTEM = (
     "osascript for this, and do not try to guess the volume from context, "
     "just read it. For clipboard contents, call `clipboard_read`/"
     "`clipboard_write` rather than shelling out to pbpaste/pbcopy. For "
-    "Wi-Fi on/off, call `set_wifi`. To lock the screen, call `lock_screen`.\n"
+    "Wi-Fi on/off, call `toggle_setting` with setting='wifi'. To lock the screen, call `lock_screen`.\n"
     # pmset -g log's BatteryHealth "Warning level"/"cap:" lines are low-charge
     # UI-warning events (cap = charge % at that moment), not a wear/health
     # metric — free-interpreting them produces confidently wrong degradation
-    # claims. get_battery_status reports the real design-capacity health %.
+    # claims. system_status(section="battery") reports the real design-capacity health %.
     "- For battery charge, time remaining, cycle count, or health/degradation "
-    "questions, call `get_battery_status` — do NOT use run_shell/pmset for "
+    "questions, call `system_status` with section='battery' — do NOT use run_shell/pmset for "
     "this.\n"
-    "- For keyboard backlight/lighting requests, call `set_keyboard_backlight` "
-    "— do NOT use run_shell for this. It won't actually change anything (this "
-    "Mac's keyboard backlight is fully automatic, confirmed not scriptable), "
-    "but it returns the correct explanation to give the user, instead of you "
-    "guessing a shell command or falsely claiming success. More generally: if "
-    "you don't immediately know a command for some system control, that's a "
+    "- This Mac's keyboard backlight is fully automatic and not scriptable: "
+    "say so rather than guessing a shell command or claiming success. More "
+    "generally: if you don't immediately know a command for some system control, that's a "
     "sign a dedicated tool exists (check the tool list) before you try to "
     "recall or guess a shell incantation from memory.\n"
-    "- For music: `spotify` controls the Spotify app; `music` controls Apple "
-    "Music. Use whichever the user names; if they just say 'play music' with "
-    "no app named, prefer whichever is already open (check via a quick "
-    "run_shell `pgrep` if genuinely unsure), otherwise default to `music` "
-    "(it ships with macOS, so it's always available).\n"
+    "- For music, call `music`: app='spotify' when the user names Spotify, "
+    "otherwise the default Apple Music (it ships with macOS, so it's always "
+    "available). If they just say 'play music' and Spotify is plainly the one "
+    "already open, use it.\n"
     "- `get_upcoming` already includes reminders the user created directly in "
     "the Reminders app (not just ones Wisp itself created) — you don't need a "
     "separate tool or run_shell/osascript to check Reminders.app.\n"
@@ -549,9 +543,9 @@ def _read_categories():
 # Reads whose answer can change within one turn without any write by Wisp, so
 # an identical repeat ("check again") must still run.
 _VOLATILE_READS = frozenset({
-    "system_status", "get_battery_status", "network_info", "world_time", "get_volume",
+    "system_status", "world_time", "get_volume",
     "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
-    "get_sports_scores", "list_scheduled_sends", "screen_capture", "clipboard_read",
+    "list_scheduled_sends", "screen_capture", "clipboard_read",
 })
 
 

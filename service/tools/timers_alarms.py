@@ -207,27 +207,50 @@ _load()
 # --------------------------------------------------------------------------
 @register(
     "set_timer",
-    "Start a countdown timer that notifies the user when it finishes. Use this "
-    "for 'set a timer for N minutes' — NOT add_reminder, which is for dated "
-    "commitments the user reviews later. `duration` accepts '10 minutes', "
-    "'1h30m', '90s', or a bare number meaning minutes. Give a `label` when the "
-    "user names the timer ('pasta', 'laundry') so several can run at once.",
+    "Start a countdown timer, a clock-time alarm, or a sleep timer; each notifies "
+    "the user (or pauses playback) when it fires. Use this for 'set a timer for "
+    "N minutes', 'wake me at 7', 'stop the music in 30 minutes' — NOT add_reminder, "
+    "which is for dated commitments the user reviews later. kind='timer' (default) "
+    "and kind='sleep' take `duration` ('10 minutes', '1h30m', '90s', or a bare "
+    "number meaning minutes); kind='alarm' takes a clock `time` ('7:30am', '18:45'). "
+    "Give a `label` when the user names one ('pasta') so several can run at once.",
     {
         "type": "object",
         "properties": {
+            "kind": {"type": "string", "enum": ["timer", "alarm", "sleep"],
+                     "description": "timer = countdown (default); alarm = clock time; "
+                                    "sleep = pause Music/Spotify after a delay."},
             "duration": {"type": "string",
-                         "description": "How long: '10 minutes', '1h30m', '90s', or a number (minutes)."},
+                         "description": "For timer/sleep: '10 minutes', '1h30m', '90s', or a number (minutes)."},
+            "time": {"type": "string",
+                     "description": "For alarm: clock time, e.g. '7:30am'. Today if still ahead, otherwise tomorrow."},
             "label": {"type": "string",
-                      "description": "Optional name, e.g. 'pasta'. Needed to run several timers at once."},
+                      "description": "Optional name, e.g. 'pasta'. Needed to run several at once."},
+            "repeat_daily": {"type": "boolean", "description": "Alarm only: repeat every day at this time."},
         },
-        "required": ["duration"],
     },
     category="timer_write",
     aliases=["set a timer for ten minutes", "give me five minutes on the clock",
              "start a 20 minute timer for the laundry",
-             "time me for half an hour", "ping me in 15 minutes"],
+             "time me for half an hour", "ping me in 15 minutes",
+             "wake me up at 7", "set an alarm for half six tomorrow", "alarm for 8am",
+             "stop the music in half an hour", "sleep timer for 20 minutes"],
 )
-def set_timer(duration: str, label: str = "") -> str:
+def set_timer(kind: str = "timer", duration: str = "", time: str = "",  # noqa: A002
+              label: str = "", repeat_daily: bool = False) -> str:
+    kind = (kind or "timer").strip().lower()
+    if kind == "alarm":
+        if not (time or "").strip():
+            return "(error: an alarm needs a clock `time`, e.g. '7:30am'.)"
+        return _set_alarm(time, label, repeat_daily)
+    if kind not in {"timer", "sleep"}:
+        return f"(error: unknown kind {kind!r}. Use timer, alarm, or sleep.)"
+    if not (duration or "").strip():
+        return "(error: a timer needs a `duration`, e.g. '10 minutes'.)"
+    return _set_sleep_timer(duration) if kind == "sleep" else _set_countdown(duration, label)
+
+
+def _set_countdown(duration: str, label: str = "") -> str:
     secs = _parse_duration(duration)
     if secs is None:
         return (f"(error: I couldn't read {duration!r} as a length of time. "
@@ -245,26 +268,7 @@ def set_timer(duration: str, label: str = "") -> str:
     return f"Timer set for {_human(secs)}{name}. I'll notify you when it's up."
 
 
-@register(
-    "set_alarm",
-    "Set an alarm for a specific CLOCK TIME today or tomorrow (e.g. '7:30am'), "
-    "as opposed to set_timer's countdown. Pass `repeat_daily` for an alarm that "
-    "fires every day at that time.",
-    {
-        "type": "object",
-        "properties": {
-            "time": {"type": "string",
-                     "description": "Clock time, e.g. '7:30am', '18:45'. Assumes today if still ahead, otherwise tomorrow."},
-            "label": {"type": "string", "description": "Optional name for the alarm."},
-            "repeat_daily": {"type": "boolean", "description": "Repeat every day at this time."},
-        },
-        "required": ["time"],
-    },
-    category="timer_write",
-    aliases=["wake me up at 7", "set an alarm for half six tomorrow",
-             "get me up at 6:45 every weekday", "alarm for 8am"],
-)
-def set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  # noqa: A002
+def _set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  # noqa: A002
     import datetime as _dt
 
     raw = (time or "").strip().lower().replace(".", ":")
@@ -296,23 +300,7 @@ def set_alarm(time: str, label: str = "", repeat_daily: bool = False) -> str:  #
     return f"Alarm set for {when_txt}{rep}."
 
 
-@register(
-    "set_sleep_timer",
-    "Pause music or video after a delay — the 'stop playing in 30 minutes' "
-    "bedtime case. Pauses Music and Spotify when it fires.",
-    {
-        "type": "object",
-        "properties": {
-            "duration": {"type": "string",
-                         "description": "How long before playback pauses: '30 minutes', '1h'."},
-        },
-        "required": ["duration"],
-    },
-    category="timer_write",
-    aliases=["stop the music in half an hour", "turn this off after 45 minutes",
-             "sleep timer for 20 minutes", "pause playback when I fall asleep"],
-)
-def set_sleep_timer(duration: str) -> str:
+def _set_sleep_timer(duration: str) -> str:
     secs = _parse_duration(duration)
     if secs is None:
         return f"(error: I couldn't read {duration!r} as a length of time.)"
@@ -328,13 +316,16 @@ def set_sleep_timer(duration: str) -> str:
 
 @register(
     "manage_timers",
-    "List, check, or cancel running timers and alarms. Use action='list' for "
-    "'how long is left', action='cancel' with a `label` or `id` to stop one, "
-    "and action='cancel_all' to clear everything.",
+    "List, check, or cancel running timers and alarms, or run the stopwatch. "
+    "action='list' for 'how long is left'; 'cancel' with a `label` or id to stop "
+    "one; 'cancel_all' to clear everything. The stopwatch counts UP: "
+    "'stopwatch_start', 'stopwatch_lap', 'stopwatch_read', 'stopwatch_stop'.",
     {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["list", "cancel", "cancel_all"],
+            "action": {"type": "string",
+                       "enum": ["list", "cancel", "cancel_all", "stopwatch_start",
+                                "stopwatch_lap", "stopwatch_read", "stopwatch_stop"],
                        "description": "What to do. Defaults to list."},
             "label": {"type": "string",
                       "description": "Which timer to cancel, by its name or id. Only for action='cancel'."},
@@ -343,10 +334,13 @@ def set_sleep_timer(duration: str) -> str:
     category="timer_write",
     aliases=["how much time is left on the timer", "what timers do I have running",
              "cancel the pasta timer", "stop all my timers",
-             "turn off that alarm", "is the laundry timer still going"],
+             "turn off that alarm", "is the laundry timer still going",
+             "start the stopwatch", "how long have I been going", "lap it", "stop timing"],
 )
 def manage_timers(action: str = "list", label: str = "") -> str:
     action = (action or "list").strip().lower()
+    if action.startswith("stopwatch_"):
+        return _stopwatch(action.removeprefix("stopwatch_"))
     now = time.time()
 
     if action == "list":
@@ -393,25 +387,11 @@ def manage_timers(action: str = "list", label: str = "") -> str:
         name = f" '{entry['label']}'" if entry.get("label") else ""
         return f"Cancelled the timer{name}."
 
-    return f"(error: unknown action {action!r}. Use list, cancel, or cancel_all.)"
+    return (f"(error: unknown action {action!r}. Use list, cancel, cancel_all, or "
+            "stopwatch_start/lap/read/stop.)")
 
 
-@register(
-    "stopwatch",
-    "Start, lap, read, or stop a stopwatch counting UP — distinct from "
-    "set_timer, which counts down to a notification.",
-    {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["start", "lap", "read", "stop"],
-                       "description": "What to do. Defaults to read."},
-        },
-    },
-    category="timer_write",
-    aliases=["start the stopwatch", "how long have I been going",
-             "lap it", "stop timing", "start timing this"],
-)
-def stopwatch(action: str = "read") -> str:
+def _stopwatch(action: str = "read") -> str:
     action = (action or "read").strip().lower()
     now = time.time()
     started = _STOPWATCH.get("started")
