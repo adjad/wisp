@@ -14,7 +14,7 @@ MEMBERS = ["train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance
            "validate.py", "validation.json", "preflight.json"]
 # Generator sources: generate.py plus every add-on module it loads (ext_*.py) and v2_replay.py, so the data is reproducible from the zip.
 MEMBERS += ["generate.py"] + sorted(p.name for p in ROOT.glob("ext_*.py")) + (["v2_replay.py"] if (ROOT / "v2_replay.py").exists() else [])
-MEMBERS += ["v3_replay.py", "v3_replay.provenance.jsonl", "V3.1_PLAN.md"]
+MEMBERS += ["v3_replay.py", "v3_replay.provenance.jsonl", "V3.1_PLAN.md", "merge_lora.py"]  # merge_lora: builds V3-merged on the VM
 # V2-replay provenance travels separately from train/dev.provenance.jsonl; required once v2r rows are appended to train/dev.
 if (ROOT / "v2_replay.provenance.jsonl").exists():
     MEMBERS.append("v2_replay.provenance.jsonl")
