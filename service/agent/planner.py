@@ -226,27 +226,26 @@ def plan_message(plan: Plan) -> dict:
                            for i, (name, args) in enumerate(plan.calls)]}
 
 
-_EMPTY_RESULT_RE = re.compile(
-    r"^\s*(?:\(|no\s+(?:matching|matches|results?|notes?|messages?|e-?mails?|events?|memor(?:y|ies)|"
-    r"contacts?|files?|reminders?|items?|data)\b|no\s+(?:\w+\s+){1,3}(?:results?|matches)\b|"
-    r"nothing\b|none\s+found|not\s+found|"
-    r"(?:i\s+)?(?:couldn'?t|could\s+not)\s+find|0\s+(?:results?|matches))", re.I)
-
-
-# Empty-result notices are one short line; real content is not. Without the
-# cap a document that merely BEGINS "No significant results were observed..."
-# counted as a miss and used up the budget before the third requested report
-# was read (fifth independent review of #211).
+# Wisp's parenthesized notices are one short line.
 EMPTY_NOTICE_MAX_CHARS = 300
 
 
 def looks_empty(result) -> bool:
-    """A read result that found nothing: blank, or a SHORT notice that is
-    parenthesized or opens with a no-results phrase (recall's 'No matching
-    memory ...', 'No usable public web results found.'). The outcome
-    classifier calls several of these `succeeded`."""
+    """A read that found nothing, judged ONLY by signals Wisp itself emits:
+    a blank result, a short notice wrapped entirely in parentheses (Wisp's
+    notice convention, e.g. "(no public web results found ...)"), or a tool's
+    exact no-match sentence. Free text is never guessed at: a report that
+    merely begins "No significant results were observed..." is content, and
+    reading it as a miss skipped the third requested report (fifth and sixth
+    independent reviews of #211). Non-succeeded outcomes are counted by the
+    caller from classify_tool_outcome."""
     text = str(result or "").strip()
-    return not text or (len(text) <= EMPTY_NOTICE_MAX_CHARS and bool(_EMPTY_RESULT_RE.match(text)))
+    if not text:
+        return True
+    if len(text) <= EMPTY_NOTICE_MAX_CHARS and text.startswith("(") and text.endswith(")"):
+        return True
+    from service.tools.memory_tools import _NO_MATCH as _RECALL_NO_MATCH
+    return text == _RECALL_NO_MATCH
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:
