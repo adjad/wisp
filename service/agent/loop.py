@@ -2589,7 +2589,11 @@ async def run_agent(
             step_schemas, "auto", min(max_out, _plan.PLAN_MAX_TOKENS), emit,
             stream_content=False, temperature=temperature, no_thinking=False,
             think_on=think_on, debug=debug,
-            extra=_plan.plan_request_kwargs(sorted(allowed), require_call=require_call))
+            extra=_plan.plan_request_kwargs(
+                sorted(allowed), require_call=require_call,
+                # History is text-only (agent/context), so a tool message here
+                # is a result from this turn.
+                searched=any(m.get("role") == "tool" for m in step_msgs)))
         plan = _plan.parse_plan(raw.get("content"), allowed)
         # READS BEFORE WRITES. A plan that mixes reads with effect calls runs
         # only the reads; the model re-plans with their results in hand.

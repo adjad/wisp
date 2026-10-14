@@ -32,6 +32,19 @@ def test_plan_schema_enumerates_offered_names_and_requires_a_call_when_asked():
     assert forced["properties"]["status"]["enum"] == ["call_tools"]
 
 
+def test_not_found_is_unavailable_before_anything_was_searched():
+    assert "not_found" not in planner.plan_schema(["a"], require_call=False, searched=False)[
+        "properties"]["status"]["enum"]
+
+
+def test_first_plan_step_cannot_claim_not_found(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "gate code"})), plan("not_found")])
+    run(client, planner=True)
+    enums = [r["response_format"]["json_schema"]["schema"]["properties"]["status"]["enum"]
+             for r in client.requests if "response_format" in r]
+    assert "not_found" not in enums[0] and "not_found" in enums[1]
+
+
 def test_plan_schema_with_no_tools_cannot_plan_a_call():
     schema = planner.plan_schema([], require_call=False)
     assert schema["properties"]["calls"]["maxItems"] == 0

@@ -106,7 +106,7 @@ STATUS_NOTES = {
 }
 
 
-def plan_schema(names: list[str], *, require_call: bool) -> dict:
+def plan_schema(names: list[str], *, require_call: bool, searched: bool = True) -> dict:
     """The JSON schema oMLX enforces for one planning step.
 
     Arguments stay a free object here; run_agent validates them against the
@@ -120,6 +120,13 @@ def plan_schema(names: list[str], *, require_call: bool) -> dict:
             "required": ["tool", "arguments"]}
     calls: dict = {"type": "array", "items": call, "maxItems": MAX_CALLS_PER_PLAN}
     statuses = list(STATUSES)
+    if not searched:
+        # not_found means "I looked and it is not there"; before any tool has
+        # run this turn it can only be a claim about a search that never
+        # happened. Measured 2026-10-13, Ling V3, real planner path: 5 of 59
+        # cases planned not_found on the first step and told the user "I
+        # checked your calendar and found nothing" with zero calls made.
+        statuses.remove("not_found")
     if require_call:
         calls["minItems"] = 1
         statuses = ["call_tools"]
@@ -133,10 +140,10 @@ def plan_schema(names: list[str], *, require_call: bool) -> dict:
             "required": ["thought", "calls", "status"]}
 
 
-def plan_request_kwargs(names: list[str], *, require_call: bool) -> dict:
+def plan_request_kwargs(names: list[str], *, require_call: bool, searched: bool = True) -> dict:
     return {"response_format": {"type": "json_schema", "json_schema": {
         "name": "wisp_plan", "strict": True,
-        "schema": plan_schema(names, require_call=require_call)}}}
+        "schema": plan_schema(names, require_call=require_call, searched=searched)}}}
 
 
 def plan_instruction(*, require_call: bool) -> dict:
