@@ -7,7 +7,10 @@ already on file. Missing a real reminder is recoverable (the message is still in
 Messages); a redundant interruption teaches the user to ignore Wisp.
 
 Only `active` and `done` rows count. A `dismissed` row is something the user
-cleared, not something they have on file.
+cleared, not something they have on file: dropping one of their own reminders says
+nothing about a new plan. (The live path only ever passes active rows.) A reminder
+the attention runner made and the user then removed is different, and is kept from
+being re-created by the runner's ledger check, which matches on the event time.
 """
 from __future__ import annotations
 
@@ -35,6 +38,11 @@ def _tokens(text: str) -> set[str]:
     return {w for w in _WORD.findall((text or "").casefold()) if w not in _STOP and not w.isdigit()}
 
 
+def shares_words(text: str, commitment: dict) -> bool:
+    """`text` and the commitment's title or location have a meaningful word in common."""
+    return bool(_tokens(text) & _tokens(f"{commitment.get('title') or ''} {commitment.get('location') or ''}"))
+
+
 @dataclass(frozen=True)
 class OnFile:
     commitment_id: str
@@ -46,12 +54,11 @@ def find_on_file(resolved: Resolved, text: str, commitments: list[dict], tz: str
     if resolved.day is None:
         return None
     zone = ZoneInfo(tz)
-    words = _tokens(text)
     for c in commitments:
         if c.get("status") not in ("active", "done") or c.get("when_ts") is None:
             continue
         when = datetime.fromtimestamp(float(c["when_ts"]), zone)
-        shared = bool(words & _tokens(f"{c.get('title') or ''} {c.get('location') or ''}"))
+        shared = shares_words(text, c)
         if resolved.has_clock and resolved.start is not None:
             gap = abs(when.timestamp() - resolved.start.timestamp())
             if gap <= CLOCK_EXACT_S:

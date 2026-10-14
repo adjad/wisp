@@ -718,6 +718,56 @@ async def test_an_allowed_create_is_audited_like_any_tool_write(isolated, monkey
     assert events and events[0][0] == "allow" and events[0][1]["tool"] == "add_reminder"
 
 
+# ---- the audit line names the reminder by reference and records the outcome (post-merge audit, item 3)
+
+@pytest.mark.parametrize("reply,status", [
+    ("Reminder set: Mom: dinner at the Quad (7:00 PM)", "succeeded"),
+    ("(error: nope)", "failed"),
+    ("Reminder not verified; nothing was confirmed", "unknown"),
+])
+async def test_the_audit_line_carries_no_message_text_and_the_real_outcome(isolated, monkeypatch, reply, status):
+    from service.tools import assistant_tools
+    events = audit_log(monkeypatch)
+
+    async def tool(*a, **k):
+        return reply
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    title = "Mom: dinner at the Quad (7:00 PM)"
+    got = await wiring.create_reminder(live.Plan(title, NOW + 3600, None, "today", "dinner at the Quad"))
+    assert got["status"] == status
+    assert len(events) == 1 and events[0][0] == "allow" and events[0][1]["status"] == status
+    line = repr(events[0][1])
+    assert "Quad" not in line and "dinner" not in line and title not in line
+    assert len(events[0][1]["args"]["title_sha256"]) == 16
+
+
+async def test_a_create_that_raises_is_audited_as_unknown(isolated, monkeypatch):
+    from service.tools import assistant_tools
+    events = audit_log(monkeypatch)
+
+    async def tool(*a, **k):
+        raise TimeoutError
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    with pytest.raises(TimeoutError):
+        await wiring.create_reminder(live.Plan("Mom: dinner", NOW + 3600, None, "today", "dinner"))
+    assert [(e, f["status"]) for e, f in events] == [("allow", "unknown")]
+
+
+async def test_the_written_audit_log_never_holds_the_quote(isolated, monkeypatch, tmp_path):
+    import importlib
+    audit_mod = importlib.import_module("service.safety.audit")
+    from service.tools import assistant_tools
+    monkeypatch.setattr(audit_mod, "AUDIT_DIR", tmp_path)
+    monkeypatch.setattr(audit_mod, "AUDIT_LOG", tmp_path / "audit.jsonl")
+
+    async def tool(*a, **k):
+        return "Reminder set: x"
+    monkeypatch.setattr(assistant_tools, "add_reminder", tool)
+    await wiring.create_reminder(live.Plan("Mom: dinner at the Quad", NOW + 3600, None, "today", "q"))
+    written = (tmp_path / "audit.jsonl").read_text()
+    assert '"status": "succeeded"' in written and "Quad" not in written
+
+
 async def test_undo_refuses_in_view_only_and_deletes_nothing(store, monkeypatch):
     from service.safety import policy
     events = audit_log(monkeypatch)

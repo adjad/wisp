@@ -674,3 +674,46 @@ def test_unambiguous_local_times_around_the_dst_change_still_resolve():
     assert resolve.resolve("Meet 2026-11-01 at 2:30am America/Los_Angeles", arrival, TZ).start is not None
     foreign = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)
     assert foreign.blocked == "other_timezone"                              # the foreign-zone control is retained
+
+
+# ------------------- an inherited guessed meridiem stays tentative (post-merge audit, item 1)
+
+def dinner_thread(proposal, *later):
+    """The user proposes, Sam accepts with "sure", then `later` outgoing replies follow."""
+    h = msg("h", "Sam", "hey", T - 86400, "outgoing")
+    p = msg("p", "Sam", proposal, T, "outgoing")
+    reply = msg("r", "Sam", "sure", T + 120)
+    after = [msg(f"o{i}", "Sam", text, T + 600 + i, "outgoing") for i, text in enumerate(later)]
+    return detector([h, p, reply, *after]), reply
+
+
+def test_an_accepted_proposal_with_a_guessed_meridiem_is_not_marked_certain():
+    """"dinner tomorrow at 9?" -> "sure": the 9:00 PM is our guess, and "sure" does not settle it."""
+    det, reply = dinner_thread("dinner tomorrow at 9?")
+    d = det.decide(reply)
+    assert not d.alert and d.blocked_by == "unconfirmed"
+    assert d.resolved.start == at(22, 21) and d.resolved.tentative and d.resolved.guessed
+    assert "time:from_thread" in d.resolved.inferred
+
+
+def test_the_users_own_follow_up_confirms_an_inherited_guess_like_any_other():
+    det, reply = dinner_thread("dinner tomorrow at 9?", "great see you then")
+    d = det.decide(reply)
+    assert d.alert and d.resolved.tentative and d.resolved.start == at(22, 21)
+
+
+@pytest.mark.parametrize("proposal,hour", [
+    ("dinner tomorrow at 7pm?", 19),          # explicit meridiem: the "?" is answered by "sure"
+    ("dinner tomorrow at 6?", 18),            # 1-6 on a known day is read as the afternoon
+])
+def test_an_accepted_proposal_without_a_guess_is_still_certain(proposal, hour):
+    det, reply = dinner_thread(proposal)
+    d = det.decide(reply)
+    assert d.alert and not d.resolved.tentative and not d.resolved.guessed
+    assert d.resolved.start == at(22, hour)
+
+
+def test_a_question_alone_is_not_a_guess():
+    asked = r("dinner tomorrow at 7pm?")
+    assert asked.tentative and not asked.guessed
+    assert r("dinner tomorrow at 9").guessed and r("dinner tomorrow at 9").tentative

@@ -80,13 +80,18 @@ class Ledger:
             return cur.rowcount
 
     def claim(self, source_id: str, *, title: str | None = None, due_ts: float | None = None,
-              event_ts: float | None = None, now: float | None = None) -> bool:
-        """True exactly once per message. False means someone already decided it."""
+              event_ts: float | None = None, now: float | None = None,
+              detail: dict | None = None) -> bool:
+        """True exactly once per message. False means someone already decided it.
+
+        `detail` is written with the claim, so a row a crash leaves `claimed` (and `recover`
+        turns `unknown`) still carries what later decisions match against."""
         with self._lock:
             cur = self._db.execute(
-                "INSERT OR IGNORE INTO actions(source_id,state,decided_at,title,due_ts,event_ts) "
-                "VALUES (?,?,?,?,?,?)",
-                (source_id, "claimed", now if now is not None else time.time(), title, due_ts, event_ts))
+                "INSERT OR IGNORE INTO actions(source_id,state,decided_at,title,due_ts,event_ts,detail) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (source_id, "claimed", now if now is not None else time.time(), title, due_ts, event_ts,
+                 json.dumps(detail or {}, sort_keys=True)))
             return cur.rowcount == 1
 
     def finish(self, source_id: str, state: str, detail: dict | None = None,
@@ -124,6 +129,17 @@ class Ledger:
                 f"SELECT COUNT(*) FROM actions WHERE decided_at>=? AND state IN ({marks}) "
                 "AND source_id IS NOT ?", (since_ts, *states, exclude)).fetchone()[0]
 
+    def rows_relevant(self, since_ts: float, upcoming_from: float, states: tuple[str, ...]) -> list[dict]:
+        """Rows in any of `states` decided since `since_ts`, or whose event (or, with no clock,
+        due time) is still at or after `upcoming_from`, however long ago they were decided.
+        Oldest first."""
+        marks = ",".join("?" * len(states))
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT * FROM actions WHERE (decided_at>=? OR COALESCE(event_ts,due_ts)>=?) "
+                f"AND state IN ({marks}) ORDER BY decided_at", (since_ts, upcoming_from, *states)).fetchall()
+        return [_row(r) for r in rows]
+
     def recent(self, limit: int = 20) -> list[dict]:
         with self._lock:
             rows = self._db.execute(
@@ -150,6 +166,13 @@ class Ledger:
             except Exception:
                 self._db.execute("ROLLBACK")
                 raise
+
+    def meta_setdefault(self, key: str, value: str) -> str:
+        """The stored value for `key`, writing `value` first only if there is none. Two callers
+        racing to set it both get the one that won."""
+        with self._lock:
+            self._db.execute("INSERT OR IGNORE INTO meta(key,value) VALUES (?,?)", (key, value))
+            return self._db.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()[0]
 
     def set_meta(self, key: str, value: str) -> None:
         with self._lock:

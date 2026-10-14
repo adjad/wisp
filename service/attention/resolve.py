@@ -69,6 +69,9 @@ class Resolved:
     quote: str
     inferred: tuple[str, ...] = ()  # e.g. ("date:next_occurrence", "meridiem")
     tentative: bool = False         # a question or proposal, or a guessed meridiem
+    guessed: bool = False           # the tentative part that is OUR reading, not the sender's
+                                    # phrasing: a guessed am/pm, or a bare clock read as 12+ hours
+                                    # away. Another person saying "sure" does not settle it.
     blocked: str | None = None      # why nothing was resolved
     at: int | None = None           # offset in the text of the phrase that gave the time
 
@@ -279,17 +282,19 @@ def _resolve(text: str, arrival: datetime, tz: str, source_id: str) -> Resolved:
         hour %= 12
         if day is None:                                 # nearest upcoming of am/pm
             start = min(_next_clock(arrival, h, minute, zone) for h in (hour, hour + 12))
+            guessed = _far(start, arrival)
             return Resolved(start, start.date(), True, quote,
                             tuple(inferred + ["date:next_occurrence"]),
-                            tentative or _far(start, arrival), at=at)
+                            tentative or guessed, at=at, guessed=guessed)
         # A known day with a bare hour: 1-6 is the afternoon; 7-11 could be either.
-        if not 1 <= hour <= 6:
-            tentative = True
+        guessed = not 1 <= hour <= 6
         hour += 12
-        return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative, at=at)
+        return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred),
+                        tentative or guessed, at=at, guessed=guessed)
     if day is None:
         start = _next_clock(arrival, hour, minute, zone)
+        guessed = _far(start, arrival)
         return Resolved(start, start.date(), True, quote,
                         tuple(inferred + ["date:next_occurrence"]),
-                        tentative or _far(start, arrival), at=at)
+                        tentative or guessed, at=at, guessed=guessed)
     return Resolved(_at(day, hour, minute, zone), day, True, quote, tuple(inferred), tentative, at=at)
