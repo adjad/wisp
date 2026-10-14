@@ -57,6 +57,7 @@ from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
 from service.inference import qualify as qualification
+from service.engine.mode import is_bundled
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -285,6 +286,10 @@ async def lifespan(app: FastAPI):
     from service.config import quarantine
     quarantine.check()
     global client
+    if is_bundled() and remote_only_profile() is None:
+        # The client reads the engine's key from its settings file at construction.
+        from service.engine.runtime import manager
+        await asyncio.to_thread(manager().prepare)
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
@@ -396,6 +401,9 @@ async def lifespan(app: FastAPI):
         if profile is None:
             await mcp_manager.stop()
         await client.aclose()
+        if is_bundled():
+            from service.engine.runtime import stop_if_running
+            await asyncio.to_thread(stop_if_running)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -455,6 +463,9 @@ async def ensure_omlx() -> None:
     if await _await_omlx(2):
         return
     client.invalidate_connections()
+    if is_bundled():
+        await _ensure_bundled_engine()
+        return
     if not await _omlx_cli("start", "--no-wait"):
         raise ModelLoadError("The local oMLX CLI is unavailable")
     if await _await_omlx(30):
@@ -463,6 +474,21 @@ async def ensure_omlx() -> None:
     if await _omlx_cli("restart") and await _await_omlx(60):
         return
     raise ModelLoadError("The local AI engine did not become ready")
+
+
+async def _ensure_bundled_engine() -> None:
+    """Start Wisp's own engine (never a user's oMLX.app) and wait until it answers."""
+    from service.engine import EngineError
+    from service.engine.runtime import manager
+    engine = manager()
+    try:
+        await asyncio.to_thread(engine.start)
+    except EngineError as exc:
+        raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
+    if not await engine.wait_ready(60):
+        engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
+    client.invalidate_connections()
 
 
 @app.get("/health")
@@ -480,6 +506,9 @@ async def shutdown_omlx() -> dict[str, Any]:
     """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
     if not getattr(client, "managed", True):
         return {"stopped": False}
+    if is_bundled():
+        from service.engine.runtime import stop_if_running
+        return {"stopped": await asyncio.to_thread(stop_if_running)}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -878,6 +907,9 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
 
 def _omlx_installed() -> bool:
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_code_root
+        return (engine_code_root() / "py" / "bin" / "python3").exists()
     return any(Path(p).exists() for p in ("/Applications/oMLX.app",
                                           str(Path.home() / "Applications" / "oMLX.app")))
 
@@ -893,6 +925,9 @@ def _omlx_model_dir() -> str | None:
     except Exception:  # noqa: BLE001 — a missing settings file just means the default folder
         pass
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_data_dir
+        return str(engine_data_dir() / "models")
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
@@ -902,7 +937,8 @@ def _omlx_admin_url() -> str:
     try:
         return omlx_base_url() + "/admin"
     except Exception:  # noqa: BLE001 — unreadable settings: use the documented default
-        return "http://127.0.0.1:8000/admin"
+        from service.engine import BUNDLED_PORT
+        return f"http://127.0.0.1:{BUNDLED_PORT if is_bundled() else 8000}/admin"
 
 
 def _setup_roles() -> dict[str, dict[str, str]]:

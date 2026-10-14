@@ -13,14 +13,19 @@ import yaml
 
 from service.paths import MOE_DIR
 
-OMLX_SETTINGS = Path.home() / ".omlx" / "settings.json"
+from service.engine.mode import bundled_base_path, is_bundled
+# External oMLX keeps its state in ~/.omlx; the bundled engine keeps its own copy under
+# ~/.moe/engine/base so Wisp's reads and writes never reach a user's oMLX.app.
+_OMLX_STATE = bundled_base_path() or Path.home() / ".omlx"
+
+OMLX_SETTINGS = _OMLX_STATE / "settings.json"
 # oMLX's own per-model settings (temperature, sampling, etc.) — each entry
 # also carries the "is_favorite" flag the user sets by starring a model in
 # oMLX's UI. Reading this file directly (rather than oMLX's live /v1/models
 # HTTP endpoint) means the favorites list is available even when the oMLX
 # server subprocess isn't currently running — only the menu-bar app has to be
 # up, which it always is once anything's been configured.
-OMLX_MODEL_SETTINGS = Path.home() / ".omlx" / "model_settings.json"
+OMLX_MODEL_SETTINGS = _OMLX_STATE / "model_settings.json"
 MODELS_YAML = Path(__file__).parent / "models.yaml"
 # User overlay — persisted settings live OUTSIDE the app bundle so a repackage
 # (which overwrites the bundled models.yaml) can't wipe them. models.yaml holds
@@ -149,6 +154,9 @@ def set_behavior_enabled(enabled: bool) -> bool:
 
 
 def omlx_base_url() -> str:
+    if is_bundled():
+        from service.engine import BUNDLED_PORT
+        return f"http://127.0.0.1:{BUNDLED_PORT}"
     cfg = models_config()["omlx"].get("base_url")
     if cfg:
         return cfg.rstrip("/")
@@ -157,6 +165,10 @@ def omlx_base_url() -> str:
 
 
 def omlx_api_key() -> str:
+    if is_bundled():
+        # The engine's own key lives in its settings.json; a key the native launcher
+        # holds for a user's oMLX.app must never be sent to the bundled engine.
+        return omlx_settings()["auth"]["api_key"]
     return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
 
 

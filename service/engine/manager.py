@@ -80,6 +80,15 @@ def new_api_key() -> str:
     return secrets.token_hex(_KEY_BYTES)
 
 
+def stored_api_key(settings_path: Path) -> str | None:
+    """The key a previous run wrote, so a Wisp restart does not rotate it needlessly."""
+    try:
+        key = json.loads(settings_path.read_text())["auth"]["api_key"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return key if isinstance(key, str) and len(key) >= 32 else None
+
+
 def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path]) -> dict:
     """The keys Wisp owns. oMLX fills in every other default on first start."""
     dirs = [str(Path(d)) for d in model_dirs]
@@ -92,6 +101,25 @@ def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path]) -> dict
                  "allow_unauthenticated_inference": False},
         "huggingface": {"hf_cache_enabled": False},
     }
+
+
+def read_settings(path: Path) -> dict:
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def merge_owned(existing: dict, owned: dict) -> dict:
+    """Overwrite only the keys Wisp owns; keep everything oMLX or the admin UI added."""
+    merged = {**existing}
+    for section, values in owned.items():
+        if isinstance(values, dict) and isinstance(merged.get(section), dict):
+            merged[section] = {**merged[section], **values}
+        else:
+            merged[section] = values
+    return merged
 
 
 def _write_private(path: Path, text: str) -> None:
@@ -122,7 +150,7 @@ def _command_of(pid: int) -> str:
 class EngineManager:
     layout: EngineLayout
     port: int = BUNDLED_PORT
-    api_key: str = field(default_factory=new_api_key)
+    api_key: str | None = None  # None: keep the key already in settings.json, else make one
     extra_model_dirs: Sequence[Path] = ()
     # Replaces `python -m omlx.cli serve`; tests substitute a stub server.
     launcher: Sequence[str] | None = None
@@ -131,6 +159,8 @@ class EngineManager:
     def __post_init__(self) -> None:
         if self.port in RESERVED_PORTS or not 1024 <= self.port <= 65535:
             raise EngineError(f"Port {self.port} is not usable for the bundled engine")
+        if self.api_key is None:
+            self.api_key = stored_api_key(self.layout.settings_path) or new_api_key()
         if len(self.api_key) < 32:
             raise EngineError("The engine API key is too short")
 
@@ -155,8 +185,9 @@ class EngineManager:
         for directory in (self.layout.data_dir, self.layout.home, self.layout.base_path,
                           self.layout.models_dir, self.layout.data_dir / "tmp"):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        _write_private(self.layout.settings_path, json.dumps(
-            engine_settings(self.port, self.api_key, self.model_dirs()), indent=2))
+        merged = merge_owned(read_settings(self.layout.settings_path),
+                             engine_settings(self.port, self.api_key, self.model_dirs()))
+        _write_private(self.layout.settings_path, json.dumps(merged, indent=2))
 
     def _reap_stale(self) -> None:
         """Kill an engine orphaned by a crashed Wisp; never anything else."""

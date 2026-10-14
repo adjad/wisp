@@ -25,6 +25,7 @@ sys.path.insert(0, str(ROOT))
 
 from service.engine import (BUNDLED_PORT, EngineError, EngineLayout,  # noqa: E402
                             EngineManager, RESERVED_PORTS, engine_settings)
+from service.engine.manager import merge_owned  # noqa: E402
 
 PASS = FAIL = 0
 KEY = "a" * 64
@@ -125,6 +126,30 @@ def test_prepare_permissions() -> None:
     check("template port", engine_settings(9000, KEY, [])["server"]["port"] == 9000)
 
 
+def test_key_and_settings_persistence() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        layout = EngineLayout(Path(t) / "e", Path(t) / "d")
+        first = EngineManager(layout)
+        first.prepare()
+        check("generated key is 64 hex", len(first.api_key) == 64)
+        again = EngineManager(layout)
+        check("restart keeps the key", again.api_key == first.api_key)
+        doc = json.loads(layout.settings_path.read_text())
+        doc["scheduler"] = {"max_concurrent_requests": 3}
+        doc["server"]["log_level"] = "debug"
+        layout.settings_path.write_text(json.dumps(doc))
+        again.prepare()
+        kept = json.loads(layout.settings_path.read_text())
+        check("foreign sections survive prepare", kept["scheduler"] == {"max_concurrent_requests": 3})
+        check("foreign keys inside owned sections survive", kept["server"]["log_level"] == "debug")
+        check("owned keys are restored", kept["server"]["port"] == again.port
+              and kept["auth"]["api_key"] == again.api_key)
+    merged = merge_owned({"model": {"model_dirs": ["/old"], "x": 1}}, {"model": {"model_dirs": ["/new"]}})
+    check("merge replaces owned keys only", merged == {"model": {"model_dirs": ["/new"], "x": 1}})
+    layout = EngineLayout(Path("/nonexistent/e"), Path("/nonexistent/d"))
+    check("unreadable settings are treated as empty", EngineManager(layout).api_key is not None)
+
+
 def test_lifecycle() -> None:
     with tempfile.TemporaryDirectory() as t:
         m = make(Path(t))
@@ -179,7 +204,7 @@ def test_reaps_orphan() -> None:
 
 
 def main() -> int:
-    for fn in (test_builders, test_refusals, test_prepare_permissions, test_lifecycle,
+    for fn in (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence, test_lifecycle,
                test_busy_port, test_reaps_orphan):
         print(fn.__name__)
         fn()

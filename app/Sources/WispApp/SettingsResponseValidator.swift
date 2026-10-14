@@ -162,7 +162,7 @@ enum SettingsResponseValidator {
                   let url = URLComponents(string: rawURL),
                   url.scheme == "http", url.host == "127.0.0.1",
                   let port = url.port, (1024...65535).contains(port),
-                  port != 8000, port != 8765,
+                  port != 8000, port != 8765, port != 8791,
                   url.user == nil, url.password == nil,
                   url.path.isEmpty || url.path == "/",
                   url.query == nil, url.fragment == nil else { return false }

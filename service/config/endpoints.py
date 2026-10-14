@@ -6,6 +6,8 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
+from service.engine.manager import BUNDLED_PORT
+
 
 class EndpointConfigurationError(ValueError):
     pass
@@ -30,7 +32,7 @@ def is_local_provider_origin(url: str) -> bool:
         return False
     return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
             and port is not None and 1024 <= port <= 65535
-            and port not in {8000, 8765}
+            and port not in {8000, 8765, BUNDLED_PORT}
             and parsed.username is None and parsed.password is None
             and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment)
 
