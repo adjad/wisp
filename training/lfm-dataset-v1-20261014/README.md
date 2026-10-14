@@ -1,6 +1,6 @@
 # LFM2.5 chat dataset v1
 
-This directory contains a deterministic conversion of `../ling-dataset-v3.1-20261013/` for LFM2.5-24B-A2B fine-tuning with MLX-LM. No model or tokenizer was loaded, and no training was run.
+This directory contains a deterministic conversion of `../ling-dataset-v3.1-20261013/` for LFM2.5-24B-A2B fine-tuning with MLX-LM. Rows are rendered through the model's real chat template (tokenizer files only; no model weights were loaded, and no training was run).
 
 ## Counts
 
@@ -18,38 +18,44 @@ Each JSONL row has `messages` in MLX-LM's chat dataset format, plus `id` and `co
 
 The source trains only the final assistant message of each step row. The converter keeps that target as the final assistant turn and drops source-only `training` flags. Set MLX-LM's `mask_prompt=True` when training so earlier assistant messages in the row remain context; the default unmasked chat loss would train on those history turns too.
 
-The source's three system messages are combined into one system message. The exact JSON Schema tool definitions offered at that assistant step are appended there, so the tool list travels in the system prompt. A top-level `tools` field is not used. Each tool call is encoded in assistant content as:
+The source's three system messages are combined into one system message. Tool definitions offered at that assistant step are stored in the row's top-level `tools` field; MLX-LM's `ChatDataset` forwards `row["tools"]` to `apply_chat_template(tools=...)`, and the real template appends them to the system prompt as `List of tools: [<JSON>, ...]`. Tool schemas are therefore not written into the system text.
 
-```text
-<think>
-I should use the listed tool definitions and conversation to form this call.
-</think>
-<|tool_call_start|>[lookup_contact(name='Sam')]<|tool_call_end|>
-```
+Assistant turns are structured, not pre-rendered strings:
 
-Multiple calls in one assistant turn are a Python list of calls in source order. Arguments are serialized as Python literals (`None`, `True`, `False`, strings, numbers, lists, and dictionaries). `convert.py` parses every emitted call with Python's AST and checks that ordered tool names and argument objects match the source. Tool-call IDs are converted to tool names on the paired `tool` messages.
+- `reasoning_content` holds a short synthesized thinking text. The template renders it as `<think>TEXT</think>` directly after the role header, which matches the generation prompt's trailing `<think>`. It renders only for assistant turns after the last user message (earlier turns drop it).
+- `tool_calls` keeps the source calls with `arguments` as a dict. The template renders them as `<|tool_call_start|>[name(arg=value, ...)]<|tool_call_end|>` after any assistant text. Multiple calls are one list in source order.
+- Tool results use `role: "tool"`; the template renders the content only (the `name` field is retained for traceability and ignored).
 
-Plain assistant answers and assistant tool-call turns each receive a short synthesized `<think>...</think>` block. The text only states how to use the conversation, listed tool definitions, or tool results; it adds no claims about the user or the world. The two fixed forms are “I should use the listed tool definitions and conversation to form this call.” and “I should answer using only the conversation context.”
+The template's argument encoding differs from a pure Python literal: a top-level string is single-quoted (escaping `\`, `'`, newline and carriage return); a top-level `None`/`True`/`False`/number is Python `str()`; lists and dicts are JSON (`true`, `null`, double-quoted strings). `convert.py` mirrors this, parses the mirrored call block back (accepting JSON `true`/`false`/`null`), and checks ordered tool names and argument objects against the source. Tool-call IDs are converted to tool names on the paired `tool` messages.
 
-## Template availability and format decision
+Plain answers and tool-call turns each receive one of two fixed synthesized thinking texts: "I should use the listed tool definitions and conversation to form this call." and "I should answer using only the conversation context." They state how to use the conversation, tool definitions, or tool results and add no claims about the user or the world. Source assistant text containing `<think>`, `</think>`, tool-call markers, or the template's `CONTINUE_FINAL_MESSAGE_TAG` is rejected.
 
-The read-only search under `$HOME/.omlx` and `$HOME/.cache/huggingface` found no `tokenizer_config.json` or `chat_template.jinja` for `LFM2.5-24B-A2B`. The documented fallback is the model's ChatML-like message format, its always-on think block, Pythonic function-call list between `<|tool_call_start|>` / `<|tool_call_end|>`, and tool results in the `tool` role. The tool schemas are listed in the system prompt as JSON Schema.
+## Template verification
 
-Because the local authoritative template is absent, exact tokenizer-template rendering and row round-trip could not be tested. This conversion follows the documented format and validates the tool-call serialization and source pairing. The exact whitespace, thinking-block handling, and schema presentation expected by the MLX checkpoint remain unverified until its tokenizer template is available. References: [LFM2.5-24B-A2B model card](https://huggingface.co/LiquidAI/LFM2.5-24B-A2B) and [MLX-LM chat dataset loader](https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/tuner/datasets.py).
+The real files are at `/Users/adijain/Desktop/OMLX_Model_Files/LiquidAI/LFM2.5-24B-A2B-MLX-4bit/` (`chat_template.jinja`, `tokenizer_config.json`, `tokenizer.json`). An earlier revision of this README wrongly said no template was available and emitted pre-rendered text with schemas in the system prompt; that diverged from the template (schemas in the wrong place, `<think>` duplicated in content, calls placed before text, nested values in Python rather than JSON form, and a generation-prompt misalignment under `mask_prompt`), and was corrected.
+
+Verified with `transformers` 5.15.0 `AutoTokenizer.from_pretrained(dir, local_files_only=True)` over all 2,705 rows, calling `apply_chat_template` the way `mlx_lm.tuner.datasets.ChatDataset.process` does (with `tools=row.get("tools")`):
+
+- For every row, the render of `messages[:-1]` with `add_generation_prompt=True` (ending in `<|im_start|>assistant\n<think>`) is an exact string and token-id prefix of the full render. The `mask_prompt=True` offset therefore lands exactly at the start of the final thinking text, and the trained span is `THINK</think>[content][tool call block]<|im_end|>\n`.
+- For every row whose final assistant turn has tool calls, the converter's mirrored call block appears verbatim in the real render.
+- Special tokens resolve to single ids: `<think>` 124901, `</think>` 124902, `<|tool_call_start|>` 124905, `<|tool_call_end|>` 124906, `<|im_end|>` 124900.
+- 660 rows (V2 replay) carry no `tools`; the other 2,045 do.
+
+Not verifiable without loading the model: whether the checkpoint's thinking style after `<think>` suits these one-line synthetic thoughts, and the fine-tuned model's tool-call behavior. The trailing newline after `<|im_end|>` is part of the trained span, as in the template.
 
 ## Rebuild and validate
 
 Run from the repository root:
 
 ```sh
-python3 training/lfm-dataset-v1-20261014/convert.py
+/Users/adijain/Desktop/MOE_Project/.venv/bin/python training/lfm-dataset-v1-20261014/convert.py
 ```
 
-The script copies the source generator inputs to a temporary directory, regenerates V3 replay rows there, runs the V3.1 generator, and writes `train.jsonl` and `valid.jsonl` here. The checked-in V2 replay files are copied as source inputs. It does not modify the source directory. The script is standard-library-only and fails if split counts change from 2,426 / 279.
+The script copies the source generator inputs to a temporary directory, regenerates V3 replay rows there, runs the V3.1 generator, and writes `train.jsonl` and `valid.jsonl` here. The checked-in V2 replay files are copied as source inputs. It does not modify the source directory. `train.jsonl` and `valid.jsonl` are gitignored generated outputs. The script is standard-library-only and fails if split counts change from 2,426 / 279.
 
 For every user message it reuses `generate.max_heldout_overlap` and `generate.OVERLAP_LIMIT` from the source generator. The source exclusion limit is 0.4; any prompt at or above it stops conversion.
 
-Focused converter tests:
+Focused converter tests (the real-template test runs only when the tokenizer files above exist and `transformers` is importable; otherwise it is skipped):
 
 ```sh
 HOME="$PWD/.codex-home" WISP_HOME="$PWD/.codex-home/.moe" \
@@ -61,8 +67,8 @@ HOME="$PWD/.codex-home" WISP_HOME="$PWD/.codex-home/.moe" \
 Recorded after conversion and focused tests:
 
 - Source rows: train **2,426**, valid **279** (2,705 total). Split composition is train 1,205 V3.1 + 621 V3 replay + 600 V2 replay; valid 143 + 76 + 60. IDs are unique within both splits.
-- Tool calls: every serialized call parses back to the original ordered function name and JSON argument object.
+- Tool calls: every mirrored call block parses back to the original ordered function name and JSON argument object, and appears verbatim in the real template render.
 - Held-out prompts: every converted user message is checked using the source exclusion algorithm at the 0.4 threshold; maximum Jaccard was **0.333** for train and **0.000** for valid.
-- Reproducibility: a second full conversion produced byte-identical JSONL. SHA-256: train `bdde53e86076bd1cb4541545da8fc81a33a8b6aff9fdf0eb48a1e87b7ae8b35f`; valid `54d30cd75c8b05be0db209dfa53c757dcbadc861e59c07a0b95dbfbd4c84fb58`.
-- Template rendering: **not run**; no matching local cached template was found.
-- Focused pytest: **3 passed** in 0.10s with the command above.
+- Reproducibility: two full conversions produced byte-identical JSONL. SHA-256: train `513d5358b5366e2b3d0aa0985763e3bfe332b7c616d1cf88b0cf1b797caf7ab4`; valid `56f4b1a20ce95e50b91c273e537cf0a8a4791dfa458c6f29196f21b1061e9a74`.
+- Template rendering: **run on all 2,705 rows**, prefix and mask alignment as described above, 0 mismatches.
+- Focused pytest: **6 passed** (including the real-template test) with the command above.

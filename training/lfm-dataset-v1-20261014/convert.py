@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert the Ling V3.1 train/valid rows to the documented LFM2.5 chat format.
+"""Convert the Ling V3.1 train/valid rows to LFM2.5 chat rows for its real chat template.
 
 The source checkout omits generated train/dev and V3 replay JSONL files. The CLI
 recreates those in a temporary staging tree from the checked-in source scripts,
@@ -87,30 +87,38 @@ def materialize_source_rows(source_dir):
         }
 
 
-def _python_literal(value):
-    if value is None:
-        return "None"
-    if value is True:
-        return "True"
-    if value is False:
-        return "False"
-    if isinstance(value, str):
-        return repr(value)
-    if isinstance(value, int):
-        return str(value)
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("non-finite numbers are not JSON values")
-        return repr(value)
+def _check_json_value(value):
+    """Reject values the template cannot render as an argument."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("non-finite numbers are not JSON values")
     if isinstance(value, list):
-        return "[" + ", ".join(_python_literal(item) for item in value) + "]"
-    if isinstance(value, dict):
+        for item in value:
+            _check_json_value(item)
+    elif isinstance(value, dict):
         if not all(isinstance(key, str) for key in value):
             raise ValueError("tool argument object keys must be strings")
-        return "{" + ", ".join(
-            f"{_python_literal(key)}: {_python_literal(item)}" for key, item in value.items()
-        ) + "}"
-    raise ValueError(f"unsupported JSON argument value: {type(value).__name__}")
+        for item in value.values():
+            _check_json_value(item)
+    elif value is not None and not isinstance(value, (str, int, float, bool)):
+        raise ValueError(f"unsupported JSON argument value: {type(value).__name__}")
+
+
+def _argument_literal(value):
+    """Mirror `format_arg_value` in the LFM2.5 chat_template.jinja.
+
+    Top-level strings are single-quoted with the template's escapes; top-level
+    None/True/False/numbers use Python's str(); lists and dicts are JSON
+    (`true`/`null`, double-quoted strings). Mirrors the template so the
+    round-trip check below validates what the real template will emit.
+    """
+    _check_json_value(value)
+    if isinstance(value, str):
+        escaped = (value.replace("\\", "\\\\").replace("'", "\\'")
+                   .replace("\n", "\\n").replace("\r", "\\r"))
+        return "'" + escaped + "'"
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
 
 
 def _as_arguments(value):
@@ -129,8 +137,22 @@ def format_tool_call(name, arguments):
     for key, value in arguments.items():
         if not isinstance(key, str) or not key.isidentifier() or keyword.iskeyword(key):
             raise ValueError(f"tool argument name is not a Python keyword name: {key!r}")
-        parts.append(f"{key}={_python_literal(value)}")
+        parts.append(f"{key}={_argument_literal(value)}")
     return f"{name}({', '.join(parts)})"
+
+
+_JSON_NAMES = {"true": True, "false": False, "null": None}
+
+
+def _literal(node):
+    """ast.literal_eval that also accepts the JSON spellings true/false/null."""
+    if isinstance(node, ast.Name) and node.id in _JSON_NAMES:
+        return _JSON_NAMES[node.id]
+    if isinstance(node, ast.List):
+        return [_literal(item) for item in node.elts]
+    if isinstance(node, ast.Dict):
+        return {_literal(k): _literal(v) for k, v in zip(node.keys, node.values)}
+    return ast.literal_eval(node)
 
 
 def parse_tool_call_list(payload):
@@ -151,7 +173,7 @@ def parse_tool_call_list(payload):
         for item_kw in item.keywords:
             if item_kw.arg in arguments:
                 raise ValueError(f"duplicate tool argument: {item_kw.arg}")
-            arguments[item_kw.arg] = ast.literal_eval(item_kw.value)
+            arguments[item_kw.arg] = _literal(item_kw.value)
         calls.append((name, arguments))
     return calls
 
@@ -174,11 +196,6 @@ def parse_message_tool_calls(content):
     return calls
 
 
-def _schema_section(tools):
-    schemas = json.dumps(tools, ensure_ascii=False, indent=2)
-    return "Available tools for this step (JSON Schema):\n" + schemas
-
-
 def _think_for(message):
     if message.get("tool_calls"):
         return "I should use the listed tool definitions and conversation to form this call."
@@ -193,19 +210,42 @@ def _source_calls(message):
     return calls
 
 
-def _assistant_content(message):
+CONTINUE_TAG = "CONTINUE_FINAL_MESSAGE_TAG"
+
+
+def _assistant_message(message):
+    """Structured assistant turn: the template renders thinking + calls itself.
+
+    Thinking goes in `reasoning_content` (rendered as <think>...</think> right
+    after the role header, matching the generation prompt's trailing <think>),
+    and tool calls stay structured with dict arguments so the template emits
+    the `<|tool_call_start|>[...]<|tool_call_end|>` list itself.
+    """
     original = message.get("content", "") or ""
+    if not isinstance(original, str):
+        raise ValueError("assistant content must be text")
+    for marker in (TOOL_CALL_START, TOOL_CALL_END, THINK_START, THINK_END, CONTINUE_TAG):
+        if marker in original:
+            raise ValueError(f"source assistant text contains a template marker: {marker}")
+    out = {"role": "assistant", "content": original,
+           "reasoning_content": _think_for(message)}
     source_calls = _source_calls(message)
     if source_calls:
-        rendered_calls = ", ".join(format_tool_call(name, args) for name, args in source_calls)
-        content = f"{TOOL_CALL_START}[{rendered_calls}]{TOOL_CALL_END}"
-        if original:
-            content += "\n" + original
-    else:
-        if TOOL_CALL_START in original or TOOL_CALL_END in original:
-            raise ValueError("source assistant text contains an LFM2 tool-call marker")
-        content = original
-    return f"{THINK_START}\n{_think_for(message)}\n{THINK_END}\n{content}"
+        out["tool_calls"] = [
+            {"type": "function", "function": {"name": name, "arguments": args}}
+            for name, args in source_calls
+        ]
+    return out
+
+
+def _mirror_rendered_calls(message):
+    """Mirror of the template's tool-call block, used for the round-trip check."""
+    calls = message.get("tool_calls", [])
+    if not calls:
+        return ""
+    rendered = ", ".join(format_tool_call(c["function"]["name"], c["function"]["arguments"])
+                         for c in calls)
+    return f"{TOOL_CALL_START}[{rendered}]{TOOL_CALL_END}"
 
 
 def convert_row(row):
@@ -240,14 +280,14 @@ def convert_row(row):
             system_parts.append(content)
             continue
         if role == "assistant":
-            content = _assistant_content(message)
+            out_message = _assistant_message(message)
             expected = _source_calls(message)
-            actual = parse_message_tool_calls(content)
+            actual = parse_message_tool_calls(_mirror_rendered_calls(out_message))
             if actual != expected:
                 raise ValueError(f"{row.get('id', '<unknown>')}: tool-call round-trip mismatch")
             expected_call_groups.append(expected)
             actual_call_groups.append(actual)
-            converted.append({"role": role, "content": content})
+            converted.append(out_message)
             continue
         if role == "tool":
             call_id = message.get("tool_call_id")
@@ -268,13 +308,14 @@ def convert_row(row):
     if not converted or converted[-1]["role"] != "assistant":
         raise ValueError(f"{row.get('id', '<unknown>')}: target message must be the final assistant turn")
     system_content = "\n\n".join(part for part in system_parts if part)
-    if tools:
-        system_content += ("\n\n" if system_content else "") + _schema_section(tools)
     converted.insert(0, {"role": "system", "content": system_content})
 
     if expected_call_groups != actual_call_groups:
         raise ValueError(f"{row.get('id', '<unknown>')}: tool-call sequence mismatch")
     out = {"messages": converted}
+    if tools:
+        # MLX-LM ChatDataset forwards row["tools"] to apply_chat_template(tools=...).
+        out["tools"] = tools
     if "id" in row:
         out["id"] = row["id"]
     if "conversation_id" in row:
