@@ -15,6 +15,7 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
                                              require_generation_role,
                                              require_local_models_disabled)
@@ -84,6 +85,7 @@ from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
 from service.router.router import RouteDecision, routing_guard_contract, rule_route
+from service.agent.planner import enabled_from_env as planner_enabled_from_env
 # Imported here, not lazily in _model_led_preload: reranker binds the tool
 # registry at import time, so it must load with the real registry.
 from service.router import reranker as _reranker
@@ -1813,6 +1815,34 @@ async def agent(body: dict[str, Any]):
             # and keep complete greetings/thanks on the tool-free fast path.
             if not model_led_turn:
                 decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
+            # PLANNER TURNS (WISP_PLANNER=1, service/agent/planner.py). The rules
+            # router still decides role and style, but its POSITIVE steering —
+            # narrow subsets, forced first tools, router-direct calls, required
+            # groups — is replaced by the planner menu (service/router/menu.py),
+            # and only the negative user-constraint envelope
+            # (routing_guard_contract, as model-led turns use) is carried over.
+            # The router's own forbidden_tools is NOT: it doubles as steering,
+            # e.g. "clarify before effects" forbids add_reminder outright.
+            # Typed workflows, deterministic claims and vision keep their paths.
+            planner_turn = False
+            if (not model_led_turn and not (workflow_turn and workflow_turn.decision)
+                    and remote_only_profile() is None and not deterministic_claim
+                    and getattr(client, "managed", False) and decision.role != "vision"
+                    and planner_enabled_from_env()):
+                from service.router.menu import build_menu
+                guard_forbidden, guard_bindings = routing_guard_contract(prompt)
+                decision = dataclasses.replace(
+                    decision, role="agent", model=role_to_model("agent"), needs_tools=True,
+                    route_source="planner", reason=f"{decision.reason} · planner menu",
+                    tool_subset=build_menu(prompt, last_assistant=last_assistant,
+                                           forbidden=frozenset(guard_forbidden)),
+                    force_first_tool=None, expect_tool_first=False, direct_calls=[],
+                    required_tool_groups=(), conditional_tools=(), multi_round=True,
+                    narration_after=frozenset(), resolved_request="", strict_read_limits={},
+                    clarify_channel=False, clarify_target=False,
+                    forbidden_tools=frozenset(guard_forbidden),
+                    tool_argument_bindings={**decision.tool_argument_bindings, **guard_bindings})
+                planner_turn = True
             super_model_cloud = False
             if remote_only_profile() is None and not model_led_turn and cloud_super_model_enabled():
                 if active_skill:
@@ -2057,7 +2087,8 @@ async def agent(body: dict[str, Any]):
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
-                                        test_mode=test_mode, debug=debug)
+                                        test_mode=test_mode, debug=debug,
+                                        planner=planner_turn)
                 from service.tools.registry import DisplayOnlyToolResult
                 if not isinstance(captured["text"], DisplayOnlyToolResult):
                     captured["text"] = final or captured["text"]
