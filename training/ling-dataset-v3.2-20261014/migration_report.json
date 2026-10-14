@@ -1,0 +1,54 @@
+{
+ "version": "v3.2-20261014",
+ "seed": 20261014,
+ "dropped": [
+  {
+   "split": "train",
+   "source": "v31_new",
+   "source_conversation_id": "v31-guardweb-train-0060",
+   "category": "v31_guard_irrelevant_web_bounded",
+   "reason": "convert_currency: retired; web_search is the only honest successor but this turn has no web access",
+   "source_rows": 3
+  },
+  {
+   "split": "train",
+   "source": "v31_new",
+   "source_conversation_id": "v31-outsend-train-0063",
+   "category": "v31_outbound_lookalikes",
+   "reason": "airdrop_file: AirDrop was retired with no replacement (no attachment-capable send tool)",
+   "source_rows": 4
+  },
+  {
+   "split": "train",
+   "source": "v31_new",
+   "source_conversation_id": "v31-outsend-train-0307",
+   "category": "v31_outbound_lookalikes",
+   "reason": "airdrop_file: AirDrop was retired with no replacement (no attachment-capable send tool)",
+   "source_rows": 4
+  },
+  {
+   "split": "train",
+   "source": "v31_new",
+   "source_conversation_id": "v31-guardweb-train-0395",
+   "category": "v31_guard_irrelevant_web_bounded",
+   "reason": "convert_currency: retired; web_search is the only honest successor but this turn has no web access",
+   "source_rows": 3
+  },
+  {
+   "split": "train",
+   "source": "v31_new",
+   "source_conversation_id": "v31-outsend-train-0405",
+   "category": "v31_outbound_lookalikes",
+   "reason": "airdrop_file: AirDrop was retired with no replacement (no attachment-capable send tool)",
+   "source_rows": 3
+  },
+  {
+   "split": "train",
+   "source": "v3_replay",
+   "source_conversation_id": "v3-outbound-train-0591",
+   "category": "outbound_sends_drafts",
+   "reason": "place_call: phone calls were retired with no replacement",
+   "source_rows": 3
+  }
+ ]
+}

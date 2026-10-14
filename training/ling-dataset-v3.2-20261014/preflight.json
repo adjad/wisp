@@ -1,0 +1,96 @@
+{
+  "status": "PASS",
+  "max_len": 16384,
+  "thinking": "disabled (enable_thinking=False)",
+  "tools_passed_to_template": true,
+  "v2_replay_tools_arg": "tools=[] -> None (identical render to no tools argument; verified)",
+  "rows_needing_string_to_dict_workaround": 0,
+  "label_definition": "tokens after '<role>ASSISTANT</role>\\n<think></think>' through '<|role_end|>' of the final assistant message; everything else -100",
+  "checks": [
+    "last message is training:true assistant, no earlier training:true",
+    "full render startswith generation-prompt render",
+    "exactly one trailing <|role_end|> in target",
+    "final assistant span is the tail (independent regex)",
+    "no token straddles the boundary; prefix tokens identical inside full render",
+    "target non-empty, last token is <|role_end|>"
+  ],
+  "splits": {
+    "train": {
+      "rows": 1805,
+      "rows_ok": 1805,
+      "tokens_total": 12033556,
+      "tokens_max": 11599,
+      "tokens_p95": 9634,
+      "tokens_median": 6435,
+      "tokens_mean": 6666.8,
+      "labeled_tokens_total": 46044,
+      "target_tokens_min": 4,
+      "target_tokens_median": 23,
+      "target_tokens_p95": 51,
+      "target_tokens_max": 126,
+      "rows_over_max_len": 0
+    },
+    "train_v2_replay": {
+      "rows": 600,
+      "rows_ok": 600,
+      "tokens_total": 336488,
+      "tokens_max": 737,
+      "tokens_p95": 667,
+      "tokens_median": 591,
+      "tokens_mean": 560.8,
+      "labeled_tokens_total": 30582,
+      "target_tokens_min": 14,
+      "target_tokens_median": 50,
+      "target_tokens_p95": 80,
+      "target_tokens_max": 93,
+      "rows_over_max_len": 0
+    },
+    "dev": {
+      "rows": 219,
+      "rows_ok": 219,
+      "tokens_total": 1480727,
+      "tokens_max": 11172,
+      "tokens_p95": 9439,
+      "tokens_median": 6641,
+      "tokens_mean": 6761.3,
+      "labeled_tokens_total": 5401,
+      "target_tokens_min": 7,
+      "target_tokens_median": 22,
+      "target_tokens_p95": 50,
+      "target_tokens_max": 121,
+      "rows_over_max_len": 0
+    },
+    "dev_v2_replay": {
+      "rows": 60,
+      "rows_ok": 60,
+      "tokens_total": 34186,
+      "tokens_max": 676,
+      "tokens_p95": 659,
+      "tokens_median": 594,
+      "tokens_mean": 569.8,
+      "labeled_tokens_total": 3229,
+      "target_tokens_min": 27,
+      "target_tokens_median": 49,
+      "target_tokens_p95": 91,
+      "target_tokens_max": 105,
+      "rows_over_max_len": 0
+    }
+  },
+  "v2_replay_source": "appended to train/dev.jsonl",
+  "note_splits": "keys train/dev = model-led rows only; train_v2_replay/dev_v2_replay = V2 replay rows (tools=[]) reported separately",
+  "rows_over_max_len": [],
+  "problems": [],
+  "problem_count": 0,
+  "tokenizer_dir_files_sha256": {
+    "tokenizer.json": "40fb9d7d7795b8bd305aeff39ce9963f3f450915b9553f2938e009be9a1fed60",
+    "tokenizer_config.json": "2456b0372956cd3e82f17e33372148b115a94970bfd4878ba5e7e60cd3204f74",
+    "chat_template.jinja": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a"
+  },
+  "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
+  "data_sha256": {
+    "train.jsonl": "40c21fcd566de9fdeb9872dc93bac63eb1bee908abbe83a46d0e4d03288e44fc",
+    "dev.jsonl": "3134ba3a6dbcf3740682d6c61fdf0cab22566a6809a1f88b0b6cf18ac4b63f2b"
+  },
+  "tokenizer_vocab_size": 157153,
+  "actual_axolotl_prepared_label_audit_still_required": true
+}

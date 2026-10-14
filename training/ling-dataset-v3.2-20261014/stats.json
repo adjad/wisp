@@ -1,0 +1,153 @@
+{
+ "dropped": {
+  "airdrop_file: AirDrop was retired with no replacement (no attachment-capable send tool)": 3,
+  "convert_currency: retired; web_search is the only honest successor but this turn has no web access": 2,
+  "place_call: phone calls were retired with no replacement": 1
+ },
+ "migration_rules": {
+  "discovery_args_remapped": 2,
+  "merged:air_quality->get_weather(include=[air_quality])": 3,
+  "merged:archive_email->email_triage(action=archive)": 2,
+  "merged:get_battery_status->system_status(section=battery)": 2,
+  "merged:mark_email_read->email_triage(action=mark_read or mark_unread)": 2,
+  "merged:network_info->system_status(section=network)": 1,
+  "merged:rain_radar->get_weather(include=[rain_next_hours])": 4,
+  "merged:set_alarm->set_timer(kind=alarm)": 11,
+  "retired:astronomy->web_search": 3,
+  "retired:recipe_lookup->web_search": 1,
+  "stub_step_removed:tool_already_loaded": 1
+ },
+ "seed": 20261014,
+ "short_descriptions": {
+  "placeholder": false,
+  "source_sha": "178ebb3ed19de91efbb8591335bf1aad687a6168"
+ },
+ "splits": {
+  "dev": {
+   "by_category": {
+    "v31:v31_chat_code_inline": 4,
+    "v31:v31_guard_irrelevant_web_bounded": 6,
+    "v31:v31_outbound_lookalikes": 10,
+    "v31:v31_reminder_calendar_followup": 11,
+    "v31:v31_safety_clarify_recipient": 10,
+    "v31:v31_saved_facts_memory": 8,
+    "v3r:chat_no_tool": 2,
+    "v3r:clarify_ambiguity": 2,
+    "v3r:compound_read_then_act": 5,
+    "v3r:error_handling": 2,
+    "v3r:followups_history": 1,
+    "v3r:outbound_sends_drafts": 4,
+    "v3r:repeated_read_guard": 1,
+    "v3r:single_tool_reads": 3,
+    "v3r:stop_after_success_no_loop": 2,
+    "v3r:writes": 2
+   },
+   "conversations": 73,
+   "conversations_by_schema_style": {
+    "full": 38,
+    "terse": 35
+   },
+   "migrated_conversations": 0,
+   "protocol_variants": {
+    "S": 50,
+    "SP-decoy": 16,
+    "SP-hit": 7
+   },
+   "row_tokens_est_chars_div4": {
+    "max": 11228,
+    "mean": 6652,
+    "p50": 6530,
+    "p95": 9415
+   },
+   "rows": 219,
+   "rows_by_schema_style": {
+    "full": 108,
+    "terse": 111
+   },
+   "v2_replay_rows": 60
+  },
+  "train": {
+   "by_category": {
+    "v31:v31_chat_code_inline": 37,
+    "v31:v31_guard_irrelevant_web_bounded": 47,
+    "v31:v31_outbound_lookalikes": 79,
+    "v31:v31_reminder_calendar_followup": 90,
+    "v31:v31_safety_clarify_recipient": 82,
+    "v31:v31_saved_facts_memory": 70,
+    "v3r:chat_no_tool": 16,
+    "v3r:clarify_ambiguity": 10,
+    "v3r:compound_read_then_act": 44,
+    "v3r:error_handling": 13,
+    "v3r:followups_history": 14,
+    "v3r:outbound_sends_drafts": 35,
+    "v3r:repeated_read_guard": 9,
+    "v3r:single_tool_reads": 23,
+    "v3r:stop_after_success_no_loop": 20,
+    "v3r:writes": 16
+   },
+   "conversations": 605,
+   "conversations_by_schema_style": {
+    "full": 304,
+    "terse": 301
+   },
+   "migrated_conversations": 17,
+   "protocol_variants": {
+    "S": 440,
+    "SP-decoy": 95,
+    "SP-hit": 70
+   },
+   "row_tokens_est_chars_div4": {
+    "max": 11672,
+    "mean": 6547,
+    "p50": 6282,
+    "p95": 9597
+   },
+   "rows": 1805,
+   "rows_by_schema_style": {
+    "full": 899,
+    "terse": 906
+   },
+   "v2_replay_rows": 600
+  }
+ },
+ "v31_conversations_by_category": {
+  "dev": {
+   "v31:v31_chat_code_inline": 4,
+   "v31:v31_guard_irrelevant_web_bounded": 6,
+   "v31:v31_outbound_lookalikes": 10,
+   "v31:v31_reminder_calendar_followup": 11,
+   "v31:v31_safety_clarify_recipient": 10,
+   "v31:v31_saved_facts_memory": 8,
+   "v3r:chat_no_tool": 2,
+   "v3r:clarify_ambiguity": 2,
+   "v3r:compound_read_then_act": 5,
+   "v3r:error_handling": 2,
+   "v3r:followups_history": 1,
+   "v3r:outbound_sends_drafts": 4,
+   "v3r:repeated_read_guard": 1,
+   "v3r:single_tool_reads": 3,
+   "v3r:stop_after_success_no_loop": 2,
+   "v3r:writes": 2
+  },
+  "train": {
+   "v31:v31_chat_code_inline": 37,
+   "v31:v31_guard_irrelevant_web_bounded": 49,
+   "v31:v31_outbound_lookalikes": 82,
+   "v31:v31_reminder_calendar_followup": 90,
+   "v31:v31_safety_clarify_recipient": 82,
+   "v31:v31_saved_facts_memory": 70,
+   "v3r:chat_no_tool": 16,
+   "v3r:clarify_ambiguity": 10,
+   "v3r:compound_read_then_act": 44,
+   "v3r:error_handling": 13,
+   "v3r:followups_history": 14,
+   "v3r:outbound_sends_drafts": 36,
+   "v3r:repeated_read_guard": 9,
+   "v3r:single_tool_reads": 23,
+   "v3r:stop_after_success_no_loop": 20,
+   "v3r:writes": 16
+  }
+ },
+ "version": "v3.2-20261014",
+ "wisp_main_sha": "1bd68e7eb68f73be5b06dbc7bc4c607c12339a7a"
+}

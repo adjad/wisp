@@ -1,0 +1,13 @@
+{
+  "archive": "ling-train-dev-v3.2-20261014.zip",
+  "axolotl_prepared_label_audit_done": false,
+  "bytes": 4399239,
+  "members": 25,
+  "no_model_execution": true,
+  "preflight_status": "PASS",
+  "python": "3.14.3",
+  "sha256": "6950e5d24e032e123b920b2a81b90e36b4805ec06277c3267ef2ec11d868c9d9",
+  "short_descriptions_source_sha": "178ebb3ed19de91efbb8591335bf1aad687a6168",
+  "static_data_only": true,
+  "zlib": "1.2.12"
+}

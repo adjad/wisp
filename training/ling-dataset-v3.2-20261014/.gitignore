@@ -1,0 +1,7 @@
+*.zip
+# Too large for GitHub; regenerate byte-identically with: python3 sources.py && python3 generate.py (sha256 in validation.json / preflight.json)
+train.jsonl
+dev.jsonl
+__pycache__/
+# Rebuilt by sources.py from the V3 / V3.1 generators and checked against V3.1's pinned hashes
+source_cache/

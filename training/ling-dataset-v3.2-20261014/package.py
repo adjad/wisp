@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Build the inert, allowlisted Ling V3.2 train/dev upload ZIP + upload-zip.json (reproducible headers).
+
+Refuses to package unless validation.json passed, preflight.json is PASS for the exact train/dev bytes, and the
+short-description asset is the REAL export (never a placeholder).
+"""
+import hashlib, json, platform, zipfile, zlib
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+NAME = "ling-train-dev-v3.2-20261014.zip"
+MEMBERS = ["train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance.jsonl", "conversations.jsonl", "stats.json",
+           "migration_report.json", "v2_replay.provenance.jsonl",
+           "assets/tools.json", "assets/system_parts.json", "assets/heldout_shingles.json", "assets/short_descriptions.json",
+           "assets/capture_verification.json",
+           "README.md", "DATA_CARD.md", "preflight.py", "check_labels.py", "axolotl-a6000.yaml", "merge_lora.py",
+           "validate.py", "validation.json", "preflight.json", "generate.py", "sources.py", "capture_assets.py"]
+MEMBERS = sorted(dict.fromkeys(MEMBERS))
+
+
+def sha(p):
+    return hashlib.sha256((ROOT / p).read_bytes()).hexdigest()
+
+
+def main():
+    for n in MEMBERS:
+        assert (ROOT / n).is_file(), "missing " + n
+    short = json.loads((ROOT / "assets/short_descriptions.json").read_text())
+    assert not short.get("placeholder"), "short_descriptions.json is a placeholder; re-render with the real export first"
+    val = json.loads((ROOT / "validation.json").read_text())
+    assert val["passed"] is True and not val.get("short_descriptions_placeholder"), "validation.json not passed"
+    pf = json.loads((ROOT / "preflight.json").read_text())
+    assert pf["status"] == "PASS" and not pf["rows_over_max_len"], "preflight not PASS"
+    for n in ["train.jsonl", "dev.jsonl"]:
+        assert pf["data_sha256"][n] == sha(n), "preflight.json is stale for " + n
+        assert val["data_sha256"][n] == sha(n), "validation.json is stale for " + n
+    meta = {n: {"sha256": sha(n), "bytes": (ROOT / n).stat().st_size} for n in MEMBERS}
+    path = ROOT / NAME
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for n in sorted(MEMBERS):
+            info = zipfile.ZipInfo(n, date_time=(2026, 10, 14, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o100644 << 16
+            info.create_system = 3
+            z.writestr(info, (ROOT / n).read_bytes(), compresslevel=9)
+    with zipfile.ZipFile(path) as z:
+        assert set(z.namelist()) == set(MEMBERS) and z.testzip() is None
+        for n, m in meta.items():
+            assert hashlib.sha256(z.read(n)).hexdigest() == m["sha256"]
+    receipt = {"archive": NAME, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "bytes": path.stat().st_size,
+               "members": len(MEMBERS), "python": platform.python_version(), "zlib": zlib.ZLIB_VERSION,
+               "static_data_only": True, "no_model_execution": True, "preflight_status": pf["status"],
+               "short_descriptions_source_sha": short.get("source_sha"), "axolotl_prepared_label_audit_done": False}
+    (ROOT / "upload-zip.json").write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+    print(json.dumps(receipt, indent=2))
+
+
+if __name__ == "__main__":
+    main()

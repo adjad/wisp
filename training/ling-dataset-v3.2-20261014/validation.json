@@ -1,0 +1,69 @@
+{
+ "passed": true,
+ "problem_counts": {},
+ "problems": {},
+ "counts": {
+  "train_rows": 1805,
+  "train_conversations": 605,
+  "migrated_conversations": 17,
+  "clarify_no_tool_conversations": 22,
+  "dev_rows": 219,
+  "dev_conversations": 73
+ },
+ "schema_style_conversations": {
+  "train": {
+   "full": 304,
+   "terse": 301
+  },
+  "dev": {
+   "terse": 35,
+   "full": 38
+  }
+ },
+ "category_counts": {
+  "train": {
+   "v31:v31_chat_code_inline": 37,
+   "v31:v31_guard_irrelevant_web_bounded": 47,
+   "v31:v31_outbound_lookalikes": 79,
+   "v31:v31_reminder_calendar_followup": 90,
+   "v31:v31_safety_clarify_recipient": 82,
+   "v31:v31_saved_facts_memory": 70,
+   "v3r:chat_no_tool": 16,
+   "v3r:clarify_ambiguity": 10,
+   "v3r:compound_read_then_act": 44,
+   "v3r:error_handling": 13,
+   "v3r:followups_history": 14,
+   "v3r:outbound_sends_drafts": 35,
+   "v3r:repeated_read_guard": 9,
+   "v3r:single_tool_reads": 23,
+   "v3r:stop_after_success_no_loop": 20,
+   "v3r:writes": 16
+  },
+  "dev": {
+   "v31:v31_chat_code_inline": 4,
+   "v31:v31_guard_irrelevant_web_bounded": 6,
+   "v31:v31_outbound_lookalikes": 10,
+   "v31:v31_reminder_calendar_followup": 11,
+   "v31:v31_safety_clarify_recipient": 10,
+   "v31:v31_saved_facts_memory": 8,
+   "v3r:chat_no_tool": 2,
+   "v3r:clarify_ambiguity": 2,
+   "v3r:compound_read_then_act": 5,
+   "v3r:error_handling": 2,
+   "v3r:followups_history": 1,
+   "v3r:outbound_sends_drafts": 4,
+   "v3r:repeated_read_guard": 1,
+   "v3r:single_tool_reads": 3,
+   "v3r:stop_after_success_no_loop": 2,
+   "v3r:writes": 2
+  }
+ },
+ "dropped": 6,
+ "short_descriptions_source_sha": "178ebb3ed19de91efbb8591335bf1aad687a6168",
+ "short_descriptions_placeholder": false,
+ "check_repro": true,
+ "data_sha256": {
+  "train.jsonl": "40c21fcd566de9fdeb9872dc93bac63eb1bee908abbe83a46d0e4d03288e44fc",
+  "dev.jsonl": "3134ba3a6dbcf3740682d6c61fdf0cab22566a6809a1f88b0b6cf18ac4b63f2b"
+ }
+}
