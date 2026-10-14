@@ -31,13 +31,29 @@
     "xlsxwriter": "document conversion (markitdown)",
     "mammoth": "document conversion (markitdown)",
     "markitdown": "document conversion (markitdown)",
-    "magika": "file-type detection (markitdown)"
+    "magika": "file-type detection (markitdown)",
+    "phonemizer": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "phonemizer_fork": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "espeakng_loader": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "misaki": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "num2words": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)"
   },
   "candidates_not_applied": {
     "scipy": "101 MB; needed by audio libraries, possibly lazily by vision processors. Prune only after a vision-model smoke test.",
     "sklearn": "49 MB; needed by audio libraries",
     "transformers": "107 MB; required by tokenizers and chat templates, cannot be dropped"
   },
-  "always_remove": ["__pycache__", ".DS_Store", "pyvenv.cfg", ".git"],
-  "always_remove_suffixes": [".pyc", ".pyo", ".db", ".p12", ".p8"]
+  "always_remove": [
+    "__pycache__",
+    ".DS_Store",
+    "pyvenv.cfg",
+    ".git"
+  ],
+  "always_remove_suffixes": [
+    ".pyc",
+    ".pyo",
+    ".db",
+    ".p12",
+    ".p8"
+  ]
 }

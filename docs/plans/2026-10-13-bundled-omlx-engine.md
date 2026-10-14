@@ -113,3 +113,13 @@ Method: traced `import omlx.server` under the installed oMLX's interpreter, copi
 3. Pre-load check: sum resident memory of both engines against `iogpu.wired_limit_mb`; refuse or shrink the load if over.
 4. Short default idle-unload on the bundled engine.
 Unverified assumption: oMLX's memory guard only sees its own process. Confirm in Phase 2 before relying on it.
+
+## Licensing findings (2026-10-14, from the installed oMLX 0.7.1.dev1 metadata; not legal advice)
+
+140 distributions would ship after pruning: 62 MIT, 34 BSD, 25 Apache-2.0, 2 MPL-2.0 (certifi, tqdm), a few ISC/PSF/unlabelled (addict, socksio and openai-harmony are MIT/MIT/Apache upstream but carry no metadata).
+
+- **GPL-3.0: `mlx-embeddings`** (Blaizzy/mlx-embeddings) is required for Wisp's embeddings and rerank (`omlx/models/embedding.py`), so it cannot be pruned. The engine runs as a separate process spoken to over HTTP, which is ordinary aggregation, but shipping it makes Wisp a distributor of GPLv3 code: the licence text and a source offer must ship with the app. **Needs a decision from the user (and counsel if the app stays closed-source).**
+- **GPL-3 text-to-speech stack removed:** `phonemizer(-fork)` (GPL) and `espeakng_loader` with its bundled libespeak-ng (GPL) are dropped, with `misaki` and `num2words` (LGPL) which only feed TTS. None is imported at server start.
+- **LGPL, dynamically loaded, kept with notices:** `soxr` (LGPL-2.1+, imported eagerly by librosa), `pycountry`.
+- **oMLX itself:** the installed app carries no licence file or package metadata, so its licence is **unverified**; it must be read from the upstream repository before anything ships.
+- The release gate should include an inventory step (slice 1 adds `engine.py inventory`) that fails on an unreviewed GPL or UNKNOWN entry.
