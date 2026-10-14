@@ -207,6 +207,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
+    "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
     "tests/test_attestation_store.py",
     # Synthetic content-free journal, bounded offline planner replay; no external effects.
@@ -340,6 +342,10 @@ ADDITIONAL_FULL_TESTS = {
     # fake client and the packaged prompt only; no model, network, subprocess,
     # or user state.
     "tests/test_prompt_scope_fit.py",
+    # Grammar-constrained planner, planner menu and read budget: scripted fake
+    # client, fake registry tools and the packaged registry/router only; no
+    # model, network, subprocess, or user state.
+    "tests/test_planner.py",
     "tests/test_notes_defaults.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",

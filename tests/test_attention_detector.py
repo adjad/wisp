@@ -674,3 +674,99 @@ def test_unambiguous_local_times_around_the_dst_change_still_resolve():
     assert resolve.resolve("Meet 2026-11-01 at 2:30am America/Los_Angeles", arrival, TZ).start is not None
     foreign = resolve.resolve("meet 2026-03-08 at 02:30 America/New_York", arrival, TZ)
     assert foreign.blocked == "other_timezone"                              # the foreign-zone control is retained
+
+
+# ------------------- an inherited guessed meridiem stays tentative (post-merge audit, item 1)
+
+def dinner_thread(proposal, *later):
+    """The user proposes, Sam accepts with "sure", then `later` outgoing replies follow."""
+    h = msg("h", "Sam", "hey", T - 86400, "outgoing")
+    p = msg("p", "Sam", proposal, T, "outgoing")
+    reply = msg("r", "Sam", "sure", T + 120)
+    after = [msg(f"o{i}", "Sam", text, T + 600 + i, "outgoing") for i, text in enumerate(later)]
+    return detector([h, p, reply, *after]), reply
+
+
+def test_an_accepted_proposal_with_a_guessed_meridiem_is_not_marked_certain():
+    """"dinner tomorrow at 9?" -> "sure": the 9:00 PM is our guess, and "sure" does not settle it."""
+    det, reply = dinner_thread("dinner tomorrow at 9?")
+    d = det.decide(reply)
+    assert not d.alert and d.blocked_by == "unconfirmed"
+    assert d.resolved.start == at(22, 21) and d.resolved.tentative and d.resolved.guessed
+    assert "time:from_thread" in d.resolved.inferred
+
+
+def test_the_users_own_follow_up_confirms_an_inherited_guess_like_any_other():
+    det, reply = dinner_thread("dinner tomorrow at 9?", "great see you then")
+    d = det.decide(reply)
+    assert d.alert and d.resolved.tentative and d.resolved.start == at(22, 21)
+
+
+@pytest.mark.parametrize("proposal,hour", [
+    ("dinner tomorrow at 7pm?", 19),          # explicit meridiem: the "?" is answered by "sure"
+    ("dinner tomorrow at 6?", 18),            # 1-6 on a known day is read as the afternoon
+])
+def test_an_accepted_proposal_without_a_guess_is_still_certain(proposal, hour):
+    det, reply = dinner_thread(proposal)
+    d = det.decide(reply)
+    assert d.alert and not d.resolved.tentative and not d.resolved.guessed
+    assert d.resolved.start == at(22, hour)
+
+
+def test_a_question_alone_is_not_a_guess():
+    asked = r("dinner tomorrow at 7pm?")
+    assert asked.tentative and not asked.guessed
+    assert r("dinner tomorrow at 9").guessed and r("dinner tomorrow at 9").tentative
+
+
+# ------------------------------------------- no guessed time zone (post-merge audit, low note)
+
+def fake_system(monkeypatch, *, link=None, real=None, tz_env=None, offset_hours):
+    def readlink(path):
+        if link is None:
+            raise OSError("no link")
+        return link
+    monkeypatch.setattr(detectors.os, "readlink", readlink)
+    monkeypatch.setattr(detectors.os.path, "realpath", lambda p: real or link or p)
+    if tz_env is None:
+        monkeypatch.delenv("TZ", raising=False)
+    else:
+        monkeypatch.setenv("TZ", tz_env)
+
+    class Local:
+        tm_gmtoff = int(offset_hours * 3600)
+    monkeypatch.setattr(detectors.time, "localtime", lambda *a: Local())
+
+
+def la_offset_hours():
+    return datetime.now(ZONE).utcoffset().total_seconds() / 3600
+
+
+def test_the_zone_is_read_from_the_localtime_link_when_it_matches_the_clock(monkeypatch):
+    fake_system(monkeypatch, link="/var/db/timezone/zoneinfo/America/Los_Angeles",
+                real="/private/var/db/timezone/tz/2026d.1.0/zoneinfo/America/Los_Angeles",
+                offset_hours=la_offset_hours())
+    assert detectors.local_timezone() == "America/Los_Angeles"
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(link=None, real="/etc/localtime"),                               # no link, nothing to name
+    dict(link="/usr/share/zoneinfo/Not/AZone"),                            # names no real zone
+    dict(link="/usr/share/zoneinfo/Asia/Tokyo"),                           # disagrees with the clock
+])
+def test_an_unknown_zone_is_none_never_utc(monkeypatch, kwargs):
+    fake_system(monkeypatch, offset_hours=la_offset_hours(), **kwargs)
+    assert detectors.local_timezone() is None
+
+
+def test_tz_in_the_environment_wins_when_it_matches_the_clock(monkeypatch):
+    fake_system(monkeypatch, link="/usr/share/zoneinfo/America/Los_Angeles", tz_env=":Asia/Tokyo",
+                offset_hours=9)
+    assert detectors.local_timezone() == "Asia/Tokyo"
+
+
+def test_the_detector_refuses_to_guess_a_zone(monkeypatch):
+    monkeypatch.setattr(detectors, "local_timezone", lambda: None)
+    with pytest.raises(ValueError, match="time zone"):
+        detectors.UncapturedCommitment(snap([]))
+    assert detectors.UncapturedCommitment(snap([]), tz=TZ).tz == TZ        # an explicit zone still works

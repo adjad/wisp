@@ -10,6 +10,7 @@ The default is "shadow": decisions are recorded in the ledger and nothing else h
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -66,11 +67,11 @@ def _audit(event: str, **fields) -> None:
     audit(event, **fields)
 
 
-def _commitments(now: float) -> list[dict]:
+def _commitments(now: float, tz: str) -> list[dict]:
     # From local midnight, not from now: `upcoming` drops anything that started more than
     # five minutes ago, which would hide today's all-day events and make a message about
     # an exam that is already on the calendar look uncaptured.
-    return assistant_store.upcoming(local_midnight(now, local_timezone()), days=ON_FILE_DAYS + 1)
+    return assistant_store.upcoming(local_midnight(now, tz), days=ON_FILE_DAYS + 1)
 
 
 def _rows_near(due: float) -> dict[str, dict]:
@@ -148,9 +149,12 @@ async def create_reminder(plan: Plan) -> dict:
         # Defence in depth: the tick already checked, but view-only can be switched on mid-pass.
         _audit("deny", tool="add_reminder", source="attention", reason=blocked)
         return {"ok": False, "status": "failed", "error": f"BLOCKED by safety policy: {blocked}"}
+    tz = local_timezone()
+    if tz is None:
+        return {"ok": False, "status": "failed", "error": "The local time zone cannot be determined."}
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
     # and a time in a repeated DST hour keeps its meaning.
-    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
+    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(tz)).isoformat(timespec="minutes")
     try:
         base = _payload_action_id(plan, when_iso)
     except Exception:  # noqa: BLE001
@@ -160,16 +164,32 @@ async def create_reminder(plan: Plan) -> dict:
         before = set(_rows_near(plan.due_ts))
     except Exception:  # noqa: BLE001
         before = set()
-    text = await add_reminder(plan.title, when_iso, "reminder")
-    _audit("allow", tool="add_reminder", source="attention",
-           args={"title": plan.title, "when_iso": when_iso, "kind": "reminder"})
+    try:
+        text = await add_reminder(plan.title, when_iso, "reminder")
+    except BaseException:
+        _audit_create(plan, base, when_iso, "unknown")
+        raise
     if text.startswith("Reminder set:"):
         where = "wisp_only" if "Wisp only" in text else "apple_and_wisp"
+        _audit_create(plan, base, when_iso, "succeeded")
         return {"ok": True, "status": "succeeded", "where": where,
                 "created": _created_identity(plan, base, actions_before, before, where)}
     lowered = text.lower()
     unknown = any(k in lowered for k in ("unconfirmed", "not verified", "nothing was confirmed"))
-    return {"ok": False, "status": "unknown" if unknown else "failed", "error": text[:300]}
+    status = "unknown" if unknown else "failed"
+    _audit_create(plan, base, when_iso, status)
+    return {"ok": False, "status": status, "error": text[:300]}
+
+
+def _audit_create(plan: Plan, action_id: str | None, when_iso: str, status: str) -> None:
+    """Audit one reminder write by reference, never by content.
+
+    The title quotes the message, and the audit log is append-only and kept forever, which
+    would outlive the ledger's purge of that text. The action id and a short digest of the
+    title are enough to tie this line to the reminder and the ledger row while they exist."""
+    _audit("allow", tool="add_reminder", source="attention", status=status,
+           args={"action_id": action_id, "title_sha256": hashlib.sha256(plan.title.encode()).hexdigest()[:16],
+                 "when_iso": when_iso, "kind": "reminder"})
 
 
 def _name_for(handle: str) -> str | None:
@@ -222,6 +242,13 @@ async def run_tick(now: float | None = None) -> list:
                 _audit("deny", tool="add_reminder", source="attention", reason=blocked)
             ledger.set_meta("last_mode", "off")
             return []
+    tz = local_timezone()
+    if tz is None:
+        # Every time in a message would be read in a guessed zone. Treated as "off", like a
+        # policy block: when the zone is known again, live re-baselines rather than sweeping up
+        # what arrived meanwhile.
+        ledger.set_meta("last_mode", "off")
+        return []
     from service.tools import imessage_tools
     feed = imessage_tools.structured_messages_snapshot()
     # Only a read completed in THIS launch is trusted; restored rows are not "new".
@@ -233,9 +260,9 @@ async def run_tick(now: float | None = None) -> list:
     if fingerprint == _last_fingerprint:
         return []
     outcomes = await process(
-        records=records, commitments=_commitments(now), now=now, tz=local_timezone(),
+        records=records, commitments=_commitments(now, tz), now=now, tz=tz,
         settings=settings, ledger=ledger, create=create_reminder, publish=_publish,
-        fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for)
+        fresh_commitments=lambda: _commitments(time.time(), tz), name_for=_name_for)
     if not getattr(outcomes, "limited", False):
         _last_fingerprint = fingerprint               # a limited pass has work left: look again soon
     return outcomes

@@ -1,6 +1,7 @@
 """Local endpoints for the attention runner: see what it did, change its mode, undo one."""
 import time
 from dataclasses import asdict
+from datetime import datetime
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
@@ -32,7 +33,11 @@ class Undo(BaseModel):
 def status():
     ledger = runner.get_ledger()
     settings = load_settings(settings_path(MOE_DIR))
-    since = local_midnight(time.time(), local_timezone())
+    tz = local_timezone()
+    now = time.time()
+    # Without a named zone, the system clock's own local midnight is still right for "today".
+    since = local_midnight(now, tz) if tz else datetime.fromtimestamp(now).replace(
+        hour=0, minute=0, second=0, microsecond=0).timestamp()
     return {
         "settings": asdict(settings),
         "modes": list(MODES),
