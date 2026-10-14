@@ -94,6 +94,8 @@ def prediction_line(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) ->
         end = minute_of(local_dt(pr.end_ts, tz)) if pr.end_ts else None
         span = fmt_range(minute_of(local_dt(pr.ts, tz)), end) if end else t
         return f"Usually in touch with {pr.subject} {span}"
+    if pr.kind == "usage":
+        return f"Usually asks Wisp about {pr.subject} around {t}"
     return f"{pr.subject} at {t}"
 
 
@@ -107,7 +109,9 @@ def profile_card(patterns: list[Pattern], predictions: list[Prediction], now: fl
     by_id = {p.id: p for p in patterns}
     p_lines = [f"- {p.statement}" + (" (you confirmed)" if p.status == "confirmed" else "") for p in ranked]
     today = local_dt(now, tz).date()
-    todays = [pr for pr in predictions if local_dt(pr.ts, tz).date() == today
+    # Usage windows are left out: the card is read by Wisp itself, and the
+    # matching wisp_usage statements already sit in the patterns section.
+    todays = [pr for pr in predictions if local_dt(pr.ts, tz).date() == today and pr.kind != "usage"
               and (by_id.get(pr.pattern_id) is None or by_id[pr.pattern_id].status != "rejected")]
     order = {"habit_conflict": 0, "cancel_risk": 1, "activity": 2, "contact": 3}
     todays = sorted(todays, key=lambda pr: (order.get(pr.kind, 9), -pr.probability, pr.ts))

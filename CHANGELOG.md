@@ -9,6 +9,7 @@ All notable changes to Wisp are documented here.
 ### Added
 
 - Model-led routing (still off by default, `WISP_MODEL_LED_ROUTING=1`) now loads full schemas up front for the 12 tools that best match the request, and offers every other catalog tool by name only. Calling a name-only tool runs nothing: it loads that tool's schema, and the model calls it again on the next step with full arguments. Ling V2 used to call real tools directly and get an empty reply. Name-only tools are dropped first when a request doesn't fit the context window.
+- The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
 
 ### Changed
 

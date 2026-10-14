@@ -60,17 +60,16 @@ def direct(prompt: str) -> list[tuple[str, dict]]:
 
 def test_single_zero_arg_device_tool_dispatches() -> None:
     print("\none unambiguously-named zero-arg device tool -> direct call")
-    for prompt, tool in [
-        ("what's my battery level", "get_battery_status"),
-        ("how's my battery doing", "get_battery_status"),
-        ("what's my volume at", "get_volume"),
-        ("what did i copy", "clipboard_read"),
-        ("lock my screen", "lock_screen"),
-        ("run a speed test", "run_speed_test"),
+    for prompt, tool, args in [
+        ("what's my battery level", "system_status", {"section": "battery"}),
+        ("how's my battery doing", "system_status", {"section": "battery"}),
+        ("what's my volume at", "get_volume", {}),
+        ("what did i copy", "clipboard_read", {}),
+        ("lock my screen", "lock_screen", {}),
     ]:
         calls = direct(prompt)
         check(f"{prompt!r} -> {tool}",
-              calls == [(tool, {})], f"got {calls}")
+              calls == [(tool, args)], f"got {calls}")
 
 
 def test_two_named_tools_decline() -> None:
@@ -86,12 +85,12 @@ def test_two_named_tools_decline() -> None:
     # it); whether both tools actually come back from retrieval needs the
     # real async route().
     check("…still matches the compound device-control route",
-          d is not None and set(d.tool_subset or ()) == {"get_battery_status", "lock_screen"})
+          d is not None and set(d.tool_subset or ()) == {"system_status", "lock_screen"})
     d_retrieved = asyncio.run(router.route("what's my battery and lock my screen"))
     check("…and retrieval surfaces BOTH tools",
           d_retrieved.tool_subset is not None
           and "lock_screen" in d_retrieved.tool_subset
-          and "get_battery_status" in d_retrieved.tool_subset,
+          and "system_status" in d_retrieved.tool_subset,
           str(d_retrieved.tool_subset))
 
 
@@ -188,7 +187,7 @@ def test_as_dict_is_json_shaped() -> None:
     d = router.rule_route("what's my battery level")
     payload = d.as_dict()
     check("direct_calls is a list of {tool, args} dicts",
-          payload["direct_calls"] == [{"tool": "get_battery_status", "args": {}}],
+          payload["direct_calls"] == [{"tool": "system_status", "args": {"section": "battery"}}],
           f"got {payload['direct_calls']}")
     other = router.rule_route("hello there")
     check("a non-direct route emits an empty list, not a missing key",

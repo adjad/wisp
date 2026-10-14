@@ -73,9 +73,11 @@ def test_compound_claims_and_negatives() -> None:
 def test_conditions_completion_and_inventory() -> None:
     print("\nconditional, completion, and inventory routes")
     d = routed("If my battery is below 20%, turn on Low Power Mode; otherwise tell me the percentage.")
-    check("battery condition has read and action", tools(d) == {"get_battery_status", "toggle_setting"})
+    check("battery condition has read and action", tools(d) == {"system_status", "toggle_setting"})
     check("battery condition is machine-readable",
-          d.conditional_tools == (("get_battery_status", "toggle_setting", "percent_below", 20),))
+          d.conditional_tools == (("system_status", "toggle_setting", "percent_below", 20),))
+    check("battery condition reads only the battery section",
+          d.tool_argument_bindings.get("system_status") == {"section": "battery"})
 
     d = routed("Complete the laundry reminder, not the calendar event with the same name.")
     check("completion resolves complete_reminder",

@@ -388,8 +388,8 @@ async def find_place(what: str, near: str, radius_km: float = 3.0) -> str:
     "travel_time",
     "How far and how long it takes to DRIVE from one place to another. NOTE: "
     "this is a free-flow estimate from speed limits — it does NOT account for "
-    "live traffic, and the answer says so. Driving only; for walking or transit "
-    "times use get_directions, which opens Apple Maps.",
+    "live traffic, and the answer says so. Driving only; for walking or transit, "
+    "say so and suggest Apple Maps (open_app 'Maps').",
     {
         "type": "object",
         "properties": {
@@ -414,7 +414,7 @@ async def travel_time(origin: str, destination: str) -> str:
     # module's docstring cites (invented cities, forecasts reported as current
     # conditions), and worse than not offering the feature.
     #
-    # Apple Maps does route all modes properly, so get_directions covers them.
+    # Apple Maps does route all modes properly; the user can open it for those.
     mode = "driving"
     profile = "car"
 
@@ -442,75 +442,3 @@ async def travel_time(origin: str, destination: str) -> str:
             f"(free-flow estimate — live traffic not included).")
 
 
-@register(
-    "get_directions",
-    "Open turn-by-turn directions in Apple Maps. Use this when the user wants "
-    "to actually navigate somewhere; use travel_time when they only want to "
-    "know how long it takes.",
-    {
-        "type": "object",
-        "properties": {
-            "destination": {"type": "string", "description": "Where they're going."},
-            "origin": {"type": "string",
-                       "description": "Optional starting point. Defaults to current location."},
-            "mode": {"type": "string", "enum": ["driving", "walking", "transit"],
-                     "description": "Travel mode. Default driving."},
-        },
-        "required": ["destination"],
-    },
-    category="app_control",
-    aliases=["give me directions to the airport", "navigate me home",
-             "how do I get to the museum from here", "map me to the office",
-             "show me the route there"],
-)
-def get_directions(destination: str, origin: str = "", mode: str = "driving") -> str:
-    import subprocess
-
-    destination = (destination or "").strip()
-    if not destination:
-        return "(error: get_directions needs a `destination`.)"
-    flag = {"driving": "d", "walking": "w", "transit": "r"}.get(
-        (mode or "driving").strip().lower(), "d")
-    url = f"maps://?daddr={quote(destination)}&dirflg={flag}"
-    if origin.strip():
-        url += f"&saddr={quote(origin.strip())}"
-    p = subprocess.run(["open", url], capture_output=True, text=True, timeout=15)
-    if p.returncode != 0:
-        return f"(could not open Maps: {(p.stderr or '').strip()})"
-    from_txt = f" from {origin.strip()}" if origin.strip() else ""
-    return f"Opened {mode} directions to {destination}{from_txt} in Maps."
-
-
-@register(
-    "transit_info",
-    "Live public-transit departure times and delays for a specific line or "
-    "stop. UNAVAILABLE: Wisp has no integrated live-arrivals provider. For turn-by-turn "
-    "transit ROUTING (not live departures), use get_directions with "
-    "mode='transit' instead, which already works via Apple Maps.",
-    {"type": "object",
-     "properties": {"query": {"type": "string", "description": "Line/route or stop name."}},
-     "required": ["query"]},
-    category="web_read",
-    aliases=["when's the next train", "is my bus running late",
-             "what time does the next train leave", "check transit delays"],
-)
-def transit_info(query: str) -> str:
-    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
-    return UNAVAILABLE_TOOL_REASONS["transit_info"]
-
-
-@register(
-    "track_flight",
-    "Live flight status — gate, delays, departure/arrival times. UNAVAILABLE: "
-    "Wisp has no integrated live flight-status provider. No lookup runs; the "
-    "user can explicitly ask for a web search instead.",
-    {"type": "object",
-     "properties": {"flight_number": {"type": "string", "description": "e.g. 'UA123'."}},
-     "required": ["flight_number"]},
-    category="web_read",
-    aliases=["is my flight on time", "what gate does my flight leave from",
-             "check the status of flight UA123", "is my flight delayed"],
-)
-def track_flight(flight_number: str) -> str:
-    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
-    return UNAVAILABLE_TOOL_REASONS["track_flight"]
