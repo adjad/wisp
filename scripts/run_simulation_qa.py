@@ -207,6 +207,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
+    "tests/test_memory_eval_scorer.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
