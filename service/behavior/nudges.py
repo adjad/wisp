@@ -24,7 +24,7 @@ import math
 from dataclasses import dataclass, field, replace
 from datetime import timedelta, tzinfo
 
-from service.behavior import miners
+from service.behavior import miners, predict
 from service.behavior.timeutil import (
     DAY_NAMES, at_minute, day_end, day_start, fmt_clock, fmt_range, local_dt, minute_of, when_phrase,
 )
@@ -38,6 +38,7 @@ EVENT_KEYED_KINDS = frozenset({"habit_conflict", "cancel_likely"})
 QUIET_START_MIN = 22 * 60
 QUIET_END_MIN = 7 * 60
 PREVIEW_END_MIN = 10 * 60
+PREVIEW_MAX_USAGE = 2
 MUTE_WINDOW_S = 7 * 86400
 MUTE_FOR_S = 7 * 86400
 FEEDBACK_MEMORY_S = 30 * 86400
@@ -247,6 +248,8 @@ def _preview_item(pr: Prediction, tz: tzinfo) -> str:
         return f"{pr.subject} at {t} may get skipped"
     if pr.kind == "habit_conflict":
         return f"{pr.subject} at {t} clashes with a routine"
+    if pr.kind == "usage":
+        return f"{predict.usage_phrase(pr.subject)} with Wisp around {t}"
     return f"talk with {pr.subject} from {t}"
 
 
@@ -260,8 +263,19 @@ def _day_preview(inp: Inputs) -> list[Nudge]:
               and (p.ts >= inp.now or p.kind == "contact")]
     if not todays:
         return []
-    rank = {"habit_conflict": 0, "cancel_risk": 1, "activity": 2, "contact": 3}
-    top = sorted(todays, key=lambda p: (rank.get(p.kind, 9), -p.probability, p.ts))[:4]
+    rank = {"habit_conflict": 0, "cancel_risk": 1, "activity": 2, "contact": 3, "usage": 4}
+    ordered = sorted(todays, key=lambda p: (rank.get(p.kind, 9), -p.probability, p.ts))
+    # Usage fills the leftover slots only: the likeliest window per topic, at
+    # most PREVIEW_MAX_USAGE of them, so "web" three times can't crowd the list.
+    seen_topics: set[str] = set()
+    picked = []
+    for p in ordered:
+        if p.kind == "usage":
+            if p.subject in seen_topics or len(seen_topics) >= PREVIEW_MAX_USAGE:
+                continue
+            seen_topics.add(p.subject)
+        picked.append(p)
+    top = picked[:4]
     top.sort(key=lambda p: p.ts)
     body = "Likely today: " + "; ".join(_preview_item(p, inp.tz) for p in top) + "."
     pids = tuple(dict.fromkeys(p.pattern_id for p in top if p.pattern_id))

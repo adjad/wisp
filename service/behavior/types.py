@@ -137,7 +137,7 @@ class Pattern:
 # Predictions for the next horizon.
 # --------------------------------------------------------------------------
 
-PREDICTION_KINDS = ("activity", "cancel_risk", "contact", "habit_conflict")
+PREDICTION_KINDS = ("activity", "cancel_risk", "contact", "habit_conflict", "usage")
 
 
 @dataclass(frozen=True)

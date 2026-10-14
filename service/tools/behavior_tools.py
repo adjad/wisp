@@ -200,7 +200,7 @@ def predict_my_day(day: str = "tomorrow") -> str:
     if not preds:
         return f"{label}: I don't have enough learned routine to predict anything specific yet."
     names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "likely to talk",
-             "habit_conflict": "conflicts with a habit"}
+             "habit_conflict": "conflicts with a habit", "usage": "you usually ask Wisp about this"}
     lines = [f"{label}, based on your learned routines (probabilities, not commitments):"]
     for p in preds[:12]:
         span = _clock(p.ts) + (f"–{_clock(p.end_ts)}" if p.end_ts else "")
