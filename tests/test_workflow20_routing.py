@@ -457,50 +457,11 @@ def test_priority_envelope_preserves_exclusions_before_all_reads(prompt, exclude
     "What should I get for groceries using email", "What should I get for groceries without checking notes",
 ])
 def test_evidence_grammar_does_not_drop_additional_conditions_or_actions(prompt):
-    from service.workflows.workflow20 import priority_read, grocery_read
-    assert priority_read(prompt) is None and grocery_read(prompt) is None
+    from service.workflows.workflow20 import priority_read
+    assert priority_read(prompt) is None
 
 
-@pytest.mark.parametrize("prompt,names", [
-    ("What should I get for groceries?", {"grocery_note_evidence", "grocery_reminder_evidence"}),
-    ("Read my notes and reminders for groceries.", {"grocery_note_evidence", "grocery_reminder_evidence"}),
-    ("Show my shopping list without notes", {"grocery_reminder_evidence"}),
-    ("What is on my grocery list using notes", {"grocery_note_evidence"}),
-])
-def test_shopping_reads_each_selected_source_and_no_excluded_source(prompt, names):
-    from service.workflows.reads import compile_read
-    decision = asyncio.run(R.route(prompt))
-    assert compile_read(prompt) is None
-    assert set(decision.tool_subset) == names
-    assert {name for name, _ in decision.direct_calls} == names
-    assert set(decision.required_tool_groups) == {frozenset({name}) for name in names}
-    assert decision.narration_after == frozenset(names)
-    assert "web_search" in decision.forbidden_tools
-
-
-def test_shopping_keeps_exact_list_and_item_query_in_separate_bindings():
-    prompt = 'What should I get for groceries in my "Costco" list containing "oat milk" without notes'
-    decision = asyncio.run(R.route(prompt))
-    assert decision.tool_argument_bindings == {"grocery_reminder_evidence": {"list_label": "Costco", "query": "oat milk", "label_kind": "list"}}
-
-
-@pytest.mark.parametrize("literal", ["organize my files", "remind me to delete files tomorrow", "without notes and reminders", "send an email to Maya"])
-def test_quoted_shopping_item_is_inert_during_structural_finalization(literal):
-    decision = asyncio.run(R.route(f'Show my grocery list using notes containing "{literal}"'))
-    assert decision.tool_subset == ["grocery_note_evidence"]
-    assert decision.tool_argument_bindings == {"grocery_note_evidence": {"list_label": "", "query": literal}}
-    assert decision.required_tool_groups == (frozenset({"grocery_note_evidence"}),)
-    assert not {"organize_files", "add_reminder", "send_email"} & set(decision.tool_subset)
-
-
-@pytest.mark.parametrize("prompt", ['Show my grocery list using notes in my "  " folder',
-    'Show my grocery list containing "  "', 'Show my grocery list in my "Costco" folder'])
-def test_unsupported_shopping_selector_never_becomes_an_unfiltered_shortcut(prompt):
-    from service.workflows.workflow20 import grocery_read
-    assert grocery_read(prompt) is None
-
-
-@pytest.mark.parametrize("prompt", ["What should I work on tomorrow without email", "What should I get for groceries without notes"])
+@pytest.mark.parametrize("prompt", ["What should I work on tomorrow without email"])
 def test_evidence_collectors_execute_before_first_model_narration(monkeypatch, prompt):
     from service.agent import loop
     from tests.test_direct_dispatch_exec import Approver, ScriptedClient
@@ -1334,7 +1295,7 @@ def test_public_route_body_signature_and_single_await_are_preserved():
     wrapper=ast.parse(textwrap.dedent(inspect.getsource(R.route))).body[0]
     body=ast.dump(ast.Module(body=implementation.body,type_ignores=[]),include_attributes=False)
     signature=ast.dump(wrapper.args,include_attributes=False)
-    assert hashlib.sha256(body.encode()).hexdigest()=='2bace944d4e0aaf11820ec0c1c35a66710932939c00a384fa1370ec5201af045'
+    assert hashlib.sha256(body.encode()).hexdigest()=='f4c3e7684b0777be41a0a1a2392247c6eb50e5205a2ea49bd760547764dbc05f'
     assert hashlib.sha256(signature.encode()).hexdigest()=='edcb3e9f9d06ef15a39eb04dadef72be9995af5c66f86b8f0bb19290f1e00c02'
     assert inspect.signature(R.route)==inspect.signature(R._route_impl)
     assert len([n for n in ast.walk(wrapper) if isinstance(n,ast.Await)])==1

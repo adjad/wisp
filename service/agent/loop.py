@@ -36,7 +36,7 @@ _EFFECT_TOOLS = frozenset({
     "add_calendar_event", "update_event", "commit_private_meeting",
     "complete_reminder", "cancel_event", "clear_past_reminders", "clear_reminders",
     "cancel_scheduled_send", "toggle_setting",
-    "write_file", "move_path", "delete_path",
+    "write_file", "move_path",
     "save_knowledge", "edit_knowledge", "delete_knowledge",
 })
 _TERMINAL_OUTBOUND_DENIALS = frozenset({
@@ -486,11 +486,9 @@ SYSTEM = (
     "messages, mail, calendar, notes), do NOT argue or retry — call that tool "
     "instead. A generated script genuinely cannot reach the user's personal "
     "data, so building one would only invent it.\n"
-    "- For volume, call `get_volume`/`set_volume` — do NOT use run_shell/"
-    "osascript for this, and do not try to guess the volume from context, "
-    "just read it. For clipboard contents, call `clipboard_read`/"
+    "- For clipboard contents, call `clipboard_read`/"
     "`clipboard_write` rather than shelling out to pbpaste/pbcopy. For "
-    "Wi-Fi on/off, call `toggle_setting` with setting='wifi'. To lock the screen, call `lock_screen`.\n"
+    "Wi-Fi on/off, call `toggle_setting` with setting='wifi'.\n"
     # pmset -g log's BatteryHealth "Warning level"/"cap:" lines are low-charge
     # UI-warning events (cap = charge % at that moment), not a wear/health
     # metric — free-interpreting them produces confidently wrong degradation
@@ -503,10 +501,6 @@ SYSTEM = (
     "generally: if you don't immediately know a command for some system control, that's a "
     "sign a dedicated tool exists (check the tool list) before you try to "
     "recall or guess a shell incantation from memory.\n"
-    "- For music, call `music`: app='spotify' when the user names Spotify, "
-    "otherwise the default Apple Music (it ships with macOS, so it's always "
-    "available). If they just say 'play music' and Spotify is plainly the one "
-    "already open, use it.\n"
     "- `get_upcoming` already includes reminders the user created directly in "
     "the Reminders app (not just ones Wisp itself created) — you don't need a "
     "separate tool or run_shell/osascript to check Reminders.app.\n"
@@ -547,11 +541,10 @@ def _read_categories():
 # (independent review of #221). Only these are exempt from the planner's
 # re-issued identical write check. An explicit list, not categories: the
 # device category also holds screen_capture, which saves a file per call.
-_REPEATABLE_WRITES = frozenset({"music", "set_volume", "toggle_setting", "window_control",
-                                "open_app", "quit_app"})
+_REPEATABLE_WRITES = frozenset({"toggle_setting", "window_control", "open_app", "quit_app"})
 
 _VOLATILE_READS = frozenset({
-    "system_status", "world_time", "get_volume",
+    "system_status", "world_time",
     "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
     "list_scheduled_sends", "screen_capture", "clipboard_read",
 })
@@ -2368,8 +2361,8 @@ async def run_agent(
             _result = f"BLOCKED by safety policy: {_dec.reason}"
             audit("deny", tool=_name, args=_args, reason=_dec.reason)
         elif _dec.tier is Tier.CONFIRM:
-            # lock_screen is system_write and run_speed_test is network_active —
-            # both CONFIRM tier, so a direct call is NOT a way around the card.
+            # A system_write or network_active direct call is CONFIRM tier, so
+            # a direct call is NOT a way around the card.
             _action = {"id": _cid, "tool": _name, "args": _args,
                        "reason": _dec.reason,
                        "fingerprint": _action_fingerprint(_name, _args)}
@@ -3916,7 +3909,7 @@ async def run_agent(
                 # Any non-read tool that ran (even one that failed part-way) may
                 # have changed what a read returns. Don't trust outcome.effect:
                 # tools outside the effect table default to "read" even when
-                # they write (set_volume, run_shell).
+                # they write (toggle_setting, run_shell).
                 completed_reads.clear()
                 # A write may change what a read returns: re-reading after it
                 # ("set volume to 10, then check it") is a new attempt.

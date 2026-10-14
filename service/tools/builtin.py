@@ -103,7 +103,7 @@ def _wrong_account_path(path: str) -> str | None:
     teach the caller the vocabulary rather than just failing".
 
     Deliberately NOT auto-rewriting the path. Silently redirecting one location
-    to a different one is the kind of guess that, on move_path or delete_path,
+    to a different one is the kind of guess that, on move_path or write_file,
     would act on a file the user never named.
     """
     p = (path or "").strip()
@@ -610,24 +610,3 @@ def move_path(source: str, destination: str) -> str:
         return f"(error moving {src} to {dst}: {e})"
 
 
-@register(
-    "delete_path",
-    "Delete a file. Requires confirmation.",
-    {"type": "object",
-     "properties": {"path": {"type": "string"}},
-     "required": ["path"]},
-    category="fs_delete",
-)
-def delete_path(path: str) -> str:
-    if (msg := _wrong_account_path(path)):
-        return msg
-    p = Path(path).expanduser()
-    if not p.exists():
-        return f"(no such path: {p})"
-    if p.is_dir():
-        return f"(refusing to delete a directory via this tool: {p})"
-    try:
-        p.unlink()
-        return f"deleted {p}"
-    except Exception as e:  # noqa: BLE001
-        return f"(error deleting {p}: {e})"

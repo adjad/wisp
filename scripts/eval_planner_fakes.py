@@ -59,14 +59,11 @@ FAKE = {
     "list_dir": lambda a: "report.pdf\nnotes.txt\nphotos/",
     "find_files": lambda a: "/Users/test/Documents/report.pdf\n/Users/test/Downloads/report_v2.pdf",
     "read_file": lambda a: "Quarterly report draft. Revenue up 4%. TODO: add charts.",
-    "delete_path": lambda a: f"Deleted {_value(a, 'path')}.",
     "write_file": lambda a: f"Wrote {_value(a, 'path')}.",
     "open_app": lambda a: f"Opened {_value(a, 'name', 'app')}.",
     "set_timer": lambda a: "Timer set.",
-    "set_volume": lambda a: "Volume set.",
     "calculate": lambda a: "= 42",
     "world_time": lambda a: "Tokyo: Tue Oct 13 2:30 AM",
-    "get_volume": lambda a: "Output volume 45%, not muted.",
     "system_status": lambda a: "CPU 18% (top: Safari 9%, Wisp 4%). Memory 15.2 of 24 GB used. Disk: 212 GB free of 994 GB.",
     "list_running_apps": lambda a: "Safari (9% CPU), Mail (2%), Wisp (4%), Music (1%), Finder (0%).",
     "travel_time": lambda a: f"About 24 min by car to {_value(a, 'destination', 'to', default='the destination')} in current traffic (11.8 mi).",
@@ -84,7 +81,7 @@ RETIRED_FAKE_NAMES = (
     "get_battery_status", "get_directions", "get_sports_scores",
     "keychain_read", "list_bluetooth_devices", "network_info", "rain_radar",
     "recipe_lookup", "search_memory", "set_alarm", "summarize_thread",
-    "trash_file",
+    "trash_file", "delete_path", "get_volume", "set_volume",
 )
 
 

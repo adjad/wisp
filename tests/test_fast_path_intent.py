@@ -40,12 +40,12 @@ def route(text):
 
 # --- the shared definition ---------------------------------------------------------------
 
-PROHIBITIONS = ["Do not lock my screen.", "don't lock my screen", "Please do not email Sam.",
+PROHIBITIONS = ["Do not turn off Wi-Fi.", "don't turn off Wi-Fi", "Please do not email Sam.",
                 "Never delete that file", "No need to send it", "Hey Wisp, don't text Mom"]
-MENTIONS = ['Explain the phrase "lock my screen".', 'Read the word "clipboard" aloud.',
-            'Say "remind me to call Mom tomorrow".', 'What does "lock my screen" mean?',
+MENTIONS = ['Explain the phrase "turn off Wi-Fi".', 'Read the word "clipboard" aloud.',
+            'Say "remind me to call Mom tomorrow".', 'What does "turn off Wi-Fi" mean?',
             'Translate "send an email to Sam"', 'Define the word clipboard', 'Repeat "delete everything"']
-PLAIN = ["lock my screen", "what's on my clipboard", "remind me to call Mom tomorrow at 5pm",
+PLAIN = ["turn off Wi-Fi", "what's on my clipboard", "remind me to call Mom tomorrow at 5pm",
          "Don't forget to call Mom tomorrow", "Don't let me forget the dentist", "Never mind, I did it",
          "Stop the music", "email Sam saying \"running late\"", 'Say "hi" to Mom', "text Mom \"I'm on my way\"",
          "what's on my calendar, don't include reminders", "turn on do not disturb",
@@ -74,7 +74,7 @@ def test_quoted_words_are_masked_for_retrieval():
 
 # --- P1: direct device dispatch ----------------------------------------------------------
 
-@pytest.mark.parametrize("text", ["Do not lock my screen.", 'Explain the phrase "lock my screen".',
+@pytest.mark.parametrize("text", ["Do not turn off Wi-Fi.", 'Explain the phrase "turn off Wi-Fi".',
                                   'Read the word "clipboard" aloud.', "Don't read my clipboard."])
 def test_negated_or_quoted_device_text_makes_no_call(text):
     decision = route(text)
@@ -82,8 +82,7 @@ def test_negated_or_quoted_device_text_makes_no_call(text):
     assert decision.force_first_tool is None and not decision.expect_tool_first, decision.reason
 
 
-@pytest.mark.parametrize("text,call", [("lock my screen", ("lock_screen", {})),
-                                       ("what's on my clipboard", ("clipboard_read", {})),
+@pytest.mark.parametrize("text,call", [("what's on my clipboard", ("clipboard_read", {})),
                                        ("what's my battery level",
                                         ("system_status", {"section": "battery"}))])
 def test_a_plain_device_request_still_takes_the_direct_path(text, call):
@@ -186,12 +185,12 @@ def test_an_unresolved_topic_still_forces_the_lookup():
 @pytest.mark.parametrize("text", [
     "Don't search my notes; is there anything about ucsc orientation I should know this week",
     "Don't check notes or messages; what's on my calendar tomorrow",
-    "Do not email Sam, just text him I'm late", "Don't lock my screen but tell me my battery level"])
+    "Do not email Sam, just text him I'm late", "Don't turn off Wi-Fi but tell me my battery level"])
 def test_a_leading_exclusion_with_a_real_request_is_not_a_prohibition(text):
     assert not U.is_prohibition(text), text
 
 
-@pytest.mark.parametrize("text", ["Do not lock my screen, thanks", "Don't email Sam!"])
+@pytest.mark.parametrize("text", ["Do not turn off Wi-Fi, thanks", "Don't email Sam!"])
 def test_a_trailing_pleasantry_does_not_hide_a_prohibition(text):
     assert U.is_prohibition(text), text
 
@@ -208,8 +207,8 @@ def test_active_calendar_filter_is_already_represented_by_the_tool():
 
 
 @pytest.mark.parametrize("text", [
-    "Do not lock my screen, I am in the middle of a call.",
-    "Do not lock my screen; just explain what that does.",
+    "Do not turn off Wi-Fi, I am in the middle of a call.",
+    "Do not turn off Wi-Fi; just explain what that does.",
     "Do not read my clipboard, it contains private information.",
     "Do not run a speed test; just explain what it measures.",
 ])
@@ -229,30 +228,30 @@ def test_device_discussion_does_not_trigger_a_device_read(text):
 
 
 @pytest.mark.parametrize("text", [
-    "Check my calendar tomorrow and lock my screen.",
-    "Check my calendar tomorrow; lock my screen.",
-    "Check my calendar tomorrow, lock my screen.",
-    "Lock my screen and check my calendar tomorrow.",
+    "Check my calendar tomorrow and show my clipboard.",
+    "Check my calendar tomorrow; show my clipboard.",
+    "Check my calendar tomorrow, show my clipboard.",
+    "Show my clipboard and check my calendar tomorrow.",
 ])
 def test_calendar_and_device_actions_keep_both_tools_without_partial_dispatch(text):
     assert reads.compile_read(text) is None
     decision = route(text)
     assert decision.direct_calls == []
-    assert {"get_upcoming", "lock_screen"} <= set(decision.tool_subset or ())
+    assert {"get_upcoming", "clipboard_read"} <= set(decision.tool_subset or ())
     assert decision.multi_round
 
 
 @pytest.mark.parametrize("text", [
-    "Lock my screen, and remind me to take my medicine tonight",
-    "Lock my screen and remind me to take my medicine tonight",
-    "Lock my screen; remind me to take my medicine tonight",
-    "Remind me to take my medicine tonight, and lock my screen",
+    "Turn off Wi-Fi, and remind me to take my medicine tonight",
+    "Turn off Wi-Fi and remind me to take my medicine tonight",
+    "Turn off Wi-Fi; remind me to take my medicine tonight",
+    "Remind me to take my medicine tonight, and turn off Wi-Fi",
 ])
 def test_compound_device_and_reminder_keeps_both_tools(text):
     assert compile_task(text, now=NOW) is None
     decision = route(text)
     assert decision.direct_calls == []
-    assert {"lock_screen", "add_reminder"} <= set(decision.tool_subset or ())
+    assert {"toggle_setting", "add_reminder"} <= set(decision.tool_subset or ())
 
 
 @pytest.mark.parametrize("scope,days", [("the next 3 days", 3), ("next 7 days", 7),
@@ -265,7 +264,7 @@ def test_supported_numeric_calendar_scope_is_preserved_at_both_layers(scope, day
 
 
 @pytest.mark.parametrize("scope", ["the next 0 days", "next 61 days", "next 9 weeks",
-                                  "next 3 days and next week", "next 3 days and lock my screen"])
+                                  "next 3 days and next week", "next 3 days and turn off Wi-Fi"])
 def test_numeric_calendar_shortcuts_do_not_truncate_or_drop_other_scope(scope):
     text = "what is on my calendar for " + scope
     assert reads.compile_read(text) is None
@@ -407,10 +406,9 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
 @pytest.mark.parametrize("text,device,device_args", [
     (f"{first}{join}{second}", device, arguments)
     for action, device, arguments in (
-        ("Lock my screen", "lock_screen", {}),
-        ("Mute my volume", "set_volume", {"level": 0}),
+        ("Switch off the Wi-Fi", "toggle_setting", {"setting": "wifi", "on": False}),
         ("Turn off Wi-Fi", "toggle_setting", {"setting": "wifi", "on": False}),
-        ("Lower my volume to zero", "set_volume", {"level": 0}),
+        ("Turn the Wi-Fi off", "toggle_setting", {"setting": "wifi", "on": False}),
         ("Disable Wi-Fi", "toggle_setting", {"setting": "wifi", "on": False}),
     )
     for join in (" and ", ", and ", ", ", "; ", ". ", " then ")
@@ -870,7 +868,7 @@ def test_named_companion_binds_lookup_identity_and_destination_proof(
         offered = {tool["function"]["name"] for tool in kwargs.get("tools", [])}
         actions = ([] if lookup_name is None else [("lookup_contact", {"name": lookup_name})])
         if with_device:
-            actions.append(("set_volume", {"level": 0}))
+            actions.append(("toggle_setting", {"setting": "wifi", "on": False}))
         send_args = {"to": destination, "text" if delivery == "message" else "body": "wrong model body"}
         if "email" in delivery:
             send_args["subject"] = "Wrong model subject"
@@ -903,7 +901,7 @@ def test_named_companion_binds_lookup_identity_and_destination_proof(
                    "scheduled_email": 'Email Mom about Update tomorrow morning saying "hello"'}[delivery]
     clauses = [send_prompt, 'Remind me to buy milk tomorrow']
     text = '; '.join(reversed(clauses) if reminder_first else clauses)
-    events = asyncio.run(request(('Mute my volume; ' if with_device else '') + text))
+    events = asyncio.run(request(('Disable Wi-Fi; ' if with_device else '') + text))
     assert all(args["name"] == "Mom" for name, args in calls if name == "lookup_contact")
     sends = [args for name, args in calls if name == effect]
     if send_ok:
@@ -986,7 +984,7 @@ def test_actual_http_alternative_clock_keeps_typed_specific_time_question(
 
 
 @pytest.mark.parametrize("tail", ["and frobnicate the gizmo", "; wobble the widget",
-                                 "then silence all the alerts", "mute my volume"])
+                                 "then silence all the alerts", "disable Wi-Fi"])
 def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
         successful_reminder_endpoint, tail):
     request, streams, calls, assistant = successful_reminder_endpoint
@@ -1001,19 +999,19 @@ def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
 
 
 @pytest.mark.parametrize("text", [
-    "Remind me to take medicine tonight or mute my volume",
-    "Remind me to take medicine tonight or mute my volume; do not browse",
-    "Without browsing, remind me to take medicine tonight or mute my volume",
-    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not browse",
-    "Remind me to take medicine or mute my volume tonight",
-    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo",
-    "Frobnicate the gizmo; mute my volume; remind me to take medicine tonight",
+    "Remind me to take medicine tonight or disable Wi-Fi",
+    "Remind me to take medicine tonight or disable Wi-Fi; do not browse",
+    "Without browsing, remind me to take medicine tonight or disable Wi-Fi",
+    "Remind me to take medicine tonight; disable Wi-Fi; frobnicate the gizmo; do not browse",
+    "Remind me to take medicine or disable Wi-Fi tonight",
+    "Remind me to take medicine tonight; disable Wi-Fi; frobnicate the gizmo",
+    "Frobnicate the gizmo; disable Wi-Fi; remind me to take medicine tonight",
     "Remind me to take medicine tonight; frobnicate the gizmo; turn off Wi-Fi",
-    "Remind me to take medicine tonight; show my calendar tomorrow; lock my screen; frobnicate the gizmo",
-    "If I am home, remind me to take medicine tonight and mute my volume",
-    "If I am home remind me to take medicine tonight and mute my volume",
-    "Remind me to take medicine tonight; if I am home, mute my volume",
-    "Remind me to take medicine tonight and mute my volume unless a call is active",
+    "Remind me to take medicine tonight; show my calendar tomorrow; turn off Wi-Fi; frobnicate the gizmo",
+    "If I am home, remind me to take medicine tonight and disable Wi-Fi",
+    "If I am home remind me to take medicine tonight and disable Wi-Fi",
+    "Remind me to take medicine tonight; if I am home, disable Wi-Fi",
+    "Remind me to take medicine tonight and disable Wi-Fi unless a call is active",
     "Remind me to take medicine tonight and text +15555550123 if I am home",
     "Remind me tomorrow to buy milk and frobnicate the gizmo now",
     "Remind me to take medicine tonight and remind me",
@@ -1028,8 +1026,8 @@ def test_unknown_outer_reminder_text_is_not_swallowed_by_a_partial_write(
     "Check my email frobnicate the gizmo; remind me to call Dan tomorrow",
     "What's new across my apps frobnicate the gizmo; remind me to call Dan tomorrow",
     "Who do I know named Sarah frobnicate the gizmo; remind me to call Dan tomorrow",
-    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not show calendar",
-    "Remind me to take medicine tonight; mute my volume; frobnicate the gizmo; do not show reminders",
+    "Remind me to take medicine tonight; disable Wi-Fi; frobnicate the gizmo; do not show calendar",
+    "Remind me to take medicine tonight; disable Wi-Fi; frobnicate the gizmo; do not show reminders",
     "Remind me to take medicine tonight and",
     "Remind me tomorrow to study and",
     'Text +16505550134 saying "hello"; frobnicate the gizmo; remind me tomorrow to buy milk',
@@ -1057,7 +1055,7 @@ def test_unresolved_reminder_compound_withholds_effects_from_eager_model(
                     "name": "add_reminder", "arguments": json.dumps({
                             "title": "take medicine", "when_iso": "2099-10-02T20:00"})}}, {
                     "id": "premature-device", "type": "function", "function": {
-                        "name": "set_volume", "arguments": json.dumps({"level": 0})}}, {
+                        "name": "toggle_setting", "arguments": json.dumps({"setting": "wifi", "on": False})}}, {
                     "id": "premature-send", "type": "function", "function": {
                         "name": "send_message", "arguments": json.dumps({
                             "to": "+16505550134", "text": "Unwanted synthetic send"})}}]}
@@ -1110,7 +1108,7 @@ def test_future_coordinated_subject_is_one_reminder_without_current_notification
 
 
 @pytest.mark.parametrize("text,device,device_args,title", [
-    ("Remind me tomorrow to buy milk and mute my volume now", "set_volume", {"level": 0}, "buy milk"),
+    ("Remind me tomorrow to buy milk and disable Wi-Fi now", "toggle_setting", {"setting": "wifi", "on": False}, "buy milk"),
     ("Remind me at 6pm tomorrow to study and turn off Wi-Fi now", "toggle_setting", {"setting": "wifi", "on": False}, "study"),
     ("Remind me on October 12, 2027 to study and disable Wi-Fi now", "toggle_setting", {"setting": "wifi", "on": False}, "study"),
 ])
@@ -1121,7 +1119,7 @@ def test_explicit_current_scope_escapes_future_reminder_subject(
 
 
 @pytest.mark.parametrize("text", [
-    "Remind me tonight mute my volume to take my medicine",
+    "Remind me tonight disable Wi-Fi to take my medicine",
     "Remind me wobble the widget tomorrow to take my medicine",
     "Remind me to buy milk and reboot tomorrow",
     "Remind me to take medicine tonight and text Mom and disable Wi-Fi",
@@ -1176,12 +1174,12 @@ def test_actual_http_tonight_respects_future_and_past_clocks_in_both_zones(
 
 @pytest.mark.parametrize("text,title", [
     ("Remind me to take my medicine tonight", "take my medicine"),
-    ('Remind me to "buy milk and lock my screen" tomorrow', "buy milk and lock my screen"),
+    ('Remind me to "buy milk and turn off Wi-Fi" tomorrow', "buy milk and turn off Wi-Fi"),
     ('Remind me to "call Mom and tell her the news" tomorrow', "call Mom and tell her the news"),
-    ('Remind me tomorrow to "buy milk and mute my volume now"', "buy milk and mute my volume now"),
+    ('Remind me tomorrow to "buy milk and disable Wi-Fi now"', "buy milk and disable Wi-Fi now"),
     ('Remind me tomorrow to "buy milk or eggs if available"', "buy milk or eggs if available"),
-    ("Remind me to lock my screen tomorrow", "lock my screen"),
-    ("Remind me to mute my volume tomorrow", "mute my volume"),
+    ("Remind me to turn off Wi-Fi tomorrow", "turn off Wi-Fi"),
+    ("Remind me to disable Wi-Fi tomorrow", "disable Wi-Fi"),
     ("Remind me to turn off Wi-Fi tomorrow", "turn off Wi-Fi"),
     ("Remind me to buy milk and eggs tomorrow", "buy milk and eggs"),
     ("Remind me to buy milk, eggs, and bread tomorrow", "buy milk, eggs, and bread"),
@@ -1311,8 +1309,8 @@ def test_notification_repair_does_not_promote_unverified_legacy_provenance(
 
 
 @pytest.mark.parametrize("text", [
-    "Remind me to take my medicine tonight and notify me and lock my screen",
-    "Lock my screen; remind me to take my medicine tonight and notify me",
+    "Remind me to take my medicine tonight and notify me and turn off Wi-Fi",
+    "Turn off Wi-Fi; remind me to take my medicine tonight and notify me",
 ])
 def test_notification_support_cannot_hide_a_third_action(text):
     assert compile_task(text, now=NOW) is None
@@ -1361,8 +1359,8 @@ def test_bare_addressed_message_keeps_reminder_words_in_its_literal_body():
 
 
 @pytest.mark.parametrize("text", [
-    "Do not lock my screen, I am in the middle of a call.",
-    "Do not lock my screen; just explain what that does.",
+    "Do not turn off Wi-Fi, I am in the middle of a call.",
+    "Do not turn off Wi-Fi; just explain what that does.",
     "Do not read my clipboard, it contains private information.",
     "Do not run a speed test; just explain what it measures.",
     'Tell me what "battery" means', "Why does my car battery keep dying?",
@@ -1374,15 +1372,15 @@ def test_actual_http_device_denial_or_discussion_executes_nothing(inert_endpoint
     assert streams and all(s.get("tool_choice", "auto") == "auto" for s in streams)
 
 
-@pytest.mark.parametrize("text", ["Check my calendar tomorrow and lock my screen.",
-                                  "Check my calendar tomorrow; lock my screen."])
+@pytest.mark.parametrize("text", ["Check my calendar tomorrow and show my clipboard.",
+                                  "Check my calendar tomorrow; show my clipboard."])
 def test_actual_http_calendar_compound_reaches_interpretation_with_both_tools(inert_endpoint, text):
     request, streams, calls = inert_endpoint
     asyncio.run(request(text))
     assert calls == []
     assert streams and streams[0].get("tool_choice", "auto") == "auto"
     offered = {tool["function"]["name"] for tool in streams[0]["tools"]}
-    assert {"get_upcoming", "lock_screen"} <= offered
+    assert {"get_upcoming", "clipboard_read"} <= offered
 
 
 @pytest.mark.parametrize("text,expected", [

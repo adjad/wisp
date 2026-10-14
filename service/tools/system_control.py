@@ -1,9 +1,9 @@
-"""System-control tools: volume, clipboard, Wi-Fi, screen lock.
+"""System-control tools: clipboard, plus battery, Bluetooth and Wi-Fi helpers.
 
-All run directly from the Python backend via osascript/shell — unlike Mail/
-Calendar/Messages, none of these need a per-app TCC grant (System Events'
-volume control, pbcopy/pbpaste, networksetup, and CGSession are all available
-to any process), so there's no need to route them through the Swift app.
+All run directly from the Python backend via shell — unlike Mail/Calendar/
+Messages, none of these need a per-app TCC grant (pbcopy/pbpaste, ioreg,
+system_profiler and networksetup are all available to any process), so
+there's no need to route them through the Swift app.
 Registered on import.
 """
 from __future__ import annotations
@@ -11,14 +11,8 @@ from __future__ import annotations
 import json
 import re
 import subprocess
-from pathlib import Path
 
 from service.tools.registry import register
-
-
-def _osascript(script: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["osascript", "-e", script],
-                          capture_output=True, text=True, timeout=20)
 
 
 def _run(argv: list[str], input_text: str | None = None) -> subprocess.CompletedProcess:
@@ -37,45 +31,6 @@ def _run(argv: list[str], input_text: str | None = None) -> subprocess.Completed
 # automatic (ambient light + typing activity) with no manual override
 # exposed to software on this keyboard generation — this is a hardware/OS
 # capability gap, not a missing command to keep guessing at.
-
-
-@register(
-    "get_volume",
-    "Get the current system output volume (0-100) and whether audio is muted.",
-    {"type": "object", "properties": {}},
-    category="system_read",
-)
-def get_volume() -> str:
-    # Extracting into variables first, then coercing `as string`, matters:
-    # concatenating `output volume of (get volume settings)` directly with `&`
-    # (no intermediate variable) doesn't cleanly coerce the integer — it comes
-    # out as the record's own textual form ("6,  , false") instead of "6".
-    p = _osascript('set vs to get volume settings\n'
-                   'set v to output volume of vs\n'
-                   'set m to output muted of vs\n'
-                   'return (v as string) & " " & (m as string)')
-    if p.returncode != 0:
-        return f"(could not read volume: {p.stderr.strip() or 'unknown error'})"
-    parts = p.stdout.strip().split()
-    level = parts[0] if parts else "?"
-    muted = parts[1] == "true" if len(parts) > 1 else False
-    return f"volume {level}/100" + (" (muted)" if muted else "")
-
-
-@register(
-    "set_volume",
-    "Set the system output volume. Pass 0 to effectively mute.",
-    {"type": "object",
-     "properties": {"level": {"type": "integer", "description": "0-100"}},
-     "required": ["level"]},
-    category="system_write",
-)
-def set_volume(level: int) -> str:
-    level = max(0, min(100, int(level)))
-    p = _osascript(f"set volume output volume {level}")
-    if p.returncode != 0:
-        return f"(could not set volume: {p.stderr.strip() or 'unknown error'})"
-    return f"volume set to {level}/100"
 
 
 @register(
@@ -201,26 +156,3 @@ def wifi_power(on: bool) -> str:
     return f"Wi-Fi turned {'on' if on else 'off'}"
 
 
-@register(
-    "lock_screen",
-    "Lock the Mac's screen immediately.",
-    {"type": "object", "properties": {}},
-    category="system_write",
-)
-def lock_screen() -> str:
-    # VERIFIED BROKEN 2026-08-19 on macOS 27 beta (this machine): CGSession no
-    # longer exists at this path at all — FileNotFoundError, not a permission
-    # or usage error. It may still exist on older macOS releases, so try it
-    # first rather than dropping it outright, but don't depend on it: `pmset
-    # displaysleepnow` is a stable, documented CLI verb (`man pmset`) that
-    # sleeps the display, which locks the session under the default "require
-    # password after sleep" setting — no GUI binary path to go stale.
-    cgsession = "/System/Library/CoreServices/Menu Extras/User.menu/Contents/Resources/CGSession"
-    if Path(cgsession).exists():
-        p = _run([cgsession, "-suspend"])
-        if p.returncode == 0:
-            return "screen locked"
-    p = _run(["pmset", "displaysleepnow"])
-    if p.returncode != 0:
-        return f"(could not lock screen: {p.stderr.strip() or 'unknown error'})"
-    return "screen locked"

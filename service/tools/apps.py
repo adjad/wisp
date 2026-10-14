@@ -1,4 +1,4 @@
-"""App-control tools: open / quit apps and drive Spotify & Music.
+"""App-control tools: open and quit apps.
 
 All carry the `app_control` safety category, so the policy engine gates them:
 in view-only mode they're denied; otherwise they require the user's confirmation
@@ -89,46 +89,5 @@ def quit_app(name: str) -> str:
     return f"asked {name} to quit"
 
 
-@register(
-    "music",
-    "Control music playback in Apple Music (ships with macOS, the default) or "
-    "Spotify: play, pause, next, previous, or play_item to start a specific "
-    "playlist. Use app='spotify' only when the user names Spotify. For "
-    "play_item, `target` is a playlist NAME for Apple Music or a Spotify URI "
-    "(e.g. 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M') for Spotify.",
-    {"type": "object",
-     "properties": {
-         "action": {"type": "string",
-                    "enum": ["play", "pause", "next", "previous", "play_item"],
-                    "description": "what to do"},
-         "app": {"type": "string", "enum": ["music", "spotify"],
-                 "description": "Which player. Defaults to Apple Music."},
-         "target": {"type": "string",
-                    "description": "For play_item: playlist name (Apple Music) or Spotify URI."},
-     },
-     "required": ["action"]},
-    category="app_control",
-)
-def music(action: str, app: str = "music", target: str | None = None) -> str:
-    verbs = {"play": "play", "pause": "pause",
-             "next": "next track", "previous": "previous track"}
-    player = (app or "music").strip().lower()
-    if player not in {"music", "spotify"}:
-        return f"(unknown app {app!r}: use music or spotify)"
-    name = "Spotify" if player == "spotify" else "Music"
-    if action == "play_item":
-        if not target:
-            return ("(play_item needs a 'target': a Spotify URI such as spotify:playlist:...)"
-                    if player == "spotify" else "(play_item needs a 'target' playlist name)")
-        kind = "track" if player == "spotify" else "playlist"
-        script = f'tell application "{name}" to play {kind} {_as_str(target)}'
-    elif action in verbs:
-        script = f'tell application "{name}" to {verbs[action]}'
-    else:
-        return f"(unknown {player} action: {action})"
-    p = _osascript(script)
-    if p.returncode != 0:
-        return f"({player} error: {p.stderr.strip() or f'is {name} installed?'})"
-    return f"{player}: {action}" + (f" {target}" if target else "")
 
 

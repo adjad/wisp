@@ -55,8 +55,7 @@ def test_ordinary_prompt_still_uses_model_led_discovery(endpoint, behavior_on):
 
 
 def test_literal_envelope_uses_the_legacy_route_under_model_led(endpoint, monkeypatch):
-    monkeypatch.setattr("service.workflows.workflow20.grocery_read_attempt", lambda prompt: True)
-    endpoint.request("Show my grocery list")
+    endpoint.request("What's queued to send?")
     assert len(endpoint.baseline_calls) == 1
     assert not any(call["model_led_discovery"] for call in endpoint.agent_calls)
 

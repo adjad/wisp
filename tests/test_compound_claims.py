@@ -65,8 +65,8 @@ def tools_of(prompt: str) -> list[str]:
 _AUDIT_ROWS = [
     ("remember that I drive a BMW, and also check my calendar for today",
      "remember", "get_upcoming"),
-    ("lock my screen, and remind me to take my medicine tonight",
-     "lock_screen", "add_reminder"),
+    ("show my clipboard, and remind me to take my medicine tonight",
+     "clipboard_read", "add_reminder"),
     ("what is queued to send, and also remind me to call the dentist tomorrow",
      "list_scheduled_sends", "add_reminder"),
     ("what's mom's number, and also add a reminder to call her tonight",
@@ -201,12 +201,12 @@ def test_single_domain_routes_are_unchanged() -> None:
 
 def test_device_direct_dispatch_survives() -> None:
     print("\na lone device action keeps its router-direct fast path")
-    d = routed("lock my screen")
-    check("still pre-dispatched", [n for n, _ in d.direct_calls] == ["lock_screen"],
+    d = routed("show my clipboard")
+    check("still pre-dispatched", [n for n, _ in d.direct_calls] == ["clipboard_read"],
           f"got {d.direct_calls}")
     # …but must NOT pre-dispatch when it is only half the request: a direct
     # call consumes step 0, which is the selection step the other half needs.
-    d2 = routed("lock my screen, and remind me to take my medicine tonight")
+    d2 = routed("show my clipboard, and remind me to take my medicine tonight")
     check("compound does NOT pre-dispatch", not d2.direct_calls, f"got {d2.direct_calls}")
 
 
