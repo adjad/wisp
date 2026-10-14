@@ -57,7 +57,9 @@ class PipelineTests(unittest.TestCase):
                     "Contents/Resources/backend/.venv/bin/python3", "Contents/Resources/backend/service/main.py",
                     "Contents/Resources/backend/service/config/models.yaml", "Contents/Resources/backend/service/config/policy.yaml",
                     "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
-                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md"):
+                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"):
             path = bundle / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
