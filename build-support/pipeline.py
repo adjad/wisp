@@ -727,7 +727,14 @@ def prepare_native_for_signing(runner, bundle):
         absolute = [rpath for rpath in rpaths if rpath.startswith("/")]
         if absolute:
             loads = re.findall(r"cmd LC_(?:LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD)_DYLIB\s+cmdsize \d+\s+name (.+?) \(offset \d+\)", commands)
-            if not all(dep.startswith(("/usr/lib/", "/System/Library/")) for dep in loads):
+            external = [dep for dep in loads if not dep.startswith(("/usr/lib/", "/System/Library/"))]
+            # oMLX's custom kernels were linked on the developer's machine: their absolute
+            # rpaths point at a build tree that does not exist anywhere else, and they load
+            # @rpath/libmlx.dylib, which dyld resolves to the image `import mlx.core` already
+            # loaded (same install name). Removing the dead absolute paths is therefore safe,
+            # but only for the engine and only for @rpath names, never for absolute libraries.
+            if external and not (engine_build.is_engine_target(bundle, path)
+                                 and all(dep.startswith("@rpath/") for dep in external)):
                 raise BuildError("Cannot remove an absolute search path used by non-system dependencies")
             for rpath in absolute:
                 runner.run(f"remove-unused-rpath-{i}", ["/usr/bin/install_name_tool", "-delete_rpath", rpath, path])
