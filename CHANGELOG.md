@@ -4,27 +4,29 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
-## [1.3.3] - Unreleased
+## [1.3.3] - 2026-10-14
 
 ### Added
 
 - Wisp now includes its own copy of the oMLX AI engine. A Mac with no oMLX installed uses it automatically; one that already has oMLX keeps using it unless you switch in Settings > Models > Engine. The built-in engine runs privately on port 8791 with its own models folder (`~/.moe/engine`), so it never touches your oMLX settings or models, and Wisp refuses to send anything to a process on that port that isn't the engine it started. It needs macOS 26.2 or newer; older Macs keep using an installed oMLX. The app includes `Documentation/THIRD-PARTY-NOTICES.md` with the licences of everything the engine ships, including the copyleft ones and where to get their source.
+- An opt-in planner (`WISP_PLANNER=1`, off by default) replaces free-form tool calling with a grammar-constrained JSON plan, a menu of the most relevant tools and explicit stopping rules (`not_found`, `cannot_do`, `clarify`). It reads before it writes, drops calls that already ran and caps repeated reads. If the first plan answers or asks a question without looking anything up, it re-plans once with a lookup required; after a miss it looks once more in families nothing has tried yet. On a 59-case sample, Ling V3 passed 52 cases with it against 40 without, using about half the tool calls; it is off by default until it has been run on more real use.
 
 ### Changed
 
-These changes are to the proactive attention reminders, which still run in shadow mode by default: they record what they would do and create nothing until you switch them to live.
-
-- A plan you proposed with a guessed time is no longer treated as settled when the other person agrees. "Dinner tomorrow at 9?" answered "sure" doesn't say whether you meant 9am or 9pm, so no reminder is made until you reply yourself. "Dinner tomorrow at 7pm?" answered "sure" still makes one.
-- One plan gets one reminder. A second message about the same plan is recognised by when the plan happens, not when its reminder fires, so it no longer makes a second reminder or uses a second slot of the daily limit, whatever the reminder's lead time.
-  - A reminder you undid isn't made again by a later message about the same plan.
-  - Two different people's plans at nearby times stay separate.
-  - A crash while a reminder is being made can't lead to a duplicate later.
-- The audit log records reminder writes by id and a short fingerprint of the title, never the title itself, which quotes the message. Each line says whether the write succeeded, failed or ended unknown.
-- If the Mac's time zone can't be read, Wisp uses the last zone it read, but only if the Mac clock agrees with that zone's offset on every day of the coming year. A move to a zone that only shares today's offset (Los Angeles to Phoenix in summer) is caught, and the reminders pause instead.
+- When every call a step made was refused as a repeat of an identical read, the next step now runs with tools off and a one-line nudge to answer from the results already in hand. Before, a model could keep re-calling the refused tool until it ran out of steps, then end on a raw dump of tool output ("What do I need to do today?" took 8 steps and 35 seconds; it now takes 4 and answers in plain language). A step that mixes a refused repeat with a new call, or that still owes a required tool, is unchanged.
+- The rules in the system prompt now describe only the tools the model is actually offered. When a tight context window drops tools, the rules are rebuilt from the survivors once per turn, so a turn spends fewer tokens on instructions for tools it cannot call. The installed-skills catalog is added only when `use_skill` is offered; a matched or active skill still loads on every route.
+- Proactive attention reminders (still in shadow mode by default: they record what they would do and create nothing until you switch them to live):
+  - A plan you proposed with a guessed time is no longer treated as settled when the other person agrees. "Dinner tomorrow at 9?" answered "sure" doesn't say whether you meant 9am or 9pm, so no reminder is made until you reply yourself. "Dinner tomorrow at 7pm?" answered "sure" still makes one.
+  - One plan gets one reminder. A second message about the same plan is recognised by when the plan happens, not when its reminder fires, so it no longer makes a second reminder or uses a second slot of the daily limit, whatever the reminder's lead time.
+    - A reminder you undid isn't made again by a later message about the same plan.
+    - Two different people's plans at nearby times stay separate.
+    - A crash while a reminder is being made can't lead to a duplicate later.
+  - The audit log records reminder writes by id and a short fingerprint of the title, never the title itself, which quotes the message. Each line says whether the write succeeded, failed or ended unknown.
+  - If the Mac's time zone can't be read, Wisp uses the last zone it read, but only if the Mac clock agrees with that zone's offset on every day of the coming year. A move to a zone that only shares today's offset (Los Angeles to Phoenix in summer) is caught, and the reminders pause instead.
 
 ### Fixed
 
-- The reminders no longer fall back to UTC when the Mac's time zone can't be determined, which would have read every time in a message hours off and filed its reminder at the wrong time. With no zone they now pause, and when the zone is known again they start fresh instead of making reminders for the messages that arrived in between.
+- Proactive attention reminders no longer fall back to UTC when the Mac's time zone can't be determined, which would have read every time in a message hours off and filed its reminder at the wrong time. With no zone they now pause, and when the zone is known again they start fresh instead of making reminders for the messages that arrived in between.
 - A daylight-saving change between two clock readings could make the known zone look unknown for one pass. The zone and the clock are now compared at the same instant.
 
 ## [1.3.2] - 2026-10-14
