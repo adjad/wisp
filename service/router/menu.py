@@ -39,7 +39,7 @@ CORE: dict[str, tuple[str, ...]] = {
                           "draft_message", "search_conversations"),
     "notes": ("search_notes", "create_note", "append_note"),
     "memory": ("remember", "recall", "search_conversations", "forget"),
-    "files": ("find_files", "list_dir", "read_file", "move_path", "trash_file"),
+    "files": ("find_files", "list_dir", "read_file", "move_path", "delete_path"),
     "public_web": ("web_search", "web_fetch", "get_weather", "travel_time", "find_place"),
     "apps_media": ("open_app", "music"),
     "device": ("set_volume", "system_status", "toggle_setting"),
