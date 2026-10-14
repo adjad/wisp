@@ -809,7 +809,7 @@ class RoutingContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("get_upcoming", calendar_tools)
         self.assertNotIn("web_search", calendar_tools)
         self.assertNotEqual(calendar_read.reason,
-                            "current public information -> web_search on Ling (router-direct)")
+                            "current public information -> web_search on the agent model (router-direct)")
 
         checklist = await R.route("add a checklist to Calendar tomorrow")
         self.assertEqual(checklist.tool_subset, ["add_calendar_event"])
