@@ -378,6 +378,14 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
         with lease(), urllib.request.urlopen(req, timeout=timeout) as r:
             return _json.loads(r.read())
 
+    if is_bundled():
+        # These plain urllib calls cannot prove who answers. The bundled engine's key goes
+        # only to the child this backend launched: if none is running, the port may belong to
+        # anything, so skip (the file write still records the intent for the next start).
+        from service.engine.runtime import manager
+        if manager().incarnation() is None:
+            return False
+
     try:
         from service.config.endpoints import endpoint
         base = endpoint().base_url

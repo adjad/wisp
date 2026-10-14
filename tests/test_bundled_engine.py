@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import socket
+import subprocess
 import stat
 import sys
 import tempfile
@@ -39,6 +40,8 @@ STUB = textwrap.dedent('''
     key = json.load(open(base + "/settings.json"))["auth"]["api_key"]
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
+            with open(base + "/seen.log", "a") as seen:
+                seen.write((self.headers.get("Authorization") or "-") + "\\n")
             ok = self.headers.get("Authorization") == "Bearer " + key
             self.send_response(200 if ok else 401); self.end_headers()
             self.wfile.write(b"{}")
@@ -87,7 +90,9 @@ def test_builders() -> None:
             del os.environ["WISP_LOCAL_OMLX_KEY"]
         check("private HOME", env["HOME"] == str(m.layout.home))
         check("no Wisp env inherited", not any(k.startswith("WISP_") for k in env)
-              and set(env) == {"HOME", "PATH", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "LANG", "TMPDIR"})
+              and set(env) == {"HOME", "PATH", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "PYTHONSAFEPATH",
+                                         "PYTHONNOUSERSITE", "LANG", "TMPDIR"})
+        check("cwd and user site stay off sys.path", env["PYTHONSAFEPATH"] == "1" and env["PYTHONNOUSERSITE"] == "1")
         check("key never on argv", KEY not in " ".join(argv))
         check("loopback only", argv[argv.index("--host") + 1] == "127.0.0.1")
         check("own base path", argv[argv.index("--base-path") + 1] == str(m.layout.base_path))
@@ -145,6 +150,15 @@ def test_key_and_settings_persistence() -> None:
         check("foreign keys inside owned sections survive", kept["server"]["log_level"] == "debug")
         check("owned keys are restored", kept["server"]["port"] == again.port
               and kept["auth"]["api_key"] == again.api_key)
+        kept["model"]["model_dirs"].append("/Volumes/Models")
+        layout.settings_path.write_text(json.dumps(kept))
+        again.prepare()
+        dirs = json.loads(layout.settings_path.read_text())["model"]["model_dirs"]
+        check("a model folder added in the admin UI survives prepare",
+              "/Volumes/Models" in dirs and dirs[0] == str(layout.models_dir), str(dirs))
+        again.prepare()
+        check("prepare does not duplicate folders",
+              json.loads(layout.settings_path.read_text())["model"]["model_dirs"] == dirs)
     merged = merge_owned({"model": {"model_dirs": ["/old"], "x": 1}}, {"model": {"model_dirs": ["/new"]}})
     check("merge replaces owned keys only", merged == {"model": {"model_dirs": ["/new"], "x": 1}})
     layout = EngineLayout(Path("/nonexistent/e"), Path("/nonexistent/d"))
@@ -156,12 +170,16 @@ def test_lifecycle() -> None:
         m = make(Path(t))
         try:
             m.start()
-            check("ready with key", asyncio.run(m.wait_ready(20)))
+            check("ready", asyncio.run(m.wait_ready(20)))
+            seen = (m.layout.base_path / "seen.log").read_text().split()
+            check("readiness polling sent the API key to nobody", seen and all(h == "-" for h in seen), str(seen))
             check("pid recorded", m.layout.pid_path.exists())
             m.start()
             check("start is idempotent", m.running())
-            wrong = EngineManager(m.layout, port=m.port, api_key="b" * 64, launcher=m.launcher)
-            check("wrong key is refused", not asyncio.run(_one_probe(wrong)))
+            stranger = EngineManager(m.layout, port=m.port, api_key="b" * 64, launcher=m.launcher)
+            check("a manager that did not launch the child never reports ready",
+                  not asyncio.run(_one_probe(stranger)))
+            check("engine log is private", stat.S_IMODE(m.layout.log_path.stat().st_mode) == 0o600)
         finally:
             m.stop()
         check("stopped", not m.running() and not port_open(m.port))
@@ -204,9 +222,49 @@ def test_reaps_orphan() -> None:
                 orphan.kill()
 
 
+def test_reap_only_the_launched_engine() -> None:
+    from service.engine.manager import reap_orphan
+    with tempfile.TemporaryDirectory() as t:
+        layout = EngineLayout(root=Path(t) / "engine", data_dir=Path(t) / "data")
+        layout.base_path.mkdir(parents=True)
+        check("no pid file: nothing to reap", reap_orphan(layout) is False)
+        # A recycled pid: some other process that merely mentions the base folder.
+        bystander = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                      str(layout.base_path / "settings.json")])
+        try:
+            layout.pid_path.write_text(str(bystander.pid))
+            check("a process that only mentions the folder is not killed", reap_orphan(layout) is False)
+            time.sleep(0.2)
+            check("bystander still running", bystander.poll() is None)
+            check("stale pid file is removed", not layout.pid_path.exists())
+        finally:
+            bystander.kill()
+            bystander.wait()
+        (Path(t) / "m").mkdir()
+        (Path(t) / "live").mkdir()
+        m = make(Path(t) / "m")
+        m.start()
+        check("launched engine up", asyncio.run(m.wait_ready(20)))
+        victim = m._proc
+        m._proc = None                      # a previous backend's engine: pid file, no handle
+        try:
+            check("the launched engine is reaped", reap_orphan(m.layout) is True)
+            time.sleep(0.3)
+            check("engine gone", victim.poll() is not None)
+        finally:
+            if victim.poll() is None:
+                victim.kill()
+        live = make(Path(t) / "live")
+        live.start()
+        try:
+            check("a manager never reaps its own live child", live.reap_orphan() is False and live.running())
+        finally:
+            live.stop()
+
+
 def main() -> int:
     for fn in (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence, test_lifecycle,
-               test_busy_port, test_reaps_orphan):
+               test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

@@ -27,11 +27,17 @@ LICENSES_DIR = "licenses"
 PERMISSIVE, WEAK, STRONG, UNKNOWN = "permissive", "weak-copyleft", "strong-copyleft", "unknown"
 _SEVERITY = {PERMISSIVE: 0, UNKNOWN: 1, WEAK: 2, STRONG: 3}
 
-_STRONG = re.compile(r"\bA?GPL\b|GNU (General|Affero) Public License", re.I)
-_WEAK = re.compile(r"\bLGPL\b|GNU Lesser|GNU Library|\bMPL\b|Mozilla Public|\bEPL\b|\bCDDL\b", re.I)
+# "GPLv3", "GPL-2.0+" and "LGPLv2+" all count: only a letter run of two or more after the name
+# (a different word) ends the match.
+_STRONG = re.compile(r"(?<![A-Za-z])A?GPL(?![A-Za-z]{2})|GNU (General|Affero General) Public License", re.I)
+_WEAK = re.compile(r"(?<![A-Za-z])LGPL(?![A-Za-z]{2})|GNU Lesser|GNU Library|\bMPL\b|Mozilla Public|\bEPL\b|\bCDDL\b", re.I)
+# Licences that restrict use or redistribution beyond the copyleft families: never auto-pass.
+_RESTRICTED = re.compile(r"Commons[- ]Clause|Business Source|\bBUSL\b|\bSSPL\b|Elastic License|"
+                         r"Non-?Commercial|\bCC-BY-NC|Proprietary|All rights reserved\.? *$", re.I)
 _PERMISSIVE = re.compile(
     r"\bMIT\b|\bBSD\b|\bApache\b|\bISC\b|\bPSF\b|\bPSFL\b|Python Software Foundation|\bHPND\b|\bCNRI\b|"
-    r"\bUnlicense\b|\b0BSD\b|\bZlib\b|\bCC0\b|\bBSL\b|Boost Software|"
+    r"\bUnlicense\b|\b0BSD\b|\bZlib\b|\bCC0\b|\bBSL-1\.0\b|Boost Software|"
+    r"Permission to use, copy, modify, and/or distribute this software|"
     r"Permission is hereby granted, free of charge|"
     r"Redistribution and use in source and binary forms|"
     r"Licensed under the Apache License", re.I)
@@ -48,6 +54,8 @@ def classify(text: str) -> str:
     if not text or text.upper() in {"UNKNOWN", "NONE", "N/A"}:
         return UNKNOWN
     # "LGPL" contains "GPL": test the weak spellings first and strip them before the strong test.
+    if _RESTRICTED.search(text):
+        return UNKNOWN
     stripped = _WEAK.sub(" ", text)
     if _STRONG.search(stripped):
         return STRONG
@@ -65,14 +73,21 @@ def _file_head(path: Path, lines: int = 40) -> str:
 
 
 def _file_class(path: Path) -> str:
-    """Class of a licence file from its title. Body text is ignored for the copyleft test: an
-    LGPL file quotes the GPL, and a MIT file may list bundled components, so keywords alone mislead."""
+    """Class of a licence file from its opening lines. Body text is ignored for the copyleft test:
+    an LGPL file quotes the GPL, and a MIT file may list bundled components, so keywords alone mislead.
+    A title among the first few lines, or the standard short "free software" notice, decides."""
     head = _file_head(path)
-    title = " ".join(" ".join(line.split()) for line in head.splitlines() if line.strip())[:200]
-    if re.match(r"(GNU )?(Lesser|Library) General Public License|Mozilla Public License", title, re.I):
+    lines = [" ".join(line.split()) for line in head.splitlines() if line.strip()]
+    opening = " ".join(lines[:6])
+    if re.search(r"(GNU )?(Lesser|Library) General Public License|Mozilla Public License", opening, re.I):
         return WEAK
-    if re.match(r"GNU (General|Affero General) Public License", title, re.I):
+    if re.search(r"GNU (General|Affero General) Public License", opening, re.I):
         return STRONG
+    flat = " ".join(lines)
+    if re.search(r"is free software[^.]{0,200}(GNU|GPL)", flat, re.I):
+        return WEAK if re.search(r"Lesser|Library", flat, re.I) else STRONG
+    if _RESTRICTED.search(opening):
+        return UNKNOWN
     return PERMISSIVE if _PERMISSIVE.search(head) else UNKNOWN
 
 
@@ -131,11 +146,14 @@ def engine_packages(engine_root: Path) -> list[dict]:
         classes = [classify(declared) if len(declared) <= 100 else UNKNOWN]
         # A package that declares nothing useful is judged by its licence files. A file titled as
         # a GPL/LGPL/MPL text also counts for a declared one, so a wrong declaration cannot hide it.
-        file_classes = [_file_class(path) for path in files if path.name.upper().startswith(("LICEN", "COPYING"))]
+        named = [_file_class(path) for path in files if path.name.upper().startswith(("LICEN", "COPYING"))]
+        # Any file under licenses/ can carry a copyleft text, whatever it is called.
+        others = [_file_class(path) for path in files if not path.name.upper().startswith(("LICEN", "COPYING"))]
         if classes[0] == UNKNOWN:
-            classes = file_classes or classes
+            classes = named or classes
         else:
-            classes += [c for c in file_classes if c in (WEAK, STRONG)]
+            classes += [c for c in named if c in (WEAK, STRONG)]
+        classes += [c for c in others if c in (WEAK, STRONG)]
         klass = max(classes, key=_SEVERITY.__getitem__)
         records.append({"name": name, "version": version, "license": " ".join(declared.split())[:120],
                         "class": klass, "files": [p.relative_to(dist_info).as_posix() for p in files],
@@ -147,6 +165,12 @@ def load_reviewed(path: Path = REVIEWED) -> dict:
     doc = json.loads(path.read_text())
     if doc.get("schema") != 1 or not isinstance(doc.get("packages"), dict) or not isinstance(doc.get("omlx"), dict):
         raise LicenseError("engine-licenses.json is malformed")
+    for component in doc.get("components", []):
+        if (not isinstance(component, dict)
+                or not all(isinstance(component.get(k), str) and component[k]
+                           for k in ("name", "license", "path", "copy_as"))
+                or "/" in component["copy_as"] or component["path"].startswith(("/", ".."))):
+            raise LicenseError("Reviewed component entries need a name, licence, relative path and copy_as")
     for name, entry in doc["packages"].items():
         if (not isinstance(entry, dict) or entry.get("class") not in _SEVERITY
                 or not isinstance(entry.get("note"), str) or not entry["note"].strip()):
@@ -206,6 +230,14 @@ def notice_text(records: list[dict], reviewed: dict, omlx_version: str | None) -
                   "Pure-Python packages above ship as readable source files inside the engine, in "
                   "`Contents/Resources/engine/sp/`. For any package whose compiled parts you want rebuilt, "
                   "the source at the address listed with it is the corresponding source for the version named.", ""]
+    components = reviewed.get("components", [])
+    if components or reviewed.get("vendored_javascript"):
+        lines += ["## Other bundled components", ""]
+        for component in components:
+            lines.append(f"- {component['name']}: {component['license']} (`{LICENSES_DIR}/{component['copy_as']}`)")
+        if reviewed.get("vendored_javascript"):
+            lines.append(f"- {reviewed['vendored_javascript']}")
+        lines.append("")
     lines += ["## All packages", "", "| Package | Version | Licence | Class | Licence files |", "|---|---|---|---|---|"]
     for record in records:
         shown = f"`licenses/{_slug(record)}/`" if record["files"] else "not shipped by upstream"
@@ -249,17 +281,25 @@ def write_notices(bundle: Path, reviewed: dict | None = None) -> list[dict]:
     if not omlx_text.is_file():
         raise LicenseError(f"oMLX licence text missing: {omlx_text}")
     shutil.copyfile(omlx_text, licences / "oMLX-LICENSE.txt")
+    for component in reviewed.get("components", []):
+        source = engine_root / component["path"]
+        if source.is_symlink() or not source.is_file():
+            raise LicenseError(f"Bundled component licence missing: {component['path']}")
+        shutil.copyfile(source, licences / component["copy_as"])
     (docs / NOTICE_NAME).write_text(notice_text(records, reviewed, omlx_version), encoding="utf-8")
     return records
 
 
-def validate(bundle: Path) -> None:
+def validate(bundle: Path, reviewed: dict | None = None) -> None:
     """Structure check: the notice and licence copies must be present for a bundle that has an engine."""
     docs = Path(bundle) / "Contents/Resources/Documentation"
     for relative in (NOTICE_NAME, f"{LICENSES_DIR}/oMLX-LICENSE.txt"):
         if not (docs / relative).is_file():
             raise LicenseError(f"Missing third-party notice file: {relative}")
     text = (docs / NOTICE_NAME).read_text(encoding="utf-8")
+    for component in (reviewed or load_reviewed()).get("components", []):
+        if not (docs / LICENSES_DIR / component["copy_as"]).is_file():
+            raise LicenseError(f"Licence copy missing for {component['name']}")
     for record in engine_packages(Path(bundle) / ENGINE_DIR):
         if f"| {record['name']} | {record['version']} |" not in text:
             raise LicenseError(f"Third-party notice does not list {record['name']} {record['version']}")

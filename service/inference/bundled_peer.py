@@ -24,7 +24,9 @@ from .local_peer import AuthRefused, process_identity, tcp_listeners
 
 BUNDLED_PORT = 8791        # asserted equal to service.engine.BUNDLED_PORT in the tests
 ENGINE_SIGNING_ID = "com.wisp.engine.python3"   # set by the packaging step when signing py/bin/python3
-_CS_VALID_RUNTIME = 0x00010001
+_CS_VALID = 0x00000001
+_CS_RUNTIME = 0x00010000
+_CS_VALID_RUNTIME = _CS_VALID | _CS_RUNTIME
 _log = logging.getLogger("wisp.attestation")
 
 
@@ -75,6 +77,10 @@ class BundledOmlx(DesktopOmlx):
         """('team', 'signed') when this backend is validly signed with hardened runtime,
         ('', 'unsigned-dev') otherwise. Read from the kernel; never from config or env."""
         flags, = struct.unpack("=I", self._csops(os.getpid(), 0, 4))
+        if flags & _CS_RUNTIME and not flags & _CS_VALID:
+            # Hardened runtime was requested but the signature no longer verifies: a signed
+            # backend that lost its valid flag must not fall back to the weaker rules.
+            raise AuthRefused("desktop_signature_unqualified")
         if flags & _CS_VALID_RUNTIME != _CS_VALID_RUNTIME:
             return "", "unsigned-dev"
         team = self._csops_string(os.getpid(), 14)   # a signed backend without a Team ID refuses

@@ -86,7 +86,14 @@ def test_config_and_bad_values() -> None:
     with tempfile.TemporaryDirectory() as t:
         home = Path(t)
         (home / "config.yaml").write_text("engine:\n  mode: bundled\n")
-        check("overlay selects bundled", probe(home)["mode"] == "bundled")
+        check("a saved 'bundled' choice falls back to external when no engine is staged",
+              probe(home)["mode"] == "external-omlx")
+        engine = home / "staged-engine"
+        (engine / "py/bin").mkdir(parents=True)
+        (engine / "py/bin/python3").write_text("")
+        (engine / "ENGINE.json").write_text(json.dumps({"minimum_macos": "11.0"}))
+        check("overlay selects bundled when the engine is staged",
+              probe(home, WISP_ENGINE_ROOT=str(engine))["mode"] == "bundled")
         check("env beats overlay", probe(home, WISP_ENGINE_MODE="external-omlx")["mode"] == "external-omlx")
         check("junk value falls back", probe(home, WISP_ENGINE_MODE="turbo")["mode"] == "external-omlx")
 

@@ -1115,6 +1115,19 @@ def authority_for(port):
     return RuntimeAuthority()
 
 
+def bundled_transport(base_url, api_key):
+    """A checked transport when `base_url` is the bundled engine's port, else None.
+
+    Clients that talk to the engine outside the main inference client (embeddings, the tool
+    reranker) use it so the API key and the document text only go to the recorded engine child.
+    Other endpoints are unchanged: the caller keeps its own transport.
+    """
+    url = httpx.URL(base_url)
+    if url.port != BUNDLED_PORT or url.host not in ("127.0.0.1", "localhost"):
+        return None
+    return CredentialTransport(base_url, api_key, managed=True)
+
+
 class CredentialTransport(httpx.AsyncBaseTransport):
     def __init__(self, base_url, key, *, managed, authority=None, key_loader=None):
         self.origin, self.key = httpx.URL(base_url), key

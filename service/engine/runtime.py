@@ -14,6 +14,15 @@ def manager() -> EngineManager:
     return _manager
 
 
+def reap_orphan() -> bool:
+    """Stop an engine a previous backend left running. Safe in any mode: only the process
+    recorded in this data dir's engine.pid, and only if it is still the Wisp-launched engine."""
+    from .manager import reap_orphan as _reap
+    if _manager is not None and _manager.running():
+        return False
+    return _reap(EngineLayout(engine_code_root(), engine_data_dir()))
+
+
 def stop_if_running() -> bool:
     """Stop the bundled engine; never touches a user's oMLX. True if one was stopped."""
     if _manager is None or not _manager.running():
@@ -22,4 +31,4 @@ def stop_if_running() -> bool:
     return True
 
 
-__all__ = ["is_bundled", "manager", "stop_if_running"]
+__all__ = ["is_bundled", "manager", "reap_orphan", "stop_if_running"]

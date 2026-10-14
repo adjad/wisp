@@ -102,9 +102,14 @@ def _configured_mode(external_installed: Callable[[], bool] | None = None) -> st
         installed = external_installed or external_omlx_installed
         return (BUNDLED if engine_present() and unsupported_reason() is None
                 and not installed() else EXTERNAL)
-    value = os.environ.get("WISP_ENGINE_MODE", "").strip() or _overlay_selection()[1]
+    override = os.environ.get("WISP_ENGINE_MODE", "").strip()
+    value = override or _overlay_selection()[1]
     mode = value if value in _MODES else EXTERNAL
     if mode == BUNDLED and unsupported_reason() is not None:
+        return EXTERNAL
+    # A saved choice outlives the build that made it: a build with no engine staged must not
+    # strand a user on "bundled". An explicit launch override is a deliberate choice and stays.
+    if mode == BUNDLED and not override and not engine_present():
         return EXTERNAL
     return mode
 

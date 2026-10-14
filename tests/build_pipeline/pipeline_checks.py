@@ -77,6 +77,10 @@ class PipelineTests(unittest.TestCase):
             path.write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture" if is_native else b"fixture")
         (engine / "py/bin/python3.11").chmod(0o755)
         (engine / "py/bin/python3").symlink_to("python3.11")
+        for component in engine_licenses.load_reviewed()["components"]:   # licence files the notice copies
+            path = engine / component["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("licence text")
         p.json_write(engine / "ENGINE.json", {
             "schema": 1, "minimum_macos": "26.2", "signing_identifier": p.engine_build.ENGINE_SIGNING_ID,
             "dropped": []})

@@ -54,5 +54,20 @@
       "no_licence_file": true,
       "note": "Apache-2.0 per its package metadata; the upstream wheel ships no licence file."
     }
-  }
+  },
+  "components": [
+    {
+      "name": "CPython 3.11 interpreter (engine/py)",
+      "license": "PSF-2.0",
+      "path": "py/lib/python3.11/LICENSE.txt",
+      "copy_as": "CPython-LICENSE.txt"
+    },
+    {
+      "name": "oMLX DeepSeek V4.1 patch (engine/omlx/patches/deepseek_v41)",
+      "license": "MIT",
+      "path": "omlx/patches/deepseek_v41/LICENSE",
+      "copy_as": "oMLX-deepseek_v41-LICENSE.txt"
+    }
+  ],
+  "vendored_javascript": "The engine's admin dashboard (engine/omlx_web/static) ships third-party JavaScript libraries unmodified; each file keeps its own licence header."
 }

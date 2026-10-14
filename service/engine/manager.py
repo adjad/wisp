@@ -100,9 +100,21 @@ def stored_api_key(settings_path: Path) -> str | None:
     return key if isinstance(key, str) and len(key) >= 32 else None
 
 
-def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path]) -> dict:
-    """The keys Wisp owns. oMLX fills in every other default on first start."""
+def _saved_model_dirs(settings: dict) -> list[str]:
+    """Model folders already in settings.json (added in the engine's admin UI)."""
+    model = settings.get("model")
+    saved = model.get("model_dirs") if isinstance(model, dict) else None
+    return [d for d in saved if isinstance(d, str) and d] if isinstance(saved, list) else []
+
+
+def engine_settings(port: int, api_key: str, model_dirs: Sequence[Path],
+                    user_dirs: Sequence[str] = ()) -> dict:
+    """The keys Wisp owns. oMLX fills in every other default on first start.
+
+    Wisp's own folders come first; folders the user added in the admin UI are kept after them.
+    """
     dirs = [str(Path(d)) for d in model_dirs]
+    dirs += [d for d in user_dirs if d not in dirs]
     return {
         "version": "1.0",
         "server": {"host": "127.0.0.1", "port": port, "auto_start_on_launch": True},
@@ -149,6 +161,37 @@ def _write_private(path: Path, text: str) -> None:
         raise
 
 
+def reap_orphan(layout: EngineLayout) -> bool:
+    """Kill the engine recorded in engine.pid if it is still the engine Wisp launched.
+
+    Wisp starts the engine in its own session, so a crash or a SIGKILL of the backend leaves it
+    running. Only a process whose command line carries this layout's `--base-path` is killed,
+    never a recycled pid that merely mentions the folder. True when a process was stopped.
+    """
+    try:
+        pid = int(layout.pid_path.read_text().strip())
+    except (OSError, ValueError):
+        return False
+    stopped = False
+    if pid > 1 and f"--base-path {layout.base_path}" in _command_of(pid):
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped = True
+            for _ in range(50):
+                time.sleep(0.1)
+                os.kill(pid, 0)
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            pass
+    try:
+        layout.pid_path.unlink()
+    except OSError:
+        pass
+    return stopped
+
+
 def _command_of(pid: int) -> str:
     try:
         return subprocess.run(["/bin/ps", "-ww", "-p", str(pid), "-o", "command="],
@@ -187,8 +230,11 @@ class EngineManager:
                 "--base-path", str(self.layout.base_path)]   # model dirs come from settings.json
 
     def environment(self) -> dict[str, str]:
+        # PYTHONSAFEPATH keeps the working directory off sys.path and PYTHONNOUSERSITE keeps the
+        # user site under HOME off it, so the engine imports only the trees attribution audits.
         return {"HOME": str(self.layout.home), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
                 "PYTHONPATH": self.layout.pythonpath, "PYTHONDONTWRITEBYTECODE": "1",
+                "PYTHONSAFEPATH": "1", "PYTHONNOUSERSITE": "1",
                 "LANG": "en_US.UTF-8", "TMPDIR": str(self.layout.data_dir / "tmp")}
 
     # -- lifecycle -----------------------------------------------------------------
@@ -196,31 +242,17 @@ class EngineManager:
         for directory in (self.layout.data_dir, self.layout.home, self.layout.base_path,
                           self.layout.models_dir, self.layout.data_dir / "tmp"):
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        merged = merge_owned(read_settings(self.layout.settings_path),
-                             engine_settings(self.port, self.api_key, self.model_dirs()))
+        existing = read_settings(self.layout.settings_path)
+        merged = merge_owned(existing, engine_settings(
+            self.port, self.api_key, self.model_dirs(), user_dirs=_saved_model_dirs(existing)))
         _write_private(self.layout.settings_path, json.dumps(merged, indent=2))
 
     def _reap_stale(self) -> None:
-        """Kill an engine orphaned by a crashed Wisp; never anything else."""
-        try:
-            pid = int(self.layout.pid_path.read_text().strip())
-        except (OSError, ValueError):
-            return
-        if pid > 1 and str(self.layout.base_path) in _command_of(pid):
-            try:
-                os.kill(pid, signal.SIGTERM)
-                for _ in range(50):
-                    time.sleep(0.1)
-                    os.kill(pid, 0)
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            except OSError:
-                pass
-        try:
-            self.layout.pid_path.unlink()
-        except OSError:
-            pass
+        reap_orphan(self.layout)
+
+    def reap_orphan(self) -> bool:
+        """Stop an engine a previous Wisp left behind; never the child this manager owns."""
+        return False if self.running() else reap_orphan(self.layout)
 
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
@@ -234,7 +266,7 @@ class EngineManager:
         self.prepare()
         if self._port_in_use():
             raise EngineError(f"Port {self.port} is already in use by another process")
-        log = open(self.layout.log_path, "ab")
+        log = open(os.open(self.layout.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "ab")
         try:
             self._proc = subprocess.Popen(
                 self.command(), env=self.environment(), cwd=str(self.layout.data_dir),
@@ -272,16 +304,21 @@ class EngineManager:
             return probe.connect_ex(("127.0.0.1", self.port)) == 0
 
     async def wait_ready(self, timeout: float = 60.0) -> bool:
+        """True once the child we launched answers HTTP on its port.
+
+        This sends no credential and follows no proxy: the port is not yet known to belong to
+        the child (another process could bind it while the engine is still importing), so the
+        API key must never be offered here. Identity is proven by the attributed transport on
+        the first real request, which refuses anything that is not the recorded child.
+        """
         deadline = time.monotonic() + timeout
-        headers = {"Authorization": f"Bearer {self.api_key}"}
-        async with httpx.AsyncClient(timeout=2.0) as http:
+        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as http:
             while time.monotonic() < deadline:
-                if self._proc is not None and self._proc.poll() is not None:
+                if self._proc is None or self._proc.poll() is not None:
                     return False
                 try:
-                    reply = await http.get(f"http://127.0.0.1:{self.port}/v1/models",
-                                           headers=headers)
-                    if reply.status_code == 200:
+                    reply = await http.get(f"http://127.0.0.1:{self.port}/health")
+                    if reply.status_code < 500:
                         return True
                 except httpx.HTTPError:
                     pass

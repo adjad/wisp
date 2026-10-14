@@ -147,20 +147,20 @@ def test_notices_written() -> None:
         check("a package without upstream files says so", "not shipped by upstream" in notice
               and not (docs / "licenses/nofile-7.0").exists())
         check("the oMLX Apache text is copied", "Apache License" in (docs / "licenses/oMLX-LICENSE.txt").read_text())
-        lic.validate(root)
+        lic.validate(root, ok)
         check("validate accepts what write_notices produced", True)
         lic.write_notices(root, ok)
         check("writing twice is idempotent", (docs / "licenses/gplpkg-2.0/LICENSE").is_file())
 
         shutil.rmtree(docs / "licenses/gplpkg-2.0")
         try:
-            lic.validate(root)
+            lic.validate(root, ok)
             check("validate refuses missing licence files", False)
         except lic.LicenseError as exc:
             check("validate refuses missing licence files", "gplpkg" in str(exc))
         (docs / lic.NOTICE_NAME).unlink()
         try:
-            lic.validate(root)
+            lic.validate(root, ok)
             check("validate refuses a missing notice", False)
         except lic.LicenseError as exc:
             check("validate refuses a missing notice", lic.NOTICE_NAME in str(exc))
@@ -198,8 +198,57 @@ def test_reviewed_file() -> None:
             check("a reviewed entry needs a written reason", True)
 
 
+def test_bypass_cases() -> None:
+    """Each of these passed the first version of the gate (found by the release audit)."""
+    for text, want in (("MIT AND GPLv3", lic.STRONG), ("BSD-3-Clause AND LGPLv2+", lic.WEAK),
+                       ("GPL-2.0+", lic.STRONG), ("LGPLv3", lic.WEAK), ("Apache-2.0 WITH Commons-Clause", lic.UNKNOWN),
+                       ("Business Source License 1.1", lic.UNKNOWN), ("BSL-1.0", lic.PERMISSIVE),
+                       ("ISC", lic.PERMISSIVE), ("MIT", lic.PERMISSIVE)):
+        check(f"{text!r} -> {want}", lic.classify(text) == want, lic.classify(text))
+    notice = ("Copyright (c) 2020 Someone\n\nThis program is free software: you can redistribute it and/or modify "
+              "it under the terms of the GNU General Public License as published by the Free Software Foundation.\n")
+    with tempfile.TemporaryDirectory() as raw:
+        root = bundle(Path(raw), [
+            ("shortnotice", "1.0", "MIT", {"LICENSE": notice}),
+            ("oddname", "2.0", "MIT", {"LICENSE": MIT, "licenses/NOTES.txt": GPL3}),
+            ("lateTitle", "3.0", "MIT", {"LICENSE": "Some Project\nCopyright 2020\n\n" + GPL3}),
+            ("isc", "4.0", "ISC", {"LICENSE": "Permission to use, copy, modify, and/or distribute this software for any purpose"}),
+        ])
+        records = {r["name"]: r for r in lic.engine_packages(root / lic.ENGINE_DIR)}
+        check("a short GPL notice under a permissive declaration is caught", records["shortnotice"]["class"] == lic.STRONG)
+        check("a GPL text in an oddly named file under licenses/ is caught", records["oddname"]["class"] == lic.STRONG)
+        check("a GPL title a few lines down is caught", records["lateTitle"]["class"] == lic.STRONG)
+        check("ISC text passes", records["isc"]["class"] == lic.PERMISSIVE)
+
+
+def test_components_listed() -> None:
+    doc = lic.load_reviewed()
+    check("interpreter and patch licences are shipped as components",
+          {c["copy_as"] for c in doc["components"]} >= {"CPython-LICENSE.txt", "oMLX-deepseek_v41-LICENSE.txt"})
+    with tempfile.TemporaryDirectory() as raw:
+        root = bundle(Path(raw), [("plain", "1.0", "MIT", {"LICENSE": MIT})])
+        engine = root / lic.ENGINE_DIR
+        (engine / "py/lib/python3.11").mkdir(parents=True)
+        (engine / "py/lib/python3.11/LICENSE.txt").write_text("PSF text")
+        (engine / "omlx/patches/deepseek_v41").mkdir(parents=True)
+        (engine / "omlx/patches/deepseek_v41/LICENSE").write_text("MIT text")
+        lic.write_notices(root, doc)
+        docs = root / "Contents/Resources/Documentation"
+        notice = (docs / lic.NOTICE_NAME).read_text()
+        check("components are listed and copied",
+              "CPython 3.11" in notice and "Other bundled components" in notice and "JavaScript" in notice
+              and (docs / "licenses/CPython-LICENSE.txt").read_text() == "PSF text")
+        (engine / "py/lib/python3.11/LICENSE.txt").unlink()
+        try:
+            lic.write_notices(root, doc)
+            check("a missing component licence fails the build", False)
+        except lic.LicenseError as exc:
+            check("a missing component licence fails the build", "py/lib/python3.11/LICENSE.txt" in str(exc))
+
+
 def main() -> int:
-    for fn in (test_classification, test_packages_and_gate, test_notices_written, test_reviewed_file):
+    for fn in (test_classification, test_packages_and_gate, test_notices_written, test_reviewed_file,
+               test_bypass_cases, test_components_listed):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

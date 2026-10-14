@@ -429,6 +429,8 @@ def test_signature_policy() -> None:
         dev = fake(0x0, "", engine_flags=0x0, engine_id="anything", engine_team="")
         check("unsigned backend: structural rules decide", dev.binding() == engine_pid and dev.strength == "unsigned-dev")
         check("backend with only CS_VALID (ad hoc) is not 'signed'", fake(0x1, "", engine_flags=0).strength == "unsigned-dev")
+        check("hardened runtime without a valid signature is refused, not downgraded to unsigned-dev",
+              refuses(lambda: fake(0x00010000, "TEAM123456", engine_flags=0), "desktop_signature_unqualified"))
     finally:
         env.close()
 
@@ -448,6 +450,12 @@ def test_messages_and_reasons() -> None:
         error = at.refused(8791)
     check("reason code kept off the user message",
           "bundled_engine_not_owned" not in str(error) and error.reason == "bundled_engine_not_owned", error.reason)
+    for url, expected in (("http://127.0.0.1:8791", True), ("http://localhost:8791", True),
+                          ("http://127.0.0.1:8000", False), ("http://192.0.2.1:8791", False),
+                          ("https://example.com", False)):
+        got = at.bundled_transport(url, "k" * 64)
+        check(f"bundled_transport({url}) is {'checked' if expected else 'left to the caller'}",
+              isinstance(got, at.CredentialTransport) == expected and (got is None) == (not expected))
     desktop = at.refused(8000)
     check("desktop refusal still says oMLX", "oMLX" in str(desktop))
     check("default refused() unchanged", str(at.refused()) == at.REFUSED_MESSAGE)

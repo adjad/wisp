@@ -107,6 +107,11 @@ package with no licence file in its wheel also fails until it is listed with
 the copyleft packages with their source addresses, and a table of every package) and
 copies each package's licence files to `Documentation/licenses/<name>-<version>/`; the
 structure check refuses a bundle whose notice does not list every shipped package.
+The classifier reads a declared licence only when it is short (a pasted text is judged through
+the licence files), recognises `GPLv3`/`LGPLv2+` spellings and a GPL title or the short
+"free software" notice in any licence file, and never auto-passes Commons Clause, Business
+Source or non-commercial terms. The CPython interpreter and the oMLX DeepSeek patch are listed
+under `components` in `engine-licenses.json`; their licence files must exist at the named path.
 oMLX's own Apache-2.0 text is `build-support/engine-licenses/Apache-2.0.txt`: the oMLX
 app carries no top-level LICENSE, so replace it with the LICENSE file from the pinned
 upstream release when pinning `engine.lock.json`.

@@ -290,6 +290,12 @@ async def lifespan(app: FastAPI):
         # Make the first-launch engine choice sticky now, not when Settings is first opened.
         from service.engine.api import persist_default as persist_engine_default
         await asyncio.to_thread(persist_engine_default)
+    if remote_only_profile() is None:
+        # The engine runs in its own session, so a crash or a SIGKILL of the previous backend
+        # leaves it running (and holding its memory). Stop it in either mode before anything
+        # else looks at the port.
+        from service.engine.runtime import reap_orphan
+        await asyncio.to_thread(reap_orphan)
     if is_bundled() and remote_only_profile() is None:
         # The client reads the engine's key from its settings file at construction.
         from service.engine.runtime import manager
@@ -465,12 +471,19 @@ async def ensure_omlx() -> None:
     from service.inference.omlx_client import ModelLoadError
     if not getattr(client, "managed", True):
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if is_bundled():
+        # Only an engine this backend launched can be verified. Probing first would find a
+        # leftover from a previous backend, refuse it as "not owned", and never reach the
+        # start path that reaps it.
+        from service.engine.runtime import manager
+        if manager().incarnation() is not None and await _await_omlx(2):
+            return
+        client.invalidate_connections()
+        await _ensure_bundled_engine()
+        return
     if await _await_omlx(2):
         return
     client.invalidate_connections()
-    if is_bundled():
-        await _ensure_bundled_engine()
-        return
     if not await _omlx_cli("start", "--no-wait"):
         raise ModelLoadError("The local oMLX CLI is unavailable")
     if await _await_omlx(30):
@@ -494,6 +507,16 @@ async def _ensure_bundled_engine() -> None:
         engine.stop()
         raise ModelLoadError("The bundled AI engine did not become ready")
     client.invalidate_connections()
+    # wait_ready sent no credential, so nothing has proven who answers yet. The checked client
+    # does: it refuses anything but the recorded child before sending the API key.
+    try:
+        verified = await _await_omlx(15)
+    except ModelLoadError:
+        engine.stop()
+        raise
+    if not verified:
+        engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
 
 
 @app.get("/health")
