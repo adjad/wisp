@@ -91,7 +91,8 @@ _FORGET_INTENT_RE = re.compile(
     # "delete my notes, but keep your memory of my gate code" must not match
     # (fourth independent review of #211).
     r"(?:delete|remove|erase|wipe|clear)\s+(?:all\s+)?(?:of\s+)?(?:your\s+|the\s+|my\s+)?"
-    r"(?:memor(?:y|ies)|what\s+you\s+(?:know|remember))|"
+    r"(?:memor(?:y|ies)(?!\s+(?:card|stick|usage|pressure|leaks?|chips?|slots?))|"
+    r"what\s+you\s+(?:know|remember))|"
     r"(?:delete|remove|erase|wipe|clear)\s+(?:(?!but\b|keep\b|not\b|and\b)[^\s,.;:?!]+\s+){0,6}"
     r"from\s+(?:your\s+)?memory)\b", re.I)
 

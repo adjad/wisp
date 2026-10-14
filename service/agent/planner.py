@@ -228,17 +228,25 @@ def plan_message(plan: Plan) -> dict:
 
 _EMPTY_RESULT_RE = re.compile(
     r"^\s*(?:\(|no\s+(?:matching|matches|results?|notes?|messages?|e-?mails?|events?|memor(?:y|ies)|"
-    r"contacts?|files?|reminders?|items?|data)\b|no\s+(?:\w+\s+){1,2}(?:results?|matches)\b|"
+    r"contacts?|files?|reminders?|items?|data)\b|no\s+(?:\w+\s+){1,3}(?:results?|matches)\b|"
     r"nothing\b|none\s+found|not\s+found|"
     r"(?:i\s+)?(?:couldn'?t|could\s+not)\s+find|0\s+(?:results?|matches))", re.I)
 
 
+# Empty-result notices are one short line; real content is not. Without the
+# cap a document that merely BEGINS "No significant results were observed..."
+# counted as a miss and used up the budget before the third requested report
+# was read (fifth independent review of #211).
+EMPTY_NOTICE_MAX_CHARS = 300
+
+
 def looks_empty(result) -> bool:
-    """A read result that found nothing: blank, a parenthesized notice, or an
-    explicit no-results sentence such as recall's 'No matching memory ...'.
-    The outcome classifier calls several of these `succeeded`."""
-    text = str(result or "")
-    return not text.strip() or bool(_EMPTY_RESULT_RE.match(text))
+    """A read result that found nothing: blank, or a SHORT notice that is
+    parenthesized or opens with a no-results phrase (recall's 'No matching
+    memory ...', 'No usable public web results found.'). The outcome
+    classifier calls several of these `succeeded`."""
+    text = str(result or "").strip()
+    return not text or (len(text) <= EMPTY_NOTICE_MAX_CHARS and bool(_EMPTY_RESULT_RE.match(text)))
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:

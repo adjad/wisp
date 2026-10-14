@@ -346,7 +346,7 @@ def test_reading_three_named_files_is_not_budgeted(_fake_tools):
     "did you forget my gate code?", "why did you forget my gate code", "i forget my gate code; what is it?",
     "delete my notes, but keep your memory of my gate code",
     "delete the old file, not my memory of the gate code",
-    "remove the meeting and keep it in memory"])
+    "remove the meeting and keep it in memory", "clear my memory card", "wipe the memory stick"])
 def test_forget_is_not_offered_without_a_request_to_forget(prompt):
     from service.router.menu import build_menu
     assert "forget" not in build_menu(prompt)
@@ -400,12 +400,15 @@ def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
 
 @pytest.mark.parametrize("text", ["", "   ", "No matching memory or user conversation passage.",
                                   "No results", "(no notes matched x)", "nothing found", "Couldn't find it",
-                                  "No public web results found."])
+                                  "No public web results found.", "No usable public web results found."])
 def test_empty_results_count_as_misses(text):
     assert planner.looks_empty(text)
 
 
-@pytest.mark.parametrize("text", ["note about alpha", "Notes: gate code 4512", "Nobody emailed"])
+@pytest.mark.parametrize("text", [
+    "note about alpha", "Notes: gate code 4512", "Nobody emailed",
+    "No significant results were observed in trial A.\n" + "Table 1: enrollment and outcomes. " * 20,
+    "No unexpected matches occurred in the validation set.\n" + "Section 2 data rows. " * 20])
 def test_real_results_are_not_misses(text):
     assert not planner.looks_empty(text)
 
