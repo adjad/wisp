@@ -770,3 +770,61 @@ def test_the_detector_refuses_to_guess_a_zone(monkeypatch):
     with pytest.raises(ValueError, match="time zone"):
         detectors.UncapturedCommitment(snap([]))
     assert detectors.UncapturedCommitment(snap([]), tz=TZ).tz == TZ        # an explicit zone still works
+
+
+def test_the_clock_check_reads_both_offsets_at_one_instant(monkeypatch):
+    """At the DST change (Nov 1 2026, 2:00 PDT -> 1:00 PST) two separate reads could disagree."""
+    change = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("UTC")).timestamp()     # 2:00 PDT
+    asked = []
+
+    class Local:
+        def __init__(self, at):
+            self.tm_gmtoff = int(datetime.fromtimestamp(at, ZONE).utcoffset().total_seconds())
+
+    def localtime(at=None):
+        asked.append(at)
+        return Local(at)
+    monkeypatch.setattr(detectors.time, "localtime", localtime)
+    for at in (change - 1, change, change + 1):
+        assert detectors.matches_clock(TZ, at)
+    assert asked == [change - 1, change, change + 1]
+    assert not detectors.matches_clock("Asia/Tokyo", change)
+    assert not detectors.matches_clock("Not/AZone", change)
+
+
+
+def clock_in(monkeypatch, zone_name):
+    """The system clock as if the Mac were in `zone_name`, at any instant asked."""
+    zone = ZoneInfo(zone_name)
+
+    class Local:
+        def __init__(self, at):
+            self.tm_gmtoff = int(datetime.fromtimestamp(at, zone).utcoffset().total_seconds())
+    monkeypatch.setattr(detectors.time, "localtime", lambda at=None: Local(at))
+
+
+def test_a_zone_that_only_shares_todays_offset_fails_the_year_check(monkeypatch):
+    """Moved from Los Angeles to Phoenix: in summer both are UTC-7, so today alone cannot tell
+    them apart. Across the November DST change they split by an hour."""
+    clock_in(monkeypatch, "America/Phoenix")
+    summer = datetime(2026, 7, 1, 12, 0, tzinfo=ZoneInfo("UTC")).timestamp()
+    assert detectors.matches_clock(TZ, summer)                         # today agrees...
+    assert not detectors.matches_clock(TZ, summer, days=366)           # ...the year does not
+    assert detectors.matches_clock("America/Phoenix", summer, days=366)
+
+
+def test_a_zone_with_the_same_rules_passes_the_year_check(monkeypatch):
+    clock_in(monkeypatch, "US/Pacific")                                # another name for the same rules
+    assert detectors.matches_clock(TZ, T, days=366)
+
+
+def test_a_zone_whose_rules_diverge_later_in_the_year_fails_it(monkeypatch):
+    """Vancouver shares Los Angeles's offset today, but in current tzdata British Columbia stays on
+    daylight time from November 2026: one day's check would accept the wrong zone."""
+    van = ZoneInfo("America/Vancouver")
+    if all(datetime.fromtimestamp(T + d * 86400, van).utcoffset()
+           == datetime.fromtimestamp(T + d * 86400, ZONE).utcoffset() for d in range(367)):
+        pytest.skip("this tzdata predates British Columbia's permanent daylight time")
+    clock_in(monkeypatch, "America/Vancouver")
+    assert detectors.matches_clock(TZ, T)
+    assert not detectors.matches_clock(TZ, T, days=366)
