@@ -861,7 +861,7 @@ def test_status_still_answers_without_a_zone(isolated, client, monkeypatch):
 # ---- a remembered zone stands in while it still matches the Mac clock --------------------------
 
 def clock_matches(monkeypatch, *zones):
-    monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None: name in zones)
+    monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None, days=0: name in zones)
 
 
 def test_a_zone_read_from_the_mac_is_remembered(isolated):
@@ -921,3 +921,11 @@ async def test_create_reminder_files_in_the_remembered_zone(isolated, monkeypatc
     due = datetime(2026, 9, 21, 17, 30, tzinfo=ZoneInfo(TZ)).timestamp()
     got = await wiring.create_reminder(live.Plan("t", due, None, "today", "q"))
     assert got["ok"] is True and seen == ["2026-09-21T17:30-07:00"]
+
+
+def test_a_remembered_zone_must_match_the_clock_for_a_whole_year(isolated, monkeypatch):
+    wiring.current_zone()
+    monkeypatch.setattr(wiring, "local_timezone", lambda: None)
+    asked = []
+    monkeypatch.setattr(wiring, "matches_clock", lambda name, at=None, days=0: asked.append(days) or True)
+    assert wiring.current_zone() == TZ and asked == [wiring.REMEMBERED_ZONE_DAYS] and asked[0] >= 365
