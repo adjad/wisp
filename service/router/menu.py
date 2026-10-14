@@ -86,8 +86,14 @@ _FORGET_INTENT_RE = re.compile(
     r"^\s*(?:(?:hey\s+)?wisp[,:]?\s+)?(?:(?:please|pls|just|can\s+you|could\s+you|would\s+you|"
     r"will\s+you|i\s+want\s+you\s+to|i\s+need\s+you\s+to)\s+)*"
     r"(?:forget|stop\s+remembering|unlearn|"
-    r"(?:delete|remove|erase|wipe|clear|drop)\b[^.?!]{0,40}"
-    r"\b(?:memor(?:y|ies)|what\s+you\s+(?:know|remember)|from\s+(?:your\s+)?memory))\b", re.I)
+    # A generic deletion verb counts only with memory as its DIRECT object,
+    # or "X from your memory" inside one clause with no but/keep/not:
+    # "delete my notes, but keep your memory of my gate code" must not match
+    # (fourth independent review of #211).
+    r"(?:delete|remove|erase|wipe|clear)\s+(?:all\s+)?(?:of\s+)?(?:your\s+|the\s+|my\s+)?"
+    r"(?:memor(?:y|ies)|what\s+you\s+(?:know|remember))|"
+    r"(?:delete|remove|erase|wipe|clear)\s+(?:(?!but\b|keep\b|not\b|and\b)[^\s,.;:?!]+\s+){0,6}"
+    r"from\s+(?:your\s+)?memory)\b", re.I)
 
 
 def family_of(name: str) -> str:

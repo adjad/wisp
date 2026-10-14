@@ -343,7 +343,10 @@ def test_reading_three_named_files_is_not_budgeted(_fake_tools):
     "delete the old file and recall my gate code", "do not forget my gate code",
     "don't forget my gate code", "don\u2019t forget my gate code", "do not stop remembering my gate code",
     "do not unlearn my gate code", "do not ever again forget my gate code",
-    "did you forget my gate code?", "why did you forget my gate code", "i forget my gate code; what is it?"])
+    "did you forget my gate code?", "why did you forget my gate code", "i forget my gate code; what is it?",
+    "delete my notes, but keep your memory of my gate code",
+    "delete the old file, not my memory of the gate code",
+    "remove the meeting and keep it in memory"])
 def test_forget_is_not_offered_without_a_request_to_forget(prompt):
     from service.router.menu import build_menu
     assert "forget" not in build_menu(prompt)
@@ -354,7 +357,8 @@ def test_forget_is_not_offered_without_a_request_to_forget(prompt):
 @pytest.mark.parametrize("prompt", [
     "forget my gate code", "stop remembering my gate code", "remove my gate code from memory",
     "forget that my wife's birthday is march 3", "please forget my old address",
-    "can you delete what you know about my ex"])
+    "can you delete what you know about my ex", "delete your memory of my gate code",
+    "remove my old address from your memory", "clear all of your memories"])
 def test_forget_is_offered_for_a_request_to_forget(prompt):
     from service.router.menu import build_menu
     assert "forget" in build_menu(prompt)
@@ -395,7 +399,8 @@ def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
 
 
 @pytest.mark.parametrize("text", ["", "   ", "No matching memory or user conversation passage.",
-                                  "No results", "(no notes matched x)", "nothing found", "Couldn't find it"])
+                                  "No results", "(no notes matched x)", "nothing found", "Couldn't find it",
+                                  "No public web results found."])
 def test_empty_results_count_as_misses(text):
     assert planner.looks_empty(text)
 

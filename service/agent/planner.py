@@ -228,7 +228,8 @@ def plan_message(plan: Plan) -> dict:
 
 _EMPTY_RESULT_RE = re.compile(
     r"^\s*(?:\(|no\s+(?:matching|matches|results?|notes?|messages?|e-?mails?|events?|memor(?:y|ies)|"
-    r"contacts?|files?|reminders?|items?|data)\b|nothing\b|none\s+found|not\s+found|"
+    r"contacts?|files?|reminders?|items?|data)\b|no\s+(?:\w+\s+){1,2}(?:results?|matches)\b|"
+    r"nothing\b|none\s+found|not\s+found|"
     r"(?:i\s+)?(?:couldn'?t|could\s+not)\s+find|0\s+(?:results?|matches))", re.I)
 
 
