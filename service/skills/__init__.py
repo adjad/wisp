@@ -281,13 +281,16 @@ def uninstall(name: str) -> dict:
     return {"ok": True, "reverted_to_bundled": reverted}
 
 
-def skills_context_block(user_text: str = "", active_name: str = "") -> str:
+def skills_context_block(user_text: str = "", active_name: str = "",
+                         catalog: bool = True) -> str:
     """The per-turn system-prompt contribution: a one-line catalog of every
     enabled skill, plus the FULL body of any whose triggers matched this turn.
 
     The catalog is what makes an untriggered skill discoverable — without it
     the model has no idea `use_skill` would return anything useful, and a skill
-    with imperfect triggers would be permanently invisible.
+    with imperfect triggers would be permanently invisible. `catalog=False` is
+    for a turn that does not offer `use_skill` at all: the model could not act
+    on the list, so only matched (or active) skill bodies are returned.
     """
     enabled = [s for s in _skills.values() if s.enabled and not s.error]
     if not enabled:
@@ -299,14 +302,18 @@ def skills_context_block(user_text: str = "", active_name: str = "") -> str:
         matched.append(active)
     matched_names = {s.name for s in matched}
 
-    out = ["\nInstalled skills — procedures the user has set up for specific "
-           "tasks. Call use_skill(name) to load one's full instructions when a "
-           "request looks like it belongs to that skill:"]
-    for s in enabled:
-        line = f"- {s.name}: {s.description or '(no description)'}"
-        if s.name in matched_names:
-            line += "  [loaded below]"
-        out.append(line)
+    out = []
+    if catalog:
+        out.append("\nInstalled skills — procedures the user has set up for specific "
+                   "tasks. Call use_skill(name) to load one's full instructions when a "
+                   "request looks like it belongs to that skill:")
+        for s in enabled:
+            line = f"- {s.name}: {s.description or '(no description)'}"
+            if s.name in matched_names:
+                line += "  [loaded below]"
+            out.append(line)
+    elif not matched:
+        return ""
 
     for s in matched:
         out.append(f"\n--- Skill: {s.name} ---\nThe user set up this procedure "

@@ -1811,15 +1811,9 @@ async def run_agent(
 
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
+    # Built below, once the turn's toolset is known (the catalog is gated on it).
     skills_hint = ""
-    if allow_skill_context and not public_web_synthesis and not skills_external:
-        try:
-            from service.skills import skills_context_block
-            last_user = next((m["content"] for m in reversed(messages)
-                              if m.get("role") == "user"), "")
-            skills_hint = skills_context_block(str(last_user), active_skill)
-        except Exception:  # noqa: BLE001
-            skills_hint = ""
+    skills_allowed = allow_skill_context and not public_web_synthesis and not skills_external
 
     # style_hint (set for light-read narration) is appended LAST so it can
     # override the base prompt's "Keep answers concise" when the task is
@@ -1882,6 +1876,65 @@ async def run_agent(
     # None on the unscoped route, which yields the full prompt — same as before.
     # Stubs are names only and get no tool-specific system rules.
     sys_text = build_system({s["function"]["name"] for s in schemas} - stub_names)
+    # Instructions from installed skills whose triggers match this turn (see
+    # service/skills). Empty until the user installs one. The installed-skills
+    # CATALOG exists to make `use_skill` discoverable; on a route that does not
+    # offer use_skill the model cannot act on it, so only a skill whose
+    # triggers matched this turn (or the active workflow) rides along. Model-led
+    # discovery keeps the catalog: its toolset is chosen mid-turn and may grow
+    # to include use_skill. Measured: the catalog alone was ~180 tokens on
+    # EVERY step while any skill was installed.
+    if skills_allowed:
+        try:
+            from service.skills import skills_context_block
+            last_user = next((m["content"] for m in reversed(messages)
+                              if m.get("role") == "user"), "")
+            skills_hint = skills_context_block(
+                str(last_user), active_skill,
+                model_led_discovery or "use_skill" in turn_tool_names)
+        except Exception:  # noqa: BLE001
+            skills_hint = ""
+    # RULES ONLY FOR TOOLS THE MODEL WILL ACTUALLY SEE. _fit_window drops
+    # schemas from the end of the list when the window is tight (an 8,000-token
+    # default window kept 11 of the ambiguous route's 19 tools), but the rules
+    # were built for all of them: the live step carried mail, notes and
+    # aggregate blocks for tools that were not in the request — 10,313 chars of
+    # system text where 5,254 described the offered tools.
+    #
+    # The rules must stay a SUPERSET of whatever any step offers, so the
+    # survivor set is computed at the LEAST overhead a step can ever carry:
+    #   * the smallest system text this turn could have — the cross-cutting
+    #     core alone plus the hints (fitting with the full rules undershoots:
+    #     the smaller rebuilt text let the real fit keep five tools with rules
+    #     for four at a 7,450–7,575-token window — audit finding);
+    #   * the smallest message list — the two-message prefix alone, the only
+    #     thing _fit_window protects on EVERY step. Everything else is
+    #     droppable on some step: a large assistant turn is protected on step
+    #     0 as one of the newest two messages, then evicted once a tool call
+    #     and result land after it (second audit finding); even the user's
+    #     own message loses its protection once a user-role nudge (retry,
+    #     contract, narration) becomes the newest user message (third).
+    # Every real step carries at least that, and _fit_window sheds history and
+    # then tools monotonically with overhead, so the step's offered set lies
+    # inside this survivor set. Tools a step can FORCE bypass the fit's drop
+    # order (a forced tool is always kept), so the forced first tool and every
+    # required-group member keep their rules whatever the fit says. Once per
+    # TURN on purpose (see build_system): the prompt-cache prefix stays stable
+    # across steps.
+    if schemas and not model_led_discovery:
+        _, fitted_max, _ = _fit_window(
+            [{"role": "system", "content": build_system(set()) + identity_hint
+                                           + memory_hint + skills_hint},
+             {"role": "system", "content": now_line}],
+            schemas, max_tokens, model, force_first_tool, protected_prefix_count=2,
+            context_window=getattr(getattr(client, "target", None), "context_window", None))
+        if len(fitted_max) < len(schemas):
+            ruled = {s["function"]["name"] for s in fitted_max}
+            if force_first_tool:
+                ruled.add(force_first_tool)
+            for group in required_tool_groups:
+                ruled |= set(group)
+            sys_text = build_system(ruled & turn_tool_names)
     # Keep the instruction order: base, identity, memory, skills, clock, style,
     # test-mode and reminder safeguards. The second system message follows
     # Ling's serialized schemas; style still overrides the base concision rule.
