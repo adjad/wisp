@@ -97,17 +97,25 @@ def _admissible(name: str, text: str, *, context_open: bool, hinted: bool = Fals
     can ask for one; file deletion only with file-action words).
 
     `hinted`: the tool's family was named by the request. That opens the
-    FILE-mutation gate for non-file families only — `remember` and `forget`
-    are registered as fs_write/fs_delete, so the file gate otherwise hides
-    them from "remember that my wife's birthday is March 3". The outbound and
+    FILE-mutation gate for non-file families — `remember` is registered as
+    fs_write, so the file gate otherwise hides it from "remember that my
+    wife's birthday is March 3". Delete-category tools (`forget`) are offered
+    only when the request itself has deletion words, and the outbound and
     bulk-delete intent gates are never opened by a hint."""
     from service.tools.registry import REGISTRY, is_tool_routable
-    from service.router.semantic import gated_tool_allowed, _allowed, _gate_open
+    from service.router.semantic import gated_tool_allowed, _allowed, _gate_open, _DELETE_INTENT_RE
     from service.router.router import has_write_intent
     tool = REGISTRY.get(name)
     if tool is None or tool.unavailable_reason or not is_tool_routable(name):
         return False
+    if tool.category.endswith("_delete") and not (context_open or _DELETE_INTENT_RE.search(text)):
+        # Deletion needs deletion words, whatever the family. `forget`
+        # deletes memories and their correction history immediately; a hint
+        # for "what is my gate code" must not put it on the menu
+        # (independent review of #211, finding 1).
+        return False
     open_gate = (_gate_open(text, writing=has_write_intent(text)) or context_open
+                 # A delete tool reaches here only with deletion words (above).
                  or (hinted and family_of(name) != "files"))
     return _allowed(name, writing=open_gate) and gated_tool_allowed(name, text, context_open=context_open)
 

@@ -40,8 +40,10 @@ MAX_CALLS_PER_PLAN = 4
 PLAN_MAX_TOKENS = 1500
 THOUGHT_MAX_CHARS = 600
 
-# Per-turn budget for repeated calls to the same READ tool with different
-# arguments. The identical-arguments guard cannot see this shape, and it is the
+# Per-turn budget for repeated calls to the same SEARCH tool (a read tool
+# that takes a `query`) with different arguments. Reads of distinct named
+# targets ("read these three files" -> read_file x3) are separate work, not
+# rephrasing, and are not budgeted. The identical-arguments guard cannot see this shape, and it is the
 # common one: measured 2026-10-13 (LFM2.5-24B, production loop, 59 cases) — 93
 # same-tool repeat calls against 23 identical repeats, e.g. search_notes with
 # "gate code", "gate", "code", "home", "security", "apartment". Two attempts
@@ -222,6 +224,12 @@ def plan_message(plan: Plan) -> dict:
             "tool_calls": [{"id": f"plan_{stamp}_{i}", "type": "function",
                             "function": {"name": name, "arguments": json.dumps(args)}}
                            for i, (name, args) in enumerate(plan.calls)]}
+
+
+def is_search_tool(tool) -> bool:
+    """A read tool whose schema takes a free-text `query`: the shape where a
+    small model rephrases the same search instead of answering."""
+    return "query" in ((getattr(tool, "parameters", None) or {}).get("properties") or {})
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:

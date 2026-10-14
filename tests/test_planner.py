@@ -132,7 +132,7 @@ async def emit(_event):
 @pytest.fixture(autouse=True)
 def _fake_tools():
     calls: list[tuple[str, dict]] = []
-    saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read", "fake_send")}
+    saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read", "fake_send", "fake_open", "fake_write")}
 
     def search(query: str = "") -> str:
         calls.append(("fake_search", {"query": query}))
@@ -151,6 +151,18 @@ def _fake_tools():
         return f"sent to {to}"
     REGISTRY["fake_send"] = Tool("fake_send", "send", {
         "type": "object", "properties": {"to": {"type": "string"}}}, "messages_send", send)
+    def open_(path: str = "") -> str:
+        calls.append(("fake_open", {"path": path}))
+        return f"contents of {path}"
+    REGISTRY["fake_open"] = Tool("fake_open", "read a file", {
+        "type": "object", "properties": {"path": {"type": "string"}}}, "fs_read", open_)
+
+    def write(path: str = "", text: str = "") -> str:
+        calls.append(("fake_write", {"path": path, "text": text}))
+        return f"wrote {path}"
+    REGISTRY["fake_write"] = Tool("fake_write", "write a file", {
+        "type": "object", "properties": {"path": {"type": "string"}, "text": {"type": "string"}}},
+        "fs_write", write)
     try:
         yield calls
     finally:
@@ -280,6 +292,95 @@ def test_only_one_forced_replan_per_turn(_fake_tools):
     plan_steps = [r for r in client.requests if "response_format" in r]
     assert len(plan_steps) == 3
     assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["cannot_do"]
+
+
+# ---- independent review of #211 (BLOCK at 5abefc78): regressions
+def test_a_repeated_read_never_takes_a_fresh_write_down_with_it(_fake_tools):
+    # finding 2: deferral ran before repeat-dropping, so the write vanished.
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": "a"})),
+                         plan("call_tools", ("fake_open", {"path": "a"}), ("fake_write", {"path": "a", "text": "new"})),
+                         plan("answer")])
+    run(client, tools=("fake_open", "fake_write"), planner=True)
+    assert _fake_tools == [("fake_open", {"path": "a"}), ("fake_write", {"path": "a", "text": "new"})]
+
+
+def test_a_read_after_a_write_runs_again(_fake_tools):
+    # finding 3: a write invalidates completed reads, so read-write-read re-reads.
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": "a"})),
+                         plan("call_tools", ("fake_write", {"path": "a", "text": "new"})),
+                         plan("call_tools", ("fake_open", {"path": "a"})), plan("answer")])
+    run(client, tools=("fake_open", "fake_write"), planner=True)
+    assert [c for c in _fake_tools if c[0] == "fake_open"] == [("fake_open", {"path": "a"})] * 2
+
+
+def test_a_failed_read_may_be_retried_identically(_fake_tools):
+    # finding 3: only SUCCESSFUL reads count as already answered.
+    attempts = []
+
+    def flaky(path: str = "") -> str:
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise RuntimeError("transient")
+        return f"contents of {path}"
+    REGISTRY["fake_open"] = Tool("fake_open", "read a file", {
+        "type": "object", "properties": {"path": {"type": "string"}}}, "fs_read", flaky)
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": "a"})),
+                         plan("call_tools", ("fake_open", {"path": "a"})), plan("answer")])
+    run(client, tools=("fake_open",), planner=True)
+    assert attempts == ["a", "a"]
+
+
+def test_reading_three_named_files_is_not_budgeted(_fake_tools):
+    # finding 4: distinct targets are separate work, not search rephrasing.
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": p})) for p in ("a", "b", "c")]
+                        + [plan("answer")])
+    run(client, tools=("fake_open",), planner=True)
+    assert [a["path"] for _, a in _fake_tools] == ["a", "b", "c"]
+
+
+def test_a_lookup_question_never_offers_forget():
+    # finding 1: a memory-family hint must not open deletion.
+    from service.router.menu import build_menu
+    assert "forget" not in build_menu("what is my gate code")
+    assert "forget" not in build_menu("what's my wife's birthday")
+    assert "forget" in build_menu("forget my gate code")
+    assert "remember" in build_menu("remember that my gate code is 4512")
+
+
+def test_planned_calls_still_get_argument_bindings(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_send", {"to": "+15559999"})), plan("answer")])
+    run(client, tools=("fake_send",), planner=True,
+        tool_argument_bindings={"fake_send": {"to": "+15550100"}})
+    assert _fake_tools == [("fake_send", {"to": "+15550100"})]
+
+
+def test_a_forbidden_tool_is_not_plannable(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_send", {"to": "x"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_send"), planner=True,
+        forbidden_tools=frozenset({"fake_send"}))
+    enum = client.requests[0]["response_format"]["json_schema"]["schema"]["properties"]["calls"][
+        "items"]["properties"]["tool"]["enum"]
+    assert "fake_send" not in enum and _fake_tools == []
+
+
+def test_denied_effect_in_a_plan_does_not_run(_fake_tools):
+    class Deny:
+        async def confirm(self, action):
+            return False
+    client = PlanClient([plan("call_tools", ("fake_send", {"to": "+15550100"})), plan("answer")])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "text sam hi"}], emit,
+                               Deny(), tools=["fake_send"], planner=True))
+    assert _fake_tools == []
+
+
+def test_flag_off_requests_carry_nothing_from_the_planner(_fake_tools):
+    offered = {"fake_read", "fake_search"}
+    assert loop.build_system(offered) == loop.build_system(offered, planner=False)
+    client = PlanClient([])
+    run(client)
+    for r in client.requests:
+        assert "response_format" not in r
+        assert not any("PLANNING STEP" in str(m.get("content")) for m in r["messages"])
 
 
 def test_unparseable_plan_is_resampled_not_executed(_fake_tools):
