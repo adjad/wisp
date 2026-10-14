@@ -717,3 +717,56 @@ def test_a_question_alone_is_not_a_guess():
     asked = r("dinner tomorrow at 7pm?")
     assert asked.tentative and not asked.guessed
     assert r("dinner tomorrow at 9").guessed and r("dinner tomorrow at 9").tentative
+
+
+# ------------------------------------------- no guessed time zone (post-merge audit, low note)
+
+def fake_system(monkeypatch, *, link=None, real=None, tz_env=None, offset_hours):
+    def readlink(path):
+        if link is None:
+            raise OSError("no link")
+        return link
+    monkeypatch.setattr(detectors.os, "readlink", readlink)
+    monkeypatch.setattr(detectors.os.path, "realpath", lambda p: real or link or p)
+    if tz_env is None:
+        monkeypatch.delenv("TZ", raising=False)
+    else:
+        monkeypatch.setenv("TZ", tz_env)
+
+    class Local:
+        tm_gmtoff = int(offset_hours * 3600)
+    monkeypatch.setattr(detectors.time, "localtime", lambda *a: Local())
+
+
+def la_offset_hours():
+    return datetime.now(ZONE).utcoffset().total_seconds() / 3600
+
+
+def test_the_zone_is_read_from_the_localtime_link_when_it_matches_the_clock(monkeypatch):
+    fake_system(monkeypatch, link="/var/db/timezone/zoneinfo/America/Los_Angeles",
+                real="/private/var/db/timezone/tz/2026d.1.0/zoneinfo/America/Los_Angeles",
+                offset_hours=la_offset_hours())
+    assert detectors.local_timezone() == "America/Los_Angeles"
+
+
+@pytest.mark.parametrize("kwargs", [
+    dict(link=None, real="/etc/localtime"),                               # no link, nothing to name
+    dict(link="/usr/share/zoneinfo/Not/AZone"),                            # names no real zone
+    dict(link="/usr/share/zoneinfo/Asia/Tokyo"),                           # disagrees with the clock
+])
+def test_an_unknown_zone_is_none_never_utc(monkeypatch, kwargs):
+    fake_system(monkeypatch, offset_hours=la_offset_hours(), **kwargs)
+    assert detectors.local_timezone() is None
+
+
+def test_tz_in_the_environment_wins_when_it_matches_the_clock(monkeypatch):
+    fake_system(monkeypatch, link="/usr/share/zoneinfo/America/Los_Angeles", tz_env=":Asia/Tokyo",
+                offset_hours=9)
+    assert detectors.local_timezone() == "Asia/Tokyo"
+
+
+def test_the_detector_refuses_to_guess_a_zone(monkeypatch):
+    monkeypatch.setattr(detectors, "local_timezone", lambda: None)
+    with pytest.raises(ValueError, match="time zone"):
+        detectors.UncapturedCommitment(snap([]))
+    assert detectors.UncapturedCommitment(snap([]), tz=TZ).tz == TZ        # an explicit zone still works
