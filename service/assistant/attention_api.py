@@ -8,7 +8,6 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from service.assistant import attention_runner as runner
 from service.attention.live import MODES, load_settings, local_midnight, save_settings, settings_path, updated
-from service.attention.detectors import local_timezone
 from service.paths import MOE_DIR
 
 router = APIRouter(prefix="/assistant/attention", tags=["attention"])
@@ -33,7 +32,7 @@ class Undo(BaseModel):
 def status():
     ledger = runner.get_ledger()
     settings = load_settings(settings_path(MOE_DIR))
-    tz = local_timezone()
+    tz = runner.current_zone()
     now = time.time()
     # Without a named zone, the system clock's own local midnight is still right for "today".
     since = local_midnight(now, tz) if tz else datetime.fromtimestamp(now).replace(
