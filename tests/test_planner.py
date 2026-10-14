@@ -209,6 +209,55 @@ def test_a_plan_mixing_reads_and_effects_runs_only_the_reads(_fake_tools):
     assert _fake_tools == [("fake_read", {}), ("fake_send", {"to": "+15550100"})]
 
 
+def test_replanning_a_call_that_already_ran_answers_instead(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("call_tools", ("fake_read", {}))])
+    assert run(client, planner=True) == "DONE"
+    assert _fake_tools == [("fake_read", {})]
+    narration = client.requests[-1]
+    assert narration["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+    assert not any("already ran" in str(m.get("content")) for m in narration["messages"])
+
+
+def test_cannot_do_before_any_search_replans_with_a_call_required(_fake_tools):
+    client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    assert run(client, planner=True) == "DONE"
+    assert _fake_tools == [("fake_read", {})]
+    second = client.requests[1]["response_format"]["json_schema"]["schema"]
+    assert second["properties"]["calls"]["minItems"] == 1
+
+
+def test_cannot_do_after_a_search_is_honoured(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("cannot_do")])
+    run(client, planner=True)
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["cannot_do"]
+
+
+def test_narration_that_writes_a_tool_call_triggers_one_replan(_fake_tools):
+    class Leaky(PlanClient):
+        narrations = 0
+
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if "response_format" not in kwargs and self.narrations == 0:
+                self.narrations += 1
+                self.requests.append({"messages": list(messages), "tools": tools, **kwargs})
+                text = "<|tool_call_start|>[fake_read()]<|tool_call_end|>"
+                yield {"kind": "final", "message": {"role": "assistant", "content": text, "tool_calls": None}}
+                return
+            async for ev in super().stream_events(model, messages, tools=tools, **kwargs):
+                yield ev
+    client = Leaky([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    assert run(client, planner=True) == "DONE"
+    assert _fake_tools == [("fake_read", {})]
+
+
+def test_only_one_forced_replan_per_turn(_fake_tools):
+    client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("cannot_do")])
+    run(client, planner=True)
+    plan_steps = [r for r in client.requests if "response_format" in r]
+    assert len(plan_steps) == 3
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["cannot_do"]
+
+
 def test_unparseable_plan_is_resampled_not_executed(_fake_tools):
     client = PlanClient(['{"thought": "cut off', plan("call_tools", ("fake_read", {})), plan("answer")])
     assert run(client, planner=True) == "DONE"

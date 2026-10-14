@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass, field
 
@@ -47,6 +48,11 @@ THOUGHT_MAX_CHARS = 600
 # lets the model try one rephrasing; after that it must answer or report
 # not_found. Effect tools keep their own duplicate-effect guard.
 READ_TOOL_BUDGET = 2
+
+
+# Tool-call syntax in a tool-free narration step: LFM2.5's pythonic markers,
+# the GLM/Ling and Hermes <tool_call> tag.
+TOOL_CALL_MARKUP = re.compile(r"<\|tool_call_start\|>|<tool_call>")
 
 
 def planner_enabled(value: str | None) -> bool:
@@ -209,6 +215,17 @@ def plan_message(plan: Plan) -> dict:
             "tool_calls": [{"id": f"plan_{stamp}_{i}", "type": "function",
                             "function": {"name": name, "arguments": json.dumps(args)}}
                            for i, (name, args) in enumerate(plan.calls)]}
+
+
+def call_key(name: str, arguments) -> tuple[str, str]:
+    """Identity of a call for repeat detection: the name plus its arguments
+    as canonical JSON, whether they arrive as a dict or a JSON string."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments or "{}")
+        except ValueError:
+            return name, arguments
+    return name, json.dumps(arguments or {}, sort_keys=True)
 
 
 def budget_message(name: str, used: int) -> str:

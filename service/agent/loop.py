@@ -2574,6 +2574,8 @@ async def run_agent(
     # Read tools called this turn, by name, for the per-tool budget.
     read_tool_uses: Counter = Counter()
     budget_reads = planner
+    # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
+    replan_left = [planner]
 
     async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
                          temperature, think_on, *, last_attempt):
@@ -2584,17 +2586,33 @@ async def run_agent(
         tool-free narration step carrying the status's instruction. An
         unparseable plan returns an empty message so the attempt loop's
         empty-response retry re-samples it, except on the last attempt."""
+        # History is text-only (agent/context), so a tool message here is a
+        # result from this turn.
+        searched = any(m.get("role") == "tool" for m in step_msgs)
         raw, _, _ = await _run_step(
             client, model, step_msgs + [_plan.plan_instruction(require_call=require_call)],
             step_schemas, "auto", min(max_out, _plan.PLAN_MAX_TOKENS), emit,
             stream_content=False, temperature=temperature, no_thinking=False,
             think_on=think_on, debug=debug,
-            extra=_plan.plan_request_kwargs(
-                sorted(allowed), require_call=require_call,
-                # History is text-only (agent/context), so a tool message here
-                # is a result from this turn.
-                searched=any(m.get("role") == "tool" for m in step_msgs)))
+            extra=_plan.plan_request_kwargs(sorted(allowed), require_call=require_call,
+                                            searched=searched))
         plan = _plan.parse_plan(raw.get("content"), allowed)
+
+        async def _replan(reason: str):
+            replan_left[0] = False
+            audit("plan_replan", reason=reason)
+            return await _plan_step(step_msgs, step_schemas, allowed, True, max_out,
+                                    temperature, think_on, last_attempt=last_attempt)
+        # SELF-CONTRADICTION, part 1: cannot_do before anything was searched,
+        # with tools offered. Measured 2026-10-13, LFM2.5-24B, real planner
+        # path: 9 of 59 first plans said cannot_do for requests the menu
+        # covered ("how many meetings on wednesday", "add coffee with jordan
+        # tomorrow at 9") — the narration then said "I don't have a tool ...
+        # but I can check your calendar". Re-plan once with a call required;
+        # effects still go through confirmation and reads-before-writes.
+        if (plan.status == "cannot_do" and not plan.calls and not searched
+                and not require_call and allowed and replan_left[0]):
+            return await _replan("cannot_do_before_search")
         # READS BEFORE WRITES. A plan that mixes reads with effect calls runs
         # only the reads; the model re-plans with their results in hand.
         # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
@@ -2606,6 +2624,27 @@ async def run_agent(
         if reads and len(reads) < len(plan.calls):
             audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
             plan.calls = reads
+        # ALREADY RAN. A planned call identical to one that already ran this
+        # turn is dropped before it reaches the repeat guard; a plan made only
+        # of such calls means the model has its results, so it answers. The
+        # refusal pointer the guard would add confused the narration: measured
+        # 2026-10-13, Ling V3, real planner path — 10 of 59 cases re-planned a
+        # read that had just succeeded, and several answers then claimed
+        # nothing was found ("I couldn't find anything for today" after
+        # predict_my_day returned the day).
+        ran = {_plan.call_key(tc["function"]["name"], tc["function"].get("arguments"))
+               for m in step_msgs if m.get("role") == "assistant"
+               for tc in (m.get("tool_calls") or [])}
+        fresh = []
+        for n, a in plan.calls:
+            if (key := _plan.call_key(n, a)) not in ran:
+                ran.add(key)  # also collapses duplicates within one plan
+                fresh.append((n, a))
+        if len(fresh) < len(plan.calls):
+            audit("plan_drop_repeats", dropped=[n for n, a in plan.calls if (n, a) not in fresh])
+            plan.calls = fresh
+            if not fresh:
+                plan.status = "answer"
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
             return {}, plan.thought, False
@@ -2616,6 +2655,14 @@ async def run_agent(
             client, model, step_msgs + [{"role": "user", "content": note}], [], "auto", max_out,
             emit, stream_content=False, temperature=None, no_thinking=True, think_on=False,
             debug=debug)
+        # SELF-CONTRADICTION, part 2: the plan called nothing, then the
+        # tool-free narration tried to call a tool in text. Same run: 7 of 59
+        # LFM2.5 answers were only `<|tool_call_start|>[get_upcoming()]...`.
+        # That text must never reach the user; the model has told us it wants
+        # the tool, so re-plan once with a call required.
+        if (_plan.TOOL_CALL_MARKUP.search(answer.get("content") or "")
+                and not require_call and allowed and replan_left[0]):
+            return await _replan("narration_called_a_tool")
         return answer, plan.thought or reasoning_text, streamed
 
     for _step in range(max_steps):
