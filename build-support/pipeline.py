@@ -795,6 +795,8 @@ def relocation_smoke(runner, bundle):
 def engine_smoke(runner, bundle):
     """Import the engine's server and initialise MLX from a relocated, signed bundle.
 
+    Runs without -I on purpose: like the engine manager, it relies on PYTHONPATH.
+
     Needs working code-signing services on the build host: on a host where newly
     created executables stall in dyld this step times out and the build fails, which
     is the correct outcome (an engine that cannot start must not ship)."""
@@ -805,7 +807,7 @@ def engine_smoke(runner, bundle):
     code = ("import omlx.server, mlx.core as mx; "
             "assert mx.default_device().type == mx.DeviceType.gpu, mx.default_device(); "
             "import mlx_lm, mlx_embeddings, transformers, xgrammar; print('engine-import-ok')")
-    status, log = runner.run("relocated-engine-smoke", [root / "py/bin/python3", "-I", "-B", "-c", code],
+    status, log = runner.run("relocated-engine-smoke", [root / "py/bin/python3", "-B", "-c", code],
                              cwd=scratch, env=env, timeout=300, check=False)
     shutil.rmtree(scratch, ignore_errors=True)
     if status or "engine-import-ok" not in log.read_text():
