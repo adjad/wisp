@@ -712,3 +712,12 @@ def test_a_write_deferred_behind_its_reads_still_runs(_fake_tools):
                          plan("call_tools", ("fake_send", {"to": "+15550100"})), plan("answer")])
     run(client, tools=("fake_read", "fake_send"), planner=True)
     assert _fake_tools == [("fake_read", {}), ("fake_send", {"to": "+15550100"})]
+
+
+def test_an_identical_volatile_read_runs_at_most_twice(_fake_tools, monkeypatch):
+    # Volatile reads are never cached, so only the attempt cap stops a loop.
+    monkeypatch.setattr(loop, "_VOLATILE_READS", loop._VOLATILE_READS | {"fake_read"})
+    client = PlanClient([plan("call_tools", ("fake_read", {})) for _ in range(6)] + [plan("answer")])
+    run(client, planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]

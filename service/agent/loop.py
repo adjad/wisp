@@ -2577,7 +2577,7 @@ async def run_agent(
     succeeded_writes: set[str] = set()
     # Exact non-read calls a plan already issued this turn (after deferral).
     issued_writes: set[str] = set()
-    # Identical read calls run this turn, by _read_call_key.
+    # Identical read calls run this turn (volatile reads included), by call_key.
     read_attempts: Counter = Counter()
     budget_reads = planner
     # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
@@ -2662,14 +2662,15 @@ async def run_agent(
             if rk is not None and rk in completed_reads:
                 dropped.append(n)
                 continue
-            if rk is not None and read_attempts[rk] >= 2:
-                # The identical read ran twice and never came back usable (a
-                # usable one is in completed_reads above). Measured
-                # 2026-10-14, Ling V3: a "(... returned no data ...)" notice is
-                # not cached so it may be retried, and predict_my_day(day=today)
-                # was then planned seven times in a row.
+            if read_attempts[key] >= 2:
+                # The identical read already ran twice. A usable non-volatile
+                # one is in completed_reads above, so this one never came back
+                # usable; a volatile read (never cached) has its answer twice
+                # over. Measured 2026-10-14, Ling V3: predict_my_day(day=today)
+                # was planned seven times on an uncached "(... returned no
+                # data ...)" notice, and clipboard_read eight times.
                 dropped.append(n)
-                exhausted = True
+                exhausted = exhausted or rk is not None
                 continue
             if key in issued_writes:
                 # The identical write was already issued this turn: it either
@@ -3865,8 +3866,10 @@ async def run_agent(
             if budget_reads:
                 is_read = (ran_tool is not None and ran_tool.category in _read_categories()
                            and name not in _EFFECT_TOOLS)
-                if read_key is not None:
-                    read_attempts[read_key] += 1
+                if is_read:
+                    fixed = (tool_argument_bindings or {}).get(name) or {}
+                    read_attempts[_plan.call_key(name, {**args, **{
+                        k: v for k, v in fixed.items() if k != "_recipient_lookup"}})] += 1
                 if is_read and (outcome.status != "succeeded" or _plan.looks_empty(name, result)):
                     read_misses[name] += 1
                 elif is_read:
