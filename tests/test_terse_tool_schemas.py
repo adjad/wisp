@@ -14,7 +14,7 @@ import pytest
 import service.tools  # noqa: F401  (registers every tool)
 from service.router import reranker, semantic
 from service.tools.registry import REGISTRY, Tool, tool_schemas
-from service.tools.short_descriptions import MAX_LEN, SHORT
+from service.tools.short_descriptions import KEEP_PARAMETER_PROSE, MAX_LEN, SHORT
 
 FLAG = "WISP_TERSE_TOOL_SCHEMAS"
 
@@ -82,8 +82,16 @@ def test_flag_on_uses_short_description_and_strips_parameter_prose(monkeypatch):
     for s in schemas:
         fn = s["function"]
         tool = REGISTRY[fn["name"]]
-        assert fn["description"] == SHORT.get(fn["name"], tool.description)
-        assert _descriptions_in_schema(fn["parameters"]) == [], fn["name"]
+        if fn["name"] not in SHORT:
+            # skill/MCP/use_skill tools were never trained terse: untouched
+            assert fn["description"] == tool.description
+            assert fn["parameters"] == tool.parameters
+            continue
+        assert fn["description"] == SHORT[fn["name"]]
+        kept = KEEP_PARAMETER_PROSE.get(fn["name"], frozenset())
+        stripped = {k: v for k, v in (fn["parameters"].get("properties") or {}).items() if k not in kept}
+        assert _descriptions_in_schema({"properties": stripped}) == [], fn["name"]
+        assert "description" not in fn["parameters"], fn["name"]
         # structure other than prose is untouched
         assert fn["parameters"].get("required") == tool.parameters.get("required")
         for prop, spec in (tool.parameters.get("properties") or {}).items():
@@ -125,9 +133,47 @@ def test_unknown_tool_falls_back_to_full_description(monkeypatch):
     monkeypatch.setitem(REGISTRY, "zz_skill_probe", registered)
     monkeypatch.setenv(FLAG, "1")
     fn = tool_schemas(["zz_skill_probe"])[0]["function"]
+    # A tool without a terse line keeps every word, parameters included:
+    # nothing else would tell the model an MCP parameter's rules.
     assert fn["description"] == registered.description
-    assert fn["parameters"]["properties"]["x"] == {"type": "string"}
-    assert registered.parameters["properties"]["x"]["description"] == "prose"
+    assert fn["parameters"] == registered.parameters
+
+
+def test_literal_values_named_description_are_data_not_prose():
+    from service.tools.registry import _strip_parameter_descriptions
+    schema = {"type": "object", "description": "drop", "properties": {
+        "mode": {"type": "object", "description": "drop", "default": {"description": "keep"},
+                 "enum": [{"description": "keep"}], "const": {"description": "keep"},
+                 "examples": [{"description": "keep"}]},
+        "items_prop": {"type": "array", "items": {"type": "string", "description": "drop"}},
+        "choice": {"anyOf": [{"type": "string", "description": "drop"}, {"type": "integer"}]},
+        "description": {"type": "string", "description": "drop"},
+    }}
+    out = _strip_parameter_descriptions(schema)
+    mode = out["properties"]["mode"]
+    assert "description" not in out and "description" not in mode
+    assert mode["default"] == mode["const"] == {"description": "keep"}
+    assert mode["enum"] == mode["examples"] == [{"description": "keep"}]
+    assert out["properties"]["items_prop"]["items"] == {"type": "string"}
+    assert out["properties"]["choice"]["anyOf"] == [{"type": "string"}, {"type": "integer"}]
+    assert out["properties"]["description"] == {"type": "string"}
+    assert schema["properties"]["mode"]["description"] == "drop"   # input untouched
+
+
+def test_safety_and_format_parameters_keep_their_prose(monkeypatch):
+    monkeypatch.setenv(FLAG, "1")
+    for name, params in KEEP_PARAMETER_PROSE.items():
+        props = REGISTRY[name].parameters["properties"]
+        assert params <= set(props), (name, params - set(props))
+        emitted = tool_schemas([name])[0]["function"]["parameters"]["properties"]
+        for param in params:
+            assert emitted[param] == props[param], (name, param)
+    assert "ONLY on a retry" in tool_schemas(["send_email"])[0]["function"]["parameters"][
+        "properties"]["confirmed_self_send"]["description"]
+
+
+def test_no_terse_line_claims_a_confirmation_policy_may_skip():
+    assert not [n for n, line in SHORT.items() if "confirm-gated" in line.lower()]
 
 
 def test_retrieval_text_is_identical_with_flag_on(monkeypatch):
