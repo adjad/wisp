@@ -2620,7 +2620,7 @@ async def run_agent(
         # reads are never in it, and effect calls are never dropped here —
         # the duplicate-effect guard owns those. Runs BEFORE the deferral
         # below, so a repeated read never takes a fresh write down with it.
-        fresh, seen, dropped = [], set(), []
+        fresh, seen, dropped, exhausted = [], set(), [], False
         for n, a in plan.calls:
             if fixed := (tool_argument_bindings or {}).get(n):
                 # Compare what will EXECUTE: the step loop overlays the same
@@ -2637,12 +2637,20 @@ async def run_agent(
             if rk is not None and rk in completed_reads:
                 dropped.append(n)
                 continue
+            if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
+                    and (t := get_tool(n)) is not None and t.category in _read_categories()):
+                # Exhausted: the step loop would refuse it. Dropping it here,
+                # before the deferral below, keeps a fresh write planned
+                # beside it (third independent review of #211).
+                dropped.append(n)
+                exhausted = True
+                continue
             fresh.append((n, a))
         if dropped:
             audit("plan_drop_repeats", dropped=dropped)
             plan.calls = fresh
             if not fresh:
-                plan.status = "answer"
+                plan.status = "not_found" if exhausted else "answer"
         # READS BEFORE WRITES. A plan that mixes NEW reads with effect calls
         # runs only the reads; the model re-plans with their results in hand.
         # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
@@ -3778,7 +3786,7 @@ async def run_agent(
                     completed_reads.add(read_key)
             if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
                     and name not in _EFFECT_TOOLS
-                    and (outcome.status != "succeeded" or str(result).lstrip().startswith("("))):
+                    and (outcome.status != "succeeded" or _plan.looks_empty(result))):
                 read_misses[name] += 1
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.

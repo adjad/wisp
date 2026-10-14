@@ -209,9 +209,9 @@ def test_read_budget_stops_the_third_rephrasing(_fake_tools):
                         + [plan("not_found")])
     run(client, planner=True)
     assert [a["query"] for _, a in _fake_tools] == ["gate code", "gate"]
-    budget_result = next(m["content"] for m in client.requests[3]["messages"]
-                         if m.get("role") == "tool" and "NOT run again" in m["content"])
-    assert "fake_search has already come back empty or failed 2 times" in budget_result
+    # The exhausted third search is dropped at the plan step, which reports
+    # not_found instead of sending the model a refusal pointer.
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["not_found"]
 
 
 def test_a_plan_mixing_reads_and_effects_runs_only_the_reads(_fake_tools):
@@ -341,7 +341,9 @@ def test_reading_three_named_files_is_not_budgeted(_fake_tools):
 @pytest.mark.parametrize("prompt", [
     "what is my gate code", "what's my wife's birthday", "what was my gate code before the reset",
     "delete the old file and recall my gate code", "do not forget my gate code",
-    "don't forget my gate code"])
+    "don't forget my gate code", "don\u2019t forget my gate code", "do not stop remembering my gate code",
+    "do not unlearn my gate code", "do not ever again forget my gate code",
+    "did you forget my gate code?", "why did you forget my gate code", "i forget my gate code; what is it?"])
 def test_forget_is_not_offered_without_a_request_to_forget(prompt):
     from service.router.menu import build_menu
     assert "forget" not in build_menu(prompt)
@@ -351,7 +353,8 @@ def test_forget_is_not_offered_without_a_request_to_forget(prompt):
 
 @pytest.mark.parametrize("prompt", [
     "forget my gate code", "stop remembering my gate code", "remove my gate code from memory",
-    "forget that my wife's birthday is march 3"])
+    "forget that my wife's birthday is march 3", "please forget my old address",
+    "can you delete what you know about my ex"])
 def test_forget_is_offered_for_a_request_to_forget(prompt):
     from service.router.menu import build_menu
     assert "forget" in build_menu(prompt)
@@ -389,6 +392,27 @@ def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
     run(client, tools=("fake_open", "fake_write"), planner=True,
         tool_argument_bindings={"fake_open": {"path": "a"}})
     assert _fake_tools == [("fake_open", {"path": "a"}), ("fake_write", {"path": "a", "text": "new"})]
+
+
+@pytest.mark.parametrize("text", ["", "   ", "No matching memory or user conversation passage.",
+                                  "No results", "(no notes matched x)", "nothing found", "Couldn't find it"])
+def test_empty_results_count_as_misses(text):
+    assert planner.looks_empty(text)
+
+
+@pytest.mark.parametrize("text", ["note about alpha", "Notes: gate code 4512", "Nobody emailed"])
+def test_real_results_are_not_misses(text):
+    assert not planner.looks_empty(text)
+
+
+def test_an_exhausted_read_never_takes_a_fresh_write_down_with_it(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "a"})),
+                         plan("call_tools", ("fake_search", {"query": "b"})),
+                         plan("call_tools", ("fake_search", {"query": "c"}),
+                              ("fake_write", {"path": "status", "text": "done"})),
+                         plan("answer")])
+    run(client, tools=("fake_search", "fake_write"), planner=True)
+    assert [c[0] for c in _fake_tools] == ["fake_search", "fake_search", "fake_write"]
 
 
 def test_remember_is_offered_for_a_request_to_remember():

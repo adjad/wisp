@@ -40,8 +40,8 @@ MAX_CALLS_PER_PLAN = 4
 PLAN_MAX_TOKENS = 1500
 THOUGHT_MAX_CHARS = 600
 
-# Per-turn budget of MISSES per read tool: calls that came back empty, with a
-# parenthesized notice, or failed. After two, that tool is not run again this
+# Per-turn budget of MISSES per read tool: calls that failed or found nothing
+# (see looks_empty). After two, that tool is not run again this
 # turn and the model must answer or report not_found. Measured 2026-10-13
 # (LFM2.5-24B, production loop, 59 cases): 93 same-tool repeat calls against
 # 23 identical ones, e.g. search_notes with "gate code", "gate", "code",
@@ -224,6 +224,20 @@ def plan_message(plan: Plan) -> dict:
             "tool_calls": [{"id": f"plan_{stamp}_{i}", "type": "function",
                             "function": {"name": name, "arguments": json.dumps(args)}}
                            for i, (name, args) in enumerate(plan.calls)]}
+
+
+_EMPTY_RESULT_RE = re.compile(
+    r"^\s*(?:\(|no\s+(?:matching|matches|results?|notes?|messages?|e-?mails?|events?|memor(?:y|ies)|"
+    r"contacts?|files?|reminders?|items?|data)\b|nothing\b|none\s+found|not\s+found|"
+    r"(?:i\s+)?(?:couldn'?t|could\s+not)\s+find|0\s+(?:results?|matches))", re.I)
+
+
+def looks_empty(result) -> bool:
+    """A read result that found nothing: blank, a parenthesized notice, or an
+    explicit no-results sentence such as recall's 'No matching memory ...'.
+    The outcome classifier calls several of these `succeeded`."""
+    text = str(result or "")
+    return not text.strip() or bool(_EMPTY_RESULT_RE.match(text))
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:
