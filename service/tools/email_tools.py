@@ -134,6 +134,7 @@ _raw_mail_snapshot: RawEmailSnapshot | None = None
 _headers = cache_store.load("email_headers")
 _history = cache_store.load("email_history")
 _raw_emails = cache_store.load("email_raw")
+_swift_headers, _swift_history, _swift_raw = _headers, _history, _raw_emails
 if _headers:
     _headers_at = time.time()
 if _history:
@@ -148,18 +149,135 @@ _client = None
 
 
 def cache_emails(headers: str) -> None:
-    global _headers, _headers_at, _headers_sync_generation
-    _headers = headers or ""
+    global _headers, _headers_at, _headers_sync_generation, _swift_headers
+    _swift_headers = headers or ""
+    _headers = _compose(_swift_headers, _ext["headers"], _line_account)
     _headers_at = time.time()
     _headers_sync_generation += 1
     cache_store.save("email_headers", _headers)
 
 
 def cache_history_headers(history: str) -> None:
-    global _history, _history_at
-    _history = history or ""
+    global _history, _history_at, _swift_history
+    _swift_history = history or ""
+    _history = _compose(_swift_history, _ext["history"], _line_account)
     _history_at = time.time()
     cache_store.save("email_history", _history)
+
+
+# --- Gmail API source (service/gmail_source.py) --------------------------------
+#
+# Mail.app's local index only advances while Mail runs, so a direct Gmail read is
+# the way to have fresh mail with Mail closed. Its rows ride in the same three
+# caches: the Swift push is kept verbatim in `_swift_*`, the connector's rows in
+# `_ext`, and the live caches are recomposed from both. Swift rows for an
+# account the connector covers are dropped, so the same inbox is never counted
+# twice (and Mail being closed or stale can't shadow the fresher Gmail rows).
+_swift_headers: str = ""
+_swift_history: str = ""
+_swift_raw: str = ""
+_ext: dict[str, str] = {"headers": "", "history": "", "raw": ""}
+_ext_address: str = ""
+_ext_ready_at: float = 0.0
+_ext_swift_residual: bool = False   # Mail still supplies accounts Gmail doesn't cover
+_EXT_FRESH_SECONDS = 1200.0
+_GMAIL_ALIASES = ("gmail", "google", "google mail")
+
+
+def _covered(account: str) -> bool:
+    if not _ext_address:
+        return False
+    a = (account or "").strip().lower()
+    return a == _ext_address or a in _GMAIL_ALIASES
+
+
+def _line_account(line: str) -> str:
+    if line.startswith("H2\x01"):
+        fields = line.split("\x01")
+        return fields[3] if len(fields) > 3 else ""
+    parts = line.split(" | ", 4)
+    if len(parts) >= 3 and parts[1] in ("R", "U"):
+        return parts[2]
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _raw_account(record: str) -> str:
+    parts = record.split(_RAW_FS)
+    if len(parts) in (8, 9):
+        return parts[2] if len(parts) > 2 else ""
+    return parts[1] if len(parts) > 1 else ""
+
+
+def _compose(swift: str, ext: str, account_of, sep: str = "\n") -> str:
+    global _ext_swift_residual
+    if not _ext_address:
+        return swift
+    kept = [r for r in swift.split(sep) if r.strip() and not _covered(account_of(r))]
+    _ext_swift_residual = bool(kept)
+    rows = [r for r in (ext or "").split(sep) if r.strip()]
+    rows.extend(kept)
+    if sep == "\n":
+        rows.sort(key=lambda r: _row_ts(r), reverse=True)
+    return sep.join(rows)
+
+
+def _row_ts(row: str) -> float:
+    try:
+        if row.startswith("H2\x01"):
+            return float(row.split("\x01", 2)[1])
+        return float(row.split(" | ", 1)[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def set_external_account(address: str) -> None:
+    """Declare (or clear, with "") the Gmail address the connector reads."""
+    global _ext_address, _ext_ready_at
+    _ext_address = (address or "").strip().lower()
+    if not _ext_address:
+        _ext.update(headers="", history="", raw="")
+        _ext_ready_at = 0.0
+    _recompose_all()
+    if _ext_address:
+        cache_identity(_swift_identity)
+
+
+def _recompose_all() -> None:
+    global _headers, _history, _raw_emails
+    _headers = _compose(_swift_headers, _ext["headers"], _line_account)
+    _history = _compose(_swift_history, _ext["history"], _line_account)
+    _raw_emails = _compose(_swift_raw, _ext["raw"], _raw_account, _RAW_RS)
+
+
+def cache_external_emails(*, headers: str | None = None, history: str | None = None,
+                          raw: str | None = None) -> None:
+    """Install a connector sync (any subset of the three caches)."""
+    global _headers_at, _history_at, _raw_emails_at, _headers_sync_generation
+    global _ext_ready_at
+    now = time.time()
+    if headers is not None:
+        _ext["headers"] = headers
+        _headers_at = now
+        _headers_sync_generation += 1
+        _ext_ready_at = now
+    if history is not None:
+        _ext["history"] = history
+        _history_at = now
+    if raw is not None:
+        _ext["raw"] = raw
+        _raw_emails_at = now
+    _recompose_all()
+    if headers is not None:
+        cache_store.save("email_headers", _headers)
+    if history is not None:
+        cache_store.save("email_history", _history)
+    if raw is not None:
+        cache_store.save("email_raw", _raw_emails)
+
+
+def _external_fresh() -> bool:
+    return bool(_ext_address and _ext_ready_at and
+                time.time() - _ext_ready_at < _EXT_FRESH_SECONDS)
 
 
 # The user's OWN email addresses, from Mail.app's configured accounts (pushed
@@ -185,10 +303,16 @@ def _is_placeholder(email: str) -> bool:
     return email.lower().strip().endswith(_PLACEHOLDER_DOMAINS)
 
 
+_swift_identity: list[str] = []
+
+
 def cache_identity(emails: list[str]) -> None:
-    global _identity_emails
-    _identity_emails = [e.strip() for e in (emails or [])
-                        if e and e.strip() and not _is_placeholder(e)]
+    global _identity_emails, _swift_identity
+    _swift_identity = [e.strip() for e in (emails or [])
+                       if e and e.strip() and not _is_placeholder(e)]
+    _identity_emails = list(_swift_identity)
+    if _ext_address and _ext_address not in (e.lower() for e in _identity_emails):
+        _identity_emails.append(_ext_address)
     cache_store.save("identity_emails", "\n".join(_identity_emails))
 
 
@@ -198,6 +322,7 @@ def get_identity_emails() -> list[str]:
 
 _identity_emails = [e for e in cache_store.load("identity_emails").splitlines()
                     if e and not _is_placeholder(e)]
+_swift_identity = list(_identity_emails)
 
 
 def set_email_availability(available: bool, reason: str = "",
@@ -213,6 +338,8 @@ def set_email_availability(available: bool, reason: str = "",
 def _no_inbox_message() -> str:
     """The right 'no data' message for the CURRENT sync state — only blames
     permission when the sync actually failed."""
+    if _email_available is False and _external_fresh():
+        return "No emails found."
     if _email_available is False:
         reason = _email_reason or "Mail Automation access isn't granted"
         return (f"(Can't read Mail: {reason}. Grant Wisp access in System Settings ▸ "
@@ -235,6 +362,8 @@ def email_sync_state() -> str:
     good fallback later, but they cannot answer "today" accurately until the
     app has told us its first live scan finished.
     """
+    if _external_fresh():
+        return "ready"
     if _email_available is False:
         return "unavailable"
     if _email_sync_pending:
@@ -246,6 +375,8 @@ def email_sync_state() -> str:
 
 def email_freshness_warning() -> str:
     """Read completion is not proof that Mail fetched everything from a server."""
+    if _external_fresh() and not _ext_swift_residual:
+        return ""   # read directly from Gmail; Mail's cache isn't in play
     if email_sync_state() == "ready" and _email_read_source == "local_index":
         return ("Email is from Mail’s local cache. Newer messages may be missing; "
                 "open Mail and let it refresh, then try again.")
@@ -436,7 +567,7 @@ def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSna
 
 def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     global _raw_emails, _raw_emails_at, _raw_reference_scan
-    global _raw_mail_snapshot, _raw_snapshot_generation
+    global _raw_mail_snapshot, _raw_snapshot_generation, _swift_raw
     raw = raw or ""
     stamp = time.time()
     scan = dict(coverage or {})
@@ -456,11 +587,15 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
             _raw_reference_scan = {**scan, "synced_at": stamp, "complete": False}
             _raw_mail_snapshot = snapshot
             return  # Preserve old display bytes, never their complete provenance.
-        _raw_emails, _raw_emails_at = raw, stamp
+        # Display bytes merge in Gmail rows; the evidence snapshot above stays
+        # Mail-only (task evidence/references address Mail messages).
+        _swift_raw = raw
+        _raw_emails = _compose(raw, _ext["raw"], _raw_account, _RAW_RS)
+        _raw_emails_at = stamp
         _raw_reference_scan = {**scan, "synced_at": stamp,
                                "decode_complete": candidate.decode_complete}
         _raw_mail_snapshot = snapshot  # Atomic body + identity + coverage publication.
-        cache_store.save("email_raw", raw)
+        cache_store.save("email_raw", _raw_emails)
 
 
 def raw_reference_metadata() -> dict:

@@ -376,6 +376,9 @@ async def lifespan(app: FastAPI):
         # capture (local model only; it would idle anyway since the fast role
         # is unmanaged).
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+    # Direct Gmail read (idle unless the user connected Gmail); not inference.
+    from service import gmail_source
+    started_tasks.append(asyncio.create_task(gmail_source.run()))
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
@@ -2743,6 +2746,32 @@ async def assistant_sync_emails(body: dict[str, Any]) -> dict[str, Any]:
                                str(diag.get("reason") or ""),
                                bool(diag.get("syncing", False)),
                                str(diag.get("read_source") or ""))
+    return {"ok": True}
+
+
+@app.get("/assistant/gmail/status")
+async def gmail_status() -> dict[str, Any]:
+    from service import gmail_source
+    return gmail_source.status()
+
+
+@app.post("/assistant/gmail/connect")
+async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
+    """Begin read-only Gmail consent. `client_id`/`client_secret` come from the
+    user's own Google Cloud Desktop OAuth client; open the returned `auth_url`
+    in a browser."""
+    from service import gmail_source
+    client_id = str(body.get("client_id") or gmail_source.load_config().get("client_id") or "")
+    secret = str(body.get("client_secret") or gmail_source.load_config().get("client_secret") or "")
+    if not client_id:
+        return {"ok": False, "error": "client_id is required"}
+    return {"ok": True, "auth_url": await gmail_source.begin_authorization(client_id, secret)}
+
+
+@app.post("/assistant/gmail/disconnect")
+async def gmail_disconnect() -> dict[str, Any]:
+    from service import gmail_source
+    await gmail_source.disconnect()
     return {"ok": True}
 
 
