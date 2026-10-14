@@ -137,6 +137,14 @@ def build_menu(text: str, *, last_assistant: str | None = None,
     families = hinted_families(masked)
     if followup:
         families += [f for f in hinted_families(last_assistant or "") if f not in families]
+    if not {"messages_contacts", "mail"} & set(families):
+        # Addressed to someone but naming no channel: "holler at Sam", "ask
+        # Sam if he's free", "give dad a ring". The outbound gate already
+        # opened for these; what was missing was the family, so the menu
+        # carried no messaging tool at all (12 of the 16 corpus misses).
+        from service.router.semantic import outbound_intent
+        if outbound_intent(masked):
+            families.append("messages_contacts")
     if families:
         # The request named its domains: retrieval keeps its top two (typos
         # and synonyms the hints miss: "chek my texts", "wether") plus a few

@@ -314,6 +314,13 @@ def test_menu_covers_the_measured_router_misses(prompt, must):
     assert must in build_menu(prompt)
 
 
+@pytest.mark.parametrize("prompt", ["holler at Sam", "ask Sam if he's free for dinner", "give dad a ring"])
+def test_a_request_addressed_to_someone_offers_messaging(prompt):
+    from service.router.menu import build_menu
+    menu = build_menu(prompt)
+    assert {"send_message", "draft_message"} & set(menu)
+
+
 def test_a_hinted_request_does_not_import_unrelated_families():
     from service.router.menu import build_menu
     menu = build_menu("whats on my todo list")
