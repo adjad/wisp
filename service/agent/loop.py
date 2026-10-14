@@ -700,7 +700,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                     temperature: float | None = None,
                     no_thinking: bool = False,
                     think_on: bool = False,
-                    debug: bool = True) -> tuple[dict, str, bool]:
+                    debug: bool = True,
+                    extra: dict | None = None) -> tuple[dict, str, bool]:
     """One model turn, streamed. Emits live answer tokens (as `delta` events) and
     throttled `heartbeat`s during silent reasoning so the agent path is never a
     no-feedback black hole. Returns (assembled_message, reasoning_text,
@@ -729,7 +730,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     events = client.stream_events(
             model, msgs, tools=schemas, tool_choice=choice, max_tokens=max_tokens,
             temperature=temperature,
-            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on))
+            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on),
+            **(extra or {}))
     async for ev in events:
         kind = ev["kind"]
         if kind == "reasoning":
@@ -794,6 +796,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         # Wisp didn't send.
         if temperature is not None:
             request["temperature"] = temperature
+        if extra:
+            request.update(extra)
         await emit({
             "type": "raw_model_io",
             "model": model,
@@ -872,9 +876,10 @@ def _system_blocks() -> list[tuple[frozenset, str]]:
 
 
 _BLOCKS_CACHE: list[tuple[frozenset, str]] | None = None
+_AGGREGATE_BLOCK_PREFIX = "- AGGREGATE QUESTIONS"
 
 
-def build_system(offered: set[str]) -> str:
+def build_system(offered: set[str], *, planner: bool = False) -> str:
     """The system prompt cut down to the tools actually offered this turn.
 
     Measured before this existed: SYSTEM was ~3,694 tokens sent on EVERY
@@ -898,8 +903,14 @@ def build_system(offered: set[str]) -> str:
     global _BLOCKS_CACHE
     if _BLOCKS_CACHE is None:
         _BLOCKS_CACHE = _system_blocks()
+    # Planner turns drop the AGGREGATE block: it orders get_upcoming AND
+    # summarize_messages AND summarize_emails AND search_notes for any to-do
+    # question, which contradicts the plan step's "fewest calls" rule and is
+    # the measured over-collection shape (LFM2.5-24B, "whats on my todo list":
+    # 7 calls, 5 outside what the question needed).
     return "\n".join(text for named, text in _BLOCKS_CACHE
-                     if not named or (named & offered))
+                     if (not named or (named & offered))
+                     and not (planner and text.startswith(_AGGREGATE_BLOCK_PREFIX)))
 
 # Smallest answer worth generating. Below this the model can't finish a
 # sentence, so a window too tight for it needs tools/history dropped instead.
@@ -1302,6 +1313,11 @@ async def run_agent(
     # export, so main.py threads the client's own debugMode flag through here
     # rather than sending it unconditionally.
     debug: bool = True,
+    # Grammar-constrained planning (service/agent/planner.py). Each selection
+    # step returns a JSON plan oMLX enforces; the plan becomes an ordinary
+    # tool_calls message, so every guard below still applies. Local managed
+    # oMLX only; ignored (free-form loop) anywhere else.
+    planner: bool = False,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1398,6 +1414,15 @@ async def run_agent(
     if tools is None and (public_web_synthesis or not _meeting_local_client(client)):
         from service.tools.registry import routable_tool_names
         tools = sorted(routable_tool_names() - {"plan_meeting", "commit_private_meeting"})
+
+    # Planning needs oMLX's logit-level grammar, i.e. the managed local engine.
+    # Model-led discovery keeps its own stub protocol; cloud synthesis has no
+    # selection step at all.
+    planner = bool(planner and not model_led_discovery and not public_web_synthesis
+                   and getattr(client, "managed", False))
+
+    def _sys(offered: set[str]) -> str:
+        return build_system(offered, planner=planner)
 
     # Monotonic negative authority. main supplies actual pre-trimming session
     # provenance; other callers conservatively retain assistant/tool/system
@@ -1875,7 +1900,7 @@ async def run_agent(
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
     # Stubs are names only and get no tool-specific system rules.
-    sys_text = build_system({s["function"]["name"] for s in schemas} - stub_names)
+    sys_text = _sys({s["function"]["name"] for s in schemas} - stub_names)
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one. The installed-skills
     # CATALOG exists to make `use_skill` discoverable; on a route that does not
@@ -1923,7 +1948,7 @@ async def run_agent(
     # across steps.
     if schemas and not model_led_discovery:
         _, fitted_max, _ = _fit_window(
-            [{"role": "system", "content": build_system(set()) + identity_hint
+            [{"role": "system", "content": _sys(set()) + identity_hint
                                            + memory_hint + skills_hint},
              {"role": "system", "content": now_line}],
             schemas, max_tokens, model, force_first_tool, protected_prefix_count=2,
@@ -1934,7 +1959,7 @@ async def run_agent(
                 ruled.add(force_first_tool)
             for group in required_tool_groups:
                 ruled |= set(group)
-            sys_text = build_system(ruled & turn_tool_names)
+            sys_text = _sys(ruled & turn_tool_names)
     # Keep the instruction order: base, identity, memory, skills, clock, style,
     # test-mode and reminder safeguards. The second system message follows
     # Ling's serialized schemas; style still overrides the base concision rule.
@@ -2539,6 +2564,131 @@ async def run_agent(
         await emit({"type": "done"})
         return response
 
+    from service.agent import planner as _plan
+    # Read calls this turn that came back empty or failed, by tool name, for
+    # the per-tool miss budget (see planner.READ_MISS_BUDGET).
+    read_misses: Counter = Counter()
+    budget_reads = planner
+    # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
+    replan_left = [planner]
+
+    async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
+                         temperature, think_on, *, last_attempt):
+        """One grammar-constrained planning step (see service/agent/planner).
+
+        Returns the same (message, reasoning, streamed) triple as _run_step: a
+        tool_calls message for a plan with calls; otherwise the answer from one
+        tool-free narration step carrying the status's instruction. An
+        unparseable plan returns an empty message so the attempt loop's
+        empty-response retry re-samples it, except on the last attempt."""
+        # History is text-only (agent/context), so a tool message here is a
+        # result from this turn.
+        searched = any(m.get("role") == "tool" for m in step_msgs)
+        raw, _, _ = await _run_step(
+            client, model, step_msgs + [_plan.plan_instruction(require_call=require_call)],
+            step_schemas, "auto", min(max_out, _plan.PLAN_MAX_TOKENS), emit,
+            stream_content=False, temperature=temperature, no_thinking=False,
+            think_on=think_on, debug=debug,
+            extra=_plan.plan_request_kwargs(sorted(allowed), require_call=require_call,
+                                            searched=searched))
+        plan = _plan.parse_plan(raw.get("content"), allowed)
+
+        async def _replan(reason: str):
+            replan_left[0] = False
+            audit("plan_replan", reason=reason)
+            return await _plan_step(step_msgs, step_schemas, allowed, True, max_out,
+                                    temperature, think_on, last_attempt=last_attempt)
+        # SELF-CONTRADICTION, part 1: cannot_do before anything was searched,
+        # with tools offered. Measured 2026-10-13, LFM2.5-24B, real planner
+        # path: 9 of 59 first plans said cannot_do for requests the menu
+        # covered ("how many meetings on wednesday", "add coffee with jordan
+        # tomorrow at 9") — the narration then said "I don't have a tool ...
+        # but I can check your calendar". Re-plan once with a call required;
+        # effects still go through confirmation and reads-before-writes.
+        if (plan.status == "cannot_do" and not plan.calls and not searched
+                and not require_call and allowed and replan_left[0]):
+            return await _replan("cannot_do_before_search")
+        # ALREADY ANSWERED. A planned read whose identical call already
+        # SUCCEEDED this turn, with no write since, is dropped before it
+        # reaches the repeat guard; the refusal pointer the guard would add
+        # confused the narration. Measured 2026-10-13, Ling V3, real planner
+        # path: 10 of 59 cases re-planned a read that had just succeeded, and
+        # several answers then claimed nothing was found ("I couldn't find
+        # anything for today" after predict_my_day returned the day). Only
+        # the loop's own completed_reads decides this: a failed read may be
+        # retried, a write clears it (read-write-read re-reads), volatile
+        # reads are never in it, and effect calls are never dropped here —
+        # the duplicate-effect guard owns those. Runs BEFORE the deferral
+        # below, so a repeated read never takes a fresh write down with it.
+        fresh, seen, dropped, exhausted = [], set(), [], False
+        for n, a in plan.calls:
+            if fixed := (tool_argument_bindings or {}).get(n):
+                # Compare what will EXECUTE: the step loop overlays the same
+                # bindings before its repeat guard (independent review of
+                # #211: a binding turned a "new" read into a repeat, and the
+                # write deferred beside it was lost).
+                a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+            key = _plan.call_key(n, a)
+            if key in seen:  # duplicate within one plan
+                dropped.append(n)
+                continue
+            seen.add(key)
+            rk = _read_call_key(n, a)
+            if rk is not None and rk in completed_reads:
+                dropped.append(n)
+                continue
+            if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
+                    and (t := get_tool(n)) is not None and t.category in _read_categories()):
+                # Exhausted: the step loop would refuse it. Dropping it here,
+                # before the deferral below, keeps a fresh write planned
+                # beside it (third independent review of #211).
+                dropped.append(n)
+                exhausted = True
+                continue
+            fresh.append((n, a))
+        if dropped:
+            audit("plan_drop_repeats", dropped=dropped)
+            plan.calls = fresh
+            if not fresh:
+                plan.status = "not_found" if exhausted else "answer"
+        # READS BEFORE WRITES. A plan that mixes NEW reads with effect calls
+        # runs only the reads; the model re-plans with their results in hand.
+        # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
+        # lookup_contact AND send_message(to="<Mom's contact>") together, and
+        # the confirmation card would have shown the placeholder.
+        reads = [(n, a) for n, a in plan.calls
+                 if n not in _EFFECT_TOOLS and (t := get_tool(n)) is not None
+                 and t.category in _read_categories()]
+        if reads and len(reads) < len(plan.calls):
+            audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
+            plan.calls = reads
+        audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
+        if plan.error and not last_attempt:
+            return {}, plan.thought, False
+        if plan.calls:
+            return _plan.plan_message(plan), plan.thought, False
+        note = _plan.STATUS_NOTES.get(plan.status, _plan.STATUS_NOTES["answer"])
+        answer, reasoning_text, streamed = await _run_step(
+            client, model, step_msgs + [{"role": "user", "content": note}], [], "auto", max_out,
+            emit, stream_content=False, temperature=None, no_thinking=True, think_on=False,
+            debug=debug)
+        # SELF-CONTRADICTION, part 2: the plan called nothing, then the
+        # tool-free narration tried to call a tool in text. Same run: 7 of 59
+        # LFM2.5 answers were only `<|tool_call_start|>[get_upcoming()]...`.
+        # That text must never reach the user; the model has told us it wants
+        # the tool, so re-plan once with a call required.
+        if (_plan.TOOL_CALL_MARKUP.search(answer.get("content") or "")
+                and not require_call and allowed and replan_left[0]):
+            return await _replan("narration_called_a_tool")
+        if _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""):
+            # Re-plan already spent: never show call syntax to the user.
+            # Measured after the re-plan landed: 8 of 59 LFM2.5 answers still
+            # ended in a second `<|tool_call_start|>` call.
+            audit("plan_markup_stripped")
+            text = _plan.strip_tool_call_markup(answer.get("content") or "")
+            answer = {**answer, "content": text or _EMPTY_MESSAGE}
+        return answer, plan.thought or reasoning_text, streamed
+
     for _step in range(max_steps):
         await client.ensure_only(model, exclusive=exclusive, emit=emit)
         contract_candidate = None
@@ -2791,10 +2941,16 @@ async def run_agent(
             attempt_temperature = step_temperature
             if retry_for_empty and step_temperature is not None:
                 attempt_temperature = step_temperature + 0.7
-            msg, reasoning, content_streamed = await _run_step(
-                client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
-                stream_content=stream, temperature=attempt_temperature,
-                no_thinking=narrating, think_on=step_think_on, debug=debug)
+            if planner and choice != "none" and step_schemas:
+                msg, reasoning, content_streamed = await _plan_step(
+                    step_msgs, step_schemas, allowed_names, choice == "required",
+                    step_max_tokens, attempt_temperature, step_think_on,
+                    last_attempt=_attempt == attempts - 1)
+            else:
+                msg, reasoning, content_streamed = await _run_step(
+                    client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
+                    stream_content=stream, temperature=attempt_temperature,
+                    no_thinking=narrating, think_on=step_think_on, debug=debug)
 
             # A completely empty response — no content, no reasoning, no tool
             # calls — is not the model deciding to say nothing. It means oMLX's
@@ -3071,7 +3227,7 @@ async def run_agent(
                 schemas, stub_names = model_led_offer(capability_catalog, tools)
                 turn_tool_names = {s["function"]["name"] for s in schemas}
                 msgs[0] = {"role": "system", "content": (
-                    build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                 stub_result = expansion.receipt()
                 await emit({"type": "routing_discovery", "families": list(expansion.families),
                             "tools": tools, "status": "ready_next_step", "implicit": True})
@@ -3100,7 +3256,7 @@ async def run_agent(
                     schemas, stub_names = model_led_offer(capability_catalog, tools)
                     turn_tool_names = {s["function"]["name"] for s in schemas}
                     msgs[0] = {"role": "system", "content": (
-                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                        _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                     result = expansion.receipt()
                     await emit({"type": "routing_discovery", "families": list(expansion.families),
                                 "tools": tools, "status": "ready_next_step"})
@@ -3202,6 +3358,16 @@ async def run_agent(
                           "result was returned earlier. It was NOT run again. Answer from that "
                           "result, or call it with different arguments if you need different data.)")
                 audit("reject_repeated_read", tool=name, args=args)
+                prev_step_refusals += 1
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
+            if (budget_reads and read_misses[name] >= _plan.READ_MISS_BUDGET
+                    and name not in _EFFECT_TOOLS and (_bt := get_tool(name)) is not None
+                    and _bt.category in _read_categories()):
+                result = _plan.budget_message(name, read_misses[name])
+                audit("reject_tool_budget", tool=name, args=args)
                 prev_step_refusals += 1
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
@@ -3618,6 +3784,10 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
+            if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
+                    and name not in _EFFECT_TOOLS
+                    and (outcome.status != "succeeded" or _plan.looks_empty(name, result))):
+                read_misses[name] += 1
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body
