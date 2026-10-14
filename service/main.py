@@ -360,6 +360,10 @@ async def lifespan(app: FastAPI):
             start_laya_warmup()
         started_tasks.append(asyncio.create_task(idle_unloader.run(client)))
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
+        # Direct Gmail read (idle unless connected). Local profile only: the
+        # remote-inference profile runs exactly the scheduler (see the comment below).
+        from service import gmail_source
+        started_tasks.append(asyncio.create_task(gmail_source.run()))
         from service import nodes
         started_tasks.append(asyncio.create_task(nodes.run()))
         from service.memory.api import worker as memory_worker
@@ -376,9 +380,6 @@ async def lifespan(app: FastAPI):
         # capture (local model only; it would idle anyway since the fast role
         # is unmanaged).
         started_tasks.append(asyncio.create_task(assistant_scheduler.run()))
-    # Direct Gmail read (idle unless the user connected Gmail); not inference.
-    from service import gmail_source
-    started_tasks.append(asyncio.create_task(gmail_source.run()))
     recovery_task = asyncio.create_task(quarantine.watch(tuple(started_tasks), client.aclose))
     # A10 WP3: serves the app's private bridge socket only when the app launched
     # this process with one (a browser enabled by the user). Otherwise this is a no-op.
