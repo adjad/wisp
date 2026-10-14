@@ -114,7 +114,7 @@ def test_weather_route_trims_arbitrary_fetchers_before_cloud(monkeypatch):
     # Explicit compatibility fixture; this is not the current complete route.
     legacy = RouteDecision(role='agent', model='synthetic-local', needs_tools=True,
         source='rules', reason='synthetic unresolved legacy weather', route_source='rules',
-        tool_subset=['get_weather','web_fetch','http_request'], light_read=False)
+        tool_subset=['get_weather','web_fetch'], light_read=False)
     assert classify(prompt, legacy)[0] is True
     super_model.prepare_cloud_standalone(legacy)
     assert legacy.tool_subset == ['get_weather']

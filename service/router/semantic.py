@@ -51,7 +51,8 @@ import re
 from service.paths import MOE_DIR
 from service.search.embedder import (EmbedUnavailable, _embed, _normalize,
                                      doc_key, embed_queries, embedding_model, embedding_target)
-from service.tools.registry import REGISTRY, Tool, is_tool_routable, routable_tool_names
+from service.tools.registry import (REGISTRY, Tool, is_tool_routable, is_tool_searchable,
+                                    searchable_tool_names)
 
 _CACHE_PATH = MOE_DIR / "cache" / "tool_vectors.json"
 
@@ -332,7 +333,7 @@ class ToolIndex:
                 self._loaded = True
 
             wanted: dict[str, list[str]] = {
-                n: _docs(t) for n, t in REGISTRY.items() if is_tool_routable(n)
+                n: _docs(t) for n, t in REGISTRY.items() if is_tool_searchable(n)
             }
             keys = {n: [doc_key(d) for d in docs] for n, docs in wanted.items()}
 
@@ -374,11 +375,11 @@ class ToolIndex:
         registered a tool, an MCP server connected, or a description was edited."""
         if self._target is None or self._target.identity != embedding_target().identity:
             return True
-        routable = routable_tool_names()
-        if set(self._keys) != routable:
+        searchable = searchable_tool_names()
+        if set(self._keys) != searchable:
             return True
         return any(self._keys.get(n) != [doc_key(d) for d in _docs(t)]
-                   for n, t in REGISTRY.items() if n in routable)
+                   for n, t in REGISTRY.items() if n in searchable)
 
     async def rank(self, text: str, *, timeout: float = 10.0) -> list[tuple[str, float]]:
         """Every registered tool, scored against `text`, best first.
@@ -426,16 +427,19 @@ async def warm() -> int:
 
 def _allowed(name: str, *, writing: bool) -> bool:
     tool = REGISTRY.get(name)
-    if tool is None or tool.unavailable_reason:
+    if tool is None or tool.unavailable_reason or tool.internal:
         return False
     return writing or tool.category not in _GATED_CATEGORIES
 
 
 def _gate_open(text: str, *, writing: bool) -> bool:
-    """Whether file-mutating tools may be offered for this request at all."""
-    uninstall = re.match(
-        r"^\s*(?:please\s+|(?:can|could|would)\s+you\s+)?uninstall\s+\S", text, re.I)
-    return writing or bool(_FILE_ACTION_RE.search(text) or uninstall)
+    """Whether file-mutating tools may be offered for this request at all.
+
+    "uninstall X" used to open this gate for the retired uninstall_app tool. It
+    no longer does: with no uninstall tool, opening it would only hand the
+    model delete_path for an application bundle.
+    """
+    return writing or bool(_FILE_ACTION_RE.search(text))
 
 
 async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,

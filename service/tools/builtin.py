@@ -135,7 +135,7 @@ def _wrong_account_path(path: str) -> str | None:
     # The "don't use this, use X instead" list used to name ~15 tools
     # individually. That was written when every request saw the whole registry;
     # with routes scoped it became actively WRONG on the narrow ones — on the
-    # ambiguous core route it told the model to prefer get_volume, set_wifi,
+    # ambiguous core route it told the model to prefer get_volume, set_wifi (now toggle_setting),
     # spotify and a dozen others that are not on the table there, which is the
     # same trap as pointing at a deleted tool. Naming the CATEGORIES and
     # deferring to "if it's in your tool list" is correct on every route and

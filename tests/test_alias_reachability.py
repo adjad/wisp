@@ -94,7 +94,7 @@ def main() -> int:
     behavior_aliases: list[tuple[str, str]] = []
     for tool_name, tool in sorted(REGISTRY.items()):
         for alias in tool.aliases:
-            if (tool_name, alias) == ("set_alarm", "set an alarm for half six tomorrow"):
+            if (tool_name, alias) == ("set_timer", "set an alarm for half six tomorrow"):
                 # The shared, receipt-verified reminder workflow supersedes
                 # this old tool identity. This exact unsupported clock must
                 # CLARIFY, not pass through an equivalent-tool allowlist.
