@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 
 import pytest
 from tests.test_mini_resources import synthetic_capacity, synthetic_process
@@ -59,10 +60,27 @@ def test_whole_batch_capacity_refusal_and_retry(tmp_path):
     assert len(runner.store.page()['results'])==3
 
 
+def _tick_until_admitted(tmp_path, now, snapshots, deadline_s=30.0):
+    """A concurrent tick may be refused with volume_busy: the store's write
+    lease waits 0.25s, and on a loaded CI runner four threads can exceed that
+    (failed on main at 4d4c853f). Refusal is the production contract, and a
+    scheduler simply ticks again, so the test does the same. The lease
+    semantics are unchanged; what this test asserts is exactly-once."""
+    from mini.resources import ResourceRefusal
+    end = time.monotonic() + deadline_s
+    while True:
+        try:
+            return runtime(tmp_path).tick(now, snapshots)
+        except ResourceRefusal as exc:
+            if str(exc) != "volume_busy" or time.monotonic() >= end:
+                raise
+            time.sleep(0.01)
+
+
 def test_concurrent_tick_and_publication_exactly_once(tmp_path):
     runner=runtime(tmp_path)
     with ThreadPoolExecutor(max_workers=4) as pool:
-        list(pool.map(lambda _:runtime(tmp_path).tick(190,{'study':SNAPSHOT}),range(4)))
+        list(pool.map(lambda _:_tick_until_admitted(tmp_path,190,{'study':SNAPSHOT}),range(4)))
     results=runner.store.page()['results']
     assert len(results)==len({r['result_id'] for r in results})==10
     assert runner.store.status()['pending_occurrences']==0
