@@ -3,3 +3,6 @@
 train.jsonl
 dev.jsonl
 __pycache__/
+# V3 replay sample (20MB); regenerate byte-identically with: python3 v3_replay.py (sha256 pinned in v3_replay.provenance.jsonl)
+v3_replay.train.jsonl
+v3_replay.dev.jsonl

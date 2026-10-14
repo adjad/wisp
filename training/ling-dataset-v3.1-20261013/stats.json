@@ -1,110 +1,101 @@
 {
- "seed": 20261012,
+ "seed": 20261013,
  "splits": {
   "dev": {
    "by_category": {
-    "chat_no_tool": 12,
-    "clarify_ambiguity": 8,
-    "compound_read_then_act": 35,
-    "error_handling": 11,
-    "followups_history": 11,
-    "outbound_sends_drafts": 28,
-    "repeated_read_guard": 6,
-    "single_tool_reads": 17,
-    "stop_after_success_no_loop": 16,
-    "writes": 12
+    "v31_chat_code_inline": 4,
+    "v31_guard_irrelevant_web_bounded": 6,
+    "v31_outbound_lookalikes": 10,
+    "v31_reminder_calendar_followup": 11,
+    "v31_safety_clarify_recipient": 10,
+    "v31_saved_facts_memory": 8
    },
-   "conversations": 156,
-   "families": 46,
-   "first_discovery_explicit": 23,
-   "first_discovery_stub_first": 88,
+   "conversations": 49,
+   "families": 15,
+   "first_discovery_explicit": 6,
+   "first_discovery_stub_first": 29,
    "row_tokens_est_chars_div4": {
-    "max": 13316,
-    "mean": 8933,
-    "p50": 8579,
-    "p95": 12391
+    "max": 12763,
+    "mean": 8617,
+    "p50": 8157,
+    "p95": 12049
    },
-   "rows": 474,
+   "rows": 143,
    "rows_by_step_index": {
-    "s0": 156,
-    "s1": 137,
-    "s2": 120,
-    "s3": 51,
-    "s4": 7,
-    "s5": 3
+    "s0": 49,
+    "s1": 41,
+    "s2": 37,
+    "s3": 13,
+    "s4": 3
    },
    "rows_by_target_type": {
-    "discovery": 24,
-    "final": 156,
-    "stub_call": 90,
-    "tool_call": 204
+    "discovery": 7,
+    "final": 49,
+    "stub_call": 31,
+    "tool_call": 56
    },
-   "rows_per_conversation": 3.04,
-   "scenarios": 156,
+   "rows_per_conversation": 2.92,
+   "scenarios": 49,
    "target_tokens_est_chars_div4": {
-    "max": 135.5,
-    "mean": 51.2,
-    "p95": 82.0
+    "max": 77.8,
+    "mean": 46.6,
+    "p95": 68.0
    },
-   "templates": 109,
+   "templates": 42,
    "variants": {
-    "S": 85,
-    "SP-decoy": 26,
-    "SP-hit": 26
+    "S": 24,
+    "SP-decoy": 11,
+    "SP-hit": 6
    }
   },
   "train": {
    "by_category": {
-    "chat_no_tool": 116,
-    "clarify_ambiguity": 72,
-    "compound_read_then_act": 317,
-    "error_handling": 101,
-    "followups_history": 101,
-    "outbound_sends_drafts": 260,
-    "repeated_read_guard": 58,
-    "single_tool_reads": 159,
-    "stop_after_success_no_loop": 144,
-    "writes": 116
+    "v31_chat_code_inline": 37,
+    "v31_guard_irrelevant_web_bounded": 49,
+    "v31_outbound_lookalikes": 82,
+    "v31_reminder_calendar_followup": 90,
+    "v31_safety_clarify_recipient": 82,
+    "v31_saved_facts_memory": 70
    },
-   "conversations": 1444,
-   "families": 160,
-   "first_discovery_explicit": 285,
-   "first_discovery_stub_first": 790,
+   "conversations": 410,
+   "families": 35,
+   "first_discovery_explicit": 69,
+   "first_discovery_stub_first": 232,
    "row_tokens_est_chars_div4": {
-    "max": 14421,
-    "mean": 8691,
-    "p50": 8450,
-    "p95": 12225
+    "max": 13740,
+    "mean": 8423,
+    "p50": 8022,
+    "p95": 12090
    },
-   "rows": 4387,
+   "rows": 1205,
    "rows_by_step_index": {
-    "s0": 1444,
-    "s1": 1269,
-    "s2": 1147,
-    "s3": 457,
-    "s4": 64,
-    "s5": 6
+    "s0": 410,
+    "s1": 341,
+    "s2": 313,
+    "s3": 112,
+    "s4": 24,
+    "s5": 5
    },
    "rows_by_target_type": {
-    "discovery": 288,
-    "final": 1444,
-    "stub_call": 791,
-    "tool_call": 1864
+    "discovery": 73,
+    "final": 410,
+    "stub_call": 240,
+    "tool_call": 482
    },
-   "rows_per_conversation": 3.04,
-   "scenarios": 1444,
+   "rows_per_conversation": 2.94,
+   "scenarios": 410,
    "target_tokens_est_chars_div4": {
-    "max": 133.8,
-    "mean": 51.6,
-    "p95": 83.8
+    "max": 136.8,
+    "mean": 48.1,
+    "p95": 72.8
    },
-   "templates": 707,
+   "templates": 300,
    "variants": {
-    "S": 891,
-    "SP-decoy": 182,
-    "SP-hit": 196
+    "S": 232,
+    "SP-decoy": 64,
+    "SP-hit": 45
    }
   }
  },
- "version": "v3-20261012"
+ "version": "v3.1-20261013"
 }

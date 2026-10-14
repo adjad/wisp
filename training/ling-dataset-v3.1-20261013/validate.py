@@ -54,18 +54,23 @@ DESTRUCTIVE = {"cancel_event", "clear_reminders", "clear_past_reminders", "clear
                "delete_knowledge", "complete_reminder", "update_reminder", "quit_app", "force_quit_app", "archive_email", "flag_email", "mark_email_read"}
 WRITE_TOOLS = OUTBOUND | DESTRUCTIVE | {"add_reminder", "add_calendar_event", "create_note", "append_note", "remember", "set_timer",
                                          "set_alarm", "set_volume", "toggle_setting", "set_appearance", "draft_email", "draft_message", "open_app", "music"}
+# Verbatim from Wisp's remember tool (service/tools/memory_tools.py on main): a save is refused unless the user's request
+# starts with an explicit save verb, contains the fact verbatim (followed only by end punctuation), and has no attribution risk.
+LIVE_SAVE = re.compile(r'^(?:(?:please|can you|could you|i want you to)\s+)*(?:remember|save|update|correct)\b', re.I)
+LIVE_ATTRIBUTION_RISK = re.compile(r'\b(?:hypothetical|example|pretend|fiction|story|roleplay|test|fixture|quote|quoted|said|wrote)\b|["“”`>]', re.I)
+RECIPIENT_TOOLS = {"send_message", "send_email", "schedule_send", "place_call", "forward_email", "draft_message", "draft_email"}
 READ_ONLY_CATEGORIES = {"stop_after_success_no_loop", "single_tool_reads", "chat_no_tool"}
 CUES = {
-    "send_message": r"text|message|msg|imessage|ping|dm\b|tell|know|shoot|send|reach|word|heads|say|email|mail|reply|answer|respond|write|contact|follow|touch|pass|drop|fire|hit|remind|nudge|invite|share|update|ask|check with|congrat|wish|thank|decline|accept|buzz|line|note",
+    "send_message": r"text|message|msg|imessage|ping|dm\b|tell|know|shoot|send|reach|word|heads|say|email|mail|reply|answer|respond|write|contact|follow|touch|pass|drop|fire|hit|remind|nudge|invite|share|update|ask|check with|congrat|wish|thank|decline|accept|buzz|line|note|slack|over to",
     "send_email": r"email|e-mail|mail|send|write|reach|contact|follow|text|message|tell|know|touch|reply|answer|respond|shoot|drop|ping|use|remind|nudge|invite|share|update|ask|check with|congrat|wish|thank|decline|accept|line|note",
     "reply_to_email": r"reply|respond|answer|write back|get back|hit reply|send a reply",
     "forward_email": r"forward|pass|send",
     "schedule_send": r"text|email|mail|send|message|schedule|queue|remind|have a message|delay|land|go out",
-    "cancel_event": r"cancel|delete|remove|take .* off|get rid|drop|scrap",
+    "cancel_event": r"cancel|delete|remove|take .* off|get rid|drop|scrap|decline|bail|back out|pull out",
     "clear_reminders": r"delete|clear|wipe|remove",
     "trash_file": r"trash|delete|throw|remove|get rid",
     "complete_reminder": r"done|finished|complete|check|tick|mark",
-    "update_reminder": r"move|push|change|reschedule|shift|update",
+    "update_reminder": r"move|push|change|reschedule|shift|update|make it|instead|bump|actually|let.s do",
     "forget": r"forget|delete", "place_call": r"call|ring|dial|facetime|phone|get .* on the phone",
     "quit_app": r"quit|close|shut|exit", "clear_past_reminders": r"clear|delete|get rid|remove|wipe|dump|purge",
     "archive_email": r"archive|file away", "flag_email": r"flag", "mark_email_read": r"mark|read",
@@ -392,6 +397,40 @@ def jacc_ngrams(a, b, n=4):
     return len(A & B) / len(A | B)
 
 
+def validate_v3r(d, bad):
+    """V3-replay rows (v3r-*, v3_replay.py): whole V3 conversations, already validated as part of the V3 release. Here they
+    must be byte-identical to v3_replay.<split>.jsonl (whose sha256 is pinned in v3_replay.provenance.jsonl), sit between
+    the generated rows and the V2-replay rows, and match the provenance row counts."""
+    CHK = "v3_replay"
+    pfile = d / "v3_replay.provenance.jsonl"
+    if not pfile.exists():
+        bad(CHK, "v3_replay.provenance.jsonl is missing")
+        return {"present": False}
+    plines = [json.loads(x) for x in pfile.read_text().splitlines() if x]
+    head, prov = plines[0], plines[1:]
+    info = {"present": True}
+    for s in ("train", "dev"):
+        f = d / f"v3_replay.{s}.jsonl"
+        if not f.exists() or hashlib.sha256(f.read_bytes()).hexdigest() != head[f"{s}_sha256"]:
+            bad(CHK, f"{f.name} missing or sha256 differs from v3_replay.provenance.jsonl")
+            continue
+        want = [x for x in f.read_text().splitlines() if x]
+        raw = [x for x in (d / f"{s}.jsonl").read_text().splitlines() if x]
+        idx = [i for i, x in enumerate(raw) if x.startswith('{"id":"v3r-')]
+        got = [raw[i] for i in idx]
+        if got != want:
+            bad(CHK, f"{s}.jsonl v3r lines are not byte-identical to {f.name} ({len(got)} vs {len(want)})")
+        if idx and (idx != list(range(idx[0], idx[0] + len(idx)))
+                    or any(not x.startswith('{"id":"v2r-') for x in raw[idx[-1] + 1:])
+                    or any(x.startswith('{"id":"v2r-') or x.startswith('{"id":"v3r-') for x in raw[:idx[0]])):
+            bad(CHK, f"{s}.jsonl: v3r rows must be one block after the generated rows and before the v2r rows")
+        n_prov = sum(p["rows"] for p in prov if p["split"] == s)
+        if n_prov != len(want):
+            bad(CHK, f"{s}: provenance counts {n_prov} rows, file has {len(want)}")
+        info[s] = {"rows": len(want), "conversations": sum(1 for p in prov if p["split"] == s)}
+    return info
+
+
 def validate_v2r(d, appended, generated_ids, held, bad):
     """Validate V2-replay rows. They are either appended to train/dev.jsonl (checked byte-for-byte against
     v2_replay.<split>.jsonl and required to trail the generated rows) or, when not appended yet, validated from the
@@ -512,7 +551,7 @@ def run(d: Path, check_repro=False):
     rows = {s: load_jsonl(d / f"{s}.jsonl", load_errors, f"{s}.jsonl") for s in ("train", "dev")}
     # V2-replay rows (v2r-*) may be appended after the generated rows; they are validated by their own block below.
     v2_appended = {s: [r_ for r_ in rows[s] if str(r_.get("id", "")).startswith("v2r-")] for s in rows}
-    rows = {s: [r_ for r_ in rows[s] if not str(r_.get("id", "")).startswith("v2r-")] for s in rows}
+    rows = {s: [r_ for r_ in rows[s] if not str(r_.get("id", "")).startswith(("v2r-", "v3r-"))] for s in rows}
     prov = {s: load_jsonl(d / f"{s}.provenance.jsonl", load_errors, f"{s}.provenance.jsonl") for s in ("train", "dev")}
     convs = load_jsonl(d / "conversations.jsonl", load_errors, "conversations.jsonl")
     rep.add("json_valid_all_files", not load_errors, f"{len(load_errors)} errors", load_errors)
@@ -808,6 +847,24 @@ def run(d: Path, check_repro=False):
                         cur_ = PROV_CUR.get(row["conversation_id"], pv_)
                         for pr in slot_problems(fn, args, cur_, now):
                             bad("slot_consistency", f"{rid}: {pr}")
+                        # V3.1: a send's recipient must come from the conversation (user/history text or an earlier
+                        # tool result such as lookup_contact), never be invented
+                        if fn in RECIPIENT_TOOLS and isinstance(args, dict) and args.get("to"):
+                            ctx = " ".join((x.get("content") or "") for x in msgs).lower()
+                            ctx_digits = re.sub(r"\D", "", ctx)
+                            tos = args["to"] if isinstance(args["to"], list) else re.split(r"\s*[,;]\s*", str(args["to"]))
+                            for t_ in tos:
+                                t_ = str(t_).strip().lower()
+                                d_ = re.sub(r"\D", "", t_)
+                                if t_ and not (t_ in ctx or (len(d_) >= 7 and d_ in ctx_digits)):
+                                    bad("recipient_provenance", f"{rid}: {fn}.to {t_!r} appears in no earlier turn or tool result")
+                        if fn == "remember" and isinstance(args, dict):
+                            q_ = (PROV_CUR.get(row["conversation_id"]) or "").strip()
+                            f_ = str(args.get("fact", ""))
+                            after_ = q_.split(f_, 1)[1] if f_ and f_ in q_ else None
+                            if not (LIVE_SAVE.search(q_) and after_ is not None and not LIVE_ATTRIBUTION_RISK.search(q_)
+                                    and re.fullmatch(r"\s*[.!?]?\s*", after_)):
+                                bad("remember_live_rule", f"{rid}: Wisp's remember would refuse this save: {q_[:80]!r}")
                         # explicit authority cue for sends / destructive tools (whole conversation's user text)
                         if fn in CUES:
                             pv = PROV_CLEAN.get(row["conversation_id"])
@@ -1008,6 +1065,7 @@ def run(d: Path, check_repro=False):
         bad("synthetic_only", f"{len(phones_bad)} phone numbers outside +1 555 01xx, e.g. {phones_bad[:3]}")
 
     # ---- V2 replay rows (v2r-*): own shape checks; model-led protocol checks do not apply
+    v3_info = validate_v3r(d, bad)
     v2_info = validate_v2r(d, v2_appended, {s: [r_["id"] for r_ in rows[s]] for s in rows}, held, bad)
 
     # ---- reproducibility
@@ -1037,6 +1095,7 @@ def run(d: Path, check_repro=False):
         "no_repeat": "no identical (name,args) call repeated within a turn, except a context-only guarded repeat (result exactly the guard text for that tool; non-volatile pure read; alone in its message; never the 3rd identical call; never a row target)",
         "guard_followup": "the step right after a guard result is not another identical call",
         "repeat_guard": "guard text equals Wisp's verbatim text; guard_rejected provenance and conversations.jsonl training:false agree with the guard results; guard conversations contain a guard",
+        "v3_replay": "v3r rows: byte-identical to v3_replay.*.jsonl (sha256 pinned in v3_replay.provenance.jsonl), one block between generated and v2r rows, counts match provenance",
         "v2_replay": "v2r rows: shape, one trailing training:true assistant, no other training flags except false on assistants, tools == [], held-out overlap < OVERLAP_LIMIT, unique ids, counts match v2_replay.provenance.jsonl, byte-identical to v2_replay.*.jsonl",
         "result_length": "tool results < 400 chars (< 1200 for conversations tagged messy_result)",
         "final_present": "every conversation ends with non-empty assistant text; only the last step is text",
@@ -1050,6 +1109,8 @@ def run(d: Path, check_repro=False):
         "preload": "SP preload (<=12 distinct catalog tools) equals the real schemas offered at round 0 and consumes no discovery attempt",
         "slot_consistency": "weekday / today / tomorrow / clock time in the user's words match the call arguments",
         "explicit_authority": "send/destructive tools only with a matching user cue",
+        "remember_live_rule": "every remember call passes Wisp's live save rule (explicit save verb first, verbatim fact at the end, no attribution-risk words)",
+        "recipient_provenance": "every send/draft/call recipient appears in an earlier user/history turn or tool result (no invented addresses)",
         "read_only_categories": "read-only categories never call write/send/destructive tools",
         "chat_no_tool": "chat conversations use no tools",
         "denial_honesty": "declined sends are reported, not claimed",
@@ -1075,6 +1136,7 @@ def run(d: Path, check_repro=False):
                        "families": len({p["family_id"] for p in prov[s]})} for s in ("train", "dev")},
         "token_estimate_chars_div4": {s: {"row": stat(est_tokens[s]), "target": stat(tgt_tokens[s])} for s in ("train", "dev")},
         "v2_replay": v2_info,
+        "v3_replay": v3_info,
         "heldout_max_jaccard": round(max_overlap, 3), "dev_vs_train_max_4gram_jaccard": round(max_dev_train, 3),
         "target_tool_call_counts": dict(tool_counter.most_common()),
         "failure_total": sum(len(v) for v in fail.values()),
