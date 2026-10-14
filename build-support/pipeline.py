@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import http.client
@@ -595,6 +596,7 @@ def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
             meta["engine"] = engine_build.stage(bundle, engine_app, lock=engine_build.load_lock(), release=release)
         except engine_build.EngineBuildError as exc:
             raise BuildError(str(exc)) from None
+        meta["engine_smoke"] = engine_build.smoke_plan(bundle)
         try:
             engine_licenses.write_notices(bundle)
         except engine_licenses.LicenseError as exc:
@@ -795,7 +797,13 @@ def relocation_smoke(runner, bundle):
         if guarded(runner, "relocated-backend-smoke", backend / ".venv/bin/python", "smoke", "-", root=backend):
             raise BuildError("Relocated bundled backend import failed")
         if engine_build.read_engine_json(moved) is not None:
-            engine_smoke(runner, moved)
+            plan = engine_build.smoke_plan(moved)
+            if plan["mode"] == "run":
+                engine_smoke(runner, moved)
+            else:
+                (runner.logs / "relocated-engine-smoke.log").write_text(
+                    "engine import smoke skipped: " + plan["reason"] + "\n")
+                print("engine import smoke skipped: " + plan["reason"])
 
 
 def engine_smoke(runner, bundle):
@@ -862,7 +870,10 @@ def notes(meta):
     previous = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0", "HEAD^"], capture_output=True, text=True)
     base = previous.stdout.strip() if previous.returncode == 0 else None
     history = git("log", "--no-merges", "--format=- %s (%h)", f"{base}..HEAD" if base else "HEAD")
-    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. " + ("Includes a built-in AI engine (macOS " + str(meta["engine"]["minimum_macos"]) + " or newer for the engine); models are downloaded separately.\n\n" if meta.get("engine") else "Requires a separately installed oMLX server and models.\n\n") + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] or meta.get('preview') else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
+    skipped = (meta.get("engine_smoke") or {}).get("mode") == "skip"
+    smoke_note = (f"The engine's import smoke test was not run on the build host ({meta['engine_smoke']['reason']}); "
+                  "the engine files are verified against the pinned oMLX release instead.\n\n" if skipped else "")
+    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. " + ("Includes a built-in AI engine (macOS " + str(meta["engine"]["minimum_macos"]) + " or newer for the engine); models are downloaded separately.\n\n" + smoke_note if meta.get("engine") else "Requires a separately installed oMLX server and models.\n\n") + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] or meta.get('preview') else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
 
 
 def finalize(runner, bundle, destination, meta, toolchain):
@@ -1280,6 +1291,9 @@ def main():
     p.add_argument("--engine-app", type=Path,
                    help="Genuine, signed oMLX.app whose pruned server is bundled as Contents/Resources/engine "
                         "(opt-in; release builds must match build-support/engine.lock.json)")
+    p.add_argument("--fetch-engine", action="store_true",
+                   help="Download the oMLX release pinned in build-support/engine-source.json (size and SHA-256 "
+                        "checked, mounted read-only) and bundle its engine; same as --engine-app for that release")
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
@@ -1290,6 +1304,8 @@ def main():
     args = p.parse_args()
     if args.jobs is not None and args.jobs < 1:
         p.error("--jobs must be at least 1")
+    if args.fetch_engine and args.engine_app:
+        p.error("--fetch-engine and --engine-app are mutually exclusive")
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts" if args.command != "preview" else "SKIPPED for preview: Simulation QA, native/browser peer gates, benchmark contracts, distribution evidence", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
@@ -1371,8 +1387,15 @@ def main():
                 if not output.is_relative_to((ROOT / "dist").resolve()) or output == (ROOT / "dist").resolve():
                     raise BuildError("Output must be a new directory below this checkout's dist/")
                 output.mkdir(parents=True, exist_ok=False)
-                bundle = assemble(runner, binary, output, meta, args.offline,
-                                  args.engine_app.resolve() if args.engine_app else None)
+                with contextlib.ExitStack() as mounted:
+                    engine_app = args.engine_app.resolve() if args.engine_app else None
+                    if args.fetch_engine:
+                        try:
+                            engine_app = mounted.enter_context(
+                                engine_build.fetched_app(STATE / "engine-cache", offline=args.offline))
+                        except engine_build.EngineBuildError as exc:
+                            raise BuildError(str(exc)) from None
+                    bundle = assemble(runner, binary, output, meta, args.offline, engine_app)
                 validate_structure(bundle, meta)
                 prepare_native_for_signing(runner, bundle)
                 validate_native(runner, bundle, meta)

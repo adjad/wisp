@@ -68,6 +68,16 @@ the pruned server from a genuine, signed oMLX release:
 ./scripts/wisp-build all --engine-app /Applications/oMLX.app
 ```
 
+`--fetch-engine` does the same for the pinned release without a local oMLX.app: it downloads
+the asset named in `build-support/engine-source.json` (official GitHub release URL only, TLS
+validated, https-only redirects, bounded size and time), refuses it unless its size and SHA-256
+match the pin, mounts it read-only, verifies the app's Developer ID signature and team, stages the
+engine, and always unmounts (`.wisp-build/engine-cache/` keeps the verified image; an offline build
+needs it cached). It is mutually exclusive with `--engine-app`. CI passes `--fetch-engine` in every
+build command (PR preview, full, release rebuild, ad-hoc rebuild), so a release made by CI carries
+the engine. Moving to a new oMLX release means updating `engine-source.json`, re-running
+`engine.py lock` and refreshing the licence file together.
+
 Release builds require the reviewed source pin at
 `build-support/engine.lock.json`. Create it from the exact oMLX app intended for
 the release with:
@@ -118,6 +128,17 @@ github.com/jundot/omlx (the repository has no NOTICE file). When `engine.lock.js
 a new oMLX release, refresh it from that release's tag. The pinned release is 0.7.0
 (`oMLX-0.7.0-macos26-27.dmg`, sha256 2e3bb06a…e3bce0, Developer ID team PSK5Q5T46L); its
 admin UI lives in `omlx/admin`, so the staged engine has no `omlx_web` folder.
+
+### Engine import smoke on older build hosts
+
+The build imports the engine's server and initialises MLX on a GPU from the relocated, signed
+bundle. MLX cannot be imported below the engine's own minimum macOS, so a build host older than
+that (the hosted `macos-15` runners are) records `engine_smoke: {mode: skip, reason: ...}` in the
+build metadata and provenance, writes the reason to `relocated-engine-smoke.log`, and the release
+notes say the smoke was not run on the build host. The engine tree is still verified byte for byte
+against `engine.lock.json` and the pinned release asset. A host that meets the minimum always runs
+the smoke and fails the build if it fails (including a host with no usable GPU). The smoke was run
+for this exact pinned tree on a macOS 26+ Apple Silicon Mac when 0.7.0 was pinned.
 
 To exercise an already staged engine with a downloaded model, run the smoke on a
 machine with compatible Apple Silicon and macOS:

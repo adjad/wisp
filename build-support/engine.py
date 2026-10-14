@@ -19,6 +19,7 @@ preview that is never release eligible.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -27,12 +28,15 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
+from collections.abc import Callable
 from email.parser import Parser
 from pathlib import Path
 
 SUPPORT = Path(__file__).resolve().parent
 PRUNE = SUPPORT / "engine-prune.json"
 LOCK = SUPPORT / "engine.lock.json"
+SOURCE = SUPPORT / "engine-source.json"
 
 OMLX_TEAM_ID = "PSK5Q5T46L"
 OMLX_BUNDLE_ID = "app.omlx"
@@ -309,6 +313,151 @@ def third_party_inventory(app: Path, *, check_signature: bool = True) -> list[di
     if own_license:
         inventory.append({"name": "oMLX", "version": facts["version"], "license_file": own_license})
     return sorted(inventory, key=lambda item: (item["name"].casefold(), item["version"].casefold()))
+
+
+# ---------------------------------------------------------------- fetching the pinned release --
+def load_source(path: Path = SOURCE, lock: dict | None = None) -> dict:
+    """The one oMLX release asset the engine may be built from, pinned by size and SHA-256.
+
+    The asset digest authenticates the download; engine.lock.json separately pins the tree that
+    is staged from it, so a release build needs both to match."""
+    doc = json.loads(path.read_text())
+    ok = (isinstance(doc, dict) and doc.get("schema") == 1
+          and re.fullmatch(r"[A-Za-z0-9-]+/[A-Za-z0-9_.-]+", str(doc.get("repo", "")))
+          and re.fullmatch(r"v\d+(\.\d+){1,3}", str(doc.get("tag", "")))
+          and re.fullmatch(r"\d+(\.\d+){1,3}", str(doc.get("omlx_version", "")))
+          and re.fullmatch(r"[A-Za-z0-9_.-]+\.dmg", str(doc.get("asset", "")))
+          and isinstance(doc.get("size"), int) and 0 < doc["size"] <= 2 * 1024 ** 3
+          and re.fullmatch(r"[0-9a-f]{64}", str(doc.get("sha256", ""))))
+    if not ok:
+        raise EngineBuildError("engine-source.json is malformed")
+    if doc["tag"] != f"v{doc['omlx_version']}" or doc["omlx_version"] not in doc["asset"]:
+        raise EngineBuildError("engine-source.json tag, version and asset disagree")
+    lock = lock if lock is not None else load_lock()
+    if lock is not None and lock["omlx_version"] != doc["omlx_version"]:
+        raise EngineBuildError("engine-source.json and engine.lock.json name different oMLX versions")
+    return doc
+
+
+def asset_url(source: dict) -> str:
+    return f"https://github.com/{source['repo']}/releases/download/{source['tag']}/{source['asset']}"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _curl(url: str, destination: Path, limit: int) -> None:
+    # macOS curl uses the system trust store; TLS validation is never disabled and redirects
+    # may only stay on https (GitHub release downloads redirect to its asset CDN).
+    result = subprocess.run(
+        ["/usr/bin/curl", "-q", "--fail", "--silent", "--show-error", "--location", "--proto", "=https",
+         "--proto-redir", "=https", "--retry", "3", "--max-time", "1800", "--max-filesize", str(limit),
+         "--output", str(destination), url],
+        env={"PATH": "/usr/bin:/bin"}, capture_output=True, timeout=1900)
+    if result.returncode:
+        raise EngineBuildError("oMLX release download failed: " + result.stderr.decode(errors="replace")[-300:])
+
+
+def _attach(dmg: Path, mountpoint: Path) -> None:
+    result = subprocess.run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                             "-mountpoint", str(mountpoint), str(dmg)], capture_output=True, text=True, timeout=300)
+    if result.returncode:
+        raise EngineBuildError("Could not mount the oMLX disk image: " + result.stderr[-300:])
+
+
+def _detach(mountpoint: Path) -> None:
+    for force in (False, True):
+        result = subprocess.run(["/usr/bin/hdiutil", "detach", *(["-force"] if force else []), str(mountpoint)],
+                                capture_output=True, text=True, timeout=120)
+        if result.returncode == 0:
+            return
+
+
+def verified_download(source: dict, cache: Path, *, offline: bool = False,
+                      fetch: Callable[[str, Path, int], None] | None = None) -> Path:
+    """The pinned DMG in `cache`, downloaded if absent, with size and SHA-256 checked either way."""
+    cache.mkdir(parents=True, exist_ok=True)
+    target = cache / source["asset"]
+
+    def good(path: Path) -> bool:
+        return path.is_file() and path.stat().st_size == source["size"] and _sha256_file(path) == source["sha256"]
+
+    if target.exists() and not good(target):
+        target.unlink()                       # a partial or tampered cache entry is never reused
+    if not target.exists():
+        if offline:
+            raise EngineBuildError("The pinned oMLX release is not cached and this is an offline build")
+        part = cache / (source["asset"] + ".part")
+        part.unlink(missing_ok=True)
+        (fetch or _curl)(asset_url(source), part, source["size"] + 1024 * 1024)
+        if not good(part):
+            part.unlink(missing_ok=True)
+            raise EngineBuildError("The downloaded oMLX release does not match engine-source.json (size or SHA-256)")
+        part.replace(target)
+    return target
+
+
+@contextlib.contextmanager
+def fetched_app(cache: Path, *, offline: bool = False, source: dict | None = None,
+                fetch: Callable[[str, Path, int], None] | None = None,
+                attach: Callable[[Path, Path], None] | None = None,
+                detach: Callable[[Path], None] | None = None):
+    """Mount the digest-checked oMLX release read-only and yield its oMLX.app, always unmounting.
+
+    Nothing from the image is executed: the build reads files from it and verifies the app's
+    Developer ID signature and team (verify_source_identity) before staging."""
+    source = source or load_source()
+    dmg = verified_download(source, cache, offline=offline, fetch=fetch)
+    mountpoint = Path(tempfile.mkdtemp(prefix="omlx-mount-", dir=cache))
+    attached = False
+    try:
+        (attach or _attach)(dmg, mountpoint)
+        attached = True
+        app = mountpoint / "oMLX.app"
+        if not app.is_dir():
+            raise EngineBuildError("The oMLX disk image does not contain oMLX.app")
+        yield app
+    finally:
+        if attached:
+            (detach or _detach)(mountpoint)
+        with contextlib.suppress(OSError):
+            mountpoint.rmdir()
+
+
+# ------------------------------------------------------------ the import smoke on this host --
+def _host_macos() -> str:
+    try:
+        return subprocess.run(["/usr/bin/sw_vers", "-productVersion"], capture_output=True, text=True,
+                              timeout=10).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def smoke_plan(bundle: Path, host_version: str | None = None) -> dict:
+    """Whether the engine's import smoke can run on this build host.
+
+    MLX cannot be imported below the engine's own minimum macOS, so a host older than that
+    (the hosted macos-15 CI runners) records a skip with its reason instead of failing the build:
+    the engine tree is still pinned by digest and verified byte for byte. Any other host (including
+    one that meets the minimum but has no usable GPU, or whose version cannot be read) runs the
+    smoke and fails the build if it fails."""
+    document = read_engine_json(Path(bundle)) or {}
+    needed = str(document.get("minimum_macos", ""))
+    host = host_version if host_version is not None else _host_macos()
+    if (re.fullmatch(r"\d+(\.\d+){0,2}", needed) and re.fullmatch(r"\d+(\.\d+){0,2}", host or "")
+            and _numeric(host) < _numeric(needed)):
+        return {"mode": "skip", "host_macos": host, "engine_minimum_macos": needed,
+                "reason": f"host macOS {host} is older than the engine's minimum {needed}"}
+    return {"mode": "run", "host_macos": host or "unknown", "engine_minimum_macos": needed}
+
+
+def _numeric(version: str) -> tuple[int, ...]:
+    return tuple((list(map(int, version.split("."))) + [0, 0, 0])[:3])
 
 
 def _cli() -> int:

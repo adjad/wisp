@@ -1050,6 +1050,49 @@ print('external venv readable; private home and writes denied')
         self.assertIn("Requires a separately installed oMLX server and models.", external_notes)
         self.assertNotIn("built-in AI engine", external_notes)
 
+    def test_relocation_smoke_skips_engine_import_only_on_a_host_below_the_engine_minimum(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+
+        class Runner:
+            logs = self.root
+            calls = []
+
+            def run(inner, label, command, **kwargs):
+                inner.calls.append(label)
+                log = self.root / (label + ".log")
+                log.write_text("")
+                return 0, log
+
+        for host, expect_run in (("15.5", False), ("26.2", True), ("27.0", True)):
+            with self.subTest(host=host), patch.object(p, "guarded", return_value=0), \
+                    patch.object(p.engine_build, "_host_macos", return_value=host), \
+                    patch.object(p, "engine_smoke") as smoke, patch("builtins.print"):
+                p.relocation_smoke(Runner(), bundle)
+                self.assertEqual(smoke.called, expect_run)
+                if not expect_run:
+                    self.assertIn("older than the engine's minimum 26.2",
+                                  (self.root / "relocated-engine-smoke.log").read_text())
+
+    def test_release_notes_say_when_the_engine_smoke_was_skipped(self):
+        meta = dict(self.meta, preview=False, engine={"minimum_macos": "26.2"})
+        skipped = dict(meta, engine_smoke={"mode": "skip", "reason": "host macOS 15.5 is older than the engine's minimum 26.2"})
+        with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")), \
+                patch.object(p, "git", return_value="- fixture change"):
+            self.assertIn("import smoke test was not run on the build host", p.notes(skipped))
+            self.assertIn("verified against the pinned oMLX release", p.notes(skipped))
+            self.assertNotIn("not run on the build host", p.notes(dict(meta, engine_smoke={"mode": "run"})))
+
+    def test_fetch_engine_and_engine_app_are_mutually_exclusive(self):
+        with patch.object(sys, "argv", ["pipeline.py", "preview", "--fetch-engine", "--engine-app", "/x/oMLX.app"]), \
+                self.assertRaises(SystemExit) as raised, patch("sys.stderr"):
+            p.main()
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_engine_source_pin_matches_the_engine_lock(self):
+        source = p.engine_build.load_source()
+        self.assertEqual(source["omlx_version"], p.engine_build.load_lock()["omlx_version"])
+
     def test_engine_smoke_requires_success_status_and_marker(self):
         bundle = self.fixture()
         self.engine_fixture(bundle)
@@ -2133,7 +2176,7 @@ print('external venv readable; private home and writes denied')
         self.assertIn("inputs.publish_ad_hoc && !inputs.publish", workflow)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
         job = workflow.split("  publish-ad-hoc-release:", 1)[1]
-        self.assertIn("all --strict-toolchain --output dist/candidate", job)
+        self.assertIn("all --strict-toolchain --fetch-engine --output dist/candidate", job)
         self.assertIn("release-ad-hoc --output dist/candidate", job)
         self.assertIn("WISP_AD_HOC_RELEASE_APPROVED: 'true'", job)
         self.assertNotIn("gh release create", job)
@@ -2167,7 +2210,7 @@ print('external venv readable; private home and writes denied')
             self.assertNotIn("secrets.", job)
             self.assertNotIn("download-artifact", job)
             self.assertNotIn("wisp-build all", job)
-        self.assertIn("./scripts/wisp-build preview --strict-toolchain --output dist/preview", preview)
+        self.assertIn("./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview", preview)
         self.assertNotIn("wisp-build test", preview)
         self.assertIn("isolated_acl_fixture.py --ephemeral-macos", preview)
         self.assertIn("mini_artifact.py --source-sha", preview)
@@ -2175,11 +2218,21 @@ print('external venv readable; private home and writes denied')
         self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
         self.assertNotIn("wisp-build preview", qa)
 
+    def test_every_ci_build_stages_the_pinned_engine(self):
+        """A release made by CI must carry the engine: every build command passes --fetch-engine."""
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        commands = [line.strip() for line in workflow.splitlines()
+                    if "./scripts/wisp-build preview" in line or "./scripts/wisp-build all" in line]
+        self.assertEqual(len(commands), 4)          # PR preview, full, release rebuild, ad-hoc rebuild
+        for command in commands:
+            self.assertIn("--fetch-engine", command)
+            self.assertNotIn("--engine-app", command)
+
     def test_main_tags_and_dispatch_keep_the_unchanged_full_gate(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         full = self.workflow_job(workflow, "full")
         self.assertIn("    if: github.event_name != 'pull_request'\n", full)
-        self.assertIn("./scripts/wisp-build all --strict-toolchain --output dist/candidate", full)
+        self.assertIn("./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate", full)
         for step in ("Qualify isolated signed ACL replacement on disposable macOS", "Upload verified candidate",
                      "Verify synthetic publisher signatures and provisioning transactions",
                      "Build and verify exact-candidate offline mini artifact", "Upload diagnostics"):

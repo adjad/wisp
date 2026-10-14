@@ -391,6 +391,103 @@ def test_runtime_gate() -> None:
         check("unreadable ENGINE.json refuses", unsupported_reason(root, "27.0") is not None)
 
 
+def test_pinned_download() -> None:
+    import hashlib
+    source = engine.load_source()
+    check("source pin is for the locked oMLX release", source["omlx_version"] == engine.load_lock()["omlx_version"])
+    check("asset URL is the official release path",
+          engine.asset_url(source) == "https://github.com/jundot/omlx/releases/download/v0.7.0/oMLX-0.7.0-macos26-27.dmg")
+    for field, value in (("repo", "evil.example/x"), ("tag", "latest"), ("asset", "../x.dmg"), ("sha256", "00"),
+                         ("size", -1), ("omlx_version", "9.9")):
+        with tempfile.TemporaryDirectory() as t:
+            bad = Path(t) / "src.json"
+            bad.write_text(json.dumps({**source, field: value}))
+            try:
+                engine.load_source(bad)
+                check(f"a bad {field} is refused", False)
+            except engine.EngineBuildError:
+                check(f"a bad {field} is refused", True)
+    with tempfile.TemporaryDirectory() as t:
+        t = Path(t)
+        payload = b"fake dmg bytes" * 10
+        fake = {**source, "size": len(payload), "sha256": hashlib.sha256(payload).hexdigest()}
+        calls: list[str] = []
+
+        def fetch(url: str, dest: Path, limit: int) -> None:
+            calls.append(url)
+            dest.write_bytes(payload)
+
+        got = engine.verified_download(fake, t / "cache", fetch=fetch)
+        check("a matching download is accepted", got.read_bytes() == payload and len(calls) == 1)
+        engine.verified_download(fake, t / "cache", fetch=fetch)
+        check("a verified cache entry is reused without downloading", len(calls) == 1)
+        got.write_bytes(b"tampered")
+        engine.verified_download(fake, t / "cache", fetch=fetch)
+        check("a tampered cache entry is replaced, never reused", len(calls) == 2 and got.read_bytes() == payload)
+
+        def bad_fetch(url: str, dest: Path, limit: int) -> None:
+            dest.write_bytes(b"x" * len(payload))          # right size, wrong digest
+
+        for kind, fn, want in (("a wrong digest", bad_fetch, "does not match"),):
+            try:
+                engine.verified_download(fake, t / "cache2", fetch=fn)
+                check(f"{kind} is refused", False)
+            except engine.EngineBuildError as exc:
+                check(f"{kind} is refused", want in str(exc))
+        check("and leaves no partial file behind", not list((t / "cache2").glob("*")))
+        try:
+            engine.verified_download(fake, t / "cache3", offline=True, fetch=fetch)
+            check("an offline build with no cached release is refused", False)
+        except engine.EngineBuildError:
+            check("an offline build with no cached release is refused", True)
+
+        events: list[str] = []
+
+        def attach(dmg: Path, mount: Path) -> None:
+            events.append("attach")
+            (mount / "oMLX.app").mkdir()
+
+        def detach(mount: Path) -> None:
+            events.append("detach")
+            shutil.rmtree(mount / "oMLX.app", ignore_errors=True)
+
+        with engine.fetched_app(t / "cache", source=fake, fetch=fetch, attach=attach, detach=detach) as app:
+            check("the mounted oMLX.app is yielded", app.name == "oMLX.app" and app.is_dir())
+        check("and unmounted afterwards", events == ["attach", "detach"])
+        events.clear()
+        try:
+            with engine.fetched_app(t / "cache", source=fake, fetch=fetch, attach=attach, detach=detach):
+                raise RuntimeError("build failed")
+        except RuntimeError:
+            pass
+        check("an unmount still happens when the build fails", events == ["attach", "detach"])
+        events.clear()
+
+        def attach_empty(dmg: Path, mount: Path) -> None:
+            events.append("attach")
+
+        try:
+            with engine.fetched_app(t / "cache", source=fake, fetch=fetch, attach=attach_empty, detach=detach):
+                pass
+            check("an image without oMLX.app is refused", False)
+        except engine.EngineBuildError:
+            check("an image without oMLX.app is refused", events == ["attach", "detach"])
+
+
+def test_smoke_plan() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        bundle = Path(t) / "Wisp.app"
+        doc = bundle / engine.ENGINE_DIR / "ENGINE.json"
+        doc.parent.mkdir(parents=True)
+        doc.write_text(json.dumps({"minimum_macos": "26.2"}))
+        for host, mode in (("15.5", "skip"), ("26.1", "skip"), ("26.2", "run"), ("26.5.1", "run"), ("27.0", "run"),
+                           ("", "run"), ("garbage", "run")):
+            plan = engine.smoke_plan(bundle, host)
+            check(f"host {host or '(unreadable)'} -> {mode}", plan["mode"] == mode, str(plan))
+        plan = engine.smoke_plan(bundle, "15.5")
+        check("the skip says why", "15.5" in plan["reason"] and "26.2" in plan["reason"])
+
+
 def test_prune_file() -> None:
     prune = engine.load_prune()
     check("prune list is non-empty and safe", len(prune["drop"]) > 20)
@@ -404,7 +501,7 @@ def main() -> int:
     for fn in (test_selection_and_pruning, test_digest_and_lock, test_lock_writer,
                test_third_party_inventory, test_smoke_arguments_and_port_refusal, test_source_identity,
                test_structural_refusals, test_validate_structure, test_signing_hooks,
-               test_runtime_gate, test_prune_file):
+               test_runtime_gate, test_prune_file, test_pinned_download, test_smoke_plan):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")
