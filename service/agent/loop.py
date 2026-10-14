@@ -542,13 +542,13 @@ def _read_categories():
 
 # Reads whose answer can change within one turn without any write by Wisp, so
 # an identical repeat ("check again") must still run.
-# Device and media controls repeat legitimately with identical arguments
-# (not shell or timers: an identical shell append or alarm is a duplicate):
-# "skip two tracks" is music(next) twice, and volume 10 -> 50 -> 10 sets 10
-# again (independent review of #221). Only these are exempt from the planner's
-# re-issued identical write check; a repeated save, note or message is not.
-# Keyed by category (not menu family, which derives from the module).
-_REPEATABLE_WRITE_CATEGORIES = frozenset({"app_control", "system_write"})
+# State controls repeat legitimately with identical arguments: "skip two
+# tracks" is music(next) twice, and volume 10 -> 50 -> 10 sets 10 again
+# (independent review of #221). Only these are exempt from the planner's
+# re-issued identical write check. An explicit list, not categories: the
+# device category also holds screen_capture, which saves a file per call.
+_REPEATABLE_WRITES = frozenset({"music", "set_volume", "toggle_setting", "window_control",
+                                "open_app", "quit_app"})
 
 _VOLATILE_READS = frozenset({
     "system_status", "world_time", "get_volume",
@@ -2636,9 +2636,9 @@ async def run_agent(
         # offers. Measured 2026-10-14, Ling V3, real planner path: 7 of the 17
         # failures in 59 cases, e.g. "what am i forgetting to do this week"
         # answered with an invented meeting. Re-plan once restricted to those
-        # tools, which are reads except the one write the rules router itself
-        # forced (menu.act_first_tools); a clarifying question is still
-        # possible after the lookup, when it is grounded.
+        # tools, which are reads only (menu.act_first_tools); a requested
+        # write is planned after the lookup, and a clarifying question is
+        # still possible then, when it is grounded.
         if (plan.status in ("answer", "clarify") and not plan.calls and not searched
                 and not require_call and replan_left[0]
                 and (only := act_first & set(allowed))):
@@ -2756,7 +2756,7 @@ async def run_agent(
             category = t.category if (t := get_tool(n)) is not None else None
             if n not in _EFFECT_TOOLS and category in _read_categories():
                 read_attempts[_plan.call_key(n, a)] += 1
-            elif category not in _REPEATABLE_WRITE_CATEGORIES:
+            elif n not in _REPEATABLE_WRITES:
                 issued_writes.add(_plan.call_key(n, a))
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:

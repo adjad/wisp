@@ -1839,8 +1839,7 @@ async def agent(body: dict[str, Any]):
                 planner_act_first = act_first_tools(
                     prompt, planner_menu,
                     routed=(decision.tool_subset or ()) if (decision.route_source == "rules"
-                                                            and decision.needs_tools) else (),
-                    forced=decision.force_first_tool if decision.route_source == "rules" else None)
+                                                            and decision.needs_tools) else ())
                 decision = dataclasses.replace(
                     decision, role="agent", model=role_to_model("agent"), needs_tools=True,
                     route_source="planner", reason=f"{decision.reason} · planner menu",

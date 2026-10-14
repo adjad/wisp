@@ -222,13 +222,6 @@ def build_menu(text: str, *, last_assistant: str | None = None,
 # first-person reference: "define ephemeral", "who is the ceo of X".
 _PERSONAL_FAMILIES = frozenset({"calendar", "mail", "messages_contacts", "notes", "memory", "files"})
 _FIRST_PERSON_RE = re.compile(r"\b(?:my|me|mine|i|i'?m|i've|am\s+i)\b", re.I)
-# The only write a forced re-plan may carry is one that verifies the user's
-# own request itself: remember saves nothing unless the current user message
-# explicitly asks to remember or save (memory_tools._SAVE). A question-shape
-# test cannot gate the others: "can you tell me if I should turn wi-fi off"
-# still forced toggle_setting, while "can you remember that ...?" lost the
-# save (second independent review of #221).
-_SELF_GUARDED_WRITES = frozenset({"remember"})
 # A writing request is answered with the writing itself. Measured 2026-10-14,
 # Ling V3, all 55 chat/clarify corpus cases: the only forced lookups were
 # writing requests ("write a regex ...", "draft a speech for my dad's
@@ -242,7 +235,7 @@ _WRITING_RE = re.compile(
     r"how\s+(?:should|do|can|would)\s+i\s+(?:word|phrase|say)|make\s+this)\b", re.I)
 
 
-def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None = None) -> frozenset[str]:
+def act_first_tools(text: str, menu: list[str], *, routed=()) -> frozenset[str]:
     """Menu tools a planner turn must try before it answers or clarifies with
     no call at all (service/agent/loop.py, "ANSWERED BEFORE LOOKING").
 
@@ -255,10 +248,14 @@ def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None
 
     Evidence is the rules router's confident tool subset (`routed`, empty for
     its "ambiguous, model decides" default) plus the menu's own family hints.
-    Only READ tools are returned, so a forced re-plan never invents a write,
-    except a self-guarded write the rules router itself forced (`forced`:
-    "remember that ..." -> remember, which re-checks the user's own words). Prohibitions and mentions ("don't search the web,
-    just tell me ...") and writing requests never qualify.
+    Only READ tools are returned: a forced re-plan never carries a write.
+    Three independent review rounds of #221 broke every write exception
+    (a question-shape test, then remember's own save guard): "should I turn
+    wi-fi off?" forced toggle_setting, and "can you remember that my dog is
+    named Max? Please don't save anything" saved it. A turn that genuinely
+    asked for a write plans it after the forced lookup, unforced.
+    Prohibitions and mentions ("don't search the web, just tell me ...") and
+    writing requests never qualify.
     """
     from service.router.model_led import READ_CATEGORIES
     from service.tools.registry import REGISTRY
@@ -275,7 +272,5 @@ def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None
         wanted |= families & _PERSONAL_FAMILIES
     if wanted:
         pool |= {n for n in menu if family_of(n) in wanted}
-    keep = {n for n in pool if (t := REGISTRY.get(n)) is not None and t.category in READ_CATEGORIES}
-    if forced in _SELF_GUARDED_WRITES and forced in offered and pool:
-        keep.add(forced)
-    return frozenset(keep)
+    return frozenset(n for n in pool if (t := REGISTRY.get(n)) is not None
+                     and t.category in READ_CATEGORIES)

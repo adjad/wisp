@@ -582,19 +582,19 @@ def test_only_one_forced_replan_per_turn(_fake_tools):
     assert _fake_tools == [("fake_read", {})] and len(client.requests) == 4
 
 
-@pytest.mark.parametrize("prompt, routed, forced, must", [
-    ("what am i forgetting to do this week", (), None, "get_upcoming"),
-    ("help me plan my day", ("get_upcoming", "daily_brief"), None, "get_upcoming"),
-    ("what's my bike lock code", (), None, "search_notes"),
-    ("find my resume and email it to dana@example.com", (), None, "find_files"),
-    ("summarize my inbox and save the important stuff to a note", (), None, "summarize_emails"),
-    ("remember that my wife's birthday is march 3", ("remember", "recall"), "remember", "remember"),
-    ("define ephemeral", (), None, "wikipedia_summary"),
+@pytest.mark.parametrize("prompt, routed, must", [
+    ("what am i forgetting to do this week", (), "get_upcoming"),
+    ("help me plan my day", ("get_upcoming", "daily_brief"), "get_upcoming"),
+    ("what's my bike lock code", (), "search_notes"),
+    ("find my resume and email it to dana@example.com", (), "find_files"),
+    ("summarize my inbox and save the important stuff to a note", (), "summarize_emails"),
+    ("remember that my wife's birthday is march 3", ("remember", "recall"), "recall"),
+    ("define ephemeral", (), "wikipedia_summary"),
 ])
-def test_act_first_tools_cover_the_measured_no_call_failures(prompt, routed, forced, must):
+def test_act_first_tools_cover_the_measured_no_call_failures(prompt, routed, must):
     from service.router.menu import act_first_tools, build_menu
     menu = build_menu(prompt)
-    assert must in act_first_tools(prompt, menu, routed=routed, forced=forced)
+    assert must in act_first_tools(prompt, menu, routed=routed)
 
 
 @pytest.mark.parametrize("prompt", [
@@ -751,23 +751,30 @@ def _run_real(client, tools, prompt, **kwargs):
                                       planner=True, **kwargs))
 
 
-@pytest.mark.parametrize("prompt", [
-    "Should I turn wi-fi off?", "can you tell me if I should turn wi-fi off",
-    "could you tell me if I should turn wi-fi off", "please, should I turn wi-fi off",
+@pytest.mark.parametrize("prompt, routed", [
+    ("Should I turn wi-fi off?", ("toggle_setting",)),
+    ("can you tell me if I should turn wi-fi off", ("toggle_setting",)),
+    ("remember that my wife's birthday is march 3", ("remember", "recall")),
+    ("can you remember that my dog is named Max? Please don't save anything; can you just tell me?",
+     ("remember", "recall")),
+    ("Can you remember my name? My name is Adi. Did you already save it?", ("remember", "recall")),
 ])
-def test_an_advice_question_never_forces_the_routers_device_write(prompt):
+def test_act_first_tools_never_carry_a_write(prompt, routed):
+    # Every write exception broke under independent review of #221.
     from service.router.menu import act_first_tools, build_menu
-    assert "toggle_setting" not in act_first_tools(prompt, build_menu(prompt), routed=("toggle_setting",),
-                                                    forced="toggle_setting")
+    from service.router.model_led import READ_CATEGORIES
+    got = act_first_tools(prompt, build_menu(prompt), routed=routed)
+    assert all(REGISTRY[n].category in READ_CATEGORIES for n in got)
 
 
-@pytest.mark.parametrize("prompt", [
-    "remember that my wife's birthday is march 3", "can you remember that my gate code is 4512?",
-    "could you remember that my gate code is 4512", "do remember that my gate code is 4512",
-])
-def test_a_forced_remember_survives_any_request_shape(prompt):
-    from service.router.menu import act_first_tools, build_menu
-    assert "remember" in act_first_tools(prompt, build_menu(prompt), routed=("remember",), forced="remember")
+def test_an_identical_screenshot_is_not_taken_twice(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "screen_capture", calls, "Saved screenshot to /tmp/s.png")
+    shot = {"path": "/tmp/s.png"}
+    _run_real(PlanClient([plan("call_tools", ("screen_capture", shot)),
+                          plan("call_tools", ("screen_capture", shot)), plan("answer")]),
+              ("screen_capture",), "take one screenshot and save it")
+    assert len(calls) <= 1
 
 
 def test_identical_shell_and_timer_writes_are_not_repeated(monkeypatch, _fake_tools):
