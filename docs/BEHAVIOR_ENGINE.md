@@ -21,6 +21,18 @@ but cannot be read (or is not a mapping), the saved setting is unknown and
 learning is treated as **off** (fail closed) until the file is fixed;
 `PUT /behavior/settings` answers 409 instead of overwriting it.
 
+**See what Wisp learned** (Settings -> Privacy & Access, or "What Wisp learned" in
+the Chat sidebar) opens a window listing every learned routine, grouped as
+Routines, People, Your days, Cancelling and moving, and How you use Wisp. Each
+row shows its sentence, a strength label from its confidence (Strong 0.6 or
+more, Likely 0.35 or more, otherwise Emerging), its counts ("6 of the last 15
+times") and when it was last seen. "That's right" confirms a routine; "Not
+true" rejects it, which stops it driving predictions, nudges and the profile
+card; rejected rows sit under "Marked not true" with a Restore button. Above
+the list, "Coming up today" shows today's predictions with their `because`
+lines. The window uses only existing endpoints (`/behavior/settings`,
+`/status`, `/patterns`, `/patterns/{id}`, `/predict?day=today`).
+
 ## Data flow
 
 ```
@@ -61,12 +73,12 @@ hours, and when you switch learning off.
 
 | Pattern kind | Needs | Example statement |
 | --- | --- | --- |
-| `habit` | at least 4 occurrences over at least 3 weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
+| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
 | `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
 | `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
 | `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
 | `day_shape` | at least 5 weekdays (4 weekend days) of kept events | "On weekdays your first commitment is usually around 6:45am and your last ends around 3:30pm; lunch is usually free 11am–2pm" |
-| `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays" |
+| `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays", "You look things up with Wisp around 5pm on Tue and Thu" |
 
 A pattern's `status` is `active`, `confirmed` or `rejected`. The user's verdict
 survives re-mining (pattern ids use a coarse window key on purpose). Rejected
