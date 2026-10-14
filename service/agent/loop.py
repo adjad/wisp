@@ -2593,6 +2593,12 @@ async def run_agent(
     # One "look wider" re-plan per turn, separate from the above so a turn
     # that was forced to look can still widen once (at most two re-plans).
     widen_left = [planner]
+    # The tools a forced re-plan restricted the turn to, held as TURN state
+    # until one of them has run: the outer attempt loop retries a parse error
+    # or an empty answer by calling _plan_step again with the full tool set,
+    # which let a write through (fifth independent review of #221).
+    restricted: list = [None]
+    restricted_ran = [False]
 
     async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
                          temperature, think_on, *, last_attempt):
@@ -2603,6 +2609,10 @@ async def run_agent(
         tool-free narration step carrying the status's instruction. An
         unparseable plan returns an empty message so the attempt loop's
         empty-response retry re-samples it, except on the last attempt."""
+        if restricted[0] is not None:
+            allowed = set(allowed) & restricted[0]
+            step_schemas = [sc for sc in step_schemas if sc["function"]["name"] in restricted[0]]
+            require_call = True
         # History is text-only (agent/context), so a tool message here is a
         # result from this turn.
         searched = any(m.get("role") == "tool" for m in step_msgs)
@@ -2618,6 +2628,8 @@ async def run_agent(
         async def _replan(reason: str, only=None, *, budget=replan_left):
             budget[0] = False
             audit("plan_replan", reason=reason, tools=sorted(only) if only else None)
+            if only:
+                restricted[0], restricted_ran[0] = frozenset(only), False
             # A restricted re-plan offers ONLY those tools: their definitions
             # too, not just the plan enum (fourth independent review of #221:
             # the write definitions were still sent).
@@ -2798,6 +2810,8 @@ async def run_agent(
         return answer, plan.thought or reasoning_text, streamed
 
     for _step in range(max_steps):
+        if restricted[0] is not None and restricted_ran[0]:
+            restricted[0] = None  # the forced lookup ran; the turn is free again
         await client.ensure_only(model, exclusive=exclusive, emit=emit)
         contract_candidate = None
         if (unmet_now := _unmet_group()) is not None:
@@ -3274,7 +3288,8 @@ async def run_agent(
         _batch_calls = []
         for tc in tool_calls:
             _batch_name = _clean_tool_name(tc["function"]["name"])
-            if _batch_name not in ("cancel_event", "add_calendar_event") or _batch_name not in allowed_names:
+            if (_batch_name not in ("cancel_event", "add_calendar_event") or _batch_name not in allowed_names
+                    or (restricted[0] is not None and _batch_name not in restricted[0])):
                 continue
             _batch_args = _parse_args(tc["function"].get("arguments", ""))
             _batch_args = {**_batch_args,
@@ -3438,6 +3453,16 @@ async def run_agent(
                           "and do not claim it ran.)")
                 audit("reject_skill_boundary", tool=name, args=args)
                 hard_failed.add(name)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
+            if restricted[0] is not None and name not in restricted[0]:
+                # Backstop for the restricted re-plan: nothing outside its
+                # tools runs until one of them has.
+                result = (f"({name} is not available at this step. Look the information up "
+                          "first with the offered tools.)")
+                audit("reject_restricted_replan", tool=name, args=args)
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -3895,6 +3920,8 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
+            if restricted[0] is not None:
+                restricted_ran[0] = True
             if budget_reads:
                 is_read = (ran_tool is not None and ran_tool.category in _read_categories()
                            and name not in _EFFECT_TOOLS)

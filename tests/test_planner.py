@@ -846,3 +846,22 @@ def test_a_restricted_replan_sends_only_the_restricted_tool_definitions(_fake_to
     run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
     forced = client.requests[1]
     assert [t["function"]["name"] for t in forced["tools"]] == ["fake_read"]
+
+
+@pytest.mark.parametrize("second", ['{"thought": "truncated', ""])
+def test_an_outer_retry_keeps_the_restricted_replan(second, _fake_tools):
+    # A malformed or empty restricted plan is retried by the outer attempt
+    # loop; the retry must stay restricted to the forced reads.
+    client = PlanClient([plan("answer"), second,
+                         plan("call_tools", ("fake_write", {"path": "raw", "text": "save"})),
+                         plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True,
+        act_first=frozenset({"fake_read"}), max_steps=2)
+    assert not [n for n, _ in _fake_tools if n == "fake_write"]
+
+
+def test_the_restriction_lifts_once_the_forced_lookup_ran(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {}), ("fake_write", {"path": "a.txt", "text": "hi"})]
