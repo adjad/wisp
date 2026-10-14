@@ -542,6 +542,13 @@ def _read_categories():
 
 # Reads whose answer can change within one turn without any write by Wisp, so
 # an identical repeat ("check again") must still run.
+# Device and media controls repeat legitimately with identical arguments:
+# "skip two tracks" is music(next) twice, and volume 10 -> 50 -> 10 sets 10
+# again (independent review of #221). Only these are exempt from the planner's
+# re-issued identical write check; a repeated save, note or message is not.
+# Keyed by category (not menu family, which derives from the module).
+_REPEATABLE_WRITE_CATEGORIES = frozenset({"app_control", "system_write", "shell", "timer_write"})
+
 _VOLATILE_READS = frozenset({
     "system_status", "world_time", "get_volume",
     "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
@@ -2738,11 +2745,17 @@ async def run_agent(
         if reads and len(reads) < len(plan.calls):
             audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
             plan.calls = reads
+        # Count what this plan ISSUES, as planned (bindings applied): the step
+        # loop may filter arguments further before running a call ("check AAPL
+        # but not TSLA"), and counting executed arguments let an identical
+        # planned read through every time (independent review of #221).
         for n, a in plan.calls:
-            if _read_call_key(n, a) is None and not ((t := get_tool(n)) is not None
-                                                      and t.category in _read_categories()):
-                if fixed := (tool_argument_bindings or {}).get(n):
-                    a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+            if fixed := (tool_argument_bindings or {}).get(n):
+                a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+            category = t.category if (t := get_tool(n)) is not None else None
+            if n not in _EFFECT_TOOLS and category in _read_categories():
+                read_attempts[_plan.call_key(n, a)] += 1
+            elif category not in _REPEATABLE_WRITE_CATEGORIES:
                 issued_writes.add(_plan.call_key(n, a))
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
@@ -3860,6 +3873,9 @@ async def run_agent(
                 # tools outside the effect table default to "read" even when
                 # they write (set_volume, run_shell).
                 completed_reads.clear()
+                # A write may change what a read returns: re-reading after it
+                # ("set volume to 10, then check it") is a new attempt.
+                read_attempts.clear()
             elif outcome.status == "succeeded":
                 if (read_key is not None and outcome.effect == "read"
                         and not str(result).lstrip().startswith("(")):
@@ -3869,10 +3885,6 @@ async def run_agent(
             if budget_reads:
                 is_read = (ran_tool is not None and ran_tool.category in _read_categories()
                            and name not in _EFFECT_TOOLS)
-                if is_read:
-                    fixed = (tool_argument_bindings or {}).get(name) or {}
-                    read_attempts[_plan.call_key(name, {**args, **{
-                        k: v for k, v in fixed.items() if k != "_recipient_lookup"}})] += 1
                 if is_read and (outcome.status != "succeeded" or _plan.looks_empty(name, result)):
                     read_misses[name] += 1
                 elif is_read:

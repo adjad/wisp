@@ -222,6 +222,11 @@ def build_menu(text: str, *, last_assistant: str | None = None,
 # first-person reference: "define ephemeral", "who is the ceo of X".
 _PERSONAL_FAMILIES = frozenset({"calendar", "mail", "messages_contacts", "notes", "memory", "files"})
 _FIRST_PERSON_RE = re.compile(r"\b(?:my|me|mine|i|i'?m|i've|am\s+i)\b", re.I)
+# A question asks for an answer, never a forced write. "can/could/would/will
+# you ..." opens a request, not a question.
+_QUESTION_RE = re.compile(
+    r"\?\s*$|^\s*(?:should|shall|do|does|did|is|are|am|was|were|what|how|why|when|where|who|which|"
+    r"can\s+i|could\s+i|would\s+it|will\s+it)\b", re.I)
 # A writing request is answered with the writing itself. Measured 2026-10-14,
 # Ling V3, all 55 chat/clarify corpus cases: the only forced lookups were
 # writing requests ("write a regex ...", "draft a speech for my dad's
@@ -269,6 +274,9 @@ def act_first_tools(text: str, menu: list[str], *, routed=(), forced: str | None
     if wanted:
         pool |= {n for n in menu if family_of(n) in wanted}
     keep = {n for n in pool if (t := REGISTRY.get(n)) is not None and t.category in READ_CATEGORIES}
-    if forced and forced in offered and pool:
+    if forced and forced in offered and pool and not _QUESTION_RE.search(masked):
+        # Only a command may force a write: "should I turn wi-fi off?" is
+        # advice, yet the rules router forces toggle_setting for it
+        # (independent review of #221).
         keep.add(forced)
     return frozenset(keep)

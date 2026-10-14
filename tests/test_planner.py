@@ -735,3 +735,62 @@ def test_a_turn_forced_to_look_can_still_look_wider_once(_fake_tools, _fake_fami
     # re-plan. fake_open returned content, so not_found narrates as answer.
     assert len(plans) == 5
     assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+# ------------------------------------- independent review of #221 (repairs)
+def _replace_body(monkeypatch, name, calls, result):
+    def body(**args):
+        calls.append((name, dict(args)))
+        return result
+    monkeypatch.setattr(REGISTRY[name], "func", body)
+
+
+def _run_real(client, tools, prompt, **kwargs):
+    return asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": prompt}], emit,
+                                      kwargs.pop("approver", Approver()), tools=list(tools),
+                                      planner=True, **kwargs))
+
+
+def test_an_advice_question_never_forces_the_routers_write():
+    from service.router.menu import act_first_tools, build_menu
+    prompt = "Should I turn wi-fi off?"
+    menu = build_menu(prompt)
+    assert "toggle_setting" not in act_first_tools(prompt, menu, routed=("toggle_setting",),
+                                                    forced="toggle_setting")
+    # A command still carries the router's forced write.
+    cmd = "remember that my wife's birthday is march 3"
+    assert "remember" in act_first_tools(cmd, build_menu(cmd), routed=("remember",), forced="remember")
+
+
+def test_device_and_media_controls_may_repeat_identical_writes(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "music", calls, "Skipped to next track.")
+    args = {"action": "next", "app": "spotify"}
+    _run_real(PlanClient([plan("call_tools", ("music", args)), plan("call_tools", ("music", args)),
+                          plan("answer")]), ("music",), "skip two tracks in Spotify")
+    assert calls == [("music", args), ("music", args)]
+    calls.clear()
+    _replace_body(monkeypatch, "set_volume", calls, "Volume changed.")
+    _run_real(PlanClient([plan("call_tools", ("set_volume", {"level": n})) for n in (10, 50, 10)]
+                         + [plan("answer")]), ("set_volume",), "set volume to 10, then 50, then 10")
+    assert calls == [("set_volume", {"level": n}) for n in (10, 50, 10)]
+
+
+def test_a_write_resets_the_identical_read_cap(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "get_volume", calls, "Volume: 25%")
+    _replace_body(monkeypatch, "set_volume", calls, "Volume set to 10%")
+    _run_real(PlanClient([plan("call_tools", ("get_volume", {})), plan("call_tools", ("get_volume", {})),
+                          plan("call_tools", ("set_volume", {"level": 10})),
+                          plan("call_tools", ("get_volume", {})), plan("answer")]),
+              ("get_volume", "set_volume"), "check the volume twice, set it to 10%, then check it")
+    assert [n for n, _ in calls] == ["get_volume", "get_volume", "set_volume", "get_volume"]
+
+
+def test_the_read_cap_counts_planned_arguments_not_filtered_ones(monkeypatch):
+    calls = []
+    _replace_body(monkeypatch, "get_stock_price", calls, "AAPL: $200")
+    args = {"symbols": ["AAPL", "TSLA"]}
+    _run_real(PlanClient([plan("call_tools", ("get_stock_price", args)) for _ in range(4)]
+                         + [plan("answer")]), ("get_stock_price",), "check AAPL but not TSLA")
+    assert len(calls) <= 2
