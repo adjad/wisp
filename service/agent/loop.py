@@ -2618,7 +2618,12 @@ async def run_agent(
         async def _replan(reason: str, only=None, *, budget=replan_left):
             budget[0] = False
             audit("plan_replan", reason=reason, tools=sorted(only) if only else None)
-            return await _plan_step(step_msgs, step_schemas, set(only or allowed), True, max_out,
+            # A restricted re-plan offers ONLY those tools: their definitions
+            # too, not just the plan enum (fourth independent review of #221:
+            # the write definitions were still sent).
+            offered = ([sc for sc in step_schemas if sc["function"]["name"] in only]
+                       if only else step_schemas)
+            return await _plan_step(step_msgs, offered, set(only or allowed), True, max_out,
                                     temperature, think_on, last_attempt=last_attempt)
         # SELF-CONTRADICTION, part 1: cannot_do before anything was searched,
         # with tools offered. Measured 2026-10-13, LFM2.5-24B, real planner
@@ -2768,12 +2773,19 @@ async def run_agent(
             client, model, step_msgs + [{"role": "user", "content": note}], [], "auto", max_out,
             emit, stream_content=False, temperature=None, no_thinking=True, think_on=False,
             debug=debug)
+        # The narration step is tool-free: native calls it returns are never
+        # executed (they would run under the outer step's wider tool set,
+        # escaping a restricted re-plan; fourth independent review of #221).
+        native_calls = bool(answer.get("tool_calls"))
+        if native_calls:
+            audit("plan_narration_calls_dropped")
+            answer = {**answer, "tool_calls": None}
         # SELF-CONTRADICTION, part 2: the plan called nothing, then the
         # tool-free narration tried to call a tool in text. Same run: 7 of 59
         # LFM2.5 answers were only `<|tool_call_start|>[get_upcoming()]...`.
         # That text must never reach the user; the model has told us it wants
         # the tool, so re-plan once with a call required.
-        if (_plan.TOOL_CALL_MARKUP.search(answer.get("content") or "")
+        if ((native_calls or _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""))
                 and not require_call and allowed and replan_left[0]):
             return await _replan("narration_called_a_tool")
         if _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""):

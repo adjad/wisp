@@ -818,3 +818,31 @@ def test_the_read_cap_counts_planned_arguments_not_filtered_ones(monkeypatch):
     _run_real(PlanClient([plan("call_tools", ("get_stock_price", args)) for _ in range(4)]
                          + [plan("answer")]), ("get_stock_price",), "check AAPL but not TSLA")
     assert len(calls) <= 2
+
+
+@pytest.mark.parametrize("widen", [False, True])
+def test_a_forced_replan_never_executes_a_write_from_narration(widen, _fake_tools, _fake_families):
+    # The tool-free narration step returns native calls; none may run.
+    class NativeNarration(PlanClient):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if "response_format" not in kwargs:
+                self.requests.append({"messages": list(messages), "tools": tools, **kwargs})
+                yield {"kind": "final", "message": planner.plan_message(
+                    planner.Plan("call_tools", calls=[("fake_write", {"path": "raw", "text": "save"})]))}
+                return
+            async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                yield event
+    plans = ([plan("call_tools", ("fake_search", {"query": "code"})), plan("not_found")]
+             if widen else [plan("answer")])
+    plans += [plan("call_tools", ("fake_write", {"path": "raw", "text": "save"}))]
+    client = NativeNarration(plans)
+    run(client, tools=("fake_search", "fake_open", "fake_write"), planner=True,
+        max_steps=2 if widen else 1, act_first=frozenset({"fake_search", "fake_open"}))
+    assert not [n for n, _ in _fake_tools if n == "fake_write"]
+
+
+def test_a_restricted_replan_sends_only_the_restricted_tool_definitions(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
+    forced = client.requests[1]
+    assert [t["function"]["name"] for t in forced["tools"]] == ["fake_read"]
