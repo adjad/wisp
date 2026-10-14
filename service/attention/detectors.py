@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -57,15 +58,40 @@ _DECLINE = re.compile(r"\b(?:can'?t|cannot|won'?t|no|nope|sorry|not\s+able|unabl
                       r"pass|busy)\b", re.I)
 
 
-def local_timezone() -> str:
-    """The Mac's IANA zone, from /etc/localtime. Falls back to UTC if it can't tell."""
-    try:
-        path = os.path.realpath("/etc/localtime")
+def _zone_candidates() -> list[str]:
+    """IANA names the system might be using, most specific first: $TZ, then where
+    /etc/localtime points (its own link, then the fully resolved path)."""
+    names: list[str] = []
+    tz = (os.environ.get("TZ") or "").lstrip(":")
+    if tz and not tz.startswith("/"):
+        names.append(tz)
+    for read in (os.readlink, os.path.realpath):
+        try:
+            path = read("/etc/localtime")
+        except OSError:
+            continue
         if "zoneinfo/" in path:
-            return path.split("zoneinfo/", 1)[1]
-    except OSError:
-        pass
-    return "UTC"
+            name = path.split("zoneinfo/", 1)[1]
+            names.append(name.removeprefix("posix/"))
+    return names
+
+
+def local_timezone() -> str | None:
+    """The Mac's IANA zone, or None when it cannot be named with confidence.
+
+    A candidate counts only if it loads and agrees with the offset the system clock is using
+    right now. There is deliberately no fallback: a guessed zone (UTC used to be the guess)
+    reads "dinner at 7" seven or eight hours off and files the reminder at that wrong time.
+    Callers that act must stop instead; tools that replay can pass a zone explicitly."""
+    offset = time.localtime().tm_gmtoff
+    for name in _zone_candidates():
+        try:
+            zone = ZoneInfo(name)
+        except (KeyError, ValueError, OSError):  # ZoneInfoNotFoundError is a KeyError
+            continue
+        if datetime.now(zone).utcoffset() == timedelta(seconds=offset):
+            return name
+    return None
 
 
 @dataclass(frozen=True)
@@ -83,6 +109,8 @@ class UncapturedCommitment:
     def __init__(self, snapshot: Snapshot, tz: str | None = None, soon_hours: float = SOON_HOURS):
         self.snapshot = snapshot
         self.tz = tz or local_timezone()
+        if self.tz is None:
+            raise ValueError("the local time zone cannot be determined; pass tz explicitly")
         self.soon = timedelta(hours=soon_hours)
         self.contacts = Contacts(snapshot.items)
 
