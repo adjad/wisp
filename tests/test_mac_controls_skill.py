@@ -12,6 +12,7 @@ osascript or pmset is reached, so nothing changes on the Mac.
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from pathlib import Path
 
@@ -106,7 +107,37 @@ def test_lock_claims_success_only_after_macos_confirms_it() -> None:
                      if not line.lstrip().startswith("#"))
     assert "displaysleepnow" not in lock
     before_success = lock[:lock.index('echo "screen locked"')]
-    assert '"CGSSessionScreenIsLocked"=Yes' in before_success
+    assert "session_locked" in before_success
+
+
+def _console(*sessions: dict) -> bytes:
+    import plistlib
+    return plistlib.dumps({"IOConsoleLocked": False, "IOConsoleUsers": list(sessions)})
+
+
+def _session(uid: int, on_console: bool, locked: bool | None) -> dict:
+    entry = {"kCGSSessionUserIDKey": uid, "kCGSSessionOnConsoleKey": on_console}
+    if locked is not None:   # the key is absent while a session is unlocked
+        entry["CGSSessionScreenIsLocked"] = locked
+    return entry
+
+
+_ME, _OTHER = os.getuid(), os.getuid() + 1
+
+
+@pytest.mark.parametrize("sessions,expected", [
+    # A locked background session must not vouch for the one on screen.
+    ((_session(_ME, True, None), _session(_OTHER, False, True)), "unlocked"),
+    ((_session(_OTHER, False, True), _session(_ME, True, None)), "unlocked"),
+    ((_session(_OTHER, True, True), _session(_ME, False, None)), "unlocked"),
+    ((_session(_ME, True, False),), "unlocked"),
+    ((), "unlocked"),
+    ((_session(_OTHER, False, None), _session(_ME, True, True)), "locked"),
+])
+def test_lock_state_is_read_from_this_users_console_session(sessions, expected) -> None:
+    proc = subprocess.run(["bash", str(SKILL_DIR / "controls.sh"), "session-locked"],
+                          input=_console(*sessions), capture_output=True, timeout=10)
+    assert proc.stdout.decode().strip() == expected, proc.stderr
 
 
 @pytest.mark.parametrize("prompt,tool", [
@@ -120,10 +151,14 @@ def test_requests_offer_the_matching_tool(loaded, prompt, tool) -> None:
     assert tool in (decision.tool_subset or ()), (prompt, decision.reason, decision.tool_subset)
 
 
-@pytest.mark.parametrize("prompt", ["turn the volume down", "lock my screen", "pause the music"])
+@pytest.mark.parametrize("prompt", ["turn the volume down", "set volume to 30%", "what's my volume",
+                                    "mute my volume", "lock my screen", "pause the music",
+                                    "next song on spotify"])
 def test_triggers_inject_the_instructions(loaded, prompt) -> None:
     assert loaded["mac-controls"].matches(prompt)
 
 
-def test_unrelated_words_do_not_inject_the_instructions(loaded) -> None:
-    assert not loaded["mac-controls"].matches("how long is my commute")
+@pytest.mark.parametrize("prompt", ["how long is my commute", "what is the volume of a sphere",
+                                    "is Spotify cheaper than Apple Music"])
+def test_unrelated_words_do_not_inject_the_instructions(loaded, prompt) -> None:
+    assert not loaded["mac-controls"].matches(prompt)

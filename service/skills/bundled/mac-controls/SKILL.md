@@ -4,7 +4,10 @@ description: Mac volume, mute, screen lock and music playback (Apple Music or Sp
 metadata:
   wisp:
     triggers:
-      - volume
+      - my volume
+      - volume up
+      - volume down
+      - volume to
       - louder
       - quieter
       - turn it up
@@ -27,7 +30,10 @@ metadata:
       - previous song
       - next track
       - previous track
-      - spotify
+      - on spotify
+      - in spotify
+      - pause spotify
+      - play spotify
     enabled: true
     tools:
       - name: mac_get_volume

@@ -9,6 +9,27 @@ set -u
 
 die() { echo "$1" >&2; exit 2; }
 
+# Whether THIS user's on-console session is locked, given `ioreg -n Root -d1 -a`
+# output on stdin. IOConsoleUsers holds one entry per login session, and a
+# background fast-user-switched session can be locked while the one on screen
+# is not, so a match anywhere in the output proves nothing.
+session_locked() {
+  local plist uid i u on locked
+  plist=$(cat) || return 1
+  uid=$(id -u)
+  i=0
+  while u=$(plutil -extract "IOConsoleUsers.$i.kCGSSessionUserIDKey" raw -o - - <<<"$plist" 2>/dev/null); do
+    on=$(plutil -extract "IOConsoleUsers.$i.kCGSSessionOnConsoleKey" raw -o - - <<<"$plist" 2>/dev/null)
+    if [[ "$u" == "$uid" && "$on" == "true" ]]; then
+      locked=$(plutil -extract "IOConsoleUsers.$i.CGSSessionScreenIsLocked" raw -o - - <<<"$plist" 2>/dev/null)
+      [[ "$locked" == "true" ]]
+      return
+    fi
+    i=$((i + 1))
+  done
+  return 1
+}
+
 case "${1:-}" in
   get-volume)
     osascript -e 'set s to get volume settings' \
@@ -36,16 +57,19 @@ case "${1:-}" in
     if ! err=$(osascript -e 'tell application "System Events" to keystroke "q" using {control down, command down}' 2>&1); then
       die "could not lock the screen: $err"
     fi
-    # Claim the lock only once the session reports it; the key is present
-    # only while the screen is locked.
+    # Claim the lock only once this user's on-console session reports it.
     for _ in 1 2 3 4 5 6; do
-      if ioreg -n Root -d1 | grep -q '"CGSSessionScreenIsLocked"=Yes'; then
+      if ioreg -n Root -d1 -a | session_locked; then
         echo "screen locked"
         exit 0
       fi
       sleep 0.5
     done
     die "sent the Lock Screen shortcut, but macOS did not report the screen as locked"
+    ;;
+  session-locked)
+    # Read-only probe for tests: no skill tool's command template reaches it.
+    session_locked && echo locked || echo unlocked
     ;;
   media)
     case "${2:-}" in
