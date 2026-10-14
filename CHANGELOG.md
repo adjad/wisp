@@ -6,6 +6,7 @@ All notable changes to Wisp are documented here.
 
 ### Added
 
+- The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
 - "What Wisp has learned": a window listing every routine Wisp learned from your calendar, messages and Wisp use, grouped by kind, with the counts behind each one and today's predictions. Mark a routine "That's right" or "Not true" (a rejected routine stops shaping predictions, nudges and answers, and can be restored). Open it from Settings → Privacy & Access → "See what Wisp learned", or from the Chat sidebar.
 
 ### Fixed

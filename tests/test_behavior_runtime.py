@@ -748,6 +748,9 @@ def test_swift_learned_view_covers_every_pattern_kind_and_status():
     assert "behaviorSafeID(patternID)" in setter
     assert 'launchers.learned' in _swift("Chat/ChatViews.swift")
     assert "LearnedWindow.shared.show()" in _swift("SettingsView.swift")
+    from service.behavior.predict import _USAGE_PHRASES
+    table = src.split("static let usagePhrases")[1].split("= [", 1)[1].split("]")[0]
+    assert dict(re.findall(r'"(\w+)": "([^"]+)"', table)) == _USAGE_PHRASES
 
 
 def _feed_line(item):

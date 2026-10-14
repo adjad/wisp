@@ -101,6 +101,7 @@ from counts (for example "20 of the last 24 Mon/Wed/Fri"), never by a model.
 | `contact` | the next window in which the user usually talks to someone (0.3 or more) |
 | `cancel_risk` | an upcoming event in a bucket the user tends to cancel; one per back-to-back run; probability is the bucket's historical rate |
 | `habit_conflict` | an upcoming event booked over a habit (10 min overlap or more) |
+| `usage` | the next window in which the user usually asks Wisp about a named topic (confidence 0.2 or more; the catch-all "general" topic is skipped). Feeds `day_preview` and `predict_my_day`, not the profile card |
 
 ## Nudges
 
@@ -113,7 +114,7 @@ Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
 | `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
 | `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
 | `habit_missed` | a personal habit (confidence 0.5 or more) did not happen today, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
-| `day_preview` | 07:00-10:00, top four predictions for today; expires at noon | none |
+| `day_preview` | 07:00-10:00, top four predictions for today; usage windows only fill slots left after the other kinds (one per topic, at most two); expires at noon | none |
 
 Attention rules (`nudges.select`):
 

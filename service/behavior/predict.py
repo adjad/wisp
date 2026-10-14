@@ -1,6 +1,6 @@
 """Predictions for the next horizon, from mined patterns + upcoming calendar events.
 
-Four kinds (``types.PREDICTION_KINDS``):
+Five kinds (``types.PREDICTION_KINDS``):
 
 * ``activity``: a personal habit expected to happen (gym Wed 6:45).
 * ``contact``: the next window in which the user usually talks to someone.
@@ -8,6 +8,8 @@ Four kinds (``types.PREDICTION_KINDS``):
   cancel (e.g. the last of a 3+ back-to-back run); probability = that bucket's
   historical cancel rate.
 * ``habit_conflict``: an upcoming event booked over an expected habit occurrence.
+* ``usage``: the next window in which the user usually asks Wisp about a topic
+  (email around 1:35pm). Only named topics; the catch-all "general" is skipped.
 
 Every prediction carries a ``because`` composed here from counts ("20 of the
 last 24 Mon/Wed/Fri"), never by a model, so the evidence line cannot drift from
@@ -25,6 +27,20 @@ ACTIVITY_MIN_CONF = 0.3
 CONTACT_MIN_CONF = 0.3
 CONFLICT_MIN_CONF = 0.4
 CONFLICT_MIN_OVERLAP_S = 10 * 60
+# Lower than the habit/contact bars: a usage window is a light hint about when
+# the user turns to Wisp, never an action, and Wilson bounds on a few weeks of
+# asks sit around 0.2-0.4.
+USAGE_MIN_CONF = 0.2
+USAGE_SKIP_TOPICS = frozenset({"", "general"})
+_USAGE_PHRASES = {"brief": "your brief", "calendar": "checking your calendar",
+                  "reminders": "your reminders", "email": "checking email",
+                  "messages": "your messages", "weather": "checking the weather", "notes": "your notes",
+                  "news": "the news", "music": "music", "web": "a web lookup"}
+
+
+def usage_phrase(topic: str) -> str:
+    """Topic label -> a phrase that reads before "with Wisp": "email" -> "checking email"."""
+    return _USAGE_PHRASES.get(topic, f"asking about {topic}")
 
 
 def occurrences(window: Window, start: float, end: float, tz: tzinfo, *,
@@ -87,6 +103,7 @@ def predict(patterns: list[Pattern], events: list[Observation], now: float, hori
     out += _contacts(live, now, end, tz)
     out += _cancel_risks(live, events, now, end, tz)
     out += _conflicts(live, upcoming, now, end, tz)
+    out += _usage(live, now, end, tz)
     out.sort(key=lambda p: (p.ts, p.kind, p.subject))
     return out
 
@@ -183,4 +200,26 @@ def _conflicts(live, upcoming, now, end, tz) -> list[Prediction]:
                 out.append(Prediction(kind="habit_conflict", subject=ev.subject, ts=ev.ts,
                                       end_ts=_end(ev), probability=round(float(prob), 2),
                                       because=because, pattern_id=h.id, refs=(ev.id,)))
+    return out
+
+
+def _usage(live, now, end, tz) -> list[Prediction]:
+    out = []
+    for p in live:
+        topic = p.stats.get("key") or p.subject
+        if p.kind != "wisp_usage" or p.confidence < USAGE_MIN_CONF or topic in USAGE_SKIP_TOPICS:
+            continue
+        occ = occurrences(p.window, now, end, tz)
+        if not occ:
+            continue
+        around = p.stats.get("around_minute")
+        s, e = occ[0]
+        if around is not None and s <= at_minute(local_dt(s, tz).date(), int(around), tz) <= e:
+            ts = at_minute(local_dt(s, tz).date(), int(around), tz)
+        else:
+            ts = s
+        because = (f"You asked Wisp about {topic} on {p.support} of the last {p.opportunities} "
+                   f"{p.stats.get('days', 'days')} ({fmt_range(p.window.start_minute, p.window.end_minute)})")
+        out.append(Prediction(kind="usage", subject=topic, ts=ts, end_ts=e,
+                              probability=round(p.confidence, 2), because=because, pattern_id=p.id))
     return out

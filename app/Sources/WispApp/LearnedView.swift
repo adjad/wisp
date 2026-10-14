@@ -59,12 +59,21 @@ struct LearnedPrediction: Identifiable {
         probability = (d["probability"] as? NSNumber)?.doubleValue ?? 0
     }
 
+    /// Same wording as the morning preview (service/behavior/predict.py _USAGE_PHRASES).
+    static let usagePhrases: [String: String] = [
+        "brief": "your brief", "calendar": "checking your calendar", "reminders": "your reminders",
+        "email": "checking email", "messages": "your messages", "weather": "checking the weather",
+        "notes": "your notes", "news": "the news", "music": "music", "web": "a web lookup",
+    ]
+
     var headline: String {
         switch kind {
         case "cancel_risk": return "\(subject) may get skipped"
         case "habit_conflict": return "\(subject) clashes with a routine"
         case "contact": return "Usually in touch with \(subject)"
-        case "usage": return "You usually ask Wisp about \(subject)"
+        case "usage":
+            let phrase = Self.usagePhrases[subject] ?? "asking about \(subject)"
+            return phrase.prefix(1).uppercased() + phrase.dropFirst() + " with Wisp"
         default: return subject
         }
     }
