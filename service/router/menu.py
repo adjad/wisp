@@ -62,7 +62,7 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
          r"(?:get back|write) to \w+)\b", ("messages_contacts",)),
         (r"\b(?:notes?|wrote down|jotted|code|password|combo|combination|membership|member id|"
          r"account number|frequent flyer|locker|parked|where did i put|name of)\b", ("notes", "memory")),
-        (r"\b(?:remember|remeber|keep in mind|fyi|did i mention|did we talk|talk(?:ed)? about|"
+        (r"\b(?:remember|remeber|forget|stop remembering|memor(?:y|ies)|what you know|keep in mind|fyi|did i mention|did we talk|talk(?:ed)? about|"
          r"you recommended|i said|you know about me|my preferences?)\b", ("memory",)),
         (r"\b(?:file|files|folder|downloads|desktop|documents|pdf|docx?|resume|cv|photos?)\b", ("files",)),
         (r"\b(?:weather|forecast|rain|news|look up|search the web|google|price|stock|hours|"
@@ -74,6 +74,27 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
         (r"\b(?:timer|alarm|stopwatch|countdown|shortcut)\b", ("automation",)),
         (r"\b(?:calculate|convert|what time is it in|percent|\d+\s*[x*/+-]\s*\d+)\b", ("compute",)),
     ))
+
+
+# `forget` is offered only for a message that OPENS with an instruction to
+# forget: "forget my gate code", "please stop remembering ...", "delete what you
+# know about my ex". Questions ("did you forget ...?"), statements ("I forget
+# my gate code") and negations ("don't forget ...") never open that way.
+# Three independent review rounds on #211 each found phrasings that slipped
+# past "forget appears anywhere, minus negations".
+_FORGET_INTENT_RE = re.compile(
+    r"^\s*(?:(?:hey\s+)?wisp[,:]?\s+)?(?:(?:please|pls|just|can\s+you|could\s+you|would\s+you|"
+    r"will\s+you|i\s+want\s+you\s+to|i\s+need\s+you\s+to)\s+)*"
+    r"(?:forget|stop\s+remembering|unlearn|"
+    # A generic deletion verb counts only with memory as its DIRECT object,
+    # or "X from your memory" inside one clause with no but/keep/not:
+    # "delete my notes, but keep your memory of my gate code" must not match
+    # (fourth independent review of #211).
+    r"(?:delete|remove|erase|wipe|clear)\s+(?:all\s+)?(?:of\s+)?(?:your\s+|the\s+|my\s+)?"
+    r"(?:memor(?:y|ies)(?!\s+(?:card|stick|usage|pressure|leaks?|chips?|slots?))|"
+    r"what\s+you\s+(?:know|remember))|"
+    r"(?:delete|remove|erase|wipe|clear)\s+(?:(?!but\b|keep\b|not\b|and\b)[^\s,.;:?!]+\s+){0,6}"
+    r"from\s+(?:your\s+)?memory)\b", re.I)
 
 
 def family_of(name: str) -> str:
@@ -97,17 +118,30 @@ def _admissible(name: str, text: str, *, context_open: bool, hinted: bool = Fals
     can ask for one; file deletion only with file-action words).
 
     `hinted`: the tool's family was named by the request. That opens the
-    FILE-mutation gate for non-file families only — `remember` and `forget`
-    are registered as fs_write/fs_delete, so the file gate otherwise hides
-    them from "remember that my wife's birthday is March 3". The outbound and
+    FILE-mutation gate for non-file families — `remember` is registered as
+    fs_write, so the file gate otherwise hides it from "remember that my
+    wife's birthday is March 3". Delete-category tools (`forget`) are offered
+    only when the request itself has deletion words, and the outbound and
     bulk-delete intent gates are never opened by a hint."""
     from service.tools.registry import REGISTRY, is_tool_routable
-    from service.router.semantic import gated_tool_allowed, _allowed, _gate_open
+    from service.router.semantic import gated_tool_allowed, _allowed, _gate_open, _DELETE_INTENT_RE
     from service.router.router import has_write_intent
     tool = REGISTRY.get(name)
     if tool is None or tool.unavailable_reason or not is_tool_routable(name):
         return False
+    if name == "forget":
+        # `forget` deletes memories and their correction history at once, so
+        # it needs an affirmative, un-negated request to forget something in
+        # THIS message; neither a family hint nor the previous turn opens it.
+        # Independent review of #211: "what is my gate code", "do not forget
+        # my gate code" and "delete the old file and recall my gate code" had
+        # all put it on the menu.
+        if not _FORGET_INTENT_RE.search(text):
+            return False
+    elif tool.category.endswith("_delete") and not (context_open or _DELETE_INTENT_RE.search(text)):
+        return False
     open_gate = (_gate_open(text, writing=has_write_intent(text)) or context_open
+                 # A delete tool reaches here only with deletion words (above).
                  or (hinted and family_of(name) != "files"))
     return _allowed(name, writing=open_gate) and gated_tool_allowed(name, text, context_open=context_open)
 
@@ -137,6 +171,14 @@ def build_menu(text: str, *, last_assistant: str | None = None,
     families = hinted_families(masked)
     if followup:
         families += [f for f in hinted_families(last_assistant or "") if f not in families]
+    if not {"messages_contacts", "mail"} & set(families):
+        # Addressed to someone but naming no channel: "holler at Sam", "ask
+        # Sam if he's free", "give dad a ring". The outbound gate already
+        # opened for these; what was missing was the family, so the menu
+        # carried no messaging tool at all (12 of the 16 corpus misses).
+        from service.router.semantic import outbound_intent
+        if outbound_intent(masked):
+            families.append("messages_contacts")
     if families:
         # The request named its domains: retrieval keeps its top two (typos
         # and synonyms the hints miss: "chek my texts", "wether") plus a few

@@ -40,14 +40,16 @@ MAX_CALLS_PER_PLAN = 4
 PLAN_MAX_TOKENS = 1500
 THOUGHT_MAX_CHARS = 600
 
-# Per-turn budget for repeated calls to the same READ tool with different
-# arguments. The identical-arguments guard cannot see this shape, and it is the
-# common one: measured 2026-10-13 (LFM2.5-24B, production loop, 59 cases) — 93
-# same-tool repeat calls against 23 identical repeats, e.g. search_notes with
-# "gate code", "gate", "code", "home", "security", "apartment". Two attempts
-# lets the model try one rephrasing; after that it must answer or report
-# not_found. Effect tools keep their own duplicate-effect guard.
-READ_TOOL_BUDGET = 2
+# Per-turn budget of MISSES per read tool: calls that failed or found nothing
+# (see looks_empty). After two, that tool is not run again this
+# turn and the model must answer or report not_found. Measured 2026-10-13
+# (LFM2.5-24B, production loop, 59 cases): 93 same-tool repeat calls against
+# 23 identical ones, e.g. search_notes with "gate code", "gate", "code",
+# "home", "security", "apartment"; lookup_contact rephrases names the same
+# way. Counting misses rather than calls leaves distinct requested targets
+# alone ("notes for alpha, beta and gamma", "read these three files") as long
+# as they find something (independent review of #211).
+READ_MISS_BUDGET = 2
 
 
 # Tool-call syntax in a tool-free narration step: LFM2.5's pythonic markers,
@@ -224,6 +226,38 @@ def plan_message(plan: Plan) -> dict:
                            for i, (name, args) in enumerate(plan.calls)]}
 
 
+# Each read tool's own "found nothing" notice, matched as a prefix for THAT
+# tool only (source in parentheses). Content is never inspected: the
+# fifth-seventh independent reviews of #211 showed that any content rule
+# ("No significant results...", a length cap, "(define tax-rate 0.08)" in a
+# Scheme file) misreads a successful read as a miss. A tool missing here just
+# never counts toward the budget, which costs at most extra reads. Outcomes
+# the classifier already calls no_match/failed count on their own.
+#
+# Tools whose successful output is wrapped by Wisp (search_notes' "Title:",
+# recall's evidence header) match their notice as a prefix. read_file returns
+# raw file text, so its notice must be the ENTIRE result: a saved backup log
+# whose first line is "(no such file: ...)" is content (eighth independent
+# review). list_dir is absent on purpose: its missing-directory notice is
+# followed by the nearest existing directory's listing, which is useful.
+EMPTY_NOTICES: dict[str, re.Pattern] = {
+    "web_search": re.compile(r"\((?:no public web results found|no web results found)"),  # web_tools, research/web
+    "search_notes": re.compile(r"No notes (?:found|modified in)"),   # tools/notes_tools.py
+    "recall": re.compile(r"No matching memory or user conversation passage\."),  # memory_tools._NO_MATCH
+    "read_file": re.compile(r"\(no such file: [^\n]*\)\Z"),        # tools/builtin.read_file, whole result
+    "manage_contacts": re.compile(r"No contact matches"),            # tools/contacts_tools.py
+    "lookup_contact": re.compile(r"\(No contacts are synced yet"),   # tools/imessage_tools.py
+}
+
+
+def looks_empty(name: str, result) -> bool:
+    """A read that found nothing, judged only by signals Wisp itself emits:
+    a blank result or the tool's own exact empty-result notice."""
+    text = str(result or "").strip()
+    pattern = EMPTY_NOTICES.get(name)
+    return not text or bool(pattern and pattern.match(text))
+
+
 def call_key(name: str, arguments) -> tuple[str, str]:
     """Identity of a call for repeat detection: the name plus its arguments
     as canonical JSON, whether they arrive as a dict or a JSON string."""
@@ -235,6 +269,6 @@ def call_key(name: str, arguments) -> tuple[str, str]:
     return name, json.dumps(arguments or {}, sort_keys=True)
 
 
-def budget_message(name: str, used: int) -> str:
-    return (f"({name} has already run {used} times this turn with different arguments; it was NOT "
+def budget_message(name: str, misses: int) -> str:
+    return (f"({name} has already come back empty or failed {misses} times this turn; it was NOT "
             "run again. Answer from the results you have, or report that it was not found.)")

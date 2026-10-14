@@ -20,14 +20,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         onOpen: { [weak self] id in self?.openSavedResearch(id) },
         onNew: { [weak self] in self?.newResearch() })
     // The Chat window: long conversations, saved chats, and the same approvals
-    // as the notch, in a real window. Today, Research, Memory, Search and
-    // Settings open the app's existing windows from its sidebar.
+    // as the notch, in a real window. Today, Research, Memory, What Wisp learned,
+    // Search and Settings open the app's existing windows from its sidebar.
     private lazy var chatWindow = ChatWindowController(
         backend: LiveChatBackend(client: client),
         launchers: ChatLaunchers(
             today: { TodayWindow.show() },
             research: { [weak self] in self?.researchLibrary.show() },
             memory: { MemoryWindow.shared.show() },
+            learned: { LearnedWindow.shared.show() },
             settings: { [weak self] in self?.openSettings() },
             searchEverything: { [weak self] in self?.toggleSearch() }),
         debug: { UserDefaults.standard.bool(forKey: "wisp.debugMode") })

@@ -2565,8 +2565,9 @@ async def run_agent(
         return response
 
     from service.agent import planner as _plan
-    # Read tools called this turn, by name, for the per-tool budget.
-    read_tool_uses: Counter = Counter()
+    # Read calls this turn that came back empty or failed, by tool name, for
+    # the per-tool miss budget (see planner.READ_MISS_BUDGET).
+    read_misses: Counter = Counter()
     budget_reads = planner
     # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
     replan_left = [planner]
@@ -2607,8 +2608,51 @@ async def run_agent(
         if (plan.status == "cannot_do" and not plan.calls and not searched
                 and not require_call and allowed and replan_left[0]):
             return await _replan("cannot_do_before_search")
-        # READS BEFORE WRITES. A plan that mixes reads with effect calls runs
-        # only the reads; the model re-plans with their results in hand.
+        # ALREADY ANSWERED. A planned read whose identical call already
+        # SUCCEEDED this turn, with no write since, is dropped before it
+        # reaches the repeat guard; the refusal pointer the guard would add
+        # confused the narration. Measured 2026-10-13, Ling V3, real planner
+        # path: 10 of 59 cases re-planned a read that had just succeeded, and
+        # several answers then claimed nothing was found ("I couldn't find
+        # anything for today" after predict_my_day returned the day). Only
+        # the loop's own completed_reads decides this: a failed read may be
+        # retried, a write clears it (read-write-read re-reads), volatile
+        # reads are never in it, and effect calls are never dropped here —
+        # the duplicate-effect guard owns those. Runs BEFORE the deferral
+        # below, so a repeated read never takes a fresh write down with it.
+        fresh, seen, dropped, exhausted = [], set(), [], False
+        for n, a in plan.calls:
+            if fixed := (tool_argument_bindings or {}).get(n):
+                # Compare what will EXECUTE: the step loop overlays the same
+                # bindings before its repeat guard (independent review of
+                # #211: a binding turned a "new" read into a repeat, and the
+                # write deferred beside it was lost).
+                a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+            key = _plan.call_key(n, a)
+            if key in seen:  # duplicate within one plan
+                dropped.append(n)
+                continue
+            seen.add(key)
+            rk = _read_call_key(n, a)
+            if rk is not None and rk in completed_reads:
+                dropped.append(n)
+                continue
+            if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
+                    and (t := get_tool(n)) is not None and t.category in _read_categories()):
+                # Exhausted: the step loop would refuse it. Dropping it here,
+                # before the deferral below, keeps a fresh write planned
+                # beside it (third independent review of #211).
+                dropped.append(n)
+                exhausted = True
+                continue
+            fresh.append((n, a))
+        if dropped:
+            audit("plan_drop_repeats", dropped=dropped)
+            plan.calls = fresh
+            if not fresh:
+                plan.status = "not_found" if exhausted else "answer"
+        # READS BEFORE WRITES. A plan that mixes NEW reads with effect calls
+        # runs only the reads; the model re-plans with their results in hand.
         # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
         # lookup_contact AND send_message(to="<Mom's contact>") together, and
         # the confirmation card would have shown the placeholder.
@@ -2618,27 +2662,6 @@ async def run_agent(
         if reads and len(reads) < len(plan.calls):
             audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
             plan.calls = reads
-        # ALREADY RAN. A planned call identical to one that already ran this
-        # turn is dropped before it reaches the repeat guard; a plan made only
-        # of such calls means the model has its results, so it answers. The
-        # refusal pointer the guard would add confused the narration: measured
-        # 2026-10-13, Ling V3, real planner path — 10 of 59 cases re-planned a
-        # read that had just succeeded, and several answers then claimed
-        # nothing was found ("I couldn't find anything for today" after
-        # predict_my_day returned the day).
-        ran = {_plan.call_key(tc["function"]["name"], tc["function"].get("arguments"))
-               for m in step_msgs if m.get("role") == "assistant"
-               for tc in (m.get("tool_calls") or [])}
-        fresh = []
-        for n, a in plan.calls:
-            if (key := _plan.call_key(n, a)) not in ran:
-                ran.add(key)  # also collapses duplicates within one plan
-                fresh.append((n, a))
-        if len(fresh) < len(plan.calls):
-            audit("plan_drop_repeats", dropped=[n for n, a in plan.calls if (n, a) not in fresh])
-            plan.calls = fresh
-            if not fresh:
-                plan.status = "answer"
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
             return {}, plan.thought, False
@@ -3340,16 +3363,15 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
 
-            if budget_reads and name not in _EFFECT_TOOLS and (_bt := get_tool(name)) is not None \
-                    and _bt.category in _read_categories():
-                if read_tool_uses[name] >= _plan.READ_TOOL_BUDGET:
-                    result = _plan.budget_message(name, read_tool_uses[name])
-                    audit("reject_tool_budget", tool=name, args=args)
-                    prev_step_refusals += 1
-                    await emit({"type": "tool_result", "id": cid, "result": result})
-                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
-                    continue
-                read_tool_uses[name] += 1
+            if (budget_reads and read_misses[name] >= _plan.READ_MISS_BUDGET
+                    and name not in _EFFECT_TOOLS and (_bt := get_tool(name)) is not None
+                    and _bt.category in _read_categories()):
+                result = _plan.budget_message(name, read_misses[name])
+                audit("reject_tool_budget", tool=name, args=args)
+                prev_step_refusals += 1
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
 
             if name in _EFFECT_TOOLS and not _prior_requirements_met(name):
                 result = (f"({name} is premature: required source steps have not succeeded "
@@ -3762,6 +3784,10 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
+            if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
+                    and name not in _EFFECT_TOOLS
+                    and (outcome.status != "succeeded" or _plan.looks_empty(name, result))):
+                read_misses[name] += 1
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body

@@ -6,7 +6,7 @@ the quick ask; both surfaces talk to the same service and the same saved chats.
 ## What it is
 
 - Sidebar: New chat (⌘N), search over chat titles (⌘K), shortcuts to Today,
-  Research, Memory and Search everything (these open the existing windows), and
+  Research, Memory, What Wisp learned and Search everything (these open the existing windows), and
   every saved chat grouped Today / Yesterday / Previous 7 days / Earlier.
 - Thread: your messages, then Wisp's. Tool calls are listed above the answer
   (collapsed once finished). Answers render through `MarkdownView`.
@@ -50,7 +50,7 @@ notch's monochrome look, so the notch is unchanged.
 - There is no per-message model picker: the router chooses the model.
 - The "Remembered" facts and context-size gauge from the concept art are not
   shown because the service does not report them per answer.
-- Today, Research, Memory and Settings are launchers into the existing
+- Today, Research, Memory, What Wisp learned and Settings are launchers into the existing
   windows, not embedded pages.
 - Wisp is a regular app: it has a Dock icon, and opening it (from the Dock, Finder or Spotlight) shows this window. Closing the window leaves Wisp running in the notch and menu bar; ⌘Q (or Quit from the Dock) stops it, running the same shutdown as the menu-bar Quit. Opening Wisp from the Dock again brings the window back.
 
