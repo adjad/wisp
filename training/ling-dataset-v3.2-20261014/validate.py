@@ -120,20 +120,24 @@ def check_schema(value, schema, path="$", partial=False):
     return errs
 
 
-def has_param_description(node, in_properties=False):
-    """True if any schema position carries a string `description` (a property NAMED description is not one)."""
-    if isinstance(node, list):
-        return any(has_param_description(v) for v in node)
+_MAP, _LIST, _ONE = G._SCHEMA_MAP_KEYS, G._SCHEMA_LIST_KEYS, G._SCHEMA_ONE_KEYS
+
+
+def has_param_description(node, keep=frozenset()):
+    """True if any SCHEMA position carries string `description` prose, ignoring properties listed in `keep` (they keep
+    their full schema in terse mode) and data under default/enum/const/examples. Written independently of the renderer."""
     if not isinstance(node, dict):
         return False
-    for k, v in node.items():
-        if in_properties:
-            if has_param_description(v):
-                return True
-            continue
-        if k == "description" and isinstance(v, str):
+    for k, val in node.items():
+        if k == "description" and isinstance(val, str):
             return True
-        if has_param_description(v, in_properties=(k == "properties" and isinstance(v, dict))):
+        if k in _MAP and isinstance(val, dict):
+            if any(has_param_description(sub) for name, sub in val.items() if not (k == "properties" and name in keep)):
+                return True
+        elif k in _LIST and isinstance(val, list):
+            if any(has_param_description(sub) for sub in val):
+                return True
+        elif k in _ONE and isinstance(val, dict) and has_param_description(val):
             return True
     return False
 
@@ -343,11 +347,18 @@ def validate_conversation(cid, rows, p, src, held, bad, counts):
                 if n in loaded:
                     if style == "full" and t != REG[n]:
                         bad("full_schema", f"{r['id']}: {n} is not the tools.json schema")
-                    if style == "terse":
-                        if has_param_description(f["parameters"]):
-                            bad("terse_schema", f"{r['id']}: {n} keeps a parameter description")
-                        if f["description"] != SHORT["tools"].get(n, REG[n]["function"]["description"]):
+                    if style == "terse" and n in SHORT["tools"]:
+                        keep = frozenset(SHORT.get("keep_parameter_prose", {}).get(n, []))
+                        if has_param_description(f["parameters"], keep):
+                            bad("terse_schema", f"{r['id']}: {n} keeps parameter prose outside KEEP_PARAMETER_PROSE")
+                        for kp in keep:
+                            props = REG[n]["function"]["parameters"].get("properties", {})
+                            if kp in props and f["parameters"]["properties"].get(kp) != props[kp]:
+                                bad("terse_schema", f"{r['id']}: {n}.{kp} must keep its full schema (KEEP_PARAMETER_PROSE)")
+                        if f["description"] != SHORT["tools"][n]:
                             bad("terse_schema", f"{r['id']}: {n} description is not the short line")
+                    elif style == "terse" and t != REG[n]:
+                        bad("terse_schema", f"{r['id']}: {n} has no short line, so it must keep its full schema")
             if r["messages"][:3] != expect_sys:
                 bad("system_messages", f"{r['id']}: system messages differ from the rebuilt prompts")
         if m["role"] != "assistant":

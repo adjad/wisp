@@ -87,31 +87,43 @@ def sys_messages(loaded, now_sentence, variant, user_text):
             {"role": "system", "content": SP["context_note"]}]
 
 
-def strip_parameter_descriptions(node):
-    """Exact mirror of service/tools/registry.py::_strip_parameter_descriptions (terse-tool-schemas branch)."""
-    if isinstance(node, list):
-        return [strip_parameter_descriptions(v) for v in node]
+_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions")
+_SCHEMA_LIST_KEYS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SCHEMA_ONE_KEYS = ("items", "additionalProperties", "not", "contains", "if", "then", "else", "propertyNames")
+KEEP_PROSE = {k: frozenset(v) for k, v in SHORT.get("keep_parameter_prose", {}).items()}
+
+
+def strip_parameter_descriptions(node, keep=frozenset()):
+    """Exact mirror of service/tools/registry.py::_strip_parameter_descriptions (terse-tool-schemas c822d511): walks
+    only schema positions; data under default/enum/const/examples is untouched; properties named in `keep` keep their
+    full schema (prose included)."""
     if not isinstance(node, dict):
-        return node
+        return copy.deepcopy(node)
     out = {}
     for key, value in node.items():
         if key == "description" and isinstance(value, str):
             continue
-        if key == "properties" and isinstance(value, dict):
-            out[key] = {name: strip_parameter_descriptions(sub) for name, sub in value.items()}
-        else:
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: (copy.deepcopy(sub) if key == "properties" and name in keep
+                               else strip_parameter_descriptions(sub)) for name, sub in value.items()}
+        elif key in _SCHEMA_LIST_KEYS and isinstance(value, list):
+            out[key] = [strip_parameter_descriptions(sub) for sub in value]
+        elif key in _SCHEMA_ONE_KEYS and isinstance(value, dict):
             out[key] = strip_parameter_descriptions(value)
+        else:
+            out[key] = copy.deepcopy(value)
     return out
 
 
 def real_schema(name, style):
+    """registry.model_schema: terse shortens ONLY tools with a SHORT entry (description = SHORT[name], parameter prose
+    stripped except KEEP_PARAMETER_PROSE); tools without one (use_skill, mac_*) keep their full schema in both styles."""
     full = REG[name]
-    if style != "terse":
+    if style != "terse" or name not in SHORT["tools"]:
         return copy.deepcopy(full)
     f = full["function"]
-    # registry.model_schema: short_description(name, full) -> SHORT.get(name, full); skill tools have no entry.
-    return {"type": "function", "function": {"name": name, "description": SHORT["tools"].get(name, f["description"]),
-                                             "parameters": strip_parameter_descriptions(f["parameters"])}}
+    return {"type": "function", "function": {"name": name, "description": SHORT["tools"][name],
+                                             "parameters": strip_parameter_descriptions(f["parameters"], KEEP_PROSE.get(name, frozenset()))}}
 
 
 def stub_schema(name):
@@ -922,9 +934,10 @@ def write_card(out, stats, prov, dropped):
           "appended when its triggers match the user's text). Message 1 is the now line + `CapabilityCatalog.prompt()`. Message 2 is the "
           "model-led context note from service/main.py.",
           "- Offer order: loaded real schemas, name-only stubs, then `get_tool_schemas` last (as `model_led_offer` sends them).",
-          "- Terse rows: description = SHORT[name] (full text for tools without an entry: use_skill, mac_*), parameter `description` keys "
-          "stripped recursively; names, types, enums, required, minimum/maximum unchanged. `get_tool_schemas` is identical in both styles "
-          "(Wisp builds it outside model_schema). Name-only stubs are identical in both styles.",
+          "- Terse rows (registry.model_schema at terse-tool-schemas c822d511): tools with a SHORT entry get the short line and lose "
+          "parameter `description` prose at schema positions only (default/enum/const data untouched), except the parameters in "
+          "KEEP_PARAMETER_PROSE, which keep their full schema; tools without an entry (use_skill, the mac_* skill tools) keep their FULL "
+          "schema. `get_tool_schemas` and name-only stubs are identical in both styles.",
           "- Every assistant target, tool result and final answer is byte-identical to its source except where a migration rule rewrote it.",
           "", "## Limitations", "",
           "- Inherits every V3.1 / V3 limitation (synthetic, template phrasing, condensed tool results).",

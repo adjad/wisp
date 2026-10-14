@@ -40,8 +40,8 @@ def main():
     ap.add_argument("--skill-sha", required=True)
     ap.add_argument("--short-export", required=True, type=Path)
     ap.add_argument("--short-sha", required=True)
-    ap.add_argument("--terse-registry", required=True, type=Path,
-                    help="service/tools/registry.py from the short-description commit (its _strip_parameter_descriptions is used)")
+    ap.add_argument("--terse-root", required=True, type=Path,
+                    help="read-only archive of the short-description commit (service/tools/registry.py + short_descriptions.py)")
     ap.add_argument("--out", type=Path, default=HERE / "assets")
     a = ap.parse_args()
 
@@ -129,14 +129,27 @@ def main():
     short = json.loads(a.short_export.read_text())
     # Reference renderings computed by WISP's own code, so validate.py can prove the stdlib mirrors in generate.py match.
     import ast, hashlib
-    tree = ast.parse(a.terse_registry.read_text())
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_strip_parameter_descriptions")
-    ns = {"Any": object}
-    exec(compile(ast.Module(body=[fn], type_ignores=[]), "terse_registry", "exec"), ns)
+    import copy as _copy, runpy
+    # registry.model_schema's terse branch, executed from the short-description commit's own source: the schema-key
+    # constants and _strip_parameter_descriptions from registry.py, SHORT and KEEP_PARAMETER_PROSE from short_descriptions.py.
+    tree = ast.parse((a.terse_root / "service/tools/registry.py").read_text())
+    keep_nodes = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name == "_strip_parameter_descriptions")
+                  or (isinstance(n, ast.Assign) and any(isinstance(t, ast.Name) and t.id.startswith("_SCHEMA_") for t in n.targets))]
+    ns = {"Any": object, "copy": _copy}
+    exec(compile(ast.Module(body=keep_nodes, type_ignores=[]), "terse_registry", "exec"), ns)
     strip = ns["_strip_parameter_descriptions"]
+    sd = runpy.run_path(str(a.terse_root / "service/tools/short_descriptions.py"))
+    assert sd["SHORT"] == short["tools"], "export does not match short_descriptions.SHORT"
+    keep_prose = {k: sorted(v) for k, v in sd["KEEP_PARAMETER_PROSE"].items()}
     h = lambda o: hashlib.sha256(json.dumps(o, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    terse_ref = {n: h({"type": "function", "function": {"name": n, "description": short["tools"].get(n, REGISTRY[n].description),
-                                                       "parameters": strip(REGISTRY[n].parameters)}}) for n in names}
+
+    def terse_model_schema(n):
+        t = REGISTRY[n]
+        if n in sd["SHORT"]:
+            return {"type": "function", "function": {"name": n, "description": sd["SHORT"][n],
+                    "parameters": strip(t.parameters, sd["KEEP_PARAMETER_PROSE"].get(n, frozenset()))}}
+        return {"type": "function", "function": {"name": n, "description": t.description, "parameters": t.parameters}}
+    terse_ref = {n: h(terse_model_schema(n)) for n in names}
     L._BLOCKS_CACHE = None
     sets = {"(none)": set(), "(all)": set(names), **{n: {n} for n in names}}
     build_ref = {k: hashlib.sha256(L.build_system(v).encode()).hexdigest() for k, v in sets.items()}
@@ -145,10 +158,11 @@ def main():
     skills_ref = {t: skills.skills_context_block(t, "", True) for t in sample_texts}
     verification = {"terse_schema_sha256": terse_ref, "build_system_sha256": build_ref, "skills_context_block": skills_ref}
     short_asset = {"source_sha": a.short_sha, "export_reported_sha": short.get("source_sha"),
-                   "placeholder": False, "tools": short["tools"],
+                   "placeholder": False, "tools": short["tools"], "keep_parameter_prose": keep_prose,
                    "note": "scripts/export_short_descriptions.py run on a read-only git archive of source_sha (not a git "
-                           "checkout, so the script itself reports 'unknown'); tools without an entry (skill tools, "
-                           "use_skill) keep their full description, as service.tools.short_descriptions does."}
+                           "checkout, so the script itself reports 'unknown'); keep_parameter_prose is "
+                           "short_descriptions.KEEP_PARAMETER_PROSE. Tools without a SHORT entry (skill tools, use_skill) keep "
+                           "their FULL schema in terse mode, parameter prose included (registry.model_schema)."}
     a.out.mkdir(exist_ok=True)
     (a.out / "tools.json").write_text(json.dumps(tools, indent=1, ensure_ascii=False) + "\n")
     (a.out / "system_parts.json").write_text(json.dumps(system_parts, indent=1, ensure_ascii=False) + "\n")

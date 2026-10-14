@@ -18,11 +18,11 @@
     "train": {
       "rows": 1974,
       "rows_ok": 1974,
-      "tokens_total": 13043366,
+      "tokens_total": 13067261,
       "tokens_max": 11599,
       "tokens_p95": 9517,
-      "tokens_median": 6249,
-      "tokens_mean": 6607.6,
+      "tokens_median": 6257,
+      "tokens_mean": 6619.7,
       "labeled_tokens_total": 48529,
       "target_tokens_min": 4,
       "target_tokens_median": 22,
@@ -48,11 +48,11 @@
     "dev": {
       "rows": 242,
       "rows_ok": 242,
-      "tokens_total": 1613832,
+      "tokens_total": 1618002,
       "tokens_max": 11172,
       "tokens_p95": 9436,
       "tokens_median": 6274,
-      "tokens_mean": 6668.7,
+      "tokens_mean": 6686.0,
       "labeled_tokens_total": 5663,
       "target_tokens_min": 5,
       "target_tokens_median": 18,
@@ -88,8 +88,8 @@
   },
   "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
   "data_sha256": {
-    "train.jsonl": "d603aaa0ab3f36598308e17539ca25932f8a0497ccb6116f41a83be10d2749e2",
-    "dev.jsonl": "d488b8a988be4ad2e3892380eeecbe6a5c901fe7967d0e7aed140d586bda6775"
+    "train.jsonl": "4e70563a4f672af43ad3a839c6ce845bd6858b4bdf264887e39d83b69996d936",
+    "dev.jsonl": "a47deb1b1135dbe09f27d2071a02960c8b6d5ce51749eca5eff38672f0a19ab6"
   },
   "tokenizer_vocab_size": 157153,
   "actual_axolotl_prepared_label_audit_still_required": true

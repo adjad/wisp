@@ -2,7 +2,7 @@
 
 Version `v3.2-20261014`, seed 20261014 (terse/full assignment; source conversations keep their V3.1 seed 20261013 / V3 seed 20261012). Synthetic; no real data. Migrates every V3.1 training conversation to the Wisp tool registry at `1bd68e7eb68f` (91 offered built-ins + `use_skill` + the five mac-controls skill tools) and renders about half of them with terse schemas.
 
-Short descriptions: `assets/short_descriptions.json`, source_sha `178ebb3ed19de91efbb8591335bf1aad687a6168`, placeholder: False.
+Short descriptions: `assets/short_descriptions.json`, source_sha `c822d511949cd4669d1b35e0990d9dee17d76391`, placeholder: False.
 
 ## Counts
 
@@ -79,15 +79,15 @@ Retired tools that appeared only as loaded decoys (preloaded SP schemas or expli
 
 | split | row mean | p50 | p95 | max |
 |---|---|---|---|---|
-| train | 6480 | 6079 | 9498 | 11672 |
-| dev | 6552 | 6308 | 9362 | 11228 |
+| train | 6492 | 6090 | 9498 | 11672 |
+| dev | 6567 | 6308 | 9362 | 11228 |
 
 ## What changed from V3.1
 
 - Registry: `assets/tools.json` is captured from Wisp source (`capture_assets.py`), not from an eval run: 91 offered built-ins (`update_event` is registered but unavailable, so never offered; `run_applescript` is blocked by the private-shell rule that the always-present identity block triggers), plus `use_skill` and `mac_get_volume`, `mac_set_volume`, `mac_mute`, `mac_lock_screen`, `mac_media` registered by the bundled mac-controls skill (category `skill_tool`, family `skills`, always confirmation-gated).
 - System prompt: message 0 is `build_system(loaded)` over loop.SYSTEM's blocks (gating names taken from each block's first line, as Wisp does) + the identity block + the installed-skills catalog (idea-refine, interview-me, mac-controls; a skill's body is appended when its triggers match the user's text). Message 1 is the now line + `CapabilityCatalog.prompt()`. Message 2 is the model-led context note from service/main.py.
 - Offer order: loaded real schemas, name-only stubs, then `get_tool_schemas` last (as `model_led_offer` sends them).
-- Terse rows: description = SHORT[name] (full text for tools without an entry: use_skill, mac_*), parameter `description` keys stripped recursively; names, types, enums, required, minimum/maximum unchanged. `get_tool_schemas` is identical in both styles (Wisp builds it outside model_schema). Name-only stubs are identical in both styles.
+- Terse rows (registry.model_schema at terse-tool-schemas c822d511): tools with a SHORT entry get the short line and lose parameter `description` prose at schema positions only (default/enum/const data untouched), except the parameters in KEEP_PARAMETER_PROSE, which keep their full schema; tools without an entry (use_skill, the mac_* skill tools) keep their FULL schema. `get_tool_schemas` and name-only stubs are identical in both styles.
 - Every assistant target, tool result and final answer is byte-identical to its source except where a migration rule rewrote it.
 
 ## Limitations

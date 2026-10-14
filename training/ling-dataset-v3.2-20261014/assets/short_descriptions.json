@@ -1,5 +1,5 @@
 {
- "source_sha": "178ebb3ed19de91efbb8591335bf1aad687a6168",
+ "source_sha": "c822d511949cd4669d1b35e0990d9dee17d76391",
  "export_reported_sha": "unknown",
  "placeholder": false,
  "tools": {
@@ -7,12 +7,12 @@
   "add_reminder": "Create a Wisp reminder that notifies at a set time; not a calendar event or alarm.",
   "append_note": "Add lines to the end of an EXISTING note, found by title.",
   "calculate": "Exact arithmetic and percentages; use for any calculation.",
-  "cancel_event": "Delete an upcoming event or reminder by title (confirm-gated).",
+  "cancel_event": "Delete an upcoming event or reminder by title.",
   "cancel_scheduled_send": "Cancel a still-pending scheduled send; exact ID from list_scheduled_sends.",
-  "clear_past_reminders": "Bulk-delete past-due reminders and events (confirm-gated); never touches upcoming.",
-  "clear_reminders": "Bulk-delete active reminders in one scope: today, tomorrow, past_due, upcoming, all.",
+  "clear_past_reminders": "Bulk-delete past-due reminders and events; never touches upcoming.",
+  "clear_reminders": "Bulk-delete active reminders in one scope; scope=all only if the user asks for all.",
   "clipboard_read": "Read the clipboard text.",
-  "clipboard_write": "Replace the clipboard text (confirm-gated).",
+  "clipboard_write": "Replace the clipboard text.",
   "collect_task_evidence": "Internal: bounded cached evidence for priorities across calendar, mail, notes.",
   "commit_private_meeting": "Create the exact block from plan_meeting, only after explicit user confirmation.",
   "complete_reminder": "Mark a reminder or task done by title; does not delete it.",
@@ -20,7 +20,7 @@
   "convert_units": "Convert a value between units (length, weight, temperature, data...).",
   "correct_pattern": "Confirm or reject one learned pattern when the user says it is right or wrong.",
   "create_note": "Create a NEW note in Notes.app; not write_file.",
-  "create_tool": "Generate a new local Python tool on request (confirm-gated); then use it.",
+  "create_tool": "Build a reusable new tool when nothing covers the capability; not one-offs.",
   "daily_brief": "Briefing of today's calendar, reminders, mail, messages and weather.",
   "delete_knowledge": "Delete one saved knowledge record; exact ID and revision, explicit request only.",
   "describe_me": "Describe the routines and habits Wisp has learned about the user; read-only.",
@@ -30,9 +30,9 @@
   "email_triage": "Archive, flag or mark read/unread one email by Message-ID; not a delete.",
   "find_files": "Spotlight search for files by name or content; use instead of shell find.",
   "find_free_time": "Find open gaps in the schedule for a meeting or call.",
-  "find_place": "Find nearby places (food, pharmacy, fuel) around a named location.",
+  "find_place": "Find nearby places around a named location; ask if it is unknown.",
   "forget": "Delete saved memories matching all query words; no fuzzy matching.",
-  "forward_email": "Forward an email by Message-ID to someone (confirm-gated).",
+  "forward_email": "Forward an email by Message-ID to someone.",
   "get_past_events": "Read calendar events from the PAST (up to a year); counterpart to get_upcoming.",
   "get_recent_activity": "What's new across texts, email, reminders and notes, merged newest-first.",
   "get_stock_price": "Stock/ETF price or history over a period; not crypto.",
@@ -48,29 +48,29 @@
   "move_path": "Move or rename a file or folder, one item per call; creates folders as needed.",
   "my_patterns": "Search learned routines for one question, e.g. when the user usually works out.",
   "open_app": "Open or focus a macOS app, optionally with a file or URL.",
-  "organize_files": "Preview, then confirm, moving glob-matched files into folders; preview first.",
-  "plan_meeting": "Read-only proposal of a private Calendar block with conflict checks; creates nothing.",
+  "organize_files": "Preview, then move glob-matched files into folders; by name only, not content.",
+  "plan_meeting": "Read-only private Calendar block proposal; never infer an event's end yourself.",
   "predict_my_day": "Predict today or tomorrow from learned routines plus the schedule; read-only.",
   "quit_app": "Quit a macOS app by name.",
   "read_file": "Read a file's text, including PDF/docx/xlsx/pptx; not scanned images.",
   "read_knowledge": "Read explicitly saved knowledge snippets (not Notes.app); exact ID optional.",
   "recall": "Retrieve saved memories and past conversation passages; empty query lists facts.",
   "remember": "Save a fact verbatim, only when the user explicitly asks to remember it.",
-  "reply_to_email": "Reply in-thread to an email by Message-ID (confirm-gated); not send_email.",
-  "route_to_arrive": "Plan when to leave to arrive by a deadline, using Apple Maps traffic ETA.",
+  "reply_to_email": "Reply in-thread by Message-ID; reply_all only if the user asks for it.",
+  "route_to_arrive": "When to leave to arrive by a deadline (traffic ETA); never invent an origin.",
   "run_applescript": "Raw AppleScript for one-off app automation; only when no dedicated tool fits.",
   "run_shell": "LAST RESORT: run a shell command; use a dedicated tool when one exists.",
   "save_knowledge": "Save explicitly user-selected text as a knowledge record; needs explicit instruction.",
   "scan_subscriptions": "List newsletter and marketing senders ranked by volume.",
-  "schedule_send": "Send a NEW email or text LATER at a given time (confirm-gated).",
+  "schedule_send": "Send a NEW email or text LATER; `when` in the user's own words.",
   "screen_capture": "Take a screenshot of the screen, window or a selection to a file.",
   "search_browser_history": "Search recent Safari/Chrome history (site and title only) by keyword or date.",
-  "search_conversations": "Search the user's past conversations by keyword; returns dated passages.",
+  "search_conversations": "Search what the USER said in past conversations by keyword; dated.",
   "search_coverage": "Internal: how far back Wisp can search each source.",
   "search_notes": "Raw verbatim text of Notes.app notes (not a summary); search by keyword or date.",
-  "search_reminders": "Search current reminders by title, including overdue; excludes calendar events.",
-  "send_email": "Send a NEW email now (confirm-gated); use reply_to_email for replies.",
-  "send_message": "Send an iMessage/SMS now (confirm-gated); recipient can be a contact name.",
+  "search_reminders": "Search reminders by title, incl. overdue and Wisp-only copies; not events.",
+  "send_email": "Send a NEW email now; use reply_to_email for replies in a thread.",
+  "send_message": "Send an iMessage/SMS now; recipient can be a contact name.",
   "set_timer": "Start a countdown timer, clock alarm or sleep timer (not a dated reminder).",
   "spreadsheet_ops": "Create an Excel .xlsx with a header row and data rows.",
   "summarize_emails": "Per-sender overview of Mail headers only; never reads bodies.",
@@ -94,7 +94,44 @@
   "wisp_status": "Wisp's own state: loaded models and memory, or last sync times.",
   "world_time": "Current date and time here or in another city; also time differences.",
   "write_document": "Create a Word .docx with title, paragraphs and optional bullets.",
-  "write_file": "Create or overwrite a plain text file (confirm-gated)."
+  "write_file": "Create or overwrite a plain text file."
  },
- "note": "scripts/export_short_descriptions.py run on a read-only git archive of source_sha (not a git checkout, so the script itself reports 'unknown'); tools without an entry (skill tools, use_skill) keep their full description, as service.tools.short_descriptions does."
+ "keep_parameter_prose": {
+  "send_email": [
+   "confirmed_self_send"
+  ],
+  "send_message": [
+   "confirmed_self_send"
+  ],
+  "get_upcoming": [
+   "include_holidays"
+  ],
+  "get_past_events": [
+   "include_holidays"
+  ],
+  "plan_meeting": [
+   "event_period",
+   "offset_minutes",
+   "when_iso"
+  ],
+  "route_to_arrive": [
+   "origin"
+  ],
+  "find_place": [
+   "near"
+  ],
+  "add_reminder": [
+   "when_iso"
+  ],
+  "add_calendar_event": [
+   "when_iso"
+  ],
+  "update_reminder": [
+   "when_iso"
+  ],
+  "schedule_send": [
+   "when"
+  ]
+ },
+ "note": "scripts/export_short_descriptions.py run on a read-only git archive of source_sha (not a git checkout, so the script itself reports 'unknown'); keep_parameter_prose is short_descriptions.KEEP_PARAMETER_PROSE. Tools without a SHORT entry (skill tools, use_skill) keep their FULL schema in terse mode, parameter prose included (registry.model_schema)."
 }

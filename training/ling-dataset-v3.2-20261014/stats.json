@@ -20,7 +20,7 @@
  "seed": 20261014,
  "short_descriptions": {
   "placeholder": false,
-  "source_sha": "178ebb3ed19de91efbb8591335bf1aad687a6168"
+  "source_sha": "c822d511949cd4669d1b35e0990d9dee17d76391"
  },
  "splits": {
   "dev": {
@@ -56,7 +56,7 @@
    },
    "row_tokens_est_chars_div4": {
     "max": 11228,
-    "mean": 6552,
+    "mean": 6567,
     "p50": 6308,
     "p95": 9362
    },
@@ -100,8 +100,8 @@
    },
    "row_tokens_est_chars_div4": {
     "max": 11672,
-    "mean": 6480,
-    "p50": 6079,
+    "mean": 6492,
+    "p50": 6090,
     "p95": 9498
    },
    "rows": 1974,

@@ -23,7 +23,7 @@ reads `~/.moe`.
 | system message 0 | captured variants + hand-written trigger map | `loop.build_system(loaded)` reproduced from `loop.SYSTEM`'s blocks (gating names from each block's first line, exactly as Wisp computes them) + identity block (synthetic Test User) + installed-skills catalog (idea-refine, interview-me, mac-controls; a skill body is appended when its triggers match the user's text) |
 | system message 1 | captured catalog | now line + `CapabilityCatalog.prompt()` (with/without web variant as before) |
 | offer order | loaded, `get_tool_schemas`, stubs | loaded, stubs (sorted), `get_tool_schemas` LAST, as `loop.model_led_offer` sends it |
-| schemas | full only | `schema_style` per conversation: `full` (tools.json byte-for-byte) or `terse` (short line, parameter descriptions stripped) |
+| schemas | full only | `schema_style` per conversation: `full` (tools.json byte-for-byte) or `terse` (registry.model_schema terse mode: tools with a SHORT entry get the short line and lose parameter prose at schema positions only, except `KEEP_PARAMETER_PROSE` parameters, which keep their full schema; tools without an entry, `use_skill` and the mac_* tools, keep their full schema) |
 | content | | every user/assistant/tool text identical to V3.1 except where a recorded migration rewrote it |
 | new category | | `v32_mac_controls` (ext_v32_mac.py), see below |
 
@@ -99,7 +99,9 @@ Refused context-only calls are the only schema-invalid calls allowed, and only i
 
 Asset provenance: Wisp `origin/main` 1bd68e7eb68f73be5b06dbc7bc4c607c12339a7a; mac-controls skill
 55a2b5b142ca816013213e07be36498ae78e6766 (`origin/claude/mac-controls-skill`, PR #226 reviewed head); short descriptions
-178ebb3ed19de91efbb8591335bf1aad687a6168 (`origin/claude/terse-tool-schemas`, PR #227, real export, not a placeholder).
+c822d511949cd4669d1b35e0990d9dee17d76391 (`origin/claude/terse-tool-schemas`, PR #227 after review: real export plus
+`KEEP_PARAMETER_PROSE`, not a placeholder). The skill's later head 1fe666bf changed only controls.sh and its test; SKILL.md is
+byte-identical to 55a2b5b1, so the captured skill assets are unaffected.
 
 ## Reproduce and validate
 
@@ -122,11 +124,12 @@ git archive <terse-sha> service/tools/short_descriptions.py service/tools/regist
 python3 $S/terse/scripts/export_short_descriptions.py $S/short_export.json
 .venv/bin/python training/ling-dataset-v3.2-20261014/capture_assets.py --main $S/main --main-sha <main-sha> \
     --skill-root $S/skill --skill-sha <skill-sha> --short-export $S/short_export.json --short-sha <terse-sha> \
-    --terse-registry $S/terse/service/tools/registry.py \
+    --terse-root $S/terse \
   && (cd training/ling-dataset-v3.2-20261014 && python3 generate.py && python3 validate.py --check-repro)
 ```
 
-`validate.py` checks: short descriptions real and covering all 92 built-ins; generate.py's stdlib mirrors of
+`validate.py` checks: short descriptions real and covering all 92 built-ins; terse rows keep prose only on
+`KEEP_PARAMETER_PROSE` parameters (which must equal their full schema) and keep full schemas for tools without a short line; generate.py's stdlib mirrors of
 `build_system`, `skills_context_block` and the terse renderer reproduce Wisp's own renderings
 (`capture_verification.json`); no unknown or retired tool name in any field (offered tools, calls, discovery args, receipts,
 catalog, system text, results, finals); per-step offer set and order, receipts, rejections, load budget; schema validity of
@@ -140,7 +143,7 @@ without an explicit trash/delete request, guarded repeats never targets); V2 rep
 ## Train on the A6000
 
 Same recipe as V3.1 (LoRA r16/alpha32 on attention, 1 epoch, LR 1e-4, `sequence_len` 16384, thinking off). Real token counts
-(`preflight.json`): train 1,974 rows, max 11,599 / p95 9,517 / median 6,249 (13.0M tokens) + 600 V2 replay rows; dev 242 + 60.
+(`preflight.json`): train 1,974 rows, max 11,599 / p95 9,517 / median 6,257 (13.07M tokens) + 600 V2 replay rows; dev 242 + 60.
 Rows are ~25% shorter than V3.1's because the catalog has 96 tools instead of ~160 and half the rows are terse.
 161 optimizer steps at effective batch 16.
 
