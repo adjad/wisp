@@ -90,6 +90,7 @@ PROFILE_TESTS = {
         "tests/test_daily_summary_history_independence.py",
         "tests/test_email_digest_presentation.py",
         "tests/test_email_scoping.py",
+        "tests/test_gmail_source.py",
         "tests/test_linked_documents.py",
         "tests/test_mail_history_wire.py",
         "tests/test_message_attribution.py",
