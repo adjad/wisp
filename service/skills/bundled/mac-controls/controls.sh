@@ -28,9 +28,24 @@ case "${1:-}" in
     esac
     ;;
   lock)
-    # CGSession -suspend no longer exists on macOS 27; sleeping the display
-    # locks the session under the default "require password after sleep".
-    pmset displaysleepnow && echo "screen locked"
+    # Not `pmset displaysleepnow`: sleeping the display locks only when the
+    # Mac asks for a password immediately after sleep, and this Mac's delay
+    # was 300 seconds (sysadminctl -screenLock status) — "locked" would have
+    # been false for five minutes. The Lock Screen shortcut locks at once.
+    # CGSession -suspend, the old way, no longer exists on macOS 27.
+    if ! err=$(osascript -e 'tell application "System Events" to keystroke "q" using {control down, command down}' 2>&1); then
+      die "could not lock the screen: $err"
+    fi
+    # Claim the lock only once the session reports it; the key is present
+    # only while the screen is locked.
+    for _ in 1 2 3 4 5 6; do
+      if ioreg -n Root -d1 | grep -q '"CGSSessionScreenIsLocked"=Yes'; then
+        echo "screen locked"
+        exit 0
+      fi
+      sleep 0.5
+    done
+    die "sent the Lock Screen shortcut, but macOS did not report the screen as locked"
     ;;
   media)
     case "${2:-}" in

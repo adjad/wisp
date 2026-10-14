@@ -52,7 +52,7 @@ metadata:
             enum: ["on", "off"]
             required: true
       - name: mac_lock_screen
-        description: Lock the Mac's screen now.
+        description: Lock the Mac's screen now and report whether macOS confirmed the lock.
         command: bash controls.sh lock
       - name: mac_media
         description: Play, pause, skip or go back in Apple Music (default) or Spotify.
@@ -74,5 +74,5 @@ metadata:
 - "Turn it down/up" with no number: call `mac_get_volume` first, then `mac_set_volume` about 20 lower or higher (clamped to 0-100).
 - "Mute" is `mac_mute` with state `on`; "unmute" is state `off`. Setting volume 0 is not the same as muting.
 - `mac_media` cannot pick a song, album or playlist. If the user asks for specific music, say so and offer to play or open the app instead.
-- Locking sleeps the display; it locks only if the Mac asks for a password after sleep. Report it as "screen locked", nothing more.
-- Each of these asks the user to confirm first, as every skill tool does. If they decline, say so plainly and do not retry another way.
+- `mac_lock_screen` reports "screen locked" only when macOS confirms it. If it returns an error, tell the user the screen is NOT locked and why.
+- Depending on the user's permission settings these may ask for confirmation first. If the user declines, say so plainly and do not retry another way.

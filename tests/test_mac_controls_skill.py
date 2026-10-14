@@ -1,8 +1,8 @@
 """The bundled mac-controls skill: volume, mute, lock and playback.
 
 These replaced the get_volume/set_volume/lock_screen/music built-ins removed in
-PR #224. As skill tools they are always confirm-tier (category skill_tool), and
-their script accepts only a closed set of words or a 0-100 integer, because the
+PR #224. As skill tools (category skill_tool) they are confirmed in the default
+mode, allowed in full-access mode and denied in view-only mode, and their script accepts only a closed set of words or a 0-100 integer, because the
 values end up inside AppleScript source — a second interpreter that the skill
 runner's one-argv-word rule does not protect.
 
@@ -71,9 +71,42 @@ def test_script_rejects_anything_outside_its_closed_inputs(argv) -> None:
     assert proc.stdout == ""
 
 
-def test_runner_reports_a_rejected_level_without_acting(loaded) -> None:
+def test_runner_reports_a_rejected_level_without_acting(loaded, monkeypatch) -> None:
+    # Sandboxing is irrelevant to validation, and sandbox-exec cannot nest
+    # inside an already-sandboxed reviewer or CI process.
+    from service.skills import sandbox
+    monkeypatch.setattr(sandbox, "available", lambda: False)
     out = asyncio.run(REGISTRY["mac_set_volume"].func(level="50 & beep"))
     assert "0 to 100" in out
+
+
+@pytest.mark.parametrize("read_only,full_access,tier", [
+    (False, False, "CONFIRM"), (False, True, "ALLOW"), (True, False, "DENY")])
+def test_policy_tier_follows_the_access_mode(loaded, monkeypatch, tmp_path,
+                                             read_only, full_access, tier) -> None:
+    # The skill's instructions must not promise a confirmation that full-access
+    # mode does not ask for; this pins what each mode actually does.
+    from service.safety import grants, policy
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {})
+    monkeypatch.setattr(policy, "_FULL_ACCESS", full_access, raising=False)
+    monkeypatch.setattr(policy, "_READ_ONLY", read_only, raising=False)
+    for name in TOOLS:
+        decision = policy.decide(REGISTRY[name].category, {}, tool=name)
+        assert decision.tier.name == tier, (name, decision)
+    assert "asks the user to confirm first, as every skill tool does" not in loaded["mac-controls"].body
+
+
+def test_lock_claims_success_only_after_macos_confirms_it() -> None:
+    # Display sleep locks only when "require password" is immediate; on this
+    # Mac the delay was 300 s. The lock path must not use it, and its only
+    # success line must sit behind the session's own locked flag.
+    script = (SKILL_DIR / "controls.sh").read_text()
+    lock = "\n".join(line for line in script[script.index("  lock)"):script.index("  media)")].splitlines()
+                     if not line.lstrip().startswith("#"))
+    assert "displaysleepnow" not in lock
+    before_success = lock[:lock.index('echo "screen locked"')]
+    assert '"CGSSessionScreenIsLocked"=Yes' in before_success
 
 
 @pytest.mark.parametrize("prompt,tool", [
