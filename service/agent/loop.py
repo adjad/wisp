@@ -15,7 +15,7 @@ import uuid
 from functools import wraps
 from collections import Counter
 from datetime import datetime
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Sequence
 
 from service import debug_capture
 from service.user_text import user_facing_failure as _user_facing_failure
@@ -1293,6 +1293,7 @@ async def run_agent(
     # stream, no separate return path needed.
     test_mode: bool = False,
     model_led_discovery: bool = False,
+    model_led_preload: Sequence[str] = (),
     # Host-only negative provenance, computed before session history is trimmed.
     # HTTP body/model arguments never set this; False cannot clear other inputs.
     private_shell_history: bool | None = None,
@@ -1833,7 +1834,7 @@ async def run_agent(
             raise ValueError("An owned execution plan must retain its controlled route")
         from service.router.model_led import (
             CapabilityCatalog, DiscoveryState, DISCOVERY_TOOL, MAX_DISCOVERIES,
-            SelectionError, discovery_schema, registry_specs,
+            SelectionError, discovery_schema, registry_specs, stub_schema, stub_selection,
         )
         from service.tools.registry import REGISTRY
 
@@ -1848,21 +1849,39 @@ async def run_agent(
                 registry_specs(REGISTRY),
                 blocked=frozenset(forbidden_tools) | _skill_boundary_names() | shell_blocked)
 
+        def model_led_offer(catalog, loaded):
+            """Real schemas for loaded tools, then, while discovery budget
+            remains, a name-only stub for every other admitted tool and the
+            discovery tool. Returns (schemas, stub names)."""
+            offer = [sch for sch in _admit(tool_schemas(list(loaded)))
+                     if sch["function"]["name"] not in forbidden_tools]
+            stubs: set[str] = set()
+            if discovery.attempts < MAX_DISCOVERIES and catalog.families:
+                real = {sch["function"]["name"] for sch in offer}
+                admitted = {sch["function"]["name"] for sch in _admit(tool_schemas(list(catalog.tools)))}
+                stubs = {n for n in catalog.tools
+                         if n in admitted and n not in real and n not in forbidden_tools}
+                offer += [stub_schema(n) for n in sorted(stubs)]
+                offer.append(discovery_schema(catalog))
+            return offer, stubs
+
         discovery = DiscoveryState()
         capability_catalog = fresh_capability_catalog()
-        tools = []
-        schemas = ([discovery_schema(capability_catalog)]
-                   if capability_catalog.families else [])
+        tools = list(discovery.preload(model_led_preload, capability_catalog))
+        schemas, stub_names = model_led_offer(capability_catalog, tools)
     else:
         schemas = [s for s in _admit(tool_schemas(tools))
                    if s["function"]["name"] not in forbidden_tools]
     # Every tool this TURN may use, as opposed to what a given step offers. A
     # forced step narrows the offer to one tool; a call to something else in
     # this set is premature, not impossible — see the rejection below.
+    if not model_led_discovery:
+        stub_names: set[str] = set()
     turn_tool_names = {s["function"]["name"] for s in schemas}
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
-    sys_text = build_system({s["function"]["name"] for s in schemas})
+    # Stubs are names only and get no tool-specific system rules.
+    sys_text = build_system({s["function"]["name"] for s in schemas} - stub_names)
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one. The installed-skills
     # CATALOG exists to make `use_skill` discoverable; on a route that does not
@@ -2633,14 +2652,17 @@ async def run_agent(
         )
         # EXPLICIT-THINKING models (config.thinking_kwargs): the think block is
         # stated on every step and defaults to OFF — V3 selects tools fine
-        # without it and runs ~10x faster. ON only when a tool failed this
-        # turn and is still outstanding: the corrected retry is the one step
+        # without it and runs ~10x faster. ON only when a RECOVERABLE tool
+        # failure is still outstanding: the corrected retry is the one step
         # with something to reason about (the same reason `narrating` refuses
-        # to fire on an error). A "think when synthesizing across two or more
-        # results" variant was measured 2026-10-13 and retired: that condition
-        # fired on 2 of 177 live V3 turns, so there was nothing to gain.
-        # `narrating` keeps governing the non-explicit models unchanged.
-        step_think_on = bool(hard_failed) or bool(failed_tools - tools_answered)
+        # to fire on an error). Not `hard_failed`: that set also holds safety
+        # blocks and user denials, which never clear, and would have kept
+        # thinking on for the rest of a turn after a single "no". A "think
+        # when synthesizing across two or more results" variant was measured
+        # 2026-10-13 and retired: that condition fired on 2 of 177 live V3
+        # turns, so there was nothing to gain. `narrating` keeps governing the
+        # non-explicit models unchanged.
+        step_think_on = bool(failed_tools - tools_answered)
         # Sampling is the model's own (as configured in oMLX) on every step
         # EXCEPT tool-SELECTION, which is pinned greedy. Higher temperature
         # increases variance away from the single most-likely — structured,
@@ -2678,7 +2700,10 @@ async def run_agent(
         # drop a tool once would keep dropping, and the toolset would shrink
         # with every retry.
         offered_schemas = step_schemas
-        allowed_names = {s["function"]["name"] for s in step_schemas}
+        # Stubs are offered by name only so the server keeps the call; they are
+        # never executable. A stub call is converted into discovery below.
+        step_stubs = frozenset(stub_names)
+        allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
         step_msgs: list[dict] = []
         step_max_tokens = max_tokens
 
@@ -2739,7 +2764,17 @@ async def run_agent(
             # Keep enforcement in sync with what was actually offered — a tool
             # dropped to fit must be rejected if the model calls it anyway,
             # exactly like one that was never offered.
-            allowed_names = {s["function"]["name"] for s in step_schemas}
+            if model_led_discovery and step_schemas != offered_schemas and step_stubs:
+                # Stubs are a convenience, not a requirement: when they don't
+                # fit, offer only the real schemas (discovery still works).
+                offered_schemas = [sch for sch in offered_schemas
+                                   if sch["function"]["name"] not in step_stubs]
+                step_stubs = frozenset()
+                step_msgs, step_schemas, step_max_tokens = _fit_window(
+                    msgs, offered_schemas, max_tokens, model, forced_tool,
+                    protected_prefix_count=len(system_prefix),
+                    context_window=getattr(getattr(client, "target", None), "context_window", None))
+            allowed_names = {s["function"]["name"] for s in step_schemas} - step_stubs
             if model_led_discovery and step_schemas != offered_schemas:
                 raise ValueError("Model-led schemas cannot fit intact; narrow the requested tools")
             # Verify before publication. Otherwise even a read-only route can
@@ -3022,7 +3057,40 @@ async def run_agent(
             for _bcid, _, _ in _batch_calls:
                 batch_verdict[_bcid] = _batch_approved
 
-        for tc in tool_calls:
+        # Calls to stubs offered on this step become ONE implicit discovery
+        # (one attempt), resolved before any call in the batch runs. Like an
+        # explicit schema request, it never widens this step's allowed_names:
+        # a sibling call to a just-loaded tool is still rejected this step.
+        # Keyed by position: a streamed call can arrive with an empty or
+        # duplicate id, and a real call must never be mistaken for a stub.
+        stub_results: dict[int, str] = {}
+        stub_calls = [(index, _clean_tool_name(tc["function"]["name"]))
+                      for index, tc in enumerate(tool_calls)
+                      if discovery is not None and _clean_tool_name(tc["function"]["name"]) in step_stubs]
+        if stub_calls:
+            try:
+                capability_catalog = fresh_capability_catalog()
+                expansion = discovery.expand(
+                    stub_selection([n for _, n in stub_calls], capability_catalog),
+                    capability_catalog, step_offered=frozenset(allowed_names))
+                tools = list(expansion.names)
+                schemas, stub_names = model_led_offer(capability_catalog, tools)
+                turn_tool_names = {s["function"]["name"] for s in schemas}
+                msgs[0] = {"role": "system", "content": (
+                    build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                stub_result = expansion.receipt()
+                await emit({"type": "routing_discovery", "families": list(expansion.families),
+                            "tools": tools, "status": "ready_next_step", "implicit": True})
+            except SelectionError as error:
+                stub_result = (f"Schema selection rejected: {error}. No source was read or "
+                               "action performed.")
+                if discovery.attempts >= MAX_DISCOVERIES:
+                    schemas, stub_names = model_led_offer(capability_catalog, tools)
+                    turn_tool_names = {s["function"]["name"] for s in schemas}
+                await emit({"type": "routing_discovery", "status": "rejected", "implicit": True})
+            stub_results = {index: stub_result for index, _ in stub_calls}
+
+        for call_index, tc in enumerate(tool_calls):
             cid = tc.get("id", "")
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
@@ -3035,10 +3103,7 @@ async def run_agent(
                     expansion = discovery.expand(
                         args, capability_catalog, step_offered=frozenset(allowed_names))
                     tools = list(expansion.names)
-                    schemas = [s for s in _admit(tool_schemas(tools))
-                               if s["function"]["name"] not in forbidden_tools]
-                    if discovery.attempts < MAX_DISCOVERIES:
-                        schemas.append(discovery_schema(capability_catalog))
+                    schemas, stub_names = model_led_offer(capability_catalog, tools)
                     turn_tool_names = {s["function"]["name"] for s in schemas}
                     msgs[0] = {"role": "system", "content": (
                         build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
@@ -3048,9 +3113,15 @@ async def run_agent(
                 except SelectionError as error:
                     result = f"Schema selection rejected: {error}. No source was read or action performed."
                     if discovery.attempts >= MAX_DISCOVERIES:
-                        schemas = [s for s in schemas if s["function"]["name"] != DISCOVERY_TOOL]
+                        schemas, stub_names = model_led_offer(capability_catalog, tools)
+                        turn_tool_names = {s["function"]["name"] for s in schemas}
                     await emit({"type": "routing_discovery", "status": "rejected"})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+            if call_index in stub_results:
+                # A call to a tool offered by name only: nothing ran. Its
+                # (shared) discovery receipt or rejection is the tool result.
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": stub_results[call_index]})
                 continue
             # A typed workflow owns identity/channel/time. The model owns only
             # the grounded prose it synthesizes from source results. Overlay
@@ -3581,10 +3652,12 @@ async def run_agent(
                 # Rebuilt through the same boundary as the initial menu: on the external
                 # local provider a freshly registered skill tool (and any existing one)
                 # stays out of what is offered.
-                schemas = [s for s in _admit(tool_schemas(tools))
-                           if s["function"]["name"] not in forbidden_tools]
-                if discovery is not None and discovery.attempts < MAX_DISCOVERIES:
-                    schemas.append(discovery_schema(fresh_capability_catalog()))
+                if discovery is not None:
+                    capability_catalog = fresh_capability_catalog()
+                    schemas, stub_names = model_led_offer(capability_catalog, tools)
+                else:
+                    schemas = [s for s in _admit(tool_schemas(tools))
+                               if s["function"]["name"] not in forbidden_tools]
 
         # See short_circuit_tools' docstring above. Only for a SINGLE
         # successful (ALLOW-tier) call to one of these tools — a compound

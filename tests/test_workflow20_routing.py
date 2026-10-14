@@ -1334,7 +1334,7 @@ def test_public_route_body_signature_and_single_await_are_preserved():
     wrapper=ast.parse(textwrap.dedent(inspect.getsource(R.route))).body[0]
     body=ast.dump(ast.Module(body=implementation.body,type_ignores=[]),include_attributes=False)
     signature=ast.dump(wrapper.args,include_attributes=False)
-    assert hashlib.sha256(body.encode()).hexdigest()=='ad6a2a796506ce3759c10bac1551617734b8d5247c1874ef05154f3be8a5a178'
+    assert hashlib.sha256(body.encode()).hexdigest()=='2bace944d4e0aaf11820ec0c1c35a66710932939c00a384fa1370ec5201af045'
     assert hashlib.sha256(signature.encode()).hexdigest()=='edcb3e9f9d06ef15a39eb04dadef72be9995af5c66f86b8f0bb19290f1e00c02'
     assert inspect.signature(R.route)==inspect.signature(R._route_impl)
     assert len([n for n in ast.walk(wrapper) if isinstance(n,ast.Await)])==1

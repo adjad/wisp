@@ -87,11 +87,14 @@ class MemoryWorker:
         # whether extraction precision improves. The budget must hold the
         # think block and the output, or the finish_reason guard below
         # rejects every extraction.
+        from service.config import thinking_kwargs
         from service.config.experiments import experiment
         think = experiment('capture_think')
+        # Explicit both ways: `{}` would hand an explicit_thinking model's
+        # decision back to the oMLX profile toggle (see config.thinking_kwargs).
         response = await client.chat(model, [{'role': 'system', 'content': EXTRACTION_SYSTEM},
             {'role': 'user', 'content': source}], max_tokens=1500 if think else 650,
-            **({} if think else no_thinking_kwargs(model)))
+            **(thinking_kwargs(model, on=True) if think else no_thinking_kwargs(model)))
         choice = response['choices'][0]
         if choice.get('finish_reason') in ('length', 'error'):
             raise ValueError('Extraction output incomplete')
