@@ -340,6 +340,9 @@ ADDITIONAL_FULL_TESTS = {
     # Agent-loop stall on refused repeats: scripted fake client and fake
     # registry tools only; no model, network, subprocess, or user state.
     "tests/test_loop_repeat_stall.py",
+    # Truncated narration fallback and evidence rendering: scripted fake client
+    # and fake registry tool only; no model, network, subprocess, or user state.
+    "tests/test_task_evidence_fallback.py",
     # Prompt scoped to the fitted toolset and the skills catalog gate: scripted
     # fake client and the packaged prompt only; no model, network, subprocess,
     # or user state.
