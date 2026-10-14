@@ -187,6 +187,7 @@ PROFILE_TESTS = {
         "tests/test_router_execution_contract.py",
         "tests/test_router_no_vision.py",
         "tests/test_router_scoping.py",
+        "tests/test_router_roster_models.py",
         "tests/test_fast_path_intent.py",
         "tests/test_reminder_compound_allowance.py",
         "tests/test_routing_contract_regressions.py",
@@ -195,6 +196,7 @@ PROFILE_TESTS = {
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
+        "tests/test_tool_consolidation.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
@@ -205,6 +207,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
+    "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
     "tests/test_attestation_store.py",
     # Synthetic content-free journal, bounded offline planner replay; no external effects.
@@ -256,6 +260,9 @@ ADDITIONAL_FULL_TESTS = {
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
     "tests/test_runtime_attestation_t1t3.py",
+    # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
+    # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
+    "tests/test_attestation_reuse.py",
     # Differential of the libproc executable-path lookup against the old lsof one, on disposable
     # copies of the interpreter started by the test itself (skips where that is denied); no oMLX,
     # port 8000, network or other process.
@@ -300,17 +307,34 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_routing.py",
     "tests/test_model_led_integration.py",
     "tests/test_repeated_read_guard.py",
+    "tests/test_model_led_preload_stubs.py",
     "tests/test_model_led_entrypoint.py",
     "tests/test_model_led_full_routing.py",
     "tests/test_model_led_effect_ownership.py",
     "tests/test_model_led_1_2_5_boundaries.py",
     # httpx MockTransport only; redirect and strict-host checks never touch the network.
-    "tests/test_http_request_redirects.py",
     "tests/test_web_strict_host.py",
     # Synthetic MIME fixtures only; offline parser tests never access real Mail.
     "tests/test_mail_mime.py",
     "tests/test_move_and_coverage.py",
     "tests/test_narration_thinking.py",
+    # Explicit think-block policy, experiment-switch parsing, and verify()
+    # grounding: pure functions over in-memory strings and the packaged
+    # models.yaml; no model, network, subprocess, or user state.
+    "tests/test_experiments.py",
+    "tests/test_search_verify_grounding.py",
+    "tests/test_thinking_kwargs.py",
+    # Agent-loop stall on refused repeats: scripted fake client and fake
+    # registry tools only; no model, network, subprocess, or user state.
+    "tests/test_loop_repeat_stall.py",
+    # Prompt scoped to the fitted toolset and the skills catalog gate: scripted
+    # fake client and the packaged prompt only; no model, network, subprocess,
+    # or user state.
+    "tests/test_prompt_scope_fit.py",
+    # Grammar-constrained planner, planner menu and read budget: scripted fake
+    # client, fake registry tools and the packaged registry/router only; no
+    # model, network, subprocess, or user state.
+    "tests/test_planner.py",
     "tests/test_notes_defaults.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",
@@ -365,7 +389,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_calendar_identity.py",
     "tests/test_workflow20_compiler.py",
     "tests/test_workflow20_daily.py",
-    "tests/test_workflow20_email_threads.py",
     "tests/test_workflow20_files.py",
     "tests/test_workflow20_groceries.py",
     "tests/test_workflow20_knowledge.py",
@@ -380,7 +403,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_schedule_time.py",
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
-    "tests/test_workflow20_unsubscribe.py",
     "tests/test_workflow20_weather.py",
     "tests/workflow20/test_contract.py",
 }

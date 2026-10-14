@@ -29,7 +29,7 @@ from service.search.chunker import Chunk
 from service.search.embedder import embedding_model
 from service.config.endpoints import role_target, EndpointConfigurationError
 from service.search.lexical import BM25
-from service.tools.registry import REGISTRY, is_tool_routable
+from service.tools.registry import REGISTRY, is_tool_routable, is_tool_searchable
 
 DEFAULT_SHORTLIST = 60
 DEFAULT_K = 12
@@ -104,7 +104,7 @@ _LEXICAL: _LexicalIndex | None = None
 
 def _signature() -> tuple[tuple[str, tuple[str, ...], str], ...]:
     return tuple((name, tuple(tool.aliases), tool.effective_retrieval_description)
-                 for name, tool in REGISTRY.items() if is_tool_routable(name))
+                 for name, tool in REGISTRY.items() if is_tool_searchable(name))
 
 
 def _lexical_index() -> _LexicalIndex:
@@ -113,7 +113,7 @@ def _lexical_index() -> _LexicalIndex:
     sig = _signature()
     if _LEXICAL is not None and _LEXICAL.signature == sig:
         return _LEXICAL
-    names = [name for name in REGISTRY if is_tool_routable(name)]
+    names = [name for name in REGISTRY if is_tool_searchable(name)]
     docs = [" ".join(_docs(REGISTRY[name])) for name in names]
     chunks = [Chunk(i, doc, 0, len(doc)) for i, doc in enumerate(docs)]
     _LEXICAL = _LexicalIndex(names, docs, BM25(chunks), sig)
@@ -153,6 +153,18 @@ def lexical_candidates(text: str, *, writing: bool, k: int = 20,
               and gated_tool_allowed(name, text, context_open=context_open)]
     picked.extend(name for name in _PINNED if is_tool_routable(name))
     return sorted(set(picked))
+
+
+def ranked_lexical_candidates(text: str, *, writing: bool, k: int,
+                              context_open: bool = False) -> list[str]:
+    """lexical_candidates' filters in rank order (best first), without the
+    pinned extras: a model-led preload head start, cut to its top k."""
+    open_gate = _gate_open(text, writing=writing)
+    picked = [name for name in lexical_shortlist(text, limit=max(k * 3, k))
+              if name in REGISTRY and name not in _PINNED
+              and _allowed(name, writing=open_gate)
+              and gated_tool_allowed(name, text, context_open=context_open)]
+    return list(dict.fromkeys(picked))[:k]
 
 
 async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) -> None:

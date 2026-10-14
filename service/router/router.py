@@ -715,14 +715,14 @@ _SYSTEM_CONTROL_RE = re.compile(
 # Each entry is (tool, the phrasings that unambiguously mean it). Zero-argument
 # tools only: there is nothing in the request that could change the call.
 _DIRECT_DEVICE_PATTERNS: list[tuple[str, re.Pattern]] = [
-    ("get_battery_status", re.compile(
+    ("system_status", re.compile(
         r"(?:\bbatter(?:y|ies)\b|\bcharging\b|\bcharge\s+(?:level|percent))"
         # Excludes two real false positives, both WRONG-ACTION bugs rather
         # than just missed offers: "put my mac in battery SAVER" was
         # direct-dispatched to a READ (battery charge %) instead of the WRITE
         # it actually named (toggle_setting low_power_mode); "which apps are
         # EATING my battery" asks about per-app usage, which
-        # get_battery_status cannot report at all — list_running_apps is the
+        # the battery section cannot report at all — list_running_apps is the
         # tool that can. Checked 2026-08-19 via test_alias_reachability.py.
         r"(?!\s*(?:saver|save)\b)(?<!eating\smy\sbattery)", re.I)),
     # Volume and clipboard are INTERROGATIVE-ONLY, unlike _SYSTEM_CONTROL_RE's
@@ -746,10 +746,6 @@ _DIRECT_DEVICE_PATTERNS: list[tuple[str, re.Pattern]] = [
         # locks the screen RIGHT NOW. That's not a missed offer, it's the
         # wrong action actually running. Checked 2026-08-19.
         r"(?!\s+(?:after|in|automatically|whenever))", re.I)),
-    ("set_keyboard_backlight", re.compile(
-        r"\bkeyboard\s+(?:backlight|light|lighting)\b", re.I)),
-    ("run_speed_test", re.compile(
-        r"\b(?:internet|network|wi-?fi)\s+speed\b|\bspeed\s?test\b", re.I)),
 ]
 
 # Belt-and-braces alongside the interrogative-only patterns above: any phrasing
@@ -770,7 +766,7 @@ _DEVICE_REQUEST_PREFIX = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
 _DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
                                      r"(?:\s+(?:please|now))?[.!?\s]*", re.I))
                     for name, body in (
-    ("get_battery_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
+    ("system_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
      r"how(?:'s|\s+is)\s+my\s+battery(?:\s+doing)?|how\s+much\s+battery\s+do\s+i\s+have|"
      r"(?:show|check|tell\s+me)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?)"),
     ("get_volume", r"(?:what(?:'s|\s+is)\s+(?:my|the|the\s+current)\s+volume(?:\s+(?:at|level))?|"
@@ -778,7 +774,6 @@ _DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
     ("clipboard_read", r"(?:what(?:'s|\s+is)\s+on\s+my\s+clipboard|what\s+did\s+i\s+copy|"
      r"(?:read|show|check)\s+(?:my|the)\s+clipboard(?:\s+contents)?)"),
     ("lock_screen", r"lock\s+(?:my|the)\s+(?:screen|mac|computer)"),
-    ("run_speed_test", r"(?:run|do|start)\s+(?:a\s+)?(?:speed\s?test|(?:internet|network|wi-?fi)\s+speed\s?test)"),
 )]
 
 
@@ -802,7 +797,12 @@ def _direct_device_call(t: str) -> list[tuple[str, dict]]:
     if _DEVICE_WRITE_RE.search(t) or _CONDITIONAL_RE.search(t):
         return []
     hits = [name for name, rx in _DEVICE_REQUESTS if rx.fullmatch(t.strip())]
-    return [(hits[0], {})] if len(hits) == 1 else []
+    return [(hits[0], dict(_DIRECT_DEVICE_ARGS.get(hits[0], {})))] if len(hits) == 1 else []
+
+
+# The battery patterns above dispatch the merged status tool's battery section;
+# every other device pattern names a zero-argument tool.
+_DIRECT_DEVICE_ARGS = {"system_status": {"section": "battery"}}
 
 
 def _matched_device_tools(t: str) -> list[str]:
@@ -1118,10 +1118,6 @@ _APPS_MEDIA_RE = re.compile(
 
 # Possible external-information domains. These cues offer a small tool menu;
 # they do not prove that a lookup is needed or select a tool for the model.
-_LING_WEB_MODEL = "Ling-3.0-tiny-oQ6e"
-
-
-
 _WEB_RE = re.compile(
     r"\b(?:stocks?|tickers?|equities|portfolio)\b|"
     r"\bweather\b|\bforecast\b|\btemperature\b[^.?!]{0,20}\b(?:in|at|outside|today)\b|"
@@ -1136,8 +1132,7 @@ _WEB_RE = re.compile(
     r"\b(?:latest|today'?s|breaking)\s+news\b|\bheadlines\b|"
     r"\bwho\s+won\b|\bfinal\s+score\b|"
     r"https?://|\bwww\.\w", re.I)
-_WEB_TOOLS = ["get_stock_price", "get_weather", "web_search", "web_fetch", "http_request",
-             "weather_alerts", "air_quality", "rain_radar"]
+_WEB_TOOLS = ["get_stock_price", "get_weather", "web_search", "web_fetch"]
 
 # What a request that matched NO rule at all can still reach.
 #
@@ -1241,9 +1236,9 @@ def _positive_write_intent(text: str) -> bool:
 
 _OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_email"})
 _CONTINUED_EFFECT_TOOLS = frozenset({
-    "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send", "place_call",
+    "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
     "draft_email", "draft_message", "lookup_contact", "clear_reminders", "clear_past_reminders",
-    "clear_memory", "delete_path", "trash_file", "forget"})
+    "delete_path", "forget"})
 
 
 _RETRY_RE = re.compile(
@@ -1546,7 +1541,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
                 for _, child, _ in clause_decisions if child.force_first_tool in writes), None)
         merged.forbidden_tools = frozenset().union(*(
             child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
-        return _pin_ling_web_decision(merged) if web_request and web_request.opted_out else merged
+        return _pin_web_decision(merged) if web_request and web_request.opted_out else merged
     if web_request and web_request.allowed:
         # Finalize local effects only on their own clause. The original public
         # query must never re-enter generic effect recognition at this boundary.
@@ -1556,7 +1551,7 @@ async def _compound_route(text: str, *, clauses: tuple[str, ...] | None = None,
             merged.tool_argument_bindings.update(child.tool_argument_bindings)
         merged.forbidden_tools = frozenset().union(*(
             child.forbidden_tools for _, child, _ in clause_decisions)) - set(merged_tools)
-        return _pin_ling_web_decision(merged)
+        return _pin_web_decision(merged)
     return _finalize(merged, text, web_request=web_request)
 
 
@@ -1778,11 +1773,24 @@ _WRITE_INTENT_RE = re.compile(
     # read like "check my reminders" / "what are my reminders" (no write verb
     # in front) still correctly stays a light-read.
     r"\b(?:set|add|create|make)\s+(?:a\s+|an\s+|\d+\s+)?reminders?\b|"
-    # Mailbox triage verbs (mark_email_read / archive_email). Without these,
+    # Mailbox triage verbs (email_triage, formerly mark_email_read / archive_email). Without these,
     # "archive the Walgreens email" read as a pure LOOKUP and was handed only
     # the two read tools — the same shape of bug as the compound send case:
     # the model finds the message, then has nothing to act on it with.
-    r"\b(?:archive|file\s+away|mark)\b", re.I)
+    # "get that out of my inbox" is the same archive request without the verb,
+    # but only when what leaves is a message: "get the tracking number out of
+    # my inbox" is a read and must not gain write tools.
+    r"\b(?:archive|file\s+away|mark)\b|"
+    # The filler may not cross "of/from/in" ("the info from that email"), and
+    # a plural needs these/those: "get the newest emails out of my inbox" is
+    # usually a read, and the router tests it as its own clause, so a
+    # following "and summarize them" cannot be relied on to say so.
+    r"\b(?:get|move|take)\s+(?:it|that|this|these|those|them|"
+    r"(?:the|that|this)\s+(?:(?!(?:of|from|in|that|this|these|those)\b)[\w'-]+\s+){0,3}?"
+    r"(?:e-?mail|message|newsletter)|"
+    r"(?:these|those)\s+(?:(?!(?:of|from|in)\b)[\w'-]+\s+){0,3}?"
+    r"(?:e-?mails|messages|newsletters))\s+out\s+of\s+(?:my|the)\s+inbox\b"
+    r"(?!\s+(?:and\s+(?:then\s+)?)?(?:summari[sz]e|read|tell|show|list|give)\b)", re.I)
 
 # The "schedule" half of that NOTE, made good. The note above says bare
 # "schedule" is excluded because it is usually the NOUN, and that real
@@ -2378,7 +2386,7 @@ _UNRELATED_PRIVATE_READ_TOOLS = frozenset({
     "search_notes", "recall", "remember", "view_emails", "get_upcoming",
     "view_messages", "summarize_messages",
     "search_conversations", "search_browser_history", "summarize_emails",
-    "summarize_thread", "scan_subscriptions", "triage_inbox", "web_search",
+    "scan_subscriptions", "triage_inbox", "web_search",
     "web_fetch", "http_request", "run_shell",
 })
 
@@ -2555,7 +2563,7 @@ _WRITE_TOOL_DOMAIN = {
     "clear_past_reminders": "calendar", "clear_reminders": "calendar",
     "send_message": "messages", "draft_message": "messages",
     "send_email": "email", "reply_to_email": "email", "draft_email": "email",
-    "archive_email": "email", "mark_email_read": "email",
+    "email_triage": "email",
     "create_note": "notes", "append_note": "notes",
 }
 
@@ -3272,8 +3280,7 @@ _AND_NOTIFY_RE = re.compile(
 _DOMAIN_WRITE_TOOLS = {
     "messages": ["lookup_contact", "send_message", "draft_message"],
     "email": ["send_email", "reply_to_email", "draft_email",
-              "mark_email_read", "archive_email", "flag_email",
-              "forward_email", "unsubscribe"],
+              "email_triage", "forward_email"],
     # clear_past_reminders belongs to the WRITE set, not the read one: it is
     # the only way to act on past-due items in bulk, and without it on the
     # calendar write route "delete all my old reminders" had nothing to call
@@ -3300,7 +3307,7 @@ _DOMAIN_WRITE_TOOLS = {
     # reached a subset of exactly ["search_notes"] and the model either wrote a
     # text file to disk with write_file — which is not where the user keeps
     # notes and does not sync — or said it couldn't.
-    "notes": ["create_note", "append_note", "search_notes", "scan_to_note"],
+    "notes": ["create_note", "append_note", "search_notes"],
 }
 
 # "When am I free" — an availability question, not a schedule read-out. The
@@ -4219,13 +4226,13 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
                  or SEND_MESSAGE_RE.search(t))):
         subset += ["view_messages", "summarize_messages"]; domains.append("messages")
     if ("email" not in _suppressed) and (EMAIL_RE.search(t) or SEND_EMAIL_RE.search(t)):
-        # scan_subscriptions/summarize_thread/triage_inbox/unsubscribe joined
-        # 2026-08-19 — same reachability trap as everywhere else in this file:
-        # this rule claims any email-shaped phrasing ("what marketing emails am
-        # I getting", "sort my inbox by priority"), so those four tools were
-        # registered, aliased, and still unreachable without this.
+        # scan_subscriptions/triage_inbox joined 2026-08-19 — same reachability
+        # trap as everywhere else in this file: this rule claims any
+        # email-shaped phrasing ("what marketing emails am I getting", "sort my
+        # inbox by priority"), so those tools were registered, aliased, and
+        # still unreachable without this.
         subset += ["view_emails", "summarize_emails", "scan_subscriptions",
-                  "summarize_thread", "triage_inbox", "unsubscribe"]
+                  "triage_inbox"]
         domains.append("email")
     # Same subtraction idiom as the messages branch above: strip the phrases
     # where "note" is the thing being SENT (see _OUTBOUND_NOTE) before asking
@@ -4244,7 +4251,7 @@ def _domain_subset(t: str, pre_claims: list[_Claim] | None = None) -> RouteDecis
         # left the model to eyeball gaps out of a list of appointments — which
         # is arithmetic it should not be doing (see conversions.calculate).
         # One extra schema on calendar reads is a cheap price for that.
-        subset += ["get_upcoming", "find_free_time", "join_video_call"]; domains.append("calendar")
+        subset += ["get_upcoming", "find_free_time"]; domains.append("calendar")
         # Offer the past-events tool ALONGSIDE get_upcoming rather than instead
         # of it: "what did I have yesterday and what's next" is one question
         # spanning both directions, and the agent prompt already tells the
@@ -4794,14 +4801,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         if timed:
             decision.required_tool_groups = (frozenset({"add_calendar_event"}),)
         return decision
-    if re.search(r"\bkeyboard\s+(?:backlight|light|lighting)\b", t, re.I):
-        d = _mk_scoped(
-            ["set_keyboard_backlight"],
-            "keyboard backlight is unavailable -> disclose limitation",
-            force="set_keyboard_backlight", light=False,
-        )
-        d.required_tool_groups = (frozenset({"set_keyboard_backlight"}),)
-        return d
     if (CODE_RE.search(t)
             and re.search(r"\bwhat\s+message\s+is\s+(?:this|the)\s+code\b", t, re.I)):
         return _mk("coding", reason="code explanation, not Messages data")
@@ -4823,11 +4822,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return _mk_scoped(
             ["wisp_skills"], "installed skill inventory -> wisp_skills",
             force="wisp_skills", light=False)
-    if re.search(r"\b(?:flip\s+(?:a\s+)?coin|pick\s+(?:one\s+)?(?:at\s+)?random|"
-                 r"choose\s+randomly|random\s+(?:number|choice|pick))\b", t, re.I):
-        return _mk_scoped(
-            ["random_pick"], "explicit randomness -> random_pick",
-            force="random_pick", light=False)
     if re.search(r"\b(?:convert|change)\s+-?\d+(?:\.\d+)?\s*"
                  r"(?:degrees?\s+)?(?:fahrenheit|celsius|kelvin|°?[fck])\b", t, re.I):
         return _mk_scoped(
@@ -4855,22 +4849,11 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             ["contact_dates"], "contact date lookup -> contact_dates",
             force="contact_dates", light=False)
     if re.search(r"\b(?:mail|messages?|notes?)\b[^.?!]{0,80}\blast\s+sync", t, re.I):
-        return _mk_scoped(
-            ["wisp_sync"], "source sync status -> wisp_sync",
-            force="wisp_sync", light=False)
-    if (re.search(r"\bcodex\b", t, re.I)
-            and re.search(r"\b(?:chats?|tasks?|threads?|agents?|running|active|"
-                          r"finished|completed|failed|stalled|status|updates?|"
-                          r"doing|catch\s+me\s+up|need(?:s)?\s+me)\b", t, re.I)):
-        if re.search(r"\b(?:need(?:s)?\s+me|attention|stalled|failed|broken)\b", t, re.I):
-            view = "attention"
-        elif re.search(r"\b(?:running|active|still\s+going|in\s+progress)\b", t, re.I):
-            view = "active"
-        else:
-            view = "recent"
-        return _mk_direct(
-            [("get_codex_updates", {"view": view})],
-            "Codex task overview -> get_codex_updates (router-direct)")
+        d = _mk_scoped(
+            ["wisp_status"], "source sync status -> wisp_status(sync)",
+            force="wisp_status", light=False)
+        d.tool_argument_bindings = {"wisp_status": {"topic": "sync"}}
+        return d
     if re.search(r"\bwhich\s+model\s+wisp\s+is\s+using\b|"
                  r"\bwhich\s+models?\s+(?:are\s+)?loaded\b", t, re.I):
         return _mk_scoped(
@@ -4889,17 +4872,17 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
             ["get_volume"], "audio output status -> get_volume",
             force="get_volume", light=False)
     if re.search(r"\b(?:local|public)\s+ip\b|\bwi-?fi\s+network\s+name\b", t, re.I):
-        return _mk_scoped(
-            ["network_info"], "network status -> network_info",
-            force="network_info", light=False)
+        d = _mk_scoped(
+            ["system_status"], "network status -> system_status(network)",
+            force="system_status", light=False)
+        d.tool_argument_bindings = {"system_status": {"section": "network"}}
+        return d
     if re.search(r"\bbattery\b[^.?!]{0,80}\b(?:charge|health|cycle\s+count)\b", t, re.I):
-        return _mk_scoped(
-            ["get_battery_status"], "battery status -> get_battery_status",
-            force="get_battery_status", light=False)
-    if re.search(r"\bbring\b[^.?!]{0,100}\bback\s+to\s+my\s+attention\b", t, re.I):
-        return _mk_scoped(
-            ["schedule_task"], "deferred notification -> schedule_task",
-            force="schedule_task", light=False)
+        d = _mk_scoped(
+            ["system_status"], "battery status -> system_status(battery)",
+            force="system_status", light=False)
+        d.tool_argument_bindings = {"system_status": {"section": "battery"}}
+        return d
     if re.search(r"\b(?:today'?s|daily)\s+(?:briefing|brief)\b", t, re.I):
         return _mk_scoped(
             ["daily_brief"], "daily briefing -> daily_brief",
@@ -4921,10 +4904,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return _mk_scoped(
             ["lookup_contact"], "saved contact detail -> lookup_contact",
             force="lookup_contact", light=False)
-    if re.search(r"\b(?:zip|archive|compress)\b[^.?!]{0,160}\b(?:folder|files?)\b", t, re.I):
-        return _mk_scoped(
-            ["archive_files"], "file archive request -> archive_files",
-            force="archive_files", light=False)
     if re.search(r"\b(?:show|list|check)\b[^.?!]{0,80}"
                  r"\b(?:outbound\s+queue|queued\s+(?:emails?|texts?|messages?)|"
                  r"emails?\s+and\s+texts?\s+currently\s+queued)\b", t, re.I):
@@ -4940,52 +4919,31 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.required_tool_groups = (frozenset({"search_notes"}),
                                   frozenset({"append_note"}))
         return d
-    if re.search(r"\b(?:encrypt|decrypt)\b[^.?!]{0,180}(?:/|\bfile\b)", t, re.I):
-        return _mk_scoped(
-            ["encrypt_file"], "file encryption operation -> encrypt_file",
-            force="encrypt_file", light=False)
-    if re.search(r"\b(?:empty|clear)\b[^.?!]{0,40}\bclipboard\b", t, re.I):
-        return _mk_scoped(
-            ["clear_clipboard"], "clear clipboard -> clear_clipboard",
-            force="clear_clipboard", light=False)
     if re.search(r"\b(?:build|create|make)\b[^.?!]{0,60}\breusable\s+tool\b", t, re.I):
         return _mk_scoped(
             ["create_tool"], "reusable tool authoring -> create_tool",
             force="create_tool", light=False)
-    if re.search(r"\bnotes?\b[^.?!]{0,50}\bdocument\s+scanner\b|"
-                 r"\bscan\b[^.?!]{0,60}\b(?:receipt|document)\b[^.?!]{0,30}\bnotes?\b", t, re.I):
-        return _mk_scoped(
-            ["scan_to_note"], "Notes document scanner -> scan_to_note",
-            force="scan_to_note", light=False)
-    if re.search(r"\bunsubscribe\b", t, re.I):
-        return _mk_scoped(
-            ["unsubscribe"], "mail unsubscribe request -> unsubscribe",
-            force="unsubscribe", light=False)
     if re.search(r"\bstopwatch\b", t, re.I):
         return _mk_scoped(
-            ["stopwatch"], "stopwatch operation -> stopwatch",
-            force="stopwatch", light=False)
+            ["manage_timers"], "stopwatch operation -> manage_timers",
+            force="manage_timers", light=False)
     if re.search(r"\b(?:active\s+)?timers?\s+and\s+alarms?\b|"
                  r"\btime\s+remains?\b[^.?!]{0,40}\b(?:timers?|alarms?)\b", t, re.I):
         return _mk_scoped(
             ["manage_timers"], "timer inventory -> manage_timers",
             force="manage_timers", light=False)
     if re.search(r"\bturn\s+wi-?fi\s+(?:on|off)\b", t, re.I):
-        return _mk_scoped(
-            ["set_wifi"], "Wi-Fi power control -> set_wifi",
-            force="set_wifi", light=False)
-    if re.search(r"\b(?:join|connect\s+to)\s+(?:the\s+)?(?:wi-?fi\s+)?network\b", t, re.I):
-        return _mk_scoped(
-            ["connect_wifi"], "Wi-Fi network connection -> connect_wifi",
-            force="connect_wifi", light=False)
+        d = _mk_scoped(
+            ["toggle_setting"], "Wi-Fi power control -> toggle_setting(wifi)",
+            force="toggle_setting", light=False)
+        d.tool_argument_bindings = {"toggle_setting": {"setting": "wifi"}}
+        return d
     if re.search(r"\bvoiceover\b", t, re.I):
-        return _mk_scoped(
-            ["accessibility_toggle"], "accessibility control -> accessibility_toggle",
-            force="accessibility_toggle", light=False)
-    if re.search(r"\b(?:macos|software)\s+updates?\b", t, re.I):
-        return _mk_scoped(
-            ["software_update"], "software update operation -> software_update",
-            force="software_update", light=False)
+        d = _mk_scoped(
+            ["toggle_setting"], "accessibility control -> toggle_setting(voiceover)",
+            force="toggle_setting", light=False)
+        d.tool_argument_bindings = {"toggle_setting": {"setting": "voiceover"}}
+        return d
     if re.search(r"\bturn\b[^.?!]{0,40}\b(?:bluetooth|airdrop|"
                  r"do\s+not\s+disturb|low\s+power\s+mode)\b[^.?!]{0,20}\b(?:on|off)\b", t, re.I):
         return _mk_scoped(
@@ -5049,12 +5007,8 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     if re.search(r"\bbring\b[^.?!]{0,60}\bforward\b[^.?!]{0,60}\bapps?\b|"
                  r"\bbring\s+(?:safari|chrome|finder|mail|messages|notes)\s+forward\b", t, re.I):
         return _mk_scoped(
-            ["switch_app"], "foreground app switch -> switch_app",
-            force="switch_app", light=False)
-    if re.search(r"^(?:patch|post|put|delete|get)\s+https?://", t, re.I):
-        return _mk_scoped(
-            ["http_request"], "explicit HTTP request -> http_request",
-            force="http_request", light=False)
+            ["open_app"], "foreground app switch -> open_app",
+            force="open_app", light=False)
     if re.search(r"\b(?:rename|change|move(?![ -]?in\b)|correct)\b[^.?!]{0,100}\breminder\b|"
                  r"\breminder\b[^.?!]{0,100}\b(?:rename|change|move(?![ -]?in\b)|correct)\b", t, re.I):
         return _mk_scoped(
@@ -5075,13 +5029,14 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
                           "capability inventory -> wisp_capabilities (router-direct)",
                           light=False)
     if (m := _LOW_POWER_CONDITIONAL_RE.search(t)):
-        d = _mk_scoped(["get_battery_status", "toggle_setting"],
+        d = _mk_scoped(["system_status", "toggle_setting"],
                        "conditional battery action -> read then optional setting",
-                       force="get_battery_status", light=False, multi=True)
-        d.required_tool_groups = (frozenset({"get_battery_status"}),
+                       force="system_status", light=False, multi=True)
+        d.required_tool_groups = (frozenset({"system_status"}),
                                   frozenset({"toggle_setting"}))
-        d.conditional_tools = (("get_battery_status", "toggle_setting",
+        d.conditional_tools = (("system_status", "toggle_setting",
                                 "percent_below", int(m.group(1))),)
+        d.tool_argument_bindings = {"system_status": {"section": "battery"}}
         return d
     if _BULK_REMINDER_CLEAR_RE.search(t):
         scope = ("today" if re.search(r"\btoday\b", t, re.I)
@@ -5383,7 +5338,7 @@ _ALL_MUTATING_TOOLS = frozenset(
 ) | frozenset({"write_file", "move_path", "delete_path", "organize_files",
                "toggle_setting", "schedule_send", "cancel_scheduled_send"})
 _INBOX_READ_TOOLS = frozenset({"view_emails", "summarize_emails", "scan_subscriptions",
-                               "summarize_thread", "triage_inbox"})
+                               "triage_inbox"})
 
 # Calendar words are constraints only when they are positive. A negated mention
 # ("not on calendar", "don't use Calendar", "in Wisp instead of calendar")
@@ -5392,7 +5347,7 @@ _INBOX_READ_TOOLS = frozenset({"view_emails", "summarize_emails", "scan_subscrip
 # still has a valid add_reminder path.
 _CALENDAR_ROUTE_TOOLS = frozenset({
     "get_upcoming", "get_past_events", "add_calendar_event", "cancel_event",
-    "update_event", "find_free_time", "join_video_call", "plan_meeting", "commit_private_meeting",
+    "update_event", "find_free_time", "plan_meeting", "commit_private_meeting",
 })
 _CALENDAR_SURFACE_RE = re.compile(r"\b(?:cal[ae]ndar|schedule|agenda)\b", re.I)
 _REMINDER_ROUTE_TOOLS = frozenset({
@@ -6106,7 +6061,7 @@ def _apply_execution_contract(decision: RouteDecision, text: str, web_request: _
         decision.tool_argument_bindings = {}
         decision.conditional_tools = ()
         decision.forbidden_tools = frozenset(forbidden | {
-            "add_reminder", "add_calendar_event", "set_alarm", "remember"})
+            "add_reminder", "add_calendar_event", "set_timer", "remember"})
         decision.needs_tools = True
         decision.light_read = False
         decision.multi_round = True
@@ -6423,9 +6378,31 @@ def _finalize(decision: RouteDecision, text: str, *, web_request: _WebRequest | 
 
 
 
-def _pin_ling_web_decision(decision: RouteDecision) -> RouteDecision:
-    """Apply after finalization so execution-contract widening cannot undo it."""
-    decision.model = _LING_WEB_MODEL
+def _web_route_model() -> str:
+    """The model every web-lookup route runs on: the configured agent model.
+
+    Until 2026-10-13 this was a literal Ling id (oQ4e, later oQ6e), pinned
+    so that a user-configured agent model (Ornith at the time) was not
+    swapped in merely to narrate a search result. The roster has since
+    collapsed to one resident model, and the literal drifted out of the
+    installed set: oMLX answered `POST /v1/models/Ling-3.0-tiny-oQ6e/load`
+    with 404, unloaded and reloaded the resident model for a "runtime
+    settings variant", and the next two /agent turns failed with 409. A
+    model id written into the router can only ever go stale, so the role is
+    resolved at route time instead; tests/test_router_roster_models.py keeps
+    router.py free of model literals.
+    """
+    return role_to_model("agent")
+
+
+def _pin_web_decision(decision: RouteDecision) -> RouteDecision:
+    """Apply after finalization so execution-contract widening cannot undo it.
+
+    Keeps the web boundary (no shell, no raw HTTP) and the agent model even
+    when a generic fallback or a later merge would have picked another role's
+    model for the narration.
+    """
+    decision.model = _web_route_model()
     decision.forbidden_tools = frozenset(
         set(decision.forbidden_tools) | {"run_shell", "http_request"})
     if decision.tool_subset is not None:
@@ -6443,11 +6420,11 @@ def _bind_public_web_source(decision: RouteDecision, request: _WebRequest) -> No
     decision.tool_argument_bindings["web_search"] = {"query": request.query}
     decision.required_tool_groups = tuple(dict.fromkeys(
         (*decision.required_tool_groups, frozenset({"web_search"}))))
-    _pin_ling_web_decision(decision)
+    _pin_web_decision(decision)
 
 
 def _direct_web_search(query: str, reason: str) -> RouteDecision:
-    """Run dedicated search first and keep its narration on low-latency Ling."""
+    """Run dedicated search first and narrate it on the configured agent model."""
     decision = _mk_direct([("web_search", {"query": query})], reason, light=False)
     decision.tool_argument_bindings = {"web_search": {"query": query}}
     decision.required_tool_groups = (frozenset({"web_search"}),)
@@ -6552,7 +6529,7 @@ def _is_no_web_public_write(text: str, request: _WebRequest) -> bool:
 def _restrict_no_web_action(decision: RouteDecision, allowed: set[str]) -> RouteDecision:
     from service.tools.registry import REGISTRY
     decision.forbidden_tools |= frozenset(set(REGISTRY) - allowed)
-    return _pin_ling_web_decision(decision)
+    return _pin_web_decision(decision)
 
 
 _DELIVERY_CONTENT_CUE = (
@@ -6827,7 +6804,7 @@ def _no_web_public_write_decision(
     decision.expect_tool_first = False
     decision.tool_subset = []
     decision.forbidden_tools = frozenset(REGISTRY)
-    return _pin_ling_web_decision(decision)
+    return _pin_web_decision(decision)
 
 
 async def _deliberate_decision(text: str, request: "_WebRequest", why: str) -> RouteDecision:
@@ -6882,14 +6859,17 @@ def _compound_device_write(clause: str) -> RouteDecision | None:
         ("set_volume", r"(?:mute(?:\s+(?:(?:my|the)\s+)?(?:volume|sound|audio))?|"
          r"(?:set|lower|reduce|turn)\s+(?:(?:my|the)\s+)?(?:volume|sound|audio)\s+"
          r"(?:to|down\s+to)\s+(?:zero|0)(?:\s*(?:percent|%))?)"),
-        ("set_wifi", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
+        ("toggle_setting", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
          r"(?:(?:my|the)\s+)?wi-?fi\s+(?:on|off))|"
          r"(?:enable|disable)\s+(?:(?:my|the)\s+)?wi-?fi)"),
     )
     for name, body in patterns:
         if re.fullmatch(prefix + body + suffix, clause.strip(), re.I):
-            return _mk_scoped([name], "complete device write clause -> model interprets",
-                              force=name, light=False, multi=True)
+            d = _mk_scoped([name], "complete device write clause -> model interprets",
+                           force=name, light=False, multi=True)
+            if name == "toggle_setting":
+                d.tool_argument_bindings = {"toggle_setting": {"setting": "wifi"}}
+            return d
     return None
 
 
@@ -7030,7 +7010,7 @@ async def _reminder_compound_boundary(text: str, request: _WebRequest) -> RouteD
     decision.tool_subset = []
     decision.resolved_request = "Please clarify the separate reminder subject and other requested actions."
     decision.forbidden_tools = frozenset(REGISTRY)
-    return _pin_ling_web_decision(decision) if request.opted_out else decision
+    return _pin_web_decision(decision) if request.opted_out else decision
 
 
 def _scheduled_send_review(text: str) -> RouteDecision | None:
@@ -7611,8 +7591,8 @@ async def _route_impl(text: str, *,
     if (no_web := _no_web_public_write_decision(text, request)) is not None:
         return no_web
     if _public_calendar_product_query(text):
-        return _pin_ling_web_decision(_direct_web_search(
-            text.strip(), "public Calendar product query -> web_search on Ling (router-direct)"))
+        return _pin_web_decision(_direct_web_search(
+            text.strip(), "public Calendar product query -> web_search on the agent model (router-direct)"))
     if (checklist := _checklist_route(text)) is not None:
         return _finalize(checklist, text, web_request=request)
     decision = await _route_request(
@@ -7621,9 +7601,9 @@ async def _route_impl(text: str, *,
     if request.opted_out:
         # An explicit no-browse constraint can still leave a local continuation
         # (for example, save a note). Keep that constrained response on the
-        # dedicated Ling boundary rather than letting a generic fallback select
-        # a pinned Ornith model.
-        decision = _pin_ling_web_decision(decision)
+        # web boundary (agent model, no shell or raw HTTP) rather than letting
+        # a generic fallback pick another role's model.
+        decision = _pin_web_decision(decision)
     if request.allowed and request.presentations:
         decision.resolved_request += " Present the verified findings as requested: " + "; ".join(
             clause.text for clause in request.presentations) + "."
@@ -7802,7 +7782,7 @@ def _assent_cannot_write_reminder(decision: RouteDecision, text: str,
     words = re.findall(r"[a-z']+", text.lower())
     pure = bool(words) and all(w in _ASSENT_WORDS for w in words)
     reminder_offer = bool(last_assistant and re.search(r"\bremind", last_assistant, re.I))
-    blocked = {"add_reminder", "set_alarm"}
+    blocked = {"add_reminder", "set_timer"}
     decision.forbidden_tools = frozenset(set(decision.forbidden_tools) | blocked)
     decision.required_tool_groups = tuple(
         g for g in decision.required_tool_groups if not g & blocked)
@@ -7935,7 +7915,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 # the model claim a reminder was set. A typed time answer
                 # continues through the existing alert-time path.
                 decision.reminder_action = "clarify_time"
-                decision.forbidden_tools |= {"add_reminder", "add_calendar_event", "set_alarm"}
+                decision.forbidden_tools |= {"add_reminder", "add_calendar_event", "set_timer"}
                 decision.required_tool_groups = tuple(
                     g for g in decision.required_tool_groups if "add_reminder" not in g)
                 decision.tool_argument_bindings.pop("add_reminder", None)
@@ -7963,7 +7943,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         decision = _mk("agent", reason="public follow-up is ambiguous -> clarify without tools")
         decision.resolved_request = web_request.clarification
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     # A topic substitution keeps the preceding operation. "And in biotech?"
     # after news asks for news, even if the new topic has its own data tool.
     web_opt_out = web_request.opted_out
@@ -7990,7 +7970,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
                 decision = _mk("agent", reason="unresolved mixed public/local request -> clarify without tools")
                 decision.resolved_request = "Please clarify the separate action to perform after the public lookup."
                 decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-                return _pin_ling_web_decision(decision)
+                return _pin_web_decision(decision)
             _bind_public_web_source(decision, web_request)
             # The public source precedes any action depending on its result.
             decision.required_tool_groups = tuple(dict.fromkeys((frozenset({"web_search"}), *(
@@ -8003,7 +7983,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
         # A prohibited delivery is a constraint, never part of a public query.
         decision = _direct_web_search(web_request.query, "public search with local-action constraints")
         decision.forbidden_tools |= frozenset(_ALL_MUTATING_TOOLS)
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     if live_web_lookup and web_request.delivery:
         return _public_delivery_decision(web_request)
     if web_opt_out and not live_lookup_write:
@@ -8012,12 +7992,12 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             reason="live-information wording with explicit no-web request -> answer without tools",
         )
         decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
-        return _pin_ling_web_decision(decision)
+        return _pin_web_decision(decision)
     if live_web_lookup and not live_lookup_write:
         query = web_request.query
         decision = _direct_web_search(
-            query, "current public information -> web_search on Ling (router-direct)")
-        return _pin_ling_web_decision(decision)
+            query, "current public information -> web_search on the agent model (router-direct)")
+        return _pin_web_decision(decision)
     # Resolve this before the outbound workflow: its conversational “send me”
     # means display the summary in Wisp, not deliver it through another app.
     if (args := _dated_messages_summary_args(text)) is not None:
@@ -8067,7 +8047,7 @@ async def _route_request(text: str, *, web_request: _WebRequest,
             return outbound
         decision = finalize(outbound, text)
         if "web_search" in decision.tool_argument_bindings:
-            return _pin_ling_web_decision(decision)
+            return _pin_web_decision(decision)
         return decision
     if (offered_text := _offered_text_confirmation(text, last_assistant)) is not None:
         return finalize(offered_text, text)

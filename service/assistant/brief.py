@@ -732,13 +732,16 @@ async def _brief_synthesis(system: str, material: str, *, model: str | None = No
     model = model or role_to_model("fast")
 
     async def request() -> dict:
+        from service.config import user_facing_summary_budget
         client = _c()
         await client.ensure_only(model)
         return await client.chat(
             model,
             [{"role": "system", "content": system},
              {"role": "user", "content": material}],
-            max_tokens=_USER_FACING_SUMMARY_MAX_TOKENS,
+            # Larger only when the request carries an explicit think block —
+            # the block comes out of this budget (see config.thinking_kwargs).
+            max_tokens=user_facing_summary_budget(model, _USER_FACING_SUMMARY_MAX_TOKENS),
             temperature=0,
             **user_facing_summary_kwargs(model),
         )

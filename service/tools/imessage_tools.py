@@ -1691,11 +1691,13 @@ async def _summarize(rows: list[tuple[float, str, str]], header_label: str) -> s
     if not candidates:
         return digest.render(groups, header_label)
     try:
+        from service.config import user_facing_summary_budget
         model = role_to_model("fast")
         request = [{"role": "system", "content": _TOPIC_SYS},
                    {"role": "user", "content": json.dumps(candidates, ensure_ascii=False)}]
         response = await asyncio.wait_for(
-            _c().chat(model, request, max_tokens=600, temperature=0,
+            _c().chat(model, request, max_tokens=user_facing_summary_budget(model, 600),
+                      temperature=0,
                       **user_facing_summary_kwargs(model)), timeout=_SUMMARY_TIMEOUT_SECONDS)
         debug_capture.record("model_call", model=model, request=request, response=response)
         choice = response["choices"][0]

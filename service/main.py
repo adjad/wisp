@@ -15,6 +15,7 @@ load/swap) that has no other visible signal — see OMLXClient.ensure_only.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from service.inference.remote_policy import (remote_only_profile,
                                              require_generation_role,
                                              require_local_models_disabled)
@@ -84,6 +85,10 @@ from service.memory.prompt_blocks import memory_block, now_line
 from service.memory.context import default_history_budget
 from service.router import route
 from service.router.router import RouteDecision, routing_guard_contract, rule_route
+from service.agent.planner import enabled_from_env as planner_enabled_from_env
+# Imported here, not lazily in _model_led_preload: reranker binds the tool
+# registry at import time, so it must load with the real registry.
+from service.router import reranker as _reranker
 from service.router.model_led import (continuation_requires_baseline,
                                       model_led_enabled, needs_effect_owner,
                                       fresh_personal_obligation, memory_excluded, opaque_effect, personal_communication_request,
@@ -1162,6 +1167,21 @@ def _agent_memory_context_allowed(decision, *, cloud: bool,
     return not schedule_read
 
 
+
+def _model_led_preload(prompt: str) -> list[str]:
+    """Tools whose full schemas a model-led turn starts with: the lexical
+    router's top MAX_PRELOAD for the (quote-masked) prompt. Only a head start:
+    every other admitted tool stays reachable by name, and run_agent drops any
+    name that is forbidden, blocked or unavailable this turn. Lexical only, so
+    it never loads a model or touches the network; any failure means no preload."""
+    try:
+        from service.router.model_led import MAX_PRELOAD
+        from service.router.router import has_write_intent, mask_quoted
+        text = mask_quoted(prompt)
+        return _reranker.ranked_lexical_candidates(text, writing=has_write_intent(text), k=MAX_PRELOAD)
+    except Exception:  # noqa: BLE001 — a missing head start must never fail the turn
+        return []
+
 @app.post("/agent")
 async def agent(body: dict[str, Any]):
     """Route the request and run it, streaming events over SSE.
@@ -1795,6 +1815,34 @@ async def agent(body: dict[str, Any]):
             # and keep complete greetings/thanks on the tool-free fast path.
             if not model_led_turn:
                 decision = apply_session_pin(decision, sess, prompt, active_skill=active_skill)
+            # PLANNER TURNS (WISP_PLANNER=1, service/agent/planner.py). The rules
+            # router still decides role and style, but its POSITIVE steering —
+            # narrow subsets, forced first tools, router-direct calls, required
+            # groups — is replaced by the planner menu (service/router/menu.py),
+            # and only the negative user-constraint envelope
+            # (routing_guard_contract, as model-led turns use) is carried over.
+            # The router's own forbidden_tools is NOT: it doubles as steering,
+            # e.g. "clarify before effects" forbids add_reminder outright.
+            # Typed workflows, deterministic claims and vision keep their paths.
+            planner_turn = False
+            if (not model_led_turn and not (workflow_turn and workflow_turn.decision)
+                    and remote_only_profile() is None and not deterministic_claim
+                    and getattr(client, "managed", False) and decision.role != "vision"
+                    and planner_enabled_from_env()):
+                from service.router.menu import build_menu
+                guard_forbidden, guard_bindings = routing_guard_contract(prompt)
+                decision = dataclasses.replace(
+                    decision, role="agent", model=role_to_model("agent"), needs_tools=True,
+                    route_source="planner", reason=f"{decision.reason} · planner menu",
+                    tool_subset=build_menu(prompt, last_assistant=last_assistant,
+                                           forbidden=frozenset(guard_forbidden)),
+                    force_first_tool=None, expect_tool_first=False, direct_calls=[],
+                    required_tool_groups=(), conditional_tools=(), multi_round=True,
+                    narration_after=frozenset(), resolved_request="", strict_read_limits={},
+                    clarify_channel=False, clarify_target=False,
+                    forbidden_tools=frozenset(guard_forbidden),
+                    tool_argument_bindings={**decision.tool_argument_bindings, **guard_bindings})
+                planner_turn = True
             super_model_cloud = False
             if remote_only_profile() is None and not model_led_turn and cloud_super_model_enabled():
                 if active_skill:
@@ -2017,6 +2065,8 @@ async def agent(body: dict[str, Any]):
                                         style_hint=style_hint or None,
                                         public_web_synthesis=super_model_cloud,
                                         model_led_discovery=model_led_turn,
+                                        model_led_preload=(_model_led_preload(prompt)
+                                                           if model_led_turn else ()),
                                         private_shell_history=turn_private_shell_history if model_led_turn else None,
                                         fresh_personal_scope=(fresh_personal_obligation(prompt, last_tools or "")
                                                               if model_led_turn else None),
@@ -2037,7 +2087,8 @@ async def agent(body: dict[str, Any]):
                                         tool_argument_bindings=decision.tool_argument_bindings,
                                         strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
-                                        test_mode=test_mode, debug=debug)
+                                        test_mode=test_mode, debug=debug,
+                                        planner=planner_turn)
                 from service.tools.registry import DisplayOnlyToolResult
                 if not isinstance(captured["text"], DisplayOnlyToolResult):
                     captured["text"] = final or captured["text"]
@@ -2106,8 +2157,18 @@ async def agent(body: dict[str, Any]):
                 # suppressed on a selection step (see no_thinking_kwargs's
                 # docstring) — this path never drives tools, so that risk
                 # doesn't apply here.
-                think_kwargs = (no_thinking_kwargs(decision.model)
-                                if decision.role == "fast" else {})
+                #
+                # An explicit-thinking model (config.thinking_kwargs) states
+                # OFF here for every role: V3 was trained thinking-off, and
+                # omitting the kwarg would hand the decision to the oMLX
+                # profile toggle. "reasoning" is the one role that may earn an
+                # explicit ON later; it has not been measured on V3 yet.
+                from service.config import thinking_kwargs, thinks_explicitly
+                if thinks_explicitly(decision.model):
+                    think_kwargs = thinking_kwargs(decision.model, on=False)
+                else:
+                    think_kwargs = (no_thinking_kwargs(decision.model)
+                                    if decision.role == "fast" else {})
                 # Load before entering the per-chunk timeout: a legitimate cold
                 # start can take longer than eight seconds, and cancelling the
                 # first stream iteration would otherwise cancel that startup.

@@ -34,11 +34,12 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from service import skills  # noqa: E402
 from service.skills import load as load_skills  # noqa: E402
-
-load_skills()  # register use_skill + the user's installed skill tools
 
 import service.router.router as R  # noqa: E402
 from service.router.router import route  # noqa: E402
@@ -46,14 +47,42 @@ from service.router.tool_aliases import apply as apply_aliases  # noqa: E402
 from service.tools import tool_schemas  # noqa: E402
 from service.tools.registry import REGISTRY  # noqa: E402
 
-# The real runtime always attaches tool_aliases.py's table before retrieval
-# ever runs (ToolIndex.build() calls this first thing — see semantic.py) — a
-# retrofitted tool's aliases exist in that table from the moment it's added,
-# but REGISTRY[name].aliases stays empty until something actually calls
-# apply(). Without this, "does it have aliases" below would test the
-# freshly-imported REGISTRY (always aliases=[]) instead of what a real turn
-# ever sees, and wrongly flag every alias-only tool as unreachable.
-apply_aliases()
+
+@pytest.fixture(scope="module", autouse=True)
+def isolated_skill_registry():
+    """Load skill tools for these routes without leaking them into other files."""
+    original_registry = REGISTRY.copy()
+    original_aliases = {name: list(tool.aliases)
+                        for name, tool in original_registry.items()}
+    original_skills = skills._skills
+    original_tools_module = sys.modules.get("service.skills.tools")
+    original_registered = (set(original_tools_module._registered)
+                           if original_tools_module else set())
+    had_tools_attribute = hasattr(skills, "tools")
+    original_tools_attribute = getattr(skills, "tools", None)
+
+    try:
+        load_skills()  # register use_skill + the user's installed skill tools
+        # The runtime applies this table before retrieval. Alias-only tools
+        # would otherwise appear unreachable in this registry-level check.
+        apply_aliases()
+        yield
+    finally:
+        REGISTRY.clear()
+        REGISTRY.update(original_registry)
+        for name, tool in original_registry.items():
+            tool.aliases = original_aliases[name]
+        skills._skills = original_skills
+
+        if original_tools_module is None:
+            sys.modules.pop("service.skills.tools", None)
+        else:
+            original_tools_module._registered.clear()
+            original_tools_module._registered.update(original_registered)
+        if had_tools_attribute:
+            skills.tools = original_tools_attribute
+        else:
+            skills.__dict__.pop("tools", None)
 
 PASS, FAIL = 0, 0
 
@@ -107,7 +136,6 @@ def test_every_tool_has_a_scoped_home() -> None:
             ("What should I get for groceries without reminders", "grocery_note_evidence"),
             ("What should I get for groceries without notes", "grocery_reminder_evidence"),
             ("search my chat history for an old project", "search_conversations"),
-            ("clear my saved memories", "clear_memory"),
             ("Save a knowledge note titled Project:\nBring blue folder.", "save_knowledge"),
             ("Read my saved knowledge notes.", "read_knowledge"),
             ("Update knowledge " + "a"*32 + " titled Project:\nBring red folder.", "edit_knowledge"),
@@ -181,8 +209,8 @@ def test_every_tool_has_a_scoped_home() -> None:
 def test_device_apps_and_web_are_scoped() -> None:
     print("\nthe three clusters that used to fall through are now scoped")
     for prompt, tool in (("what's the current volume?", "get_volume"),
-                         ("how much battery do I have", "get_battery_status"),
-                         ("turn off my wifi", "set_wifi"),
+                         ("how much battery do I have", "system_status"),
+                         ("turn off my wifi", "toggle_setting"),
                          ("lock my screen", "lock_screen"),
                          ("what's on my clipboard", "clipboard_read"),
                          ("open safari", "open_app"),
@@ -286,7 +314,7 @@ def test_confirmation_inherits_the_previous_domain() -> None:
     # Verified failure 2026-08-09: "yes archive them", right after Wisp listed
     # emails, was routed with NO subset — all 55 tools, the configuration this
     # project measured as worst at selection. It called view_emails again and
-    # never archive_email, on the one turn where the user had already said
+    # never archive_email (now email_triage), on the one turn where the user had already said
     # "do it".
     d = asyncio.run(route("yes archive them",
                           last_assistant="Would you like me to archive these emails to keep your inbox clean?",
@@ -294,7 +322,7 @@ def test_confirmation_inherits_the_previous_domain() -> None:
     sub = d.tool_subset or []
     check("scoped rather than the full registry", bool(sub) and len(sub) < 20,
           f"-> {len(sub) if sub else 'UNSCOPED'}")
-    check("archive_email is actually offered", "archive_email" in sub, f"-> {sub}")
+    check("email_triage (archive) is actually offered", "email_triage" in sub, f"-> {sub}")
     check("it does not force a tool call", d.expect_tool_first is False)
 
     d = asyncio.run(route("go ahead", last_assistant="Want me to send that text to Mom?",

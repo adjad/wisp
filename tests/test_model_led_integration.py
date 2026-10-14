@@ -120,6 +120,12 @@ def names(request):
     return {schema["function"]["name"] for schema in request.get("tools") or []}
 
 
+def real_names(request):
+    """Offered tools with real schemas; name-only stubs carry no description."""
+    return {schema["function"]["name"] for schema in request.get("tools") or []
+            if "description" in schema["function"]}
+
+
 def test_baseline_default_does_not_offer_discovery(synthetic):
     client = ScriptedClient(["Synthetic baseline."])
     async def emit(event):
@@ -133,8 +139,8 @@ def test_schema_first_then_real_executor_arguments_and_receipts(synthetic):
     effects, _ = synthetic
     client, events, _ = run([[discover("calendar", "get_upcoming")],
                            [call("get_upcoming", period="this week", calendar_only=True)], "Synthetic agenda."])
-    assert names(client.requests[0]) == {DISCOVERY_TOOL}
-    assert names(client.requests[1]) == {DISCOVERY_TOOL, "get_upcoming"}
+    assert real_names(client.requests[0]) == {DISCOVERY_TOOL}
+    assert real_names(client.requests[1]) == {DISCOVERY_TOOL, "get_upcoming"}
     schema = next(s for s in client.requests[1]["tools"] if s["function"]["name"] == "get_upcoming")
     assert schema == registry.get_tool("get_upcoming").schema()
     assert effects == [("get_upcoming", {"period": "this week", "calendar_only": True})]
@@ -149,8 +155,11 @@ def test_same_response_schema_selection_does_not_admit_sibling_real_call(synthet
     client, events, _ = run([[discover("calendar", "get_upcoming"), call("get_upcoming", days=1)],
                            [call("get_upcoming", days=1)], "Synthetic agenda."])
     assert effects == [("get_upcoming", {"days": 1})]
-    assert any(e["type"] == "tool_result" and "not available" in e["result"] for e in events)
-    assert names(client.requests[0]) == {DISCOVERY_TOOL}
+    # The sibling named a tool offered only as a stub: it loads, it does not run.
+    sibling = next(m for m in client.requests[1]["messages"]
+                   if m.get("role") == "tool" and m.get("tool_call_id") == "synthetic-get_upcoming")
+    assert json.loads(sibling["content"])["source_tools_executed"] is False
+    assert real_names(client.requests[0]) == {DISCOVERY_TOOL}
 
 
 @pytest.mark.parametrize("prompt,history", [
@@ -163,7 +172,7 @@ def test_original_prompt_and_followup_context_reach_model_intact(synthetic, prom
     request = client.requests[0]
     assert request["messages"][-1] == {"role": "user", "content": prompt}
     assert all(message in request["messages"] for message in history)
-    assert names(request) == {DISCOVERY_TOOL}
+    assert real_names(request) == {DISCOVERY_TOOL}
     assert synthetic[0] == []
 
 
@@ -550,7 +559,8 @@ def test_explicit_public_lookup_request_keeps_web_without_confirmation_before_an
 @pytest.mark.parametrize("model_led", [True, False])
 def test_opaque_outbound_always_confirms_in_model_led_even_with_full_access(synthetic, monkeypatch, name, model_led):
     effects, register = synthetic
-    register(name, "shortcuts_bridge", "app_control", parameters={"type": "object", "properties": {
+    # Synthetic stand-ins: the opaque-outbound rule outlives the retired tools.
+    register(name, "automation_tools", "app_control", parameters={"type": "object", "properties": {
         "name": {"type": "string"}}})
     monkeypatch.setattr("service.safety.policy._FULL_ACCESS", True)
     monkeypatch.setattr("service.safety.grants.check", lambda *args: "allow")

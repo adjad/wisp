@@ -4,6 +4,36 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.3.2] - 2026-10-14
+
+### Added
+
+- Model-led routing (still off by default, `WISP_MODEL_LED_ROUTING=1`) now loads full schemas up front for the 12 tools that best match the request, and offers every other catalog tool by name only. Calling a name-only tool runs nothing: it loads that tool's schema, and the model calls it again on the next step with full arguments. Ling V2 used to call real tools directly and get an empty reply. Name-only tools are dropped first when a request doesn't fit the context window.
+- The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
+- "What Wisp has learned": a window listing every routine Wisp learned from your calendar, messages and Wisp use, grouped by kind, with the counts behind each one and today's predictions. Mark a routine "That's right" or "Not true" (a rejected routine stops shaping predictions, nudges and answers, and can be restored). Open it from Settings → Privacy & Access → "See what Wisp learned", or from the Chat sidebar.
+
+### Changed
+
+- Behavior learning picks up routines from sparser calendars. A habit now needs 3 occurrences in at least 3 separate weeks (was 4), and a recurring event, note or reminder is judged from when it first appeared, so office hours that started three weeks ago count as three for three instead of three of seven. Category routines (gym, focus time) still count every week of history, and Wisp-usage routines still need 4 asks.
+- Wisp-usage routines read naturally: "You usually use Wisp around 12:15pm" and "You look things up with Wisp around 5pm" instead of "You ask Wisp about general / web".
+- Wisp has 100 built-in tools instead of 182. Related tools were merged into one tool with a mode, so old phrasings still work: weather alerts, air quality and rain are `get_weather`; timers, alarms, sleep timers and the stopwatch are `set_timer` and `manage_timers`; battery, network and Bluetooth status are `system_status`; Wi-Fi, VoiceOver and dark mode join `toggle_setting`; Music and Spotify are `music`; podcasts, audiobooks, radio and ambient sound are `play_audio`; archive, mark read and flag are `email_triage`. "Always allow" and "never allow" choices made for a merged tool still cover only what they covered before.
+- Within one turn, a read the model already made with identical arguments isn't run again. The model gets "already ran with these exact arguments… It was NOT run again" and answers from the earlier result. Status reads (battery, volume, network, running apps, clipboard, screen and similar) still run every time, and any successful write or action clears the record, so a read after a write sees fresh data.
+- Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
+
+### Removed
+
+- Directions, currency conversion, app uninstall, sending files by AirDrop (the AirDrop on/off setting stays), unsubscribe, raw HTTP requests, display brightness and a few other low-use or duplicate tools. Currency, definition, recipe and sunset questions now go to web search or Wikipedia. Placeholder tools that did nothing are gone.
+
+### Fixed
+
+- Smart Search no longer answers "not found" when the model's answer is correct but has no [n] citation. A sentence grounded in a retrieved passage keeps its place and gets that passage cited, if its figures match exactly, its negation matches, and at least 80% of its content words appear in the passage.
+- Behavior learning now sees Messages. Every message was dropped on ingest (the Messages feed sends RFC 3339 timestamps and the runtime parsed them as numbers), so no contact rhythm could ever form. Replies now count toward the same person as their texts, named by Contacts, and automated senders (short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped.
+- Web lookups (news, weather, stock and crypto prices, "search the web for…") now run on the model configured for the `agent` role instead of a model id written into the router. The written id (`Ling-3.0-tiny-oQ6e`) was no longer installed, so oMLX answered its load with 404, reloaded the resident model, and the next turns failed with "The local AI engine returned an error (409)".
+- An approved Calendar, Reminders or send action no longer fails with "Wisp app is not connected" when it lands while the app is reconnecting its event stream, which happens about every 25 seconds. Wisp now waits up to 8 seconds for an app that disconnected within the last minute; an app that never connected, or left long ago, still fails at once with nothing sent.
+- A failed or denied write, and a drafted message, no longer show "The assistant didn't respond." in place of Wisp's actual reply. Every early end of a turn now tells the app the turn is done.
+- "What did you remember about me?" goes to memory recall like "What do you know about me?".
+- Typo-tolerant tool search returns the same matches on every launch; it used to vary with Python's hash seed.
+
 ## [1.3.1] - 2026-10-12
 
 ### Added

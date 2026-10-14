@@ -22,9 +22,8 @@ import pytest
 
 os.environ.setdefault("WISP_HOME", tempfile.mkdtemp(prefix="wisp-fastpath-"))
 
-from service.skills import load as load_skills  # noqa: E402
-
-load_skills()
+# Avoid loading skills during collection: test_router_everyday_prompts imports
+# helpers from this module, and loading registers use_skill in the shared registry.
 
 import service.router.router as R  # noqa: E402
 from service import utterance_shape as U  # noqa: E402
@@ -83,11 +82,12 @@ def test_negated_or_quoted_device_text_makes_no_call(text):
     assert decision.force_first_tool is None and not decision.expect_tool_first, decision.reason
 
 
-@pytest.mark.parametrize("text,tool", [("lock my screen", "lock_screen"),
-                                       ("what's on my clipboard", "clipboard_read"),
-                                       ("what's my battery level", "get_battery_status")])
-def test_a_plain_device_request_still_takes_the_direct_path(text, tool):
-    assert [n for n, _ in route(text).direct_calls] == [tool]
+@pytest.mark.parametrize("text,call", [("lock my screen", ("lock_screen", {})),
+                                       ("what's on my clipboard", ("clipboard_read", {})),
+                                       ("what's my battery level",
+                                        ("system_status", {"section": "battery"}))])
+def test_a_plain_device_request_still_takes_the_direct_path(text, call):
+    assert route(text).direct_calls == [call]
 
 
 # --- P1: a quoted request must not become a task ----------------------------------------
@@ -409,9 +409,9 @@ def successful_reminder_endpoint(inert_endpoint, monkeypatch, tmp_path):
     for action, device, arguments in (
         ("Lock my screen", "lock_screen", {}),
         ("Mute my volume", "set_volume", {"level": 0}),
-        ("Turn off Wi-Fi", "set_wifi", {"on": False}),
+        ("Turn off Wi-Fi", "toggle_setting", {"setting": "wifi", "on": False}),
         ("Lower my volume to zero", "set_volume", {"level": 0}),
-        ("Disable Wi-Fi", "set_wifi", {"on": False}),
+        ("Disable Wi-Fi", "toggle_setting", {"setting": "wifi", "on": False}),
     )
     for join in (" and ", ", and ", ", ", "; ", ". ", " then ")
     for first, second in ((action, "Remind me to take my medicine tonight"),
@@ -1111,8 +1111,8 @@ def test_future_coordinated_subject_is_one_reminder_without_current_notification
 
 @pytest.mark.parametrize("text,device,device_args,title", [
     ("Remind me tomorrow to buy milk and mute my volume now", "set_volume", {"level": 0}, "buy milk"),
-    ("Remind me at 6pm tomorrow to study and turn off Wi-Fi now", "set_wifi", {"on": False}, "study"),
-    ("Remind me on October 12, 2027 to study and disable Wi-Fi now", "set_wifi", {"on": False}, "study"),
+    ("Remind me at 6pm tomorrow to study and turn off Wi-Fi now", "toggle_setting", {"setting": "wifi", "on": False}, "study"),
+    ("Remind me on October 12, 2027 to study and disable Wi-Fi now", "toggle_setting", {"setting": "wifi", "on": False}, "study"),
 ])
 def test_explicit_current_scope_escapes_future_reminder_subject(
         successful_reminder_endpoint, monkeypatch, text, device, device_args, title):
@@ -1386,7 +1386,7 @@ def test_actual_http_calendar_compound_reaches_interpretation_with_both_tools(in
 
 
 @pytest.mark.parametrize("text,expected", [
-    ("What's my battery level", ("get_battery_status", {})),
+    ("What's my battery level", ("system_status", {"section": "battery"})),
     ('Show calendar events named "Do not disturb" tomorrow',
      ("get_upcoming", {"period": "tomorrow", "query": "Do not disturb", "calendar_only": True})),
     ("Show my calendar on October 12, 2027", ("get_upcoming", {"period": "2027-10-12"})),

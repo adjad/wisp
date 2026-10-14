@@ -169,65 +169,6 @@ class StoredDisplayArtifact:
                 "sha256": hashlib.sha256(self.text.encode("utf-8")).hexdigest()}
 
 
-# Compatibility registrations for capabilities that have no executable local
-# implementation.  Keeping the names lets old saved workflows and direct
-# callers receive a precise explanation, while ``unavailable_reason`` makes
-# them non-routable and prevents approval/dispatch.  This is the authoritative
-# inventory: do not advertise API-key settings or providers Wisp does not have.
-UNAVAILABLE_TOOL_REASONS: dict[str, str] = {
-    "country_info": (
-        "Wisp does not currently have a country-data lookup provider. "
-        "No country lookup was performed; ask me to search the web instead."
-    ),
-    "find_local_events": (
-        "Wisp does not currently have a local-events provider. "
-        "No event lookup was performed; ask me to search the web instead."
-    ),
-    "get_lyrics": (
-        "Wisp does not have a licensed lyrics source. No lyrics lookup was performed; "
-        "use a licensed service such as Apple Music or Genius."
-    ),
-    "identify_song": (
-        "Wisp cannot identify nearby music because its app has no ShazamKit audio bridge. "
-        "No recording or song identification ran."
-    ),
-    "live_captions": (
-        "Wisp cannot control macOS Live Captions because macOS exposes no supported "
-        "automation API for it. Nothing was changed; use System Settings > Accessibility > "
-        "Live Captions."
-    ),
-    "lookup_media_title": (
-        "Wisp does not currently have a movie or TV metadata provider. "
-        "No title lookup was performed; ask me to search the web instead."
-    ),
-    "set_hotkey": (
-        "Wisp cannot register global hotkeys because its app has no Accessibility event-tap "
-        "bridge. No shortcut was created."
-    ),
-    "set_keyboard_backlight": (
-        "Wisp cannot change this Mac's keyboard backlight: no supported manual software "
-        "control is available. Nothing was changed."
-    ),
-    "track_flight": (
-        "Wisp does not currently have a live flight-status provider. "
-        "No flight lookup was performed; ask me to search the web instead."
-    ),
-    "track_package": (
-        "Wisp does not currently have a carrier-tracking provider. "
-        "No package lookup was performed; check the carrier link or ask me to search your "
-        "email for the shipping confirmation."
-    ),
-    "transcribe_audio": (
-        "Wisp cannot transcribe audio because its app has no Speech-framework bridge. "
-        "No file was opened or transcribed."
-    ),
-    "transit_info": (
-        "Wisp does not currently have a live transit-arrivals provider. "
-        "No departure lookup was performed; transit directions in Apple Maps are still "
-        "available."
-    ),
-}
-
 EVENT_UPDATE_UNAVAILABLE = (
     "Calendar event updates are unavailable in Wisp because it cannot yet "
     "preserve the existing event's duration, calendar, attendees, and other details. "
@@ -256,6 +197,10 @@ class Tool:
     # An unavailable implementation is stopped before approval/dispatch, even
     # if a router or model selects its retained compatibility registration.
     unavailable_reason: str = ""
+    # Reached only by name from a deterministic route or typed workflow, never
+    # by keyword/embedding search: it stays out of every retrieval index, so it
+    # neither competes in a retrieved menu nor shows up for a lookalike request.
+    internal: bool = False
 
     @property
     def effective_retrieval_description(self) -> str:
@@ -296,7 +241,7 @@ _TOOL_EFFECTS = {
     "cancel_event": "cancelled", "cancel_scheduled_send": "cancelled",
     "clear_past_reminders": "deleted", "clear_reminders": "deleted",
     "toggle_setting": "changed", "write_file": "written", "move_path": "moved",
-    "delete_path": "deleted", "trash_file": "deleted", "organize_files": "moved",
+    "delete_path": "deleted", "organize_files": "moved",
     "commit_private_meeting": "created",
     "save_knowledge": "created", "edit_knowledge": "updated", "delete_knowledge": "deleted",
 }
@@ -306,9 +251,6 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
                           denied: bool = False) -> ToolOutcome:
     text = str(result or "")
     effect = _TOOL_EFFECTS.get(tool_name, "read")
-    if tool_name in UNAVAILABLE_TOOL_REASONS:
-        return ToolOutcome(
-            "unsupported", text or UNAVAILABLE_TOOL_REASONS[tool_name], effect)
     if planned:
         return ToolOutcome("planned", text, effect)
     if not denied and type(result) is _OutboundUnknownResult and result.operation == tool_name:
@@ -378,11 +320,12 @@ def classify_tool_outcome(tool_name: str, result: str, *, planned: bool = False,
 
 def register(name: str, description: str, parameters: dict, category: str,
              aliases: list[str] | None = None, *,
-             retrieval_description: str | None = None, unavailable_reason: str = ""):
+             retrieval_description: str | None = None, unavailable_reason: str = "",
+             internal: bool = False):
     def deco(func):
-        reason = unavailable_reason or UNAVAILABLE_TOOL_REASONS.get(name, "")
         REGISTRY[name] = Tool(name, description, parameters, category, func,
-                              list(aliases or []), retrieval_description, reason)
+                              list(aliases or []), retrieval_description, unavailable_reason,
+                              internal)
         return func
     return deco
 
@@ -399,6 +342,16 @@ def is_tool_routable(name: str) -> bool:
 
 def routable_tool_names() -> set[str]:
     return {name for name, tool in REGISTRY.items() if not tool.unavailable_reason}
+
+
+def is_tool_searchable(name: str) -> bool:
+    """Whether retrieval may surface ``name``: routable and not internal-only."""
+    tool = REGISTRY.get(name)
+    return bool(tool and not tool.unavailable_reason and not tool.internal)
+
+
+def searchable_tool_names() -> set[str]:
+    return {name for name in REGISTRY if is_tool_searchable(name)}
 
 
 def tool_schemas(names: list[str] | None = None) -> list[dict]:
