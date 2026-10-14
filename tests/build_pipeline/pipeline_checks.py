@@ -66,8 +66,35 @@ class PipelineTests(unittest.TestCase):
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(p.plist(self.meta)))
         return bundle
 
+    def engine_fixture(self, bundle):
+        engine = bundle / p.engine_build.ENGINE_DIR
+        for rel in ("py/bin/python3.11", "omlx/server.py", "omlx/cli.py", "omlx_web/index.html",
+                    "sp/mlx/core.cpython-311-darwin.so", "sp/mlx/lib/mlx.metallib"):
+            path = engine / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            is_native = rel in ("py/bin/python3.11", "sp/mlx/core.cpython-311-darwin.so")
+            path.write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture" if is_native else b"fixture")
+        (engine / "py/bin/python3.11").chmod(0o755)
+        (engine / "py/bin/python3").symlink_to("python3.11")
+        p.json_write(engine / "ENGINE.json", {
+            "schema": 1, "minimum_macos": "26.2", "signing_identifier": p.engine_build.ENGINE_SIGNING_ID,
+            "dropped": []})
+        return engine
+
     def test_valid_bundle(self):
         p.validate_structure(self.fixture(), self.meta)
+
+    def test_engine_json_requires_all_engine_pieces(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        (engine / "omlx/server.py").unlink()
+        with self.assertRaisesRegex(p.BuildError, "Engine is missing omlx/server.py"):
+            p.validate_structure(bundle, self.meta)
+
+    def test_engine_json_accepts_complete_engine(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+        p.validate_structure(bundle, self.meta)
 
     def test_missing_resource(self):
         bundle = self.fixture()
@@ -854,6 +881,17 @@ print('external venv readable; private home and writes denied')
         self.assertIn("--deep", runner.calls[-2])
         self.assertIn("--strict", runner.calls[-2])
 
+    def test_adhoc_signing_identifier_is_only_for_engine_interpreter(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.signing_runner()
+        p.sign_adhoc(runner, bundle)
+        signs = [command for command in runner.calls if "--sign" in command]
+        identified = [command for command in signs if "-i" in command]
+        self.assertEqual(len(identified), 1)
+        self.assertEqual(identified[0][identified[0].index("-i") + 1], "com.wisp.engine.python3")
+        self.assertEqual(identified[0][-1], engine / "py/bin/python3.11")
+
     def test_signing_failure_stops_before_parent_and_verification(self):
         bundle = self.signing_fixture()
         runner = self.signing_runner(failure="adhoc-sign-0")
@@ -925,6 +963,54 @@ print('external venv readable; private home and writes denied')
             p.prepare_native_for_signing(runner, bundle)
         self.assertEqual(runner.calls[0][:2], ["/usr/bin/strip", "-S"])
         self.assertFalse(any("--sign" in command or "-delete_rpath" in command for command in runner.calls))
+
+    def test_native_cleanup_skips_engine_but_strips_app_machos(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.signing_runner()
+        p.prepare_native_for_signing(runner, bundle)
+        stripped = [command[-1] for command in runner.calls if command[:2] == ["/usr/bin/strip", "-S"]]
+        self.assertIn(bundle / "Contents/MacOS/Wisp", stripped)
+        self.assertTrue(stripped)
+        self.assertNotIn(engine / "py/bin/python3.11", stripped)
+        self.assertNotIn(engine / "sp/mlx/core.cpython-311-darwin.so", stripped)
+
+    def test_release_notes_describe_built_in_engine_only_when_staged(self):
+        meta = dict(self.meta, preview=False)
+        with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")), \
+                patch.object(p, "git", return_value="- fixture change"):
+            engine_notes = p.notes(dict(meta, engine={"minimum_macos": "26.2"}))
+            external_notes = p.notes(meta)
+        self.assertIn("Includes a built-in AI engine (macOS 26.2 or newer for the engine)", engine_notes)
+        self.assertNotIn("separately installed oMLX", engine_notes)
+        self.assertIn("Requires a separately installed oMLX server and models.", external_notes)
+        self.assertNotIn("built-in AI engine", external_notes)
+
+    def test_engine_smoke_requires_success_status_and_marker(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+
+        class FakeRunner:
+            logs = self.root
+
+            def __init__(inner, status, output):
+                inner.status = status
+                inner.output = output
+                inner.calls = []
+
+            def run(inner, label, command, **kwargs):
+                inner.calls.append((label, command, kwargs))
+                log = self.root / (label + ".log")
+                log.write_text(inner.output)
+                return inner.status, log
+
+        for status, output in ((1, "engine-import-ok"), (0, "imports completed")):
+            with self.subTest(status=status, output=output), self.assertRaisesRegex(p.BuildError, "import smoke test"):
+                p.engine_smoke(FakeRunner(status, output), bundle)
+        runner = FakeRunner(0, "engine-import-ok\n")
+        p.engine_smoke(runner, bundle)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0][0], "relocated-engine-smoke")
 
     def test_production_staging_removes_only_development_fallback(self):
         path = ROOT / "app/Sources/WispApp/BackendManager.swift"
@@ -1548,6 +1634,46 @@ print('external venv readable; private home and writes denied')
                                 (self.native_runner(dependency="/opt/homebrew/lib/libfixture.dylib"), "Nonportable")):
             with self.subTest(message=message), self.assertRaisesRegex(p.BuildError, message):
                 p.validate_native(runner, bundle, self.meta)
+
+    def test_native_inventory_uses_engine_minimum_and_keeps_app_minimum(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        app_paths = ("Contents/MacOS/Wisp", "Contents/Resources/backend/.venv/bin/python3")
+        for name in app_paths:
+            (bundle / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture")
+        engine_paths = tuple(str((engine / name).relative_to(bundle)) for name in
+                             ("py/bin/python3.11", "sp/mlx/core.cpython-311-darwin.so"))
+        app_main = app_paths[0]
+        minimums = {name: "14.0" for name in app_paths}
+        minimums.update({name: "26.2" for name in engine_paths})
+
+        def runner_for(target_minimums):
+            root = self.root
+
+            class FakeRunner:
+                logs = root
+
+                def run(inner, label, command):
+                    target = str(Path(command[-1]).relative_to(bundle))
+                    log = root / (label + ".log")
+                    if label.startswith("macho-"):
+                        log.write_text("arm64")
+                    elif label.startswith("load-commands-"):
+                        log.write_text("cmd LC_BUILD_VERSION\ncmdsize 32\nplatform 1\nminos "
+                                       + target_minimums[target])
+                    else:
+                        log.write_text("binary:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n")
+                    return 0, log
+
+            return FakeRunner()
+
+        p.validate_native(runner_for(minimums), bundle, self.meta)
+        too_new_app = dict(minimums, **{app_main: "14.1"})
+        with self.assertRaisesRegex(p.BuildError, "advertised minimum"):
+            p.validate_native(runner_for(too_new_app), bundle, self.meta)
+        too_new_engine = {**minimums, **{name: "26.3" for name in engine_paths}}
+        with self.assertRaisesRegex(p.BuildError, "the engine's own minimum"):
+            p.validate_native(runner_for(too_new_engine), bundle, self.meta)
 
 
     def test_native_inventory_distinguishes_dylib_identity_from_loads(self):

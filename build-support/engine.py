@@ -18,6 +18,7 @@ preview that is never release eligible.
 """
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -26,6 +27,7 @@ import re
 import shutil
 import stat
 import subprocess
+from email.parser import Parser
 from pathlib import Path
 
 SUPPORT = Path(__file__).resolve().parent
@@ -212,6 +214,108 @@ def minimum_macos(pairs: list[tuple[str, Path]], minos_reader=None) -> str:
     return ".".join(map(str, best[:2] if best[2] == 0 else best))
 
 
+def create_lock(app: Path, output: Path = LOCK, *, force: bool = False,
+                check_signature: bool = True, minos_reader=None) -> dict:
+    """Pin the selected, pruned source tree and write a load_lock-compatible file."""
+    facts = verify_source_identity(app, check_signature=check_signature)
+    if not facts["version"]:
+        raise EngineBuildError("oMLX source has no version")
+    prune = load_prune()
+    pairs = select_files(app, prune)
+    links = link_entries(app, prune)
+    document = {"schema": 1, "omlx_version": facts["version"],
+                "source_tree_sha256": tree_digest(pairs, links),
+                "minimum_macos": minimum_macos(pairs, minos_reader)}
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(document, indent=2, sort_keys=True) + "\n"
+    if force:
+        output.write_text(serialized)
+    else:
+        try:
+            with output.open("x") as handle:
+                handle.write(serialized)
+        except FileExistsError:
+            raise EngineBuildError(f"Refusing to overwrite existing lock: {output} (use --force)") from None
+    return document
+
+
+def _license_file(app: Path, selected: list[tuple[str, Path]]) -> str | None:
+    candidates = [destination for destination, _ in selected
+                  if Path(destination).name.lower().startswith(("license", "copying"))
+                  and (destination.startswith("omlx/")
+                       or (len(Path(destination).parts) > 2
+                           and Path(destination).parts[0] == "sp"
+                           and Path(destination).parts[1].lower().startswith("omlx-")
+                           and Path(destination).parts[1].endswith(".dist-info")))]
+    return min(candidates, key=lambda value: (value.count("/"), value.casefold())) if candidates else None
+
+
+def third_party_inventory(app: Path, *, check_signature: bool = True) -> list[dict]:
+    """List kept distribution licences and oMLX's bundled licence file, if present."""
+    facts = verify_source_identity(app, check_signature=check_signature)
+    prune = load_prune()
+    selected = select_files(app, prune)
+    resources = _resources(Path(app).resolve(strict=True))
+    site_packages = resources / SITE_PACKAGES
+    dist_info_names = {Path(destination).parts[1]
+                       for destination, _ in selected
+                       if len(Path(destination).parts) > 2
+                       and Path(destination).parts[0] == "sp"
+                       and Path(destination).parts[1].endswith(".dist-info")}
+    selected_metadata = {source for destination, source in selected
+                         if len(Path(destination).parts) == 3
+                         and Path(destination).parts[0] == "sp"
+                         and Path(destination).parts[1].endswith(".dist-info")
+                         and Path(destination).name == "METADATA"}
+    inventory: list[dict] = []
+    for dist_info_name in sorted(dist_info_names, key=str.casefold):
+        dist_info = site_packages / dist_info_name
+        if dist_info.is_symlink() or not dist_info.is_dir():
+            continue
+        metadata_path = dist_info / "METADATA"
+        if metadata_path in selected_metadata:
+            metadata = Parser().parsestr(metadata_path.read_text(encoding="utf-8", errors="replace"))
+        else:
+            metadata = Parser().parsestr("")
+        name = (metadata.get("Name") or dist_info.name[:-len(".dist-info")].rsplit("-", 1)[0]).strip()
+        version = (metadata.get("Version") or dist_info.name[:-len(".dist-info")].rsplit("-", 1)[-1]).strip()
+        licence = (metadata.get("License-Expression") or metadata.get("License") or "").strip()
+        if not licence:
+            classifiers = sorted({value[len("License :: "):].strip()
+                                  for value in metadata.get_all("Classifier", [])
+                                  if value.startswith("License :: ") and value[len("License :: "):].strip()},
+                                 key=str.casefold)
+            licence = "; ".join(classifiers)
+        inventory.append({"name": name, "version": version, "license": licence})
+
+    own_license = _license_file(Path(app), selected)
+    if own_license:
+        inventory.append({"name": "oMLX", "version": facts["version"], "license_file": own_license})
+    return sorted(inventory, key=lambda item: (item["name"].casefold(), item["version"].casefold()))
+
+
+def _cli() -> int:
+    parser = argparse.ArgumentParser(description="Inspect and pin the bundled oMLX engine source.")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    lock_parser = subparsers.add_parser("lock", help="create a source tree lock")
+    lock_parser.add_argument("--app", type=Path, required=True, help="signed oMLX.app source")
+    lock_parser.add_argument("--output", type=Path, default=LOCK, help=f"lock output (default: {LOCK})")
+    lock_parser.add_argument("--force", action="store_true", help="replace an existing lock")
+    inventory_parser = subparsers.add_parser("inventory", help="list kept package licences")
+    inventory_parser.add_argument("--app", type=Path, required=True, help="signed oMLX.app source")
+    args = parser.parse_args()
+    try:
+        if args.command == "lock":
+            document = create_lock(args.app, args.output, force=args.force)
+            print(f"oMLX {document['omlx_version']} tree {document['source_tree_sha256']}")
+        else:
+            print(json.dumps(third_party_inventory(args.app), indent=2, sort_keys=True))
+    except (EngineBuildError, OSError, json.JSONDecodeError) as exc:
+        parser.exit(1, f"engine.py: error: {exc}\n")
+    return 0
+
+
 def stage(bundle: Path, app: Path, *, lock: dict | None, release: bool,
           prune: dict | None = None, check_signature: bool = True, minos_reader=None) -> dict:
     """Copy the pruned engine into the bundle and write ENGINE.json. Returns its content."""
@@ -302,3 +406,7 @@ def codesign_identifier_args(bundle: Path, target: Path) -> list[str]:
     """Extra codesign arguments: the engine interpreter carries the identifier the
     attribution check demands; everything else keeps codesign's default."""
     return ["-i", ENGINE_SIGNING_ID] if is_engine_python(bundle, target) else []
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

@@ -9,6 +9,9 @@ serves a model — is covered by scripts/engine_smoke.py and the pipeline's engi
 from __future__ import annotations
 
 import json
+import contextlib
+import importlib.util
+import io
 import os
 import plistlib
 import shutil
@@ -164,6 +167,77 @@ def test_digest_and_lock() -> None:
             check("release without a lock refused", True)
 
 
+def test_lock_writer() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        app = make_app(tmp)
+        output = tmp / "engine.lock.json"
+        document = engine.create_lock(app, output, check_signature=False, minos_reader=reader)
+        check("lock has the validated schema", engine.load_lock(output) == document)
+        check("lock pins the source version", document["omlx_version"] == "0.7.1")
+        check("lock records the selected-tree digest", document["source_tree_sha256"] == engine.tree_digest(
+            engine.select_files(app), engine.link_entries(app)))
+        check("lock records the engine macOS floor", document["minimum_macos"] == "26.2")
+        original = output.read_text()
+        try:
+            engine.create_lock(app, output, check_signature=False, minos_reader=reader)
+            check("existing lock is protected", False)
+        except engine.EngineBuildError as exc:
+            check("existing lock is protected", "--force" in str(exc))
+        check("refused lock is unchanged", output.read_text() == original)
+        write(app / "Contents/Resources/omlx/server.py", "# revised")
+        replacement = engine.create_lock(app, output, force=True, check_signature=False, minos_reader=reader)
+        check("force replaces an existing lock", replacement["source_tree_sha256"] != document["source_tree_sha256"]
+              and engine.load_lock(output) == replacement)
+
+
+def test_third_party_inventory() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        app = make_app(tmp)
+        resources = app / "Contents/Resources"
+        write(resources / "Python/framework-mlx-base/lib/python3.11/site-packages/numpy-2.0.dist-info/METADATA",
+              "Name: numpy\nVersion: 2.0\nLicense-Expression: BSD-3-Clause\n")
+        write(resources / "Python/framework-mlx-base/lib/python3.11/site-packages/fixture-1.0.dist-info/METADATA",
+              "Name: fixture\nVersion: 1.0\nClassifier: License :: OSI Approved :: MIT License\n")
+        write(resources / "Python/framework-mlx-base/lib/python3.11/site-packages/simple-1.0.dist-info/METADATA",
+              "Name: simple\nVersion: 1.0\nLicense: Apache-2.0\n")
+        write(resources / "omlx/LICENSE", "oMLX license text\n")
+        inventory = engine.third_party_inventory(app, check_signature=False)
+        by_name = {item["name"]: item for item in inventory}
+        check("inventory is sorted", inventory == sorted(
+            inventory, key=lambda item: (item["name"].casefold(), item["version"].casefold())))
+        check("License-Expression is reported", by_name.get("numpy", {}).get("license") == "BSD-3-Clause")
+        check("license classifier is reported", by_name.get("fixture", {}).get("license") ==
+              "OSI Approved :: MIT License")
+        check("License field is reported", by_name.get("simple", {}).get("license") == "Apache-2.0")
+        check("pruned distribution metadata is omitted", "opencv" not in by_name and "onnxruntime" not in by_name)
+        check("oMLX license file is included", by_name.get("oMLX", {}).get("license_file") == "omlx/LICENSE")
+
+
+def test_smoke_arguments_and_port_refusal() -> None:
+    spec = importlib.util.spec_from_file_location("engine_smoke", ROOT / "scripts/engine_smoke.py")
+    smoke = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(smoke)
+    args = smoke.build_parser().parse_args([
+        "--engine-root", "/tmp/engine", "--model-dir", "/tmp/models", "--model", "small-model"])
+    check("smoke arguments are parsed", args.engine_root == Path("/tmp/engine")
+          and args.model_dir == Path("/tmp/models") and args.model == "small-model")
+    with contextlib.redirect_stderr(io.StringIO()):
+        try:
+            smoke.build_parser().parse_args([])
+            check("required smoke arguments are enforced", False)
+        except SystemExit as exc:
+            check("required smoke arguments are enforced", exc.code == 2)
+    for port in (8000, 8765, 8791):
+        try:
+            smoke.validate_port(port)
+            check(f"reserved smoke port {port} refused", False)
+        except smoke.SmokeError:
+            check(f"reserved smoke port {port} refused", True)
+
+
 def test_source_identity() -> None:
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
@@ -315,7 +389,8 @@ def test_prune_file() -> None:
 
 
 def main() -> int:
-    for fn in (test_selection_and_pruning, test_digest_and_lock, test_source_identity,
+    for fn in (test_selection_and_pruning, test_digest_and_lock, test_lock_writer,
+               test_third_party_inventory, test_smoke_arguments_and_port_refusal, test_source_identity,
                test_structural_refusals, test_validate_structure, test_signing_hooks,
                test_runtime_gate, test_prune_file):
         print(fn.__name__)

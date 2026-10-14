@@ -2,9 +2,10 @@
 
 The build creates an **ad-hoc sealed local candidate** containing the Swift app,
 tracked backend source and resources, and a relocatable Python runtime. It never
-installs or launches Wisp. oMLX and its models remain separately installed runtime
-prerequisites. Ad-hoc sealing carries no team identity and is not notarization, so a
-candidate is still not a Developer ID signed or notarized release.
+installs or launches Wisp. By default oMLX and its models remain separately installed
+runtime prerequisites; a release may opt into the bundled engine described below.
+Ad-hoc sealing carries no team identity and is not notarization, so a candidate is
+still not a Developer ID signed or notarized release.
 
 ## Local commands
 
@@ -56,6 +57,58 @@ failure; the slowest known modules are queued first (scheduling only).
 result. All generated files stay under `.wisp-build/` and `dist/`, except temporary
 QA fixtures and reports that are removed after textual evidence is copied into
 `.wisp-build/run-*/`. Neither generated directory belongs in Git.
+
+## Bundled engine
+
+The bundled oMLX engine is opt-in. Pass `--engine-app` to a build command to stage
+the pruned server from a genuine, signed oMLX release:
+
+```sh
+./scripts/wisp-build preview --engine-app /Applications/oMLX.app
+./scripts/wisp-build all --engine-app /Applications/oMLX.app
+```
+
+Release builds require the reviewed source pin at
+`build-support/engine.lock.json`. Create it from the exact oMLX app intended for
+the release with:
+
+```sh
+python build-support/engine.py lock --app /Applications/oMLX.app
+```
+
+The command verifies the oMLX bundle identity and signing team, then hashes the
+files and relative links selected by the prune rules and records the highest
+Mach-O macOS deployment target. It refuses to replace an existing lock; use
+`--force` only when intentionally reviewing a new engine input. `--output PATH`
+selects another lock path. The build checks the source version, selected-tree
+digest, and macOS floor against the lock. A build with `--engine-app` and no lock
+is a preview and cannot ship. Inspect included dependency licence metadata with
+`python build-support/engine.py inventory --app /Applications/oMLX.app`.
+
+The engine currently needs macOS 26.2. Wisp's app deployment target remains
+macOS 14.0; the bundled engine is unavailable on systems below its recorded
+floor. The staged engine is approximately 716 MB uncompressed (the full oMLX.app
+was about 1.6 GB in the feasibility measurement); ZIP size varies by release.
+Nested engine code is signed with identifier
+`com.wisp.engine.python3` for its interpreter and the entitlements in
+`build-support/engine.entitlements` (JIT, unsigned executable memory, and
+disabled library validation).
+
+To exercise an already staged engine with a downloaded model, run the smoke on a
+machine with compatible Apple Silicon and macOS:
+
+```sh
+python scripts/engine_smoke.py \
+  --engine-root /Applications/Wisp.app/Contents/Resources/engine \
+  --model-dir /path/to/model-directory
+```
+
+The smoke allocates a random loopback port, starts the engine with a temporary
+private data directory and HOME, discovers the smallest listed model in the
+provided model directory, then requests one short chat completion and one
+embedding. It prints a JSON result and stops the engine on success or failure.
+Use `--model NAME` to require a particular model id. It does not use the user's
+`~/.omlx` state.
 
 ## Reviewed inputs and offline builds
 

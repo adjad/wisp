@@ -1148,6 +1148,7 @@ struct SettingsView: View {
                 if selectedPane == "models" {
                 VStack(alignment: .leading, spacing: 14) {
                     Text("Models").font(.title2.weight(.medium))
+                    EngineSettingsView()
                     VStack(alignment: .leading, spacing: 14) {
                         Picker("Model settings", selection: $modelsPane) {
                             Text("Assignments").tag("assignments")
