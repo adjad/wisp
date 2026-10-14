@@ -144,17 +144,64 @@ def _yoga(day, minute=7 * 60, n=0):
                        subject="Yoga", category="fitness")
 
 
-def test_habit_needs_four_occurrences_over_three_weeks():
+def test_habit_needs_three_occurrences_over_three_weeks():
     now = datetime(2026, 10, 30, 12, 0, tzinfo=TZ).timestamp()
     saturdays = [datetime(2026, 10, d, tzinfo=TZ).date() for d in (3, 10, 17, 24)]
     first = Observation(id="anchor", kind="event", ts=datetime(2026, 10, 1, 9, tzinfo=TZ).timestamp(),
                         end_ts=datetime(2026, 10, 1, 10, tzinfo=TZ).timestamp(), subject="Errand", category="errand")
+    two = [_yoga(d, n=i) for i, d in enumerate(saturdays[:2])]
+    assert not [p for p in miners.mine_all([first] + two, now, TZ) if p.subject == "fitness"]
+    # a third session on a different weekday adds no recurring weekday: still not a habit
+    sunday = datetime(2026, 10, 4, tzinfo=TZ).date()
+    two_weeks = two + [_yoga(sunday, n=9)]
+    assert not [p for p in miners.mine_all([first] + two_weeks, now, TZ) if p.subject == "fitness"]
     three = [_yoga(d, n=i) for i, d in enumerate(saturdays[:3])]
-    assert not [p for p in miners.mine_all([first] + three, now, TZ) if p.subject == "fitness"]
+    (p,) = [p for p in miners.mine_all([first] + three, now, TZ) if p.subject == "fitness"]
+    assert p.window.weekdays == (5,) and p.support == 3 and p.opportunities == 4
     four = [_yoga(d, n=i) for i, d in enumerate(saturdays)]
     (p,) = [p for p in miners.mine_all([first] + four, now, TZ) if p.subject == "fitness"]
     assert p.window.weekdays == (5,) and p.support == 4 and p.opportunities == 4
     assert p.statement == "You usually work out on Saturday mornings (7–8am)"
+
+
+def _titled(day, title, minute, n):
+    start = datetime.combine(day, datetime.min.time(), TZ) + timedelta(minutes=minute)
+    return Observation(id=f"{title}{n}", kind="event", ts=start.timestamp(), end_ts=start.timestamp() + 3600,
+                       subject=title, category="meeting")
+
+
+def test_titled_habit_counts_misses_only_since_it_first_appeared():
+    """Office hours that began in week 5 of 7 are three for three, not three of seven."""
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=TZ).timestamp()
+    old = [_titled(datetime(2026, 8, 25, tzinfo=TZ).date() + timedelta(days=i), "Lab", 14 * 60, i)
+           for i in range(0, 14, 3)]
+    mondays = [datetime(2026, 9, d, tzinfo=TZ).date() for d in (21, 28)] + [datetime(2026, 10, 5, tzinfo=TZ).date()]
+    hours = [_titled(d, "Community office hours", 18 * 60, i) for i, d in enumerate(mondays)]
+    (p,) = [p for p in miners.mine_all(old + hours, now, TZ)
+            if p.kind == "habit" and p.stats.get("key_type") == "subject" and "office" in p.subject.lower()]
+    assert (p.support, p.opportunities, p.window.weekdays) == (3, 4, (0,))   # incl. Mon Oct 12
+    assert p.confidence >= 0.3
+
+
+def test_category_habit_still_counts_the_whole_history():
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=TZ).timestamp()
+    anchor = _titled(datetime(2026, 8, 25, tzinfo=TZ).date(), "Kickoff", 9 * 60, 0)
+    sats = [datetime(2026, 9, 26, tzinfo=TZ).date() + timedelta(weeks=i) for i in range(3)]
+    (p,) = [p for p in miners.mine_all([anchor] + [_yoga(d, n=i) for i, d in enumerate(sats)], now, TZ)
+            if p.subject == "fitness"]
+    assert p.support == 3 and p.opportunities == 7       # every Saturday since Aug 25
+
+
+def test_wisp_usage_keeps_four_asks():
+    now = datetime(2026, 10, 13, 12, 0, tzinfo=TZ).timestamp()
+    tuesdays = [datetime(2026, 10, 13, 9, tzinfo=TZ) - timedelta(weeks=w) for w in (1, 2, 3)]
+    asks = [Observation(id=f"ask:{i}", kind="wisp_ask", ts=d.timestamp(), subject="email", source="wisp")
+            for i, d in enumerate(tuesdays)]
+    assert not [p for p in miners.mine_all(asks, now, TZ) if p.kind == "wisp_usage"]
+    more = asks + [Observation(id="ask:9", kind="wisp_ask",
+                               ts=(datetime(2026, 10, 13, 9, tzinfo=TZ) - timedelta(weeks=4)).timestamp(),
+                               subject="email", source="wisp")]
+    assert [p for p in miners.mine_all(more, now, TZ) if p.kind == "wisp_usage"]
 
 
 def test_wilson_lower_bound_prefers_more_evidence():
