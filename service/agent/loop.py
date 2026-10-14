@@ -1894,12 +1894,13 @@ async def run_agent(
     #     core alone plus the hints (fitting with the full rules undershoots:
     #     the smaller rebuilt text let the real fit keep five tools with rules
     #     for four at a 7,450–7,575-token window — audit finding);
-    #   * the smallest message list — the prefix and the last user message,
-    #     which _fit_window never drops. Everything else in history is
-    #     droppable on SOME step: a large assistant turn is protected on step
+    #   * the smallest message list — the two-message prefix alone, the only
+    #     thing _fit_window protects on EVERY step. Everything else is
+    #     droppable on some step: a large assistant turn is protected on step
     #     0 as one of the newest two messages, then evicted once a tool call
-    #     and result land after it, which frees room for more tools (second
-    #     audit finding).
+    #     and result land after it (second audit finding); even the user's
+    #     own message loses its protection once a user-role nudge (retry,
+    #     contract, narration) becomes the newest user message (third).
     # Every real step carries at least that, and _fit_window sheds history and
     # then tools monotonically with overhead, so the step's offered set lies
     # inside this survivor set. Tools a step can FORCE bypass the fit's drop
@@ -1908,12 +1909,10 @@ async def run_agent(
     # TURN on purpose (see build_system): the prompt-cache prefix stays stable
     # across steps.
     if schemas and not model_led_discovery:
-        last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
         _, fitted_max, _ = _fit_window(
             [{"role": "system", "content": build_system(set()) + identity_hint
                                            + memory_hint + skills_hint},
-             {"role": "system", "content": now_line}]
-            + ([last_user] if last_user else []),
+             {"role": "system", "content": now_line}],
             schemas, max_tokens, model, force_first_tool, protected_prefix_count=2,
             context_window=getattr(getattr(client, "target", None), "context_window", None))
         if len(fitted_max) < len(schemas):

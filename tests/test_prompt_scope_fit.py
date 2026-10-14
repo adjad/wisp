@@ -194,6 +194,33 @@ def test_rules_cover_later_steps_after_protected_history_is_freed(monkeypatch, f
     assert seen_growth  # the scenario the finding described actually occurred
 
 
+def test_rules_cover_nudged_retries_that_evict_the_pasted_question(monkeypatch):
+    """A retry nudge is a user-role message, so it becomes the protected user
+    message and the original (long) question becomes droppable; the retry can
+    then offer more tools than the first attempt (third audit finding)."""
+    monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
+    pasted = "pasted text " * 1500 + "\nFile this for me."
+
+    async def emit(event):
+        pass
+
+    seen_growth = False
+    for window in range(6_000, 10_000, 100):
+        monkeypatch.setattr(config, "model_context_window", lambda model, w=window: w)
+        client = ScriptedClient()  # never calls a tool, so every attempt is nudged
+        asyncio.run(loop.run_agent(client, "Ling-3.0-tiny-oQ4e",
+                                   [{"role": "user", "content": pasted}], emit, Approver(),
+                                   debug=False, max_steps=1, tools=list(FIVE),
+                                   expect_tool_first=True))
+        assert len(client.requests) >= 2
+        assert any(m["role"] == "user" and m["content"] != pasted
+                   for m in client.requests[-1]["messages"])  # a nudge was sent
+        _assert_rules_cover_every_request(client)
+        if len(client.requests[-1]["tools"]) > len(client.requests[0]["tools"]):
+            seen_growth = True
+    assert seen_growth
+
+
 def test_rules_cover_a_required_group_tool_the_fit_would_drop(monkeypatch):
     monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
     monkeypatch.setattr(config, "model_context_window", lambda model: 5_500)
