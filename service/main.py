@@ -476,8 +476,9 @@ async def ensure_omlx() -> None:
         # leftover from a previous backend, refuse it as "not owned", and never reach the
         # start path that reaps it.
         from service.engine.runtime import manager
-        if manager().incarnation() is not None and await _await_omlx(2):
-            manager().verified = True
+        seen = manager().incarnation()
+        if seen is not None and await _await_omlx(2):
+            manager().mark_verified(seen)
             return
         client.invalidate_connections()
         await _ensure_bundled_engine()
@@ -500,17 +501,17 @@ async def _ensure_bundled_engine() -> None:
     from service.engine import EngineError
     from service.engine.runtime import manager
     engine = manager()
-    # Only an engine this call launched is stopped on failure: a healthy engine other turns are
-    # using must survive a slow probe or a momentary verification refusal.
-    launched = not engine.running()
+    # A verification failure stops only an engine this call launched (start() reports that under
+    # its lock): a healthy engine other turns are using must survive a momentary refusal. An engine
+    # that gives no HTTP answer at all for the whole readiness window is hung and is stopped.
     try:
-        await asyncio.to_thread(engine.start)
+        launched = bool(await asyncio.to_thread(engine.start))
     except EngineError as exc:
         raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
     if not await engine.wait_ready(60):
-        if launched:
-            engine.stop()
+        engine.stop()
         raise ModelLoadError("The bundled AI engine did not become ready")
+    incarnation = engine.incarnation()
     client.invalidate_connections()
     # wait_ready sent no credential, so nothing has proven who answers yet. The checked client
     # does: it refuses anything but the recorded child before sending the API key. The window
@@ -525,7 +526,7 @@ async def _ensure_bundled_engine() -> None:
         if launched:
             engine.stop()
         raise ModelLoadError("The bundled AI engine did not become ready")
-    engine.verified = True
+    engine.mark_verified(incarnation)
 
 
 @app.get("/health")

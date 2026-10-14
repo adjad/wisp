@@ -281,6 +281,42 @@ def test_second_audit_bypasses() -> None:
         check("a GPL text in a nested licenses/ folder is collected and caught", records["nested"]["class"] == lic.STRONG)
         check("a GPL classifier beside an MIT expression is caught", records["classified-package"]["class"] == lic.STRONG)
         check("'UNKNOWN' beside a real identifier is ignored", records["noise-pkg"]["class"] == lic.PERMISSIVE)
+    cases = [
+        ("expr", "License-Expression: MIT AND LicenseRef-Custom\nClassifier: License :: OSI Approved :: MIT License\n"),
+        ("apache-sa", "License-Expression: Apache-2.0 AND CC-BY-SA-4.0\nClassifier: License :: OSI Approved :: Apache Software License\n"),
+        ("sspl", "License-Expression: SSPL-1.0\nLicense: MIT\n"),
+        ("proprietary", "License: MIT\nClassifier: License :: Other/Proprietary License\n"),
+        ("lower", "License-Expression: MIT and LicenseRef-Custom\n"),
+        ("refname", "License-Expression: Apache-2.0 AND LicenseRef-MIT-NonFree\n"),
+        ("bsl-long", "License: " + "Business Source License 1.1. " * 6 + "\nClassifier: License :: OSI Approved :: MIT License\n"),
+    ]
+    with tempfile.TemporaryDirectory() as raw:
+        root = bundle(Path(raw), [])
+        sp = root / lic.ENGINE_DIR / "sp"
+        for label, body in cases:
+            info = sp / f"{label.replace('-', '_')}-1.0.dist-info"
+            info.mkdir(parents=True)
+            (info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {label}\nVersion: 1.0\n{body}")
+            (info / "LICENSE").write_text(MIT)
+        got = {r["name"]: r["class"] for r in lic.engine_packages(root / lic.ENGINE_DIR)}
+        for label, _ in cases:
+            check(f"the gate, not just classify(), refuses declared terms: {label}", got[label] == lic.UNKNOWN, got[label])
+        upper = sp / "upperdir-1.0.dist-info"
+        (upper / "LICENSES").mkdir(parents=True)
+        (upper / "METADATA").write_text("Metadata-Version: 2.4\nName: upperdir\nVersion: 1.0\nLicense-Expression: MIT\n")
+        (upper / "LICENSE").write_text(MIT)
+        (upper / "LICENSES/gpl-3.0.txt").write_text(GPL3)
+        (sp / "plainnamed-1.0.dist-info").mkdir()
+        (sp / "plainnamed-1.0.dist-info/METADATA").write_text("Metadata-Version: 2.4\nName: plainnamed\nVersion: 1.0\nLicense-Expression: MIT\n")
+        (sp / "plainnamed-1.0.dist-info/LICENSE").write_text(MIT)
+        (sp / "plainnamed-1.0.dist-info/GPL-3.0.txt").write_text(GPL3)
+        (sp / "late-1.0.dist-info").mkdir()
+        (sp / "late-1.0.dist-info/METADATA").write_text("Metadata-Version: 2.4\nName: late\nVersion: 1.0\nLicense-Expression: Apache-2.0\n")
+        (sp / "late-1.0.dist-info/LICENSE").write_text(MIT + "\n" * 100 + "This software is under the Commons Clause license condition.\n")
+        got = {r["name"]: r["class"] for r in lic.engine_packages(root / lic.ENGINE_DIR)}
+        check("a GPL text under an upper-case LICENSES/ folder is collected", got["upperdir"] == lic.STRONG, got["upperdir"])
+        check("a GPL text named GPL-3.0.txt is collected", got["plainnamed"] == lic.STRONG, got["plainnamed"])
+        check("a Commons Clause far below the licence text is seen", got["late"] == lic.UNKNOWN, got["late"])
     with tempfile.TemporaryDirectory() as raw:
         bad = Path(raw) / "bad.json"
         bad.write_text(json.dumps({"schema": 1, "omlx": {}, "packages": {}, "components": [

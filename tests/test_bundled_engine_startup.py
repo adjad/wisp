@@ -65,18 +65,26 @@ class FakeClient:
 class FakeEngine:
     def __init__(self, log, *, live=False, ready=True):
         self.log, self.live, self.ready = log, live, ready
+        self.token = object()
 
     verified = False
 
     def incarnation(self):
-        return object() if self.live else None
+        return self.token if self.live else None
 
     def running(self):
         return self.live
 
     def start(self):
+        if self.live:
+            return False
         self.log.append("start")
         self.live = True
+        return True
+
+    def mark_verified(self, incarnation):
+        if incarnation is not None and incarnation is self.token and self.live:
+            self.verified = True
 
     async def wait_ready(self, timeout):
         self.log.append("wait_ready")
@@ -174,13 +182,16 @@ def test_a_running_engine_survives_a_failed_probe() -> None:
         check("a verification refusal still fails the call", True)
     check("but does not stop an engine this call did not launch", "stop" not in log and engine.live, str(log))
     log = []
-    runtime._manager = FakeEngine(log, live=True, ready=False)
+    hung = FakeEngine(log, live=True, ready=False)
+    runtime._manager = hung
     main.client = FakeClient(None, log)
     try:
         run(main._ensure_bundled_engine())
     except ModelLoadError:
         pass
-    check("nor does a readiness timeout", "stop" not in log, str(log))
+    check("an engine that gives no HTTP answer for the whole window is hung and is stopped, launched here or not",
+          log[-1] == "stop" and not hung.live, str(log))
+    check("a refusal after another caller launched it leaves it running", engine.live)
 
 
 def test_verified_flag_gates_plain_http_users() -> None:
@@ -195,6 +206,8 @@ def test_verified_flag_gates_plain_http_users() -> None:
         raise AssertionError("the engine key must not be sent")
 
     urllib.request.urlopen = spy
+    original_open = urllib.request.OpenerDirector.open
+    urllib.request.OpenerDirector.open = lambda self, *a, **k: spy()
     try:
         log: list[str] = []
         engine = FakeEngine(log, live=False)
@@ -206,8 +219,20 @@ def test_verified_flag_gates_plain_http_users() -> None:
         main.client = FakeClient(None, log)
         run(main._ensure_bundled_engine())
         check("verification marks the engine verified", engine.verified is True)
+        stale = FakeEngine(log, live=True)
+        before = stale.incarnation()
+        stale.token = object()                       # the child was replaced during the check
+        stale.mark_verified(before)
+        check("a stale verification cannot mark a replaced child verified", stale.verified is False)
+        from service.config.endpoints import Endpoint, EndpointConfigurationError
+        try:
+            Endpoint("local", "http://127.0.0.1:8000", "local_omlx", managed=True).api_key()
+            check("the engine key is refused for another port", False)
+        except EndpointConfigurationError:
+            check("the engine key is refused for another port", True)
     finally:
         urllib.request.urlopen = original
+        urllib.request.OpenerDirector.open = original_open
 
 
 def test_reap_orphan_is_safe_without_a_pid_file() -> None:

@@ -372,10 +372,22 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
     import urllib.request
     from .quarantine import lease
 
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    def _open(req, timeout):
+        if is_bundled():
+            # The bundled engine's key never rides an environment or system proxy, and a redirect
+            # cannot carry it elsewhere.
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect).open(
+                req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout)
+
     def _get(url: str, timeout: float = 5.0):
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {omlx_api_key()}"})
-        with lease(), urllib.request.urlopen(req, timeout=timeout) as r:
+        with lease(), _open(req, timeout) as r:
             return _json.loads(r.read())
 
     if is_bundled():
@@ -391,6 +403,10 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
     try:
         from service.config.endpoints import endpoint
         base = endpoint().base_url
+        if is_bundled():
+            from service.engine import BUNDLED_PORT
+            if base.rstrip("/") != f"http://127.0.0.1:{BUNDLED_PORT}":
+                return False        # an overridden endpoint is not the engine that was verified
         with OMLX_MODEL_SETTINGS.open() as f:
             current = (_json.load(f).get("models") or {}).get(model)
         if not isinstance(current, dict):
@@ -411,7 +427,7 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
             data=_json.dumps(body).encode(), method="PUT",
             headers={"Authorization": f"Bearer {omlx_api_key()}",
                      "Content-Type": "application/json"})
-        with lease(), urllib.request.urlopen(req, timeout=15) as r:
+        with lease(), _open(req, 15) as r:
             return 200 <= r.status < 300
     except Exception:  # noqa: BLE001 — oMLX may simply not be running
         return False

@@ -38,7 +38,7 @@ _RESTRICTED_NAMED = re.compile(r"Commons[- ]Clause|Business Source|\bBUSL\b|\bSS
 _RESTRICTED = re.compile(_RESTRICTED_NAMED.pattern + r"|Non-?Commercial|Proprietary", re.I)
 # "A AND B", "A OR B WITH X": every identifier must be a family this gate recognises, so
 # `MIT AND LicenseRef-Custom` or `Apache-2.0 AND CC-BY-SA-4.0` cannot pass on the MIT word alone.
-_SPDX_SHAPE = re.compile(r"^\(?[A-Za-z0-9.+\-]+\)?(?: (?:AND|OR|WITH) \(?[A-Za-z0-9.+\-]+\)?)+$")
+_SPDX_SHAPE = re.compile(r"^[(]*[A-Za-z0-9.+:\-]+[)]*(?: (?:AND|OR|WITH) [(]*[A-Za-z0-9.+:\-]+[)]*)+$", re.I)
 _PERMISSIVE = re.compile(
     r"\bMIT\b|\bBSD\b|\bApache\b|\bISC\b|\bPSF\b|\bPSFL\b|Python Software Foundation|\bHPND\b|\bCNRI\b|"
     r"\bUnlicense\b|\b0BSD\b|\bZlib\b|\bCC0\b|\bBSL-1\.0\b|Boost Software|\bPython-2\.0\b|"
@@ -46,7 +46,7 @@ _PERMISSIVE = re.compile(
     r"Permission is hereby granted, free of charge|"
     r"Redistribution and use in source and binary forms|"
     r"Licensed under the Apache License", re.I)
-_LICENSE_NAME = re.compile(r"^(licen[sc]e|copying|notice|authors)", re.I)
+_LICENSE_NAME = re.compile(r"^(licen[sc]e|copying|copyright|notice|authors|patents|third[-_ ]?party|a?l?gpl|mpl)", re.I)
 
 
 class LicenseError(RuntimeError):
@@ -72,8 +72,11 @@ def classify(text: str) -> str:
 def _spdx_unrecognised(text: str) -> bool:
     if not _SPDX_SHAPE.match(text):
         return False
-    for token in re.split(r"\s+(?:AND|OR)\s+", text):
-        token = token.split(" WITH ")[0].strip("() ")
+    for token in re.split(r"\s+(?:AND|OR)\s+", text, flags=re.I):
+        token = re.split(r"\s+WITH\s+", token, flags=re.I)[0].strip("() ")
+        # A LicenseRef is a custom licence whatever words its name contains.
+        if re.search(r"LicenseRef-", token, re.I):
+            return True
         if not (_PERMISSIVE.search(token) or _WEAK.search(token) or _STRONG.search(token)):
             return True
     return False
@@ -107,7 +110,8 @@ def _file_class(path: Path) -> str:
 
 
 def _file_restricted(path: Path) -> bool:
-    return bool(_RESTRICTED_NAMED.search(_file_head(path)))
+    # A longer window than the title check: a restriction can be appended below the licence text.
+    return bool(_RESTRICTED_NAMED.search(_file_head(path, 400)))
 
 
 def _licence_files(dist_info: Path) -> list[Path]:
@@ -116,7 +120,8 @@ def _licence_files(dist_info: Path) -> list[Path]:
         if path.is_symlink() or not path.is_file():
             continue
         # Anything under a licenses/ folder at any depth, or named like a licence file anywhere.
-        if _LICENSE_NAME.match(path.name) or "licenses" in path.relative_to(dist_info).parts[:-1]:
+        if (_LICENSE_NAME.match(path.name)
+                or "licenses" in [part.lower() for part in path.relative_to(dist_info).parts[:-1]]):
             found.append(path)
     return found
 
@@ -186,8 +191,11 @@ def engine_packages(engine_root: Path) -> list[dict]:
         else:
             classes += [c for c in named if c in (WEAK, STRONG)]
         classes += [c for c in others if c in (WEAK, STRONG)]
-        if any(_file_restricted(path) for path in files):
-            classes.append(UNKNOWN)                               # restricted terms are never discarded
+        sources = _declared_sources(metadata)
+        if (any(len(source) <= 100 and (_RESTRICTED.search(source) or _spdx_unrecognised(source)) for source in sources)
+                or any(_RESTRICTED_NAMED.search(source) for source in sources)
+                or any(_file_restricted(path) for path in files)):
+            classes.append(UNKNOWN)       # restricted or unrecognised terms are never discarded
         klass = max(classes, key=_SEVERITY.__getitem__)
         records.append({"name": name, "version": version, "license": " ".join(declared.split())[:120],
                         "class": klass, "files": [p.relative_to(dist_info).as_posix() for p in files],

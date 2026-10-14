@@ -151,7 +151,7 @@ def _in_place_class(port: int, interpreter_dir: Path, **attrs):
             return interpreter_dir
 
         def _tree_roots(self):
-            return (self.site_root, self.code_root)
+            return (self.site_root, self.code_root, *self._optional_roots())
     return type("InPlace", (InPlace,), {"port": port, **attrs})
 
 
@@ -405,6 +405,15 @@ def test_interpreter_and_tree_tampering() -> None:
         os.link(env.stub, env.root / "omlx/stub-hardlink.py")
         check("hard-linked file refused", refuses(env.bundled, "desktop_runtime_unqualified"))
         os.unlink(env.root / "omlx/stub-hardlink.py")
+
+        (env.root / "omlx_web").mkdir()
+        (env.root / "omlx_web/page.py").write_text("x = 1\n")
+        check("an omlx_web tree (oMLX 0.7.1 and later) is audited and accepted when clean",
+              env.bundled().binding() == inc.pid)
+        os.chmod(env.root / "omlx_web/page.py", 0o666)
+        check("a world-writable file under omlx_web is refused like any other engine tree",
+              refuses(env.bundled, "desktop_runtime_unqualified"))
+        shutil.rmtree(env.root / "omlx_web")
 
         (env.root / "omlx/extra.py").write_text("x = 1\n")
         check("new file in a clean tree is still accepted", env.bundled().binding() == inc.pid)

@@ -90,9 +90,14 @@ class BundledOmlx(DesktopOmlx):
     def _python_root(root: Path) -> Path:
         return root / "py"
 
+    def _optional_roots(self):
+        """omlx_web (oMLX 0.7.1 and later) is importable through PYTHONPATH when it exists."""
+        web = self.engine_root / "omlx_web"
+        return (web,) if web.is_dir() else ()
+
     def _tree_roots(self):
         """Every directory whose files the engine can execute or import."""
-        return (self.python_root, self.site_root, self.code_root)
+        return (self.python_root, self.site_root, self.code_root, *self._optional_roots())
 
     # -- the qualification -------------------------------------------------------
     def _listener(self):

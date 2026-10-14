@@ -278,15 +278,24 @@ class EngineManager:
     def running(self) -> bool:
         return self._proc is not None and self._proc.poll() is None
 
-    def start(self) -> None:
+    def start(self) -> bool:
+        """Launch the engine unless it is already running. True only when THIS call launched it,
+        decided under the lock, so a caller can tell its own launch from a concurrent one."""
         # One launch at a time: two overlapping starts would each pass the busy-port check and
         # start an engine, leaving one untracked and holding the port.
         with self._lock:
-            self._start()
+            return self._start()
 
-    def _start(self) -> None:
+    def mark_verified(self, incarnation) -> None:
+        """Record that the checked client verified `incarnation`. Ignored if the child has since
+        changed, so a stop and restart during the check can never leave a new child 'verified'."""
+        with self._lock:
+            if incarnation is not None and incarnation is self._incarnation and self.running():
+                self.verified = True
+
+    def _start(self) -> bool:
         if self.running():
-            return
+            return False
         self.verified = False
         if not self.launcher and not self.layout.python.exists():
             raise EngineError("The bundled engine is not installed")
@@ -309,6 +318,7 @@ class EngineManager:
         except Exception as exc:  # noqa: BLE001 — an engine Wisp cannot identify must not run
             self.stop()
             raise EngineError("Could not identify the engine process") from exc
+        return True
 
     def _record_incarnation(self, pid: int) -> Incarnation:
         from service.inference.local_peer import AuthRefused, process_identity, process_path
