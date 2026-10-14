@@ -14,14 +14,16 @@ die() { echo "$1" >&2; exit 2; }
 # background fast-user-switched session can be locked while the one on screen
 # is not, so a match anywhere in the output proves nothing.
 session_locked() {
-  local plist uid i u on locked
+  # $UID and pipes rather than `id -u` and here-strings: no extra binary and
+  # no temp file, so a tighter sandbox fails only on plutil itself.
+  local plist i u on locked
   plist=$(cat) || return 1
-  uid=$(id -u)
+  key() { printf '%s' "$plist" | plutil -extract "IOConsoleUsers.$i.$1" raw -o - - 2>/dev/null; }
   i=0
-  while u=$(plutil -extract "IOConsoleUsers.$i.kCGSSessionUserIDKey" raw -o - - <<<"$plist" 2>/dev/null); do
-    on=$(plutil -extract "IOConsoleUsers.$i.kCGSSessionOnConsoleKey" raw -o - - <<<"$plist" 2>/dev/null)
-    if [[ "$u" == "$uid" && "$on" == "true" ]]; then
-      locked=$(plutil -extract "IOConsoleUsers.$i.CGSSessionScreenIsLocked" raw -o - - <<<"$plist" 2>/dev/null)
+  while u=$(key kCGSSessionUserIDKey); do
+    on=$(key kCGSSessionOnConsoleKey)
+    if [[ "$u" == "$UID" && "$on" == "true" ]]; then
+      locked=$(key CGSSessionScreenIsLocked)
       [[ "$locked" == "true" ]]
       return
     fi

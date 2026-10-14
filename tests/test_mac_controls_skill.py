@@ -135,6 +135,12 @@ _ME, _OTHER = os.getuid(), os.getuid() + 1
     ((_session(_OTHER, False, None), _session(_ME, True, True)), "locked"),
 ])
 def test_lock_state_is_read_from_this_users_console_session(sessions, expected) -> None:
+    probe = subprocess.run(["bash", "-c", "plutil -help >/dev/null 2>&1"], capture_output=True, timeout=10)
+    if probe.returncode == 126 or b"Operation not permitted" in probe.stderr:
+        # Simulation QA's sandbox lets test children exec only sh/bash. The
+        # probe then fails closed ("unlocked"); the unsandboxed regression
+        # gate runs this test for real.
+        pytest.skip("this environment does not allow executing plutil")
     proc = subprocess.run(["bash", str(SKILL_DIR / "controls.sh"), "session-locked"],
                           input=_console(*sessions), capture_output=True, timeout=10)
     assert proc.stdout.decode().strip() == expected, proc.stderr
