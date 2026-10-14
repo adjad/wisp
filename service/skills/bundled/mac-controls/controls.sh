@@ -14,15 +14,19 @@ die() { echo "$1" >&2; exit 2; }
 # background fast-user-switched session can be locked while the one on screen
 # is not, so a match anywhere in the output proves nothing.
 session_locked() {
-  # $UID and pipes rather than `id -u` and here-strings: no extra binary and
-  # no temp file, so a tighter sandbox fails only on plutil itself.
-  local plist i u on locked
+  # Not $UID: bash 3.2 lets an inherited UID variable override it, which would
+  # let the environment pick whose session vouches for the lock. `id` reads
+  # the process's own credentials; if it cannot run, fail closed. Pipes, not
+  # here-strings, so no temp file is needed.
+  local plist uid i u on locked
+  uid=$(/usr/bin/id -u 2>/dev/null) || return 1
+  [[ "$uid" =~ ^[0-9]+$ ]] || return 1
   plist=$(cat) || return 1
   key() { printf '%s' "$plist" | plutil -extract "IOConsoleUsers.$i.$1" raw -o - - 2>/dev/null; }
   i=0
   while u=$(key kCGSSessionUserIDKey); do
     on=$(key kCGSSessionOnConsoleKey)
-    if [[ "$u" == "$UID" && "$on" == "true" ]]; then
+    if [[ "$u" == "$uid" && "$on" == "true" ]]; then
       locked=$(key CGSSessionScreenIsLocked)
       [[ "$locked" == "true" ]]
       return

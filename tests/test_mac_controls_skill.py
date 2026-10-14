@@ -98,6 +98,15 @@ def test_policy_tier_follows_the_access_mode(loaded, monkeypatch, tmp_path,
     assert "asks the user to confirm first, as every skill tool does" not in loaded["mac-controls"].body
 
 
+def test_an_inherited_uid_variable_cannot_choose_the_session() -> None:
+    # bash 3.2 lets an inherited UID override $UID; the probe must use the
+    # process's own credentials, so another user's locked session never counts.
+    proc = subprocess.run(["bash", str(SKILL_DIR / "controls.sh"), "session-locked"],
+                          input=_console(_session(_ME, False, None), _session(_OTHER, True, True)),
+                          capture_output=True, timeout=10, env={**os.environ, "UID": str(_OTHER)})
+    assert proc.stdout.decode().strip() == "unlocked", proc.stderr
+
+
 def test_lock_claims_success_only_after_macos_confirms_it() -> None:
     # Display sleep locks only when "require password" is immediate; on this
     # Mac the delay was 300 s. The lock path must not use it, and its only
@@ -135,12 +144,14 @@ _ME, _OTHER = os.getuid(), os.getuid() + 1
     ((_session(_OTHER, False, None), _session(_ME, True, True)), "locked"),
 ])
 def test_lock_state_is_read_from_this_users_console_session(sessions, expected) -> None:
-    probe = subprocess.run(["bash", "-c", "plutil -help >/dev/null 2>&1"], capture_output=True, timeout=10)
-    if probe.returncode == 126 or b"Operation not permitted" in probe.stderr:
-        # Simulation QA's sandbox lets test children exec only sh/bash. The
-        # probe then fails closed ("unlocked"); the unsandboxed regression
-        # gate runs this test for real.
-        pytest.skip("this environment does not allow executing plutil")
+    for tool in ("/usr/bin/id", "/usr/bin/plutil"):
+        probe = subprocess.run(["bash", "-c", f"{tool} >/dev/null 2>&1 </dev/null; {tool} -h"],
+                               capture_output=True, timeout=10)
+        if b"Operation not permitted" in probe.stderr:
+            # Simulation QA's sandbox lets test children exec only sh/bash, and
+            # the probe then fails closed ("unlocked"). Only that refusal
+            # skips: any other failure to run the tool must fail the test.
+            pytest.skip(f"this sandbox does not allow executing {tool}")
     proc = subprocess.run(["bash", str(SKILL_DIR / "controls.sh"), "session-locked"],
                           input=_console(*sessions), capture_output=True, timeout=10)
     assert proc.stdout.decode().strip() == expected, proc.stderr
