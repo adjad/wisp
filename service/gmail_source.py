@@ -407,11 +407,17 @@ async def _finish(client_id, client_secret, code, verifier, redirect) -> None:
         body = response.json()
         if response.status_code != 200 or not body.get("refresh_token"):
             raise GmailError(f"token exchange failed: {body.get('error', response.status_code)}")
+        if SCOPE not in str(body.get("scope", "")).split():
+            raise GmailError("Gmail read access wasn't granted — on Google's consent screen, "
+                             "tick the box to view your email messages, then try again")
         profile = await http.get(f"{API}/profile",
                                  headers={"Authorization": f"Bearer {body['access_token']}"})
-        email = profile.json().get("emailAddress", "")
+        data = profile.json() if profile.content else {}
+        email = data.get("emailAddress", "")
     if not email:
-        raise GmailError("could not read the Gmail address")
+        detail = (data.get("error") or {}) if isinstance(data.get("error"), dict) else {}
+        reason = detail.get("message") or f"HTTP {profile.status_code}"
+        raise GmailError(f"Google refused the Gmail profile request: {reason[:160]}")
     _meta.clear()
     _access.update(token=body["access_token"], expires=time.time() + float(body.get("expires_in", 3600)))
     _save_config({"client_id": client_id, "client_secret": client_secret,
