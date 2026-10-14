@@ -1,0 +1,191 @@
+"""service/engine — the private bundled-oMLX lifecycle manager.
+
+What must keep holding:
+  * the child never shares HOME, a port reserved for oMLX.app / Wisp, or Wisp's environment;
+  * the API key is in a 0600 settings file and never on argv;
+  * start/stop is clean, a busy port is refused, and a crashed Wisp's orphan is reaped.
+
+    python tests/test_bundled_engine.py
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import socket
+import stat
+import sys
+import tempfile
+import textwrap
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from service.engine import (BUNDLED_PORT, EngineError, EngineLayout,  # noqa: E402
+                            EngineManager, RESERVED_PORTS, engine_settings)
+
+PASS = FAIL = 0
+KEY = "a" * 64
+
+STUB = textwrap.dedent('''
+    import json, sys
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    args = sys.argv[1:]
+    port = int(args[args.index("--port") + 1])
+    base = args[args.index("--base-path") + 1]
+    key = json.load(open(base + "/settings.json"))["auth"]["api_key"]
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            ok = self.headers.get("Authorization") == "Bearer " + key
+            self.send_response(200 if ok else 401); self.end_headers()
+            self.wfile.write(b"{}")
+        def log_message(self, *a): pass
+    HTTPServer(("127.0.0.1", port), H).serve_forever()
+''')
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    global PASS, FAIL
+    if ok:
+        PASS += 1
+        print(f"  ok   {name}")
+    else:
+        FAIL += 1
+        print(f"  FAIL {name} {detail}")
+
+
+def free_port() -> int:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def port_open(port: int) -> bool:
+    with socket.socket() as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def make(tmp: Path, port: int | None = None, **kw) -> EngineManager:
+    stub = tmp / "stub.py"
+    stub.write_text(STUB)
+    layout = EngineLayout(root=tmp / "engine", data_dir=tmp / "data")
+    return EngineManager(layout, port=port or free_port(), api_key=KEY,
+                         launcher=[sys.executable, str(stub)], **kw)
+
+
+def test_builders() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        os.environ["WISP_LOCAL_OMLX_KEY"] = "s" * 64
+        try:
+            m = make(Path(t))
+            env, argv = m.environment(), m.command()
+        finally:
+            del os.environ["WISP_LOCAL_OMLX_KEY"]
+        check("private HOME", env["HOME"] == str(m.layout.home))
+        check("no Wisp env inherited", not any(k.startswith("WISP_") for k in env)
+              and set(env) == {"HOME", "PATH", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "LANG", "TMPDIR"})
+        check("key never on argv", KEY not in " ".join(argv))
+        check("loopback only", argv[argv.index("--host") + 1] == "127.0.0.1")
+        check("own base path", argv[argv.index("--base-path") + 1] == str(m.layout.base_path))
+        check("default python is the bundled one",
+              EngineManager(m.layout).command()[0] == str(m.layout.root / "py/bin/python3"))
+
+
+def test_refusals() -> None:
+    layout = EngineLayout(Path("/x"), Path("/y"))
+    for port in sorted(RESERVED_PORTS) + [80, 70000]:
+        try:
+            EngineManager(layout, port=port)
+            check(f"refuses port {port}", False)
+        except EngineError:
+            check(f"refuses port {port}", True)
+    try:
+        EngineManager(layout, api_key="short")
+        check("refuses short key", False)
+    except EngineError:
+        check("refuses short key", True)
+    check("default port is unreserved", BUNDLED_PORT not in RESERVED_PORTS)
+
+
+def test_prepare_permissions() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        m = make(Path(t), extra_model_dirs=[Path(t) / "shared"])
+        m.prepare()
+        mode = stat.S_IMODE(m.layout.settings_path.stat().st_mode)
+        doc = json.loads(m.layout.settings_path.read_text())
+        check("settings file is 0600", mode == 0o600, oct(mode))
+        check("state dirs are 0700", stat.S_IMODE(m.layout.home.stat().st_mode) == 0o700)
+        check("key stored in settings", doc["auth"]["api_key"] == KEY)
+        check("unauthenticated inference off", doc["auth"]["allow_unauthenticated_inference"] is False)
+        check("HF cache scan off", doc["huggingface"]["hf_cache_enabled"] is False)
+        check("shared model dir added", str(Path(t) / "shared") in doc["model"]["model_dirs"])
+    check("template port", engine_settings(9000, KEY, [])["server"]["port"] == 9000)
+
+
+def test_lifecycle() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        m = make(Path(t))
+        try:
+            m.start()
+            check("ready with key", asyncio.run(m.wait_ready(20)))
+            check("pid recorded", m.layout.pid_path.exists())
+            m.start()
+            check("start is idempotent", m.running())
+            wrong = EngineManager(m.layout, port=m.port, api_key="b" * 64, launcher=m.launcher)
+            check("wrong key is refused", not asyncio.run(_one_probe(wrong)))
+        finally:
+            m.stop()
+        check("stopped", not m.running() and not port_open(m.port))
+        check("pid file removed", not m.layout.pid_path.exists())
+
+
+async def _one_probe(manager: EngineManager) -> bool:
+    return await manager.wait_ready(1.0)
+
+
+def test_busy_port() -> None:
+    with tempfile.TemporaryDirectory() as t, socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        s.listen()
+        m = make(Path(t), port=s.getsockname()[1])
+        try:
+            m.start()
+            check("busy port refused", False)
+        except EngineError:
+            check("busy port refused", True)
+        check("nothing started", not m.running())
+
+
+def test_reaps_orphan() -> None:
+    with tempfile.TemporaryDirectory() as t:
+        first = make(Path(t))
+        first.start()
+        check("orphan up", asyncio.run(first.wait_ready(20)))
+        orphan = first._proc
+        first._proc = None  # simulate a crashed Wisp: pid file remains, no handle
+        second = EngineManager(first.layout, port=first.port, api_key=KEY, launcher=first.launcher)
+        try:
+            second.start()
+            time.sleep(0.2)
+            check("orphan reaped", orphan.poll() is not None)
+            check("replacement ready", asyncio.run(second.wait_ready(20)))
+        finally:
+            second.stop()
+            if orphan.poll() is None:
+                orphan.kill()
+
+
+def main() -> int:
+    for fn in (test_builders, test_refusals, test_prepare_permissions, test_lifecycle,
+               test_busy_port, test_reaps_orphan):
+        print(fn.__name__)
+        fn()
+    print(f"\n{PASS} passed, {FAIL} failed")
+    return 1 if FAIL else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
