@@ -155,6 +155,18 @@ def lexical_candidates(text: str, *, writing: bool, k: int = 20,
     return sorted(set(picked))
 
 
+def ranked_lexical_candidates(text: str, *, writing: bool, k: int,
+                              context_open: bool = False) -> list[str]:
+    """lexical_candidates' filters in rank order (best first), without the
+    pinned extras: a model-led preload head start, cut to its top k."""
+    open_gate = _gate_open(text, writing=writing)
+    picked = [name for name in lexical_shortlist(text, limit=max(k * 3, k))
+              if name in REGISTRY and name not in _PINNED
+              and _allowed(name, writing=open_gate)
+              and gated_tool_allowed(name, text, context_open=context_open)]
+    return list(dict.fromkeys(picked))[:k]
+
+
 async def _evict_embedder(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
     """Best-effort enforcement of the two-model ceiling before reranking."""
     with engine_epoch.operation():
