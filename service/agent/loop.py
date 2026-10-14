@@ -1888,28 +1888,41 @@ async def run_agent(
     # aggregate blocks for tools that were not in the request — 10,313 chars of
     # system text where 5,254 described the offered tools.
     #
-    # The rules must stay a SUPERSET of whatever a step offers, and a smaller
-    # rule text lets the step fit keep more tools, so fitting with the full
-    # rules and rebuilding from the survivors can undershoot (audit finding on
-    # the first cut: at a 7,450–7,575-token window the step carried five tools
-    # with rules for four). Fit instead against the SMALLEST system text this
-    # turn could have — the cross-cutting core alone plus the hints. Every real
-    # step adds rules and a larger runtime block on top of that, and
-    # _fit_window drops history and then tools monotonically with overhead, so
-    # the step's offered set is always within this survivor set and every
-    # offered tool keeps its rules. Once per TURN on purpose (see build_system):
-    # the fitted set can only shrink further as history grows, so a later
-    # step's rules may still mention a tool that just fell out, but the
-    # prompt-cache prefix stays stable.
+    # The rules must stay a SUPERSET of whatever any step offers, so the
+    # survivor set is computed at the LEAST overhead a step can ever carry:
+    #   * the smallest system text this turn could have — the cross-cutting
+    #     core alone plus the hints (fitting with the full rules undershoots:
+    #     the smaller rebuilt text let the real fit keep five tools with rules
+    #     for four at a 7,450–7,575-token window — audit finding);
+    #   * the smallest message list — the prefix and the last user message,
+    #     which _fit_window never drops. Everything else in history is
+    #     droppable on SOME step: a large assistant turn is protected on step
+    #     0 as one of the newest two messages, then evicted once a tool call
+    #     and result land after it, which frees room for more tools (second
+    #     audit finding).
+    # Every real step carries at least that, and _fit_window sheds history and
+    # then tools monotonically with overhead, so the step's offered set lies
+    # inside this survivor set. Tools a step can FORCE bypass the fit's drop
+    # order (a forced tool is always kept), so the forced first tool and every
+    # required-group member keep their rules whatever the fit says. Once per
+    # TURN on purpose (see build_system): the prompt-cache prefix stays stable
+    # across steps.
     if schemas and not model_led_discovery:
+        last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
         _, fitted_max, _ = _fit_window(
             [{"role": "system", "content": build_system(set()) + identity_hint
                                            + memory_hint + skills_hint},
-             {"role": "system", "content": now_line}] + messages,
+             {"role": "system", "content": now_line}]
+            + ([last_user] if last_user else []),
             schemas, max_tokens, model, force_first_tool, protected_prefix_count=2,
             context_window=getattr(getattr(client, "target", None), "context_window", None))
         if len(fitted_max) < len(schemas):
-            sys_text = build_system({s["function"]["name"] for s in fitted_max})
+            ruled = {s["function"]["name"] for s in fitted_max}
+            if force_first_tool:
+                ruled.add(force_first_tool)
+            for group in required_tool_groups:
+                ruled |= set(group)
+            sys_text = build_system(ruled & turn_tool_names)
     # Keep the instruction order: base, identity, memory, skills, clock, style,
     # test-mode and reminder safeguards. The second system message follows
     # Ling's serialized schemas; style still overrides the base concision rule.

@@ -122,6 +122,88 @@ def test_rules_always_cover_every_offered_tool_across_windows(monkeypatch):
     assert saved_somewhere
 
 
+def _blocks():
+    loop.build_system(set())
+    return [(named, text) for named, text in loop._BLOCKS_CACHE if named]
+
+
+def _assert_rules_cover_every_request(client):
+    for request in client.requests:
+        offered = {t["function"]["name"] for t in request["tools"]}
+        stable = request["messages"][0]["content"]
+        for named, text in _blocks():
+            if named & offered:
+                assert text in stable, sorted(named & offered)
+
+
+class CallingClient(ScriptedClient):
+    """Calls `first` on step 0, then answers."""
+
+    def __init__(self, first):
+        super().__init__()
+        self.first = first
+
+    async def stream_events(self, model, messages, **kwargs):
+        self.requests.append(copy.deepcopy({"messages": messages, **kwargs}))
+        if len(self.requests) == 1:
+            yield {"kind": "final", "message": {"role": "assistant", "content": "", "tool_calls": [{
+                "id": "c1", "function": {"name": self.first, "arguments": "{}"}}]}}
+        else:
+            yield {"kind": "final", "message": {"role": "assistant", "content": "Done."}}
+
+
+@pytest.fixture
+def fake_read():
+    from service.tools.registry import REGISTRY, Tool
+    saved = REGISTRY.get("fake_read")
+    REGISTRY["fake_read"] = Tool("fake_read", "fake read", {"type": "object", "properties": {}},
+                                 "system_read", lambda: "tiny")
+    try:
+        yield "fake_read"
+    finally:
+        if saved is None:
+            REGISTRY.pop("fake_read", None)
+        else:
+            REGISTRY["fake_read"] = saved
+
+
+def test_rules_cover_later_steps_after_protected_history_is_freed(monkeypatch, fake_read):
+    """Step 0 protects a large assistant turn as one of the newest messages;
+    step 1 (after a tool call and result) can evict it and keep MORE tools.
+    The rules were sized against the minimal message list, so they still
+    cover whatever step 1 offers (second audit finding)."""
+    monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
+    history = [{"role": "user", "content": "earlier"},
+               {"role": "assistant", "content": "long reply " * 1500},
+               {"role": "user", "content": "What is on today?"}]
+    tools = [fake_read] + list(FIVE)
+
+    async def emit(event):
+        pass
+
+    seen_growth = False
+    for window in range(6_000, 10_000, 100):
+        monkeypatch.setattr(config, "model_context_window", lambda model, w=window: w)
+        client = CallingClient(fake_read)
+        asyncio.run(loop.run_agent(client, "Ling-3.0-tiny-oQ4e", list(history), emit, Approver(),
+                                   debug=False, max_steps=2, tools=tools))
+        assert len(client.requests) == 2
+        _assert_rules_cover_every_request(client)
+        if len(client.requests[1]["tools"]) > len(client.requests[0]["tools"]):
+            seen_growth = True
+    assert seen_growth  # the scenario the finding described actually occurred
+
+
+def test_rules_cover_a_required_group_tool_the_fit_would_drop(monkeypatch):
+    monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
+    monkeypatch.setattr(config, "model_context_window", lambda model: 5_500)
+    client = ScriptedClient()
+    run(client, list(FIVE), required_tool_groups=(frozenset({"search_notes"}),))
+    sent = [t["function"]["name"] for t in client.requests[0]["tools"]]
+    assert sent == ["search_notes"]  # the forced step offers the group only
+    _assert_rules_cover_every_request(client)
+
+
 def test_model_led_discovery_keeps_the_skills_catalog(monkeypatch):
     monkeypatch.setattr(config, "model_context_window", lambda model: 50_000)
     calls = []

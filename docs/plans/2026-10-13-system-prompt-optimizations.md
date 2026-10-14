@@ -78,9 +78,13 @@ rebuilds the rules from that survivor set — once per turn, so the prompt-cache
 across steps. Fitting with the *full* rules and rebuilding from the survivors was the first cut
 and is wrong: the smaller rebuilt text lets the real step fit keep more tools than the pre-fit
 did, so at a 7,450–7,575-token window the request carried five tools with rules for four (audit
-finding). Every real step's system text is at least the core-only one, and `_fit_window` drops
-history then tools monotonically with overhead, so the offered set always lies inside the
-pre-fit survivors. `skills_context_block(..., catalog=False)` drops the installed-skills catalog
+finding). The pre-fit also uses the smallest message list a step can carry (prefix plus the last
+user message): a large assistant turn is protected on step 0 as one of the newest messages and
+evicted once a tool call and result land after it, which frees room for more tools (second audit
+finding). Every real step carries at least that overhead, and `_fit_window` drops history then
+tools monotonically with overhead, so the offered set always lies inside the pre-fit survivors.
+Tools a step can force (the forced first tool, required-group members) bypass the drop order,
+so they keep their rules regardless. `skills_context_block(..., catalog=False)` drops the installed-skills catalog
 when `use_skill` is not offered (model-led discovery keeps it), keeping any matched or active
 skill body. Tests: `tests/test_prompt_scope_fit.py` (5, including a window sweep across every
 drop boundary), registered in the Simulation QA manifest; the existing modules that touch the
