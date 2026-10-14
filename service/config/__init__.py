@@ -380,10 +380,12 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
 
     if is_bundled():
         # These plain urllib calls cannot prove who answers. The bundled engine's key goes
-        # only to the child this backend launched: if none is running, the port may belong to
-        # anything, so skip (the file write still records the intent for the next start).
+        # only to the child this backend launched and the checked client has verified: otherwise
+        # the port may belong to anything, so skip (the file write still records the intent for
+        # the next start).
         from service.engine.runtime import manager
-        if manager().incarnation() is None:
+        engine = manager()
+        if engine.incarnation() is None or not engine.verified:
             return False
 
     try:

@@ -32,11 +32,16 @@ _SEVERITY = {PERMISSIVE: 0, UNKNOWN: 1, WEAK: 2, STRONG: 3}
 _STRONG = re.compile(r"(?<![A-Za-z])A?GPL(?![A-Za-z]{2})|GNU (General|Affero General) Public License", re.I)
 _WEAK = re.compile(r"(?<![A-Za-z])LGPL(?![A-Za-z]{2})|GNU Lesser|GNU Library|\bMPL\b|Mozilla Public|\bEPL\b|\bCDDL\b", re.I)
 # Licences that restrict use or redistribution beyond the copyleft families: never auto-pass.
-_RESTRICTED = re.compile(r"Commons[- ]Clause|Business Source|\bBUSL\b|\bSSPL\b|Elastic License|"
-                         r"Non-?Commercial|\bCC-BY-NC|Proprietary|All rights reserved\.? *$", re.I)
+# Named terms apply to declared fields and to licence files; the looser words only to declared
+# fields, because permissive licence texts legitimately say "commercial or non-commercial".
+_RESTRICTED_NAMED = re.compile(r"Commons[- ]Clause|Business Source|\bBUSL\b|\bSSPL\b|Elastic License|\bCC-BY-NC", re.I)
+_RESTRICTED = re.compile(_RESTRICTED_NAMED.pattern + r"|Non-?Commercial|Proprietary", re.I)
+# "A AND B", "A OR B WITH X": every identifier must be a family this gate recognises, so
+# `MIT AND LicenseRef-Custom` or `Apache-2.0 AND CC-BY-SA-4.0` cannot pass on the MIT word alone.
+_SPDX_SHAPE = re.compile(r"^\(?[A-Za-z0-9.+\-]+\)?(?: (?:AND|OR|WITH) \(?[A-Za-z0-9.+\-]+\)?)+$")
 _PERMISSIVE = re.compile(
     r"\bMIT\b|\bBSD\b|\bApache\b|\bISC\b|\bPSF\b|\bPSFL\b|Python Software Foundation|\bHPND\b|\bCNRI\b|"
-    r"\bUnlicense\b|\b0BSD\b|\bZlib\b|\bCC0\b|\bBSL-1\.0\b|Boost Software|"
+    r"\bUnlicense\b|\b0BSD\b|\bZlib\b|\bCC0\b|\bBSL-1\.0\b|Boost Software|\bPython-2\.0\b|"
     r"Permission to use, copy, modify, and/or distribute this software|"
     r"Permission is hereby granted, free of charge|"
     r"Redistribution and use in source and binary forms|"
@@ -54,7 +59,7 @@ def classify(text: str) -> str:
     if not text or text.upper() in {"UNKNOWN", "NONE", "N/A"}:
         return UNKNOWN
     # "LGPL" contains "GPL": test the weak spellings first and strip them before the strong test.
-    if _RESTRICTED.search(text):
+    if _RESTRICTED.search(text) or _spdx_unrecognised(text):
         return UNKNOWN
     stripped = _WEAK.sub(" ", text)
     if _STRONG.search(stripped):
@@ -62,6 +67,16 @@ def classify(text: str) -> str:
     if _WEAK.search(text):
         return WEAK
     return PERMISSIVE if _PERMISSIVE.search(text) else UNKNOWN
+
+
+def _spdx_unrecognised(text: str) -> bool:
+    if not _SPDX_SHAPE.match(text):
+        return False
+    for token in re.split(r"\s+(?:AND|OR)\s+", text):
+        token = token.split(" WITH ")[0].strip("() ")
+        if not (_PERMISSIVE.search(token) or _WEAK.search(token) or _STRONG.search(token)):
+            return True
+    return False
 
 
 def _file_head(path: Path, lines: int = 40) -> str:
@@ -86,9 +101,13 @@ def _file_class(path: Path) -> str:
     flat = " ".join(lines)
     if re.search(r"is free software[^.]{0,200}(GNU|GPL)", flat, re.I):
         return WEAK if re.search(r"Lesser|Library", flat, re.I) else STRONG
-    if _RESTRICTED.search(opening):
+    if _RESTRICTED_NAMED.search(head):
         return UNKNOWN
     return PERMISSIVE if _PERMISSIVE.search(head) else UNKNOWN
+
+
+def _file_restricted(path: Path) -> bool:
+    return bool(_RESTRICTED_NAMED.search(_file_head(path)))
 
 
 def _licence_files(dist_info: Path) -> list[Path]:
@@ -96,9 +115,19 @@ def _licence_files(dist_info: Path) -> list[Path]:
     for path in sorted(dist_info.rglob("*"), key=lambda p: p.as_posix().casefold()):
         if path.is_symlink() or not path.is_file():
             continue
-        if _LICENSE_NAME.match(path.name) or path.parent.name == "licenses":
+        # Anything under a licenses/ folder at any depth, or named like a licence file anywhere.
+        if _LICENSE_NAME.match(path.name) or "licenses" in path.relative_to(dist_info).parts[:-1]:
             found.append(path)
     return found
+
+
+def _declared_sources(metadata) -> list[str]:
+    """Every place a package declares a licence; the gate judges all of them, not the first."""
+    classifiers = "; ".join(sorted({c[len("License :: "):].strip() for c in metadata.get_all("Classifier", [])
+                                    if c.startswith("License :: ")}, key=str.casefold))
+    sources = [(metadata.get("License-Expression") or "").strip(), (metadata.get("License") or "").strip(),
+               classifiers]
+    return [" ".join(source.split()) for source in sources if source]
 
 
 def _declared_licence(metadata) -> str:
@@ -143,7 +172,10 @@ def engine_packages(engine_root: Path) -> list[dict]:
         files = _licence_files(dist_info)
         # A long declared field is a pasted licence text (it can quote the GPL for a bundled
         # component), not an identifier, so it is judged through the licence files instead.
-        classes = [classify(declared) if len(declared) <= 100 else UNKNOWN]
+        classes = [classify(source) if len(source) <= 100 else UNKNOWN for source in _declared_sources(metadata)]
+        if any(c != UNKNOWN for c in classes):
+            classes = [c for c in classes if c != UNKNOWN]     # "UNKNOWN" beside a real identifier is noise
+        classes = classes or [UNKNOWN]
         # A package that declares nothing useful is judged by its licence files. A file titled as
         # a GPL/LGPL/MPL text also counts for a declared one, so a wrong declaration cannot hide it.
         named = [_file_class(path) for path in files if path.name.upper().startswith(("LICEN", "COPYING"))]
@@ -154,6 +186,8 @@ def engine_packages(engine_root: Path) -> list[dict]:
         else:
             classes += [c for c in named if c in (WEAK, STRONG)]
         classes += [c for c in others if c in (WEAK, STRONG)]
+        if any(_file_restricted(path) for path in files):
+            classes.append(UNKNOWN)                               # restricted terms are never discarded
         klass = max(classes, key=_SEVERITY.__getitem__)
         records.append({"name": name, "version": version, "license": " ".join(declared.split())[:120],
                         "class": klass, "files": [p.relative_to(dist_info).as_posix() for p in files],
@@ -169,7 +203,8 @@ def load_reviewed(path: Path = REVIEWED) -> dict:
         if (not isinstance(component, dict)
                 or not all(isinstance(component.get(k), str) and component[k]
                            for k in ("name", "license", "path", "copy_as"))
-                or "/" in component["copy_as"] or component["path"].startswith(("/", ".."))):
+                or "/" in component["copy_as"] or component["path"].startswith("/")
+                or ".." in Path(component["path"]).parts):
             raise LicenseError("Reviewed component entries need a name, licence, relative path and copy_as")
     for name, entry in doc["packages"].items():
         if (not isinstance(entry, dict) or entry.get("class") not in _SEVERITY

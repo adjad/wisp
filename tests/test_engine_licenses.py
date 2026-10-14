@@ -246,9 +246,55 @@ def test_components_listed() -> None:
             check("a missing component licence fails the build", "py/lib/python3.11/LICENSE.txt" in str(exc))
 
 
+def test_second_audit_bypasses() -> None:
+    """Gaps the second audit found in the first hardening."""
+    for text, want in (("MIT AND EUPL-1.2", lic.UNKNOWN), ("MIT AND LicenseRef-Custom", lic.UNKNOWN),
+                       ("Apache-2.0 AND CC-BY-SA-4.0", lic.UNKNOWN), ("Apache-2.0 OR BSD-3-Clause", lic.PERMISSIVE),
+                       ("Apache-2.0 AND CNRI-Python", lic.PERMISSIVE), ("MPL-2.0 AND MIT", lic.WEAK),
+                       ("GPL-2.0-only WITH Classpath-exception-2.0", lic.STRONG), ("PSF-2.0", lic.PERMISSIVE),
+                       ("MIT-0", lic.PERMISSIVE)):
+        check(f"{text!r} -> {want}", lic.classify(text) == want, lic.classify(text))
+    commons = "Apache License 2.0 with Commons Clause\n\nThe Software is provided under the Commons Clause condition."
+    with tempfile.TemporaryDirectory() as raw:
+        root = bundle(Path(raw), [
+            ("clause", "1.0", "Apache-2.0", {"LICENSE": commons}),
+            ("sidefile", "2.0", "MIT", {"LICENSE": MIT, "licenses/TERMS.txt": commons}),
+            ("nested", "3.0", "MIT", {"LICENSE": MIT, "licenses/third_party/gpl-3.0.txt": GPL3}),
+            ("noisy", "4.0", "MIT", {"LICENSE": MIT}, {"field": "License"}),
+            ("classified", "5.0", "MIT", {"LICENSE": MIT}),
+        ])
+        # extra declared sources the helper does not write
+        sp = root / lic.ENGINE_DIR / "sp"
+        meta = sp / "classified_package-5.0.dist-info" / "METADATA"
+        meta.parent.mkdir(parents=True)
+        meta.write_text("Metadata-Version: 2.4\nName: classified-package\nVersion: 5.0\nLicense-Expression: MIT\n"
+                        "Classifier: License :: OSI Approved :: GNU General Public License v3 (GPLv3)\n")
+        (meta.parent / "LICENSE").write_text(MIT)
+        unknown_noise = sp / "noise_pkg-6.0.dist-info" / "METADATA"
+        unknown_noise.parent.mkdir(parents=True)
+        unknown_noise.write_text("Metadata-Version: 2.4\nName: noise-pkg\nVersion: 6.0\nLicense: UNKNOWN\n"
+                                 "License-Expression: MIT\n")
+        (unknown_noise.parent / "LICENSE").write_text(MIT)
+        records = {r["name"]: r for r in lic.engine_packages(root / lic.ENGINE_DIR)}
+        check("a Commons Clause LICENSE under an Apache declaration is not auto-passed", records["clause"]["class"] == lic.UNKNOWN)
+        check("restricted terms in a side file under licenses/ are not discarded", records["sidefile"]["class"] == lic.UNKNOWN)
+        check("a GPL text in a nested licenses/ folder is collected and caught", records["nested"]["class"] == lic.STRONG)
+        check("a GPL classifier beside an MIT expression is caught", records["classified-package"]["class"] == lic.STRONG)
+        check("'UNKNOWN' beside a real identifier is ignored", records["noise-pkg"]["class"] == lic.PERMISSIVE)
+    with tempfile.TemporaryDirectory() as raw:
+        bad = Path(raw) / "bad.json"
+        bad.write_text(json.dumps({"schema": 1, "omlx": {}, "packages": {}, "components": [
+            {"name": "x", "license": "MIT", "path": "py/../../x", "copy_as": "x.txt"}]}))
+        try:
+            lic.load_reviewed(bad)
+            check("a component path may not climb out of the engine", False)
+        except lic.LicenseError:
+            check("a component path may not climb out of the engine", True)
+
+
 def main() -> int:
     for fn in (test_classification, test_packages_and_gate, test_notices_written, test_reviewed_file,
-               test_bypass_cases, test_components_listed):
+               test_bypass_cases, test_components_listed, test_second_audit_bypasses):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

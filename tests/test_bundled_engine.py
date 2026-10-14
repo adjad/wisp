@@ -262,9 +262,112 @@ def test_reap_only_the_launched_engine() -> None:
             live.stop()
 
 
+LOADING_STUB = textwrap.dedent('''
+    import sys
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    port = int(sys.argv[sys.argv.index("--port") + 1])
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(503); self.end_headers(); self.wfile.write(b'{"status": "loading"}')
+        def log_message(self, *a): pass
+    HTTPServer(("127.0.0.1", port), H).serve_forever()
+''')
+
+
+def test_audit_followups() -> None:
+    import threading
+    from service.engine import manager as manager_module
+    from service.engine.manager import reap_orphan
+    with tempfile.TemporaryDirectory() as t:
+        tmp = Path(t)
+        # an engine preloading a pinned model answers /health 503 "loading": that is still "listening"
+        (tmp / "loading").mkdir()
+        stub = tmp / "loading" / "stub.py"
+        stub.write_text(LOADING_STUB)
+        loading = EngineManager(EngineLayout(root=tmp / "loading" / "engine", data_dir=tmp / "loading" / "data"),
+                                port=free_port(), api_key=KEY, launcher=[sys.executable, str(stub)])
+        try:
+            loading.start()
+            check("a 503 'loading' answer counts as listening", asyncio.run(loading.wait_ready(20)))
+        finally:
+            loading.stop()
+
+        # two overlapping starts launch one engine
+        (tmp / "race").mkdir()
+        race = make(tmp / "race")
+        errors: list[str] = []
+
+        def go() -> None:
+            try:
+                race.start()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        threads = [threading.Thread(target=go) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        try:
+            check("overlapping starts raise nothing", not errors, str(errors))
+            check("and leave exactly the one recorded engine",
+                  race.layout.pid_path.read_text().strip() == str(race._proc.pid))
+            race.verified = True
+            race.stop()
+            check("stop clears the verified flag", race.verified is False)
+        finally:
+            race.stop()
+
+        # an engine whose parent is another live process belongs to that process
+        (tmp / "owned").mkdir()
+        owned = make(tmp / "owned")
+        owned.start()
+        original = manager_module._parent_of
+        try:
+            manager_module._parent_of = lambda pid: os.getpid() + 1       # someone else's child
+            check("an engine still owned by another live process is not reaped", reap_orphan(owned.layout) is False)
+            check("and its pid file is left alone", owned.layout.pid_path.exists() and owned.running())
+            manager_module._parent_of = lambda pid: 1                        # orphaned to launchd
+            owned._proc, victim = None, owned._proc
+            check("an engine orphaned to launchd is reaped", reap_orphan(owned.layout) is True)
+            time.sleep(0.3)
+            check("and gone", victim.poll() is not None)
+        finally:
+            manager_module._parent_of = original
+            if victim.poll() is None:
+                victim.kill()
+
+        # `.../base2` is not `.../base`
+        layout = EngineLayout(root=tmp / "x" / "engine", data_dir=tmp / "x" / "data")
+        layout.base_path.mkdir(parents=True)
+        lookalike = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)",
+                                      "--base-path", str(layout.base_path) + "2"])
+        try:
+            layout.pid_path.write_text(str(lookalike.pid))
+            check("a lookalike base path is not reaped", reap_orphan(layout) is False)
+            time.sleep(0.2)
+            check("lookalike still running", lookalike.poll() is None)
+        finally:
+            lookalike.kill()
+            lookalike.wait()
+
+        # a log left by an earlier run with a looser mode is tightened
+        (tmp / "log").mkdir()
+        logged = make(tmp / "log")
+        logged.layout.data_dir.mkdir(parents=True, exist_ok=True)
+        logged.layout.log_path.write_text("old\n")
+        logged.layout.log_path.chmod(0o644)
+        try:
+            logged.start()
+            check("an existing engine.log is tightened to 0600",
+                  stat.S_IMODE(logged.layout.log_path.stat().st_mode) == 0o600)
+        finally:
+            logged.stop()
+
+
 def main() -> int:
     for fn in (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence, test_lifecycle,
-               test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine):
+               test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine, test_audit_followups):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import os
 import secrets
 import signal
@@ -173,7 +174,13 @@ def reap_orphan(layout: EngineLayout) -> bool:
     except (OSError, ValueError):
         return False
     stopped = False
-    if pid > 1 and f"--base-path {layout.base_path}" in _command_of(pid):
+    # --base-path is the last argument of the engine command, so an exact suffix match keeps
+    # `.../base` from matching `.../base2`.
+    if pid > 1 and _command_of(pid).endswith(f"--base-path {layout.base_path}"):
+        if _parent_of(pid) not in (1, os.getpid()):
+            # Still a child of another live process: that backend owns it. Reaping is for an
+            # engine orphaned to launchd (pid 1), or one this process launched and lost.
+            return False
         try:
             os.kill(pid, signal.SIGTERM)
             stopped = True
@@ -190,6 +197,15 @@ def reap_orphan(layout: EngineLayout) -> bool:
     except OSError:
         pass
     return stopped
+
+
+def _parent_of(pid: int) -> int | None:
+    try:
+        out = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "ppid="],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        return int(out)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
 
 
 def _command_of(pid: int) -> str:
@@ -209,6 +225,11 @@ class EngineManager:
     # Replaces `python -m omlx.cli serve`; tests substitute a stub server.
     launcher: Sequence[str] | None = None
     _proc: subprocess.Popen | None = field(default=None, init=False, repr=False)
+    # Set by the caller once the checked client has proven the listener is the child. Cleared
+    # whenever the child changes; code that cannot do the check itself (plain urllib calls)
+    # sends the engine key only while this is True.
+    verified: bool = field(default=False, init=False)
+    _lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
     _incarnation: Incarnation | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -258,15 +279,24 @@ class EngineManager:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self) -> None:
+        # One launch at a time: two overlapping starts would each pass the busy-port check and
+        # start an engine, leaving one untracked and holding the port.
+        with self._lock:
+            self._start()
+
+    def _start(self) -> None:
         if self.running():
             return
+        self.verified = False
         if not self.launcher and not self.layout.python.exists():
             raise EngineError("The bundled engine is not installed")
         self._reap_stale()
         self.prepare()
         if self._port_in_use():
             raise EngineError(f"Port {self.port} is already in use by another process")
-        log = open(os.open(self.layout.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "ab")
+        fd = os.open(self.layout.log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(fd, 0o600)          # a log from an earlier run may have been created looser
+        log = open(fd, "ab")
         try:
             self._proc = subprocess.Popen(
                 self.command(), env=self.environment(), cwd=str(self.layout.data_dir),
@@ -304,7 +334,7 @@ class EngineManager:
             return probe.connect_ex(("127.0.0.1", self.port)) == 0
 
     async def wait_ready(self, timeout: float = 60.0) -> bool:
-        """True once the child we launched answers HTTP on its port.
+        """True once the child we launched answers HTTP on its port (any status).
 
         This sends no credential and follows no proxy: the port is not yet known to belong to
         the child (another process could bind it while the engine is still importing), so the
@@ -317,16 +347,20 @@ class EngineManager:
                 if self._proc is None or self._proc.poll() is not None:
                     return False
                 try:
-                    reply = await http.get(f"http://127.0.0.1:{self.port}/health")
-                    if reply.status_code < 500:
-                        return True
+                    await http.get(f"http://127.0.0.1:{self.port}/health")
+                    return True      # any HTTP answer: oMLX returns 503 "loading" while it preloads models
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(0.4)
         return False
 
     def stop(self, grace: float = 10.0) -> None:
+        with self._lock:
+            self._stop(grace)
+
+    def _stop(self, grace: float) -> None:
         proc, self._proc, self._incarnation = self._proc, None, None
+        self.verified = False
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:

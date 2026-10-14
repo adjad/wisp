@@ -5,6 +5,7 @@ import contextvars
 import ctypes
 import grp
 import hashlib
+import ipaddress
 import json
 import logging
 import os
@@ -1123,9 +1124,13 @@ def bundled_transport(base_url, api_key):
     Other endpoints are unchanged: the caller keeps its own transport.
     """
     url = httpx.URL(base_url)
-    if url.port != BUNDLED_PORT or url.host not in ("127.0.0.1", "localhost"):
+    if url.port != BUNDLED_PORT:
         return None
-    return CredentialTransport(base_url, api_key, managed=True)
+    try:
+        loopback = ipaddress.ip_address(url.host).is_loopback      # 127.x.x.x and ::1
+    except ValueError:
+        loopback = url.host == "localhost"
+    return CredentialTransport(base_url, api_key, managed=True) if loopback else None
 
 
 class CredentialTransport(httpx.AsyncBaseTransport):

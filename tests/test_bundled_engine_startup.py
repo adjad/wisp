@@ -66,8 +66,13 @@ class FakeEngine:
     def __init__(self, log, *, live=False, ready=True):
         self.log, self.live, self.ready = log, live, ready
 
+    verified = False
+
     def incarnation(self):
         return object() if self.live else None
+
+    def running(self):
+        return self.live
 
     def start(self):
         self.log.append("start")
@@ -156,6 +161,55 @@ def test_readiness_then_identity() -> None:
         check("an engine that never answers fails", "health" not in log and log[-1] == "stop", str(log))
 
 
+def test_a_running_engine_survives_a_failed_probe() -> None:
+    main, runtime, ModelLoadError = boot()
+    log: list[str] = []
+    engine = FakeEngine(log, live=True)
+    runtime._manager = engine
+    main.client = FakeClient(ModelLoadError("momentary refusal"), log)
+    try:
+        run(main._ensure_bundled_engine())
+        check("a verification refusal still fails the call", False)
+    except ModelLoadError:
+        check("a verification refusal still fails the call", True)
+    check("but does not stop an engine this call did not launch", "stop" not in log and engine.live, str(log))
+    log = []
+    runtime._manager = FakeEngine(log, live=True, ready=False)
+    main.client = FakeClient(None, log)
+    try:
+        run(main._ensure_bundled_engine())
+    except ModelLoadError:
+        pass
+    check("nor does a readiness timeout", "stop" not in log, str(log))
+
+
+def test_verified_flag_gates_plain_http_users() -> None:
+    main, runtime, ModelLoadError = boot()
+    from service import config
+    import urllib.request
+    calls: list[str] = []
+    original = urllib.request.urlopen
+
+    def spy(*args, **kwargs):
+        calls.append("urlopen")
+        raise AssertionError("the engine key must not be sent")
+
+    urllib.request.urlopen = spy
+    try:
+        log: list[str] = []
+        engine = FakeEngine(log, live=False)
+        runtime._manager = engine
+        check("no engine: plain-HTTP push is skipped", config._push_context_window_to_server("m", 4096) is False)
+        engine.live = True
+        check("a live but unverified engine gets no key either", config._push_context_window_to_server("m", 4096) is False)
+        check("the client never opened a connection", not calls, str(calls))
+        main.client = FakeClient(None, log)
+        run(main._ensure_bundled_engine())
+        check("verification marks the engine verified", engine.verified is True)
+    finally:
+        urllib.request.urlopen = original
+
+
 def test_reap_orphan_is_safe_without_a_pid_file() -> None:
     main, runtime, ModelLoadError = boot()
     runtime._manager = None
@@ -164,7 +218,8 @@ def test_reap_orphan_is_safe_without_a_pid_file() -> None:
 
 def main() -> int:
     for fn in (test_leftover_engine_is_not_probed_first, test_live_engine_is_verified_not_restarted,
-               test_readiness_then_identity, test_reap_orphan_is_safe_without_a_pid_file):
+               test_readiness_then_identity, test_a_running_engine_survives_a_failed_probe,
+               test_verified_flag_gates_plain_http_users, test_reap_orphan_is_safe_without_a_pid_file):
         print(fn.__name__)
         fn()
     print(f"\n{PASS} passed, {FAIL} failed")

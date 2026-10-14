@@ -451,6 +451,7 @@ def test_messages_and_reasons() -> None:
     check("reason code kept off the user message",
           "bundled_engine_not_owned" not in str(error) and error.reason == "bundled_engine_not_owned", error.reason)
     for url, expected in (("http://127.0.0.1:8791", True), ("http://localhost:8791", True),
+                          ("http://[::1]:8791", True), ("http://127.0.0.2:8791", True),
                           ("http://127.0.0.1:8000", False), ("http://192.0.2.1:8791", False),
                           ("https://example.com", False)):
         got = at.bundled_transport(url, "k" * 64)
