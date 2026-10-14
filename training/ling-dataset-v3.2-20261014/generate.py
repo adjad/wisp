@@ -525,7 +525,15 @@ def migrate_conversation(rows, prov, style, source):
         out_turn.append(msg)
         out_turn.extend(res_msgs)
 
-    # ---- emit rows
+    new_rows, conv_msgs, info = emit(steps, out_turn, prefix, loaded, now_sentence, variant, user_text, style,
+                                     preload_new, gold, modes)
+    info["migrations"] = migrations
+    info["removed_preload"] = [t for t in preload_old if not (nmap(t) and nmap(t) in cat_tools)]
+    return new_rows, conv_msgs, info
+
+
+def emit(steps, out_turn, prefix, loaded, now_sentence, variant, user_text, style, preload, gold, modes):
+    """Rows (one per trainable assistant step), the full conversation, and per-conversation info."""
     def sysmsgs(ld):
         return sys_messages(ld, now_sentence, variant, user_text)
 
@@ -534,18 +542,18 @@ def migrate_conversation(rows, prov, style, source):
     for idx, ld, att, ok in steps:
         if not ok:
             continue
-        msgs = sysmsgs(ld) + copy.deepcopy(prefix) + [dict(x) for x in out_turn[:idx]]
+        msgs = sysmsgs(ld) + copy.deepcopy(prefix) + [copy.deepcopy(x) for x in out_turn[:idx]]
         for x in msgs:
             if x["role"] == "assistant":
                 x["training"] = False
-        tgt = dict(out_turn[idx])
+        tgt = copy.deepcopy(out_turn[idx])
         tgt["training"] = True
         new_rows.append({"k": k, "tools": render_tools(ld, att, variant, style), "messages": msgs + [tgt]})
         k += 1
     trainable_idx = {idx for idx, _, _, ok in steps if ok}
     conv_msgs = sysmsgs(loaded) + copy.deepcopy(prefix)
     for j, x in enumerate(out_turn):
-        x = dict(x)
+        x = copy.deepcopy(x)
         if x["role"] == "assistant":
             x["training"] = j in trainable_idx
         conv_msgs.append(x)
@@ -554,16 +562,135 @@ def migrate_conversation(rows, prov, style, source):
         msg = out_turn[idx]
         if msg.get("tool_calls"):
             n0 = msg["tool_calls"][0]["function"]["name"]
-            first_kind = "real" if n0 != DISCOVERY and n0 in preload_new else "load"
+            first_kind = "real" if n0 != DISCOVERY and n0 in preload else "load"
             break
-    variant_sp = "S" if not preload_new else ("SP-hit" if first_kind == "real" else "SP-decoy")
-    info = {"gold_calls": gold, "discovery_modes": modes, "preload": preload_new, "protocol_variant": variant_sp,
-            "migrations": migrations, "n_steps": len(new_rows),
+    variant_sp = "S" if not preload else ("SP-hit" if first_kind == "real" else "SP-decoy")
+    info = {"gold_calls": gold, "discovery_modes": modes, "preload": list(preload), "protocol_variant": variant_sp,
+            "migrations": [], "n_steps": len(new_rows),
             "tools_per_round": [{"real_schemas": ld, "get_tool_schemas": att < MAX_DISCOVERIES,
                                  "name_only_stubs": len([t for t in CATALOG_TOOLS[variant] if t not in ld]) if att < MAX_DISCOVERIES else 0}
-                                for _, ld, att, _ in steps],
-            "removed_preload": [t for t in preload_old if not (nmap(t) and nmap(t) in cat_tools)]}
+                                for _, ld, att, _ in steps]}
     return new_rows, conv_msgs, info
+
+
+class Builder:
+    """Records one NEW conversation (V3.2-authored categories) directly in the current host protocol: the same state
+    machine migrate_conversation replays (loaded schemas, two loading steps, receipts, stub implicit discovery)."""
+
+    def __init__(self, rng, variant, preload=()):
+        self.r, self.variant = rng, variant
+        self.loaded = [t for t in CATALOG_TOOLS[variant] if t in set(preload)]
+        self.preload = list(self.loaded)
+        self.attempts = 0
+        self.out_turn, self.steps, self.gold, self.modes = [], [], [], []
+        self.seen = set()
+
+    def _id(self):
+        return "call_" + "".join(self.r.choice("0123456789abcdef") for _ in range(8))
+
+    def _step(self, msg, trainable=True):
+        self.steps.append((len(self.out_turn), list(self.loaded), self.attempts, trainable))
+        self.out_turn.append(msg)
+
+    def offered(self):
+        return offered(self.loaded, self.attempts, self.variant)
+
+    def stub(self, specs):
+        """specs: [(tool, guess_args)]: an implicit discovery through name-only stubs."""
+        new = [t for t, _ in specs]
+        assert self.attempts < MAX_DISCOVERIES and all(t in CATALOG_TOOLS[self.variant] and t not in self.loaded for t in new)
+        fams = list(dict.fromkeys(FAMILY[t] for t in new))
+        names = list(dict.fromkeys([*self.loaded, *new]))
+        rec = receipt(fams, names)
+        msg = {"role": "assistant", "content": "", "training": False, "tool_calls": []}
+        res = []
+        for t, a in specs:
+            cid = self._id()
+            msg["tool_calls"].append({"id": cid, "type": "function", "function": {"name": t, "arguments": dict(a)}})
+            res.append({"role": "tool", "tool_call_id": cid, "content": rec})
+            self.gold.append({"name": t, "arguments": dict(a), "stub": True})
+        self._step(msg)
+        self.out_turn.extend(res)
+        self.attempts += 1
+        self.loaded = names
+        self.modes.append("stub")
+
+    def explicit(self, families, tools):
+        assert self.attempts < MAX_DISCOVERIES
+        args = {"families": list(families), "tools": list(tools)}
+        allowed = {t for f in families for t in CATALOG[self.variant][f]}
+        assert set(tools) <= allowed
+        names = list(dict.fromkeys([*self.loaded, *tools]))
+        cid = self._id()
+        self._step({"role": "assistant", "content": "", "training": False, "tool_calls": [
+            {"id": cid, "type": "function", "function": {"name": DISCOVERY, "arguments": args}}]})
+        self.out_turn.append({"role": "tool", "tool_call_id": cid, "content": receipt(families, names)})
+        self.attempts += 1
+        self.loaded = names
+        self.modes.append("explicit")
+        self.gold.append({"name": DISCOVERY, "arguments": args})
+
+    def call(self, specs, trainable=True):
+        """specs: [(tool, args, result)]. trainable=False records a context-only step (e.g. a bad call the host refused)."""
+        msg = {"role": "assistant", "content": "", "training": False, "tool_calls": []}
+        res = []
+        for t, a, out in specs:
+            assert t in self.loaded, (t, self.loaded)
+            key = (t, json.dumps(a, sort_keys=True))
+            assert key not in self.seen, key
+            self.seen.add(key)
+            cid = self._id()
+            msg["tool_calls"].append({"id": cid, "type": "function", "function": {"name": t, "arguments": dict(a)}})
+            res.append({"role": "tool", "tool_call_id": cid, "content": out})
+            self.gold.append({"name": t, "arguments": dict(a), **({} if trainable else {"context_only": True})})
+        self._step(msg, trainable)
+        self.out_turn.extend(res)
+
+    def final(self, text):
+        self._step({"role": "assistant", "content": text, "training": False})
+
+    def finish(self, prefix, now_sentence, user_text, style):
+        return emit(self.steps, self.out_turn, prefix, self.loaded, now_sentence, self.variant, user_text, style,
+                    self.preload, self.gold, self.modes)
+
+
+# ----------------------------------------------------------------------------- helpers for authored categories
+
+def rng_v32(*parts):
+    return random.Random(int(hashlib.sha256("|".join(str(x) for x in (SEED,) + parts).encode()).hexdigest()[:16], 16))
+
+
+def _norm_tokens(text):
+    return re.findall(r"[a-z0-9']+", text.lower())
+
+
+def _hsh(t):
+    return hashlib.sha1(" ".join(t).encode()).hexdigest()[:12]
+
+
+def heldout_overlap(held, text):
+    """Max Jaccard of `text`'s n-gram shingles against the hashed eval prompts (same rule as V3.1)."""
+    t = _norm_tokens(text)
+    if not t:
+        return 0.0
+    full = _hsh(t)
+    best = 0.0
+    for it in held:
+        if it["full"] == full:
+            return 1.0
+        m = min(len(t), it["ntok"])
+        if m < 3:
+            continue
+        n = min(6, m)
+        a = {_hsh(t[i:i + n]) for i in range(len(t) - n + 1)}
+        b = set(it["sh"].get(str(n), []))
+        if a and b:
+            best = max(best, len(a & b) / len(a | b))
+    return best
+
+
+OVERLAP_LIMIT = 0.4
+NEW_CATEGORIES = ["v32:v32_mac_controls"]
 
 
 # ----------------------------------------------------------------------------- style assignment
@@ -612,6 +739,15 @@ def main():
         for cid in convs:
             uses = any(r["tools"] for r in convs[cid])
             entries.append((split, ("v31:" if source == "v31_new" else "v3r:") + prov[cid]["category"], cid, uses))
+    sys.path.insert(0, str(HERE))
+    import ext_v32_mac as MAC
+    held = json.loads((ASSETS / "heldout_shingles.json").read_text())["items"]
+    mac = MAC.build(sys.modules[__name__], held, OVERLAP_LIMIT)
+    counters = {"train": 0, "dev": 0}
+    for m in mac:
+        counters[m["split"]] += 1
+        m["cid"] = f"v32-mac-{m['split']}-{counters[m['split']]:04d}"
+        entries.append((m["split"], "v32:" + MAC.CATEGORY, m["cid"], True))
     styles = assign_styles(entries)
     rows_out = {"train": [], "dev": []}
     prov_out = {"train": [], "dev": []}
@@ -644,6 +780,27 @@ def main():
             convs_out.append({"conversation_id": ncid, "id": ncid, "split": split, "category": pv["category"],
                               "schema_style": style, "now": p["reference_now"], "messages": cmsgs,
                               "tools_per_round": info["tools_per_round"]})
+    # authored V3.2 category (after the migrated rows, before the V2 replay block)
+    for m in mac:
+        split, ncid, style = m["split"], m["cid"], styles[m["cid"]]
+        prefix = [({"role": role, "content": t, "training": False} if role == "assistant" else {"role": role, "content": t})
+                  for role, t in m["prefix"]] + [{"role": "user", "content": m["user_text"]}]
+        nrows, cmsgs, info = m["builder"].finish(prefix, m["now"], m["user_text"], style)
+        for r in nrows:
+            rows_out[split].append({"id": f"{ncid}-s{r['k']}", "conversation_id": ncid, "tools": r["tools"], "messages": r["messages"]})
+        pv = {"id": ncid, "conversation_id": ncid, "split": split, "source": "v32_new", "source_conversation_id": None,
+              "source_category": MAC.CATEGORY, "category_key": "mac", "family_id": m["fid"],
+              "template_id": f"{m['fid']}-{m['j']}", "targeted_failure_class": ["mac_controls_skill"],
+              "reference_now": m["now"], "user_prompt": m["user_text"], "user_prompt_clean": m["user_text"],
+              "history_user_prompts": [t for role, t in m["prefix"] if role == "user"], "history_turns": len(m["prefix"]),
+              "slots": m["meta"], "catalog_variant": m["variant"], "heldout_max_jaccard": round(m["overlap"], 3),
+              "generation_attempt": m["attempt"], "category": "v32:" + MAC.CATEGORY, "schema_style": style,
+              "gold_calls": info["gold_calls"], "discovery_modes": info["discovery_modes"], "preload": info["preload"],
+              "protocol_variant": info["protocol_variant"], "n_steps": info["n_steps"], "source_steps": None,
+              "migrated": False, "migrations": [], "removed_preload": []}
+        prov_out[split].append(pv)
+        convs_out.append({"conversation_id": ncid, "id": ncid, "split": split, "category": pv["category"], "schema_style": style,
+                          "now": m["now"], "messages": cmsgs, "tools_per_round": info["tools_per_round"]})
     # V2 replay: no tools, no tool names -> unchanged bytes, appended last (as in V3.1)
     v2 = {s: (V31 / f"v2_replay.{s}.jsonl").read_text() for s in ("train", "dev")}
     for split in ("train", "dev"):
@@ -719,7 +876,7 @@ def write_card(out, stats, prov, dropped):
          f"Short descriptions: `assets/short_descriptions.json`, source_sha `{stats['short_descriptions']['source_sha']}`, "
          f"placeholder: {stats['short_descriptions']['placeholder']}.", "",
          "## Counts", "",
-         "| split | conversations (tool protocol) | rows | V2 replay rows | migrated conversations | terse conversations | full conversations | terse rows | full rows |",
+         "| split | conversations (tool protocol, incl. v32_mac_controls) | rows | V2 replay rows | migrated conversations | terse conversations | full conversations | terse rows | full rows |",
          "|---|---|---|---|---|---|---|---|---|"]
     for s in ("train", "dev"):
         d = S[s]
@@ -727,9 +884,10 @@ def write_card(out, stats, prov, dropped):
         L.append(f"| {s} | {d['conversations']} | {d['rows']} | {d['v2_replay_rows']} | {d['migrated_conversations']} | "
                  f"{cs.get('terse', 0)} | {cs.get('full', 0)} | {rs.get('terse', 0)} | {rs.get('full', 0)} |")
     L += ["", "## Conversations by category: V3.1 source vs V3.2", "",
-          "`v31:` = V3.1 targeted-fix conversations, `v3r:` = the V3 replay sample V3.1 trained on. V2 replay rows (600 train / 60 dev) are unchanged.", "",
+          "`v31:` = V3.1 targeted-fix conversations, `v3r:` = the V3 replay sample V3.1 trained on, `v32:` = authored in V3.2 "
+          "(ext_v32_mac.py). V2 replay rows (600 train / 60 dev) are unchanged.", "",
           "| category | V3.1 train | V3.2 train | V3.1 dev | V3.2 dev |", "|---|---|---|---|---|"]
-    cats = sorted(set(v31["train"]) | set(v31["dev"]))
+    cats = sorted(set(v31["train"]) | set(v31["dev"]) | set(S["train"]["by_category"]) | set(S["dev"]["by_category"]))
     for c in cats:
         L.append(f"| {c} | {v31['train'].get(c, 0)} | {S['train']['by_category'].get(c, 0)} | {v31['dev'].get(c, 0)} | {S['dev']['by_category'].get(c, 0)} |")
     L += ["", "## Dropped conversations", "", "| source conversation | category | reason |", "|---|---|---|"]
@@ -770,8 +928,11 @@ def write_card(out, stats, prov, dropped):
           "- Every assistant target, tool result and final answer is byte-identical to its source except where a migration rule rewrote it.",
           "", "## Limitations", "",
           "- Inherits every V3.1 / V3 limitation (synthetic, template phrasing, condensed tool results).",
-          "- No conversation was authored for the mac_* skill tools: the V3.1 sources call none of the volume/lock/music tools, so the "
-          "skill tools appear only as stubs/catalog entries and in the skills block. Volume/lock/playback behaviour is untrained here.",
+          "- `v32_mac_controls` (60 train / 8 dev, ext_v32_mac.py) is the only authored category: explicit and relative volume "
+          "(read first, about +/-20, clamped), volume reads, mute/unmute, lock success and failure (the answer says NOT locked), "
+          "Apple Music / Spotify playback, specific-music requests (no call; open_app only after the user accepts), declined "
+          "confirmations (host text `The user denied this action.`, no retry) and refused arguments (the bad call is context only, the "
+          "target is the correction). Results are the skill's real output strings; template phrasing is limited (12 train families).",
           "- Merged-tool results keep the old single-purpose shape (e.g. `get_weather(include=[air_quality])` returns only the AQI line).",
           "- The installed-skills block assumes the mac-controls skill ships bundled and enabled and no user skills are installed.",
           "- Quality is unmeasured until Ling is retrained and evaluated (see README gate, including terse-vs-full parity).", ""]

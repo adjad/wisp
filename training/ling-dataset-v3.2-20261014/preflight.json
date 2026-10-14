@@ -16,17 +16,17 @@
   ],
   "splits": {
     "train": {
-      "rows": 1805,
-      "rows_ok": 1805,
-      "tokens_total": 12033556,
+      "rows": 1974,
+      "rows_ok": 1974,
+      "tokens_total": 13043366,
       "tokens_max": 11599,
-      "tokens_p95": 9634,
-      "tokens_median": 6435,
-      "tokens_mean": 6666.8,
-      "labeled_tokens_total": 46044,
+      "tokens_p95": 9517,
+      "tokens_median": 6249,
+      "tokens_mean": 6607.6,
+      "labeled_tokens_total": 48529,
       "target_tokens_min": 4,
-      "target_tokens_median": 23,
-      "target_tokens_p95": 51,
+      "target_tokens_median": 22,
+      "target_tokens_p95": 50,
       "target_tokens_max": 126,
       "rows_over_max_len": 0
     },
@@ -46,17 +46,17 @@
       "rows_over_max_len": 0
     },
     "dev": {
-      "rows": 219,
-      "rows_ok": 219,
-      "tokens_total": 1480727,
+      "rows": 242,
+      "rows_ok": 242,
+      "tokens_total": 1613832,
       "tokens_max": 11172,
-      "tokens_p95": 9439,
-      "tokens_median": 6641,
-      "tokens_mean": 6761.3,
-      "labeled_tokens_total": 5401,
-      "target_tokens_min": 7,
-      "target_tokens_median": 22,
-      "target_tokens_p95": 50,
+      "tokens_p95": 9436,
+      "tokens_median": 6274,
+      "tokens_mean": 6668.7,
+      "labeled_tokens_total": 5663,
+      "target_tokens_min": 5,
+      "target_tokens_median": 18,
+      "target_tokens_p95": 46,
       "target_tokens_max": 121,
       "rows_over_max_len": 0
     },
@@ -88,8 +88,8 @@
   },
   "chat_template_sha256": "eb6226c94ae38058f875d159f86a206b3a165828c0e7d6bda664ae14667f798a",
   "data_sha256": {
-    "train.jsonl": "40c21fcd566de9fdeb9872dc93bac63eb1bee908abbe83a46d0e4d03288e44fc",
-    "dev.jsonl": "3134ba3a6dbcf3740682d6c61fdf0cab22566a6809a1f88b0b6cf18ac4b63f2b"
+    "train.jsonl": "d603aaa0ab3f36598308e17539ca25932f8a0497ccb6116f41a83be10d2749e2",
+    "dev.jsonl": "d488b8a988be4ad2e3892380eeecbe6a5c901fe7967d0e7aed140d586bda6775"
   },
   "tokenizer_vocab_size": 157153,
   "actual_axolotl_prepared_label_audit_still_required": true

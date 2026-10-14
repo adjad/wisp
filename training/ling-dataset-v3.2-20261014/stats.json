@@ -31,6 +31,7 @@
     "v31:v31_reminder_calendar_followup": 11,
     "v31:v31_safety_clarify_recipient": 10,
     "v31:v31_saved_facts_memory": 8,
+    "v32:v32_mac_controls": 8,
     "v3r:chat_no_tool": 2,
     "v3r:clarify_ambiguity": 2,
     "v3r:compound_read_then_act": 5,
@@ -42,27 +43,27 @@
     "v3r:stop_after_success_no_loop": 2,
     "v3r:writes": 2
    },
-   "conversations": 73,
+   "conversations": 81,
    "conversations_by_schema_style": {
-    "full": 38,
-    "terse": 35
+    "full": 42,
+    "terse": 39
    },
    "migrated_conversations": 0,
    "protocol_variants": {
-    "S": 50,
-    "SP-decoy": 16,
-    "SP-hit": 7
+    "S": 55,
+    "SP-decoy": 17,
+    "SP-hit": 9
    },
    "row_tokens_est_chars_div4": {
     "max": 11228,
-    "mean": 6652,
-    "p50": 6530,
-    "p95": 9415
+    "mean": 6552,
+    "p50": 6308,
+    "p95": 9362
    },
-   "rows": 219,
+   "rows": 242,
    "rows_by_schema_style": {
-    "full": 108,
-    "terse": 111
+    "full": 118,
+    "terse": 124
    },
    "v2_replay_rows": 60
   },
@@ -74,6 +75,7 @@
     "v31:v31_reminder_calendar_followup": 90,
     "v31:v31_safety_clarify_recipient": 82,
     "v31:v31_saved_facts_memory": 70,
+    "v32:v32_mac_controls": 60,
     "v3r:chat_no_tool": 16,
     "v3r:clarify_ambiguity": 10,
     "v3r:compound_read_then_act": 44,
@@ -85,27 +87,27 @@
     "v3r:stop_after_success_no_loop": 20,
     "v3r:writes": 16
    },
-   "conversations": 605,
+   "conversations": 665,
    "conversations_by_schema_style": {
-    "full": 304,
-    "terse": 301
+    "full": 334,
+    "terse": 331
    },
    "migrated_conversations": 17,
    "protocol_variants": {
-    "S": 440,
-    "SP-decoy": 95,
-    "SP-hit": 70
+    "S": 482,
+    "SP-decoy": 103,
+    "SP-hit": 80
    },
    "row_tokens_est_chars_div4": {
     "max": 11672,
-    "mean": 6547,
-    "p50": 6282,
-    "p95": 9597
+    "mean": 6480,
+    "p50": 6079,
+    "p95": 9498
    },
-   "rows": 1805,
+   "rows": 1974,
    "rows_by_schema_style": {
-    "full": 899,
-    "terse": 906
+    "full": 982,
+    "terse": 992
    },
    "v2_replay_rows": 600
   }

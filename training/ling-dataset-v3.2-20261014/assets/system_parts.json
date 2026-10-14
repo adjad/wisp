@@ -1,7 +1,7 @@
 {
  "source": {
   "wisp_main_sha": "1bd68e7eb68f73be5b06dbc7bc4c607c12339a7a",
-  "mac_controls_skill_sha": "d7479c52b9067d8372e852da842d190d794a73e0",
+  "mac_controls_skill_sha": "55a2b5b142ca816013213e07be36498ae78e6766",
   "builders": [
    "service/agent/loop.py SYSTEM + _system_blocks + build_system",
    "service/router/model_led.py CapabilityCatalog.prompt / FAMILIES",
@@ -321,7 +321,10 @@
     "name": "mac-controls",
     "description": "Mac volume, mute, screen lock and music playback (Apple Music or Spotify) through fixed, validated commands. Use for \"turn it down\", \"mute\", \"lock my screen\", \"pause the music\", \"next song\".",
     "triggers": [
-     "volume",
+     "my volume",
+     "volume up",
+     "volume down",
+     "volume to",
      "louder",
      "quieter",
      "turn it up",
@@ -344,9 +347,12 @@
      "previous song",
      "next track",
      "previous track",
-     "spotify"
+     "on spotify",
+     "in spotify",
+     "pause spotify",
+     "play spotify"
     ],
-    "body": "# Mac controls\n\n- For volume, mute, screen lock or music playback, call the `mac_*` tools. Do not use `run_shell` or `run_applescript` for these.\n- \"Turn it down/up\" with no number: call `mac_get_volume` first, then `mac_set_volume` about 20 lower or higher (clamped to 0-100).\n- \"Mute\" is `mac_mute` with state `on`; \"unmute\" is state `off`. Setting volume 0 is not the same as muting.\n- `mac_media` cannot pick a song, album or playlist. If the user asks for specific music, say so and offer to play or open the app instead.\n- Locking sleeps the display; it locks only if the Mac asks for a password after sleep. Report it as \"screen locked\", nothing more.\n- Each of these asks the user to confirm first, as every skill tool does. If they decline, say so plainly and do not retry another way."
+    "body": "# Mac controls\n\n- For volume, mute, screen lock or music playback, call the `mac_*` tools. Do not use `run_shell` or `run_applescript` for these.\n- \"Turn it down/up\" with no number: call `mac_get_volume` first, then `mac_set_volume` about 20 lower or higher (clamped to 0-100).\n- \"Mute\" is `mac_mute` with state `on`; \"unmute\" is state `off`. Setting volume 0 is not the same as muting.\n- `mac_media` cannot pick a song, album or playlist. If the user asks for specific music, say so and offer to play or open the app instead.\n- `mac_lock_screen` reports \"screen locked\" only when macOS confirms it. If it returns an error, tell the user the screen is NOT locked and why.\n- Depending on the user's permission settings these may ask for confirmation first. If the user declines, say so plainly and do not retry another way."
    }
   ]
  },

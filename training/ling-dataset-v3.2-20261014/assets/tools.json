@@ -1,7 +1,7 @@
 {
  "source": {
   "wisp_main_sha": "1bd68e7eb68f73be5b06dbc7bc4c607c12339a7a",
-  "mac_controls_skill_sha": "d7479c52b9067d8372e852da842d190d794a73e0",
+  "mac_controls_skill_sha": "55a2b5b142ca816013213e07be36498ae78e6766",
   "captured_by": "capture_assets.py (registry.tool_schemas, full mode; skills.load() for skill tools)",
   "builtin_registered": 92,
   "unavailable_not_offered": {
@@ -1259,7 +1259,7 @@
    "type": "function",
    "function": {
     "name": "mac_lock_screen",
-    "description": "Lock the Mac's screen now. (from the 'mac-controls' skill)",
+    "description": "Lock the Mac's screen now and report whether macOS confirmed the lock. (from the 'mac-controls' skill)",
     "parameters": {
      "type": "object",
      "properties": {},

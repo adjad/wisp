@@ -61,8 +61,8 @@ CUES = {   # V3.1 cues, renamed for merged tools, plus the new destructive/confi
     "clear_past_reminders": r"clear|delete|get rid|remove|wipe|dump|purge",
     "email_triage": r"archive|file away|flag|mark|read|unread|inbox",
     "move_path": r"move|rename|sort|organi[sz]e|tidy|file|put|trash|delete|throw|get rid",
-    "mac_set_volume": r"volume|louder|quieter|turn (it )?(up|down)|sound", "mac_mute": r"mute|silence|sound",
-    "mac_lock_screen": r"lock", "mac_media": r"play|pause|resume|skip|next|previous|song|track|music|spotify",
+    "mac_set_volume": r"volume|louder|quieter|turn (it )?(up|down)|sound|speaker|output level|crank|max",
+    "mac_mute": r"mute|silence|sound", "mac_lock_screen": r"lock|secure the display", "mac_media": r"play|pause|resume|skip|next|previous|song|track|music|spotify",
 }
 CLARIFY_FAMILIES = {"sf_vague_destructive", "sf_no_referent"}
 CRYPTO_URL = re.compile(r"^https://api\.coingecko\.com/api/v3/simple/price\?ids=[a-z0-9-]+&vs_currencies=usd$")
@@ -247,6 +247,9 @@ def run(d, check_repro):
             bad("schema_style_mix", f"{split}: terse share {sty.get('terse', 0)}/{tot} outside 40-60%")
     # category counts vs V3.1 minus drops
     v31_counts = G.v31_counts()
+    import ext_v32_mac as MAC
+    v31_counts["train"]["v32:" + MAC.CATEGORY] = MAC.N_TRAIN    # authored in V3.2: expected = generator allocation
+    v31_counts["dev"]["v32:" + MAC.CATEGORY] = MAC.N_DEV
     for split in ("train", "dev"):
         drops = collections.Counter(("v31:" if x["source"] == "v31_new" else "v3r:") + x["category"]
                                     for x in report["dropped"] if x["split"] == split)
@@ -416,7 +419,10 @@ def validate_conversation(cid, rows, p, src, held, bad, counts):
                 for t, x in zip(tcs, res):
                     n, a = t["function"]["name"], t["function"]["arguments"]
                     errs = check_schema(a, REG[n]["function"]["parameters"])
-                    if errs:
+                    refused = x["content"].startswith(("(error calling", "(exit code"))
+                    if errs and r is None and refused and p["source"] == "v32_new":
+                        counts["context_only_refused_calls"] += 1     # never a target; the next step is the correction
+                    elif errs:
                         bad("schema_valid", f"{cid}: {n} {errs}")
                     key = (n, json.dumps(a, sort_keys=True))
                     guarded = GUARD_MARK in x["content"]
@@ -499,6 +505,9 @@ def validate_conversation(cid, rows, p, src, held, bad, counts):
     for em in re.findall(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]+", blob):
         if not em.endswith(".invalid") and not em.endswith("@example.com"):
             bad("synthetic_only", f"{cid}: non-synthetic address {em}")
+    if p["source"] == "v32_new":
+        mac_rules(cid, p, turn, user_text, full, bad, counts)
+        return
     # ---- content preservation vs the V3.1 source
     if src is None:
         bad("source", f"{cid}: source conversation missing")
@@ -525,6 +534,66 @@ def validate_conversation(cid, rows, p, src, held, bad, counts):
         for mg in p["migrations"]:
             if not mg.get("migration_rule"):
                 bad("provenance", f"{cid}: migration without a rule")
+
+
+MAC_FORBIDDEN = {"run_shell", "run_applescript"}
+SPECIFIC_MUSIC = re.compile(r"\b(playlist|album|discover weekly|taylor swift|rhapsody|rumours)\b", re.I)
+NOT_LOCKED = re.compile(r"\b(NOT locked|isn't locked|is not locked|still unlocked|couldn't lock|could not lock)\b", re.I)
+
+
+def mac_rules(cid, p, turn, user_text, full, bad, counts):
+    """Forbidden/required behaviour for v32_mac_controls (mirrors the mac-controls skill body)."""
+    low = (" ".join(p.get("history_user_prompts") or []) + " " + user_text).lower()
+    results = {m["tool_call_id"]: m["content"] for m in turn if m["role"] == "tool"}
+    # executed calls only: discovery calls and name-only stub calls (answered by a receipt) are not executions
+    calls = [(tc["function"]["name"], tc["function"]["arguments"], i) for i, m in enumerate(turn)
+             for tc in (m.get("tool_calls") or [])
+             if tc["function"]["name"] != DISCOVERY and not results.get(tc["id"], "").startswith('{"schema_discovery"')]
+    final = full[-1].get("content") or ""
+    real = [(n, a) for n, a, _ in calls]
+    for m in turn:
+        for tc in m.get("tool_calls") or []:
+            if tc["function"]["name"] in MAC_FORBIDDEN:
+                bad("mac_forbidden_call", f"{cid}: {tc['function']['name']} called (or stubbed) for a mac control")
+    for n, a in real:
+        if n in MAC_FORBIDDEN:
+            bad("mac_forbidden_call", f"{cid}: {n} used for a mac control")
+    for m in turn:
+        for tc in m.get("tool_calls") or []:
+            n, a = tc["function"]["name"], tc["function"]["arguments"]
+            res = results.get(tc["id"], "")
+            if n == "mac_set_volume" and not res.startswith(("(error calling", "(exit code")) and "level" in a:
+                if not (isinstance(a["level"], int) and not isinstance(a["level"], bool) and 0 <= a["level"] <= 100):
+                    bad("mac_volume_level", f"{cid}: executed level {a['level']!r} is not an integer 0-100")
+            if n == "mac_media" and a:
+                if "spotify" in low and a.get("app") not in (None, "spotify") or ("spotify" not in low and "app" in a):
+                    bad("mac_media_app", f"{cid}: app must be omitted (Apple Music) unless the user names Spotify")
+            if n == "mac_lock_screen" and res.startswith("(exit code") and not NOT_LOCKED.search(final):
+                bad("mac_lock_error_honesty", f"{cid}: lock failed but the answer does not say the screen is NOT locked")
+            if n in G.TOOLS["skill_tools"] and res == "The user denied this action.":
+                later = [c for c in calls if c[2] > turn.index(m)]
+                if later:
+                    bad("mac_denial_retry", f"{cid}: calls after a denied confirmation")
+                counts["mac_denials"] += 1
+    names = [n for n, _ in real]
+    if re.search(r"\bmute\b", low) and not re.search(r"\bunmute\b", low) and "mac_set_volume" in names:
+        bad("mac_mute_not_zero", f"{cid}: mute must be mac_mute, not a volume change")
+    if re.search(r"\b(what'?s|what is|how loud|am i muted|is my)\b", low) and set(names) - {"mac_get_volume"}:
+        bad("mac_read_only", f"{cid}: a volume question must only call mac_get_volume")
+    if re.search(r"turn it (up|down)|louder|quieter|volume (up|down)|bring the sound|bump the sound|speakers (back|a little)", low) \
+            and "mac_set_volume" in names and not re.search(r"\d", user_text):
+        if names[:1] != ["mac_get_volume"]:
+            bad("mac_relative_volume", f"{cid}: relative change without reading the volume first")
+        cur = [int(re.match(r"volume (\d+)%", results[tc["id"]]).group(1)) for m in turn for tc in (m.get("tool_calls") or [])
+               if tc["function"]["name"] == "mac_get_volume" and re.match(r"volume \d+%", results.get(tc["id"], ""))]
+        new = [a["level"] for n, a in real if n == "mac_set_volume"]
+        if cur and new and not (abs(abs(new[0] - cur[0]) - 20) <= 5 or new[0] in (0, 100)):
+            bad("mac_relative_volume", f"{cid}: {cur[0]} -> {new[0]} is not about 20 (or clamped)")
+    if p["family_id"] == "mc_specific" and any(n == "mac_media" for n in names):
+        bad("mac_specific_music", f"{cid}: mac_media cannot pick specific music")
+    if SPECIFIC_MUSIC.search(user_text) and "mac_media" in names:
+        bad("mac_specific_music", f"{cid}: mac_media called for a specific song/playlist")
+    counts["mac_conversations"] += 1
 
 
 def main():

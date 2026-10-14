@@ -14,7 +14,7 @@ MEMBERS = ["train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance
            "assets/tools.json", "assets/system_parts.json", "assets/heldout_shingles.json", "assets/short_descriptions.json",
            "assets/capture_verification.json",
            "README.md", "DATA_CARD.md", "preflight.py", "check_labels.py", "axolotl-a6000.yaml", "merge_lora.py",
-           "validate.py", "validation.json", "preflight.json", "generate.py", "sources.py", "capture_assets.py"]
+           "validate.py", "validation.json", "preflight.json", "generate.py", "ext_v32_mac.py", "sources.py", "capture_assets.py"]
 MEMBERS = sorted(dict.fromkeys(MEMBERS))
 
 

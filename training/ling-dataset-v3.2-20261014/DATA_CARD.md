@@ -6,14 +6,14 @@ Short descriptions: `assets/short_descriptions.json`, source_sha `178ebb3ed19de9
 
 ## Counts
 
-| split | conversations (tool protocol) | rows | V2 replay rows | migrated conversations | terse conversations | full conversations | terse rows | full rows |
+| split | conversations (tool protocol, incl. v32_mac_controls) | rows | V2 replay rows | migrated conversations | terse conversations | full conversations | terse rows | full rows |
 |---|---|---|---|---|---|---|---|---|
-| train | 605 | 1805 | 600 | 17 | 301 | 304 | 906 | 899 |
-| dev | 73 | 219 | 60 | 0 | 35 | 38 | 111 | 108 |
+| train | 665 | 1974 | 600 | 17 | 331 | 334 | 992 | 982 |
+| dev | 81 | 242 | 60 | 0 | 39 | 42 | 124 | 118 |
 
 ## Conversations by category: V3.1 source vs V3.2
 
-`v31:` = V3.1 targeted-fix conversations, `v3r:` = the V3 replay sample V3.1 trained on. V2 replay rows (600 train / 60 dev) are unchanged.
+`v31:` = V3.1 targeted-fix conversations, `v3r:` = the V3 replay sample V3.1 trained on, `v32:` = authored in V3.2 (ext_v32_mac.py). V2 replay rows (600 train / 60 dev) are unchanged.
 
 | category | V3.1 train | V3.2 train | V3.1 dev | V3.2 dev |
 |---|---|---|---|---|
@@ -23,6 +23,7 @@ Short descriptions: `assets/short_descriptions.json`, source_sha `178ebb3ed19de9
 | v31:v31_reminder_calendar_followup | 90 | 90 | 11 | 11 |
 | v31:v31_safety_clarify_recipient | 82 | 82 | 10 | 10 |
 | v31:v31_saved_facts_memory | 70 | 70 | 8 | 8 |
+| v32:v32_mac_controls | 0 | 60 | 0 | 8 |
 | v3r:chat_no_tool | 16 | 16 | 2 | 2 |
 | v3r:clarify_ambiguity | 10 | 10 | 2 | 2 |
 | v3r:compound_read_then_act | 44 | 44 | 5 | 5 |
@@ -71,15 +72,15 @@ Retired tools that appeared only as loaded decoys (preloaded SP schemas or expli
 
 | split | S | SP-hit | SP-decoy |
 |---|---|---|---|
-| train | 440 | 70 | 95 |
-| dev | 50 | 7 | 16 |
+| train | 482 | 80 | 103 |
+| dev | 55 | 9 | 17 |
 
 ## Length estimates (characters / 4)
 
 | split | row mean | p50 | p95 | max |
 |---|---|---|---|---|
-| train | 6547 | 6282 | 9597 | 11672 |
-| dev | 6652 | 6530 | 9415 | 11228 |
+| train | 6480 | 6079 | 9498 | 11672 |
+| dev | 6552 | 6308 | 9362 | 11228 |
 
 ## What changed from V3.1
 
@@ -92,7 +93,7 @@ Retired tools that appeared only as loaded decoys (preloaded SP schemas or expli
 ## Limitations
 
 - Inherits every V3.1 / V3 limitation (synthetic, template phrasing, condensed tool results).
-- No conversation was authored for the mac_* skill tools: the V3.1 sources call none of the volume/lock/music tools, so the skill tools appear only as stubs/catalog entries and in the skills block. Volume/lock/playback behaviour is untrained here.
+- `v32_mac_controls` (60 train / 8 dev, ext_v32_mac.py) is the only authored category: explicit and relative volume (read first, about +/-20, clamped), volume reads, mute/unmute, lock success and failure (the answer says NOT locked), Apple Music / Spotify playback, specific-music requests (no call; open_app only after the user accepts), declined confirmations (host text `The user denied this action.`, no retry) and refused arguments (the bad call is context only, the target is the correction). Results are the skill's real output strings; template phrasing is limited (12 train families).
 - Merged-tool results keep the old single-purpose shape (e.g. `get_weather(include=[air_quality])` returns only the AQI line).
 - The installed-skills block assumes the mac-controls skill ships bundled and enabled and no user skills are installed.
 - Quality is unmeasured until Ling is retrained and evaluated (see README gate, including terse-vs-full parity).

@@ -2,8 +2,9 @@
 
 V3.2 is the V3.1 training set (`../ling-dataset-v3.1-20261013`, frozen and untouched) replayed against the Wisp tool registry
 as it exists on `origin/main` 1bd68e7e (after PR #208's 182 -> 100 consolidation and PR #224's removals), with about half of
-the conversations rendered in the opt-in **terse** schema mode. It authors no new scenarios. Nothing here loads a model,
-calls oMLX, executes a Wisp tool or reads `~/.moe`.
+the conversations rendered in the opt-in **terse** schema mode, plus one authored category, `v32_mac_controls`, for the
+mac-controls skill tools (60 train / 8 dev conversations). Nothing here loads a model, calls oMLX, executes a Wisp tool or
+reads `~/.moe`.
 
 ## Why
 
@@ -24,6 +25,7 @@ calls oMLX, executes a Wisp tool or reads `~/.moe`.
 | offer order | loaded, `get_tool_schemas`, stubs | loaded, stubs (sorted), `get_tool_schemas` LAST, as `loop.model_led_offer` sends it |
 | schemas | full only | `schema_style` per conversation: `full` (tools.json byte-for-byte) or `terse` (short line, parameter descriptions stripped) |
 | content | | every user/assistant/tool text identical to V3.1 except where a recorded migration rewrote it |
+| new category | | `v32_mac_controls` (ext_v32_mac.py), see below |
 
 The discovery protocol itself (two loading steps, 24 schemas, implicit stub discovery, receipt JSON, rejection text) is
 unchanged on `origin/main` and was re-verified against `service/router/model_led.py` and `service/agent/loop.py`.
@@ -51,6 +53,33 @@ assistant step, only the last message of a row has `training: true`.
   One conversation's stub step disappeared because its tool was already preloaded after the merge (`weather_alerts` decoy ->
   `get_weather`), turning it from SP-decoy into SP-hit.
 
+## New category: `v32_mac_controls`
+
+`ext_v32_mac.py` authors 60 train / 8 dev conversations (12 train families, 4 dev families with their own phrasing
+registers; deterministic from seed 20261014; held-out overlap < 0.4; terse/full split like every other category). They use
+the same protocol as the migrated rows (`generate.Builder`): stubs or `get_tool_schemas` for the `skills` family (where
+`model_led.family_for` puts category `skill_tool`), SP preloads (hit and decoy), receipts, two loading steps. Results are the
+skill's real strings (controls.sh through the skill runner; a non-zero exit becomes `(exit code 2)\n<stderr>`), the host's
+argument-validation error, and the host's confirmation denial `The user denied this action.` (service/agent/loop.py; V3.1's
+sends used a synthetic `The user declined; nothing was sent.`, but the skill tools go through the generic confirm path).
+
+| family | gold behaviour |
+|---|---|
+| explicit level | `mac_set_volume(level=<int>)`, "50%" -> 50; volume 0 answered as zero, not muted |
+| relative ("turn it down", "louder") | `mac_get_volume` first, then `mac_set_volume` about 20 lower/higher, clamped to 0-100 |
+| read ("what's my volume", "am I muted") | `mac_get_volume` only |
+| mute / unmute | `mac_mute(state="on"/"off")` |
+| lock / lock failure | `mac_lock_screen`; on "sent the Lock Screen shortcut, but macOS did not report the screen as locked" or "could not lock the screen: ..." the answer says the screen is NOT locked and why; no retry |
+| playback | `mac_media(action)` with `app` omitted (Apple Music), `app="spotify"` only when Spotify is named |
+| specific song/album/playlist | no call; says mac_media can't pick music, offers to resume or open the app; accepting in a follow-up -> `open_app` |
+| declined confirmation | says nothing changed; no retry; never `run_shell` / `run_applescript` |
+| refused argument | `level: "50%"` (host type error) or `level: 110` (skill range error) is a context-only step; the target is the corrected call (or 100 for "max it out") |
+
+validate.py enforces this category's rules: no `run_shell`/`run_applescript` call or stub, executed levels are integers 0-100,
+mute is never a volume change, volume questions only read, relative changes read first and move about 20 (or clamp), Spotify
+only when named, no `mac_media` for specific music, no call after a denial, and a failed lock is reported as NOT locked.
+Refused context-only calls are the only schema-invalid calls allowed, and only in this category.
+
 ## Files
 
 | file | purpose |
@@ -62,13 +91,14 @@ assistant step, only the last message of a row has `training: true`.
 | `sources.py` | rebuilds the exact V3.1 source rows into `source_cache/` (gitignored) and proves them byte-identical to V3.1's pinned train/dev hashes |
 | `capture_assets.py` | captures `assets/` from read-only Wisp checkouts (Wisp venv; HOME/WISP_HOME redirected to a temp dir) |
 | `generate.py` | deterministic migration + rendering (seed 20261014, stdlib only) |
+| `ext_v32_mac.py` | the authored `v32_mac_controls` category |
 | `validate.py`, `validation.json` | checks below; FAILS if the short-description asset is a placeholder |
 | `preflight.py`, `preflight.json` | real Ling tokenizer render + intended label mask (tokenizer files only, no weights) |
 | `check_labels.py`, `axolotl-a6000.yaml`, `merge_lora.py`, `package.py` | training-side tools, unchanged from V3.1 except names/counts |
 | `assets/` | `tools.json`, `system_parts.json`, `short_descriptions.json`, `capture_verification.json` (reference renderings produced by Wisp's own functions), `heldout_shingles.json` (V3.1's, unchanged) |
 
 Asset provenance: Wisp `origin/main` 1bd68e7eb68f73be5b06dbc7bc4c607c12339a7a; mac-controls skill
-d7479c52b9067d8372e852da842d190d794a73e0 (`origin/claude/mac-controls-skill`); short descriptions
+55a2b5b142ca816013213e07be36498ae78e6766 (`origin/claude/mac-controls-skill`, PR #226 reviewed head); short descriptions
 178ebb3ed19de91efbb8591335bf1aad687a6168 (`origin/claude/terse-tool-schemas`, PR #227, real export, not a placeholder).
 
 ## Reproduce and validate
@@ -110,9 +140,9 @@ without an explicit trash/delete request, guarded repeats never targets); V2 rep
 ## Train on the A6000
 
 Same recipe as V3.1 (LoRA r16/alpha32 on attention, 1 epoch, LR 1e-4, `sequence_len` 16384, thinking off). Real token counts
-(`preflight.json`): train 1,805 rows, max 11,599 / p95 9,634 / median 6,435 (12.0M tokens) + 600 V2 replay rows; dev 219 + 60.
+(`preflight.json`): train 1,974 rows, max 11,599 / p95 9,517 / median 6,249 (13.0M tokens) + 600 V2 replay rows; dev 242 + 60.
 Rows are ~25% shorter than V3.1's because the catalog has 96 tools instead of ~160 and half the rows are terse.
-151 optimizer steps at effective batch 16.
+161 optimizer steps at effective batch 16.
 
 ### Continued fine-tune base (pick one)
 
@@ -140,12 +170,11 @@ the registry above with the mac-controls skill bundled (the training rows assume
 
 ## Known gaps and risks
 
-- No conversation exercises the mac_* skill tools (volume, mute, lock, playback): V3.1 never called the retired
-  volume/lock/music tools, so those calls had nothing to migrate. They appear as stubs, catalog entries and in the skills block
-  only. Add authored rows (with the confirmation-gated flow) before relying on them.
+- `v32_mac_controls` is template-authored (12 train families, small phrasing banks); it is the only coverage of the mac_*
+  tools. The skills block assumes skill triggers as of 55a2b5b1; if PR #226 changes them again, re-capture and re-generate.
 - No row fetches the crypto/news endpoints with `web_fetch`; terse mode drops those URL templates from the description, so
   that path is untrained in terse mode. validate.py enforces the exact endpoint forms if such rows are added.
 - Merged-tool results keep the single-purpose shape (e.g. `get_weather(include=[air_quality])` returns only the AQI line).
-- The skills block assumes the bundled skill set {idea-refine, interview-me, mac-controls} enabled and no user skills; no
-  user text in the data triggers a skill body.
+- The skills block assumes the bundled skill set {idea-refine, interview-me, mac-controls} enabled and no user skills. The
+  mac-controls body is appended (`[loaded below]`) in the rows whose user text matches its triggers.
 - Memory/facts blocks are empty (synthetic user), as in V3.1.

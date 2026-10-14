@@ -88,7 +88,7 @@ eval_sample_packing: false
 
 # ---- optimisation ----------------------------------------------------------
 micro_batch_size: 1
-gradient_accumulation_steps: 16         # effective batch 16 rows -> 151 optimizer steps for 2,405 rows (1,805 migrated V3.1/V3 + 600 V2 replay)
+gradient_accumulation_steps: 16         # effective batch 16 rows -> 161 optimizer steps for 2,574 rows (1,805 migrated V3.1/V3 + 169 v32_mac_controls + 600 V2 replay)
 num_epochs: 1
 learning_rate: 0.0001
 lr_scheduler: cosine
@@ -111,4 +111,4 @@ logging_steps: 1
 # ---- TIMED SMOKE RUN (before the full run) ---------------------------------
 # Add `max_steps: 20` and `evals_per_epoch: 0` (or pass --max_steps 20 on the CLI, with a different --output_dir), run
 # `axolotl train`, then tokens/sec = (20 steps x 16 rows x ~9,000 tokens ~= 2.9M tokens) / wall seconds. Read peak GPU memory
-# from nvidia-smi. Full-run time ~= smoke time x 151/20 (rows average ~6,700 tokens now, not ~9,000).
+# from nvidia-smi. Full-run time ~= smoke time x 161/20 (rows average ~6,700 tokens now, not ~9,000).
