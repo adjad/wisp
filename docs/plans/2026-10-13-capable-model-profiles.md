@@ -470,3 +470,40 @@ answers under three tokens, 60% otherwise — and cited to that passage; anythin
 traced is still dropped. `search_think` retired with its numbers; `capture_think` kept, unmeasured.
 Confirmed live (run `20261013-143849`, V3, 6 cases × 3 reps): **18/18 correct**, p50 5.2s, versus
 33% in every run before the fix.
+
+**Correction to §1 / Phase 2 (2026-10-13, measured in `loop._system_blocks`).** The "~6k-token system
+prompt" figure is the raw `SYSTEM` constant. `build_system()` already prunes it per route: only 8
+cross-cutting blocks (3,234 chars, ~810 tokens) are always sent, and a scoped route carries ~1,000–1,500
+tokens of rules (inbox 1,201; calendar 1,478; web 1,024). The two heavy blocks — send rules (3,852
+chars) and memory rules (3,377) — ride only when those tools are offered. Yet real V3 turns in the oMLX
+log prefill 10–11k tokens, so the rules are a minor share of Ling's per-step cost. Phase 2's
+description migration is still right for the capable tier and for model-led discovery, but for Ling the
+next measurement is the **composition of a real turn's prompt** (schemas, history, memory block, tool
+results), which decides whether Phase 3 (history) or schema trimming comes first.
+
+**Composition probe (`scripts/eval_prompt_composition.py`, report `composition-20261013-161238`), six
+prompts on V3, fresh sandbox session.** Three of six prompts (calendar, messages, weather) ran **zero
+model steps** — pre-synthesized tools answer them — so prompt size is moot there. On model steps:
+rules 810–2,316 tokens (the 11-tool ambiguous route is the 2,316), schemas 294–1,948, identity 261–468,
+memory/history 0 (fresh session; real sessions add both). The outlier: **"What do I need to do today?"
+ran 8 steps / 34.9s**, re-calling `collect_task_evidence` every step with its ~1,800-token result
+re-sent each time — tool results were 40% of all prompt tokens in the run because of this one turn.
+That loop, not the rules, is Ling's biggest measured cost on a daily prompt; it is the next slice.
+
+**Slice 4 (branch `claude/ling-v3-prompt`, stacked on PR #203): stop the refused-repeat loop.** The
+repeated-read guard already returned an "already ran" pointer, but V3 ignored it and re-called until
+`max_steps`. Now, when every call a step made was refused (identical read or duplicate effect) and no
+required group is still unmet, the next step runs with `tool_choice="none"`, so the model answers from
+the results in context. Never while a forced/expected tool is pending. Live re-run of the same prompt:
+**4 steps / 13.6s** (was 8 / 34.9s); the refusal fires once, the turn ends on its own.
+`tests/test_loop_repeat_stall.py` covers the stall, the mixed-step exception and the unmet-group
+exception. `scripts/eval_prompt_composition.py` added for the per-step breakdown.
+
+The choice alone was not enough: the `none` steps came back **empty**, and the turn fell through to
+`_merge_results`' raw JSON dump (which is what the app shows today after the 35s loop). oMLX's log had
+the cause: V3 emitted a call to a non-existent `think` tool, dropped as unregistered. Replaying the
+exact request: pointer in context → empty in every configuration (tools on/off, thinking on/off);
+pointer removed → re-calls the tool; **one nudge line** ("Write the answer now from the tool results
+above. Do not call any tool.") → concise grounded answer 2/2; nudge without the pointer → runaway to
+the token cap (70s). Shipped: `tool_choice="none"` + the nudge, pointer kept. Live: a real four-source
+readout in 18.9s instead of a JSON dump after 34.9s.

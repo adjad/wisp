@@ -22,9 +22,8 @@ import pytest
 
 os.environ.setdefault("WISP_HOME", tempfile.mkdtemp(prefix="wisp-fastpath-"))
 
-from service.skills import load as load_skills  # noqa: E402
-
-load_skills()
+# Avoid loading skills during collection: test_router_everyday_prompts imports
+# helpers from this module, and loading registers use_skill in the shared registry.
 
 import service.router.router as R  # noqa: E402
 from service import utterance_shape as U  # noqa: E402
