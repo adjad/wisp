@@ -146,6 +146,15 @@ def get_behavior_enabled() -> bool:
     return not (isinstance(section, dict) and section.get("enabled") is False)
 
 
+def terse_tool_schemas_enabled() -> bool:
+    """Opt-in terse tool schemas: one-line descriptions, no parameter prose.
+    Meant for a model fine-tuned on the tools; OFF unless WISP_TERSE_TOOL_SCHEMAS
+    is 1/true/yes/on. Read per call (not at import) so tests and a relaunched
+    backend see the current value; unset or unrecognized keeps full schemas."""
+    import os
+    return os.environ.get("WISP_TERSE_TOOL_SCHEMAS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def set_behavior_enabled(enabled: bool) -> bool:
     if type(enabled) is not bool:
         raise ValueError("behavior enabled must be a boolean")

@@ -354,9 +354,48 @@ def searchable_tool_names() -> set[str]:
     return {name for name in REGISTRY if is_tool_searchable(name)}
 
 
+def _strip_parameter_descriptions(node: Any) -> Any:
+    """Deep copy of a JSON schema without `description` on properties.
+
+    Only schema positions are stripped: a property literally NAMED
+    "description" (create_tool's argument) is a key under `properties`, so it
+    is kept. Types, enums, required, defaults and formats are untouched."""
+    if isinstance(node, list):
+        return [_strip_parameter_descriptions(v) for v in node]
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for key, value in node.items():
+        if key == "description" and isinstance(value, str):
+            continue
+        if key == "properties" and isinstance(value, dict):
+            out[key] = {name: _strip_parameter_descriptions(sub) for name, sub in value.items()}
+        else:
+            out[key] = _strip_parameter_descriptions(value)
+    return out
+
+
+def _terse_schema(tool: Tool) -> dict:
+    """Model-facing schema with the one-line description and bare parameters.
+    Built from copies; the registry's stored objects are never touched, and
+    retrieval keeps indexing the full description."""
+    from service.tools.short_descriptions import short_description
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            # skill/MCP/user-authored tools have no entry and keep their prose
+            "description": short_description(tool.name, tool.description),
+            "parameters": _strip_parameter_descriptions(tool.parameters),
+        },
+    }
+
+
 def tool_schemas(names: list[str] | None = None) -> list[dict]:
+    from service.config import terse_tool_schemas_enabled
     tools = REGISTRY.values() if names is None else [REGISTRY[n] for n in names if n in REGISTRY]
-    return [t.schema() for t in tools if not t.unavailable_reason]
+    render = _terse_schema if terse_tool_schemas_enabled() else Tool.schema
+    return [render(t) for t in tools if not t.unavailable_reason]
 
 
 def _arg_hint(tool: Tool) -> str:
