@@ -4,7 +4,7 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
-## [1.3.2] - 2026-10-13
+## [1.3.2] - 2026-10-14
 
 ### Added
 
@@ -13,8 +13,14 @@ All notable changes to Wisp are documented here.
 
 ### Changed
 
+- Behavior learning picks up routines from sparser calendars. A habit now needs 3 occurrences in at least 3 separate weeks (was 4), and a recurring event, note or reminder is judged from when it first appeared, so office hours that started three weeks ago count as three for three instead of three of seven. Category routines (gym, focus time) still count every week of history, and Wisp-usage routines still need 4 asks.
+- Wisp has 100 built-in tools instead of 182. Related tools were merged into one tool with a mode, so old phrasings still work: weather alerts, air quality and rain are `get_weather`; timers, alarms, sleep timers and the stopwatch are `set_timer` and `manage_timers`; battery, network and Bluetooth status are `system_status`; Wi-Fi, VoiceOver and dark mode join `toggle_setting`; Music and Spotify are `music`; podcasts, audiobooks, radio and ambient sound are `play_audio`; archive, mark read and flag are `email_triage`. "Always allow" and "never allow" choices made for a merged tool still cover only what they covered before.
 - Within one turn, a read the model already made with identical arguments isn't run again. The model gets "already ran with these exact arguments… It was NOT run again" and answers from the earlier result. Status reads (battery, volume, network, running apps, clipboard, screen and similar) still run every time, and any successful write or action clears the record, so a read after a write sees fresh data.
 - Requests to the local oMLX engine no longer re-prove the engine from scratch each time. Wisp keeps one verified record per running oMLX for at most 60 seconds, re-checks the engine process natively before every request and every write, and still checks the listener once per connection and the connection's owner (lsof) before every write. A restart, an exec into another binary, the authorization file appearing or any check failure falls back to the full check. `WISP_ATTESTATION_LEGACY=1` restores the previous per-request check.
+
+### Removed
+
+- Directions, currency conversion, app uninstall, AirDrop, unsubscribe, raw HTTP requests, display brightness and a few other low-use or duplicate tools. Currency, definition, recipe and sunset questions now go to web search or Wikipedia. Placeholder tools that did nothing are gone.
 
 ### Fixed
 

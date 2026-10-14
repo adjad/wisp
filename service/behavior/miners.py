@@ -33,8 +33,9 @@ from service.behavior.types import Observation, Pattern, Window
 
 Z = 1.28                      # one-sided ~90% Wilson bound
 BIN_MIN = 30                  # habit clustering bin
-HABIT_MIN_SUPPORT = 4
+HABIT_MIN_SUPPORT = 3        # 3 is enough over >= 3 separate weeks: a weekly class shows up after three
 HABIT_MIN_WEEKS = 3
+USAGE_MIN_SUPPORT = 4        # Wisp asks are cheap and bursty, so usage keeps the stricter bar
 WEEKDAY_MIN_RATE = 0.4        # a weekday joins a habit window when it happens >= 40% of those days
 MAX_WINDOW_MIN = 240          # wider than this is "sometime during the day", not a habit
 CONTACT_MIN_INTERACTIONS = 8
@@ -291,7 +292,11 @@ def mine_habits(items: list[Local], spans: dict[str, date], now_dt: datetime) ->
     for (kt, key), members in groups.items():
         if len(members) < HABIT_MIN_SUPPORT:
             continue
-        first = spans.get(kt) or min(m.day for m in members)
+        # A category spans the whole history. A titled event, note or reminder
+        # is judged from its first appearance: a class or office hours that began
+        # this term must not count the weeks before it existed as misses.
+        own_first = min(m.day for m in members)
+        first = own_first if kt != "category" else (spans.get(kt) or own_first)
         for c in find_windows(members, first, now_dt):
             label = _label(c.members)
             subject = key if kt == "category" else label
@@ -705,9 +710,10 @@ def mine_wisp_usage(asks: list[Local], first: date | None, now_dt: datetime) -> 
             groups[key].append(a)
     out = []
     for key, items in groups.items():
-        if len(items) < HABIT_MIN_SUPPORT:
+        if len(items) < USAGE_MIN_SUPPORT:
             continue
-        for c in find_windows(items, first or min(i.day for i in items), now_dt, step=5):
+        for c in find_windows(items, first or min(i.day for i in items), now_dt, step=5,
+                              min_support=USAGE_MIN_SUPPORT):
             around = round_to(c.median_minute, 5)
             label = _label(c.members)
             if "brief" in key:
