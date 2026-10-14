@@ -22,7 +22,7 @@ session_locked() {
   uid=$(/usr/bin/id -u 2>/dev/null) || return 1
   [[ "$uid" =~ ^[0-9]+$ ]] || return 1
   plist=$(cat) || return 1
-  key() { printf '%s' "$plist" | plutil -extract "IOConsoleUsers.$i.$1" raw -o - - 2>/dev/null; }
+  key() { printf '%s' "$plist" | /usr/bin/plutil -extract "IOConsoleUsers.$i.$1" raw -o - - 2>/dev/null; }
   i=0
   while u=$(key kCGSSessionUserIDKey); do
     on=$(key kCGSSessionOnConsoleKey)
@@ -65,7 +65,7 @@ case "${1:-}" in
     fi
     # Claim the lock only once this user's on-console session reports it.
     for _ in 1 2 3 4 5 6; do
-      if ioreg -n Root -d1 -a | session_locked; then
+      if /usr/sbin/ioreg -n Root -d1 -a | session_locked; then
         echo "screen locked"
         exit 0
       fi
