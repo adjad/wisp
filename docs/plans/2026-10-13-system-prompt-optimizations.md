@@ -72,12 +72,19 @@ Cumulative, low-risk set (A+B+C+D+E): ambiguous route −1,440 tokens; every oth
 tokens plus better prefix reuse; "what time is it" prompts lose a model step entirely. The
 medium/high set (F–I) is worth ~400–1,200 more per route but belongs with a V4 training run.
 
-**Implemented on this branch (A and B):** `run_agent` now fits the request once up front with the
-full rules and, when tools fall out, rebuilds the rules from the survivors (once per turn, so the
-prompt-cache prefix stays stable across steps); `skills_context_block(..., catalog=False)` drops
-the installed-skills catalog when `use_skill` is not offered, keeping any matched or active skill
-body. Tests: `tests/test_prompt_scope_fit.py` (3), registered in the Simulation QA manifest; the
-seven existing modules that touch the prompt builder or the skills block pass (911 tests).
+**Implemented on this branch (A and B):** `run_agent` now fits the request once up front against
+the smallest system text the turn could have (core blocks plus hints) and, when tools fall out,
+rebuilds the rules from that survivor set — once per turn, so the prompt-cache prefix stays stable
+across steps. Fitting with the *full* rules and rebuilding from the survivors was the first cut
+and is wrong: the smaller rebuilt text lets the real step fit keep more tools than the pre-fit
+did, so at a 7,450–7,575-token window the request carried five tools with rules for four (audit
+finding). Every real step's system text is at least the core-only one, and `_fit_window` drops
+history then tools monotonically with overhead, so the offered set always lies inside the
+pre-fit survivors. `skills_context_block(..., catalog=False)` drops the installed-skills catalog
+when `use_skill` is not offered (model-led discovery keeps it), keeping any matched or active
+skill body. Tests: `tests/test_prompt_scope_fit.py` (5, including a window sweep across every
+drop boundary), registered in the Simulation QA manifest; the existing modules that touch the
+prompt builder or the skills block pass.
 Note that A's measured saving shrinks once the window is fixed (§1a) — with 16k, fewer tools are
 dropped and the rules were right all along; it stays correct in both states.
 
