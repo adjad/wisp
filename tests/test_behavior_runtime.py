@@ -176,7 +176,7 @@ def _env(monkeypatch, tmp_path):
     config.models_config.cache_clear()
 
 
-def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=lambda: NOW):
+def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=lambda: NOW, contact_name_fn=None):
     engine = engine or FakeEngine()
     calls = {"messages": 0}
 
@@ -188,6 +188,7 @@ def make_runtime(tmp_path, engine=None, *, calendar=None, messages=None, clock=l
         tmp_path / "home",
         local_factory=lambda path: engine,
         messages_fn=messages_fn,
+        contact_name_fn=contact_name_fn,
         calendar_sync_fn=lambda: calendar if calendar is not None else {"available": False},
         session_db_fn=lambda: (_ for _ in ()).throw(RuntimeError("no sessions in tests")),
         clock=clock)
@@ -224,8 +225,9 @@ def test_default_runtime_reads_the_real_sources_and_keeps_message_text_out(tmp_p
     seen = []
     secret = "SECRET BODY TEXT"
     snapshot = {"state": "ready", "records": [
-        {"identity": "m1", "timestamp": NOW - 600, "direction": "incoming", "sender": "Sam", "text": secret},
-        {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "conversation": "Sam", "text": secret}]}
+        {"identity": "m1", "timestamp": NOW - 600, "direction": "incoming", "sender": "+15555550101", "text": secret},
+        {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "conversation": "any;-;+15555550101",
+         "text": secret}]}
     monkeypatch.setattr(imessage_tools, "structured_messages_snapshot", lambda: seen.append(1) or snapshot)
     assert rt._ingest_messages(NOW) is True and seen == [1]
     assert {o.source for o in engine.obs.values()} == {"messages"}
@@ -457,12 +459,13 @@ def test_real_mode_reads_all_calendars_messages_metadata_and_reminders(tmp_path,
     store.sync_source("calendar", [_cal("Standup", at(10, 0, 1), sid="s", calendar="Work")])
     store.add_manual("Call mom", at(18, 0))
     messages = {"state": "ready", "records": [
-        {"identity": "m1", "timestamp": NOW - 600, "direction": "incoming", "sender": "Sam",
-         "conversation": "Sam", "text": "secret text never ingested"},
-        {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "sender": "Me",
-         "conversation": "Priya", "text": "also secret"}]}
+        {"identity": "m1", "timestamp": NOW - 600, "direction": "incoming", "sender": "+15555550101",
+         "conversation": "any;-;+15555550101", "text": "secret text never ingested"},
+        {"identity": "m2", "timestamp": NOW - 300, "direction": "outgoing", "sender": "",
+         "conversation": "iMessage;-;priya@example.invalid", "text": "also secret"}]}
+    names = {"+15555550101": "Sam", "priya@example.invalid": "Priya"}
     rt, eng = make_runtime(tmp_path, calendar={"available": True, "last_sync": NOW},
-                           messages=messages)
+                           messages=messages, contact_name_fn=lambda h: names.get(h, h))
     store.sync_source("calendar", [_cal("Standup", at(10, 0, 1), sid="s", calendar="Work"),
                                    _cal("Old 1:1", at(15, 0, -7), sid="o", calendar="Work",
                                         end=at(15, 30, -7))])
@@ -757,7 +760,10 @@ def test_real_messages_feed_reaches_the_engine_as_one_subject_per_person(tmp_pat
             _feed_record("g4", "any;+;chat123456", "+15555550100", "incoming", t - 600),
             _feed_record("g5", "any;+;chat123456", "", "outgoing", t - 300),
             _feed_record("g6", "any;-;+15555550100", "+15555550100", "incoming", t - br.HISTORY_S - 60),
-            _feed_record("g7", "any;-;36726", "36726", "incoming", t - 200)]
+            _feed_record("g7", "any;-;36726", "36726", "incoming", t - 200),
+            _feed_record("g8", "SMS;-;AMAZON", "AMAZON", "incoming", t - 190),
+            _feed_record("g9", "SMS;-;+18005550100", "+18005550100", "incoming", t - 180),
+            _feed_record("g10", "iMessage;-;urn:biz:5f1a2b", "urn:biz:5f1a2b", "incoming", t - 170)]
     coverage = {"version": 1, "kind": "coverage", "attempted": len(rows), "emitted": len(rows),
                 "skipped": 0, "truncated": 0, "limit": 2000, "byte_limit": 4000000,
                 "window_days": 365, "row_limit": 20000, "reached_row_limit": False}
@@ -774,7 +780,7 @@ def test_real_messages_feed_reaches_the_engine_as_one_subject_per_person(tmp_pat
                    (t - 600, "message_in", "Sam Lee")]                  # group: the sender counts
     assert all(k.startswith("msg:") for k in engine.obs)
     # g5 (outgoing to a group) has no single counterpart; g6 is older than the mining window;
-    # g7 is an SMS short code (an automated sender), not a person to have a rhythm with.
+    # g7-g10 are automated senders (short code, alphanumeric id, toll-free, business chat).
     assert "private body" not in json.dumps([o.to_dict() for o in engine.obs.values()])
 
 
@@ -783,3 +789,24 @@ def test_message_timestamps_accept_rfc3339_and_numbers():
     assert br._message_ts(1791950062) == 1791950062.0
     assert br._message_ts("2026-10-14T03:54:22") is None              # no zone: ambiguous, skipped
     assert br._message_ts("not a time") is None and br._message_ts(None) is None
+
+
+def test_counterpart_keeps_people_and_drops_automated_senders():
+    person = lambda d, conv, sender="": br._counterpart({"direction": d, "conversation": conv, "sender": sender})
+    assert person("incoming", "any;-;+15555550101", "+15555550101") == "+15555550101"
+    assert person("incoming", "any;-;sam@example.invalid", "sam@example.invalid") == "sam@example.invalid"
+    assert person("outgoing", "SMS;-;+44 20 7946 0958") == "+44 20 7946 0958"
+    assert person("outgoing", "any;+;chat1234") == ""                 # group: no single counterpart
+    assert person("outgoing", "chat1234") == ""                       # unknown chat shape
+    for automated in ("36726", "+1 800 555 0100", "18885550100", "AMAZON", "Chase", "urn:biz:9f"):
+        assert person("incoming", "any;-;" + automated, automated) == "", automated
+
+
+def test_a_failing_contact_lookup_falls_back_to_the_handle(tmp_path):
+    messages = {"state": "ready", "records": [
+        {"identity": "m1", "timestamp": NOW - 60, "direction": "incoming", "sender": "+15555550101"}]}
+    def boom(handle):
+        raise RuntimeError("contacts unavailable")
+    rt, eng = make_runtime(tmp_path, messages=messages, contact_name_fn=boom)
+    assert rt._ingest_messages(NOW) is True
+    assert eng.obs["msg:m1"].subject == "+15555550101"

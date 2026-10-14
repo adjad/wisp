@@ -126,6 +126,19 @@ def _message_ts(value) -> float | None:
 
 
 _SHORT_CODE = re.compile(r"\+?\d{3,6}")   # SMS short codes (bank, delivery, 2FA senders), not people
+_TOLL_FREE = re.compile(r"\+?1?(?:800|833|844|855|866|877|888)\d{7}")
+
+
+def _is_person_handle(handle: str) -> bool:
+    """A phone number or email a person texts from. Automated senders are not people to have a
+    rhythm with: SMS short codes, toll-free numbers, alphanumeric sender ids ("AMAZON", "Chase")
+    and business chats (urn:biz:...)."""
+    if "@" in handle:
+        return True
+    digits = re.sub(r"[\s().-]", "", handle)
+    if handle.lower().startswith("urn:") or not re.fullmatch(r"\+?\d+", digits):
+        return False
+    return not (_SHORT_CODE.fullmatch(digits) or _TOLL_FREE.fullmatch(digits))
 
 
 def _counterpart(record: dict) -> str:
@@ -136,10 +149,8 @@ def _counterpart(record: dict) -> str:
         who = str(record.get("sender") or "").strip()
     else:
         chat = str(record.get("conversation") or "").strip()
-        if ";+;" in chat:
-            return ""
-        who = chat.split(";-;", 1)[1].strip() if ";-;" in chat else (chat or str(record.get("sender") or "").strip())
-    return "" if _SHORT_CODE.fullmatch(who) else who
+        who = chat.split(";-;", 1)[1].strip() if ";-;" in chat else ""   # group (;+;) or unknown shape
+    return who if who and _is_person_handle(who) else ""
 
 
 def _default_calendar_sync() -> dict:
@@ -447,7 +458,10 @@ class BehaviorRuntime:
                     continue
                 # One subject per person: the Contacts name when known, so texts, replies and
                 # calendar 1:1s that name them count toward the same rhythm.
-                who = (self._contact_name_fn(handle) or handle).strip()
+                try:
+                    who = (self._contact_name_fn(handle) or handle).strip()
+                except Exception:  # noqa: BLE001 — a Contacts hiccup must not drop the whole pass
+                    who = handle
                 # Metadata only: who and when. Message text never leaves the reader.
                 obs.append(Observation(id="msg:" + str(r["identity"]),
                                        kind="message_in" if incoming else "message_out",
