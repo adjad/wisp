@@ -62,7 +62,7 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
          r"(?:get back|write) to \w+)\b", ("messages_contacts",)),
         (r"\b(?:notes?|wrote down|jotted|code|password|combo|combination|membership|member id|"
          r"account number|frequent flyer|locker|parked|where did i put|name of)\b", ("notes", "memory")),
-        (r"\b(?:remember|remeber|keep in mind|fyi|did i mention|did we talk|talk(?:ed)? about|"
+        (r"\b(?:remember|remeber|forget|stop remembering|keep in mind|fyi|did i mention|did we talk|talk(?:ed)? about|"
          r"you recommended|i said|you know about me|my preferences?)\b", ("memory",)),
         (r"\b(?:file|files|folder|downloads|desktop|documents|pdf|docx?|resume|cv|photos?)\b", ("files",)),
         (r"\b(?:weather|forecast|rain|news|look up|search the web|google|price|stock|hours|"
@@ -74,6 +74,14 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
         (r"\b(?:timer|alarm|stopwatch|countdown|shortcut)\b", ("automation",)),
         (r"\b(?:calculate|convert|what time is it in|percent|\d+\s*[x*/+-]\s*\d+)\b", ("compute",)),
     ))
+
+
+_FORGET_INTENT_RE = re.compile(
+    r"\b(?:forget|stop\s+remembering|unlearn)\b|"
+    r"\b(?:delete|remove|erase|wipe|clear|drop)\b[^.?!]{0,40}"
+    r"\b(?:memor(?:y|ies)|what you (?:know|remember)|from (?:your )?memory)\b", re.I)
+_NEGATED_FORGET_RE = re.compile(
+    r"\b(?:do\s+not|don'?t|never|not)\s+(?:\w+\s+)?(?:forget|delete|remove|erase|wipe|clear)\b", re.I)
 
 
 def family_of(name: str) -> str:
@@ -108,11 +116,16 @@ def _admissible(name: str, text: str, *, context_open: bool, hinted: bool = Fals
     tool = REGISTRY.get(name)
     if tool is None or tool.unavailable_reason or not is_tool_routable(name):
         return False
-    if tool.category.endswith("_delete") and not (context_open or _DELETE_INTENT_RE.search(text)):
-        # Deletion needs deletion words, whatever the family. `forget`
-        # deletes memories and their correction history immediately; a hint
-        # for "what is my gate code" must not put it on the menu
-        # (independent review of #211, finding 1).
+    if name == "forget":
+        # `forget` deletes memories and their correction history at once, so
+        # it needs an affirmative, un-negated request to forget something in
+        # THIS message; neither a family hint nor the previous turn opens it.
+        # Independent review of #211: "what is my gate code", "do not forget
+        # my gate code" and "delete the old file and recall my gate code" had
+        # all put it on the menu.
+        if _NEGATED_FORGET_RE.search(text) or not _FORGET_INTENT_RE.search(text):
+            return False
+    elif tool.category.endswith("_delete") and not (context_open or _DELETE_INTENT_RE.search(text)):
         return False
     open_gate = (_gate_open(text, writing=has_write_intent(text)) or context_open
                  # A delete tool reaches here only with deletion words (above).

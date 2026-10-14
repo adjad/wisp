@@ -40,16 +40,16 @@ MAX_CALLS_PER_PLAN = 4
 PLAN_MAX_TOKENS = 1500
 THOUGHT_MAX_CHARS = 600
 
-# Per-turn budget for repeated calls to the same SEARCH tool (a read tool
-# that takes a `query`) with different arguments. Reads of distinct named
-# targets ("read these three files" -> read_file x3) are separate work, not
-# rephrasing, and are not budgeted. The identical-arguments guard cannot see this shape, and it is the
-# common one: measured 2026-10-13 (LFM2.5-24B, production loop, 59 cases) — 93
-# same-tool repeat calls against 23 identical repeats, e.g. search_notes with
-# "gate code", "gate", "code", "home", "security", "apartment". Two attempts
-# lets the model try one rephrasing; after that it must answer or report
-# not_found. Effect tools keep their own duplicate-effect guard.
-READ_TOOL_BUDGET = 2
+# Per-turn budget of MISSES per read tool: calls that came back empty, with a
+# parenthesized notice, or failed. After two, that tool is not run again this
+# turn and the model must answer or report not_found. Measured 2026-10-13
+# (LFM2.5-24B, production loop, 59 cases): 93 same-tool repeat calls against
+# 23 identical ones, e.g. search_notes with "gate code", "gate", "code",
+# "home", "security", "apartment"; lookup_contact rephrases names the same
+# way. Counting misses rather than calls leaves distinct requested targets
+# alone ("notes for alpha, beta and gamma", "read these three files") as long
+# as they find something (independent review of #211).
+READ_MISS_BUDGET = 2
 
 
 # Tool-call syntax in a tool-free narration step: LFM2.5's pythonic markers,
@@ -226,12 +226,6 @@ def plan_message(plan: Plan) -> dict:
                            for i, (name, args) in enumerate(plan.calls)]}
 
 
-def is_search_tool(tool) -> bool:
-    """A read tool whose schema takes a free-text `query`: the shape where a
-    small model rephrases the same search instead of answering."""
-    return "query" in ((getattr(tool, "parameters", None) or {}).get("properties") or {})
-
-
 def call_key(name: str, arguments) -> tuple[str, str]:
     """Identity of a call for repeat detection: the name plus its arguments
     as canonical JSON, whether they arrive as a dict or a JSON string."""
@@ -243,6 +237,6 @@ def call_key(name: str, arguments) -> tuple[str, str]:
     return name, json.dumps(arguments or {}, sort_keys=True)
 
 
-def budget_message(name: str, used: int) -> str:
-    return (f"({name} has already run {used} times this turn with different arguments; it was NOT "
+def budget_message(name: str, misses: int) -> str:
+    return (f"({name} has already come back empty or failed {misses} times this turn; it was NOT "
             "run again. Answer from the results you have, or report that it was not found.)")

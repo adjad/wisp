@@ -136,7 +136,7 @@ def _fake_tools():
 
     def search(query: str = "") -> str:
         calls.append(("fake_search", {"query": query}))
-        return f"no match for {query}"
+        return f"(no notes matched {query})"
 
     def read() -> str:
         calls.append(("fake_read", {}))
@@ -211,7 +211,7 @@ def test_read_budget_stops_the_third_rephrasing(_fake_tools):
     assert [a["query"] for _, a in _fake_tools] == ["gate code", "gate"]
     budget_result = next(m["content"] for m in client.requests[3]["messages"]
                          if m.get("role") == "tool" and "NOT run again" in m["content"])
-    assert "fake_search has already run 2 times" in budget_result
+    assert "fake_search has already come back empty or failed 2 times" in budget_result
 
 
 def test_a_plan_mixing_reads_and_effects_runs_only_the_reads(_fake_tools):
@@ -338,12 +338,61 @@ def test_reading_three_named_files_is_not_budgeted(_fake_tools):
     assert [a["path"] for _, a in _fake_tools] == ["a", "b", "c"]
 
 
-def test_a_lookup_question_never_offers_forget():
-    # finding 1: a memory-family hint must not open deletion.
+@pytest.mark.parametrize("prompt", [
+    "what is my gate code", "what's my wife's birthday", "what was my gate code before the reset",
+    "delete the old file and recall my gate code", "do not forget my gate code",
+    "don't forget my gate code"])
+def test_forget_is_not_offered_without_a_request_to_forget(prompt):
     from service.router.menu import build_menu
-    assert "forget" not in build_menu("what is my gate code")
-    assert "forget" not in build_menu("what's my wife's birthday")
-    assert "forget" in build_menu("forget my gate code")
+    assert "forget" not in build_menu(prompt)
+    assert "forget" not in build_menu("what is my gate code",
+                                      last_assistant="Would you like me to send a message?")
+
+
+@pytest.mark.parametrize("prompt", [
+    "forget my gate code", "stop remembering my gate code", "remove my gate code from memory",
+    "forget that my wife's birthday is march 3"])
+def test_forget_is_offered_for_a_request_to_forget(prompt):
+    from service.router.menu import build_menu
+    assert "forget" in build_menu(prompt)
+
+
+def test_three_successful_searches_are_not_budgeted(_fake_tools):
+    def hit(query: str = "") -> str:
+        _fake_tools.append(("fake_search", {"query": query}))
+        return f"note about {query}"
+    REGISTRY["fake_search"] = Tool("fake_search", "search", {
+        "type": "object", "properties": {"query": {"type": "string"}}}, "notes_read", hit)
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": q})) for q in ("alpha", "beta", "gamma")]
+                        + [plan("answer")])
+    run(client, planner=True)
+    assert [a["query"] for _, a in _fake_tools] == ["alpha", "beta", "gamma"]
+
+
+def test_misses_are_budgeted_for_reads_without_a_query_param(_fake_tools):
+    def miss(path: str = "") -> str:
+        _fake_tools.append(("fake_open", {"path": path}))
+        return f"(no file named {path})"
+    REGISTRY["fake_open"] = Tool("fake_open", "read a file", {
+        "type": "object", "properties": {"path": {"type": "string"}}}, "fs_read", miss)
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": p})) for p in ("Sam", "Samuel", "Sammy")]
+                        + [plan("not_found")])
+    run(client, tools=("fake_open",), planner=True)
+    assert [a["path"] for _, a in _fake_tools] == ["Sam", "Samuel"]
+
+
+def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_open", {"path": "a"})),
+                         plan("call_tools", ("fake_open", {"path": "different"}),
+                              ("fake_write", {"path": "a", "text": "new"})),
+                         plan("answer")])
+    run(client, tools=("fake_open", "fake_write"), planner=True,
+        tool_argument_bindings={"fake_open": {"path": "a"}})
+    assert _fake_tools == [("fake_open", {"path": "a"}), ("fake_write", {"path": "a", "text": "new"})]
+
+
+def test_remember_is_offered_for_a_request_to_remember():
+    from service.router.menu import build_menu
     assert "remember" in build_menu("remember that my gate code is 4512")
 
 
