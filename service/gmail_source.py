@@ -406,7 +406,11 @@ async def _finish(client_id, client_secret, code, verifier, redirect) -> None:
             "grant_type": "authorization_code"})
         body = response.json()
         if response.status_code != 200 or not body.get("refresh_token"):
-            raise GmailError(f"token exchange failed: {body.get('error', response.status_code)}")
+            why = body.get("error_description") or body.get("error") or response.status_code
+            hint = (" — paste your OAuth client secret in Settings ▸ Google and try again"
+                    if "secret" in str(why).lower() or body.get("error") == "invalid_request"
+                    and not client_secret else "")
+            raise GmailError(f"token exchange failed: {why}{hint}")
         if SCOPE not in str(body.get("scope", "")).split():
             raise GmailError("Gmail read access wasn't granted — on Google's consent screen, "
                              "tick the box to view your email messages, then try again")

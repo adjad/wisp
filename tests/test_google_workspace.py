@@ -91,3 +91,14 @@ class GoogleWorkspace(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedCredentials(unittest.TestCase):
+    def test_saved_credentials_come_from_the_workspace_entry(self):
+        cfg = Path(_scratch.name) / "mcp-saved.json"
+        cfg.write_text(json.dumps({"servers": {"google_workspace": {"env": {
+            "GOOGLE_OAUTH_CLIENT_ID": "cid", "GOOGLE_OAUTH_CLIENT_SECRET": "csec"}}}}))
+        with patch.object(G, "CONFIG_PATH", cfg):
+            self.assertEqual(G.saved_credentials(), ("cid", "csec"))
+        with patch.object(G, "CONFIG_PATH", Path(_scratch.name) / "absent.json"):
+            self.assertEqual(G.saved_credentials(), ("", ""))

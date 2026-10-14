@@ -2762,8 +2762,13 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
     user's own Google Cloud Desktop OAuth client; open the returned `auth_url`
     in a browser."""
     from service import gmail_source
-    client_id = str(body.get("client_id") or gmail_source.load_config().get("client_id") or "")
-    secret = str(body.get("client_secret") or gmail_source.load_config().get("client_secret") or "")
+    from service import google_workspace
+    saved_id, saved_secret = google_workspace.saved_credentials()
+    cfg = gmail_source.load_config()
+    client_id = str(body.get("client_id") or cfg.get("client_id") or saved_id or "")
+    secret = str(body.get("client_secret") or cfg.get("client_secret") or "")
+    if not secret and client_id == (saved_id or client_id) and saved_id:
+        secret = saved_secret      # same client as the Workspace setup: reuse its secret
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
     return {"ok": True, "auth_url": await gmail_source.begin_authorization(client_id, secret)}

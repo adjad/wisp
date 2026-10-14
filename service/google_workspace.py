@@ -145,6 +145,13 @@ def status() -> dict:
             "tools": len((live or {}).get("tools", []))}
 
 
+def saved_credentials() -> tuple[str, str]:
+    """(client_id, client_secret) saved by the Workspace setup, so the two Google
+    paths share one OAuth client entry instead of asking twice."""
+    env = _entry().get("env") or {}
+    return env.get("GOOGLE_OAUTH_CLIENT_ID", ""), env.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+
+
 def _auth_arguments(schema: dict, email: str) -> dict:
     args: dict = {}
     for prop in (schema or {}).get("properties", {}):
