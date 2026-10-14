@@ -11,8 +11,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "eval_planner.py"
 
 
-def test_dry_run_builds_three_case_menus_without_a_model() -> None:
-    home = ROOT / ".codex-home"
+def test_dry_run_builds_three_case_menus_without_a_model(tmp_path: Path) -> None:
+    # tmp_path, not the repo: the Simulation QA sandbox cannot write there.
+    home = tmp_path / "home"
     (home / ".moe").mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     env["HOME"] = str(home)
