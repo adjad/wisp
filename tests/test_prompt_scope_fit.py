@@ -94,6 +94,51 @@ def test_rules_follow_the_tools_that_survive_the_window_fit(monkeypatch):
     assert not _stable_system(tight).startswith(full)
 
 
+def test_rules_always_cover_every_offered_tool_across_windows(monkeypatch):
+    """The rebuilt rules must stay a superset of what the step actually offers.
+
+    The first cut fitted with the full rules and rebuilt from the survivors; the
+    smaller rebuilt text then let the real fit keep MORE tools than the pre-fit
+    did, so at some windows a tool was offered without its rule block (audit
+    finding). Sweep the window across every tool-drop boundary and check the
+    invariant directly against the rule blocks.
+    """
+    monkeypatch.setattr(skills, "skills_context_block", lambda *args: "")
+    loop.build_system(set())  # populate the block cache
+    blocks = [(named, text) for named, text in loop._BLOCKS_CACHE if named]
+    full = loop.build_system(set(FIVE))
+    saved_somewhere = False
+    for window in range(3_000, 9_600, 75):
+        monkeypatch.setattr(config, "model_context_window", lambda model, w=window: w)
+        client = ScriptedClient()
+        run(client, list(FIVE))
+        offered = {t["function"]["name"] for t in client.requests[0]["tools"]}
+        stable = _stable_system(client)
+        for named, text in blocks:
+            if named & offered:
+                assert text in stable, (window, sorted(named & offered))
+        if len(offered) < len(FIVE) and not stable.startswith(full):
+            saved_somewhere = True
+    assert saved_somewhere
+
+
+def test_model_led_discovery_keeps_the_skills_catalog(monkeypatch):
+    monkeypatch.setattr(config, "model_context_window", lambda model: 50_000)
+    calls = []
+
+    def recorder(*args):
+        calls.append(args)
+        return "\nSKILLS"
+
+    monkeypatch.setattr(skills, "skills_context_block", recorder)
+    client = ScriptedClient()
+    run(client, None, model_led_discovery=True)
+    offered = {t["function"]["name"] for t in client.requests[0]["tools"]}
+    assert "use_skill" not in offered  # only the discovery tool is on the table
+    assert calls and calls[-1][2] is True
+    assert _stable_system(client).endswith("\nIDENTITY\nMEMORY\nSKILLS")
+
+
 def test_skills_catalog_only_when_use_skill_is_offered(monkeypatch):
     monkeypatch.setattr(config, "model_context_window", lambda model: 50_000)
     calls = []
