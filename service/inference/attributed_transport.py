@@ -164,9 +164,17 @@ def _close_inspection_pool():
     _POOL.shutdown(wait=False)
 
 
-def refused():
+# The bundled engine's port (service.engine.BUNDLED_PORT; a test keeps them equal). It is
+# repeated here because the mini bundle ships this module without service.engine.
+BUNDLED_PORT = 8791
+BUNDLED_REFUSED_MESSAGE = ("Wisp couldn't verify its built-in AI engine just now. "
+                           "This is usually momentary \u2014 try again. If it keeps happening, "
+                           "restart Wisp.")
+
+
+def refused(port=None):
     from .inference_errors import ModelLoadError
-    error = ModelLoadError(REFUSED_MESSAGE)
+    error = ModelLoadError(BUNDLED_REFUSED_MESSAGE if port == BUNDLED_PORT else REFUSED_MESSAGE)
     active = sys.exc_info()[1]
     error.reason = str(active) if isinstance(active, AuthRefused) else type(active).__name__ if active else ''
     return error
@@ -993,7 +1001,7 @@ class CheckedStream(httpcore.AsyncNetworkStream):
                     raise AuthRefused('connected_peer_changed')
         except Exception:
             await self.stream.aclose()
-            raise refused() from None
+            raise refused(self.backend.port) from None
 
     async def write(self, buffer, timeout=None):
         if not buffer:
@@ -1012,7 +1020,7 @@ class CheckedStream(httpcore.AsyncNetworkStream):
 
     async def start_tls(self, *args, **kwargs):
         await self.aclose()
-        raise refused()
+        raise refused(self.backend.port)
 
 
 class _EpochChanged(Exception):
@@ -1026,7 +1034,7 @@ class CheckedBackend(AutoBackend):
     async def connect_tcp(self, host, port, **kwargs):
         epoch = self.epoch
         if host != '127.0.0.1' or port != self.port:
-            raise refused()
+            raise refused(self.port)
         stream = await super().connect_tcp(host, port, **kwargs)
         try:
             authority = None
@@ -1054,7 +1062,7 @@ class CheckedBackend(AutoBackend):
             return CheckedStream(stream, authority, epoch, self, identity, owner, sock)
         except Exception:
             await stream.aclose()
-            raise refused() from None
+            raise refused(self.port) from None
 
     async def _connect_reused(self, stream, epoch, authority, lease):
         """Optimized connect: full binding() (D4), incarnation bound to the lease,
@@ -1089,11 +1097,29 @@ class ResponseStream(httpx.AsyncByteStream):
         await self.stream.aclose()
 
 
+class _UnavailableAuthority:
+    """Stands in when the bundled-engine module is not shipped: every load refuses."""
+    def load(self):
+        raise AuthRefused('bundled_authority_unavailable')
+
+
+def authority_for(port):
+    """The only authority that may vouch for a port. 8791 is Wisp's own engine; every
+    other managed port is the desktop oMLX, which itself refuses anything but 8000."""
+    if port == BUNDLED_PORT:
+        try:
+            from .bundled_peer import BundledAuthority
+        except ImportError:
+            return _UnavailableAuthority()
+        return BundledAuthority()
+    return RuntimeAuthority()
+
+
 class CredentialTransport(httpx.AsyncBaseTransport):
     def __init__(self, base_url, key, *, managed, authority=None, key_loader=None):
         self.origin, self.key = httpx.URL(base_url), key
         self.key_loader = key_loader
-        self.backend = CheckedBackend(authority or RuntimeAuthority(), self.origin.port) if managed else None
+        self.backend = CheckedBackend(authority or authority_for(self.origin.port), self.origin.port) if managed else None
         self.pool = httpcore.AsyncConnectionPool(ssl_context=ssl.create_default_context(cafile=certifi.where()),
                                                network_backend=self.backend, retries=0,
                                                max_connections=10, max_keepalive_connections=0)
@@ -1107,13 +1133,13 @@ class CredentialTransport(httpx.AsyncBaseTransport):
     async def handle_async_request(self, request):
         if (request.url.scheme, request.url.host, request.url.port) != (
                 self.origin.scheme, self.origin.host, self.origin.port):
-            raise refused()
+            raise refused(self.origin.port)
         if self.key_loader is not None:
             # Keychain may prompt/block. Cancellation must remain responsive;
             # no socket or request bytes exist until resolution succeeds.
             key = await asyncio.to_thread(self.key_loader)
             if not key:
-                raise refused()
+                raise refused(self.origin.port)
             self.key = key
             self.key_loader = None
         request.headers.pop('Authorization', None)

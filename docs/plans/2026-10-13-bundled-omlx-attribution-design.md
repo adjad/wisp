@@ -110,3 +110,14 @@ Performance (informational, not a gate): connect and per-write latency of the bu
 ## 12. Files this will touch
 
 New: `service/inference/bundled_peer.py`, `tests/test_bundled_attribution.py`. Edited: `service/inference/attributed_transport.py` (selector, message), `service/engine/manager.py` (`incarnation()`), possibly `service/inference/local_peer.py` (none expected). Owned by this branch; no other active task is known to own them, to be recorded with the Orchestrator before edit.
+
+## 13. Implementation notes (2026-10-13)
+
+Implemented as designed with the recommendations from section 10. Differences and findings:
+
+- **The shipped interpreter must not re-exec.** Attribution pins the executable path read right after spawn. A framework Python's `bin/python3.x` launcher re-execs into `Python.app/Contents/MacOS/Python` after start, so the live path differs from the recorded one and the engine is refused (`desktop_executable_unqualified`). This is the intended fail-closed behaviour. The packaged engine must therefore be a single executable at `py/bin/python3` (the oMLX.app interpreter already is). Tests start the engine from the final binary for the same reason.
+- **A manager that vouches for a process is trusted.** The trust root is the incarnation the manager recorded. Tests that hand the authority a hand-built incarnation of an arbitrary child show it is accepted if it is our child, has the same executable and passes the audits; that models a compromised manager, which is out of scope, not an impostor. Impostors are covered by "no incarnation" and "stale incarnation".
+- **Manager retries identity capture** for up to 4 s after spawn (a first-run code-signing assessment can leave a new process briefly unreadable) and refuses to run an engine it cannot identify.
+- **Hooks for tests:** `BundledOmlx` exposes `signing_id`, `_python_root()` and `_tree_roots()` so a test can run the engine in place with temp trees. Production behaviour is the class defaults.
+- **Not verified yet (needs the packaging step):** the audit of a real signed `py/` tree, and the signed path with a Wisp Team ID and `com.wisp.engine.python3`. The signed-engine rules are covered with a faked kernel signature view plus the real python.org interpreter, whose signature put the test run in `signed` strength.
+- **Host condition:** while testing, this Mac's code-signing services stalled, so any newly created executable hung in dyld at launch. That is why tests use the interpreter in place, and why an end-to-end run against the trimmed oMLX engine could not be repeated at the end of the session.

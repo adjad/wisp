@@ -44,7 +44,8 @@ def engine_data_dir() -> Path:
 def engine_code_root() -> Path:
     """Read-only engine code: WISP_ENGINE_ROOT, else `engine/` beside the service package."""
     override = os.environ.get("WISP_ENGINE_ROOT", "").strip()
-    return Path(override).expanduser() if override else Path(__file__).resolve().parents[2] / "engine"
+    # Resolved: attribution refuses an engine root reached through a symlink.
+    return (Path(override).expanduser() if override else Path(__file__).parents[2] / "engine").resolve()
 
 
 def bundled_base_path() -> Path | None:

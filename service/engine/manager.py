@@ -34,6 +34,17 @@ class EngineError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Incarnation:
+    """Exactly which process the manager launched; the attribution check pins to it."""
+    pid: int
+    uid: int
+    start_seconds: int
+    start_microseconds: int
+    exe: Path
+    root: Path
+
+
+@dataclass(frozen=True)
 class EngineLayout:
     """Where the engine's code lives (read-only) and where its state lives (private).
 
@@ -155,6 +166,7 @@ class EngineManager:
     # Replaces `python -m omlx.cli serve`; tests substitute a stub server.
     launcher: Sequence[str] | None = None
     _proc: subprocess.Popen | None = field(default=None, init=False, repr=False)
+    _incarnation: Incarnation | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.port in RESERVED_PORTS or not 1024 <= self.port <= 65535:
@@ -231,6 +243,28 @@ class EngineManager:
         finally:
             log.close()
         _write_private(self.layout.pid_path, str(self._proc.pid))
+        try:
+            self._incarnation = self._record_incarnation(self._proc.pid)
+        except Exception as exc:  # noqa: BLE001 — an engine Wisp cannot identify must not run
+            self.stop()
+            raise EngineError("Could not identify the engine process") from exc
+
+    def _record_incarnation(self, pid: int) -> Incarnation:
+        from service.inference.local_peer import AuthRefused, process_identity, process_path
+        # A freshly exec'd process can be briefly unreadable (a first-run code-signing
+        # assessment holds it in dyld), so retry for a couple of seconds before giving up.
+        for attempt in range(40):
+            try:
+                pid, uid, seconds, micros = process_identity(pid, os.getuid())
+                return Incarnation(pid, uid, seconds, micros, Path(process_path(pid)), self.layout.root)
+            except AuthRefused:
+                if attempt == 39 or not self.running():
+                    raise
+                time.sleep(0.1)
+
+    def incarnation(self) -> Incarnation | None:
+        """The live child this manager launched, else None. Never read from disk."""
+        return self._incarnation if self.running() else None
 
     def _port_in_use(self) -> bool:
         import socket
@@ -256,7 +290,7 @@ class EngineManager:
         return False
 
     def stop(self, grace: float = 10.0) -> None:
-        proc, self._proc = self._proc, None
+        proc, self._proc, self._incarnation = self._proc, None, None
         if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
