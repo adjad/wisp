@@ -4,6 +4,23 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+These changes are to the proactive attention reminders, which still run in shadow mode by default: they record what they would do and create nothing until you switch them to live.
+
+### Changed
+
+- A plan you proposed with a guessed time is no longer treated as settled when the other person agrees. "Dinner tomorrow at 9?" answered "sure" doesn't say whether you meant 9am or 9pm, so no reminder is made until you reply yourself. "Dinner tomorrow at 7pm?" answered "sure" still makes one.
+- One plan gets one reminder. A second message about the same plan is recognised by when the plan happens, not when its reminder fires, so it no longer makes a second reminder or uses a second slot of the daily limit, whatever the reminder's lead time.
+  - A reminder you undid isn't made again by a later message about the same plan.
+  - Two different people's plans at nearby times stay separate.
+  - A crash while a reminder is being made can't lead to a duplicate later.
+- The audit log records reminder writes by id and a short fingerprint of the title, never the title itself, which quotes the message. Each line says whether the write succeeded, failed or ended unknown.
+- If the Mac's time zone can't be read, Wisp uses the last zone it read, but only if the Mac clock agrees with that zone's offset on every day of the coming year. A move to a zone that only shares today's offset (Los Angeles to Phoenix in summer) is caught, and the reminders pause instead.
+
+### Fixed
+
+- The reminders no longer fall back to UTC when the Mac's time zone can't be determined, which would have read every time in a message hours off and filed its reminder at the wrong time. With no zone they now pause, and when the zone is known again they start fresh instead of making reminders for the messages that arrived in between.
+- A daylight-saving change between two clock readings could make the known zone look unknown for one pass. The zone and the clock are now compared at the same instant.
+
 ## [1.3.2] - 2026-10-14
 
 ### Added
