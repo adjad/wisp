@@ -1817,12 +1817,13 @@ async def run_agent(
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one.
     skills_hint = ""
+    skills_user_text = ""
     if allow_skill_context and not public_web_synthesis and not skills_external:
         try:
             from service.skills import skills_context_block
-            last_user = next((m["content"] for m in reversed(messages)
-                              if m.get("role") == "user"), "")
-            skills_hint = skills_context_block(str(last_user), active_skill)
+            skills_user_text = next((m["content"] for m in reversed(messages)
+                                     if m.get("role") == "user"), "")
+            skills_hint = skills_context_block(str(skills_user_text), active_skill)
         except Exception:  # noqa: BLE001
             skills_hint = ""
 
@@ -1869,10 +1870,41 @@ async def run_agent(
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
     sys_text = build_system({s["function"]["name"] for s in schemas})
+    # The installed-skills catalog exists to make `use_skill` discoverable
+    # (see skills_context_block). On a route that does not offer use_skill the
+    # model cannot act on it, so only a skill whose triggers matched this turn
+    # (or the active workflow) rides along. Measured: the catalog alone was
+    # ~180 tokens on EVERY step while any skill was installed.
+    if skills_hint:
+        try:
+            from service.skills import skills_context_block
+            skills_hint = skills_context_block(
+                str(skills_user_text), active_skill, "use_skill" in turn_tool_names)
+        except Exception:  # noqa: BLE001
+            skills_hint = ""
     # Keep the instruction order: base, identity, memory, skills, clock, style,
     # test-mode and reminder safeguards. The second system message follows
     # Ling's serialized schemas; style still overrides the base concision rule.
     sys_content = sys_text + identity_hint + memory_hint + skills_hint
+    # RULES ONLY FOR TOOLS THE MODEL WILL ACTUALLY SEE. _fit_window drops
+    # schemas from the end of the list when the window is tight (an 8,000-token
+    # default window kept 11 of the ambiguous route's 19 tools), but the rules
+    # above were built for all of them: the live step carried mail, notes and
+    # aggregate blocks for tools that were not in the request — 10,313 chars of
+    # system text where 5,254 described the offered tools. Fit once, up front,
+    # with the full rules, and if tools fall out rebuild the rules from the
+    # survivors. Once per TURN on purpose (see build_system): the fitted set
+    # can only shrink further as history grows, so a later step's rules may
+    # still mention a tool that just fell out, but the prefix stays stable.
+    if schemas and not model_led_discovery:
+        _, fitted_first, _ = _fit_window(
+            [{"role": "system", "content": sys_content}, {"role": "system", "content": now_line}]
+            + messages, schemas, max_tokens, model, force_first_tool,
+            protected_prefix_count=2,
+            context_window=getattr(getattr(client, "target", None), "context_window", None))
+        if len(fitted_first) < len(schemas):
+            sys_text = build_system({s["function"]["name"] for s in fitted_first})
+            sys_content = sys_text + identity_hint + memory_hint + skills_hint
     runtime_content = (now_line
                        + (("\n" + capability_catalog.prompt()) if capability_catalog else "")
                        + (("\n" + style_hint) if style_hint else "")
