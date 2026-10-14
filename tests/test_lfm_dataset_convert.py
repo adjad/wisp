@@ -1,7 +1,6 @@
 import json
 import importlib.util
 from pathlib import Path
-import tempfile
 
 
 CONVERTER_PATH = Path(__file__).resolve().parents[1] / "training" / "lfm-dataset-v1-20261014" / "convert.py"
@@ -62,7 +61,7 @@ def test_convert_multiple_calls_keeps_order():
     ]
 
 
-def test_convert_plain_and_v2_style_rows_add_think_and_keep_chat_roles():
+def test_convert_plain_and_v2_style_rows_add_think_and_keep_chat_roles(tmp_path):
     rows = [
         _row("synthetic-plain", [
             {"role": "system", "content": "Answer directly."},
@@ -83,9 +82,9 @@ def test_convert_plain_and_v2_style_rows_add_think_and_keep_chat_roles():
     assert converted[1]["messages"][-1]["content"].endswith('{"kind": "read"}')
     assert all("<think>" in item["messages"][-1]["content"] for item in converted)
 
-    with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parents[1]) as tmp:
-        path = Path(tmp) / "train.jsonl"
-        convert.write_jsonl(path, converted)
-        first = path.read_bytes()
-        convert.write_jsonl(path, converted)
-        assert path.read_bytes() == first
+    # tmp_path, not the repo root: the Simulation QA sandbox cannot write there.
+    path = tmp_path / "train.jsonl"
+    convert.write_jsonl(path, converted)
+    first = path.read_bytes()
+    convert.write_jsonl(path, converted)
+    assert path.read_bytes() == first
