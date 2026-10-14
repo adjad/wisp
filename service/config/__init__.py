@@ -13,14 +13,19 @@ import yaml
 
 from service.paths import MOE_DIR
 
-OMLX_SETTINGS = Path.home() / ".omlx" / "settings.json"
+from service.engine.mode import bundled_base_path, is_bundled
+# External oMLX keeps its state in ~/.omlx; the bundled engine keeps its own copy under
+# ~/.moe/engine/base so Wisp's reads and writes never reach a user's oMLX.app.
+_OMLX_STATE = bundled_base_path() or Path.home() / ".omlx"
+
+OMLX_SETTINGS = _OMLX_STATE / "settings.json"
 # oMLX's own per-model settings (temperature, sampling, etc.) — each entry
 # also carries the "is_favorite" flag the user sets by starring a model in
 # oMLX's UI. Reading this file directly (rather than oMLX's live /v1/models
 # HTTP endpoint) means the favorites list is available even when the oMLX
 # server subprocess isn't currently running — only the menu-bar app has to be
 # up, which it always is once anything's been configured.
-OMLX_MODEL_SETTINGS = Path.home() / ".omlx" / "model_settings.json"
+OMLX_MODEL_SETTINGS = _OMLX_STATE / "model_settings.json"
 MODELS_YAML = Path(__file__).parent / "models.yaml"
 # User overlay — persisted settings live OUTSIDE the app bundle so a repackage
 # (which overwrites the bundled models.yaml) can't wipe them. models.yaml holds
@@ -149,6 +154,9 @@ def set_behavior_enabled(enabled: bool) -> bool:
 
 
 def omlx_base_url() -> str:
+    if is_bundled():
+        from service.engine import BUNDLED_PORT
+        return f"http://127.0.0.1:{BUNDLED_PORT}"
     cfg = models_config()["omlx"].get("base_url")
     if cfg:
         return cfg.rstrip("/")
@@ -157,6 +165,10 @@ def omlx_base_url() -> str:
 
 
 def omlx_api_key() -> str:
+    if is_bundled():
+        # The engine's own key lives in its settings.json; a key the native launcher
+        # holds for a user's oMLX.app must never be sent to the bundled engine.
+        return omlx_settings()["auth"]["api_key"]
     return _credential("WISP_LOCAL_OMLX_KEY") or omlx_settings()["auth"]["api_key"]
 
 
@@ -360,15 +372,41 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
     import urllib.request
     from .quarantine import lease
 
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    def _open(req, timeout):
+        if is_bundled():
+            # The bundled engine's key never rides an environment or system proxy, and a redirect
+            # cannot carry it elsewhere.
+            return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect).open(
+                req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=timeout)
+
     def _get(url: str, timeout: float = 5.0):
         req = urllib.request.Request(
             url, headers={"Authorization": f"Bearer {omlx_api_key()}"})
-        with lease(), urllib.request.urlopen(req, timeout=timeout) as r:
+        with lease(), _open(req, timeout) as r:
             return _json.loads(r.read())
+
+    if is_bundled():
+        # These plain urllib calls cannot prove who answers. The bundled engine's key goes
+        # only to the child this backend launched and the checked client has verified: otherwise
+        # the port may belong to anything, so skip (the file write still records the intent for
+        # the next start).
+        from service.engine.runtime import manager
+        engine = manager()
+        if engine.incarnation() is None or not engine.verified:
+            return False
 
     try:
         from service.config.endpoints import endpoint
         base = endpoint().base_url
+        if is_bundled():
+            from service.engine import BUNDLED_PORT
+            if base.rstrip("/") != f"http://127.0.0.1:{BUNDLED_PORT}":
+                return False        # an overridden endpoint is not the engine that was verified
         with OMLX_MODEL_SETTINGS.open() as f:
             current = (_json.load(f).get("models") or {}).get(model)
         if not isinstance(current, dict):
@@ -389,7 +427,7 @@ def _push_context_window_to_server(model: str, tokens: int) -> bool:
             data=_json.dumps(body).encode(), method="PUT",
             headers={"Authorization": f"Bearer {omlx_api_key()}",
                      "Content-Type": "application/json"})
-        with lease(), urllib.request.urlopen(req, timeout=15) as r:
+        with lease(), _open(req, 15) as r:
             return 200 <= r.status < 300
     except Exception:  # noqa: BLE001 — oMLX may simply not be running
         return False

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import http.client
@@ -21,6 +22,9 @@ import tempfile
 import time
 from urllib.parse import quote, urlencode
 import zipfile
+
+import engine as engine_build
+import engine_licenses
 
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT = ROOT / "build-support"
@@ -542,7 +546,7 @@ def source_files() -> list[Path]:
     return result
 
 
-def assemble(runner, binary, destination, meta, offline=False):
+def assemble(runner, binary, destination, meta, offline=False, engine_app=None):
     bundle = destination / "Wisp.app"
     contents = bundle / "Contents"
     resources = contents / "Resources"
@@ -585,6 +589,18 @@ def assemble(runner, binary, destination, meta, offline=False):
     for name in ("CHANGELOG.md", "docs/build-release.md"):
         shutil.copyfile(ROOT / name, docs / Path(name).name)
     shutil.copyfile(SUPPORT / "requirements-runtime.lock", docs / "requirements-runtime.lock")
+    if engine_app is not None:
+        # Release candidates must match engine.lock.json; previews may use an unpinned local oMLX.
+        release = not (meta["dirty"] or meta.get("preview"))
+        try:
+            meta["engine"] = engine_build.stage(bundle, engine_app, lock=engine_build.load_lock(), release=release)
+        except engine_build.EngineBuildError as exc:
+            raise BuildError(str(exc)) from None
+        meta["engine_smoke"] = engine_build.smoke_plan(bundle)
+        try:
+            engine_licenses.write_notices(bundle)
+        except engine_licenses.LicenseError as exc:
+            raise BuildError(str(exc)) from None
     json_write(resources / "build-info.json", meta)
     # Normalize modes before signing so umask does not change candidate archives.
     for path in bundle.rglob("*"):
@@ -630,12 +646,23 @@ def validate_structure(bundle: Path, meta: dict):
     for name in ("Contents/MacOS/Wisp", "Contents/Resources/backend/.venv/bin/python"):
         if not os.access(bundle / name, os.X_OK):
             raise BuildError(f"Bundle program is not executable: {name}")
+    if engine_build.read_engine_json(bundle) is not None or meta.get("engine"):
+        try:
+            engine_build.validate_structure(bundle, meta.get("engine"))
+            engine_licenses.validate(bundle)
+        except (engine_build.EngineBuildError, engine_licenses.LicenseError) as exc:
+            raise BuildError(str(exc)) from None
 
 
 def validate_native(runner, bundle, meta):
     rows = []
     minimum = tuple(map(int, CONFIG["minimum_macos"].split(".")))
+    engine_doc = engine_build.read_engine_json(bundle)
+    engine_minimum = tuple(map(int, engine_doc["minimum_macos"].split("."))) if engine_doc else None
     for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
+        # The bundled engine (MLX) targets a newer macOS than the app; it is held to its own,
+        # recorded minimum and the app refuses to use it on older systems (service/engine/mode.py).
+        limit = engine_minimum if engine_minimum and engine_build.is_engine_target(bundle, path) else minimum
         _, log = runner.run(f"macho-{i}", ["lipo", "-archs", path])
         if "arm64" not in log.read_text().split():
             raise BuildError(f"Missing arm64 slice: {path.relative_to(bundle)}")
@@ -647,8 +674,9 @@ def validate_native(runner, bundle, meta):
             raise BuildError(f"No macOS deployment target: {path.relative_to(bundle)}")
         for version in versions:
             nums = tuple(map(int, version.split(".")))
-            if (nums + (0, 0, 0))[:3] > (minimum + (0, 0, 0))[:3]:
-                raise BuildError(f"{path.relative_to(bundle)} requires macOS {version}, above advertised minimum")
+            if (nums + (0, 0, 0))[:3] > (limit + (0, 0, 0))[:3]:
+                raise BuildError(f"{path.relative_to(bundle)} requires macOS {version}, above "
+                                 + ("the engine's own minimum" if limit is engine_minimum else "advertised minimum"))
         _, log = runner.run(f"dylibs-{i}", ["otool", "-arch", "arm64", "-L", path])
         # otool -L prints a dylib's own LC_ID_DYLIB before its dependencies.
         # That identity is not a library loaded at runtime (wheel builders often
@@ -699,14 +727,22 @@ def scan_host_paths(bundle):
 
 def prepare_native_for_signing(runner, bundle):
     for i, path in enumerate(p for p in bundle.rglob("*") if is_macho(p)):
-        runner.run(f"strip-debug-{i}", ["/usr/bin/strip", "-S", path])
+        if not engine_build.is_engine_target(bundle, path):
+            runner.run(f"strip-debug-{i}", ["/usr/bin/strip", "-S", path])
         _, log = runner.run(f"signing-load-commands-{i}", ["otool", "-arch", "arm64", "-l", path])
         commands = log.read_text()
         rpaths = re.findall(r"cmd LC_RPATH\s+cmdsize \d+\s+path (\S+)", commands)
         absolute = [rpath for rpath in rpaths if rpath.startswith("/")]
         if absolute:
             loads = re.findall(r"cmd LC_(?:LOAD|LOAD_WEAK|REEXPORT|LOAD_UPWARD)_DYLIB\s+cmdsize \d+\s+name (.+?) \(offset \d+\)", commands)
-            if not all(dep.startswith(("/usr/lib/", "/System/Library/")) for dep in loads):
+            external = [dep for dep in loads if not dep.startswith(("/usr/lib/", "/System/Library/"))]
+            # oMLX's custom kernels were linked on the developer's machine: their absolute
+            # rpaths point at a build tree that does not exist anywhere else, and they load
+            # @rpath/libmlx.dylib, which dyld resolves to the image `import mlx.core` already
+            # loaded (same install name). Removing the dead absolute paths is therefore safe,
+            # but only for the engine and only for @rpath names, never for absolute libraries.
+            if external and not (engine_build.is_engine_target(bundle, path)
+                                 and all(dep.startswith("@rpath/") for dep in external)):
                 raise BuildError("Cannot remove an absolute search path used by non-system dependencies")
             for rpath in absolute:
                 runner.run(f"remove-unused-rpath-{i}", ["/usr/bin/install_name_tool", "-delete_rpath", rpath, path])
@@ -746,7 +782,8 @@ def verify_bundle_signature(bundle, expected, runner=None, prefix="bundle-signat
 def sign_adhoc(runner, bundle):
     scan_host_paths(bundle)
     for i, target in enumerate(signing_targets(bundle)):
-        runner.run(f"adhoc-sign-{i}", ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", target])
+        runner.run(f"adhoc-sign-{i}", ["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none",
+                                       *engine_build.codesign_identifier_args(bundle, target), target])
     verify_bundle_signature(bundle, "ad-hoc", runner, "adhoc-verification")
 
 
@@ -759,6 +796,36 @@ def relocation_smoke(runner, bundle):
         backend = moved / "Contents/Resources/backend"
         if guarded(runner, "relocated-backend-smoke", backend / ".venv/bin/python", "smoke", "-", root=backend):
             raise BuildError("Relocated bundled backend import failed")
+        if engine_build.read_engine_json(moved) is not None:
+            plan = engine_build.smoke_plan(moved)
+            if plan["mode"] == "run":
+                engine_smoke(runner, moved)
+            else:
+                (runner.logs / "relocated-engine-smoke.log").write_text(
+                    "engine import smoke skipped: " + plan["reason"] + "\n")
+                print("engine import smoke skipped: " + plan["reason"])
+
+
+def engine_smoke(runner, bundle):
+    """Import the engine's server and initialise MLX from a relocated, signed bundle.
+
+    Runs without -I on purpose: like the engine manager, it relies on PYTHONPATH.
+
+    Needs working code-signing services on the build host: on a host where newly
+    created executables stall in dyld this step times out and the build fails, which
+    is the correct outcome (an engine that cannot start must not ship)."""
+    root = bundle / engine_build.ENGINE_DIR
+    scratch = Path(tempfile.mkdtemp(prefix="engine-smoke-", dir=runner.logs)).resolve()
+    env = {"HOME": str(scratch), "PATH": "/usr/bin:/bin", "TMPDIR": str(scratch), "LANG": "en_US.UTF-8",
+           "PYTHONPATH": f"{root}:{root / 'sp'}", "PYTHONDONTWRITEBYTECODE": "1"}
+    code = ("import omlx.server, mlx.core as mx; "
+            "assert mx.default_device().type == mx.DeviceType.gpu, mx.default_device(); "
+            "import mlx_lm, mlx_embeddings, transformers; print('engine-import-ok')")
+    status, log = runner.run("relocated-engine-smoke", [root / "py/bin/python3", "-B", "-c", code],
+                             cwd=scratch, env=env, timeout=300, check=False)
+    shutil.rmtree(scratch, ignore_errors=True)
+    if status or "engine-import-ok" not in log.read_text():
+        raise BuildError("Relocated bundled engine failed its import smoke test")
 
 
 def inventory(bundle):
@@ -803,7 +870,10 @@ def notes(meta):
     previous = subprocess.run(["git", "-C", str(ROOT), "describe", "--tags", "--match", "v[0-9]*", "--abbrev=0", "HEAD^"], capture_output=True, text=True)
     base = previous.stdout.strip() if previous.returncode == 0 else None
     history = git("log", "--no-merges", "--format=- %s (%h)", f"{base}..HEAD" if base else "HEAD")
-    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. Requires a separately installed oMLX server and models.\n\n" + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] or meta.get('preview') else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
+    skipped = (meta.get("engine_smoke") or {}).get("mode") == "skip"
+    smoke_note = (f"The engine's import smoke test was not run on the build host ({meta['engine_smoke']['reason']}); "
+                  "the engine files are verified against the pinned oMLX release instead.\n\n" if skipped else "")
+    return f"# Wisp {meta['version']} (build {meta['build_number']})\n\nSource: `{meta['commit']}`\n\nApple Silicon, macOS {meta['minimum_macos']} or newer. " + ("Includes a built-in AI engine (macOS " + str(meta["engine"]["minimum_macos"]) + " or newer for the engine); models are downloaded separately.\n\n" + smoke_note if meta.get("engine") else "Requires a separately installed oMLX server and models.\n\n") + ("LOCAL PREVIEW — uncommitted source; do not distribute.\n\n" if meta['dirty'] or meta.get('preview') else "") + f"Changes since {base or 'repository creation'}:\n\n{history}\n"
 
 
 def finalize(runner, bundle, destination, meta, toolchain):
@@ -1218,6 +1288,12 @@ def main():
     p.add_argument("--build-number")
     p.add_argument("--jobs", type=int, help="Concurrent Simulation QA gates (default: one per CPU; 1 = sequential)")
     p.add_argument("--output", type=Path)
+    p.add_argument("--engine-app", type=Path,
+                   help="Genuine, signed oMLX.app whose pruned server is bundled as Contents/Resources/engine "
+                        "(opt-in; release builds must match build-support/engine.lock.json)")
+    p.add_argument("--fetch-engine", action="store_true",
+                   help="Download the oMLX release pinned in build-support/engine-source.json (size and SHA-256 "
+                        "checked, mounted read-only) and bundle its engine; same as --engine-app for that release")
     p.add_argument("--test-python", type=Path, help="Existing interpreter for test/swift auditing only")
     p.add_argument("--qa-runtime", type=Path,
                    help="Closed Python runtime tree for the separate managed-QA artifact")
@@ -1228,6 +1304,8 @@ def main():
     args = p.parse_args()
     if args.jobs is not None and args.jobs < 1:
         p.error("--jobs must be at least 1")
+    if args.fetch_engine and args.engine_app:
+        p.error("--fetch-engine and --engine-app are mutually exclusive")
     if args.dry_run:
         print(json.dumps({"command": args.command, "toolchain": CONFIG, "stages": ["preflight and lock validation", "pinned runtime and hash-checked binary dependencies", "pipeline contracts + isolated Python suites + Swift contracts" if args.command != "preview" else "SKIPPED for preview: Simulation QA, native/browser peer gates, benchmark contracts, distribution evidence", "Swift release build and icon generation", "tracked source + relocatable runtime assembly", "ad-hoc sealed native/resource/relocation verification", "normalized ZIP, checksums, dependency inventory, provenance, release notes"],
                           "external_release": "release requires protected CI, an exact version tag, credentials, and explicit dispatch", "installs_app": False, "offline": args.offline}, indent=2))
@@ -1309,7 +1387,15 @@ def main():
                 if not output.is_relative_to((ROOT / "dist").resolve()) or output == (ROOT / "dist").resolve():
                     raise BuildError("Output must be a new directory below this checkout's dist/")
                 output.mkdir(parents=True, exist_ok=False)
-                bundle = assemble(runner, binary, output, meta, args.offline)
+                with contextlib.ExitStack() as mounted:
+                    engine_app = args.engine_app.resolve() if args.engine_app else None
+                    if args.fetch_engine:
+                        try:
+                            engine_app = mounted.enter_context(
+                                engine_build.fetched_app(STATE / "engine-cache", offline=args.offline))
+                        except engine_build.EngineBuildError as exc:
+                            raise BuildError(str(exc)) from None
+                    bundle = assemble(runner, binary, output, meta, args.offline, engine_app)
                 validate_structure(bundle, meta)
                 prepare_native_for_signing(runner, bundle)
                 validate_native(runner, bundle, meta)

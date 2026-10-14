@@ -136,7 +136,10 @@ async def _embed_batches(texts: list[str], *, timeout: float, target: Target | N
         vecs = [by_index[i] for i in range(len(batch))]
         return idx, vecs
 
-    async with guard_client(httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False)) as c:
+    from service.inference.attributed_transport import bundled_transport
+    checked = bundled_transport(target.endpoint.base_url, key)     # None unless the bundled engine
+    async with guard_client(httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False,
+                                              **({"transport": checked} if checked else {}))) as c:
         tasks = [asyncio.create_task(run(c, i, b)) for i, b in enumerate(batches)]
         try:
             results = await asyncio.gather(*tasks)
