@@ -20,6 +20,7 @@ import tempfile
 import time
 from urllib.parse import quote
 
+import engine as engine_build
 from pipeline import (BoundReleaseAssets, BuildError, CONFIG, GitHubReleaseUploader, ROOT, SUPPORT, archive, clean_env,
                       git, inventory, json_write, relocation_smoke, distribution_roundtrip,
                       validate_native, validate_structure, verify_artifacts, signing_targets, verify_bundle_signature, scan_host_paths)
@@ -194,6 +195,7 @@ def secret_run(command, *, env=None, pass_fds=()):
 ENTITLEMENT_SOURCES = {
     "app": "build-support/app.entitlements",
     "python": "build-support/python.entitlements",
+    "engine": engine_build.ENGINE_ENTITLEMENTS,
 }
 
 
@@ -335,7 +337,9 @@ def entitlement_role(bundle, target, main_executable=None):
     bundle, target = Path(bundle), Path(target)
     main_executable = (bundle_main_executable(bundle) if main_executable is None
                        else Path(main_executable))
-    return "app" if target in (bundle, main_executable) else "python"
+    if target in (bundle, main_executable):
+        return "app"
+    return "engine" if engine_build.is_engine_target(bundle, target) else "python"
 
 
 def developer_sign(runner, bundle, identity, keychain, entitlements):
@@ -346,7 +350,8 @@ def developer_sign(runner, bundle, identity, keychain, entitlements):
         role = entitlement_role(bundle, target, main_executable)
         entitlement, descriptor = entitlements.argument(role)
         secret_run(["/usr/bin/codesign", "--force", "--sign", identity, "--keychain", keychain,
-                    "--timestamp", "--options", "runtime", "--entitlements", entitlement, target],
+                    "--timestamp", "--options", "runtime", "--entitlements", entitlement,
+                    *engine_build.codesign_identifier_args(bundle, target), target],
                    pass_fds=(descriptor,))
     verify_bundle_signature(bundle, "Developer ID Application", runner, "developer-verification")
     verify_signed_entitlements(bundle, entitlements)

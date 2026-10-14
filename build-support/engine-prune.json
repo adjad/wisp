@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "comment": "Top-level site-packages entries NOT shipped in Wisp's bundled engine. Wisp uses oMLX for text generation, tool calling, embeddings and rerank; none of the features below. A feature whose package is absent fails only when that route is used. Static import analysis cannot prune further (the transitive closure from omlx reaches ~everything), so this list is a reviewed denylist and must be re-validated by scripts/engine_smoke.py after every engine update.",
+  "drop": {
+    "cv2": "video input (omlx/utils/video.py), 124 MB",
+    "modelscope": "alternate model downloader (omlx/admin/ms_downloader.py), 53 MB",
+    "onnxruntime": "file-type detection and document conversion (magika/markitdown), 82 MB",
+    "llvmlite": "numba JIT backend, audio feature extraction only, 131 MB",
+    "numba": "audio feature extraction only (imported lazily by librosa), 30 MB",
+    "spacy": "text-to-speech phonemizer pipeline",
+    "spacy_legacy": "text-to-speech phonemizer pipeline",
+    "spacy_loggers": "text-to-speech phonemizer pipeline",
+    "thinc": "text-to-speech phonemizer pipeline",
+    "blis": "text-to-speech phonemizer pipeline",
+    "srsly": "text-to-speech phonemizer pipeline",
+    "cymem": "text-to-speech phonemizer pipeline",
+    "preshed": "text-to-speech phonemizer pipeline",
+    "murmurhash": "text-to-speech phonemizer pipeline",
+    "wasabi": "text-to-speech phonemizer pipeline",
+    "weasel": "text-to-speech phonemizer pipeline",
+    "catalogue": "text-to-speech phonemizer pipeline",
+    "confection": "text-to-speech phonemizer pipeline",
+    "en_core_web_sm": "text-to-speech phonemizer pipeline",
+    "pdfminer": "document conversion (markitdown)",
+    "pdfplumber": "document conversion (markitdown)",
+    "pypdfium2": "document conversion (markitdown)",
+    "pypdfium2_raw": "document conversion (markitdown)",
+    "pypdfium2_cfg": "document conversion (markitdown)",
+    "pypdfium2_cli": "document conversion (markitdown)",
+    "pptx": "document conversion (markitdown)",
+    "xlsxwriter": "document conversion (markitdown)",
+    "mammoth": "document conversion (markitdown)",
+    "markitdown": "document conversion (markitdown)",
+    "magika": "file-type detection (markitdown)",
+    "phonemizer": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "phonemizer_fork": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "espeakng_loader": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "misaki": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)",
+    "num2words": "text-to-speech only; GPL/LGPL components not needed by Wisp (phonemizer and espeak-ng are GPL)"
+  },
+  "candidates_not_applied": {
+    "scipy": "101 MB; needed by audio libraries, possibly lazily by vision processors. Prune only after a vision-model smoke test.",
+    "sklearn": "49 MB; needed by audio libraries",
+    "transformers": "107 MB; required by tokenizers and chat templates, cannot be dropped"
+  },
+  "always_remove": [
+    "__pycache__",
+    ".DS_Store",
+    "pyvenv.cfg",
+    ".git"
+  ],
+  "always_remove_suffixes": [
+    ".pyc",
+    ".pyo",
+    ".db",
+    ".p12",
+    ".p8"
+  ]
+}

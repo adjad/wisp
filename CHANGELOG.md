@@ -8,6 +8,7 @@ All notable changes to Wisp are documented here.
 
 ### Added
 
+- Wisp now includes its own copy of the oMLX AI engine. A Mac with no oMLX installed uses it automatically; one that already has oMLX keeps using it unless you switch in Settings > Models > Engine. The built-in engine runs privately on port 8791 with its own models folder (`~/.moe/engine`), so it never touches your oMLX settings or models, and Wisp refuses to send anything to a process on that port that isn't the engine it started. It needs macOS 26.2 or newer; older Macs keep using an installed oMLX. The app includes `Documentation/THIRD-PARTY-NOTICES.md` with the licences of everything the engine ships, including the copyleft ones and where to get their source.
 - An opt-in planner (`WISP_PLANNER=1`, off by default) replaces free-form tool calling with a grammar-constrained JSON plan, a menu of the most relevant tools and explicit stopping rules (`not_found`, `cannot_do`, `clarify`). It reads before it writes, drops calls that already ran and caps repeated reads. If the first plan answers or asks a question without looking anything up, it re-plans once with a lookup required; after a miss it looks once more in families nothing has tried yet. On a 59-case sample, Ling V3 passed 52 cases with it against 40 without, using about half the tool calls; it is off by default until it has been run on more real use.
 
 ### Changed

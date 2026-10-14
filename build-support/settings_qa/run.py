@@ -34,6 +34,15 @@ DISABLED_LOCAL = {
 }
 
 
+# Synthetic /engine response: the built-in engine running while the user's own oMLX also runs.
+ENGINE_FIXTURE = {
+    "mode": "bundled", "configured_mode": "bundled", "bundled_available": True,
+    "unsupported_reason": None, "running": True, "omlx_version": "0.7.1.dev1",
+    "admin_url": "http://127.0.0.1:8791/admin", "external_omlx_installed": True,
+    "restart_required": False, "external_engine_running": True,
+}
+
+
 class Fixture:
     def __init__(self) -> None:
         self.mode = "normal"
@@ -118,6 +127,14 @@ def handler_for(fixture: Fixture):
                         if fixture.mode == "local_delete_500":
                             return self.respond({"detail": "Synthetic local post-disable close"}, 500)
                         return self.respond(fixture.local)
+                if path == "/engine" and self.command == "GET":
+                    return self.respond(dict(ENGINE_FIXTURE))
+                if path == "/engine/mode" and self.command == "POST":
+                    if self.headers.get("Content-Type") != "application/json":
+                        return self.respond({"detail": "Send application/json"}, 415)
+                    ENGINE_FIXTURE["configured_mode"] = body["mode"]
+                    ENGINE_FIXTURE["restart_required"] = body["mode"] != ENGINE_FIXTURE["mode"]
+                    return self.respond(dict(ENGINE_FIXTURE))
                 if path == "/models":
                     return self.respond({"installed": ["qa-local"], "roles": {"reasoning": "qa-local"}})
                 if path == "/mode":
