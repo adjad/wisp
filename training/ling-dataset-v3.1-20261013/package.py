@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the inert, allowlisted Ling V3 train/dev upload ZIP + upload-zip.json (reproducible headers).
+"""Build the inert, allowlisted Ling V3.1 train/dev upload ZIP + upload-zip.json (reproducible headers).
 
 Refuses to package unless validation.json passed and preflight.json is PASS for the exact train/dev bytes.
 """
@@ -7,13 +7,14 @@ import hashlib, json, platform, zipfile, zlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-NAME = "ling-train-dev-v3-20261012.zip"
+NAME = "ling-train-dev-v3.1-20261013.zip"
 MEMBERS = ["train.jsonl", "dev.jsonl", "train.provenance.jsonl", "dev.provenance.jsonl", "conversations.jsonl", "stats.json",
            "assets/tools.json", "assets/system_parts.json", "assets/heldout_shingles.json",
            "README.md", "DATA_CARD.md", "preflight.py", "check_labels.py", "axolotl-a6000.yaml",
            "validate.py", "validation.json", "preflight.json"]
 # Generator sources: generate.py plus every add-on module it loads (ext_*.py) and v2_replay.py, so the data is reproducible from the zip.
 MEMBERS += ["generate.py"] + sorted(p.name for p in ROOT.glob("ext_*.py")) + (["v2_replay.py"] if (ROOT / "v2_replay.py").exists() else [])
+MEMBERS += ["v3_replay.py", "v3_replay.provenance.jsonl", "V3.1_PLAN.md"]
 # V2-replay provenance travels separately from train/dev.provenance.jsonl; required once v2r rows are appended to train/dev.
 if (ROOT / "v2_replay.provenance.jsonl").exists():
     MEMBERS.append("v2_replay.provenance.jsonl")
@@ -38,7 +39,7 @@ def main():
     path = ROOT / NAME
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for n in sorted(MEMBERS):
-            info = zipfile.ZipInfo(n, date_time=(2026, 10, 12, 0, 0, 0))
+            info = zipfile.ZipInfo(n, date_time=(2026, 10, 13, 0, 0, 0))
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             info.create_system = 3

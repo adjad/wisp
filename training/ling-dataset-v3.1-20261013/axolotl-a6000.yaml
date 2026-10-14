@@ -86,7 +86,7 @@ eval_sample_packing: false
 
 # ---- optimisation ----------------------------------------------------------
 micro_batch_size: 1
-gradient_accumulation_steps: 16         # effective batch 16 rows -> 312 optimizer steps for 4,987 rows (4,387 model-led + 600 V2 replay)
+gradient_accumulation_steps: 16         # effective batch 16 rows -> 152 optimizer steps for 2,426 rows (1,205 new + 621 V3 replay + 600 V2 replay)
 num_epochs: 1
 learning_rate: 0.0001
 lr_scheduler: cosine
