@@ -1825,17 +1825,26 @@ async def agent(body: dict[str, Any]):
             # e.g. "clarify before effects" forbids add_reminder outright.
             # Typed workflows, deterministic claims and vision keep their paths.
             planner_turn = False
+            planner_act_first: frozenset[str] = frozenset()
             if (not model_led_turn and not (workflow_turn and workflow_turn.decision)
                     and remote_only_profile() is None and not deterministic_claim
                     and getattr(client, "managed", False) and decision.role != "vision"
                     and planner_enabled_from_env()):
-                from service.router.menu import build_menu
+                from service.router.menu import act_first_tools, build_menu
                 guard_forbidden, guard_bindings = routing_guard_contract(prompt)
+                planner_menu = build_menu(prompt, last_assistant=last_assistant,
+                                          forbidden=frozenset(guard_forbidden))
+                # The rules router's confident subset is evidence the turn
+                # needs a tool; its "ambiguous, model decides" default is not.
+                planner_act_first = act_first_tools(
+                    prompt, planner_menu,
+                    routed=(decision.tool_subset or ()) if (decision.route_source == "rules"
+                                                            and decision.needs_tools) else (),
+                    forced=decision.force_first_tool if decision.route_source == "rules" else None)
                 decision = dataclasses.replace(
                     decision, role="agent", model=role_to_model("agent"), needs_tools=True,
                     route_source="planner", reason=f"{decision.reason} · planner menu",
-                    tool_subset=build_menu(prompt, last_assistant=last_assistant,
-                                           forbidden=frozenset(guard_forbidden)),
+                    tool_subset=planner_menu,
                     force_first_tool=None, expect_tool_first=False, direct_calls=[],
                     required_tool_groups=(), conditional_tools=(), multi_round=True,
                     narration_after=frozenset(), resolved_request="", strict_read_limits={},
@@ -2088,7 +2097,8 @@ async def agent(body: dict[str, Any]):
                                         strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug,
-                                        planner=planner_turn)
+                                        planner=planner_turn,
+                                        act_first=planner_act_first if planner_turn else frozenset())
                 from service.tools.registry import DisplayOnlyToolResult
                 if not isinstance(captured["text"], DisplayOnlyToolResult):
                     captured["text"] = final or captured["text"]

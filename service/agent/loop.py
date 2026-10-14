@@ -1318,6 +1318,9 @@ async def run_agent(
     # tool_calls message, so every guard below still applies. Local managed
     # oMLX only; ignored (free-form loop) anywhere else.
     planner: bool = False,
+    # Planner turns only: tools the first plan must try before answering or
+    # clarifying with no call (service/router/menu.act_first_tools).
+    act_first: frozenset[str] = frozenset(),
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -2568,6 +2571,12 @@ async def run_agent(
     # Read calls this turn that came back empty or failed, by tool name, for
     # the per-tool miss budget (see planner.READ_MISS_BUDGET).
     read_misses: Counter = Counter()
+    # Reads that returned something, by tool name, and the exact non-read
+    # calls that already succeeded, for the plan step's checks below.
+    read_hits: Counter = Counter()
+    succeeded_writes: set[str] = set()
+    # Identical read calls run this turn, by _read_call_key.
+    read_attempts: Counter = Counter()
     budget_reads = planner
     # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
     replan_left = [planner]
@@ -2593,10 +2602,10 @@ async def run_agent(
                                             searched=searched))
         plan = _plan.parse_plan(raw.get("content"), allowed)
 
-        async def _replan(reason: str):
+        async def _replan(reason: str, only=None):
             replan_left[0] = False
-            audit("plan_replan", reason=reason)
-            return await _plan_step(step_msgs, step_schemas, allowed, True, max_out,
+            audit("plan_replan", reason=reason, tools=sorted(only) if only else None)
+            return await _plan_step(step_msgs, step_schemas, set(only or allowed), True, max_out,
                                     temperature, think_on, last_attempt=last_attempt)
         # SELF-CONTRADICTION, part 1: cannot_do before anything was searched,
         # with tools offered. Measured 2026-10-13, LFM2.5-24B, real planner
@@ -2608,6 +2617,19 @@ async def run_agent(
         if (plan.status == "cannot_do" and not plan.calls and not searched
                 and not require_call and allowed and replan_left[0]):
             return await _replan("cannot_do_before_search")
+        # ANSWERED BEFORE LOOKING. A first plan that answers or asks a
+        # clarifying question without calling anything, for a request about
+        # the user's own data (or a public lookup) whose tools the menu
+        # offers. Measured 2026-10-14, Ling V3, real planner path: 7 of the 17
+        # failures in 59 cases, e.g. "what am i forgetting to do this week"
+        # answered with an invented meeting. Re-plan once restricted to those
+        # tools, which are reads except the one write the rules router itself
+        # forced (menu.act_first_tools); a clarifying question is still
+        # possible after the lookup, when it is grounded.
+        if (plan.status in ("answer", "clarify") and not plan.calls and not searched
+                and not require_call and replan_left[0]
+                and (only := act_first & set(allowed))):
+            return await _replan("answered_before_looking", only)
         # ALREADY ANSWERED. A planned read whose identical call already
         # SUCCEEDED this turn, with no write since, is dropped before it
         # reaches the repeat guard; the refusal pointer the guard would add
@@ -2621,6 +2643,7 @@ async def run_agent(
         # the duplicate-effect guard owns those. Runs BEFORE the deferral
         # below, so a repeated read never takes a fresh write down with it.
         fresh, seen, dropped, exhausted = [], set(), [], False
+        wanted_more = bool(plan.calls)
         for n, a in plan.calls:
             if fixed := (tool_argument_bindings or {}).get(n):
                 # Compare what will EXECUTE: the step loop overlays the same
@@ -2637,6 +2660,22 @@ async def run_agent(
             if rk is not None and rk in completed_reads:
                 dropped.append(n)
                 continue
+            if rk is not None and read_attempts[rk] >= 2:
+                # The identical read ran twice and never came back usable (a
+                # usable one is in completed_reads above). Measured
+                # 2026-10-14, Ling V3: a "(... returned no data ...)" notice is
+                # not cached so it may be retried, and predict_my_day(day=today)
+                # was then planned seven times in a row.
+                dropped.append(n)
+                exhausted = True
+                continue
+            if key in succeeded_writes:
+                # The identical write already SUCCEEDED this turn. The effect
+                # guard only knows _EFFECT_TOOLS by name; measured 2026-10-14,
+                # Ling V3: "remember that my wife's birthday is march 3" saved
+                # the same fact three times. A different write still runs.
+                dropped.append(n)
+                continue
             if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
                     and (t := get_tool(n)) is not None and t.category in _read_categories()):
                 # Exhausted: the step loop would refuse it. Dropping it here,
@@ -2651,6 +2690,32 @@ async def run_agent(
             plan.calls = fresh
             if not fresh:
                 plan.status = "not_found" if exhausted else "answer"
+        # LOOK WIDER BEFORE GIVING UP. The model says nothing was found, or
+        # re-planned only searches that already ran (it still wants to look),
+        # or every read so far missed; yet the request's own evidence tools
+        # (act_first) include families nothing has searched. Measured
+        # 2026-10-14, Ling V3: "what's my bike lock code" searched Notes, got
+        # only unrelated notes, re-planned the same search and answered "I
+        # couldn't find anything" without checking memory. Re-plan once over
+        # the untried families.
+        if (not plan.calls and searched and not require_call and replan_left[0] and act_first
+                and not succeeded_writes and (plan.status == "not_found" or wanted_more
+                     or (plan.status in ("answer", "clarify") and read_misses and not read_hits))):
+            from service.router.menu import family_of
+            tried = {family_of(n) for n in (*read_misses, *read_hits)}
+            if untried := {n for n in act_first & set(allowed)
+                           if family_of(n) not in tried
+                           and (t := get_tool(n)) is not None and t.category in _read_categories()}:
+                return await _replan("nothing_found_untried_family", untried)
+        # NOT FOUND NEEDS A MISS. not_found narrates "nothing was found", so
+        # it stands only when every read this turn came back empty or failed;
+        # otherwise the answer narration works from what did come back.
+        # Measured 2026-10-14, Ling V3: after summarize_emails and get_upcoming
+        # returned real content, plans said not_found and the answers read
+        # "nothing matching that question was found".
+        if plan.status == "not_found" and not plan.calls and (read_hits or not read_misses):
+            audit("plan_status_corrected", status="not_found", to="answer")
+            plan.status = "answer"
         # READS BEFORE WRITES. A plan that mixes NEW reads with effect calls
         # runs only the reads; the model re-plans with their results in hand.
         # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
@@ -3784,10 +3849,17 @@ async def run_agent(
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
-            if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
-                    and name not in _EFFECT_TOOLS
-                    and (outcome.status != "succeeded" or _plan.looks_empty(name, result))):
-                read_misses[name] += 1
+            if budget_reads:
+                is_read = (ran_tool is not None and ran_tool.category in _read_categories()
+                           and name not in _EFFECT_TOOLS)
+                if read_key is not None:
+                    read_attempts[read_key] += 1
+                if is_read and (outcome.status != "succeeded" or _plan.looks_empty(name, result)):
+                    read_misses[name] += 1
+                elif is_read:
+                    read_hits[name] += 1
+                elif outcome.status == "succeeded" and read_key is None:
+                    succeeded_writes.add(_plan.call_key(name, args))
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body

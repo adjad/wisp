@@ -537,3 +537,156 @@ def test_menu_offers_sends_only_with_an_outbound_cue():
     from service.router.menu import build_menu
     assert "send_message" not in build_menu("summarize my messages from today")
     assert "send_message" in build_menu("text sam that i'm running late")
+
+
+# ------------------------------------------------- answered before looking
+def test_answer_before_looking_replans_once_restricted_to_act_first_tools(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    assert run(client, planner=True, act_first=frozenset({"fake_read"})) == "DONE"
+    assert _fake_tools == [("fake_read", {})]
+    second = client.requests[1]["response_format"]["json_schema"]["schema"]
+    assert second["properties"]["calls"]["minItems"] == 1
+    assert second["properties"]["calls"]["items"]["properties"]["tool"]["enum"] == ["fake_read"]
+
+
+def test_clarify_before_looking_replans_too_and_may_clarify_after_the_lookup(_fake_tools):
+    client = PlanClient([plan("clarify"), plan("call_tools", ("fake_read", {})), plan("clarify")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["clarify"]
+
+
+def test_answer_without_act_first_evidence_is_honoured(_fake_tools):
+    client = PlanClient([plan("answer")])
+    assert run(client, planner=True) == "DONE"
+    assert _fake_tools == [] and len(client.requests) == 2  # plan + narration
+
+
+def test_act_first_tools_outside_the_offered_tools_never_force_a_replan(_fake_tools):
+    client = PlanClient([plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_send"}))
+    assert _fake_tools == [] and len(client.requests) == 2
+
+
+def test_answer_after_a_lookup_is_honoured_even_with_act_first(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "gate code"})), plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_search", {"query": "gate code"})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_only_one_forced_replan_per_turn(_fake_tools):
+    # cannot_do spends the turn's one re-plan, so act_first adds no second one.
+    client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {})] and len(client.requests) == 4
+
+
+@pytest.mark.parametrize("prompt, routed, forced, must", [
+    ("what am i forgetting to do this week", (), None, "get_upcoming"),
+    ("help me plan my day", ("get_upcoming", "daily_brief"), None, "get_upcoming"),
+    ("what's my bike lock code", (), None, "search_notes"),
+    ("find my resume and email it to dana@example.com", (), None, "find_files"),
+    ("summarize my inbox and save the important stuff to a note", (), None, "summarize_emails"),
+    ("remember that my wife's birthday is march 3", ("remember", "recall"), "remember", "remember"),
+    ("define ephemeral", (), None, "wikipedia_summary"),
+])
+def test_act_first_tools_cover_the_measured_no_call_failures(prompt, routed, forced, must):
+    from service.router.menu import act_first_tools, build_menu
+    menu = build_menu(prompt)
+    assert must in act_first_tools(prompt, menu, routed=routed, forced=forced)
+
+
+@pytest.mark.parametrize("prompt", [
+    "tell me a joke", "thanks!", "what's the capital of france",
+    "don't search the web, just tell me what you know about rome",
+])
+def test_act_first_tools_leave_chat_and_prohibitions_alone(prompt):
+    from service.router.menu import act_first_tools, build_menu
+    assert act_first_tools(prompt, build_menu(prompt)) == frozenset()
+
+
+def test_act_first_tools_never_include_a_write_the_router_did_not_force():
+    from service.router.menu import act_first_tools, build_menu
+    from service.router.model_led import READ_CATEGORIES
+    prompt = "text mom that i'm running late and add a reminder to call the dentist"
+    menu = build_menu(prompt)
+    got = act_first_tools(prompt, menu, routed=tuple(menu))
+    assert got and all(REGISTRY[n].category in READ_CATEGORIES for n in got)
+
+
+# ------------------------------------------- repeats, not_found, look wider
+def test_an_identical_write_that_already_succeeded_is_not_planned_again(_fake_tools):
+    w, other = {"path": "a.txt", "text": "hi"}, {"path": "b.txt", "text": "hi"}
+    client = PlanClient([plan("call_tools", ("fake_write", w)), plan("call_tools", ("fake_write", w))])
+    run(client, tools=("fake_write",), planner=True)
+    assert _fake_tools == [("fake_write", w)]  # the repeat plan narrates the saved result
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+    _fake_tools.clear()
+    client = PlanClient([plan("call_tools", ("fake_write", w)), plan("call_tools", ("fake_write", other)),
+                         plan("answer")])
+    run(client, tools=("fake_write",), planner=True)
+    assert _fake_tools == [("fake_write", w), ("fake_write", other)]
+
+
+def test_not_found_after_a_read_returned_content_narrates_as_answer(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("not_found")])
+    run(client, planner=True)
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_not_found_after_only_misses_stands(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "gate code"})), plan("not_found")])
+    run(client, planner=True)
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["not_found"]
+
+
+@pytest.fixture
+def _fake_families(monkeypatch):
+    import service.router.menu as menu
+    fams = {"fake_search": "notes", "fake_open": "files", "fake_write": "files"}
+    monkeypatch.setattr(menu, "family_of", lambda n: fams.get(n, "other"))
+
+
+def test_nothing_found_replans_once_over_untried_evidence_families(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "bike lock"})), plan("not_found"),
+                         plan("call_tools", ("fake_open", {"path": "lock.txt"})), plan("answer")])
+    run(client, tools=("fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert _fake_tools == [("fake_search", {"query": "bike lock"}), ("fake_open", {"path": "lock.txt"})]
+    forced = client.requests[2]["response_format"]["json_schema"]["schema"]
+    assert forced["properties"]["calls"]["items"]["properties"]["tool"]["enum"] == ["fake_open"]
+
+
+def test_nothing_found_with_every_evidence_family_tried_is_honoured(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "bike lock"})), plan("not_found")])
+    run(client, planner=True, act_first=frozenset({"fake_search"}))
+    assert len(client.requests) == 3  # plan, plan, narration: no re-plan
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["not_found"]
+
+
+def test_no_look_wider_replan_after_a_write_succeeded(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})),
+                         plan("call_tools", ("fake_search", {"query": "a"})), plan("not_found")])
+    run(client, tools=("fake_write", "fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert [n for n, _ in _fake_tools] == ["fake_write", "fake_search"]
+
+
+def test_a_plan_of_only_repeated_searches_looks_wider_first(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_open", {"path": "lock.txt"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_open"), planner=True,
+        act_first=frozenset({"fake_read", "fake_open"}))
+    assert _fake_tools == [("fake_read", {}), ("fake_open", {"path": "lock.txt"})]
+
+
+def test_an_identical_read_that_never_came_back_usable_runs_at_most_twice(_fake_tools, monkeypatch):
+    # A parenthesized notice is not cached, so one identical retry is allowed.
+    def notice() -> str:
+        _fake_tools.append(("fake_read", {}))
+        return "(fake_read returned no data for this request.)"
+    monkeypatch.setattr(REGISTRY["fake_read"], "func", notice)
+    client = PlanClient([plan("call_tools", ("fake_read", {})) for _ in range(5)] + [plan("answer")])
+    run(client, planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
