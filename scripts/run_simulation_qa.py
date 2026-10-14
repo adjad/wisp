@@ -207,6 +207,8 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
+    "tests/test_memory_eval_scorer.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
     "tests/test_attestation_store.py",
     # Synthetic content-free journal, bounded offline planner replay; no external effects.
