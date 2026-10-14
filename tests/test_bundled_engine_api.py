@@ -384,15 +384,32 @@ def existing_setup_suite() -> int:
         return int(result)
 
 
+def sockets_allowed() -> bool:
+    """The Simulation QA sandbox refuses loopback binds; the probe test below needs a real
+    listener, so it is reported as skipped there and runs wherever sockets are allowed."""
+    import socket
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+        return True
+    except OSError:
+        return False
+
+
 def main() -> int:
     if "--setup-guide" in sys.argv:
         return existing_setup_suite()
+    skipped = 0
     for fn in (test_first_launch_and_stickiness, test_unsupported_and_validation,
                test_switch_and_secrets, test_env_and_corrupt_overlay, test_concurrent_selection,
                test_credential_free_local_probe):
         print(fn.__name__)
+        if fn is test_credential_free_local_probe and not sockets_allowed():
+            skipped += 1
+            print("  skip needs loopback sockets (refused by this sandbox)")
+            continue
         fn()
-    print(f"\n{PASS} passed, {FAIL} failed")
+    print(f"\n{PASS} passed, {FAIL} failed, {skipped} skipped")
     return 1 if FAIL else 0
 
 

@@ -50,6 +50,31 @@ STUB = textwrap.dedent('''
 ''')
 
 
+def sockets_allowed() -> bool:
+    """The Simulation QA sandbox refuses loopback binds; tests that need a real listener are
+    reported as skipped there and run for real wherever sockets are allowed (CI preview, local)."""
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+        return True
+    except OSError:
+        return False
+
+
+SOCKETS = sockets_allowed()
+SKIPPED = 0
+
+
+def run_or_skip(fn, needs_sockets: bool) -> None:
+    global SKIPPED
+    print(fn.__name__)
+    if needs_sockets and not SOCKETS:
+        SKIPPED += 1
+        print("  skip needs loopback sockets (refused by this sandbox)")
+        return
+    fn()
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     global PASS, FAIL
     if ok:
@@ -61,6 +86,8 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 
 
 def free_port() -> int:
+    if not SOCKETS:
+        return 40000 + os.getpid() % 20000      # only builders and settings tests reach here
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         return s.getsockname()[1]
@@ -366,11 +393,14 @@ def test_audit_followups() -> None:
 
 
 def main() -> int:
-    for fn in (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence, test_lifecycle,
-               test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine, test_audit_followups):
-        print(fn.__name__)
-        fn()
-    print(f"\n{PASS} passed, {FAIL} failed")
+    plain = (test_builders, test_refusals, test_prepare_permissions, test_key_and_settings_persistence)
+    live = (test_lifecycle, test_busy_port, test_reaps_orphan, test_reap_only_the_launched_engine,
+            test_audit_followups)
+    for fn in plain:
+        run_or_skip(fn, False)
+    for fn in live:
+        run_or_skip(fn, True)
+    print(f"\n{PASS} passed, {FAIL} failed, {SKIPPED} skipped")
     return 1 if FAIL else 0
 
 

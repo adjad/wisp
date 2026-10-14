@@ -86,6 +86,31 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         print(f"  FAIL {name} {detail}")
 
 
+def sockets_allowed() -> bool:
+    """The Simulation QA sandbox refuses loopback binds; tests that need a real listener are
+    reported as skipped there and run for real wherever sockets are allowed (CI preview, local)."""
+    try:
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+        return True
+    except OSError:
+        return False
+
+
+SOCKETS = sockets_allowed()
+SKIPPED = 0
+
+
+def run_or_skip(fn, needs_sockets: bool) -> None:
+    global SKIPPED
+    print(fn.__name__)
+    if needs_sockets and not SOCKETS:
+        SKIPPED += 1
+        print("  skip needs loopback sockets (refused by this sandbox)")
+        return
+    fn()
+
+
 def free_port() -> int:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -477,15 +502,17 @@ def test_missing_module_refuses() -> None:
 
 
 def main() -> int:
-    for fn in (test_selection_and_constants, test_accepts_the_engine_wisp_launched,
-               test_refuses_without_a_launched_engine, test_key_never_reaches_an_impostor,
-               test_impostor_replaces_a_killed_engine, test_restart_changes_incarnation,
-               test_wrong_parent, test_other_listeners_on_the_port,
-               test_interpreter_and_tree_tampering, test_signature_policy,
-               test_messages_and_reasons, test_missing_module_refuses):
-        print(fn.__name__)
-        fn()
-    print(f"\n{PASS} passed, {FAIL} failed")
+    plain = (test_selection_and_constants, test_messages_and_reasons, test_missing_module_refuses)
+    live = (test_accepts_the_engine_wisp_launched,
+            test_refuses_without_a_launched_engine, test_key_never_reaches_an_impostor,
+            test_impostor_replaces_a_killed_engine, test_restart_changes_incarnation,
+            test_wrong_parent, test_other_listeners_on_the_port,
+            test_interpreter_and_tree_tampering, test_signature_policy)
+    for fn in plain:
+        run_or_skip(fn, False)
+    for fn in live:
+        run_or_skip(fn, True)
+    print(f"\n{PASS} passed, {FAIL} failed, {SKIPPED} skipped")
     return 1 if FAIL else 0
 
 
