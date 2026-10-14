@@ -329,6 +329,10 @@ ADDITIONAL_FULL_TESTS = {
     # fake client and the packaged prompt only; no model, network, subprocess,
     # or user state.
     "tests/test_prompt_scope_fit.py",
+    # Grammar-constrained planner, planner menu and read budget: scripted fake
+    # client, fake registry tools and the packaged registry/router only; no
+    # model, network, subprocess, or user state.
+    "tests/test_planner.py",
     "tests/test_notes_defaults.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",

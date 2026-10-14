@@ -706,7 +706,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
                     temperature: float | None = None,
                     no_thinking: bool = False,
                     think_on: bool = False,
-                    debug: bool = True) -> tuple[dict, str, bool]:
+                    debug: bool = True,
+                    extra: dict | None = None) -> tuple[dict, str, bool]:
     """One model turn, streamed. Emits live answer tokens (as `delta` events) and
     throttled `heartbeat`s during silent reasoning so the agent path is never a
     no-feedback black hole. Returns (assembled_message, reasoning_text,
@@ -735,7 +736,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
     events = client.stream_events(
             model, msgs, tools=schemas, tool_choice=choice, max_tokens=max_tokens,
             temperature=temperature,
-            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on))
+            **_template_kwargs(model, no_thinking=no_thinking, think_on=think_on),
+            **(extra or {}))
     async for ev in events:
         kind = ev["kind"]
         if kind == "reasoning":
@@ -800,6 +802,8 @@ async def _run_step(client, model, msgs, schemas, choice, max_tokens, emit,
         # Wisp didn't send.
         if temperature is not None:
             request["temperature"] = temperature
+        if extra:
+            request.update(extra)
         await emit({
             "type": "raw_model_io",
             "model": model,
@@ -878,9 +882,10 @@ def _system_blocks() -> list[tuple[frozenset, str]]:
 
 
 _BLOCKS_CACHE: list[tuple[frozenset, str]] | None = None
+_AGGREGATE_BLOCK_PREFIX = "- AGGREGATE QUESTIONS"
 
 
-def build_system(offered: set[str]) -> str:
+def build_system(offered: set[str], *, planner: bool = False) -> str:
     """The system prompt cut down to the tools actually offered this turn.
 
     Measured before this existed: SYSTEM was ~3,694 tokens sent on EVERY
@@ -904,8 +909,14 @@ def build_system(offered: set[str]) -> str:
     global _BLOCKS_CACHE
     if _BLOCKS_CACHE is None:
         _BLOCKS_CACHE = _system_blocks()
+    # Planner turns drop the AGGREGATE block: it orders get_upcoming AND
+    # summarize_messages AND summarize_emails AND search_notes for any to-do
+    # question, which contradicts the plan step's "fewest calls" rule and is
+    # the measured over-collection shape (LFM2.5-24B, "whats on my todo list":
+    # 7 calls, 5 outside what the question needed).
     return "\n".join(text for named, text in _BLOCKS_CACHE
-                     if not named or (named & offered))
+                     if (not named or (named & offered))
+                     and not (planner and text.startswith(_AGGREGATE_BLOCK_PREFIX)))
 
 # Smallest answer worth generating. Below this the model can't finish a
 # sentence, so a window too tight for it needs tools/history dropped instead.
@@ -1308,6 +1319,11 @@ async def run_agent(
     # export, so main.py threads the client's own debugMode flag through here
     # rather than sending it unconditionally.
     debug: bool = True,
+    # Grammar-constrained planning (service/agent/planner.py). Each selection
+    # step returns a JSON plan oMLX enforces; the plan becomes an ordinary
+    # tool_calls message, so every guard below still applies. Local managed
+    # oMLX only; ignored (free-form loop) anywhere else.
+    planner: bool = False,
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -1404,6 +1420,15 @@ async def run_agent(
     if tools is None and (public_web_synthesis or not _meeting_local_client(client)):
         from service.tools.registry import routable_tool_names
         tools = sorted(routable_tool_names() - {"plan_meeting", "commit_private_meeting"})
+
+    # Planning needs oMLX's logit-level grammar, i.e. the managed local engine.
+    # Model-led discovery keeps its own stub protocol; cloud synthesis has no
+    # selection step at all.
+    planner = bool(planner and not model_led_discovery and not public_web_synthesis
+                   and getattr(client, "managed", False))
+
+    def _sys(offered: set[str]) -> str:
+        return build_system(offered, planner=planner)
 
     # Monotonic negative authority. main supplies actual pre-trimming session
     # provenance; other callers conservatively retain assistant/tool/system
@@ -1881,7 +1906,7 @@ async def run_agent(
     # Scope the prompt to this turn's toolset (see build_system). `tools` is
     # None on the unscoped route, which yields the full prompt — same as before.
     # Stubs are names only and get no tool-specific system rules.
-    sys_text = build_system({s["function"]["name"] for s in schemas} - stub_names)
+    sys_text = _sys({s["function"]["name"] for s in schemas} - stub_names)
     # Instructions from installed skills whose triggers match this turn (see
     # service/skills). Empty until the user installs one. The installed-skills
     # CATALOG exists to make `use_skill` discoverable; on a route that does not
@@ -1929,7 +1954,7 @@ async def run_agent(
     # across steps.
     if schemas and not model_led_discovery:
         _, fitted_max, _ = _fit_window(
-            [{"role": "system", "content": build_system(set()) + identity_hint
+            [{"role": "system", "content": _sys(set()) + identity_hint
                                            + memory_hint + skills_hint},
              {"role": "system", "content": now_line}],
             schemas, max_tokens, model, force_first_tool, protected_prefix_count=2,
@@ -1940,7 +1965,7 @@ async def run_agent(
                 ruled.add(force_first_tool)
             for group in required_tool_groups:
                 ruled |= set(group)
-            sys_text = build_system(ruled & turn_tool_names)
+            sys_text = _sys(ruled & turn_tool_names)
     # Keep the instruction order: base, identity, memory, skills, clock, style,
     # test-mode and reminder safeguards. The second system message follows
     # Ling's serialized schemas; style still overrides the base concision rule.
@@ -2545,6 +2570,39 @@ async def run_agent(
         await emit({"type": "done"})
         return response
 
+    from service.agent import planner as _plan
+    # Read tools called this turn, by name, for the per-tool budget.
+    read_tool_uses: Counter = Counter()
+    budget_reads = planner
+
+    async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
+                         temperature, think_on, *, last_attempt):
+        """One grammar-constrained planning step (see service/agent/planner).
+
+        Returns the same (message, reasoning, streamed) triple as _run_step: a
+        tool_calls message for a plan with calls; otherwise the answer from one
+        tool-free narration step carrying the status's instruction. An
+        unparseable plan returns an empty message so the attempt loop's
+        empty-response retry re-samples it, except on the last attempt."""
+        raw, _, _ = await _run_step(
+            client, model, step_msgs + [_plan.plan_instruction(require_call=require_call)],
+            step_schemas, "auto", min(max_out, _plan.PLAN_MAX_TOKENS), emit,
+            stream_content=False, temperature=temperature, no_thinking=False,
+            think_on=think_on, debug=debug,
+            extra=_plan.plan_request_kwargs(sorted(allowed), require_call=require_call))
+        plan = _plan.parse_plan(raw.get("content"), allowed)
+        audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
+        if plan.error and not last_attempt:
+            return {}, plan.thought, False
+        if plan.calls:
+            return _plan.plan_message(plan), plan.thought, False
+        note = _plan.STATUS_NOTES.get(plan.status, _plan.STATUS_NOTES["answer"])
+        answer, reasoning_text, streamed = await _run_step(
+            client, model, step_msgs + [{"role": "user", "content": note}], [], "auto", max_out,
+            emit, stream_content=False, temperature=None, no_thinking=True, think_on=False,
+            debug=debug)
+        return answer, plan.thought or reasoning_text, streamed
+
     for _step in range(max_steps):
         await client.ensure_only(model, exclusive=exclusive, emit=emit)
         contract_candidate = None
@@ -2797,10 +2855,16 @@ async def run_agent(
             attempt_temperature = step_temperature
             if retry_for_empty and step_temperature is not None:
                 attempt_temperature = step_temperature + 0.7
-            msg, reasoning, content_streamed = await _run_step(
-                client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
-                stream_content=stream, temperature=attempt_temperature,
-                no_thinking=narrating, think_on=step_think_on, debug=debug)
+            if planner and choice != "none" and step_schemas:
+                msg, reasoning, content_streamed = await _plan_step(
+                    step_msgs, step_schemas, allowed_names, choice == "required",
+                    step_max_tokens, attempt_temperature, step_think_on,
+                    last_attempt=_attempt == attempts - 1)
+            else:
+                msg, reasoning, content_streamed = await _run_step(
+                    client, model, step_msgs, step_schemas, choice, step_max_tokens, emit,
+                    stream_content=stream, temperature=attempt_temperature,
+                    no_thinking=narrating, think_on=step_think_on, debug=debug)
 
             # A completely empty response — no content, no reasoning, no tool
             # calls — is not the model deciding to say nothing. It means oMLX's
@@ -3077,7 +3141,7 @@ async def run_agent(
                 schemas, stub_names = model_led_offer(capability_catalog, tools)
                 turn_tool_names = {s["function"]["name"] for s in schemas}
                 msgs[0] = {"role": "system", "content": (
-                    build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                    _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                 stub_result = expansion.receipt()
                 await emit({"type": "routing_discovery", "families": list(expansion.families),
                             "tools": tools, "status": "ready_next_step", "implicit": True})
@@ -3106,7 +3170,7 @@ async def run_agent(
                     schemas, stub_names = model_led_offer(capability_catalog, tools)
                     turn_tool_names = {s["function"]["name"] for s in schemas}
                     msgs[0] = {"role": "system", "content": (
-                        build_system(set(tools)) + identity_hint + memory_hint + skills_hint)}
+                        _sys(set(tools)) + identity_hint + memory_hint + skills_hint)}
                     result = expansion.receipt()
                     await emit({"type": "routing_discovery", "families": list(expansion.families),
                                 "tools": tools, "status": "ready_next_step"})
@@ -3212,6 +3276,17 @@ async def run_agent(
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
+
+            if budget_reads and name not in _EFFECT_TOOLS and (_bt := get_tool(name)) is not None \
+                    and _bt.category in _read_categories():
+                if read_tool_uses[name] >= _plan.READ_TOOL_BUDGET:
+                    result = _plan.budget_message(name, read_tool_uses[name])
+                    audit("reject_tool_budget", tool=name, args=args)
+                    prev_step_refusals += 1
+                    await emit({"type": "tool_result", "id": cid, "result": result})
+                    msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                    continue
+                read_tool_uses[name] += 1
 
             if name in _EFFECT_TOOLS and not _prior_requirements_met(name):
                 result = (f"({name} is premature: required source steps have not succeeded "
