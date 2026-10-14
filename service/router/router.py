@@ -1777,9 +1777,13 @@ _WRITE_INTENT_RE = re.compile(
     # "archive the Walgreens email" read as a pure LOOKUP and was handed only
     # the two read tools — the same shape of bug as the compound send case:
     # the model finds the message, then has nothing to act on it with.
-    # "get that out of my inbox" is the same archive request without the verb.
+    # "get that out of my inbox" is the same archive request without the verb,
+    # but only when what leaves is a message: "get the tracking number out of
+    # my inbox" is a read and must not gain write tools.
     r"\b(?:archive|file\s+away|mark)\b|"
-    r"\b(?:get|move|take)\s+(?:\w+\s+){1,3}?out\s+of\s+(?:my|the)\s+inbox\b", re.I)
+    r"\b(?:get|move|take)\s+(?:it|that|this|these|those|them|"
+    r"(?:the|that|this|these|those)\s+(?:[\w'-]+\s+){0,3}?"
+    r"(?:e-?mails?|messages?|mail|newsletters?))\s+out\s+of\s+(?:my|the)\s+inbox\b", re.I)
 
 # The "schedule" half of that NOTE, made good. The note above says bare
 # "schedule" is excluded because it is usually the NOUN, and that real

@@ -103,7 +103,8 @@ EFFECT_RECEIPTS = {
     "create_tool": ("created '",),
     "remember": ("saved memory ",), "forget": ("forgot ", "no exact matching memories were forgotten."),
     "text_to_speech": ("spoken.", "saved speech to "),
-    "play_audio": ("opened podcasts ", "opened books ", "playing ", "stopped."),
+    "play_audio": ("opened podcasts ", "opened books ", "playing ", "stopped.",
+                   "stopped ambient sound."),
     "email_triage": ("marked as ", "moved to archive.", "flagged.", "unflagged."),
     "create_note": ("created the ",), "append_note": ("added it to ",),
     "write_document": ("created ",), "spreadsheet_ops": ("created ",),
@@ -189,7 +190,8 @@ def effectful_call(tool, args: dict) -> bool:
     if tool.name == "run_shell":
         from service.safety.policy import read_only_shell_argv
         return read_only_shell_argv(str(args.get("cmd", ""))) is None
-    if tool.name == "manage_timers" and args.get("action", "list") in {"list", "stopwatch_read"}:
+    if tool.name == "manage_timers" and str(args.get("action") or "list").strip().lower() in {
+            "list", "stopwatch_read"}:
         return False
     return True
 

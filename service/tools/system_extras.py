@@ -197,6 +197,19 @@ _SETTINGS = {
 }
 
 
+_SETTING_ALIASES = {"dnd": "do_not_disturb", "focus": "do_not_disturb",
+                    "donotdisturb": "do_not_disturb", "bt": "bluetooth",
+                    "low_power": "low_power_mode", "battery_saver": "low_power_mode",
+                    "wi_fi": "wifi", "screen_reader": "voiceover", "dark": "dark_mode",
+                    "auto": "auto_appearance"}
+
+
+def setting_key(setting: str) -> str:
+    """Canonical _SETTINGS key for a spoken setting name (also the grant scope)."""
+    key = (setting or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return _SETTING_ALIASES.get(key, key)
+
+
 @register(
     "toggle_setting",
     "Turn a named macOS setting on or off: wifi, bluetooth, do_not_disturb, "
@@ -223,13 +236,7 @@ _SETTINGS = {
              "switch to light mode", "match my mac's theme to the time of day"],
 )
 def toggle_setting(setting: str, on: bool) -> str:
-    key = (setting or "").strip().lower().replace(" ", "_").replace("-", "_")
-    aliases = {"dnd": "do_not_disturb", "focus": "do_not_disturb",
-               "donotdisturb": "do_not_disturb", "bt": "bluetooth",
-               "low_power": "low_power_mode", "battery_saver": "low_power_mode",
-               "wi_fi": "wifi", "screen_reader": "voiceover", "dark": "dark_mode",
-               "auto": "auto_appearance"}
-    key = aliases.get(key, key)
+    key = setting_key(setting)
     fn = _SETTINGS.get(key)
     if fn is None:
         return (f"(error: I can't toggle {setting!r}. Options: "

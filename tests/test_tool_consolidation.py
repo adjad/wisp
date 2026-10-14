@@ -40,7 +40,11 @@ def _route(prompt):
 
 
 def test_registry_is_capped_at_one_hundred():
-    assert len(REGISTRY) == 100
+    # Built-in tools only. use_skill, skill tools and MCP tools register later,
+    # once the user installs them, and test modules can leave them behind.
+    builtin = [name for name, tool in REGISTRY.items()
+               if tool.func.__module__.startswith("service.tools.")]
+    assert len(builtin) == 100
 
 
 def test_retired_names_stay_retired_and_merged_tools_exist():
@@ -84,3 +88,83 @@ def test_txt_file_request_ranks_read_file_first_without_outbound_tools():
     offered = set(_route(prompt).tool_subset or [])
     assert "read_file" in offered
     assert {"send_message", "send_email", "reply_to_email", "forward_email"}.isdisjoint(offered)
+
+
+@pytest.mark.parametrize("prompt", [
+    "get the tracking number out of my inbox",
+    "get the receipts out of my inbox and summarize them",
+    "get my flight info out of my inbox",
+])
+def test_extracting_information_from_the_inbox_stays_a_read(prompt):
+    offered = set(_route(prompt).tool_subset or [])
+    assert {"email_triage", "send_email", "reply_to_email", "forward_email"}.isdisjoint(offered)
+
+
+# --- standing grants on merged tools ----------------------------------------
+
+@pytest.fixture
+def isolated_grants(monkeypatch, tmp_path):
+    from service.safety import grants, policy
+    monkeypatch.setattr(grants, "GRANTS_PATH", tmp_path / "grants.json")
+    monkeypatch.setattr(grants, "_CACHE", {})
+    monkeypatch.setattr(policy, "_FULL_ACCESS", False, raising=False)
+    return grants
+
+
+def test_always_allow_on_one_setting_does_not_cover_another(isolated_grants):
+    grants = isolated_grants
+    assert grants.grant("toggle_setting", {"setting": "dnd", "on": True})["scope"] == "do_not_disturb"
+    assert grants.check("toggle_setting", {"setting": "Do Not Disturb", "on": False}) == "allow"
+    for setting in ("wifi", "Wi-Fi", "voiceover", "dark_mode", "bluetooth"):
+        assert grants.check("toggle_setting", {"setting": setting, "on": False}) is None, setting
+
+
+def test_always_allow_on_one_triage_action_does_not_cover_archive(isolated_grants):
+    grants = isolated_grants
+    grants.grant("email_triage", {"message_id": "<a@x>", "action": "mark_read"})
+    assert grants.check("email_triage", {"message_id": "<b@x>", "action": "mark_read"}) == "allow"
+    assert grants.check("email_triage", {"message_id": "<b@x>", "action": "archive"}) is None
+
+
+def test_pre_merge_tool_wide_allow_keeps_its_old_coverage(isolated_grants):
+    grants = isolated_grants
+    # Written by an older build, where toggle_setting had five settings and
+    # set_timer only counted down.
+    grants._CACHE["toggle_setting"] = {"allow": [{"scope": ""}], "deny": []}
+    grants._CACHE["set_timer"] = {"allow": [{"scope": ""}], "deny": []}
+    assert grants.check("toggle_setting", {"setting": "bluetooth", "on": True}) == "allow"
+    assert grants.check("toggle_setting", {"setting": "wifi", "on": False}) is None
+    assert grants.check("set_timer", {"duration": "5 min"}) == "allow"
+    assert grants.check("set_timer", {"kind": "alarm", "time": "7am"}) is None
+    # Deliberately widening it again covers every behaviour.
+    grants.grant("toggle_setting", {}, decision="allow", scoped=False)
+    assert grants.check("toggle_setting", {"setting": "wifi", "on": False}) == "allow"
+
+
+@pytest.mark.parametrize("retired, tool, args", [
+    ("archive_email", "email_triage", {"message_id": "<a@x>", "action": "archive"}),
+    ("set_wifi", "toggle_setting", {"setting": "wifi", "on": False}),
+    ("set_alarm", "set_timer", {"kind": "alarm", "time": "7am"}),
+    ("spotify", "music", {"action": "play", "app": "spotify"}),
+    ("play_radio", "play_audio", {"kind": "radio", "query": "kexp"}),
+])
+def test_deny_on_a_retired_name_still_blocks_its_merged_behaviour(isolated_grants, monkeypatch,
+                                                                   retired, tool, args):
+    from service.safety import policy
+    grants = isolated_grants
+    grants._CACHE[retired] = {"allow": [], "deny": [{"scope": ""}]}
+    monkeypatch.setattr(policy, "_FULL_ACCESS", True, raising=False)
+    assert grants.check(tool, args) == "deny"
+    assert policy.decide(REGISTRY[tool].category, args, tool=tool).tier is policy.Tier.DENY
+
+
+def test_retired_deny_does_not_spill_onto_other_behaviours(isolated_grants):
+    grants = isolated_grants
+    grants._CACHE["archive_email"] = {"allow": [], "deny": [{"scope": ""}]}
+    grants._CACHE["mark_email_read"] = {"allow": [], "deny": [{"scope": ""}]}
+    assert grants.check("email_triage", {"message_id": "<a@x>", "action": "flag"}) is None
+    # Allowing one behaviour lifts only that part of the old deny.
+    grants.grant("email_triage", {"message_id": "<a@x>", "action": "mark_read"})
+    assert grants.check("email_triage", {"message_id": "<a@x>", "action": "mark_read"}) == "allow"
+    assert grants.check("email_triage", {"message_id": "<a@x>", "action": "mark_unread"}) == "deny"
+    assert grants.check("email_triage", {"message_id": "<a@x>", "action": "archive"}) == "deny"
