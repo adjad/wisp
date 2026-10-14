@@ -2663,6 +2663,13 @@ async def run_agent(
         if (_plan.TOOL_CALL_MARKUP.search(answer.get("content") or "")
                 and not require_call and allowed and replan_left[0]):
             return await _replan("narration_called_a_tool")
+        if _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""):
+            # Re-plan already spent: never show call syntax to the user.
+            # Measured after the re-plan landed: 8 of 59 LFM2.5 answers still
+            # ended in a second `<|tool_call_start|>` call.
+            audit("plan_markup_stripped")
+            text = _plan.strip_tool_call_markup(answer.get("content") or "")
+            answer = {**answer, "content": text or _EMPTY_MESSAGE}
         return answer, plan.thought or reasoning_text, streamed
 
     for _step in range(max_steps):

@@ -53,6 +53,13 @@ READ_TOOL_BUDGET = 2
 # Tool-call syntax in a tool-free narration step: LFM2.5's pythonic markers,
 # the GLM/Ling and Hermes <tool_call> tag.
 TOOL_CALL_MARKUP = re.compile(r"<\|tool_call_start\|>|<tool_call>")
+_TOOL_CALL_SPAN = re.compile(
+    r"<\|tool_call_start\|>.*?(?:<\|tool_call_end\|>|$)|<tool_call>.*?(?:</tool_call>|$)", re.S)
+
+
+def strip_tool_call_markup(text: str) -> str:
+    """The prose around any tool-call spans (an unterminated span runs to the end)."""
+    return _TOOL_CALL_SPAN.sub("", text or "").strip()
 
 
 def planner_enabled(value: str | None) -> bool:

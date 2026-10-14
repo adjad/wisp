@@ -250,6 +250,30 @@ def test_narration_that_writes_a_tool_call_triggers_one_replan(_fake_tools):
     assert _fake_tools == [("fake_read", {})]
 
 
+@pytest.mark.parametrize("raw,clean", [
+    ("<|tool_call_start|>[get_upcoming()]<|tool_call_end|>", ""),
+    ("Let me check. <|tool_call_start|>[get_upcoming()]<|tool_call_end|>", "Let me check."),
+    ("Sure <tool_call>search_notes<arg_key>q</arg_key>", "Sure"),
+])
+def test_strip_tool_call_markup(raw, clean):
+    assert planner.strip_tool_call_markup(raw) == clean
+
+
+def test_markup_after_the_replan_is_spent_never_reaches_the_user(_fake_tools):
+    class AlwaysLeaky(PlanClient):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if "response_format" in kwargs:
+                async for ev in super().stream_events(model, messages, tools=tools, **kwargs):
+                    yield ev
+                return
+            self.requests.append({"messages": list(messages), "tools": tools, **kwargs})
+            text = "<|tool_call_start|>[fake_read()]<|tool_call_end|>"
+            yield {"kind": "final", "message": {"role": "assistant", "content": text, "tool_calls": None}}
+    out = run(AlwaysLeaky([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")]),
+              planner=True)
+    assert "tool_call" not in out and out.strip()
+
+
 def test_only_one_forced_replan_per_turn(_fake_tools):
     client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("cannot_do")])
     run(client, planner=True)
