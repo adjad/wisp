@@ -322,6 +322,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_experiments.py",
     "tests/test_search_verify_grounding.py",
     "tests/test_thinking_kwargs.py",
+    # Agent-loop stall on refused repeats: scripted fake client and fake
+    # registry tools only; no model, network, subprocess, or user state.
+    "tests/test_loop_repeat_stall.py",
     "tests/test_notes_defaults.py",
     "tests/test_phase1_tools.py",
     "tests/test_recent_activity.py",
