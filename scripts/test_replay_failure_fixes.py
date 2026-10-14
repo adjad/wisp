@@ -74,6 +74,7 @@ LEGACY_SCRIPT_TESTS = frozenset({
     "tests/test_schedule_send.py",
     "tests/test_search_reliability.py",
     "tests/test_semantic_routing.py",
+    "tests/test_tool_consolidation.py",
     "tests/test_shell_boundary.py",
     "tests/test_short_circuit.py",
     "tests/test_source_sync_contract.py",

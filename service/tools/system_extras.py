@@ -7,8 +7,9 @@ firewall, Do Not Disturb) are the same shape: one named boolean, on or off. They
 are ONE tool with an enum rather than seven near-identical schemas, and the
 reason is retrieval accuracy, not tidiness — seven schemas differing only in a
 noun are exactly the case a small model picks wrong from, and each one costs
-~200 tokens of every menu it appears in. `set_volume` and `set_wifi` keep their
-own tools because they already exist and are the two most-used by a wide margin.
+~200 tokens of every menu it appears in. Wi-Fi power, VoiceOver and dark/auto
+appearance joined the same enum in 2026-10; `set_volume` keeps its own tool
+because volume is a level, not a boolean.
 
 WHAT IS DELIBERATELY MISSING
 ----------------------------
@@ -42,73 +43,6 @@ def _osa(script: str, timeout: int = _TIMEOUT) -> subprocess.CompletedProcess:
 # --------------------------------------------------------------------------
 # display
 # --------------------------------------------------------------------------
-@register(
-    "set_display",
-    "Adjust the screen: brightness, Night Shift, or Dark Mode. Brightness is a "
-    "percentage 0-100.",
-    {
-        "type": "object",
-        "properties": {
-            "brightness": {"type": "integer",
-                           "description": "Screen brightness 0-100. Omit to leave unchanged."},
-            "night_shift": {"type": "boolean", "description": "Turn Night Shift on or off."},
-            "dark_mode": {"type": "boolean", "description": "Turn Dark Mode on or off."},
-        },
-    },
-    category="system_write",
-    aliases=["it's too bright in here", "turn the screen down",
-             "make my display dimmer", "switch to dark mode",
-             "turn on night shift", "the screen is hurting my eyes",
-             "brighten the screen all the way"],
-)
-def set_display(brightness: int | None = None, night_shift: bool | None = None,
-                dark_mode: bool | None = None) -> str:
-    done: list[str] = []
-
-    if brightness is not None:
-        try:
-            level = max(0, min(100, int(brightness)))
-        except (TypeError, ValueError):
-            return f"(error: {brightness!r} isn't a brightness percentage.)"
-        # `brightness` CLI isn't installed by default; the keyboard-key route is
-        # the one that works on a stock Mac. Each press is one notch (1/16), so
-        # the target is reached by pressing down 16 times then up as needed —
-        # crude, but it needs no third-party binary and no extra permission.
-        notches = round(level / 100 * 16)
-        script = ('tell application "System Events"\n'
-                  '  repeat 16 times\n    key code 145\n  end repeat\n'
-                  f'  repeat {notches} times\n    key code 144\n  end repeat\n'
-                  'end tell')
-        p = _osa(script, timeout=40)
-        if p.returncode != 0:
-            msg = (p.stderr or "").strip()
-            if "-1719" in msg or "assistive" in msg.lower() or "not allowed" in msg.lower():
-                return ("(Wisp needs Accessibility access to change brightness. "
-                        "System Settings > Privacy & Security > Accessibility > Wisp.)")
-            return f"(could not set brightness: {msg or 'unknown error'})"
-        done.append(f"brightness ~{level}%")
-
-    if night_shift is not None:
-        # No shell/AppleScript API exists for Night Shift; the private
-        # CBBlueLightClient is the only real handle and needs a compiled helper.
-        # Say so instead of silently doing nothing.
-        return ("(Night Shift can't be toggled from here — macOS exposes no "
-                "scriptable API for it. You can set it in System Settings > "
-                "Displays > Night Shift.)"
-                + (f" Did change: {', '.join(done)}." if done else ""))
-
-    if dark_mode is not None:
-        p = _osa('tell application "System Events" to tell appearance preferences '
-                 f'to set dark mode to {"true" if dark_mode else "false"}')
-        if p.returncode != 0:
-            return f"(could not change appearance: {(p.stderr or '').strip()})"
-        done.append(f"dark mode {'on' if dark_mode else 'off'}")
-
-    if not done:
-        return "(error: set_display needs at least one of brightness or dark_mode.)"
-    return "Set " + ", ".join(done) + "."
-
-
 # --------------------------------------------------------------------------
 # capture
 # --------------------------------------------------------------------------
@@ -226,26 +160,55 @@ def _airdrop(on: bool) -> str:
     return f"AirDrop {'enabled' if on else 'disabled'}."
 
 
+def _wifi(on: bool) -> str:
+    from service.tools.system_control import wifi_power
+    return wifi_power(on)
+
+
+def _voiceover(on: bool) -> str:
+    from service.tools.system_extras2 import voiceover_power
+    return voiceover_power("voiceover", on)
+
+
+def _dark_mode(on: bool) -> str:
+    from service.tools.system_extras2 import appearance_mode
+    return appearance_mode("dark" if on else "light")
+
+
+def _auto_appearance(on: bool) -> str:
+    from service.tools.system_extras2 import appearance_mode
+    if on:
+        return appearance_mode("auto")
+    # Leave automatic switching while keeping whatever look is showing now.
+    p = _run(["defaults", "read", "-g", "AppleInterfaceStyle"])
+    return appearance_mode("dark" if p.returncode == 0 and "Dark" in p.stdout else "light")
+
+
 _SETTINGS = {
+    "wifi": _wifi,
     "bluetooth": _bluetooth,
     "do_not_disturb": _do_not_disturb,
     "low_power_mode": _low_power,
     "firewall": _firewall,
     "airdrop": _airdrop,
+    "voiceover": _voiceover,
+    "dark_mode": _dark_mode,
+    "auto_appearance": _auto_appearance,
 }
 
 
 @register(
     "toggle_setting",
-    "Turn a named macOS setting on or off: bluetooth, do_not_disturb, "
-    "low_power_mode, firewall, or airdrop. For Wi-Fi use set_wifi and for sound "
-    "use set_volume — those have their own tools.",
+    "Turn a named macOS setting on or off: wifi, bluetooth, do_not_disturb, "
+    "low_power_mode, firewall, airdrop, voiceover, dark_mode, or auto_appearance "
+    "(follow the system light/dark schedule). For sound use set_volume.",
     {
         "type": "object",
         "properties": {
             "setting": {"type": "string",
-                        "enum": ["bluetooth", "do_not_disturb", "low_power_mode",
-                                 "firewall", "airdrop"],
+                        "enum": ["wifi", "bluetooth", "do_not_disturb", "low_power_mode",
+                                 "firewall", "airdrop", "voiceover", "dark_mode",
+                                 "auto_appearance"],
                         "description": "Which setting to change."},
             "on": {"type": "boolean", "description": "true to enable, false to disable."},
         },
@@ -255,18 +218,22 @@ _SETTINGS = {
     aliases=["turn on do not disturb", "stop notifications for a while",
              "switch bluetooth off", "enable low power mode",
              "I need to focus, silence everything", "turn airdrop off",
-             "put my mac in battery saver"],
+             "put my mac in battery saver", "turn wifi off", "get me back on wifi",
+             "turn on voiceover", "enable screen reader", "switch to dark mode",
+             "switch to light mode", "match my mac's theme to the time of day"],
 )
 def toggle_setting(setting: str, on: bool) -> str:
     key = (setting or "").strip().lower().replace(" ", "_").replace("-", "_")
     aliases = {"dnd": "do_not_disturb", "focus": "do_not_disturb",
                "donotdisturb": "do_not_disturb", "bt": "bluetooth",
-               "low_power": "low_power_mode", "battery_saver": "low_power_mode"}
+               "low_power": "low_power_mode", "battery_saver": "low_power_mode",
+               "wi_fi": "wifi", "screen_reader": "voiceover", "dark": "dark_mode",
+               "auto": "auto_appearance"}
     key = aliases.get(key, key)
     fn = _SETTINGS.get(key)
     if fn is None:
         return (f"(error: I can't toggle {setting!r}. Options: "
-                f"{', '.join(sorted(_SETTINGS))}. Wi-Fi uses set_wifi, sound uses set_volume.)")
+                f"{', '.join(sorted(_SETTINGS))}. Sound uses set_volume.)")
     return fn(bool(on))
 
 
@@ -275,16 +242,47 @@ def toggle_setting(setting: str, on: bool) -> str:
 # --------------------------------------------------------------------------
 @register(
     "system_status",
-    "Report how the Mac is doing: free disk space, memory pressure, CPU load, "
-    "and uptime. Use this for 'is my Mac running out of space' or 'why is it "
-    "slow' rather than run_shell.",
-    {"type": "object", "properties": {}},
+    "Report how the Mac is doing. section='overview' (default): battery plus free "
+    "disk, memory pressure, CPU load and uptime. section='battery': charge %, "
+    "charging state, time remaining, cycle count and battery HEALTH (max capacity "
+    "vs. design capacity) — use it for ANY battery question, not run_shell/pmset "
+    "(`pmset -g log` 'BatteryHealth Warning level'/'cap:' lines are low-charge "
+    "UI events, NOT a wear metric). section='network': local/public IP, Wi-Fi "
+    "network name, Wi-Fi vs Ethernet. section='bluetooth': connected Bluetooth "
+    "devices and whether Bluetooth is on (read-only; toggle_setting turns it on/off).",
+    {"type": "object", "properties": {
+        "section": {"type": "string",
+                    "enum": ["overview", "battery", "network", "bluetooth"],
+                    "description": "What to report. Defaults to overview."},
+    }},
     category="system_read",
     aliases=["am I running out of space", "why is my mac so slow",
              "how much storage do I have left", "what's eating my memory",
-             "how long has this thing been on", "check my disk space"],
+             "how long has this thing been on", "check my disk space",
+             "what's my ip address", "what wifi network am I on",
+             "am I connected to the internet", "what's connected over bluetooth",
+             "are my airpods connected", "how's my battery health",
+             "how much battery do I have left", "am I plugged in"],
 )
-def system_status() -> str:
+def system_status(section: str = "overview") -> str:
+    section = (section or "overview").strip().lower()
+    if section == "battery":
+        from service.tools.system_control import battery_status
+        return battery_status()
+    if section == "network":
+        from service.tools.system_extras2 import network_details
+        return network_details()
+    if section == "bluetooth":
+        from service.tools.system_control import bluetooth_devices
+        return bluetooth_devices()
+    if section != "overview":
+        return f"(error: unknown section {section!r}. Use overview, battery, network, or bluetooth.)"
+    from service.tools.system_control import battery_status
+    # Battery first: the conditional low-power route reads the first "N%".
+    return f"Battery: {battery_status()}\n{_resources()}"
+
+
+def _resources() -> str:
     lines: list[str] = []
 
     p = _run(["df", "-H", "/System/Volumes/Data"])
