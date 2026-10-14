@@ -7,7 +7,10 @@ has not opted in.
 """
 from __future__ import annotations
 
+import json
 import os
+import platform
+import re
 from pathlib import Path
 
 from service.paths import MOE_DIR
@@ -15,6 +18,29 @@ from service.paths import MOE_DIR
 EXTERNAL = "external-omlx"
 BUNDLED = "bundled"
 _MODES = (EXTERNAL, BUNDLED)
+
+
+def _version(text: str) -> tuple[int, ...]:
+    return tuple((list(map(int, re.findall(r"\d+", text))) + [0, 0, 0])[:3])
+
+
+def unsupported_reason(root: Path | None = None, mac_version: str | None = None) -> str | None:
+    """Why the bundled engine cannot run on this Mac, else None.
+
+    The engine's own minimum macOS comes from the ENGINE.json written at packaging time
+    (MLX targets a newer macOS than the app). A source checkout has no ENGINE.json and is
+    not gated. Used to fall back to the external engine instead of failing at launch."""
+    document = (root or engine_code_root()) / "ENGINE.json"
+    try:
+        needed = str(json.loads(document.read_text()).get("minimum_macos", ""))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError, AttributeError):
+        return "The bundled engine's ENGINE.json is unreadable"
+    current = mac_version if mac_version is not None else platform.mac_ver()[0]
+    if needed and _version(current) < _version(needed):
+        return f"The bundled engine needs macOS {needed} or newer (this Mac has {current or 'unknown'})"
+    return None
 
 
 def _configured_mode() -> str:
@@ -26,10 +52,11 @@ def _configured_mode() -> str:
             value = str((doc.get("engine") or {}).get("mode", "")).strip()
         except Exception:  # noqa: BLE001 — an unreadable overlay means the default
             value = ""
-    return value if value in _MODES else EXTERNAL
+    mode = value if value in _MODES else EXTERNAL
+    if mode == BUNDLED and unsupported_reason() is not None:
+        return EXTERNAL
+    return mode
 
-
-MODE = _configured_mode()
 
 
 def is_bundled() -> bool:
@@ -51,3 +78,6 @@ def engine_code_root() -> Path:
 def bundled_base_path() -> Path | None:
     """Where the bundled engine keeps settings.json and model_settings.json, else None."""
     return engine_data_dir() / "base" if is_bundled() else None
+
+
+MODE = _configured_mode()   # last: it needs the helpers above
