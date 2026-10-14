@@ -537,3 +537,363 @@ def test_menu_offers_sends_only_with_an_outbound_cue():
     from service.router.menu import build_menu
     assert "send_message" not in build_menu("summarize my messages from today")
     assert "send_message" in build_menu("text sam that i'm running late")
+
+
+# ------------------------------------------------- answered before looking
+def test_answer_before_looking_replans_once_restricted_to_act_first_tools(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    assert run(client, planner=True, act_first=frozenset({"fake_read"})) == "DONE"
+    assert _fake_tools == [("fake_read", {})]
+    second = client.requests[1]["response_format"]["json_schema"]["schema"]
+    assert second["properties"]["calls"]["minItems"] == 1
+    assert second["properties"]["calls"]["items"]["properties"]["tool"]["enum"] == ["fake_read"]
+
+
+def test_clarify_before_looking_replans_too_and_may_clarify_after_the_lookup(_fake_tools):
+    client = PlanClient([plan("clarify"), plan("call_tools", ("fake_read", {})), plan("clarify")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["clarify"]
+
+
+def test_answer_without_act_first_evidence_is_honoured(_fake_tools):
+    client = PlanClient([plan("answer")])
+    assert run(client, planner=True) == "DONE"
+    assert _fake_tools == [] and len(client.requests) == 2  # plan + narration
+
+
+def test_act_first_tools_outside_the_offered_tools_never_force_a_replan(_fake_tools):
+    client = PlanClient([plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_send"}))
+    assert _fake_tools == [] and len(client.requests) == 2
+
+
+def test_answer_after_a_lookup_is_honoured_even_with_act_first(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "gate code"})), plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_search", {"query": "gate code"})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_only_one_forced_replan_per_turn(_fake_tools):
+    # cannot_do spends the turn's one re-plan, so act_first adds no second one.
+    client = PlanClient([plan("cannot_do"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {})] and len(client.requests) == 4
+
+
+@pytest.mark.parametrize("prompt, routed, must", [
+    ("what am i forgetting to do this week", (), "get_upcoming"),
+    ("help me plan my day", ("get_upcoming", "daily_brief"), "get_upcoming"),
+    ("what's my bike lock code", (), "search_notes"),
+    ("find my resume and email it to dana@example.com", (), "find_files"),
+    ("summarize my inbox and save the important stuff to a note", (), "summarize_emails"),
+    ("remember that my wife's birthday is march 3", ("remember", "recall"), "recall"),
+    ("define ephemeral", (), "wikipedia_summary"),
+])
+def test_act_first_tools_cover_the_measured_no_call_failures(prompt, routed, must):
+    from service.router.menu import act_first_tools, build_menu
+    menu = build_menu(prompt)
+    assert must in act_first_tools(prompt, menu, routed=routed)
+
+
+@pytest.mark.parametrize("prompt", [
+    "tell me a joke", "thanks!", "what's the capital of france",
+    "don't search the web, just tell me what you know about rome",
+    "write a regex that matches email addresses", "draft a speech for my dad's retirement",
+    "how should i word a message asking for a raise", "give me a polite way to say no to a meeting",
+])
+def test_act_first_tools_leave_chat_and_prohibitions_alone(prompt):
+    from service.router.menu import act_first_tools, build_menu
+    assert act_first_tools(prompt, build_menu(prompt)) == frozenset()
+
+
+def test_act_first_tools_never_include_a_write_the_router_did_not_force():
+    from service.router.menu import act_first_tools, build_menu
+    from service.router.model_led import READ_CATEGORIES
+    prompt = "text mom that i'm running late and add a reminder to call the dentist"
+    menu = build_menu(prompt)
+    got = act_first_tools(prompt, menu, routed=tuple(menu))
+    assert got and all(REGISTRY[n].category in READ_CATEGORIES for n in got)
+
+
+# ------------------------------------------- repeats, not_found, look wider
+def test_an_identical_write_that_already_succeeded_is_not_planned_again(_fake_tools):
+    w, other = {"path": "a.txt", "text": "hi"}, {"path": "b.txt", "text": "hi"}
+    client = PlanClient([plan("call_tools", ("fake_write", w)), plan("call_tools", ("fake_write", w))])
+    run(client, tools=("fake_write",), planner=True)
+    assert _fake_tools == [("fake_write", w)]  # the repeat plan narrates the saved result
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+    _fake_tools.clear()
+    client = PlanClient([plan("call_tools", ("fake_write", w)), plan("call_tools", ("fake_write", other)),
+                         plan("answer")])
+    run(client, tools=("fake_write",), planner=True)
+    assert _fake_tools == [("fake_write", w), ("fake_write", other)]
+
+
+def test_not_found_after_a_read_returned_content_narrates_as_answer(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("not_found")])
+    run(client, planner=True)
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_not_found_after_only_misses_stands(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "gate code"})), plan("not_found")])
+    run(client, planner=True)
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["not_found"]
+
+
+@pytest.fixture
+def _fake_families(monkeypatch):
+    import service.router.menu as menu
+    fams = {"fake_search": "notes", "fake_open": "files", "fake_write": "files"}
+    monkeypatch.setattr(menu, "family_of", lambda n: fams.get(n, "other"))
+
+
+def test_nothing_found_replans_once_over_untried_evidence_families(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "bike lock"})), plan("not_found"),
+                         plan("call_tools", ("fake_open", {"path": "lock.txt"})), plan("answer")])
+    run(client, tools=("fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert _fake_tools == [("fake_search", {"query": "bike lock"}), ("fake_open", {"path": "lock.txt"})]
+    forced = client.requests[2]["response_format"]["json_schema"]["schema"]
+    assert forced["properties"]["calls"]["items"]["properties"]["tool"]["enum"] == ["fake_open"]
+
+
+def test_nothing_found_with_every_evidence_family_tried_is_honoured(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_search", {"query": "bike lock"})), plan("not_found")])
+    run(client, planner=True, act_first=frozenset({"fake_search"}))
+    assert len(client.requests) == 3  # plan, plan, narration: no re-plan
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["not_found"]
+
+
+def test_no_look_wider_replan_after_a_write_succeeded(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})),
+                         plan("call_tools", ("fake_search", {"query": "a"})), plan("not_found")])
+    run(client, tools=("fake_write", "fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert [n for n, _ in _fake_tools] == ["fake_write", "fake_search"]
+
+
+def test_a_plan_of_only_repeated_searches_looks_wider_first(_fake_tools, _fake_families):
+    client = PlanClient([plan("call_tools", ("fake_read", {})), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_open", {"path": "lock.txt"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_open"), planner=True,
+        act_first=frozenset({"fake_read", "fake_open"}))
+    assert _fake_tools == [("fake_read", {}), ("fake_open", {"path": "lock.txt"})]
+
+
+def test_an_identical_read_that_never_came_back_usable_runs_at_most_twice(_fake_tools, monkeypatch):
+    # A parenthesized notice is not cached, so one identical retry is allowed.
+    def notice() -> str:
+        _fake_tools.append(("fake_read", {}))
+        return "(fake_read returned no data for this request.)"
+    monkeypatch.setattr(REGISTRY["fake_read"], "func", notice)
+    client = PlanClient([plan("call_tools", ("fake_read", {})) for _ in range(5)] + [plan("answer")])
+    run(client, planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
+
+
+def test_an_identical_write_refused_by_a_guard_is_not_planned_again(_fake_tools):
+    # The user declines the confirmation; the model re-plans the same write.
+    class Decliner:
+        async def confirm(self, action):
+            return False
+    send = {"to": "+15550100"}
+    client = PlanClient([plan("call_tools", ("fake_send", send)) for _ in range(3)])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "text +15550100"}],
+                               emit, Decliner(), tools=["fake_send", "fake_read"], planner=True))
+    plans = [r for r in client.requests if "response_format" in r]
+    assert _fake_tools == [] and len(plans) <= 2  # the repeat is dropped, then narrated
+
+
+def test_a_write_deferred_behind_its_reads_still_runs(_fake_tools):
+    client = PlanClient([plan("call_tools", ("fake_read", {}), ("fake_send", {"to": "+15550100"})),
+                         plan("call_tools", ("fake_send", {"to": "+15550100"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_send"), planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_send", {"to": "+15550100"})]
+
+
+def test_an_identical_volatile_read_runs_at_most_twice(_fake_tools, monkeypatch):
+    # Volatile reads are never cached, so only the attempt cap stops a loop.
+    monkeypatch.setattr(loop, "_VOLATILE_READS", loop._VOLATILE_READS | {"fake_read"})
+    client = PlanClient([plan("call_tools", ("fake_read", {})) for _ in range(6)] + [plan("answer")])
+    run(client, planner=True)
+    assert _fake_tools == [("fake_read", {}), ("fake_read", {})]
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+def test_a_turn_forced_to_look_can_still_look_wider_once(_fake_tools, _fake_families):
+    client = PlanClient([plan("clarify"), plan("call_tools", ("fake_search", {"query": "bike lock"})),
+                         plan("not_found"), plan("call_tools", ("fake_open", {"path": "lock.txt"})),
+                         plan("not_found")])
+    run(client, tools=("fake_search", "fake_open"), planner=True,
+        act_first=frozenset({"fake_search", "fake_open"}))
+    assert [n for n, _ in _fake_tools] == ["fake_search", "fake_open"]
+    plans = [r for r in client.requests if "response_format" in r]
+    # first, forced look, after the search, widened look, final; no third
+    # re-plan. fake_open returned content, so not_found narrates as answer.
+    assert len(plans) == 5
+    assert client.requests[-1]["messages"][-1]["content"] == planner.STATUS_NOTES["answer"]
+
+
+# ------------------------------------- independent review of #221 (repairs)
+def _replace_body(monkeypatch, name, calls, result):
+    def body(**args):
+        calls.append((name, dict(args)))
+        return result
+    monkeypatch.setattr(REGISTRY[name], "func", body)
+
+
+def _run_real(client, tools, prompt, **kwargs):
+    return asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": prompt}], emit,
+                                      kwargs.pop("approver", Approver()), tools=list(tools),
+                                      planner=True, **kwargs))
+
+
+@pytest.mark.parametrize("prompt, routed", [
+    ("Should I turn wi-fi off?", ("toggle_setting",)),
+    ("can you tell me if I should turn wi-fi off", ("toggle_setting",)),
+    ("remember that my wife's birthday is march 3", ("remember", "recall")),
+    ("can you remember that my dog is named Max? Please don't save anything; can you just tell me?",
+     ("remember", "recall")),
+    ("Can you remember my name? My name is Adi. Did you already save it?", ("remember", "recall")),
+])
+def test_act_first_tools_never_carry_a_write(prompt, routed):
+    # Every write exception broke under independent review of #221.
+    from service.router.menu import act_first_tools, build_menu
+    from service.router.model_led import READ_CATEGORIES
+    got = act_first_tools(prompt, build_menu(prompt), routed=routed)
+    assert all(REGISTRY[n].category in READ_CATEGORIES for n in got)
+
+
+def test_an_identical_screenshot_is_not_taken_twice(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "screen_capture", calls, "Saved screenshot to /tmp/s.png")
+    shot = {"path": "/tmp/s.png"}
+    _run_real(PlanClient([plan("call_tools", ("screen_capture", shot)),
+                          plan("call_tools", ("screen_capture", shot)), plan("answer")]),
+              ("screen_capture",), "take one screenshot and save it")
+    assert len(calls) <= 1
+
+
+def test_identical_shell_and_timer_writes_are_not_repeated(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "run_shell", calls, "ok")
+    cmd = {"command": "echo hi >> notes.txt"}
+    _run_real(PlanClient([plan("call_tools", ("run_shell", cmd)), plan("call_tools", ("run_shell", cmd)),
+                          plan("answer")]), ("run_shell",), "append hi to notes.txt")
+    assert len(calls) <= 1
+
+
+def test_device_and_media_controls_may_repeat_identical_writes(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "music", calls, "Skipped to next track.")
+    args = {"action": "next", "app": "spotify"}
+    _run_real(PlanClient([plan("call_tools", ("music", args)), plan("call_tools", ("music", args)),
+                          plan("answer")]), ("music",), "skip two tracks in Spotify")
+    assert calls == [("music", args), ("music", args)]
+    calls.clear()
+    _replace_body(monkeypatch, "set_volume", calls, "Volume changed.")
+    _run_real(PlanClient([plan("call_tools", ("set_volume", {"level": n})) for n in (10, 50, 10)]
+                         + [plan("answer")]), ("set_volume",), "set volume to 10, then 50, then 10")
+    assert calls == [("set_volume", {"level": n}) for n in (10, 50, 10)]
+
+
+def test_a_write_resets_the_identical_read_cap(monkeypatch, _fake_tools):
+    calls = []
+    _replace_body(monkeypatch, "get_volume", calls, "Volume: 25%")
+    _replace_body(monkeypatch, "set_volume", calls, "Volume set to 10%")
+    _run_real(PlanClient([plan("call_tools", ("get_volume", {})), plan("call_tools", ("get_volume", {})),
+                          plan("call_tools", ("set_volume", {"level": 10})),
+                          plan("call_tools", ("get_volume", {})), plan("answer")]),
+              ("get_volume", "set_volume"), "check the volume twice, set it to 10%, then check it")
+    assert [n for n, _ in calls] == ["get_volume", "get_volume", "set_volume", "get_volume"]
+
+
+def test_the_read_cap_counts_planned_arguments_not_filtered_ones(monkeypatch):
+    calls = []
+    _replace_body(monkeypatch, "get_stock_price", calls, "AAPL: $200")
+    args = {"symbols": ["AAPL", "TSLA"]}
+    _run_real(PlanClient([plan("call_tools", ("get_stock_price", args)) for _ in range(4)]
+                         + [plan("answer")]), ("get_stock_price",), "check AAPL but not TSLA")
+    assert len(calls) <= 2
+
+
+@pytest.mark.parametrize("widen", [False, True])
+def test_a_forced_replan_never_executes_a_write_from_narration(widen, _fake_tools, _fake_families):
+    # The tool-free narration step returns native calls; none may run.
+    class NativeNarration(PlanClient):
+        async def stream_events(self, model, messages, *, tools=None, **kwargs):
+            if "response_format" not in kwargs:
+                self.requests.append({"messages": list(messages), "tools": tools, **kwargs})
+                yield {"kind": "final", "message": planner.plan_message(
+                    planner.Plan("call_tools", calls=[("fake_write", {"path": "raw", "text": "save"})]))}
+                return
+            async for event in super().stream_events(model, messages, tools=tools, **kwargs):
+                yield event
+    plans = ([plan("call_tools", ("fake_search", {"query": "code"})), plan("not_found")]
+             if widen else [plan("answer")])
+    plans += [plan("call_tools", ("fake_write", {"path": "raw", "text": "save"}))]
+    client = NativeNarration(plans)
+    run(client, tools=("fake_search", "fake_open", "fake_write"), planner=True,
+        max_steps=2 if widen else 1, act_first=frozenset({"fake_search", "fake_open"}))
+    assert not [n for n, _ in _fake_tools if n == "fake_write"]
+
+
+def test_a_restricted_replan_sends_only_the_restricted_tool_definitions(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
+    forced = client.requests[1]
+    assert [t["function"]["name"] for t in forced["tools"]] == ["fake_read"]
+
+
+@pytest.mark.parametrize("second", ['{"thought": "truncated', ""])
+def test_an_outer_retry_keeps_the_restricted_replan(second, _fake_tools):
+    # A malformed or empty restricted plan is retried by the outer attempt
+    # loop; the retry must stay restricted to the forced reads.
+    client = PlanClient([plan("answer"), second,
+                         plan("call_tools", ("fake_write", {"path": "raw", "text": "save"})),
+                         plan("call_tools", ("fake_read", {})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True,
+        act_first=frozenset({"fake_read"}), max_steps=2)
+    assert not [n for n, _ in _fake_tools if n == "fake_write"]
+
+
+def test_the_restriction_lifts_once_the_forced_lookup_ran(_fake_tools):
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    run(client, tools=("fake_read", "fake_write"), planner=True, act_first=frozenset({"fake_read"}))
+    assert _fake_tools == [("fake_read", {}), ("fake_write", {"path": "a.txt", "text": "hi"})]
+
+
+@pytest.mark.parametrize("guard", ["deny", "decline"])
+def test_a_forced_lookup_that_never_ran_keeps_writes_refused(guard, _fake_tools, monkeypatch):
+    from service.safety import Decision, Tier
+    monkeypatch.setattr(loop, "decide", lambda category, args, *, tool: Decision(
+        (Tier.DENY if guard == "deny" else Tier.CONFIRM) if tool == "fake_read" else Tier.ALLOW,
+        "synthetic guard"))
+
+    class Decline:
+        async def confirm(self, action):
+            return False
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "find my gate code"}], emit,
+                               Decline(), tools=["fake_read", "fake_write"], planner=True, max_steps=3,
+                               act_first=frozenset({"fake_read"})))
+    assert _fake_tools == []
+
+
+def test_a_dry_run_lookup_satisfies_the_restriction(_fake_tools):
+    events = []
+
+    async def capture(ev):
+        events.append(ev)
+    client = PlanClient([plan("answer"), plan("call_tools", ("fake_read", {})),
+                         plan("call_tools", ("fake_write", {"path": "a.txt", "text": "hi"})), plan("answer")])
+    asyncio.run(loop.run_agent(client, MODEL, [{"role": "user", "content": "find my gate code"}], capture,
+                               Approver(), tools=["fake_read", "fake_write"], planner=True, test_mode=True,
+                               act_first=frozenset({"fake_read"})))
+    assert [e["name"] for e in events if e.get("type") == "tool_call"] == ["fake_read", "fake_write"]
+    assert _fake_tools == []  # a dry run executes nothing

@@ -542,6 +542,14 @@ def _read_categories():
 
 # Reads whose answer can change within one turn without any write by Wisp, so
 # an identical repeat ("check again") must still run.
+# State controls repeat legitimately with identical arguments: "skip two
+# tracks" is music(next) twice, and volume 10 -> 50 -> 10 sets 10 again
+# (independent review of #221). Only these are exempt from the planner's
+# re-issued identical write check. An explicit list, not categories: the
+# device category also holds screen_capture, which saves a file per call.
+_REPEATABLE_WRITES = frozenset({"music", "set_volume", "toggle_setting", "window_control",
+                                "open_app", "quit_app"})
+
 _VOLATILE_READS = frozenset({
     "system_status", "world_time", "get_volume",
     "list_running_apps", "wisp_status", "get_recent_activity", "get_stock_price",
@@ -1318,6 +1326,9 @@ async def run_agent(
     # tool_calls message, so every guard below still applies. Local managed
     # oMLX only; ignored (free-form loop) anywhere else.
     planner: bool = False,
+    # Planner turns only: tools the first plan must try before answering or
+    # clarifying with no call (service/router/menu.act_first_tools).
+    act_first: frozenset[str] = frozenset(),
 ) -> str:
     """Run the loop. Returns the final assistant text. Streams events via `emit`.
 
@@ -2568,9 +2579,26 @@ async def run_agent(
     # Read calls this turn that came back empty or failed, by tool name, for
     # the per-tool miss budget (see planner.READ_MISS_BUDGET).
     read_misses: Counter = Counter()
+    # Reads that returned something, by tool name, and the exact non-read
+    # calls that already succeeded, for the plan step's checks below.
+    read_hits: Counter = Counter()
+    succeeded_writes: set[str] = set()
+    # Exact non-read calls a plan already issued this turn (after deferral).
+    issued_writes: set[str] = set()
+    # Identical read calls run this turn (volatile reads included), by call_key.
+    read_attempts: Counter = Counter()
     budget_reads = planner
     # One forced re-plan per turn (see _plan_step's SELF-CONTRADICTION).
     replan_left = [planner]
+    # One "look wider" re-plan per turn, separate from the above so a turn
+    # that was forced to look can still widen once (at most two re-plans).
+    widen_left = [planner]
+    # The tools a forced re-plan restricted the turn to, held as TURN state
+    # until one of them has run: the outer attempt loop retries a parse error
+    # or an empty answer by calling _plan_step again with the full tool set,
+    # which let a write through (fifth independent review of #221).
+    restricted: list = [None]
+    restricted_ran = [False]
 
     async def _plan_step(step_msgs, step_schemas, allowed, require_call, max_out,
                          temperature, think_on, *, last_attempt):
@@ -2581,6 +2609,10 @@ async def run_agent(
         tool-free narration step carrying the status's instruction. An
         unparseable plan returns an empty message so the attempt loop's
         empty-response retry re-samples it, except on the last attempt."""
+        if restricted[0] is not None:
+            allowed = set(allowed) & restricted[0]
+            step_schemas = [sc for sc in step_schemas if sc["function"]["name"] in restricted[0]]
+            require_call = True
         # History is text-only (agent/context), so a tool message here is a
         # result from this turn.
         searched = any(m.get("role") == "tool" for m in step_msgs)
@@ -2593,10 +2625,17 @@ async def run_agent(
                                             searched=searched))
         plan = _plan.parse_plan(raw.get("content"), allowed)
 
-        async def _replan(reason: str):
-            replan_left[0] = False
-            audit("plan_replan", reason=reason)
-            return await _plan_step(step_msgs, step_schemas, allowed, True, max_out,
+        async def _replan(reason: str, only=None, *, budget=replan_left):
+            budget[0] = False
+            audit("plan_replan", reason=reason, tools=sorted(only) if only else None)
+            if only:
+                restricted[0], restricted_ran[0] = frozenset(only), False
+            # A restricted re-plan offers ONLY those tools: their definitions
+            # too, not just the plan enum (fourth independent review of #221:
+            # the write definitions were still sent).
+            offered = ([sc for sc in step_schemas if sc["function"]["name"] in only]
+                       if only else step_schemas)
+            return await _plan_step(step_msgs, offered, set(only or allowed), True, max_out,
                                     temperature, think_on, last_attempt=last_attempt)
         # SELF-CONTRADICTION, part 1: cannot_do before anything was searched,
         # with tools offered. Measured 2026-10-13, LFM2.5-24B, real planner
@@ -2608,6 +2647,19 @@ async def run_agent(
         if (plan.status == "cannot_do" and not plan.calls and not searched
                 and not require_call and allowed and replan_left[0]):
             return await _replan("cannot_do_before_search")
+        # ANSWERED BEFORE LOOKING. A first plan that answers or asks a
+        # clarifying question without calling anything, for a request about
+        # the user's own data (or a public lookup) whose tools the menu
+        # offers. Measured 2026-10-14, Ling V3, real planner path: 7 of the 17
+        # failures in 59 cases, e.g. "what am i forgetting to do this week"
+        # answered with an invented meeting. Re-plan once restricted to those
+        # tools, which are reads only (menu.act_first_tools); a requested
+        # write is planned after the lookup, and a clarifying question is
+        # still possible then, when it is grounded.
+        if (plan.status in ("answer", "clarify") and not plan.calls and not searched
+                and not require_call and replan_left[0]
+                and (only := act_first & set(allowed))):
+            return await _replan("answered_before_looking", only)
         # ALREADY ANSWERED. A planned read whose identical call already
         # SUCCEEDED this turn, with no write since, is dropped before it
         # reaches the repeat guard; the refusal pointer the guard would add
@@ -2621,6 +2673,7 @@ async def run_agent(
         # the duplicate-effect guard owns those. Runs BEFORE the deferral
         # below, so a repeated read never takes a fresh write down with it.
         fresh, seen, dropped, exhausted = [], set(), [], False
+        wanted_more = bool(plan.calls)
         for n, a in plan.calls:
             if fixed := (tool_argument_bindings or {}).get(n):
                 # Compare what will EXECUTE: the step loop overlays the same
@@ -2637,6 +2690,28 @@ async def run_agent(
             if rk is not None and rk in completed_reads:
                 dropped.append(n)
                 continue
+            if read_attempts[key] >= 2:
+                # The identical read already ran twice. A usable non-volatile
+                # one is in completed_reads above, so this one never came back
+                # usable; a volatile read (never cached) has its answer twice
+                # over. Measured 2026-10-14, Ling V3: predict_my_day(day=today)
+                # was planned seven times on an uncached "(... returned no
+                # data ...)" notice, and clipboard_read eight times.
+                dropped.append(n)
+                exhausted = exhausted or rk is not None
+                continue
+            if key in issued_writes:
+                # The identical write was already issued this turn: it either
+                # succeeded (a repeat duplicates it), failed (the turn ended)
+                # or was refused by a guard (it would be refused again). The
+                # effect guard only knows _EFFECT_TOOLS by name. Measured
+                # 2026-10-14, Ling V3: "remember that my wife's birthday is
+                # march 3" saved the same fact three times; a reply_to_email
+                # whose Mail check refused it was planned four times. A
+                # different write still runs; a deferred write was never
+                # issued, so it still runs after its reads.
+                dropped.append(n)
+                continue
             if (read_misses[n] >= _plan.READ_MISS_BUDGET and n not in _EFFECT_TOOLS
                     and (t := get_tool(n)) is not None and t.category in _read_categories()):
                 # Exhausted: the step loop would refuse it. Dropping it here,
@@ -2651,6 +2726,32 @@ async def run_agent(
             plan.calls = fresh
             if not fresh:
                 plan.status = "not_found" if exhausted else "answer"
+        # LOOK WIDER BEFORE GIVING UP. The model says nothing was found, or
+        # re-planned only searches that already ran (it still wants to look),
+        # or every read so far missed; yet the request's own evidence tools
+        # (act_first) include families nothing has searched. Measured
+        # 2026-10-14, Ling V3: "what's my bike lock code" searched Notes, got
+        # only unrelated notes, re-planned the same search and answered "I
+        # couldn't find anything" without checking memory. Re-plan once over
+        # the untried families.
+        if (not plan.calls and searched and not require_call and widen_left[0] and act_first
+                and not succeeded_writes and (plan.status == "not_found" or wanted_more
+                     or (plan.status in ("answer", "clarify") and read_misses and not read_hits))):
+            from service.router.menu import family_of
+            tried = {family_of(n) for n in (*read_misses, *read_hits)}
+            if untried := {n for n in act_first & set(allowed)
+                           if family_of(n) not in tried
+                           and (t := get_tool(n)) is not None and t.category in _read_categories()}:
+                return await _replan("nothing_found_untried_family", untried, budget=widen_left)
+        # NOT FOUND NEEDS A MISS. not_found narrates "nothing was found", so
+        # it stands only when every read this turn came back empty or failed;
+        # otherwise the answer narration works from what did come back.
+        # Measured 2026-10-14, Ling V3: after summarize_emails and get_upcoming
+        # returned real content, plans said not_found and the answers read
+        # "nothing matching that question was found".
+        if plan.status == "not_found" and not plan.calls and (read_hits or not read_misses):
+            audit("plan_status_corrected", status="not_found", to="answer")
+            plan.status = "answer"
         # READS BEFORE WRITES. A plan that mixes NEW reads with effect calls
         # runs only the reads; the model re-plans with their results in hand.
         # Measured on LFM2.5-24B: "text mom that i'm on my way" planned
@@ -2662,6 +2763,18 @@ async def run_agent(
         if reads and len(reads) < len(plan.calls):
             audit("plan_defer_effects", deferred=[n for n, a in plan.calls if (n, a) not in reads])
             plan.calls = reads
+        # Count what this plan ISSUES, as planned (bindings applied): the step
+        # loop may filter arguments further before running a call ("check AAPL
+        # but not TSLA"), and counting executed arguments let an identical
+        # planned read through every time (independent review of #221).
+        for n, a in plan.calls:
+            if fixed := (tool_argument_bindings or {}).get(n):
+                a = {**a, **{k: v for k, v in fixed.items() if k != "_recipient_lookup"}}
+            category = t.category if (t := get_tool(n)) is not None else None
+            if n not in _EFFECT_TOOLS and category in _read_categories():
+                read_attempts[_plan.call_key(n, a)] += 1
+            elif n not in _REPEATABLE_WRITES:
+                issued_writes.add(_plan.call_key(n, a))
         audit("plan", status=plan.status, tools=[n for n, _ in plan.calls], error=plan.error)
         if plan.error and not last_attempt:
             return {}, plan.thought, False
@@ -2672,12 +2785,19 @@ async def run_agent(
             client, model, step_msgs + [{"role": "user", "content": note}], [], "auto", max_out,
             emit, stream_content=False, temperature=None, no_thinking=True, think_on=False,
             debug=debug)
+        # The narration step is tool-free: native calls it returns are never
+        # executed (they would run under the outer step's wider tool set,
+        # escaping a restricted re-plan; fourth independent review of #221).
+        native_calls = bool(answer.get("tool_calls"))
+        if native_calls:
+            audit("plan_narration_calls_dropped")
+            answer = {**answer, "tool_calls": None}
         # SELF-CONTRADICTION, part 2: the plan called nothing, then the
         # tool-free narration tried to call a tool in text. Same run: 7 of 59
         # LFM2.5 answers were only `<|tool_call_start|>[get_upcoming()]...`.
         # That text must never reach the user; the model has told us it wants
         # the tool, so re-plan once with a call required.
-        if (_plan.TOOL_CALL_MARKUP.search(answer.get("content") or "")
+        if ((native_calls or _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""))
                 and not require_call and allowed and replan_left[0]):
             return await _replan("narration_called_a_tool")
         if _plan.TOOL_CALL_MARKUP.search(answer.get("content") or ""):
@@ -2690,6 +2810,8 @@ async def run_agent(
         return answer, plan.thought or reasoning_text, streamed
 
     for _step in range(max_steps):
+        if restricted[0] is not None and restricted_ran[0]:
+            restricted[0] = None  # the forced lookup ran; the turn is free again
         await client.ensure_only(model, exclusive=exclusive, emit=emit)
         contract_candidate = None
         if (unmet_now := _unmet_group()) is not None:
@@ -3166,7 +3288,8 @@ async def run_agent(
         _batch_calls = []
         for tc in tool_calls:
             _batch_name = _clean_tool_name(tc["function"]["name"])
-            if _batch_name not in ("cancel_event", "add_calendar_event") or _batch_name not in allowed_names:
+            if (_batch_name not in ("cancel_event", "add_calendar_event") or _batch_name not in allowed_names
+                    or (restricted[0] is not None and _batch_name not in restricted[0])):
                 continue
             _batch_args = _parse_args(tc["function"].get("arguments", ""))
             _batch_args = {**_batch_args,
@@ -3242,6 +3365,7 @@ async def run_agent(
 
         for call_index, tc in enumerate(tool_calls):
             cid = tc.get("id", "")
+            tool_executed = False  # the tool body ran (not denied/declined/refused)
             name = _clean_tool_name(tc["function"]["name"])
             args = _parse_args(tc["function"].get("arguments", ""))
             if discovery is not None and name == DISCOVERY_TOOL:
@@ -3330,6 +3454,16 @@ async def run_agent(
                           "and do not claim it ran.)")
                 audit("reject_skill_boundary", tool=name, args=args)
                 hard_failed.add(name)
+                await emit({"type": "tool_result", "id": cid, "result": result})
+                msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
+                continue
+
+            if restricted[0] is not None and name not in restricted[0]:
+                # Backstop for the restricted re-plan: nothing outside its
+                # tools runs until one of them has.
+                result = (f"({name} is not available at this step. Look the information up "
+                          "first with the offered tools.)")
+                audit("reject_restricted_replan", tool=name, args=args)
                 await emit({"type": "tool_result", "id": cid, "result": result})
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 continue
@@ -3465,6 +3599,9 @@ async def run_agent(
                 msgs.append({"role": "tool", "tool_call_id": cid, "content": result})
                 _record_outcome(name, result, planned=True)
                 tools_answered.add(name)
+                if restricted[0] is not None:
+                    # A dry run's planned lookup stands in for the real one.
+                    restricted_ran[0] = True
                 continue
 
             if recipient_requirements and name != "lookup_contact":
@@ -3698,11 +3835,13 @@ async def run_agent(
                             try:
                                 with approved_private_meeting(private_args):
                                     result = await execute_tool(tool, private_args)
+                                    tool_executed = True
                             except (ValueError, TypeError) as exc:
                                 result = "(error: " + str(exc) + "; request a new private block preview.)"
                         else:
                             with human_reviewed_content(_reviewed):
                                 result = await execute_tool(tool, args)
+                            tool_executed = True
                         audit("confirm_allow", tool=name, args=args)
                     else:
                         result = "The user denied this action."
@@ -3713,6 +3852,7 @@ async def run_agent(
                         hard_failed.add(name)
                 else:  # ALLOW
                     result = await execute_tool(tool, args)
+                    tool_executed = True
                     audit("allow", tool=name, args=args)
 
             # DISPLAY ONLY — the model always gets the full result on the next
@@ -3778,16 +3918,29 @@ async def run_agent(
                 # tools outside the effect table default to "read" even when
                 # they write (set_volume, run_shell).
                 completed_reads.clear()
+                # A write may change what a read returns: re-reading after it
+                # ("set volume to 10, then check it") is a new attempt.
+                read_attempts.clear()
             elif outcome.status == "succeeded":
                 if (read_key is not None and outcome.effect == "read"
                         and not str(result).lstrip().startswith("(")):
                     # A parenthesized notice ("(no public web results found ...)")
                     # is not a usable answer; leave an identical retry allowed.
                     completed_reads.add(read_key)
-            if (budget_reads and ran_tool is not None and ran_tool.category in _read_categories()
-                    and name not in _EFFECT_TOOLS
-                    and (outcome.status != "succeeded" or _plan.looks_empty(name, result))):
-                read_misses[name] += 1
+            if restricted[0] is not None and tool_executed:
+                # Only a lookup that actually RAN satisfies the restriction; a
+                # denied or declined one leaves writes refused for the turn
+                # (sixth independent review of #221).
+                restricted_ran[0] = True
+            if budget_reads:
+                is_read = (ran_tool is not None and ran_tool.category in _read_categories()
+                           and name not in _EFFECT_TOOLS)
+                if is_read and (outcome.status != "succeeded" or _plan.looks_empty(name, result)):
+                    read_misses[name] += 1
+                elif is_read:
+                    read_hits[name] += 1
+                elif outcome.status == "succeeded" and read_key is None:
+                    succeeded_writes.add(_plan.call_key(name, args))
             if outcome.status == "succeeded" and name == "draft_message":
                 # A message draft is structured UI state, not assistant prose.
                 # End the turn after emitting the exact editable recipient/body
