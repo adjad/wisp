@@ -28,8 +28,6 @@ import math
 import operator
 import re
 
-import httpx
-
 from service.tools.registry import register
 
 # --------------------------------------------------------------------------
@@ -283,48 +281,3 @@ def convert_units(value: float, from_unit: str, to_unit: str) -> str:
             f"so they can't be converted.)")
 
 
-@register(
-    "convert_currency",
-    "Convert between currencies at today's exchange rate. Use this rather "
-    "than convert_units, which has no live rate — currency moves daily and "
-    "guessing a rate from training data is exactly the 'confidently wrong "
-    "number' this tool exists to prevent.",
-    {
-        "type": "object",
-        "properties": {
-            "amount": {"type": "number", "description": "Amount to convert."},
-            "from_currency": {"type": "string", "description": "3-letter currency code, e.g. 'USD'."},
-            "to_currency": {"type": "string", "description": "3-letter currency code, e.g. 'EUR'."},
-        },
-        "required": ["amount", "from_currency", "to_currency"],
-    },
-    category="web_read",
-    aliases=["how much is 100 dollars in euros", "convert 50 pounds to usd",
-             "what's the exchange rate for yen right now",
-             "how many dollars is 200 canadian"],
-)
-async def convert_currency(amount: float, from_currency: str, to_currency: str) -> str:
-    src = (from_currency or "").strip().upper()
-    dst = (to_currency or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{3}", src) or not re.fullmatch(r"[A-Z]{3}", dst):
-        return "(error: currency codes must be 3 letters, e.g. USD, EUR, GBP.)"
-    try:
-        amount = float(amount)
-    except (TypeError, ValueError):
-        return f"(error: {amount!r} isn't a number.)"
-
-    try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            r = await c.get("https://api.frankfurter.dev/v1/latest",
-                            params={"base": src, "symbols": dst})
-    except httpx.HTTPError as e:
-        return f"(could not reach the exchange-rate service: {e})"
-    if r.status_code >= 400:
-        return f"(error: {src!r} or {dst!r} isn't a recognized currency code.)"
-    data = r.json()
-    rate = (data.get("rates") or {}).get(dst)
-    if rate is None:
-        return f"(error: no rate found for {src} -> {dst}.)"
-    out = amount * rate
-    return (f"{_tidy(amount)} {src} = {_tidy(round(out, 2))} {dst} "
-            f"(rate: 1 {src} = {rate} {dst}, as of {data.get('date', 'today')})")

@@ -1386,7 +1386,9 @@ def _weather_forecast_rows(raw: object) -> list[dict]:
     "If you do not know where the user is, ASK them; never guess a city, and "
     "never answer a weather question from memory. The result names the area it "
     "resolved to. California lookups verify the provider's city, state and "
-    "country before returning numbers; ambiguous city names require clarification.",
+    "country before returning numbers; ambiguous city names require clarification. "
+    "Add `include` only when asked: 'alerts' for severe-weather warnings (US only), "
+    "'air_quality' for AQI/smoke, 'rain_next_hours' for hour-by-hour rain chance.",
     {"type": "object",
      "properties": {
          "location": {"type": "string",
@@ -1394,15 +1396,23 @@ def _weather_forecast_rows(raw: object) -> list[dict]:
                                      "airport code — e.g. 'Dublin,CA', "
                                      "'London', '94568'"},
          "period": {"type": "string", "description": "Exact requested forecast date/range; unavailable coverage is reported, never expanded silently."},
+         "include": {"type": "array",
+                     "items": {"type": "string",
+                               "enum": ["alerts", "air_quality", "rain_next_hours"]},
+                     "description": "Optional extras, only when the user asks for them."},
      },
      "required": ["location"]},
     category="web_read",
 )
-async def get_weather(location: str, period: str = "") -> str:
+async def get_weather(location: str, period: str = "", include: list[str] | None = None) -> str:
     from service.tools.ca_locations import normalize_weather_location, provider_area_matches
     from service.workflows.compiler import is_temporal_location
     if not isinstance(location, str) or len(location) > 200:
         return "(error: weather location must be a string of at most 200 characters.)"
+    extras = list(dict.fromkeys(include or []))
+    if not isinstance(include, (list, type(None))) or any(
+            x not in _WEATHER_EXTRAS for x in extras):
+        return (f"(error: include must be a list drawn from {sorted(_WEATHER_EXTRAS)}.)")
     place = location.strip()
     if not place or is_temporal_location(place):
         return ("(error: no location given — ask the user which city they want the "
@@ -1483,7 +1493,41 @@ async def get_weather(location: str, period: str = "") -> str:
         out.append(f"  forecast ({day['date']}): "
                    f"high {day['maximum']}°F / low {day['minimum']}°F, "
                    f"{_first(day['mid'], 'weatherDesc').strip()}, {rain}")
+    if extras:
+        out.extend(await _weather_extras(extras, area, resolved or place,
+                                         _first(area, "country")))
     return "\n".join(out)
+
+
+# Optional get_weather sections. Each runs against the coordinates of the area
+# get_weather already resolved (and, for California, verified) — never a second
+# free-text place lookup that could land on a different city of the same name.
+_WEATHER_EXTRAS = {"alerts": "severe-weather alerts",
+                   "air_quality": "air quality",
+                   "rain_next_hours": "rain, next hours"}
+
+
+async def _weather_extras(extras: list[str], area: dict, name: str, country: str) -> list[str]:
+    from service.tools.misc_t1 import weather_alerts_at
+    from service.tools.web_extras import air_quality_at, rain_next_hours_at
+    try:
+        lat, lon = float(area["latitude"]), float(area["longitude"])
+        if not (math.isfinite(lat) and math.isfinite(lon)
+                and -90 <= lat <= 90 and -180 <= lon <= 180):
+            raise ValueError("coordinates out of range")
+    except (KeyError, TypeError, ValueError):
+        return [f"  {_WEATHER_EXTRAS[x]}: (unavailable — the weather service did not "
+                "return coordinates for this area)" for x in extras]
+    sections = []
+    for extra in extras:
+        if extra == "alerts":
+            text = await weather_alerts_at(lat, lon, name, country)
+        elif extra == "air_quality":
+            text = await air_quality_at(lat, lon, name)
+        else:
+            text = await rain_next_hours_at(lat, lon, name)
+        sections.append(f"  {_WEATHER_EXTRAS[extra]}: {text}")
+    return sections
 
 
 @register(
@@ -1501,7 +1545,13 @@ async def get_weather(location: str, period: str = "") -> str:
      "required": ["query"]},
     category="web_read",
     aliases=["search the web for this", "look this up online", "find recent sources",
-             "research this topic", "what are reliable sources about this"],
+             "research this topic", "what are reliable sources about this",
+             # Phrasings the retired convert_currency, recipe_lookup,
+             # astronomy and get_sports_scores tools used to answer.
+             "how much is 100 dollars in euros", "what's the exchange rate for yen right now",
+             "give me a recipe for banana bread", "how do I make carbonara",
+             "what time does the sun set today", "when's sunrise tomorrow",
+             "what's the score of the game", "who won last night"],
 )
 async def web_search(query: str, limit: int = 6) -> str:
     try:

@@ -226,7 +226,7 @@ def test_undeclared_tool_is_blocked_before_implementation():
     assert any(e["kind"] == "approval_accepted" and e["approved"] is False for e in result["ledger"])
 
 
-@pytest.mark.parametrize("name", ["route_to_arrive", "unsubscribe", "update_event"])
+@pytest.mark.parametrize("name", ["route_to_arrive", "update_event"])
 def test_unavailable_capabilities_cannot_be_simulated_as_success(name):
     data = payload()
     data["scenario"]["sources"]["traffic"] = {"state": "ready", "complete": True, "records": []}

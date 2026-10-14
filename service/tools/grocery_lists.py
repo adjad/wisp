@@ -51,7 +51,7 @@ def _render(payload: dict) -> str:
 
 @register("grocery_reminder_evidence",
     "Read bounded incomplete shopping candidates from Apple Reminders, with exact list-label/item filters, native IDs and source freshness. No quantities merged; no writes.",
-    _SCHEMA, category="assistant_read")
+    _SCHEMA, category="assistant_read", internal=True)
 async def grocery_reminder_evidence(list_label: str = "", query: str = "", label_kind: str = "list") -> str:
     if not _valid(list_label, query, label_kind) or label_kind != "list":
         return "(error: shopping filters must be strings of at most 200 characters; no source was read.)"
@@ -84,7 +84,7 @@ async def grocery_reminder_evidence(list_label: str = "", query: str = "", label
 
 @register("grocery_note_evidence",
     "Read bounded plaintext shopping-list evidence from Notes with original line wording and explicit [ ]/[x] state only. Unmarked state and native IDs are unknown; no writes or quantity merging.",
-    _SCHEMA, category="assistant_read")
+    _SCHEMA, category="assistant_read", internal=True)
 async def grocery_note_evidence(list_label: str = "", query: str = "", label_kind: str = "list") -> str:
     if not _valid(list_label, query, label_kind):
         return "(error: shopping filters must be strings of at most 200 characters; no source was read.)"

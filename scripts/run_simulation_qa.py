@@ -196,6 +196,7 @@ PROFILE_TESTS = {
         "tests/test_read_context_continuations.py",
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
+        "tests/test_tool_consolidation.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
@@ -310,7 +311,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_model_led_effect_ownership.py",
     "tests/test_model_led_1_2_5_boundaries.py",
     # httpx MockTransport only; redirect and strict-host checks never touch the network.
-    "tests/test_http_request_redirects.py",
     "tests/test_web_strict_host.py",
     # Synthetic MIME fixtures only; offline parser tests never access real Mail.
     "tests/test_mail_mime.py",
@@ -376,7 +376,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_calendar_identity.py",
     "tests/test_workflow20_compiler.py",
     "tests/test_workflow20_daily.py",
-    "tests/test_workflow20_email_threads.py",
     "tests/test_workflow20_files.py",
     "tests/test_workflow20_groceries.py",
     "tests/test_workflow20_knowledge.py",
@@ -391,7 +390,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_schedule_time.py",
     "tests/test_workflow20_snapshot.py",
     "tests/test_workflow20_travel.py",
-    "tests/test_workflow20_unsubscribe.py",
     "tests/test_workflow20_weather.py",
     "tests/workflow20/test_contract.py",
 }

@@ -306,7 +306,7 @@ def synthetic_tools(adapters, ledger):
     replacements = {}
     for name, tool in REGISTRY.items():
         adapter = adapters.get(name)
-        if adapter and (tool.unavailable_reason or name in {"route_to_arrive", "unsubscribe", "update_event"}):
+        if adapter and (tool.unavailable_reason or name in {"route_to_arrive", "update_event"}):
             raise ValueError(f"Cannot simulate unavailable capability {name}")
         if adapter and adapter["kind"] == "source" and tool.category not in safe_reads:
             raise ValueError(f"Source adapter cannot bypass effect policy for {name}")

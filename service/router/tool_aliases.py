@@ -113,15 +113,6 @@ ALIASES: dict[str, list[str]] = {
         "catch me up on my mail",
         "did anyone email me about the apartment",
     ],
-    "archive_email": [
-        "get that out of my inbox",
-        "file away the Walgreens email",
-        "clear that one out",
-    ],
-    "mark_email_read": [
-        "mark those as read",
-        "I've seen it, clear the unread badge",
-    ],
     # ---- messages & contacts ----
     "send_message": [
         "text mom I'm running late",
@@ -205,6 +196,12 @@ ALIASES: dict[str, list[str]] = {
         "summarize that document for me",
         "open the spreadsheet and tell me what's in it",
         "read the contract and pull out the key dates",
+        # "txt" must exist somewhere in the index: an absent term falls back to
+        # its one-edit neighbours, and "txt" -> "text" pulled every Messages
+        # tool into file requests once convert_file (the only tool that said
+        # "txt") was retired.
+        "what's in notes.txt",
+        "open report.txt and read it to me",
     ],
     "write_file": [
         "save that to a file",
@@ -229,27 +226,9 @@ ALIASES: dict[str, list[str]] = {
     ],
     "get_volume": ["how loud is it right now", "is the sound muted"],
     "lock_screen": ["lock my screen", "I'm stepping away, lock it"],
-    "set_wifi": ["turn wifi off", "get me back on wifi"],
-    "get_battery_status": [
-        "how much battery do I have left",
-        "is my battery health okay",
-        "am I plugged in",
-    ],
-    "list_bluetooth_devices": [
-        "what's connected over bluetooth",
-        "are my airpods paired",
-    ],
-    "set_keyboard_backlight": [
-        "make the keyboard light brighter",
-        "turn off the key backlight",
-    ],
-    "run_speed_test": [
-        "how fast is my internet right now",
-        "why is my connection so slow",
-        "test my wifi speed",
-    ],
     # ---- apps & media ----
-    "open_app": ["open Spotify", "launch Xcode", "bring up Safari"],
+    "open_app": ["open Spotify", "launch Xcode", "bring up Safari",
+                 "open netflix", "launch hulu", "open the apple tv app"],
     "quit_app": ["close Chrome", "quit Slack", "shut down Photoshop"],
     "music": [
         "play some jazz",
@@ -262,8 +241,6 @@ ALIASES: dict[str, list[str]] = {
         # entirely (music ranked 12th) before this line existed.
         "put something on in the background",
         "throw on some music while I work",
-    ],
-    "spotify": [
         "play that album on Spotify",
         "next song on Spotify",
     ],
@@ -276,6 +253,12 @@ ALIASES: dict[str, list[str]] = {
         "do I need an umbrella today",
         "how cold is it going to get tonight",
         "what's the weather in Chicago this weekend",
+        "is there a storm warning",
+        "any severe weather alerts",
+        "is the air quality bad today",
+        "is it smoky outside",
+        "is it about to rain",
+        "when will it stop raining",
     ],
     "get_stock_price": [
         "how's Apple doing today",
@@ -294,10 +277,6 @@ ALIASES: dict[str, list[str]] = {
         "find recent reliable sources",
         "research this topic",
         "compare what different sources say",
-    ],
-    "http_request": [
-        "post this to the API",
-        "send a PUT request to that endpoint",
     ],
     "search_browser_history": [
         "what was that site I was on yesterday",

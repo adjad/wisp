@@ -13,7 +13,7 @@ stating a range.
 That is not a reason to keep tuning the prose. This project's own established
 pattern for "the model doesn't reliably do X from an instruction alone" is to
 stop asking and make X the deterministic answer of a tool call instead (see
-`conversions.calculate`, `get_battery_status`, `world_time` — the whole reason
+`conversions.calculate`, `system_status`'s battery section, `world_time` — the whole reason
 those exist rather than leaving it to generation). The router direct-dispatches
 this tool for the capability-question shape (see router.py's
 `_SEARCH_COVERAGE_RE`) and its result is registered as a SHORT-CIRCUIT answer
@@ -87,6 +87,7 @@ _COVERAGE = {
         },
     },
     category="assistant_read",
+    internal=True,
     # Every alias here is verified to match _SEARCH_COVERAGE_RE (router.py) —
     # this tool's whole design is a DETERMINISTIC dispatch, not retrieval, so
     # an alias that only reaches it via the semantic fallback would silently
