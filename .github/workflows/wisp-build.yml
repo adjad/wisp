@@ -76,7 +76,7 @@ jobs:
       # and relocated-backend smoke as `all`. Simulation QA runs in its own job;
       # the artifact is marked preview and every release command refuses it.
       - name: Build, sign and smoke-test preview from source
-        run: ./scripts/wisp-build preview --strict-toolchain --output dist/preview
+        run: ./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
           .wisp-build/test-env/bin/python -m venv /tmp/wisp-provisioning-tests
@@ -200,7 +200,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Build and verify from source
-        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+        run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Verify synthetic publisher signatures and provisioning transactions
         run: |
           .wisp-build/test-env/bin/python -m venv /tmp/wisp-provisioning-tests
@@ -297,7 +297,7 @@ jobs:
       # Rebuild without an untrusted artifact handoff or restored dependency cache.
       # Credentials are exposed only to the explicit external release step.
       - name: Rebuild approved source with strict validation
-        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+        run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Sign, notarize, verify and publish
         env:
           WISP_RELEASE_APPROVED: 'true'
@@ -346,7 +346,7 @@ jobs:
           persist-credentials: false
       # Rebuild and verify the exact tagged source with no artifact handoff or cache.
       - name: Rebuild ad-hoc source with strict validation
-        run: ./scripts/wisp-build all --strict-toolchain --output dist/candidate
+        run: ./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate
       - name: Publish verified ad-hoc assets
         env:
           WISP_AD_HOC_RELEASE_APPROVED: 'true'

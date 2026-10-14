@@ -1,7 +1,7 @@
 """Turns raw facts about this Mac and its inference apps into a setup checklist.
 
-Pure: everything it needs is passed in, so the same logic serves the first-run
-guide, the Settings entry point, and tests. I/O lives in `service/main.py`.
+The checklist uses passed-in model facts and the selected engine profile, so
+the same logic serves the first-run guide, Settings, and tests.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import shlex
 from dataclasses import dataclass
 
 from . import catalog
-from .engines import EXTERNAL_ENGINES, OMLX, EngineState
+from .engines import BUNDLED, EXTERNAL_ENGINES, OMLX, EngineState, main_engine_profile
 from .hardware import Hardware
 
 # Text roles a single "use this model" choice sets, and their labels.
@@ -72,9 +72,14 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
     # Catalog models first in recommended order, then everything else.
     ordered = sorted(chat_models, key=lambda m: (ranked.index(m) if m in ranked else len(ranked), m))
     entries = [_entry(m, hardware, tool_capable) for m in ordered]
+    engine = main_engine_profile()
+    built_in = engine is BUNDLED
 
     checks: list[dict] = []
-    if omlx.running:
+    if built_in:
+        checks.append({"id": "engine", "state": "ok", "title": "Wisp's built-in engine is ready",
+                       "detail": "Wisp starts it when needed."})
+    elif omlx.running:
         checks.append({"id": "engine", "state": "ok", "title": "oMLX is running",
                        "detail": "Wisp's main inference engine is ready."})
     elif omlx.installed:
@@ -89,7 +94,7 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
     missing = [r for r in TEXT_ROLES
                if roles.get(r, {}).get("endpoint", "local") == "local"
                and roles.get(r, {}).get("model") not in installed]
-    if not omlx.running and not installed:
+    if not built_in and not omlx.running and not installed:
         checks.append({"id": "model", "state": "todo", "title": "Choose a model",
                        "detail": "Wisp will list your models once oMLX is running."})
     elif not chat_models:
@@ -114,10 +119,10 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
     return {
         "ready": ready,
         "hardware": {"chip": hardware.chip, "ram_gb": hardware.ram_gb, "tier": hardware.tier},
-        "omlx": {"installed": omlx.installed, "running": omlx.running, "model_dir": omlx.model_dir,
+        "omlx": {"installed": built_in or omlx.installed, "running": omlx.running, "model_dir": omlx.model_dir,
                  "min_macos": OMLX_MIN_MACOS, "url": OMLX.url,
                  # oMLX's own admin page has a Model Downloader for Hugging Face repos.
-                 "admin_url": omlx.admin_url},
+                 "admin_url": f"http://127.0.0.1:{engine.port}/admin" if built_in else omlx.admin_url},
         "models": {"source": models_source, "installed": entries,
                    "recommended": rec["first_choice"], "use": rec["use"], "warning": rec["warning"],
                    "download": download_info(rec["get"], omlx.model_dir),
@@ -125,8 +130,8 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
                                          else download_info(embedder.id, omlx.model_dir)},
         "roles": [{"role": r, "label": ROLE_LABELS[r], **roles.get(r, {})} for r in TEXT_ROLES],
         "engines": [
-            {"id": OMLX.id, "label": OMLX.label, "port": OMLX.port, "runs_tools": True,
-             "summary": OMLX.summary, "how_to_start": OMLX.how_to_start, "url": OMLX.url,
+            {"id": engine.id, "label": engine.label, "port": engine.port, "runs_tools": True,
+             "summary": engine.summary, "how_to_start": engine.how_to_start, "url": engine.url,
              "running": omlx.running, "models": len(chat_models)},
             *[{"id": e.profile.id, "label": e.profile.label, "port": e.port, "runs_tools": False,
                "summary": e.profile.summary, "how_to_start": e.profile.how_to_start,

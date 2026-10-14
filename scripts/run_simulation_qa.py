@@ -262,6 +262,17 @@ ADDITIONAL_FULL_TESTS = {
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
     "tests/test_runtime_attestation_t1t3.py",
+    # The bundled-engine suites run Wisp's own stand-in HTTP engine and impostors as child
+    # processes on random loopback ports (never 8000, 8765 or 8791 for real traffic), in
+    # disposable temp directories with a private HOME; no oMLX, user data or network.
+    "tests/test_bundled_attribution.py",
+    "tests/test_bundled_engine_api.py",
+    "tests/test_bundled_engine.py",
+    "tests/test_bundled_engine_mode.py",
+    # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
+    "tests/test_engine_packaging.py",
+    "tests/test_engine_licenses.py",
+    "tests/test_bundled_engine_startup.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
     "tests/test_attestation_reuse.py",

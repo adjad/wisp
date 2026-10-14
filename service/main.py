@@ -58,6 +58,7 @@ from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
 from service.inference import qualify as qualification
+from service.engine.mode import is_bundled
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -287,6 +288,20 @@ async def lifespan(app: FastAPI):
     from service.config import quarantine
     quarantine.check()
     global client
+    if remote_only_profile() is None:
+        # Make the first-launch engine choice sticky now, not when Settings is first opened.
+        from service.engine.api import persist_default as persist_engine_default
+        await asyncio.to_thread(persist_engine_default)
+    if remote_only_profile() is None:
+        # The engine runs in its own session, so a crash or a SIGKILL of the previous backend
+        # leaves it running (and holding its memory). Stop it in either mode before anything
+        # else looks at the port.
+        from service.engine.runtime import reap_orphan
+        await asyncio.to_thread(reap_orphan)
+    if is_bundled() and remote_only_profile() is None:
+        # The client reads the engine's key from its settings file at construction.
+        from service.engine.runtime import manager
+        await asyncio.to_thread(manager().prepare)
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
@@ -398,6 +413,9 @@ async def lifespan(app: FastAPI):
         if profile is None:
             await mcp_manager.stop()
         await client.aclose()
+        if is_bundled():
+            from service.engine.runtime import stop_if_running
+            await asyncio.to_thread(stop_if_running)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -411,6 +429,7 @@ from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -454,6 +473,18 @@ async def ensure_omlx() -> None:
     from service.inference.omlx_client import ModelLoadError
     if not getattr(client, "managed", True):
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if is_bundled():
+        # Only an engine this backend launched can be verified. Probing first would find a
+        # leftover from a previous backend, refuse it as "not owned", and never reach the
+        # start path that reaps it.
+        from service.engine.runtime import manager
+        seen = manager().incarnation()
+        if seen is not None and await _await_omlx(2):
+            manager().mark_verified(seen)
+            return
+        client.invalidate_connections()
+        await _ensure_bundled_engine()
+        return
     if await _await_omlx(2):
         return
     client.invalidate_connections()
@@ -465,6 +496,39 @@ async def ensure_omlx() -> None:
     if await _omlx_cli("restart") and await _await_omlx(60):
         return
     raise ModelLoadError("The local AI engine did not become ready")
+
+
+async def _ensure_bundled_engine() -> None:
+    """Start Wisp's own engine (never a user's oMLX.app) and wait until it answers."""
+    from service.engine import EngineError
+    from service.engine.runtime import manager
+    engine = manager()
+    # A verification failure stops only an engine this call launched (start() reports that under
+    # its lock): a healthy engine other turns are using must survive a momentary refusal. An engine
+    # that gives no HTTP answer at all for the whole readiness window is hung and is stopped.
+    try:
+        launched = bool(await asyncio.to_thread(engine.start))
+    except EngineError as exc:
+        raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
+    if not await engine.wait_ready(60):
+        engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
+    incarnation = engine.incarnation()
+    client.invalidate_connections()
+    # wait_ready sent no credential, so nothing has proven who answers yet. The checked client
+    # does: it refuses anything but the recorded child before sending the API key. The window
+    # is as long as readiness: an engine preloading a pinned model answers /health slowly.
+    try:
+        verified = await _await_omlx(60)
+    except ModelLoadError:
+        if launched:
+            engine.stop()
+        raise
+    if not verified:
+        if launched:
+            engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
+    engine.mark_verified(incarnation)
 
 
 @app.get("/health")
@@ -482,6 +546,9 @@ async def shutdown_omlx() -> dict[str, Any]:
     """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
     if not getattr(client, "managed", True):
         return {"stopped": False}
+    if is_bundled():
+        from service.engine.runtime import stop_if_running
+        return {"stopped": await asyncio.to_thread(stop_if_running)}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -880,6 +947,9 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
 
 def _omlx_installed() -> bool:
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_code_root
+        return (engine_code_root() / "py" / "bin" / "python3").exists()
     return any(Path(p).exists() for p in ("/Applications/oMLX.app",
                                           str(Path.home() / "Applications" / "oMLX.app")))
 
@@ -895,6 +965,9 @@ def _omlx_model_dir() -> str | None:
     except Exception:  # noqa: BLE001 — a missing settings file just means the default folder
         pass
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_data_dir
+        return str(engine_data_dir() / "models")
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
@@ -904,7 +977,8 @@ def _omlx_admin_url() -> str:
     try:
         return omlx_base_url() + "/admin"
     except Exception:  # noqa: BLE001 — unreadable settings: use the documented default
-        return "http://127.0.0.1:8000/admin"
+        from service.engine import BUNDLED_PORT
+        return f"http://127.0.0.1:{BUNDLED_PORT if is_bundled() else 8000}/admin"
 
 
 def _setup_roles() -> dict[str, dict[str, str]]:

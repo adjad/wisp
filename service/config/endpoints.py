@@ -6,6 +6,8 @@ import ipaddress
 import re
 from urllib.parse import urlsplit
 
+from service.engine.manager import BUNDLED_PORT
+
 
 class EndpointConfigurationError(ValueError):
     pass
@@ -30,7 +32,7 @@ def is_local_provider_origin(url: str) -> bool:
         return False
     return (parsed.scheme == "http" and parsed.hostname == "127.0.0.1"
             and port is not None and 1024 <= port <= 65535
-            and port not in {8000, 8765}
+            and port not in {8000, 8765, BUNDLED_PORT}
             and parsed.username is None and parsed.password is None
             and parsed.path in {"", "/"} and not parsed.query and not parsed.fragment)
 
@@ -56,6 +58,11 @@ class Endpoint:
             if purpose != "inference" or self.name != "local" or not self.managed or not is_loopback(self.base_url):
                 raise EndpointConfigurationError("Local credentials require the managed loopback endpoint")
             from service.config import omlx_api_key
+            from service.engine.mode import is_bundled
+            if is_bundled():
+                # The bundled engine's key belongs to the bundled engine's port only.
+                if urlsplit(self.base_url).port != BUNDLED_PORT:
+                    raise EndpointConfigurationError("The built-in engine's credential is only for its own port")
             return omlx_api_key()
         prefix, _, name = self.credential_ref.partition(":")
         if prefix == "keychain":

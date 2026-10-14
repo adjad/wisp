@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "omlx": {
+    "url": "https://github.com/jundot/omlx",
+    "license": "Apache-2.0",
+    "licence_text": "engine-licenses/oMLX-LICENSE.txt"
+  },
+  "packages": {
+    "mlx-embeddings": {
+      "class": "strong-copyleft",
+      "source": "https://github.com/Blaizzy/mlx-embeddings",
+      "note": "GPL-3.0. Shipped unmodified, as the Python source files in engine/sp. It runs only inside the engine process, which Wisp reaches over a loopback HTTP connection."
+    },
+    "pycountry": {
+      "class": "weak-copyleft",
+      "source": "https://github.com/pycountry/pycountry",
+      "note": "LGPL-2.1. Pure Python, shipped unmodified as readable source in engine/sp, so it can be replaced by another copy of the same package."
+    },
+    "soxr": {
+      "class": "weak-copyleft",
+      "source": "https://github.com/dofuuz/python-soxr",
+      "note": "LGPL-2.1 or later. Compiled extension shipped unmodified; the source for this version is available from the project at the address listed with it."
+    },
+    "certifi": {
+      "class": "weak-copyleft",
+      "note": "MPL-2.0 (CA bundle data). Shipped unmodified."
+    },
+    "tqdm": {
+      "class": "weak-copyleft",
+      "note": "MPL-2.0 and MIT. Shipped unmodified."
+    },
+    "cobble": {
+      "class": "permissive",
+      "no_licence_file": true,
+      "note": "BSD per its package metadata; the upstream wheel ships no licence file, so the notice names it and its project address instead."
+    },
+    "flatbuffers": {
+      "class": "permissive",
+      "no_licence_file": true,
+      "note": "Apache-2.0 per its package metadata; the upstream wheel ships no licence file."
+    },
+    "primp": {
+      "class": "permissive",
+      "no_licence_file": true,
+      "note": "MIT per its package metadata; the upstream wheel ships no licence file."
+    },
+    "sentencepiece": {
+      "class": "permissive",
+      "no_licence_file": true,
+      "note": "Apache-2.0 per its package metadata; the upstream wheel ships no licence file."
+    },
+    "tokenizers": {
+      "class": "permissive",
+      "no_licence_file": true,
+      "note": "Apache-2.0 per its package metadata; the upstream wheel ships no licence file."
+    }
+  },
+  "components": [
+    {
+      "name": "CPython 3.11 interpreter (engine/py)",
+      "license": "PSF-2.0",
+      "path": "py/lib/python3.11/LICENSE.txt",
+      "copy_as": "CPython-LICENSE.txt"
+    },
+    {
+      "name": "oMLX DeepSeek V4.1 patch (engine/omlx/patches/deepseek_v41)",
+      "license": "MIT",
+      "path": "omlx/patches/deepseek_v41/LICENSE",
+      "copy_as": "oMLX-deepseek_v41-LICENSE.txt"
+    }
+  ],
+  "vendored_javascript": "The engine's admin dashboard (engine/omlx_web/static) ships third-party JavaScript libraries unmodified; each file keeps its own licence header."
+}

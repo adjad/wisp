@@ -230,6 +230,10 @@ enum SettingsQADriver {
         let text = try visibleText(in: screenshot)
         try require(text.localizedCaseInsensitiveContains("Assignment unknown"),
                     "Assignment unknown is missing from rendered Settings window: \(text.prefix(300))")
+        try require(text.localizedCaseInsensitiveContains("Built-in engine")
+                    && text.localizedCaseInsensitiveContains("Open engine dashboard")
+                    && text.localizedCaseInsensitiveContains("both use memory"),
+                    "Engine section is missing from rendered Settings window: \(text.prefix(300))")
 
         try await setMode("ambiguous")
         loader.cloudAPIKey = "synthetic-key-2"

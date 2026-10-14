@@ -17,7 +17,11 @@ from urllib.parse import urlsplit, unquote
 def install_guard(root: Path, scratch: Path, runtime: Path) -> list[str]:
     violations: list[str] = []
     real_home = Path.home().resolve()
-    allowed_reads = (root.resolve(), scratch.resolve(), runtime.resolve(), Path(sys.prefix).resolve())
+    # In a packaged app the bundled engine (Resources/engine) is the backend's sibling; its
+    # ENGINE.json is read at import time to decide whether the engine can run on this Mac.
+    engine = root.resolve().parent / "engine"
+    allowed_reads = (root.resolve(), scratch.resolve(), runtime.resolve(), Path(sys.prefix).resolve(),
+                     *((engine,) if (engine / "ENGINE.json").is_file() else ()))
     scratch = scratch.resolve()
 
     def deny(event: str) -> None:

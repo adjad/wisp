@@ -4,9 +4,15 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
-These changes are to the proactive attention reminders, which still run in shadow mode by default: they record what they would do and create nothing until you switch them to live.
+## [1.3.3] - Unreleased
+
+### Added
+
+- Wisp now includes its own copy of the oMLX AI engine. A Mac with no oMLX installed uses it automatically; one that already has oMLX keeps using it unless you switch in Settings > Models > Engine. The built-in engine runs privately on port 8791 with its own models folder (`~/.moe/engine`), so it never touches your oMLX settings or models, and Wisp refuses to send anything to a process on that port that isn't the engine it started. It needs macOS 26.2 or newer; older Macs keep using an installed oMLX. The app includes `Documentation/THIRD-PARTY-NOTICES.md` with the licences of everything the engine ships, including the copyleft ones and where to get their source.
 
 ### Changed
+
+These changes are to the proactive attention reminders, which still run in shadow mode by default: they record what they would do and create nothing until you switch them to live.
 
 - A plan you proposed with a guessed time is no longer treated as settled when the other person agrees. "Dinner tomorrow at 9?" answered "sure" doesn't say whether you meant 9am or 9pm, so no reminder is made until you reply yourself. "Dinner tomorrow at 7pm?" answered "sure" still makes one.
 - One plan gets one reminder. A second message about the same plan is recognised by when the plan happens, not when its reminder fires, so it no longer makes a second reminder or uses a second slot of the daily limit, whatever the reminder's lead time.
