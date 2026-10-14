@@ -38,8 +38,7 @@ OPAQUE_OUTBOUND_TOOLS = frozenset({"run_shortcut", "run_shell", "run_applescript
                                     "create_tool", "http_request", "place_call"})
 BUILTIN_COMPLETION_MODULES = {
     "run_shell": "service.tools.builtin", "run_applescript": "service.tools.automation_tools",
-    "software_update": "service.tools.system_extras2", "uninstall_app": "service.tools.system_extras2",
-    "http_request": "service.tools.action_tools", "manage_contacts": "service.tools.contacts_tools",
+    "manage_contacts": "service.tools.contacts_tools",
 }
 
 
@@ -81,8 +80,7 @@ def builtin_completion_verified(tool, result) -> bool:
             or result.phase != "mutation" or type(result.completion_code) is not int
             or not authoritative_builtin(tool)):
         return False
-    return (200 <= result.completion_code < 300 if tool.name == "http_request"
-            else result.completion_code == 0)
+    return result.completion_code == 0
 
 
 def builtin_completion_outcome(tool, result, outcome):
@@ -90,49 +88,27 @@ def builtin_completion_outcome(tool, result, outcome):
         return outcome
     from dataclasses import replace
     return replace(outcome, status="succeeded" if builtin_completion_verified(tool, result) else "failed",
-                   effect="executed" if tool.name in {"run_shell", "run_applescript", "software_update"} else "changed")
+                   effect="executed" if tool.name in {"run_shell", "run_applescript"} else "changed")
 
 # Exact successful prefixes emitted by built-ins whose legacy classifier has
 # no effect entry. Unknown/extension strings are never completion contracts.
 EFFECT_RECEIPTS = {
-    "set_timer": ("timer set for ",), "set_alarm": ("alarm set for ",),
-    "set_sleep_timer": ("playback will pause in ",),
-    "schedule_task": ("i'll bring up ",),
-    "manage_timers": ("cancelled the timer",),
-    "stopwatch": ("stopwatch started.", "lap ", "stopped at "),
+    "set_timer": ("timer set for ", "alarm set for ", "playback will pause in "),
+    "manage_timers": ("cancelled the timer", "stopwatch started.", "lap ", "stopped at "),
     "set_volume": ("volume set to ",), "clipboard_write": ("copied ",),
-    "clear_clipboard": ("clipboard cleared.",), "set_wifi": ("wi-fi turned ",),
-    "lock_screen": ("screen locked",), "set_appearance": ("appearance set to ",),
-    "connect_wifi": ("joined ",), "set_screen_lock_timeout": ("screen lock set to ",),
-    "accessibility_toggle": ("voiceover turned ",),
-    "manage_login_items": ("added login item.", "removed login item."),
-    "power_control": ("restart initiated.", "shut down initiated.", "sleep initiated.", "log out initiated."),
+    "lock_screen": ("screen locked",),
     "open_app": ("opened ",), "quit_app": ("asked ",),
-    "switch_app": ("switched to ",), "window_control": ("minimized ", "closed ", "maximized ", "tiled ", "zoomed ", "entered full screen for ", "exited full screen for "),
-    "reveal_in_finder": ("showing ",), "force_quit_app": ("force-quit ",),
-    "spotify": ("spotify: ",), "music": ("music: ",),
-    "print_document": ("sent ",), "manage_spaces": ("switched ",),
-    "run_shortcut": ("ran ",), "install_shortcut": ("opened ",),
+    "window_control": ("minimized ", "closed ", "maximized ", "tiled ", "zoomed ", "entered full screen for ", "exited full screen for "),
+    "music": ("music: ", "spotify: "),
     "create_tool": ("created '",),
     "remember": ("saved memory ",), "forget": ("forgot ", "no exact matching memories were forgotten."),
-    "clear_memory": ("forgot ",),
-    "find_my_device": ("opened find my.",), "place_call": ("starting ",),
     "text_to_speech": ("spoken.", "saved speech to "),
-    "play_podcast": ("opened podcasts ",), "play_audiobook": ("opened books ",),
-    "play_ambient": ("playing ", "stopped ambient sound."),
-    "play_radio": ("playing ",), "stop_radio": ("stopped.",),
-    "play_streaming": ("opened ",), "get_directions": ("opened ",),
-    "log_entry": ("logged (",), "set_fitness_goal": ("goal set: ",),
-    "keychain_store": ("saved to keychain ",),
-    "mark_email_read": ("marked as ",), "archive_email": ("moved to archive.",),
-    "flag_email": ("flagged.", "unflagged."),
+    "play_audio": ("opened podcasts ", "opened books ", "playing ", "stopped.",
+                   "stopped ambient sound."),
+    "email_triage": ("marked as ", "moved to archive.", "flagged.", "unflagged."),
     "create_note": ("created the ",), "append_note": ("added it to ",),
-    "scan_to_note": ("opened the document scanner ",),
-    "create_folder": ("created ",), "archive_files": ("created ",),
-    "tag_file": ("tagged ", "removed the label "), "backup_folder": ("backed up ",),
-    "convert_file": ("converted ",), "encrypt_file": ("encrypted to ", "decrypted to "),
     "write_document": ("created ",), "spreadsheet_ops": ("created ",),
-    "screen_capture": ("saved ",), "set_display": ("set brightness ", "set dark mode "),
+    "screen_capture": ("saved ",),
 }
 _PERSONAL_COMMUNICATION = re.compile(
     r"^\s*(?:please\s+)?(?:can\s+you\s+|could\s+you\s+)?"
@@ -191,7 +167,8 @@ def trusted_effect_receipt(tool, outcome, result=None) -> bool:
     if tool.name == "manage_timers" and outcome.status in {"succeeded", "no_match"}:
         low = outcome.text.strip().lower()
         return bool(re.fullmatch(r"cancelled \d+ timers?\.", low) or low == "nothing to cancel."
-                    or low.startswith("cancelled the timer"))
+                    or low.startswith(("cancelled the timer", "lap ", "stopped at "))
+                    or low == "stopwatch started.")
     return (outcome.status in {"succeeded", "no_match"} and
             (outcome.effect != "read" or
              outcome.text.strip().lower().startswith(EFFECT_RECEIPTS.get(tool.name, ("\0",)))))
@@ -205,20 +182,16 @@ def has_effect_contract(tool, outcome) -> bool:
 def effectful_call(tool, args: dict) -> bool:
     if not needs_effect_owner(tool.category):
         return False
-    if tool.name in {"organize_files", "clear_memory"} and not args.get("confirm", False):
+    if tool.name == "organize_files" and not args.get("confirm", False):
         return False  # Authoritative preview phase; commit gets its own claim.
-    if tool.name == "software_update" and args.get("action", "check") == "install" and not args.get("confirm", False):
-        return False  # The built-in refuses this phase before starting updates.
-    if tool.name in {"list_shortcuts", "list_running_apps", "wisp_status", "wisp_capabilities",
-                     "wisp_skills", "wisp_mcp", "wisp_sync", "unsubscribe", "run_speed_test"}:
+    if tool.name in {"list_running_apps", "wisp_status", "wisp_capabilities",
+                     "wisp_skills", "wisp_mcp"}:
         return False
     if tool.name == "run_shell":
         from service.safety.policy import read_only_shell_argv
         return read_only_shell_argv(str(args.get("cmd", ""))) is None
-    if (tool.name == "manage_timers" and args.get("action", "list") == "list"
-            or tool.name == "manage_login_items" and args.get("action", "list") == "list"
-            or tool.name == "software_update" and args.get("action", "check") == "check"
-            or tool.name == "stopwatch" and args.get("action", "status") in {"status", "read"}):
+    if tool.name == "manage_timers" and str(args.get("action") or "list").strip().lower() in {
+            "list", "stopwatch_read"}:
         return False
     return True
 
@@ -341,10 +314,9 @@ _MODULE_FAMILIES = {
     "speech_tools": "apps_media", "system_control": "device",
     "system_extras": "device", "system_extras2": "device", "misc_t1": "device",
     "timers_alarms": "automation", "automation_tools": "automation",
-    "shortcuts_bridge": "automation", "everyday": "compute", "conversions": "compute",
-    "security_privacy": "personal_security", "local_log": "personal_security",
+    "everyday": "compute", "conversions": "compute",
     "recent_tools": "wisp_activity", "search_coverage": "wisp_activity",
-    "codex_tools": "wisp_activity", "tool_authoring": "skills",
+    "tool_authoring": "skills",
 }
 _ACTIVITY_TOOLS = frozenset({"daily_brief", "get_recent_activity", "wisp_status",
                            "wisp_capabilities", "sync_sources", "search_coverage"})

@@ -101,14 +101,3 @@ def test_poll_catches_task_that_starts_and_finishes_between_polls(tmp_path: Path
     events = monitor.poll_events(now=now + 20)
     assert [(event["kind"], event["thread_id"]) for event in events] == [("completed", "fast")]
     assert monitor.poll_events(now=now + 21) == []
-
-
-def test_router_sends_codex_status_requests_directly_to_monitor():
-    from service.router.router import rule_route
-
-    active = rule_route("Which Codex chats are still running?")
-    assert active is not None
-    assert active.direct_calls == [("get_codex_updates", {"view": "active"})]
-    attention = rule_route("Does any Codex task need me or look stalled?")
-    assert attention is not None
-    assert attention.direct_calls == [("get_codex_updates", {"view": "attention"})]

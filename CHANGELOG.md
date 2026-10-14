@@ -4,8 +4,13 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- The morning preview (7–10am) can now include the times you usually turn to Wisp, for example "checking email with Wisp around 1:35pm". These come from your learned Wisp-usage routines and only fill space the calendar, habit and contact predictions leave free: at most two, one per topic, and never the catch-all "general" topic. `predict_my_day` lists them too.
+
 ### Fixed
 
+- Behavior learning now sees Messages. Every message was dropped on ingest (the Messages feed sends RFC 3339 timestamps and the runtime parsed them as numbers), so no contact rhythm could ever form. Replies now count toward the same person as their texts, named by Contacts, and automated senders (short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped.
 - Web lookups (news, weather, stock and crypto prices, "search the web for…") now run on the model configured for the `agent` role instead of a model id written into the router. The written id (`Ling-3.0-tiny-oQ6e`) was no longer installed, so oMLX answered its load with 404, reloaded the resident model, and the next turns failed with "The local AI engine returned an error (409)".
 
 ### Changed
