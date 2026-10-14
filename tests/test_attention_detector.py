@@ -770,3 +770,23 @@ def test_the_detector_refuses_to_guess_a_zone(monkeypatch):
     with pytest.raises(ValueError, match="time zone"):
         detectors.UncapturedCommitment(snap([]))
     assert detectors.UncapturedCommitment(snap([]), tz=TZ).tz == TZ        # an explicit zone still works
+
+
+def test_the_clock_check_reads_both_offsets_at_one_instant(monkeypatch):
+    """At the DST change (Nov 1 2026, 2:00 PDT -> 1:00 PST) two separate reads could disagree."""
+    change = datetime(2026, 11, 1, 9, 0, tzinfo=ZoneInfo("UTC")).timestamp()     # 2:00 PDT
+    asked = []
+
+    class Local:
+        def __init__(self, at):
+            self.tm_gmtoff = int(datetime.fromtimestamp(at, ZONE).utcoffset().total_seconds())
+
+    def localtime(at=None):
+        asked.append(at)
+        return Local(at)
+    monkeypatch.setattr(detectors.time, "localtime", localtime)
+    for at in (change - 1, change, change + 1):
+        assert detectors.matches_clock(TZ, at)
+    assert asked == [change - 1, change, change + 1]
+    assert not detectors.matches_clock("Asia/Tokyo", change)
+    assert not detectors.matches_clock("Not/AZone", change)

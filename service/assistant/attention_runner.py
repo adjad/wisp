@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from service.assistant.hub import hub
 from service.assistant.store import assistant_store
-from service.attention.detectors import local_timezone
+from service.attention.detectors import local_timezone, matches_clock
 from service.attention.ledger import Ledger
 from service.attention.live import LOOKBACK_S, Plan, load_settings, local_midnight, settings_path
 from service.attention.runner import process
@@ -46,6 +46,26 @@ def reset() -> None:
     if _task is not None and not _task.done():
         _task.cancel()
     _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
+
+
+def current_zone() -> str | None:
+    """The zone to read and file times in: the one macOS names now, or else the last zone it
+    named, but only while the Mac clock still agrees with that zone's offset.
+
+    Each zone read successfully is remembered in the ledger. If the name later cannot be read,
+    the remembered one stands in; if the user has since moved (the clock's offset no longer
+    matches it), there is no zone and the pass stops rather than guess."""
+    tz = local_timezone()
+    try:
+        ledger = get_ledger()
+        if tz is not None:
+            if ledger.meta("last_zone") != tz:
+                ledger.set_meta("last_zone", tz)
+            return tz
+        saved = ledger.meta("last_zone")
+    except Exception:  # noqa: BLE001 — an unreadable ledger only loses the fallback
+        return tz
+    return saved if saved and matches_clock(saved) else None
 
 
 def _policy_block(**args) -> str | None:
@@ -149,7 +169,7 @@ async def create_reminder(plan: Plan) -> dict:
         # Defence in depth: the tick already checked, but view-only can be switched on mid-pass.
         _audit("deny", tool="add_reminder", source="attention", reason=blocked)
         return {"ok": False, "status": "failed", "error": f"BLOCKED by safety policy: {blocked}"}
-    tz = local_timezone()
+    tz = current_zone()
     if tz is None:
         return {"ok": False, "status": "failed", "error": "The local time zone cannot be determined."}
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
@@ -242,7 +262,7 @@ async def run_tick(now: float | None = None) -> list:
                 _audit("deny", tool="add_reminder", source="attention", reason=blocked)
             ledger.set_meta("last_mode", "off")
             return []
-    tz = local_timezone()
+    tz = current_zone()
     if tz is None:
         # Every time in a message would be read in a guessed zone. Treated as "off", like a
         # policy block: when the zone is known again, live re-baselines rather than sweeping up
