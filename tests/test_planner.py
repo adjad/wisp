@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -132,8 +133,8 @@ async def emit(_event):
 @pytest.fixture(autouse=True)
 def _fake_tools(monkeypatch):
     # The fakes' own empty notices, as real tools register theirs.
-    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_search", ("(no notes matched",))
-    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_open", ("(no file named",))
+    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_search", re.compile(r"\(no notes matched"))
+    monkeypatch.setitem(planner.EMPTY_NOTICES, "fake_open", re.compile(r"\(no file named"))
     calls: list[tuple[str, dict]] = []
     saved = {k: REGISTRY.get(k) for k in ("fake_search", "fake_read", "fake_send", "fake_open", "fake_write")}
 
@@ -405,6 +406,7 @@ def test_a_binding_that_makes_a_read_a_repeat_keeps_the_write(_fake_tools):
     ("search_notes", ""), ("search_notes", "   "),
     ("recall", "No matching memory or user conversation passage. Try another query."),
     ("web_search", "(no public web results found; do not answer from memory.)"),
+    ("web_search", "(no web results found)"),
     ("read_file", "(no such file: ~/a.txt)"), ("search_notes", "No notes found."),
     ("manage_contacts", "No contact matches 'Sammy'. Use action='create' to add one.")])
 def test_tools_own_empty_notices_count_as_misses(name, text):
@@ -416,6 +418,7 @@ def test_tools_own_empty_notices_count_as_misses(name, text):
     ("read_file", "No significant results were observed in trial A. Participants: 40."),
     ("read_file", "No unexpected matches occurred in the validation set. Rows: 12."),
     ("read_file", "(define tax-rate 0.08)"), ("read_file", "(c) 2024 Acme. Revenue up 4%."),
+    ("read_file", "(no such file: /Volumes/Backup/config.json)\nBackup verification: 14 files copied."),
     ("web_fetch", "(no public web results found)"),  # another tool's notice is content here
     ("search_notes", "Nobody emailed")])
 def test_content_is_never_a_miss(name, text):

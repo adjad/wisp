@@ -233,14 +233,20 @@ def plan_message(plan: Plan) -> dict:
 # Scheme file) misreads a successful read as a miss. A tool missing here just
 # never counts toward the budget, which costs at most extra reads. Outcomes
 # the classifier already calls no_match/failed count on their own.
-EMPTY_NOTICES: dict[str, tuple[str, ...]] = {
-    "web_search": ("(no public web results found",),          # tools/web_tools.py
-    "search_notes": ("No notes found", "No notes modified in"),  # tools/notes_tools.py
-    "recall": ("No matching memory or user conversation passage.",),  # tools/memory_tools._NO_MATCH
-    "read_file": ("(no such file:",),                          # tools/builtin.read_file
-    "list_dir": ("(no such path:",),                           # tools/builtin.py
-    "manage_contacts": ("No contact matches",),                # tools/contacts_tools.py
-    "lookup_contact": ("(No contacts are synced yet",),        # tools/imessage_tools.py
+#
+# Tools whose successful output is wrapped by Wisp (search_notes' "Title:",
+# recall's evidence header) match their notice as a prefix. read_file returns
+# raw file text, so its notice must be the ENTIRE result: a saved backup log
+# whose first line is "(no such file: ...)" is content (eighth independent
+# review). list_dir is absent on purpose: its missing-directory notice is
+# followed by the nearest existing directory's listing, which is useful.
+EMPTY_NOTICES: dict[str, re.Pattern] = {
+    "web_search": re.compile(r"\((?:no public web results found|no web results found)"),  # web_tools, research/web
+    "search_notes": re.compile(r"No notes (?:found|modified in)"),   # tools/notes_tools.py
+    "recall": re.compile(r"No matching memory or user conversation passage\."),  # memory_tools._NO_MATCH
+    "read_file": re.compile(r"\(no such file: [^\n]*\)\Z"),        # tools/builtin.read_file, whole result
+    "manage_contacts": re.compile(r"No contact matches"),            # tools/contacts_tools.py
+    "lookup_contact": re.compile(r"\(No contacts are synced yet"),   # tools/imessage_tools.py
 }
 
 
@@ -248,7 +254,8 @@ def looks_empty(name: str, result) -> bool:
     """A read that found nothing, judged only by signals Wisp itself emits:
     a blank result or the tool's own exact empty-result notice."""
     text = str(result or "").strip()
-    return not text or text.startswith(EMPTY_NOTICES.get(name, ()))
+    pattern = EMPTY_NOTICES.get(name)
+    return not text or bool(pattern and pattern.match(text))
 
 
 def call_key(name: str, arguments) -> tuple[str, str]:
