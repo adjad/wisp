@@ -5,7 +5,7 @@ WHY THESE ARE MOSTLY "OPEN AND SEARCH", NOT "SEARCH AND PLAY"
 Podcasts.app and Books.app have essentially no AppleScript dictionary on
 modern macOS — probed live on this machine: `tell application "Podcasts" to
 name` fails outright, and driving them via the Accessibility API needs a grant
-Wisp doesn't request for this. `music`/`spotify` in apps.py work because those
+Wisp doesn't request for this. `music` (Apple Music/Spotify) in apps.py works because those
 two specific apps kept a real scripting dictionary; Apple's newer apps mostly
 didn't inherit it. Where a URL scheme exists (`podcasts://search?term=`,
 verified live to be handled) that's what's used; where it doesn't, the tool is
@@ -40,7 +40,7 @@ _TIMEOUT = 15
 _UA = "Wisp/1.0 (local macOS assistant; personal use)"
 
 # The literal path segment "wisp_ambient" is load-bearing, not cosmetic:
-# play_ambient(kind="stop") finds the background afplay loop with
+# play_audio(kind="stop") finds the background afplay loop with
 # `pkill -f wisp_ambient`, matching against the full command line — which only
 # contains this string because the WAV file's own path does. A generic
 # "ambient" or "cache" directory name would make that pkill call match nothing.
@@ -56,22 +56,10 @@ def _osa(script: str) -> subprocess.CompletedProcess:
 # --------------------------------------------------------------------------
 # podcasts / audiobooks
 # --------------------------------------------------------------------------
-@register(
-    "play_podcast",
-    "Open Apple Podcasts to search results for a show or episode. Podcasts.app "
-    "has no scripting support on modern macOS, so this opens the search rather "
-    "than guaranteeing autoplay — the user taps play once it's in front of them.",
-    {"type": "object",
-     "properties": {"query": {"type": "string", "description": "Podcast name or topic to search for."}},
-     "required": ["query"]},
-    category="app_control",
-    aliases=["play the daily podcast", "find me a true crime podcast",
-             "put on the last episode of my favorite show", "search podcasts for tech news"],
-)
-def play_podcast(query: str) -> str:
+def _play_podcast(query: str) -> str:
     q = (query or "").strip()
     if not q:
-        return "(error: play_podcast needs a `query`.)"
+        return "(error: a podcast search needs a `query`.)"
     p = subprocess.run(["open", f"podcasts://search?term={quote(q)}"],
                        capture_output=True, text=True, timeout=_TIMEOUT)
     if p.returncode != 0:
@@ -79,16 +67,7 @@ def play_podcast(query: str) -> str:
     return f"Opened Podcasts to search results for {q!r} — press play on what you want."
 
 
-@register(
-    "play_audiobook",
-    "Open Apple Books to the Audiobooks section. Books.app has no scripting "
-    "support to search or resume a specific title, so this opens the app and "
-    "the user picks from there.",
-    {"type": "object", "properties": {}},
-    category="app_control",
-    aliases=["resume my audiobook", "open my audiobook", "continue listening to my book"],
-)
-def play_audiobook() -> str:
+def _play_audiobook() -> str:
     p = _osa('tell application "Books" to activate')
     if p.returncode != 0:
         return f"(could not open Books: {(p.stderr or '').strip()})"
@@ -125,28 +104,7 @@ def _synth_noise(kind: str, seconds: int) -> Path:
     return path
 
 
-@register(
-    "play_ambient",
-    "Play white noise or brown noise in the background — for focus, sleep, or "
-    "blocking distraction. Synthesized locally, not a recording, so 'rain' or "
-    "'ocean' aren't available — only white_noise and brown_noise. Loops for "
-    "the given duration, or use manage_timers/stopwatch to stop it early via "
-    "`stop_ambient`.",
-    {
-        "type": "object",
-        "properties": {
-            "kind": {"type": "string", "enum": ["white_noise", "brown_noise", "stop"],
-                     "description": "Which sound, or 'stop' to end playback."},
-            "minutes": {"type": "integer", "description": "How long to play, in minutes. Default 30."},
-        },
-        "required": ["kind"],
-    },
-    category="app_control",
-    aliases=["play some white noise", "put on brown noise while I sleep",
-             "I need background noise to focus", "play static to help me sleep",
-             "turn off the white noise", "stop the ambient sound"],
-)
-def play_ambient(kind: str, minutes: int = 30) -> str:
+def _play_ambient(kind: str, minutes: int = 30) -> str:
     key = (kind or "").strip().lower()
     if key == "stop":
         subprocess.run(["pkill", "-f", "afplay.*wisp_ambient"], capture_output=True)
@@ -175,27 +133,10 @@ def play_ambient(kind: str, minutes: int = 30) -> str:
 # --------------------------------------------------------------------------
 # internet radio
 # --------------------------------------------------------------------------
-@register(
-    "play_radio",
-    "Find and play an internet radio station by name or genre — jazz, news, "
-    "a specific station name. Streams in the background via a free public "
-    "station directory (radio-browser.info); playback quality depends on the "
-    "station.",
-    {
-        "type": "object",
-        "properties": {
-            "query": {"type": "string", "description": "Station name or genre, e.g. 'smooth jazz', 'BBC Radio 1'."},
-        },
-        "required": ["query"]},
-    category="app_control",
-    aliases=["play some jazz radio", "put on a news station",
-             "find me a radio station for classical music", "play bbc radio 1",
-             "put on an internet radio station"],
-)
-async def play_radio(query: str) -> str:
+async def _play_radio(query: str) -> str:
     q = (query or "").strip()
     if not q:
-        return "(error: play_radio needs a `query`.)"
+        return "(error: a radio search needs a `query`.)"
     try:
         async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
             r = await c.get("https://de1.api.radio-browser.info/json/stations/search",
@@ -219,110 +160,59 @@ async def play_radio(query: str) -> str:
     return f"Playing {name} ({station.get('country', '')}). Say 'stop the radio' to end it."
 
 
-@register(
-    "stop_radio",
-    "Stop internet radio started with play_radio.",
-    {"type": "object", "properties": {}},
-    category="app_control",
-    aliases=["stop the radio", "turn off the radio station", "stop streaming"],
-)
-def stop_radio() -> str:
+def _stop_radio() -> str:
     p = subprocess.run(["pkill", "afplay"], capture_output=True)
     return "Stopped." if p.returncode == 0 else "Nothing was playing."
 
 
 # --------------------------------------------------------------------------
-# streaming apps
-# --------------------------------------------------------------------------
-_STREAMING_APPS = {
-    "netflix": "Netflix", "disney+": "Disney+", "disney plus": "Disney+",
-    "hulu": "Hulu", "max": "Max", "hbo max": "Max", "prime video": "Prime Video",
-    "amazon prime": "Prime Video", "apple tv": "TV", "apple tv+": "TV",
-    "youtube": "YouTube", "paramount+": "Paramount+", "peacock": "Peacock",
-}
-
-
-@register(
-    "play_streaming",
-    "Open a streaming app (Netflix, Disney+, Hulu, Max, Prime Video, Apple "
-    "TV, YouTube, Paramount+, Peacock). Launches the app; picking the actual "
-    "show is up to the user, since these apps aren't scriptable.",
-    {"type": "object",
-     "properties": {"app": {"type": "string", "description": "Which streaming app, e.g. 'Netflix'."}},
-     "required": ["app"]},
-    category="app_control",
-    aliases=["open netflix", "put on disney plus", "launch hulu",
-             "I want to watch something on max", "open the apple tv app"],
-)
-def play_streaming(app: str) -> str:
-    key = (app or "").strip().lower()
-    target = _STREAMING_APPS.get(key)
-    if target is None:
-        target = next((v for k, v in _STREAMING_APPS.items() if k in key), None)
-    if target is None:
-        return (f"(I don't recognize {app!r} as a streaming app. Known: "
-                f"{', '.join(sorted(set(_STREAMING_APPS.values())))}.)")
-    p = subprocess.run(["open", "-a", target], capture_output=True,
-                       text=True, timeout=_TIMEOUT)
-    if p.returncode != 0:
-        return (f"({target} doesn't seem to be installed, or couldn't be "
-                f"opened: {(p.stderr or '').strip()})")
-    return f"Opened {target}."
-
-
-# --------------------------------------------------------------------------
 # honestly not available
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# the one registered entry point
+# --------------------------------------------------------------------------
 @register(
-    "identify_song",
-    "Identify a song playing nearby, Shazam-style. NOT YET AVAILABLE — this "
-    "would need a native ShazamKit bridge in the Swift app (microphone "
-    "capture + on-device fingerprint match), which hasn't been built. Says so "
-    "rather than guessing a song.",
-    {"type": "object", "properties": {}},
+    "play_audio",
+    "Play non-music audio. kind='podcast' opens Apple Podcasts search for `query` "
+    "(the user presses play; Podcasts isn't scriptable). kind='audiobook' opens "
+    "Apple Books' Audiobooks. kind='radio' streams an internet radio station "
+    "matching `query` (name or genre). kind='ambient' plays locally synthesized "
+    "white or brown noise (`query` 'white_noise' or 'brown_noise'; no rain/ocean "
+    "recordings) for `minutes`. kind='stop' stops radio and ambient sound. For "
+    "songs and playlists use `music`.",
+    {
+        "type": "object",
+        "properties": {
+            "kind": {"type": "string",
+                     "enum": ["podcast", "audiobook", "radio", "ambient", "stop"],
+                     "description": "What to play, or 'stop'."},
+            "query": {"type": "string",
+                      "description": "Podcast/radio search, or white_noise/brown_noise for ambient."},
+            "minutes": {"type": "integer", "description": "Ambient only: how long, default 30."},
+        },
+        "required": ["kind"],
+    },
     category="app_control",
-    aliases=["what song is this", "shazam this", "identify this music",
-             "what's playing right now"],
+    aliases=["play the daily podcast", "find me a true crime podcast",
+             "resume my audiobook", "continue listening to my book",
+             "play some white noise", "I need background noise to focus",
+             "play some jazz radio", "put on a news station", "play bbc radio 1",
+             "stop the radio", "turn off the white noise", "stop the ambient sound"],
 )
-def identify_song() -> str:
-    return ("Song identification isn't built yet — it needs a native "
-            "ShazamKit bridge (microphone capture in the Swift app) that "
-            "doesn't exist in Wisp today. I can't guess a song from nothing, "
-            "so I'm telling you rather than making one up.")
-
-
-@register(
-    "get_lyrics",
-    "Look up song lyrics. NOT AVAILABLE — there is no free, keyless API for "
-    "licensed lyrics; every option needs a paid license. Says so rather than "
-    "guessing or reproducing lyrics from memory (which risks copyright "
-    "infringement and is often wrong anyway).",
-    {"type": "object",
-     "properties": {"song": {"type": "string", "description": "Song title (and artist, if known)."}}},
-    category="app_control",
-    aliases=["what are the lyrics to this song", "show me the lyrics",
-             "what does this song say"],
-)
-def get_lyrics(song: str = "") -> str:
-    return ("I don't have a lyrics source — licensed lyrics need a paid API "
-            "with no free/keyless option, so this isn't available. I also "
-            "won't reproduce lyrics from memory: I can't guarantee accuracy "
-            "and it risks reproducing copyrighted text. Try Genius or Apple "
-            "Music, which show lyrics for what's currently playing.")
-
-
-@register(
-    "lookup_media_title",
-    "Look up info about a movie or TV show — cast, synopsis, rating, release "
-    "year. UNAVAILABLE: Wisp has no integrated movie/TV metadata provider. "
-    "No lookup runs; the user can explicitly ask for a web search instead.",
-    {"type": "object",
-     "properties": {"title": {"type": "string", "description": "Movie or show title."}},
-     "required": ["title"]},
-    category="web_read",
-    aliases=["what's that movie about", "who's in the new dune movie",
-             "when did that show come out", "what's the rating on this movie"],
-)
-def lookup_media_title(title: str) -> str:
-    from service.tools.registry import UNAVAILABLE_TOOL_REASONS
-    return UNAVAILABLE_TOOL_REASONS["lookup_media_title"]
+async def play_audio(kind: str, query: str = "", minutes: int = 30) -> str:
+    key = (kind or "").strip().lower()
+    if key == "podcast":
+        return _play_podcast(query)
+    if key == "audiobook":
+        return _play_audiobook()
+    if key == "radio":
+        return await _play_radio(query)
+    if key == "ambient":
+        return _play_ambient(query or "white_noise", minutes)
+    if key == "stop":
+        ambient = subprocess.run(["pkill", "-f", "afplay.*wisp_ambient"], capture_output=True)
+        radio = _stop_radio()
+        return "Stopped." if ambient.returncode == 0 or radio == "Stopped." else "Nothing was playing."
+    return f"(error: unknown kind {key!r}. Use podcast, audiobook, radio, ambient, or stop.)"

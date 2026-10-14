@@ -87,7 +87,7 @@ def test_personal_arrival_clarifies_without_public_search_or_effect(prompt):
     assert not decision.expect_tool_first
     assert not decision.tool_subset
     assert 'route_to_arrive' in decision.forbidden_tools
-    assert {'web_search','web_fetch','http_request','run_shell','travel_time','get_directions',
+    assert {'web_search','web_fetch','http_request','run_shell','travel_time',
             'send_message','add_calendar_event'} <= decision.forbidden_tools
     assert decision.resolved_request.startswith(prompt)
     assert 'Clarify' in decision.resolved_request
@@ -102,7 +102,7 @@ def test_complete_arrival_has_only_exact_checked_read_binding():
         'arrive_by':'2026-10-12T23:00:00-07:00',
         'timezone':'America/Los_Angeles', 'buffer_minutes':30}}
     assert not decision.direct_calls and not decision.force_first_tool
-    assert 'get_directions' in decision.forbidden_tools
+    assert 'travel_time' in decision.forbidden_tools
 
 
 def test_unresolved_arrival_actual_loop_asks_once_without_tool_nudges(monkeypatch):

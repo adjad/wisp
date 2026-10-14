@@ -104,17 +104,3 @@ async def search_conversations(query: str = '', limit: int = 15, session_id: str
     result = retrieve(query, facts=store, limit=max(1, min(50, limit)), strict=True)
     rows = result['passages']
     return _bounded(f"[USER {r['session_id']}:{r['turn_idx']}; {dated(r['created_at'])}; historical]\n{r['text']}" for r in rows) if rows else 'No matching user conversation passages. No stored user passage contains every term of that request.' + _SCOPE
-
-
-@tool(name='clear_memory', description='Preview matching saved memories before clearing them. Use confirm=true only after the user confirms this deletion scope. Does not delete conversations.',
-      parameters={'type': 'object', 'properties': {'query': {'type': 'string'}, 'confirm': {'type': 'boolean'}}, 'required': []}, category='fs_delete')
-async def clear_memory(query: str = '', confirm: bool = False) -> str:
-    tokens = terms(query)
-    rows = store.search(query, 1000) if query.strip() else store.all(1000)
-    if query.strip():
-        rows = [r for r in rows if tokens and all(t in re.findall(r'\w+', r['text'].casefold()) for t in tokens)]
-    if not confirm:
-        return f"{len(rows)} matching memories. Ask the user to confirm before clearing.\n" + '\n'.join(f"{r['id']}: {r['text']}" for r in rows)
-    with store._write():
-        count = sum(store.delete(r['id']) for r in rows)
-    return f'Forgot {count} memory record(s), including their correction history. Conversations were retained.'

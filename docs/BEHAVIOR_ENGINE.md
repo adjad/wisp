@@ -61,8 +61,8 @@ hours, and when you switch learning off.
 
 | Pattern kind | Needs | Example statement |
 | --- | --- | --- |
-| `habit` | at least 4 occurrences over at least 3 weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
-| `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night) | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
+| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
+| `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
 | `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
 | `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
 | `day_shape` | at least 5 weekdays (4 weekend days) of kept events | "On weekdays your first commitment is usually around 6:45am and your last ends around 3:30pm; lunch is usually free 11am–2pm" |
@@ -89,6 +89,7 @@ from counts (for example "20 of the last 24 Mon/Wed/Fri"), never by a model.
 | `contact` | the next window in which the user usually talks to someone (0.3 or more) |
 | `cancel_risk` | an upcoming event in a bucket the user tends to cancel; one per back-to-back run; probability is the bucket's historical rate |
 | `habit_conflict` | an upcoming event booked over a habit (10 min overlap or more) |
+| `usage` | the next window in which the user usually asks Wisp about a named topic (confidence 0.2 or more; the catch-all "general" topic is skipped). Feeds `day_preview` and `predict_my_day`, not the profile card |
 
 ## Nudges
 
@@ -101,7 +102,7 @@ Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
 | `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
 | `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
 | `habit_missed` | a personal habit (confidence 0.5 or more) did not happen today, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
-| `day_preview` | 07:00-10:00, top four predictions for today; expires at noon | none |
+| `day_preview` | 07:00-10:00, top four predictions for today; usage windows only fill slots left after the other kinds (one per topic, at most two); expires at noon | none |
 
 Attention rules (`nudges.select`):
 
