@@ -14,12 +14,6 @@ from scripts.bench_routing_overhead import CASES, uncached_shortlist
 
 
 class LexicalToolRetrievalTests(unittest.TestCase):
-    def test_explicit_file_crypto_action_survives_without_reranker(self) -> None:
-        query = ("decrypt /tmp/wisp-routing-fixtures/keep/encrypted-test.txt.enc "
-                 "using dummy-file-password")
-        self.assertEqual("encrypt_file", lexical_rank(query)[0])
-        self.assertIn("encrypt_file", lexical_candidates(query, writing=True, k=20))
-
     def test_explicit_task_list_is_split_without_splitting_noun_lists(self) -> None:
         query = ("Please do these in this order: check my calendar tomorrow; "
                  "then text Mom the result; then save the summary to a file.")
@@ -118,9 +112,13 @@ def test_silent_file_mutation_gate_and_pins_survive_reuse(monkeypatch):
 
 
 @pytest.mark.parametrize("query", ["Uninstall Cobalt app", "Please uninstall Cobalt app",
-    "Can you uninstall Cobalt app", "Could you uninstall Cobalt app", "Would you uninstall Cobalt app"])
-def test_explicit_uninstall_survives_normal_legacy_retrieval(query):
-    assert "uninstall_app" in lexical_candidates(query, writing=False, k=20)
+    "Can you uninstall Cobalt app"])
+def test_uninstall_request_no_longer_opens_the_file_mutation_gate(query):
+    # uninstall_app was retired; without it the gate must not hand an
+    # "uninstall" request delete_path and the other file-mutating tools.
+    from service.router.semantic import _gate_open
+    assert not _gate_open(query, writing=False)
+    assert "delete_path" not in lexical_candidates(query, writing=False, k=20)
 
 
 @pytest.mark.parametrize("query", ["Do not uninstall Cobalt app", "Don't uninstall Cobalt app",
@@ -128,7 +126,6 @@ def test_explicit_uninstall_survives_normal_legacy_retrieval(query):
 def test_uninstall_visibility_fix_does_not_open_on_negation_or_explanation(query):
     from service.router.semantic import _gate_open
     assert not _gate_open(query, writing=False)
-    assert "uninstall_app" not in lexical_candidates(query, writing=False, k=20)
 
 
 def test_typo_neighbours_do_not_depend_on_vocab_iteration_order():

@@ -124,11 +124,10 @@ def test_noncredential_assignment_metadata_is_untouched():
 
 def test_actual_inert_connect_wifi_loop_scrubs_typed_password_in_allow_audit(tmp_path, monkeypatch):
     import asyncio
-    from dataclasses import replace
     from service import main  # registers real tools without starting lifespan
     from service.agent import loop
     from service.safety.policy import Decision, Tier
-    from service.tools.registry import REGISTRY
+    from service.tools.registry import REGISTRY, Tool
 
     calls, events = [], []
     args = {"network": "Synthetic-Only", "password": OPAQUE}
@@ -155,7 +154,13 @@ def test_actual_inert_connect_wifi_loop_scrubs_typed_password_in_allow_audit(tmp
         async def confirm(self, *_a, **_k):
             return True
 
-    monkeypatch.setitem(REGISTRY, "connect_wifi", replace(REGISTRY["connect_wifi"], func=inert_connect))
+    # The real connect_wifi tool was retired; a synthetic one with the same
+    # credential-bearing schema keeps the loop's audit scrubbing exercised.
+    monkeypatch.setitem(REGISTRY, "connect_wifi", Tool(
+        "connect_wifi", "Join a Wi-Fi network (synthetic test tool).",
+        {"type": "object", "properties": {"network": {"type": "string"},
+                                          "password": {"type": "string"}},
+         "required": ["network"]}, "system_write", inert_connect))
     monkeypatch.setattr(loop, "decide", lambda *_a, **_k: Decision(Tier.ALLOW, "synthetic only"))
     monkeypatch.setattr(loop, "audit", audit_module.audit)
     monkeypatch.setattr(audit_module, "AUDIT_DIR", tmp_path)

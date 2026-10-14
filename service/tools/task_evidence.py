@@ -104,7 +104,7 @@ def _native_source(source: str, *, now: float, start: float, end: float, query: 
 
 @register("collect_task_evidence",
     "Read bounded cached evidence for personal priorities: Calendar occurrences/Reminder due dates in the task window, plus Mail/Messages/Notes bodies scanned independently of receipt dates. Includes IDs, direction, omissions and uncertainty. Does not infer ownership/deadlines, rank, schedule or write.",
-    _SCHEMA, category="assistant_read")
+    _SCHEMA, category="assistant_read", internal=True)
 async def collect_task_evidence(period: str = "today", email_account: str = "", chat_id: str = "",
         query: str = "", include_overdue: bool = True, include_undated: bool = True,
         include_calendar: bool = True, include_reminders: bool = True, include_email: bool = True,

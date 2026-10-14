@@ -107,7 +107,6 @@ def test_every_tool_has_a_scoped_home() -> None:
             ("What should I get for groceries without reminders", "grocery_note_evidence"),
             ("What should I get for groceries without notes", "grocery_reminder_evidence"),
             ("search my chat history for an old project", "search_conversations"),
-            ("clear my saved memories", "clear_memory"),
             ("Save a knowledge note titled Project:\nBring blue folder.", "save_knowledge"),
             ("Read my saved knowledge notes.", "read_knowledge"),
             ("Update knowledge " + "a"*32 + " titled Project:\nBring red folder.", "edit_knowledge"),
@@ -181,8 +180,8 @@ def test_every_tool_has_a_scoped_home() -> None:
 def test_device_apps_and_web_are_scoped() -> None:
     print("\nthe three clusters that used to fall through are now scoped")
     for prompt, tool in (("what's the current volume?", "get_volume"),
-                         ("how much battery do I have", "get_battery_status"),
-                         ("turn off my wifi", "set_wifi"),
+                         ("how much battery do I have", "system_status"),
+                         ("turn off my wifi", "toggle_setting"),
                          ("lock my screen", "lock_screen"),
                          ("what's on my clipboard", "clipboard_read"),
                          ("open safari", "open_app"),
@@ -286,7 +285,7 @@ def test_confirmation_inherits_the_previous_domain() -> None:
     # Verified failure 2026-08-09: "yes archive them", right after Wisp listed
     # emails, was routed with NO subset — all 55 tools, the configuration this
     # project measured as worst at selection. It called view_emails again and
-    # never archive_email, on the one turn where the user had already said
+    # never archive_email (now email_triage), on the one turn where the user had already said
     # "do it".
     d = asyncio.run(route("yes archive them",
                           last_assistant="Would you like me to archive these emails to keep your inbox clean?",
@@ -294,7 +293,7 @@ def test_confirmation_inherits_the_previous_domain() -> None:
     sub = d.tool_subset or []
     check("scoped rather than the full registry", bool(sub) and len(sub) < 20,
           f"-> {len(sub) if sub else 'UNSCOPED'}")
-    check("archive_email is actually offered", "archive_email" in sub, f"-> {sub}")
+    check("email_triage (archive) is actually offered", "email_triage" in sub, f"-> {sub}")
     check("it does not force a tool call", d.expect_tool_first is False)
 
     d = asyncio.run(route("go ahead", last_assistant="Want me to send that text to Mom?",
