@@ -167,7 +167,7 @@ class _Store:
 def install_synthetic_adapters(service_root: Path, *, endpoint: str) -> dict:
     """Install an explicit read-only synthetic world before summary imports."""
     service_root = service_root.resolve()
-    isolated = ("service.config.quarantine", "service.inference.omlx_client",
+    isolated = ("service.publication_authority", "service.config.quarantine", "service.inference.omlx_client",
                 "service.inference.attributed_transport", "service.inference.local_peer",
                 "service.tools.email_tools", "service.tools.imessage_tools",
                 "service.tools.message_digest", "service.assistant.brief")
