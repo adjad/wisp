@@ -1,0 +1,36 @@
+# Calendar reads and writes. Writes forbid the destructive neighbours.
+- id: cal_tomorrow
+  prompt: "What's on my calendar tomorrow?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  forbid: [add_calendar_event, cancel_event, clear_reminders]
+  answer: {contains_any: [Patel, dentist]}
+- id: cal_sunday
+  prompt: "do i have anything on sunday"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: [Sam, brunch, Nopa]}
+  trap: "2026-10-13 eval: get_upcoming/get_past_events x10 on this exact prompt"
+- id: cal_last_week
+  prompt: "What did I have on my calendar last week?"
+  expect: [{tool: get_past_events}]
+  answer: {contains_any: [Lakeside, car service, offsite]}
+- id: cal_free_tomorrow
+  prompt: "When am I free tomorrow?"
+  expect: [{any_of: [find_free_time, get_upcoming]}]
+  answer: {contains_any: ["9:00", "5:00", "11:30", "3:30"]}
+- id: cal_add_lunch
+  prompt: "Add lunch with Priya on Friday at 12:30"
+  expect:
+    - tool: add_calendar_event
+      args: {title: {icontains: priya}, when_iso: {weekday: friday}}
+  forbid: [send_email, send_message, cancel_event]
+- id: cal_pencil_in
+  prompt: "pencil in coffee with Jordan next wednesday at 9"
+  expect:
+    - tool: add_calendar_event
+      args: {title: {icontains: coffee}, when_iso: {regex: "T0?9:00"}}
+  forbid: [send_email, send_message]
+  trap: "2026-10-13 eval: get_upcoming x3 instead of adding the event"
+- id: cal_cancel_yoga
+  prompt: "Cancel my yoga class"
+  expect: [{tool: cancel_event, args: {title: {icontains: yoga}}}]
+  forbid: [clear_reminders, clear_past_reminders]

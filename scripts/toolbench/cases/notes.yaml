@@ -1,0 +1,12 @@
+- id: notes_latte
+  prompt: "Search my notes for latte"
+  expect: [{tool: search_notes, args: {query: {icontains: latte}}}]
+  answer: {contains_any: [oat, espresso]}
+- id: notes_gift_sam
+  prompt: "what gift ideas did I write down for Sam?"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: [kettle, pour-over]}
+- id: notes_create_groceries
+  prompt: "Make a note called Groceries with eggs, spinach and coffee"
+  expect: [{tool: create_note, args: {title: {icontains: groceries}}}]
+  forbid: [append_note]

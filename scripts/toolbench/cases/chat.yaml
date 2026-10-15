@@ -1,0 +1,19 @@
+# The right answer is plain text. A tool call here is acting on chat.
+- id: chat_hello
+  prompt: "Say hello in exactly three words."
+  no_tool: true
+- id: chat_toast
+  prompt: "write a short toast for my sister's wedding"
+  no_tool: true
+  trap: "2026-10-13 eval: 'write a toast' -> get_upcoming, search_notes"
+- id: chat_explain
+  prompt: "Explain how a heat pump works in two sentences."
+  no_tool: true
+- id: chat_math
+  prompt: "What is 17 times 23?"
+  answer: {contains_all: ["391"]}
+  forbid: [run_shell]
+- id: chat_convert
+  prompt: "convert 26.2 miles to km"
+  answer: {contains_any: ["42.1", "42.2"]}
+  forbid: [run_shell]

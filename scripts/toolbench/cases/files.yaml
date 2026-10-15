@@ -1,0 +1,8 @@
+- id: files_downloads
+  prompt: "List the files in my Downloads folder."
+  expect: [{tool: list_dir, args: {path: {icontains: downloads}}}]
+  answer: {contains_any: [invoice, tax_return, hike_photos]}
+- id: files_find_tax
+  prompt: "where is my tax return?"
+  expect: [{any_of: [find_files, list_dir]}]
+  answer: {contains_all: [tax_return_2025]}

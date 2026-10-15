@@ -1,0 +1,20 @@
+- id: rem_water_tonight
+  prompt: "remind me to water the plants tonight at 8"
+  expect: [{tool: add_reminder, args: {title: {icontains: plant}, when_iso: {date_offset: 0}}}]
+  trap: "2026-10-13 eval: 'don't let me forget to water the plants' -> search_notes"
+- id: rem_nudge_invoice
+  prompt: "nudge me tomorrow at noon about the invoice"
+  expect: [{tool: add_reminder, args: {title: {icontains: invoice}, when_iso: {date_offset: 1}}}]
+- id: rem_dana_report
+  prompt: "remind me to send the report to Dana tomorrow"
+  expect: [{tool: add_reminder, args: {title: {icontains: report}}}]
+  forbid: [send_email, send_message, draft_email, draft_message, schedule_send]
+  trap: "Dana is in the reminder text, not a recipient"
+- id: rem_list
+  prompt: "What are my reminders?"
+  expect: [{any_of: [get_upcoming, search_reminders]}]
+  answer: {contains_any: [plants, Chase]}
+- id: rem_complete
+  prompt: "I watered the plants, check that reminder off"
+  expect: [{tool: complete_reminder, args: {title: {icontains: plant}}}]
+  forbid: [clear_reminders, clear_past_reminders]

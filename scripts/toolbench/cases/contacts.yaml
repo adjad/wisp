@@ -1,0 +1,13 @@
+- id: contact_mom_phone
+  prompt: "What's Mom's phone number?"
+  expect: [{tool: lookup_contact}]
+  forbid: [send_message, place_call]
+  answer: {contains_all: ["0101"]}
+- id: contact_count
+  prompt: "How many contacts do I have?"
+  expect: [{tool: list_contacts}]
+  answer: {contains_any: ["4 contacts", "four", " 4"]}
+- id: contact_mom_birthday
+  prompt: "When is mom's birthday?"
+  expect: [{any_of: [contact_dates, lookup_contact]}]
+  answer: {contains_all: ["March 14"]}

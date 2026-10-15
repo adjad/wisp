@@ -1,0 +1,26 @@
+# Multi-turn: the prompt only makes sense with the earlier turn.
+- id: fu_and_tomorrow
+  history:
+    - user: "what's on my calendar today?"
+      assistant: "Nothing on your calendar today — just a reminder to water the plants at 6pm."
+      tools: get_upcoming
+  prompt: "and tmrw?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: [Patel, dentist]}
+  trap: "2026-10-13 eval: get_upcoming x9"
+- id: fu_second_email
+  history:
+    - user: "show my unread emails"
+      assistant: "1. Mom — Flight details\n2. Chase — Your statement is ready\n3. Priya Shah — Q3 budget review moved"
+      tools: view_emails
+  prompt: "open the second one"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["1,284.17"]}
+- id: fu_reply_mom
+  history:
+    - user: "read mom's latest email"
+      assistant: "Mom says her flight lands Friday at 6:40pm at SFO, terminal 2."
+      tools: view_emails
+  prompt: "reply saying I'll be there"
+  expect: [{any_of: [reply_to_email, draft_email]}]
+  forbid: [send_message, forward_email]

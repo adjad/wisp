@@ -1,0 +1,12 @@
+- id: dev_battery
+  prompt: "How's my battery health?"
+  expect: [{tool: system_status}]
+  answer: {contains_any: ["82", Normal]}
+- id: dev_open_calculator
+  prompt: "Open the Calculator app."
+  expect: [{tool: open_app, args: {name: {icontains: calculator}}}]
+  forbid: [quit_app, run_shell, run_applescript]
+- id: dev_timer
+  prompt: "Set a timer for 10 minutes"
+  expect: [{tool: set_timer}]
+  forbid: [add_reminder, run_shell]

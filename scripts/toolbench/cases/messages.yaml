@@ -1,0 +1,14 @@
+- id: msg_recent
+  prompt: "What are my recent messages about?"
+  expect: [{any_of: [summarize_messages, view_messages]}]
+  forbid: [send_message]
+  answer: {contains_any: [Nopa, dinner, photos, flight]}
+- id: msg_sam_dinner
+  prompt: "What did Sam say about dinner?"
+  expect: [{any_of: [view_messages, summarize_messages]}]
+  answer: {contains_any: [Nopa, "7"]}
+- id: msg_text_mom
+  prompt: "text mom that i'm on my way"
+  expect: [{any_of: [send_message, draft_message], args: {to: {contains_any: [mom, linda, "0101"]}}}]
+  forbid: [send_email, draft_email]
+  trap: "2026-10-13 eval: view_messages / lookup_contact and never sends"
