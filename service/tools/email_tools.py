@@ -203,7 +203,10 @@ _external_accounts: dict[str, dict] = {}
 _EXTERNAL_MAX_AGE = 300.0
 _native_headers_at = 0.0
 _native_source = ""
-_native_raw_at = 0.0
+# Only a cache predating both provenance files may inherit display-file age.
+# A modern composed cache (even with a fresh mtime) cannot attest its source.
+_native_raw_at = (_raw_emails_at if _cache_file_exists("email_mail_raw") is False
+                  and _cache_file_exists("email_sources") is False else 0.0)
 _native_history_at = 0.0
 
 
@@ -216,7 +219,7 @@ def _restore_email_sources() -> None:
         saved = json.loads(cache_store.load("email_sources") or "{}")
         _native_headers_at = float(saved.get("native_headers_at") or 0)
         _native_source = str(saved.get("native_source") or "")
-        _native_raw_at = float(saved.get("native_raw_at") or 0)
+        _native_raw_at = float(saved.get("native_raw_at") or _native_raw_at)
         _native_history_at = float(saved.get("native_history_at") or 0)
         for address, item in saved.get("accounts", {}).items():
             if isinstance(item, dict) and "@" in address:
@@ -228,6 +231,8 @@ def _restore_email_sources() -> None:
 
 def _save_email_sources() -> bool:
     import json
+    if _cache_file_exists("email_sources") is None:
+        return False
     saved = json.dumps({
         "native_headers_at": _native_headers_at, "native_source": _native_source,
         "native_raw_at": _native_raw_at, "native_history_at": _native_history_at,
@@ -238,12 +243,10 @@ def _save_email_sources() -> bool:
 
 def _persist_composed_sources(*, purge: bool = True) -> None:
     """Keep native provenance durable before writing any merged display data."""
-    global _native_raw_at
     if purge:
         _purge_raw_if_expired(persist=False)
-    # Preserve the original legacy body's age during the one-time migration.
-    if _swift_raw and not _native_raw_at:
-        _native_raw_at = _raw_emails_at
+    if _cache_file_exists("email_sources") is None:
+        return  # Read-only staged adapters cannot persist private provenance.
     durable = True
     for part, data in (("headers", _swift_headers), ("history", _swift_history),
                        ("raw", _swift_raw), ("identity", "\n".join(_swift_identity))):
@@ -869,30 +872,39 @@ async def ensure_reply_source(timeout_seconds: float = 2.5) -> None:
 
 
 def _purge_raw_if_expired(*, persist: bool = True) -> None:
-    """Drop the raw cache once it's more than a week old (see _RAW_TTL_SECONDS).
-    Checked lazily on read rather than via a background task: same effect, no
-    extra scheduler needed."""
+    """Admit bodies only from source snapshots with a valid original receipt.
+
+    The composed display store is never evidence of ownership or receipt age.
+    Rebuild it on every read, including when no source needed expiration.
+    """
     global _raw_emails, _raw_emails_at, _raw_mail_snapshot, _swift_raw, _native_raw_at
     changed = False
     with _raw_snapshot_lock:
         now = time.time()
+        def receipt(value) -> float:
+            try:
+                stamp = float(value or 0)
+            except (ValueError, TypeError):
+                return 0.0
+            return stamp if stamp > 0 and 0 <= now - stamp <= _RAW_TTL_SECONDS else 0.0
+
         for item in _external_accounts.values():
-            if item.get("raw") is not None and now - float(item.get("raw_at") or 0) > _RAW_TTL_SECONDS:
+            if item.get("raw") is not None and not receipt(item.get("raw_at")):
                 item["raw"] = None
                 item["raw_at"] = 0
                 changed = True
-        native_stamp = _native_raw_at or _raw_emails_at
-        if _swift_raw and (not native_stamp or now - native_stamp > _RAW_TTL_SECONDS):
+        if _swift_raw and not receipt(_native_raw_at):
             _swift_raw = ""
             _native_raw_at = 0.0
             _raw_mail_snapshot = None
             changed = True
-        if changed:
-            _recompose_all()
-        if _raw_emails_at and now - _raw_emails_at > _RAW_TTL_SECONDS:
-            _raw_emails = ""
-            _raw_emails_at = 0.0
-            _raw_mail_snapshot = None
+        admitted = _compose_source(_swift_raw, "raw")
+        changed = changed or admitted != _raw_emails
+        _raw_emails = admitted
+        stamps = [receipt(_native_raw_at)] if _swift_raw else []
+        stamps.extend(receipt(item.get("raw_at")) for item in _external_accounts.values()
+                      if item.get("raw") is not None)
+        _raw_emails_at = max(stamps, default=0.0)
         if changed and persist:
             _persist_composed_sources(purge=False)
 

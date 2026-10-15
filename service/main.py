@@ -2868,10 +2868,25 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/assistant/gmail/disconnect")
-async def gmail_disconnect(body: dict[str, Any] | None = None) -> dict[str, Any]:
+async def gmail_disconnect(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_native_google_removal(request)
     from service import gmail_source
-    await gmail_source.disconnect(str((body or {}).get("account") or ""))
+    await gmail_source.disconnect(str(body.get("account") or ""))
     return {"ok": True}
+
+
+def _require_native_google_removal(request: Request) -> None:
+    """Removal is an explicit native-app JSON action, never a browser form.
+
+    Reject every browser Origin, including null, without trusting Host to
+    manufacture an allowed origin. Native URLSession requests have no Origin.
+    JSON also prevents a browser simple request from reaching the mutation.
+    """
+    if "origin" in request.headers:
+        raise HTTPException(status_code=403, detail="Use Wisp Settings to remove this integration")
+    media = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    if media != "application/json":
+        raise HTTPException(status_code=415, detail="Content-Type must be application/json")
 
 
 @app.post("/assistant/sync/notes")
@@ -3209,7 +3224,8 @@ async def google_workspace_enable(body: dict[str, Any]) -> dict[str, Any]:
 
 
 @app.post("/assistant/google/workspace/disable")
-async def google_workspace_disable() -> dict[str, Any]:
+async def google_workspace_disable(request: Request, body: dict[str, Any]) -> dict[str, Any]:
+    _require_native_google_removal(request)
     from service import google_workspace
     return await google_workspace.disable()
 

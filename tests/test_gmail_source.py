@@ -437,6 +437,96 @@ print('safe staged import')
         result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
         self.assertIn("safe staged import", result.stdout)
 
+    def test_registered_cold_unknown_body_is_rejected_in_staged_and_filesystem_cache(self):
+        code = r'''
+import asyncio, importlib, json, sys, types
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from service.tools import email_tools as E, cache_store
+from service import gmail_source as G
+from service.tools.registry import REGISTRY, run_tool
+import service.tools
+body = 'UNKNOWN_ORIGIN_BODY_MUST_NOT_BE_DISPLAYED'
+values = {'email_headers': '', 'email_history': '',
+          'email_raw': '\x01'.join(['1700000000', 'U', 'iCloud', 'native-id',
+                        'Fixture <fixture@example.test>', 'me@icloud.com',
+                        'Unknown body', '<unknown@example.test>', body]),
+          'identity_emails': 'old-provider@example.test'}
+loads = []
+if sys.argv[1] == 'staged':
+    adapter = types.ModuleType('service.tools.cache_store')
+    def load(name):
+        loads.append(name)
+        assert name in values, 'Private adapter read: ' + name
+        return values[name]
+    def save(*args):
+        raise AssertionError('Read-only adapter attempted persistence')
+    adapter.load, adapter.save = load, save
+    sys.modules[adapter.__name__] = adapter
+    service.tools.cache_store = adapter
+else:
+    cache_store.CACHE_DIR = Path(sys.argv[2])
+    for name, value in values.items():
+        cache_store.save(name, value)
+    cache_store.save('email_sources', '{}')
+    assert not cache_store._path('email_mail_raw').exists()
+E = importlib.reload(E)
+assert E._swift_raw == '' and E._native_raw_at == 0
+assert body in E._raw_emails
+original_ensure = E._ensure_email_cache
+async def ensure(*, want_raw=False):
+    await original_ensure(want_raw=want_raw, timeout_seconds=0)
+with patch.object(G, 'connected_accounts', return_value={}), \
+     patch.object(G, 'refresh_if_stale', AsyncMock()), \
+     patch('service.assistant.hub.hub.publish', AsyncMock()) as publish, \
+     patch.object(E, '_ensure_email_cache', ensure):
+    output = asyncio.run(run_tool(REGISTRY['view_emails'], {'query': 'Unknown body'}))
+assert body not in output and E._raw_emails == ''
+assert 'No raw email content cached' in output
+publish.assert_awaited_once_with({'type': 'sync_emails_now'})
+if sys.argv[1] == 'staged':
+    assert set(loads) == set(values), loads
+else:
+    assert cache_store.load('email_raw') == ''
+print('unknown body rejected')
+'''
+        for mode in ("staged", "filesystem"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="cold-body-") as folder:
+                result = subprocess.run([sys.executable, "-c", code, mode, folder],
+                                        check=True, capture_output=True, text=True)
+                self.assertIn("unknown body rejected", result.stdout)
+
+    def test_raw_admission_uses_each_source_receipt_without_renewal(self):
+        for expired in ("native", "provider"):
+            with self.subTest(expired=expired):
+                E.cache_raw_emails(G.raw_record(msg("native", "Native retained body"), "iCloud"))
+                self.publish(raw=G.raw_record(msg("provider", "Provider retained body"), ME))
+                original = time.time() - 3600
+                E._native_raw_at = original
+                E._external_accounts[ME]["raw_at"] = original
+                if expired == "native":
+                    E._native_raw_at -= 8 * 86400
+                else:
+                    E._external_accounts[ME]["raw_at"] -= 8 * 86400
+                E._raw_emails_at = time.time() - 20 * 86400
+                E._purge_raw_if_expired()
+                self.assertNotIn("Native retained body" if expired == "native" else "Provider retained body", E._raw_emails)
+                self.assertIn("Provider retained body" if expired == "native" else "Native retained body", E._raw_emails)
+                self.assertEqual(E._raw_emails_at, original)
+
+    def test_modern_native_body_without_valid_receipt_cannot_inherit_display_age(self):
+        for invalid in (0, time.time() + 3600, "invalid", float("nan")):
+            with self.subTest(receipt=invalid):
+                E.cache_raw_emails(G.raw_record(msg("native", "Unknown receipt body"), "iCloud"))
+                self.publish(raw=G.raw_record(msg("provider", "Unknown provider receipt body"), ME))
+                E._native_raw_at = invalid
+                E._external_accounts[ME]["raw_at"] = invalid
+                E._raw_emails_at = time.time()
+                self.assertFalse(E._raw_ready())
+                self.assertEqual(E._raw_emails, "")
+                self.assertEqual(E._native_raw_at, 0)
+                self.assertIsNone(E._external_accounts[ME]["raw"])
+
     def test_registered_dated_unread_uses_current_identity_before_date_filter(self):
         self.accounts[ME]["mail_account_id"] = "native-A"
         E.configure_external_accounts(self.accounts)
@@ -668,6 +758,57 @@ print('safe staged import')
             await callbacks[index](reader, writer)
             return writer
         return start, callback
+
+    def test_integration_removal_requires_explicit_native_json_before_any_effect(self):
+        import ast
+        from typing import Any
+        from fastapi import FastAPI, HTTPException, Request
+        from service import google_workspace as workspace
+        source = Path(__file__).resolve().parents[1] / "service/main.py"
+        names = {"gmail_disconnect", "google_workspace_disable", "_require_native_google_removal"}
+        nodes = [n for n in ast.parse(source.read_text()).body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
+        self.assertEqual(len(nodes), 3)
+        app = FastAPI()
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), str(source), "exec"),
+             {"app": app, "Any": Any, "Request": Request, "HTTPException": HTTPException})
+        async def run():
+            with patch.object(G, "disconnect", AsyncMock()) as disconnect, \
+                 patch.object(workspace, "disable", AsyncMock(return_value={"ok": True})) as disable:
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                                             base_url="http://127.0.0.1:8765") as client:
+                    invalid = [
+                        {},
+                        {"content": "account=", "headers": {"Content-Type": "application/x-www-form-urlencoded"}},
+                        {"content": "--fixture--", "headers": {"Content-Type": "multipart/form-data; boundary=fixture"}},
+                        {"content": "{}", "headers": {"Content-Type": "text/plain"}},
+                        {"content": "{}"},
+                        {"content": "{", "headers": {"Content-Type": "application/json"}},
+                        {"json": []}, {"content": "null", "headers": {"Content-Type": "application/json"}},
+                        {"json": "account"}, {"json": 1},
+                    ]
+                    for origin in ("https://foreign.example.test", "null", "http://127.0.0.1:8765", ""):
+                        invalid.append({"json": {}, "headers": {"Origin": origin}})
+                    invalid.append({"json": {}, "headers": {
+                        "Host": "forged.example.test", "Origin": "http://forged.example.test"}})
+                    for path in ("/assistant/gmail/disconnect", "/assistant/google/workspace/disable"):
+                        for request in invalid:
+                            with self.subTest(path=path, request=request):
+                                response = await client.post(path, **request)
+                                self.assertIn(response.status_code, (403, 415, 422), response.text)
+                                disconnect.assert_not_awaited()
+                                disable.assert_not_awaited()
+                    response = await client.post("/assistant/gmail/disconnect", json={"account": ME})
+                    self.assertEqual(response.json(), {"ok": True})
+                    disconnect.assert_awaited_once_with(ME)
+                    disconnect.reset_mock()
+                    response = await client.post("/assistant/gmail/disconnect", json={})
+                    self.assertEqual(response.json(), {"ok": True})
+                    disconnect.assert_awaited_once_with("")
+                    response = await client.post("/assistant/google/workspace/disable", json={})
+                    self.assertEqual(response.json(), {"ok": True})
+                    disable.assert_awaited_once_with()
+        asyncio.run(run())
 
     def test_atomic_connect_receipts_distinguish_superseding_http_flow(self):
         import ast
