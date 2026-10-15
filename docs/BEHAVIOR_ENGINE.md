@@ -365,21 +365,20 @@ Endpoints added: `GET /behavior/history`, `GET /behavior/history/{source}/next`,
 `POST /behavior/history/{source}/control` with `pause|resume|restart`.
 Supported native history sources are `calendar` and `completed_reminders` only.
 
-Email, foreground/screen time, website sessions, Focus/DND availability, away/sleep/
-lock intervals and next-activity/day planning remain the accepted next stages.
-Their collectors are not activated by this milestone. Those sources must keep
-observed, reported, scheduled and inferred evidence distinct and expose coverage.
+That history milestone established the Calendar/completed-reminder evidence
+foundation. The subsequent opt-in activity, cached source interpretation and
+Today integration are described below. Foreground app time, idle/inactive/screen-
+sleep observations and website point visits have bounded collectors; website
+dwell sessions and Focus/DND availability remain unsupported. Historical app or
+device activity from before collection began cannot be recovered.
 
-The next planning stage should learn probable availability and ask only when a
-concrete decision conflicts with a sufficiently supported, recent routine. For
-example, recurring Monday 10am–noon away intervals plus a new 11am meeting may
-justify: "You are usually away from this computer then. Keep this meeting, find
-another time, or treat that routine as wrong?" Away from a computer does not prove
-the user is busy, in class, at an event, or unable to join remotely. Suggestions
-must be correctable, use coverage and uncertainty, respect prompt budgets, and
-retain normal authorization for any real rescheduling. Do not add repeated
-per-event attendance or completion questions. This milestone establishes the
-evidence foundation; it does not activate that collector or planning workflow.
+The planning stage keeps observations, reported claims, schedules and inferences
+distinct. Recurring computer inactivity leaves human availability unknown;
+active-app support is still only evidence for a tentative occupied hypothesis.
+Today shows correctable busy or possible-time-away guidance without repeated
+attendance check-ins. A concrete conflict can justify a user decision under the
+ordinary planning/action flow; no inference authorizes rescheduling or proves
+attendance, completion, willingness to meet or what happened away from the Mac.
 
 ### Availability research and next-stage requirements
 
@@ -499,8 +498,16 @@ expired analysis or dates outside the seven-day horizon withhold the hint. Sourc
 bodies and visits are discarded after this comparison, including on failure;
 neither analysis nor source receipt time is renewed.
 
-The day-planner consumer still requires its separate kind, label and advisory
-placement integration. This producer alone does not reserve away time in a plan.
+The default day-planner consumer now reads this public version-1 contract and
+renders the two kinds separately. Occupied hypotheses retain the tentative busy
+label. Computer-inactivity hints appear as `behavior_away` blocks titled “Possible
+time away”, with explicitly unknown availability and accurate ignore wording.
+Calendar commitments and explicit pins take precedence. The planner first fits
+authored flexible work, then places away guidance only in remaining gaps; local
+copies retain those fitting placements without changing saved pins, tasks or
+revisions. Source suggestions can remain unscheduled behind authored work. Both
+kinds support a stable, day-specific ignore correction. These blocks are transient
+plan advice, never saved events, tasks, sends or new action authority.
 
 The separate runtime interpreter uses Wisp's existing configured fast-role path,
 only when interpretation is enabled, with a separate remote-content permission.
@@ -566,6 +573,12 @@ guarded model request. Passages are bounded by characters **and UTF-8 bytes**;
 long records have a resumable overlapping passage cursor. The interpreter reports
 which records actually fit its input budget, and only those checkpoints advance.
 There is still at most one attempt per five minutes, so large seeds are gradual.
+Anchor selection balances sources and least-attempted records; tied records use
+stable IDs, without a newest-first or importance guarantee. A single source with
+2,000 short eligible records needs 500 four-anchor passes, roughly 42 hours at
+that cadence before contention, retries or longer passages. Initial metadata
+indexing and useful early hypotheses do not mean semantic analysis of the whole
+publication has finished. This beta does not promise an instant full-history scan.
 
 The metadata index has a 10,000-record cap; each supplied source is bounded to
 2,000 records and an independent byte budget. A publication can be much smaller
@@ -606,11 +619,20 @@ Saved progress is never permission to reuse a stale/restored/revoked source. Wit
 no persistent body copy, a record missing from the current bounded source view
 cannot be retrieved as usable historical memory.
 
-The daily-workspace owner owns final slot fitting and ordinary planning-choice
-feedback. This producer does not implement a second planner, automatic external
-calendar changes, sends or attendance check-ins. Consumer integration and source/model
-runtime validation remain separate gates; source compilation and fake tests are not
-claims that a real user's day has been planned from these new signals.
+The daily workspace owns slot fitting and ordinary planning-choice feedback;
+the behavior producer supplies evidence-bound hypotheses. The integrated path
+does not add automatic external calendar changes, sends or attendance check-ins.
+The committed availability regression copies the actual coherent checkout's core
+into private storage and exercises its public wrapper, default consumer, cached
+source APIs, miner, Seed/SourceIndex, Store and planner. Its 54 controls cover
+original analysis versus current proof, source-specific TTLs, source/query zones
+and DST, both window kinds, authored work/pins/corrections, revocation, cancellation
+and private Forget/restart. Explicit external boundaries are inert and process,
+network and user-data effects are guarded. Normal app startup, real native readers,
+real model/provider execution and a real user's history or day remain untested by
+those synthetic controls. Compile-only checks never launch Wisp. The combined
+candidate still needs its own exact-commit full tests, CI and independent reviews;
+component checks do not qualify an assembled beta.
 
 ### Inference limits and action authority
 
