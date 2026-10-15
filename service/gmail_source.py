@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import time
+import weakref
 from contextvars import ContextVar
 from email.header import decode_header, make_header
 from email.utils import parseaddr
@@ -67,6 +68,30 @@ _context: ContextVar[tuple[str, dict, int] | None] = ContextVar("gmail_account",
 _pending_flow: dict | None = None
 _flow_generation = 0
 _authorization: dict = {"state": "idle", "generation": 0, "error": ""}
+_behavior_history_sources: weakref.WeakSet = weakref.WeakSet()
+
+
+def new_behavior_history(*, admission, limits, clock=time.time, monotonic=time.monotonic):
+    """Explicit disabled provider core; trusted admission/transport wiring is caller-owned.
+
+    No production caller starts this provider. It never borrows the interactive
+    recent-body cache or weakens native raw_email_snapshot completeness.
+    """
+    from service.gmail_behavior_history import HistoryProvider
+    source = HistoryProvider(admission=admission, limits=limits, clock=clock, monotonic=monotonic)
+    _behavior_history_sources.add(source)
+    return source
+
+
+def invalidate_behavior_history(reason="invalidated") -> None:
+    """Synchronous withdrawal for consent/Forget/account-set lifecycle adapters.
+
+    Account-set revisions bind every job, so changing even one connection
+    conservatively withdraws all registered history leases before any await.
+    Native Mail fallback and interactive caches follow their existing lifecycle.
+    """
+    for source in list(_behavior_history_sources):
+        source.invalidate(reason)
 
 
 # --- config / token -----------------------------------------------------------
@@ -571,6 +596,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
                                for other, item in accounts.items()):
         raise GmailError("That Mail account is already linked to a different Google account")
+    invalidate_behavior_history()
     _epochs[email] = _epochs.get(email, 0) + 1
     _access.pop(email, None)
     _last.pop(email, None)
@@ -588,6 +614,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
 async def disconnect(account: str = "") -> None:
     """Invalidate before awaiting revocation; a late fetch cannot restore access."""
     global _pending_flow, _flow_generation
+    invalidate_behavior_history("disconnected")
     from service.tools import email_tools as E
     _flow_generation += 1
     _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")

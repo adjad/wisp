@@ -62,6 +62,80 @@ class GmailSource(unittest.TestCase):
     def publish(self, account=ME, **parts):
         E.cache_external_emails(account=account, **parts)
 
+    def history_provider(self):
+        import weakref
+        from service import gmail_behavior_history as H
+        self.enterContext(patch.object(G, "_behavior_history_sources", weakref.WeakSet()))
+        scope = H.HistoryScope(100, 190, "inbox", 100)
+        admission = H.Admission(H.AccountIdentity("gmail", "configured-opaque-id", "connection-1", "set-1"),
+                                1, 1, True, True, True, scope.digest)
+        provider = G.new_behavior_history(admission=lambda: admission,
+            limits=H.Limits(80000, 8000000, 32000000, 100), clock=lambda: 200, monotonic=lambda: 0)
+        self.addCleanup(provider.invalidate)
+        return provider, scope
+
+    def test_provider_history_fetches_beyond_recent_fifty_without_native_complete_promotion(self):
+        from test_gmail_behavior_history import FakeHTTP, message, token
+        provider, scope = self.history_provider()
+        http = FakeHTTP(pages=[{"messages": [{"id": str(i)} for i in range(55)]}],
+                        messages={str(i): message(str(i)) for i in range(55)})
+        provider.control("start", scope=scope)
+        async def run():
+            from service.gmail_behavior_history import StepBudget
+            for _ in range(11):
+                await provider.step(http=http, token=token, budget=StepBudget(100, 5, 6, 400000, 30))
+        with patch.object(E, "_raw_mail_snapshot", None), patch.object(E, "_email_available", True):
+            asyncio.run(run())
+            snapshot = E.provider_history_snapshot(provider)
+            self.assertEqual(len(snapshot.records), 55)
+            self.assertIsNone(E.raw_email_snapshot())
+            calls = len(http.calls)
+            same = E.provider_history_snapshot(provider, expected_receipt=snapshot.receipt,
+                                                required_refs=(snapshot.records[0].ref,))
+            self.assertEqual(same.records[0], snapshot.records[0])
+            self.assertEqual(len(http.calls), calls)
+        self.assertEqual(G.RAW_LIMIT, 50)
+        self.assertEqual(len(http.calls), 56)
+        self.assertEqual((E._raw_emails, E._swift_raw), ("", ""))
+
+    def test_provider_disconnect_withdraws_history_before_revocation_await(self):
+        from test_gmail_behavior_history import FakeHTTP, token
+        from service.gmail_behavior_history import StepBudget
+        provider, scope = self.history_provider()
+        provider.control("start", scope=scope)
+        asyncio.run(provider.step(http=FakeHTTP(), token=token, budget=StepBudget(100, 5, 6, 400000, 30)))
+        receipt = provider.snapshot().receipt
+        async def revoke(*args, **kwargs):
+            self.assertIsNone(E.provider_history_snapshot(provider, expected_receipt=receipt))
+            self.assertEqual(provider.status()["state"], "disconnected")
+        with patch.object(G.httpx, "AsyncClient") as client:
+            client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=revoke)
+            asyncio.run(G.disconnect(ME))
+            client.return_value.__aenter__.return_value.post.assert_awaited_once()
+
+    def test_history_forget_synchronously_withdraws_without_affecting_native_fallback(self):
+        from test_gmail_behavior_history import FakeHTTP, token
+        from service.gmail_behavior_history import StepBudget
+        provider, scope = self.history_provider()
+        native = header("iCloud", "Native fallback preserved", native_id="native-cloud")
+        E.cache_emails(native)
+        provider.control("start", scope=scope)
+        asyncio.run(provider.step(http=FakeHTTP(), token=token, budget=StepBudget(100, 5, 6, 400000, 30)))
+        G.invalidate_behavior_history("forgotten")
+        self.assertIsNone(E.provider_history_snapshot(provider))
+        self.assertIn("Native fallback preserved", E._headers)
+        self.assertEqual(E._swift_headers, native)
+
+    def test_history_factory_and_snapshot_do_not_activate_or_require_gmail_presence(self):
+        from service.gmail_behavior_history import Limits
+        self.accounts.clear()
+        provider = G.new_behavior_history(admission=lambda: None, limits=Limits(100, 100, 100, 100))
+        self.addCleanup(provider.invalidate)
+        self.assertFalse(G.is_connected())
+        self.assertEqual(provider.status()["state"], "off")
+        self.assertIsNone(E.provider_history_snapshot(provider))
+        self.assertIsNone(E.provider_history_snapshot({"email_consent": True}))
+
     def test_header_roundtrip_and_plain_body(self):
         self.publish(headers=header(subject="Hi | there"))
         self.assertEqual(E._parse_header_records(E._headers)[0]["subject"], "Hi | there")

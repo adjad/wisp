@@ -810,6 +810,19 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
                             hashlib.sha256(raw.encode("utf-8")).hexdigest())
 
 
+def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=()):
+    """Pure, explicit provider evidence API; separate from native completeness.
+
+    No implicit source construction, cache warming, token refresh or network.
+    Callers must recheck the same receipt and record refs before using results.
+    Native-only raw_email_snapshot retains its existing admission contract.
+    """
+    from service.gmail_behavior_history import HistoryProvider
+    if not isinstance(provider, HistoryProvider):
+        return None
+    return provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+
+
 def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSnapshot | None:
     """Read once for coherent provenance, or None for ineligible evidence.
 
