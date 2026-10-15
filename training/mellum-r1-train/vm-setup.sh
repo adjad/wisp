@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 # Wisp Mellum R1 training VM setup (one NVIDIA A6000 48GB, Ubuntu + CUDA driver, Jupyter).
 # Paste into the VM's setup-script field. Runs once at boot, usually as root.
 #  - installs torch + transformers (>=5.8.1, which has Mellum built in) + peft into ~/wisp/venv (uv, Python 3.11)
@@ -60,7 +60,7 @@ print("base at", p)
 PY
 
 cat > "$WORK/run.sh" <<'RUN'
-#!/usr/bin/env bash
+#!/bin/bash
 # Mellum R1 steps. Usage from a notebook cell: !~/wisp/run.sh <step>
 # In order: check  unpack  preflight  smoke  train  status  merge  package
 set -uo pipefail
