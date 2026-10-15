@@ -32,6 +32,8 @@ final class URLSession {
     }
 }
 
+// WISP_NATIVE_CAPTURE_ORDER
+
 // WISP_NATIVE_TRANSPORT
 
 final class FakeHistory {
@@ -53,6 +55,7 @@ final class Reader {
     let dbReader: FakeDB
     let headerLimit = 200
     let identityScript = "identity"
+    private let identityCaptureOrder = MailIdentityCaptureOrder()
     var events: [String] = []
     var runningChecks = 0
     var inFlight = false

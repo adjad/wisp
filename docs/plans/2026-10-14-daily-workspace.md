@@ -218,3 +218,55 @@ Final delivery requires a clean current-main-reconciled pushed candidate,
 exact-SHA mechanical checks, required CI and distinct independent review plus
 synthetic specialist QA. No app launch, real model/provider/native access,
 communications, installed-app replacement or deployment is part of validation.
+
+Independent review of `cda9008d` found that the raw and history readers also
+observe account inventory. A raw empty-account observation updated legacy
+content caches without revoking the feature identity. The sealed reproduction
+reached the fake send bridge with old consent, so that candidate remains held.
+The single-owner successor extends the same capture boundary to all three
+native entry points, including early exits and helper-controlled interruption.
+Raw and history content failures alone do not mean an account disappeared:
+a known nonempty inventory may recover only through a genuine complete live
+address read. Closed, unknown, duplicate or empty inventory cannot preserve old
+sending eligibility. A closure actually observed during a loop stays failed
+for that capture even if Mail reopens before settlement. Cached index/history
+content cannot verify identity.
+
+Begin response admission tracks server session/generation and local request
+ordering without holding a lock during native work. An older acknowledgement
+cannot begin new work after a newer acknowledged capture; a restarted backend
+can issue a new-session generation one, while retired-session responses remain
+ineligible. Each terminal request retains its own original capture. Server
+ordering, original read-start expiry, account-set epochs, final consent and
+claim-once admission remain authoritative. Existing scan coalescing and history
+yielding remain separate from identity generations.
+
+`NativeMailObserverFlowChecks.swift` executes byte-exact production header,
+raw and history callers, capture/order logic, inventory parser, posting methods,
+history helpers and pure history state with inert script/database/URLSession
+collaborators. Its request traces are replayed through the actual legacy and
+feature API handlers, real private legacy cache functions, real Decision/Tier
+policy and final scoped admission into a fake bridge. Controls cover empty and
+failed inventory, closures between accounts/batches and reopening, body-only
+failures, index/commit supersession, malformed/capped/deferred history, failed
+begin acknowledgement and retry, cross-entry delayed receipts, reordered begin
+responses, restart, expiry, duplicate completion, account-set changes retaining
+the original self address, continuous fresh same-account receipts, and yielding
+to a pending raw scan. The original 17-branch header fixture is preserved.
+All runtime state is disposable; this does not qualify actual native readers,
+real inbox delivery or a running Wisp app. The behavior adapter remains separate.
+
+
+The static ordering helper also caught a cold-start compatibility gap in the
+working repair: a newer raw capture could suppress a delayed initial header
+acknowledgement. The source-bound cold-start control first failed on that
+working snapshot. Within the existing claimed header invocation, a valid but
+superseded same-session acknowledgement may now reacquire one fresh capture.
+Both requests share the original eight-second deadline; no new scan or timer
+is created. Failure, malformed response, retired session or another
+supersession releases the claim without native work. Existing later header
+invocations can recover readiness. Raw/history captures do not reacquire.
+The fixture checks successful readiness recovery, bounded failure paths,
+subsequent recovery, no third header begin, and real final fake admission.
+This bounds a startup interleaving; it is not a universal starvation guarantee
+under unbounded competing requests.

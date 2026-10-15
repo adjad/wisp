@@ -632,7 +632,8 @@ def native_identity_flows(tmp_path_factory):
     transport = (root / "app/Sources/WispApp/MailHistoryMerge.swift").read_text()
     transport = transport[transport.index("enum MailHistoryTransport {"):transport.index("/// Serializes local")]
     fixture = (root / "tests/NativeMailIdentityFlowChecks.swift").read_text()
-    fixture = fixture.replace("// WISP_NATIVE_TRANSPORT", transport).replace(
+    capture_order = source[source.index("private final class MailIdentityCaptureOrder {"):source.index("// Reads recent Mail.app inbox headers.")]
+    fixture = fixture.replace("// WISP_NATIVE_CAPTURE_ORDER", capture_order).replace("// WISP_NATIVE_TRANSPORT", transport).replace(
         "// WISP_NATIVE_READER_METHODS", flow + posts)
     generated = scratch / "IdentityFlow.swift"
     generated.write_text(fixture)
@@ -716,3 +717,346 @@ def test_native_capture_transport_failure_aborts_before_observing_accounts(nativ
     for case in ("bad_http", "bad_json"):
         flow = native_identity_flows[case]
         assert not flow["events"] and len(flow["requests"]) == 1
+
+
+@pytest.fixture(scope="module")
+def native_observer_flows(tmp_path_factory):
+    """Bind the actual three callers, inventory parser and pure history state.
+
+    No AppKit, AppleScript, real database, process launch or network is linked.
+    Only this inspected Foundation fixture executable is run.
+    """
+    import json
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    scratch = tmp_path_factory.mktemp("native-observer-flow")
+    source = (root / "app/Sources/WispApp/MailReader.swift").read_text()
+    history = (root / "app/Sources/WispApp/MailHistoryMerge.swift").read_text()
+    labels = (root / "app/Sources/WispApp/MailDBReader.swift").read_text()
+    pieces = {
+        "// WISP_OBSERVER_PURE_HISTORY": history,
+        "// WISP_OBSERVER_CAPTURE_ORDER": source[source.index("private final class MailIdentityCaptureOrder {"):source.index("// Reads recent Mail.app inbox headers.")],
+        "// WISP_OBSERVER_SCAN_BOOKKEEPING": source[source.index("    private func claimScan("):source.index("    // MARK: - Helpers")],
+        "// WISP_OBSERVER_ACCOUNT_NAMES": source[source.index("    private typealias AccountEnumeration"):source.index("    /// Leading epoch-seconds field")],
+        "// WISP_OBSERVER_SCAN_METHODS": source[source.index("    func sync() {"):source.index("    /// One retry chain at a time")],
+        "// WISP_OBSERVER_HISTORY_HELPERS": source[source.index("    private func syncHistoryFromIndex("):source.index("    // MARK: - Posting")],
+        "// WISP_OBSERVER_POST_METHODS": source[source.index("    private func postEmptyAccounts("):source.rindex("\n}")],
+        "// WISP_OBSERVER_ACCOUNT_PARSER": labels[labels.index("    static func valid("):labels.index("    static func stored()")],
+    }
+    fixture = (root / "tests/NativeMailObserverFlowChecks.swift").read_text()
+    for marker, body in pieces.items():
+        assert fixture.count(marker) == 1
+        fixture = fixture.replace(marker, body)
+    generated = scratch / "ObserverFlow.swift"
+    generated.write_text(fixture)
+    executable = scratch / "observer-flow"
+    compiled = subprocess.run(["swiftc", "-parse-as-library", "-swift-version", "5",
+        "-module-cache-path", str(scratch / "module-cache"), str(generated), "-o", str(executable)],
+        capture_output=True, text=True, timeout=90)
+    assert compiled.returncode == 0, compiled.stderr
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    return {row["case"]: row for row in json.loads(result.stdout)}
+
+
+@pytest.fixture
+def observer_replay(store, monkeypatch, tmp_path):
+    """Exact native requests -> real private legacy caches + feature admission.
+
+    The ASGI handler is extracted without importing/starting service.main.
+    Policy uses the real Decision/Tier implementation; only its private grant
+    lookup, remote-profile lookup, subscriber and final native bridge are inert.
+    """
+    import ast
+    import importlib
+    from pathlib import Path
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service import safety
+    from service.safety import policy
+    from service.inference import remote_policy
+    from service.assistant import daily_workspace_api as api, day_plan_email as delivery, outbox
+    from service.tools import email_tools as email, cache_store
+    hub = importlib.import_module("service.assistant.hub")
+    clock = [at(hour=7, minute=55)]
+    for name, value in {"_email_store": store, "_identity": SelfIdentity(), "_identity_started": 0,
+        "_identity_epoch": "observer-initial-epoch", "_identity_previous": (), "_identity_settled": False,
+        "_identity_generation": 0, "_identity_capture_at": 0,
+        "_identity_session": "native-observer-session-one"}.items():
+        monkeypatch.setattr(api, name, value)
+    monkeypatch.setattr(api.time, "time", lambda: clock[0])
+    monkeypatch.setattr(api, "email_contents", lambda *args: dict(ready=True, subject="Plan", body="Body"))
+    monkeypatch.setattr(hub, "hub", SimpleNamespace(has_subscribers=True))
+    monkeypatch.setattr(policy, "_READ_ONLY", False)
+    monkeypatch.setattr(safety.grants, "check", lambda *args: None)
+    monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: None)
+    cache_dir = tmp_path / "private-legacy-cache"
+    monkeypatch.setattr(cache_store, "CACHE_DIR", cache_dir)
+    for name in ("_headers", "_history", "_raw_emails", "_swift_headers", "_swift_history", "_swift_raw",
+                 "_email_reason", "_email_read_source", "_native_source"):
+        monkeypatch.setattr(email, name, "")
+    for name in ("_headers_at", "_history_at", "_raw_emails_at", "_headers_sync_generation", "_native_headers_at",
+                 "_native_history_at", "_native_raw_at", "_raw_snapshot_generation"):
+        monkeypatch.setattr(email, name, 0)
+    for name, value in {"_external_accounts": {}, "_swift_identity": [], "_identity_emails": [],
+        "_email_available": None, "_email_sync_pending": False, "_raw_reference_scan": {}, "_raw_mail_snapshot": None}.items():
+        monkeypatch.setattr(email, name, value)
+    email.cache_emails("original headers")
+    email.cache_history_headers("original history")
+    email.cache_raw_emails("original body", coverage={"accounts": ["A"], "failed_accounts": [], "complete": True})
+    email.cache_identity(["me@example.test"])
+    email.set_email_availability(True, read_source="mail_app")
+    assert cache_store.load("email_headers") == "original headers"
+    assert cache_store.load("email_history") == "original history"
+    assert cache_store.load("email_raw") == "original body"
+    calls = []
+    async def bridge(operation, payload):
+        calls.append((operation, payload))
+        return dict(ok=True, status="succeeded")
+    monkeypatch.setattr(outbox, "request", bridge)
+    path = Path(__file__).resolve().parents[1] / "service/main.py"
+    node = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "assistant_sync_emails")
+    node.decorator_list = []
+    namespace = {"Any": object}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    app = FastAPI(); app.include_router(api.router)
+    app.post("/assistant/sync/emails")(namespace["assistant_sync_emails"])
+    api.publish_identity(["me@example.test"], available=True, complete=True, started_at=clock[0], now=clock[0])
+    epoch = api.self_identity().epoch
+    preview = store.preview(dict(recipient="me@example.test", timezone=ZONE, minute=480),
+                            "Plan", "Body", api.self_identity(), now=clock[0])
+    assert delivery._policy_allows("me@example.test")
+    store.enable(preview["token"], api.self_identity(), confirmed=True, now=clock[0], policy_allows=delivery._policy_allows)
+    clock[0] = at(hour=7, minute=59)
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
+        def replay(request, *, expected=200):
+            if "restart" in request:
+                api._identity_session = request["restart"]
+                api._identity_generation = 0
+                api._identity_capture_at = api._identity_started = 0
+                api._identity = SelfIdentity()
+                api._identity_previous = ()
+                api._identity_epoch = "observer-restarted-epoch"
+                api._identity_settled = False
+                return
+            route = request["path"].replace("/assistant/today/workspace", "/workspace")
+            response = client.post(route, **({"json": request["body"]} if request["body"] is not None else {}))
+            assert response.status_code == expected, response.text
+            if route.endswith("/identity/begin"):
+                assert response.json() == dict(session=request["reply_session"], generation=request["reply_generation"])
+            return response.json()
+        def due(now=None):
+            clock[0] = at(hour=8) if now is None else now
+            return asyncio.run(deliver_due(store, identity=api.self_identity, compose=api.email_contents,
+                sender=delivery._approved_native_submission, policy_allows=delivery._policy_allows, clock=lambda: clock[0]))
+        yield SimpleNamespace(replay=replay, due=due, clock=clock, calls=calls, store=store, api=api,
+                              email=email, cache=cache_store, epoch=epoch)
+
+
+_OBSERVER_CASES = [lane + "_" + case for lane in ("raw", "history") for case in (
+    "success", "empty", "duplicate", "unavailable", "closed", "closed_mid", "closed_reopened", "closed_before_identity", "closed_between",
+    "body_failed", "partial", "two", "identity_failed", "identity_malformed", "identity_empty", "changed", "expanded")]
+_OBSERVER_CASES += ["history_" + case for case in ("closed_batch", "index", "index_superseded", "enumeration_superseded", "walk_malformed", "capped", "commit_superseded", "deferred")]
+
+
+@pytest.mark.parametrize("case", _OBSERVER_CASES)
+def test_all_native_observers_revoke_or_preserve_through_real_cache_and_admission(native_observer_flows, observer_replay, case):
+    h = observer_replay
+    flow = native_observer_flows[case]
+    native_case = case.split("_", 1)[1]
+    blocked = native_case in {"empty", "duplicate", "unavailable", "closed", "closed_mid", "closed_reopened",
+        "closed_before_identity", "closed_between", "closed_batch", "identity_failed", "identity_malformed", "identity_empty", "changed", "expanded"}
+    for request in flow["requests"]:
+        h.replay(request)
+        if request["path"].endswith("/identity/begin"):
+            assert h.due() == "waiting_for_self_identity" and not h.calls
+            assert h.store.occurrence("2026-10-14") is None
+    assert h.email._headers == h.cache.load("email_headers") == "original headers"
+    if case == "raw_empty":
+        assert h.email._history == h.cache.load("email_history") == ""
+        assert h.email._raw_emails == h.cache.load("email_raw") == ""
+        assert h.email._raw_reference_scan["complete"] is True
+    if case in {"raw_closed", "raw_duplicate", "raw_unavailable", "raw_body_failed"}:
+        assert h.email._raw_emails == h.cache.load("email_raw") == "original body"
+        assert h.email._raw_reference_scan["complete"] is False
+    if case == "raw_partial":
+        assert flow["content_calls"] == 2 and h.email._raw_reference_scan["accounts"] == ["A"]
+        assert h.email._raw_reference_scan["failed_accounts"] == ["B"] and h.email._raw_reference_scan["complete"] is False
+        assert h.email._raw_emails == h.cache.load("email_raw") == "synthetic body"
+    expected_history = {
+        "history_body_failed": "C3\x01A\x01one\x01failed\n",
+        "history_partial": "C3\x01B\x01two\x01failed\n",
+        "history_walk_malformed": "C3\x01A\x01one\x01failed\n",
+        "history_capped": "C2\x01A\x01one\x010\x010\x011\n",
+        "history_deferred": "original history",
+        "history_index": "trusted synthetic history",
+    }
+    if case in expected_history:
+        assert h.email._history == h.cache.load("email_history") == expected_history[case]
+    if case in {"history_enumeration_superseded", "history_index_superseded", "history_commit_superseded"}:
+        assert h.email._history == h.cache.load("email_history") == "original history"
+    if case.startswith("history_"):
+        assert h.email._raw_emails == h.cache.load("email_raw") == "original body"
+    result = h.due()
+    assert len(h.calls) == int(not blocked)
+    assert h.api.self_identity().epoch == h.epoch if not blocked else h.api.self_identity().epoch != h.epoch
+    if not blocked:
+        assert result == "submitted" and h.store.occurrence("2026-10-14")["status"] == "submitted"
+        h.due(at(hour=8, minute=1))
+        assert len(h.calls) == 1
+    else:
+        assert result == ("connected_accounts_changed_review_settings" if native_case == "expanded" else "waiting_for_self_identity")
+        assert h.store.occurrence("2026-10-14") is None
+
+
+@pytest.mark.parametrize("lane", ["raw", "history"])
+@pytest.mark.parametrize("failure", ["bad_http", "bad_json", "transport"])
+def test_each_observer_releases_failed_begin_and_can_retry(native_observer_flows, lane, failure):
+    flow = native_observer_flows[lane + "_" + failure]
+    assert sum(r["path"].endswith("/identity/begin") for r in flow["requests"]) == 2
+    assert sum(r["path"].endswith("/email/identity") for r in flow["requests"]) == 1
+    assert flow["events"].count("accounts") == 1
+
+
+@pytest.mark.parametrize("newer", ["headers", "history"])
+def test_reordered_native_begin_does_not_observe_or_override_newer_accounts(native_observer_flows, observer_replay, newer):
+    h = observer_replay
+    flow = native_observer_flows["reordered_begin_" + newer]
+    assert "raw" not in flow["events"]
+    for request in flow["requests"]:
+        h.replay(request)
+    assert h.api.self_identity().epoch == h.epoch
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("older,newer", [("headers", "raw"), ("raw", "history"), ("history", "headers")])
+@pytest.mark.parametrize("first,second", [("success", "empty"), ("empty", "success"), ("closed", "success"), ("success", "closed")])
+def test_delayed_cross_observer_terminal_cannot_change_current_receipt(native_observer_flows, observer_replay, older, newer, first, second):
+    h = observer_replay
+    flow = native_observer_flows[f"delayed_{older}_{newer}_{first}_{second}"]
+    last = None
+    for request in flow["requests"]:
+        last = h.replay(request)
+    assert last == dict(ok=False, superseded=True)
+    current = h.api.self_identity()
+    assert current.complete is (second != "closed")
+    assert current.addresses == (("me@example.test",) if second == "success" else ())
+    # A pending older empty/failure was never accepted; it must not rotate the
+    # epoch of the newer genuinely complete same-account positive.
+    assert (current.epoch == h.epoch) is (second == "success")
+    assert h.due() == ("submitted" if second == "success" else "waiting_for_self_identity")
+    assert len(h.calls) == int(second == "success")
+
+
+def test_restart_and_late_old_session_ack_require_new_consent(native_observer_flows, observer_replay):
+    h = observer_replay
+    for request in native_observer_flows["restart_reordered"]["requests"]:
+        h.replay(request)
+    assert h.api.self_identity().complete and h.api.self_identity().addresses == ("me@example.test",)
+    assert h.api.self_identity().epoch != h.epoch
+    assert h.due() == "connected_accounts_changed_review_settings" and not h.calls
+
+
+@pytest.mark.parametrize("case", ["raw_success", "history_index"])
+@pytest.mark.parametrize("age", [601, -1])
+def test_actual_native_completion_keeps_original_capture_age(native_observer_flows, observer_replay, case, age):
+    h = observer_replay
+    for request in native_observer_flows[case]["requests"]:
+        terminal = request["path"].endswith("/email/identity")
+        if terminal:
+            h.clock[0] = at(hour=7, minute=59) + age
+        h.replay(request, expected=422 if terminal else 200)
+    assert h.due(at(hour=8, minute=10)) == "waiting_for_self_identity" and not h.calls
+    assert h.store.occurrence("2026-10-14") is None
+
+
+def test_history_preflight_does_not_claim_to_observe_accounts(native_observer_flows):
+    flow = native_observer_flows["history_preflight"]
+    assert not flow["requests"] and not flow["events"] and flow["retries"] == 1
+
+
+@pytest.mark.parametrize("case", ["raw_success", "history_index"])
+def test_duplicate_actual_terminal_does_not_renew_its_read_start(native_observer_flows, observer_replay, case):
+    h = observer_replay
+    terminal = None
+    for request in native_observer_flows[case]["requests"]:
+        h.replay(request)
+        if request["path"].endswith("/email/identity"):
+            terminal = request
+    original = h.api.self_identity()
+    h.clock[0] = at(hour=8, minute=5)
+    h.replay(terminal)
+    assert h.api.self_identity() == original and original.received_at == at(hour=7, minute=59)
+    assert h.due(at(hour=8, minute=10)) == "waiting_for_self_identity" and not h.calls
+
+
+@pytest.mark.parametrize("case", ["raw_success", "history_index"])
+def test_fresh_native_proof_after_continuity_expiry_needs_new_review(native_observer_flows, observer_replay, case):
+    h = observer_replay
+    h.clock[0] = at(hour=8, minute=6)
+    for request in native_observer_flows[case]["requests"]:
+        h.replay(request)
+    assert h.api.self_identity().complete and h.api.self_identity().epoch != h.epoch
+    assert h.due(at(hour=8, minute=6)) == "connected_accounts_changed_review_settings" and not h.calls
+
+
+def test_continuous_actual_native_refreshes_preserve_reviewed_account_epoch(native_observer_flows, observer_replay):
+    h = observer_replay
+    times = iter([at(hour=7, minute=56), at(hour=8, minute=5), at(hour=8, minute=14)])
+    for request in native_observer_flows["continuous_fresh"]["requests"]:
+        if request["path"].endswith("/identity/begin"):
+            h.clock[0] = next(times)
+        h.replay(request)
+    assert h.api.self_identity().received_at == at(hour=8, minute=14)
+    assert h.api.self_identity().epoch == h.epoch
+    assert h.due(at(hour=8, minute=15)) == "submitted" and len(h.calls) == 1
+
+
+def test_actual_history_walk_yields_without_self_deadlock(native_observer_flows, observer_replay):
+    h = observer_replay
+    flow = native_observer_flows["history_yields_to_raw"]
+    assert "history" in flow["events"] and "raw" not in flow["events"]
+    for request in flow["requests"]:
+        h.replay(request)
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("retry", ["success", "bad_http", "bad_json", "transport", "cancel", "cancel_data"])
+def test_cold_start_header_reacquires_superseded_capture_once(native_observer_flows, retry):
+    flow = native_observer_flows["cold_header_retry_" + retry]
+    assert sum(request["path"].endswith("/identity/begin") for request in flow["requests"]) == 3
+    assert flow["events"].count("accounts") == (2 if retry == "success" else 1)
+    assert ("headers" in flow["events"]) is (retry == "success")
+
+
+def test_reacquired_cold_header_capture_reaches_real_final_admission(native_observer_flows, observer_replay):
+    h = observer_replay
+    for request in native_observer_flows["cold_header_retry_success"]["requests"]:
+        h.replay(request)
+    assert h.email._headers == h.cache.load("email_headers") == "synthetic header"
+    assert h.api.self_identity().epoch == h.epoch
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("retry", ["bad_http", "bad_json", "transport", "cancel", "cancel_data", "foreign", "superseded", "expired", "late_ack"])
+def test_header_retry_is_bounded_and_future_invocation_can_recover(native_observer_flows, retry):
+    failed = native_observer_flows["cold_header_retry_" + retry]
+    recovered = native_observer_flows["cold_header_recover_" + retry]
+    assert "headers" not in failed["events"]
+    assert recovered["events"].count("headers") == 1
+    expected = 2 if retry == "expired" else (4 if retry in {"foreign", "superseded"} else 3)
+    assert sum(request.get("path", "").endswith("/identity/begin") for request in failed["requests"]) == expected
+    assert sum(request.get("path", "").endswith("/identity/begin") for request in recovered["requests"]) == expected + 1
+
+
+@pytest.mark.parametrize("retry", ["bad_http", "bad_json", "transport", "cancel", "cancel_data", "late_ack"])
+def test_failed_header_reacquisition_does_not_leave_raw_proof_eligible(native_observer_flows, observer_replay, retry):
+    h = observer_replay
+    for request in native_observer_flows["cold_header_retry_" + retry]["requests"]:
+        h.replay(request)
+    assert h.email._headers == h.cache.load("email_headers") == "original headers"
+    assert h.due() == "waiting_for_self_identity" and not h.calls
+    assert h.store.occurrence("2026-10-14") is None
