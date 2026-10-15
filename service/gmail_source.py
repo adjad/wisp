@@ -66,6 +66,7 @@ _locks: dict[tuple[str, str], asyncio.Lock] = {}
 _context: ContextVar[tuple[str, dict, int] | None] = ContextVar("gmail_account", default=None)
 _pending_flow: dict | None = None
 _flow_generation = 0
+_authorization: dict = {"state": "idle", "generation": 0, "error": ""}
 
 
 # --- config / token -----------------------------------------------------------
@@ -117,7 +118,8 @@ def status() -> dict:
     return {"connected": bool(rows), "email": first.get("email", ""), "accounts": rows,
             "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
             "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
-            "authorizing": _pending_flow is not None, "mail_accounts": E.native_email_accounts()}
+            "authorizing": _pending_flow is not None, "authorization": dict(_authorization),
+            "mail_accounts": E.native_email_accounts()}
 
 
 def _current() -> tuple[str, dict, int]:
@@ -136,9 +138,13 @@ def _still_connected() -> bool:
 
 async def _access_token(http: httpx.AsyncClient) -> str:
     email, cfg, _ = _current()
+    if not _still_connected():
+        raise GmailError("Gmail connection changed during refresh")
     cached = _access.get(email, {})
     if cached.get("token") and time.time() < cached.get("expires", 0) - 60:
         return cached["token"]
+    if not _still_connected():
+        raise GmailError("Gmail connection changed during refresh")
     response = await http.post(TOKEN_URL, data={
         "client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
         "refresh_token": cfg.get("refresh_token", ""), "grant_type": "refresh_token"})
@@ -160,9 +166,15 @@ class GmailError(RuntimeError):
 
 async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = None) -> dict:
     for attempt in range(4):
+        if not _still_connected():
+            raise GmailError("Gmail connection changed during refresh")
         token = await _access_token(http)
+        if not _still_connected():
+            raise GmailError("Gmail connection changed during refresh")
         response = await http.get(f"{API}/{path}", params=params,
                                   headers={"Authorization": f"Bearer {token}"})
+        if not _still_connected():
+            raise GmailError("Gmail connection changed during refresh")
         if response.status_code == 401:
             _access.pop(_current()[0], None)
             continue
@@ -443,6 +455,7 @@ async def begin_authorization(client_id: str, client_secret: str = "",
     global _pending_flow, _flow_generation
     _flow_generation += 1
     generation = _flow_generation
+    _authorization.update(state="authorizing", generation=generation, error="", email="")
     if _pending_flow:
         _pending_flow["server"].close()
     verifier = secrets.token_urlsafe(64)
@@ -452,7 +465,7 @@ async def begin_authorization(client_id: str, client_secret: str = "",
     done = asyncio.Event()
 
     async def handle(reader, writer):
-        global _pending_flow
+        global _pending_flow, _flow_generation
         message = "Wisp could not connect Gmail."
         try:
             line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
@@ -460,15 +473,24 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             if query.get("state", [""])[0] != state or generation != _flow_generation:
                 return writer.close()  # Unrelated/stale callbacks cannot consume the active flow.
             if query.get("code"):
-                await _finish(client_id, client_secret, query["code"][0], verifier, redirect,
-                              generation=generation, mail_account_id=mail_account_id)
+                email = await _finish(client_id, client_secret, query["code"][0], verifier, redirect,
+                                      generation=generation, mail_account_id=mail_account_id)
+                if generation != _flow_generation:
+                    return writer.close()
+                _authorization.update(state="connected", email=email, error="")
+                _flow_generation += 1
                 message = "Gmail connected. You can close this tab and return to Wisp."
             elif query:
-                message = f"Gmail was not connected ({query.get('error', ['denied'])[0]})."
+                message = "Google sign-in was declined or cancelled. Your existing accounts were kept."
+                _authorization.update(state="failed", error=message)
+                _flow_generation += 1
             else:
                 return writer.close()
         except Exception as exc:  # noqa: BLE001
             message = f"Wisp could not connect Gmail: {str(exc)[:120]}"
+            if generation == _flow_generation:
+                _authorization.update(state="failed", error=message)
+                _flow_generation += 1
         body = f"<html><body style='font-family:system-ui;padding:3em'>{html.escape(message)}</body></html>".encode()
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n"
                      b"Content-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body)
@@ -482,11 +504,13 @@ async def begin_authorization(client_id: str, client_secret: str = "",
     _pending_flow = {"server": server}
 
     async def expire() -> None:
-        global _pending_flow
+        global _pending_flow, _flow_generation
         try:
             await asyncio.wait_for(done.wait(), timeout)
         except asyncio.TimeoutError:
-            pass
+            if generation == _flow_generation:
+                _authorization.update(state="failed", error="Google sign-in timed out. Try again.")
+                _flow_generation += 1
         server.close()
         if _pending_flow and _pending_flow["server"] is server:
             _pending_flow = None
@@ -499,12 +523,16 @@ async def begin_authorization(client_id: str, client_secret: str = "",
 
 
 async def _finish(client_id, client_secret, code, verifier, redirect, *,
-                  generation: int, mail_account_id: str = "") -> None:
+                  generation: int, mail_account_id: str = "") -> str | None:
+    if generation != _flow_generation:
+        return None
     async with httpx.AsyncClient(timeout=30) as http:
         response = await http.post(TOKEN_URL, data={
             "client_id": client_id, "client_secret": client_secret, "code": code,
             "code_verifier": verifier, "redirect_uri": redirect,
             "grant_type": "authorization_code"})
+        if generation != _flow_generation:
+            return None
         body = response.json()
         if response.status_code != 200 or not body.get("refresh_token"):
             why = body.get("error_description") or body.get("error") or response.status_code
@@ -542,6 +570,7 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
     # Header-only first connection; bodies remain on demand.
     asyncio.create_task(sync(("headers",)))
+    return email
 
 
 async def disconnect(account: str = "") -> None:
@@ -549,6 +578,7 @@ async def disconnect(account: str = "") -> None:
     global _pending_flow, _flow_generation
     from service.tools import email_tools as E
     _flow_generation += 1
+    _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
     if _pending_flow:
         _pending_flow["server"].close()
         _pending_flow = None

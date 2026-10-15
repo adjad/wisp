@@ -53,14 +53,54 @@ class GoogleWorkspace(unittest.TestCase):
 
     def test_reenable_without_secret_keeps_saved_secret_and_status_hides_it(self):
         asyncio.run(G.enable("id", "S3cr3t-value", "a@b.c"))
-        asyncio.run(G.enable("id2", "", "a@b.c"))
+        asyncio.run(G.enable("id", "", "a@b.c"))
         env = json.loads(self.cfg.read_text())["servers"]["google_workspace"]["env"]
         self.assertEqual((env["GOOGLE_OAUTH_CLIENT_ID"], env["GOOGLE_OAUTH_CLIENT_SECRET"]),
-                         ("id2", "S3cr3t-value"))
+                         ("id", "S3cr3t-value"))
         with patch.object(G.manager, "status", return_value={"servers": []}):
             st = G.status()
         self.assertTrue(st["has_secret"])
         self.assertNotIn("S3cr3t-value", json.dumps(st))
+
+    def test_changed_client_without_matching_secret_preserves_valid_configuration(self):
+        asyncio.run(G.enable("client-A", "secret-A", "a@b.c"))
+        before = self.cfg.read_bytes()
+        result = asyncio.run(G.enable("client-B", "", "a@b.c"))
+        self.assertFalse(result["ok"])
+        self.assertEqual(self.cfg.read_bytes(), before)
+        self.assertEqual(G.saved_credentials(), ("client-A", "secret-A"))
+        self.assertTrue(asyncio.run(G.enable("client-B", "secret-B", "a@b.c"))["ok"])
+        self.assertEqual(G.saved_credentials(), ("client-B", "secret-B"))
+
+    def test_existing_temporary_file_is_private_before_credentials_are_written(self):
+        temp = self.cfg.with_suffix(".tmp")
+        temp.write_text("old")
+        temp.chmod(0o644)
+        G._write_file({"servers": {"existing": {"env": {"SECRET": "synthetic"}}}})
+        self.assertEqual(self.cfg.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(json.loads(self.cfg.read_text())["servers"]["existing"]["env"]["SECRET"], "synthetic")
+
+    def test_symlink_temporary_file_is_refused_without_touching_target(self):
+        target = self.cfg.with_name("unrelated")
+        target.write_text("untouched")
+        temp = self.cfg.with_suffix(".tmp")
+        temp.unlink(missing_ok=True)
+        temp.symlink_to(target)
+        try:
+            with self.assertRaises(OSError):
+                G._write_file({"secret": "must not be written"})
+            self.assertEqual(target.read_text(), "untouched")
+        finally:
+            temp.unlink(missing_ok=True)
+
+    def test_write_failure_retains_existing_configuration_and_cleans_staging(self):
+        self.cfg.write_text('{"servers":{"unrelated":{}}}')
+        before = self.cfg.read_bytes()
+        with patch.object(G.json, "dump", side_effect=OSError("synthetic disk failure")):
+            with self.assertRaises(OSError):
+                G._write_file({"secret": "synthetic"})
+        self.assertEqual(self.cfg.read_bytes(), before)
+        self.assertFalse(self.cfg.with_suffix(".tmp").exists())
 
     def test_enable_needs_uv_and_a_client_id(self):
         with patch.object(G, "find_uvx", return_value=""):

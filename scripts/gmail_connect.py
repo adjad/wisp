@@ -28,9 +28,10 @@ async def main() -> None:
         await asyncio.sleep(1)
         info = gmail_source.status()
         if not info["authorizing"]:
-            if not info["connected"]:
-                sys.exit("Google sign-in did not finish. Try again.")
-            print("Connected accounts:", ", ".join(row["email"] for row in info["accounts"]))
+            authorization = info.get("authorization", {})
+            if authorization.get("state") != "connected":
+                sys.exit(authorization.get("error") or "Google sign-in did not finish. Try again.")
+            print("Connected:", authorization["email"])
             await asyncio.sleep(2)
             return
     sys.exit("Timed out waiting for consent.")

@@ -92,7 +92,7 @@ def sources_snapshot(source_ids: Iterable[str] = DAILY_SOURCE_IDS) -> dict:
             "Waiting for current data; intermediate progress unavailable" if state == "syncing" else
             "Turned off" if state == "disabled" else
             (source.get("reason") or "Could not read this source"))
-        if source.get("warning"):
+        if source.get("warning") and state == "ready":
             source["progress_detail"] = "Cached email available; some accounts are stale or unverified"
         elif source["id"] == "email" and state == "ready":
             source["progress_detail"] = "Email refreshed" if source.get("fresh") else "Email data read"

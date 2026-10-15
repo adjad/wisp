@@ -62,10 +62,15 @@ def _read_file() -> dict:
 def _write_file(data: dict) -> None:
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as handle:
-        json.dump(data, handle, indent=2)
-    tmp.replace(CONFIG_PATH)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    try:
+        with os.fdopen(fd, "w") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            json.dump(data, handle, indent=2)
+        tmp.replace(CONFIG_PATH)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _entry() -> dict:
@@ -106,7 +111,10 @@ async def enable(client_id: str, client_secret: str, email: str, tier: str = "co
     data = _read_file()
     servers = data.get("servers") if isinstance(data.get("servers"), dict) else {}
     previous = _entry().get("env") or {}
-    secret = client_secret.strip() or previous.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
+    same_client = previous.get("GOOGLE_OAUTH_CLIENT_ID") == client_id
+    secret = client_secret.strip() or (previous.get("GOOGLE_OAUTH_CLIENT_SECRET", "") if same_client else "")
+    if not secret:
+        return {"ok": False, "error": "Enter the client secret that belongs to this OAuth client ID. Saved settings were kept."}
     env = {"GOOGLE_OAUTH_CLIENT_ID": client_id}
     if secret:
         env["GOOGLE_OAUTH_CLIENT_SECRET"] = secret

@@ -161,6 +161,7 @@ _client = None
 def cache_emails(headers: str) -> None:
     global _headers, _headers_at, _headers_sync_generation, _swift_headers
     _swift_headers = headers or ""
+    _refresh_native_bindings()
     _headers = _compose_source(_swift_headers, "headers")
     cache_store.save("email_mail_headers", _swift_headers)
     _headers_at = time.time()
@@ -200,7 +201,8 @@ def _restore_email_sources() -> None:
         _native_history_at = float(saved.get("native_history_at") or 0)
         for address, item in saved.get("accounts", {}).items():
             if isinstance(item, dict) and "@" in address:
-                _external_accounts[address] = {**item, "verified": False}
+                _external_accounts[address] = {**item, "verified": False,
+                    "headers_verified": False, "history_verified": False, "raw_verified": False}
     except (ValueError, TypeError, AttributeError):
         _external_accounts = {}
 
@@ -215,7 +217,7 @@ def _save_email_sources() -> None:
 
 def native_email_accounts() -> list[dict]:
     found = {}
-    for row in _parse_header_records(_swift_headers):
+    for row in _parse_header_records(_swift_headers) + _scan_marker_accounts(_swift_headers):
         key = row.get("account_id") or row["account"]
         if key:
             found[key] = {"id": key, "name": row["account"]}
@@ -236,6 +238,7 @@ def configure_external_accounts(accounts: dict[str, dict]) -> None:
                          "headers": old.get("headers"), "history": old.get("history"),
                          "raw": old.get("raw")}
     _external_accounts = selected
+    _refresh_native_bindings()
     _recompose_all()
     cache_identity(_swift_identity)
     _save_email_sources()
@@ -258,9 +261,16 @@ def _source_identity(record: str, *, raw: bool = False) -> tuple[str, str]:
     return ((fields[2] if fields[1] in ("R", "U") else fields[1]), "") if len(fields) > 2 else ("", "")
 
 
+def _refresh_native_bindings() -> None:
+    observed = native_email_accounts()
+    for address, item in _external_accounts.items():
+        exact = {row["id"] for row in observed if row["name"].casefold() == address}
+        item["inferred_native_id"] = next(iter(exact)) if len(exact) == 1 else ""
+
+
 def _covered_source(label: str, native_id: str, address: str, item: dict) -> bool:
-    bound = item.get("mail_account_id")
-    return (label.casefold() == address or native_id.casefold() == address or
+    bound = item.get("mail_account_id") or item.get("inferred_native_id")
+    return (not native_id and label.casefold() == address or native_id.casefold() == address or
             bool(bound and native_id == bound))
 
 
@@ -268,7 +278,7 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
     if item.get(part) is None:
         return False
     stamp = float(item.get(part + "_at") or 0)
-    if item.get("verified") and not item.get(part + "_error") and 0 <= time.time() - stamp <= _EXTERNAL_MAX_AGE:
+    if item.get(part + "_verified") and not item.get(part + "_error") and 0 <= time.time() - stamp <= _EXTERNAL_MAX_AGE:
         return True
     # A successful later native read is a better fallback than a failed provider
     # snapshot. Its server freshness is still disclosed separately.
@@ -331,6 +341,7 @@ def cache_external_emails(*, account: str, headers: str | None = None,
             item[part] = data
             item[part + "_at"] = now
             item[part + "_error"] = ""
+            item[part + "_verified"] = True
     if headers is not None:
         item["verified"] = True
         _headers_at = now
@@ -350,13 +361,15 @@ def cache_external_emails(*, account: str, headers: str | None = None,
 def external_email_error(account: str, part: str, reason: str) -> None:
     if account in _external_accounts:
         _external_accounts[account][part + "_error"] = reason
+        _recompose_all()
         _save_email_sources()
+        cache_store.save("email_" + part, {"headers": _headers, "history": _history, "raw": _raw_emails}[part])
 
 
 def _external_fresh() -> bool:
     now = time.time()
     return bool(_external_accounts) and all(
-        item.get("verified") and not item.get("headers_error") and
+        item.get("headers_verified") and not item.get("headers_error") and
         0 <= now - float(item.get("headers_at") or 0) <= _EXTERNAL_MAX_AGE
         for item in _external_accounts.values())
 
@@ -425,7 +438,8 @@ def set_email_availability(available: bool, reason: str = "",
     if available and not syncing:
         _native_headers_at = time.time()
         _native_source = _email_read_source
-        _recompose_all()
+        if _external_accounts:
+            _recompose_all()
         _save_email_sources()
 
 
@@ -442,7 +456,9 @@ def _no_inbox_message() -> str:
         return (f"(Can't read Mail: {reason}. Grant Wisp access in System Settings ▸ "
                 "Privacy & Security ▸ Automation ▸ Wisp ▸ Mail, then try again.)")
     if _email_available is True:
-        # Sync worked, there's just nothing in the requested window.
+        # Local read completion cannot prove that the server inbox is empty.
+        if email_freshness_warning():
+            return "No emails found in the available cache; your current inbox could not be verified."
         return "No emails found."
     # Never synced yet — could be a just-launched race OR missing permission; don't
     # assert either. (Mail syncs within ~15s of launch; a retry usually resolves it.)
@@ -475,26 +491,35 @@ def email_sync_state() -> str:
 def email_source_details(account: str | None = None, *, part: str = "headers") -> list[dict]:
     now = time.time()
     result = []
-    q = _account_query(account) if account else ""
+    native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
+    native_rows = []
+    for record in native.split(_RAW_RS if part == "raw" else "\n"):
+        if record.strip():
+            label, native_id = _source_identity(record, raw=part == "raw")
+            native_rows.append({"account": label, "account_id": native_id})
+    if part == "history" and not native_rows:
+        native_rows = native_email_accounts()
+        native_rows = [{"account": r["name"], "account_id": r["id"]} for r in native_rows]
+    selected = _resolve_account_groups(account, native_rows)[0] if account else None
     for address, item in _external_accounts.items():
-        if q and q not in address and q not in str(item.get("mail_account_id", "")).casefold():
+        if selected is not None and _account_group(address, address) not in selected:
             continue
         stamp = float(item.get(part + "_at") or 0)
         error = str(item.get(part + "_error") or "")
-        fresh = bool(item.get("verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
+        fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
         result.append({"account": address, "source": "gmail", "fresh": fresh,
                        "last_success": stamp or None, "error": error,
                        "age_seconds": max(0, now - stamp) if stamp else None})
     observed = {}
-    for record in (_swift_raw.split(_RAW_RS) if part == "raw" else _swift_headers.splitlines()):
-        label, native_id = _source_identity(record, raw=part == "raw")
-        if not label or q and q not in label.casefold() and q not in native_id.casefold():
+    for row in native_rows:
+        label, native_id = row["account"], row["account_id"]
+        if not label or selected is not None and _account_group(label, native_id) not in selected:
             continue
         if any(_provider_selected(address, item, part) and _covered_source(label, native_id, address, item)
                for address, item in _external_accounts.items()):
             continue
         observed[native_id or label] = label
-    native_stamp = _native_raw_at if part == "raw" else _native_headers_at
+    native_stamp = {"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at)
     for label in observed.values():
         # Mail.app read completion still cannot prove a server fetch completed.
         result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
@@ -506,20 +531,46 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
     return result
 
 
+def external_recent_complete(address: str) -> bool:
+    item = _external_accounts.get(address, {})
+    if (not item.get("headers_verified") or item.get("headers_error") or
+            not 0 <= time.time() - float(item.get("headers_at") or 0) <= _EXTERNAL_MAX_AGE):
+        return False
+    headers = item.get("headers")
+    if headers == "":
+        return True
+    if headers is None:
+        return False
+    return any(line.split("\x01")[0] == "C2" and len(line.split("\x01")) == 6 and
+               line.split("\x01")[4:] == ["0", "0"] for line in headers.splitlines())
+
+
+def _range_history(start: float, end: float) -> list[dict]:
+    return [row for row in _parse_header_records(_history, snapshot="history")
+            if start <= row["ts"] < end and not any(external_recent_complete(address) and
+                _account_group(row["account"], row.get("account_id", "")) == _account_group(address, address)
+                for address in _external_accounts)]
+
+
+def _history_warning(account: str | None = None) -> str:
+    return email_freshness_warning(account, part="history")
+
+
 def email_freshness_warning(account: str | None = None, *, part: str = "headers") -> str:
     details = email_source_details(account, part=part)
     warnings = []
     for item in details:
-        if item["fresh"]:
+        if item["fresh"] or part == "history" and item["source"] == "gmail" and external_recent_complete(item["account"]):
             continue
         last = (datetime.fromtimestamp(item["last_success"]).strftime("%b %-d, %-I:%M %p")
                 if item["last_success"] else "unknown")
         if item["source"] == "gmail":
             reason = item["error"] or "a current Google refresh has not completed"
-            warnings.append(f"{item['account']}: Gmail cache is stale or unverified; last successful refresh {last}. {reason}.")
+            kind = "Gmail history cache" if part == "history" else "Gmail cache"
+            warnings.append(f"{item['account']}: {kind} is stale or unverified; last successful refresh {last}. {reason}.")
         else:
             warnings.append(f"{item['account']}: Email is from Mail’s local cache. Newer messages may be missing; "
-                            f"server freshness is unverified (last local read {last}). "
+                            f"server freshness is unverified (last local {'history ' if part == 'history' else ''}read {last}). "
                             "Connect this account in Settings ▸ Google to refresh with Mail closed, or open Mail and let it refresh.")
     # Preserve the native diagnostic for successful empty local-index scans, too.
     if not details and _email_read_source == "local_index":
@@ -544,6 +595,10 @@ def _disclose_mail_freshness(function):
         part = "raw" if function.__name__.startswith("view_email") else "headers"
         result = await function(*args, **kwargs)
         warning = email_freshness_warning(account, part=part) if account or part == "raw" else email_freshness_warning()
+        if function.__name__ in {"summarize_inbox_for_day", "summarize_inbox_for_period"}:
+            history_warning = _history_warning(account)
+            if history_warning and history_warning != warning:
+                warning = "\n".join(filter(None, (warning, history_warning)))
         return with_email_freshness_note(result, warning)
     return wrapped
 
@@ -1085,9 +1140,14 @@ def header_scan_coverage(rows: list[dict], *, raw_headers: str | None = None,
     labels: dict[str, str] = {}
     native: dict[str, tuple[int, int, bool]] = {}
     incomplete: dict[str, str] = {}
-    q = (_ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()) if account else ""
+    scoped_keys = None
+    if account:
+        extra = rows + (_parse_header_records(raw_headers) + _scan_marker_accounts(raw_headers)
+                        if raw_headers is not None else [])
+        scoped_keys, _ = _resolve_account_groups(account, extra)
     def selected(key: str, label: str) -> bool:
-        return key == "*" or not q or q in key.casefold() or q in label.casefold()
+        return (key == "*" or scoped_keys is None or _account_group(label, key) in scoped_keys or
+                key == label and _account_group(label, "") in scoped_keys)
     if raw_headers is None:
         entries = [(row.get("account_id") or row.get("account") or "unknown",
                     row.get("account") or "Mail") for row in rows]
@@ -1243,8 +1303,10 @@ async def _ensure_email_cache(*, want_raw: bool = False,
     """
     from service import gmail_source
     await gmail_source.refresh_if_stale(parts=("headers", "raw") if want_raw else ("headers",))
-    refresh_local = not want_raw and any(row["source"] != "gmail" and not row["fresh"]
-                                        for row in email_source_details())
+    sources = email_source_details()
+    refresh_local = not want_raw and (
+        any(row["source"] != "gmail" and not row["fresh"] for row in sources) or
+        (not sources and _email_read_source == "local_index"))
     generation = _headers_sync_generation
     if _raw_ready() if want_raw else email_sync_state() == "ready" and not refresh_local:
         return
@@ -1298,81 +1360,86 @@ def _fmt_line(account: str, sender: str, subject: str) -> str:
     return f"{tag}{sender} | {subject}"
 
 
-def _account_query(account: str) -> str:
-    q = _ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()
-    # A user-selected native binding also resolves the original account selector.
-    matches = [address for address, item in _external_accounts.items()
-               if q in {str(item.get("mail_account_id") or "").casefold(),
-                        str(item.get("mail_account_name") or "").casefold()}]
-    return matches[0] if len(matches) == 1 else q
-
-
 _ACCOUNT_FILLER_RE = re.compile(r"\b(?:e-?mail|account|inbox|mail)\b", re.I)
+
+
+def _account_query(account: str) -> str:
+    return _ACCOUNT_FILLER_RE.sub("", account).strip().casefold() or account.strip().casefold()
+
+
+def _account_group(label: str, native_id: str) -> tuple[str, str]:
+    for address, item in _external_accounts.items():
+        if native_id.casefold() == address or not native_id and label.casefold() == address:
+            return ("native", item.get("mail_account_id") or item.get("inferred_native_id") or address)
+    return ("native", native_id) if native_id else ("legacy", label.casefold())
+
+
+def _account_catalog(extra: list[dict]) -> dict:
+    # Header queries never inspect history or bodies to discover identities.
+    # Raw lookups pass retained native body identities explicitly below.
+    groups = {}
+    inventory = (_parse_header_records(_headers) + _parse_header_records(_swift_headers) +
+                 _scan_marker_accounts(_swift_headers) + extra)
+    def add(label, native_id):
+        key = _account_group(label, native_id)
+        group = groups.setdefault(key, {"ids": set(), "labels": set()})
+        if native_id:
+            group["ids"].add(native_id.casefold())
+        if label:
+            group["labels"].add(label.casefold())
+    for row in inventory:
+        add(str(row.get("account") or ""), str(row.get("account_id") or ""))
+    for address, item in _external_accounts.items():
+        add(address, address)
+        bound = item.get("mail_account_id") or item.get("inferred_native_id")
+        if bound:
+            add(str(item.get("mail_account_name") or address), str(bound))
+    return groups
+
+
+def _resolve_account_groups(account: str, extra: list[dict] | None = None) -> tuple[set, dict]:
+    groups = _account_catalog(extra or [])
+    q = _account_query(account)
+    exact_id = {key for key, group in groups.items() if account.strip().casefold() in group["ids"]}
+    exact_label = {key for key, group in groups.items() if q in group["labels"]}
+    partial = {key for key, group in groups.items() if any(q in name for name in group["labels"] | group["ids"])}
+    return exact_id or exact_label or partial, groups
 
 
 def _filter_account(rows: list, account: str | None) -> list:
     if not account:
         return rows
-    # Strip generic words ("email", "account"...) before matching, so "UCSC
-    # email" reaches the "ucsc" that actually appears in the cached identifier
-    # rather than failing to match the whole phrase. See _unknown_account_message
-    # for why this alone isn't sufficient.
-    q = _ACCOUNT_FILLER_RE.sub("", account).strip().lower() or account.strip().lower()
-    return [r for r in rows if q in r[1].lower()]
+    keys, _ = _resolve_account_groups(account, [{"account": r[1], "account_id": ""} for r in rows])
+    return [r for r in rows if _account_group(r[1], "") in keys]
 
 
 def _filter_account_records(rows: list[dict], account: str | None) -> list[dict]:
     if not account:
         return rows
-    q = _account_query(account)
-    return [r for r in rows if q in r["account"].casefold() or
-            q in r.get("account_id", "").casefold()]
+    keys, _ = _resolve_account_groups(account, rows)
+    return [r for r in rows if _account_group(r["account"], r.get("account_id", "")) in keys]
 
 
 def _raw_account_scope(rows: list[dict], account: str | None) -> tuple[list[dict], str]:
-    """Resolve a body lookup to one account identity without widening its scope.
-
-    Header labels can lag behind the body cache, and two native accounts can
-    share one display label. Exact native IDs take precedence over partial
-    label matches; a duplicate label must be clarified before exposing bodies.
-    Unscoped body lookups deliberately retain their cross-account behavior.
-    """
+    """Resolve identities before labels; replacement must not erase ambiguity."""
     if not account or not account.strip():
         return rows, ""
-    selector = account.strip()
-    q = _account_query(selector)
-    identities: dict[tuple[str, str], dict] = {}
-    for row in rows:
-        label = str(row.get("account") or "")
-        native_id = str(row.get("account_id") or "")
-        key = ("native", native_id) if native_id else ("legacy", label.casefold())
-        identities.setdefault(key, {"account": label, "account_id": native_id})
-    candidates = list(identities.items())
-    exact_ids = [(key, row) for key, row in candidates
-                 if row["account_id"] and row["account_id"] == selector]
-    exact_labels = [(key, row) for key, row in candidates
-                    if row["account"].casefold() == q]
-    matches = exact_ids or exact_labels or [(key, row) for key, row in candidates
-                                          if q in row["account"].casefold()]
-    if not matches:
-        # Keep the established corrective account names when headers prove
-        # them, while allowing a newer raw-only account to resolve above.
-        problem = _unknown_account_message(account)
-        if problem:
-            return [], problem
-        known = ", ".join(sorted({row["account"] for _, row in candidates if row["account"]}))
+    retained = []
+    for record in _swift_raw.split(_RAW_RS):
+        if record.strip():
+            label, native_id = _source_identity(record, raw=True)
+            retained.append({"account": label, "account_id": native_id})
+    keys, groups = _resolve_account_groups(account, rows + retained)
+    if not keys:
         return [], (f"(error: no cached email account matches {account!r}. "
-                    f"{'Available body-cache accounts: ' + known + '. ' if known else ''}"
                     "Choose an account from the synced Mail data; no other account was searched.)")
-    if len(matches) != 1:
-        choices = "; ".join(f"{row['account']} (account ID: {row['account_id'] or 'unavailable'})"
-                            for _, row in matches)
+    if len(keys) != 1:
+        choices = "; ".join(f"{', '.join(sorted(groups[key]['labels']))} (account ID: {key[1] or 'unavailable'})"
+                            for key in sorted(keys))
         return [], (f"(error: several email accounts match {account!r}: {choices}. "
                     "Which one? Use an exact account ID, or rename the accounts in Mail and sync again.)")
-    selected = matches[0][0]
-    return [row for row in rows
-            if (("native", str(row.get("account_id"))) if row.get("account_id")
-                else ("legacy", str(row.get("account") or "").casefold())) == selected], ""
+    return [row for row in rows if _account_group(str(row.get("account") or ""),
+                                                  str(row.get("account_id") or "")) in keys], ""
 
 
 def _email_body_block(row: dict) -> str:
@@ -1942,7 +2009,7 @@ async def summarize_inbox_for_day(day: str, account: str | None = None,
         return f"(couldn't understand the date {day!r} — use 'today', 'yesterday', or YYYY-MM-DD)"
     cached = _parse_header_records(_headers, snapshot="recent")
     recent = [r for r in cached if start <= r["ts"] < end]
-    history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
+    history = _range_history(start, end)
     scoped = _filter_account_records(recent + history, account)
     rows = _unique_records(scoped)
     if not rows and not unread:
@@ -2044,7 +2111,7 @@ def _empty_range_message(label: str, start: float, end: float,
     entirely as user-facing prose because this pre-synthesized tool can be
     returned directly without another model narration pass.
     """
-    if email_freshness_warning(account):
+    if email_freshness_warning(account) or _history_warning(account):
         return (f"I couldn’t verify whether you have email for {label}. No matching messages "
                 "were found in the available cache; this does not mean your inbox is empty. "
                 "Other dates may have cached emails.")
@@ -2132,7 +2199,7 @@ async def summarize_inbox_for_period(period: str, account: str | None = None,
     # The recent cache only reaches back ~5-7 weeks, so any range older than
     # that needs the deeper ~2-year history scan — merged, not substituted,
     # because a range can straddle the boundary between the two.
-    history = [r for r in _parse_header_records(_history, snapshot="history") if start <= r["ts"] < end]
+    history = _range_history(start, end)
     scoped = _filter_account_records(recent + history, account)
     rows = _unique_records(scoped)
     if not rows and not unread:

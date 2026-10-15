@@ -20,6 +20,8 @@ final class GoogleAccountModel: ObservableObject {
     @Published var inboxAccounts: [InboxAccount] = []
     @Published var mailAccounts: [MailAccount] = []
     @Published var selectedMailAccountID = ""
+    @Published var authorizationState = "idle"
+    @Published var authorizationError = ""
     @Published var connected = false
     @Published var email = ""
     @Published var authorizing = false
@@ -51,6 +53,9 @@ final class GoogleAccountModel: ObservableObject {
         connected = s["connected"] as? Bool ?? false
         email = s["email"] as? String ?? ""
         authorizing = s["authorizing"] as? Bool ?? false
+        let authorization = s["authorization"] as? [String: Any] ?? [:]
+        authorizationState = authorization["state"] as? String ?? "idle"
+        authorizationError = authorization["error"] as? String ?? ""
         lastError = s["last_error"] as? String ?? ""
         hasSavedSecret = s["has_secret"] as? Bool ?? false
         if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
@@ -145,9 +150,11 @@ final class GoogleAccountModel: ObservableObject {
     }
 
     func connect() {
+        guard !authorizing else { return }
         let id = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { message = "Enter your OAuth client ID first."; return }
         message = ""
+        authorizing = true
         Task {
             let body: [String: Any] = ["client_id": id,
                                        "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -156,6 +163,7 @@ final class GoogleAccountModel: ObservableObject {
                   r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
                   let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
                 message = "Couldn't start Google sign-in."
+                authorizing = false
                 return
             }
             clientSecret = ""
@@ -186,7 +194,9 @@ final class GoogleAccountModel: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 await self.refresh()
                 if !self.authorizing {
-                    self.message = self.connected ? "Sign-in finished. Check each account’s refresh status below." : "Sign-in did not finish. Try again."
+                    self.message = self.authorizationState == "connected"
+                        ? "Account connected. Check its refresh status below."
+                        : (self.authorizationError.isEmpty ? "Sign-in did not finish. Try again." : self.authorizationError)
                     return
                 }
             }

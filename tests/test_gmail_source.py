@@ -52,7 +52,8 @@ class GmailSource(unittest.TestCase):
             _email_available=None, _email_read_source="", _email_reason="", _email_sync_pending=False,
             _native_headers_at=0.0, _native_raw_at=0.0, _native_source="", _swift_identity=[], _identity_emails=[]))
         self.enterContext(patch.multiple(G, _last={}, _errors={}, _access={}, _epochs={}, _locks={},
-                                        _meta={}, _pending_flow=None, _flow_generation=0))
+                                        _meta={}, _pending_flow=None, _flow_generation=0,
+                                        _authorization={"state": "idle", "generation": 0, "error": ""}))
         self.accounts = {ME: {"client_id": "synthetic", "refresh_token": "fake-refresh"}}
         self.enterContext(patch.object(G, "connected_accounts", lambda cfg=None: dict(self.accounts)))
         E.configure_external_accounts(self.accounts)
@@ -260,7 +261,7 @@ class GmailSource(unittest.TestCase):
 
     def test_status_never_exposes_credentials_and_marks_restored_data_unverified(self):
         self.publish(headers=header())
-        E._external_accounts[ME]["verified"] = False
+        E._external_accounts[ME]["headers_verified"] = False
         info = G.status()
         self.assertFalse(info["accounts"][0]["fresh"])
         self.assertIsNotNone(info["accounts"][0]["last_headers_sync"])
@@ -270,27 +271,38 @@ class GmailSource(unittest.TestCase):
         E.cache_emails("")
         self.assertEqual(E._restored_native("headers", header(subject="Obsolete")), "")
 
+    @staticmethod
+    def fake_oauth_server():
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        callbacks = []
+        server = SimpleNamespace(sockets=[SimpleNamespace(getsockname=lambda: ("127.0.0.1", 54321))], close=Mock())
+        async def start(callback, *args):
+            callbacks.append(callback)
+            return server
+        async def callback(query):
+            reader = SimpleNamespace(readline=AsyncMock(return_value=f"GET /?{query} HTTP/1.1\r\n".encode()))
+            writer = SimpleNamespace(close=Mock(), write=Mock(), drain=AsyncMock())
+            await callbacks[0](reader, writer)
+            return writer
+        return start, callback
+
     def test_unrelated_oauth_callback_cannot_finish_or_cancel_active_flow(self):
         from urllib.parse import urlparse, parse_qs
         async def run():
-            url = await G.begin_authorization("synthetic", timeout=1)
-            args = parse_qs(urlparse(url).query)
-            redirect = urlparse(args["redirect_uri"][0])
-            async def callback(query):
-                reader, writer = await asyncio.open_connection(redirect.hostname, redirect.port)
-                writer.write(f"GET /?{query} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".encode())
-                await writer.drain()
-                await reader.read()
-                writer.close()
-                await writer.wait_closed()
-            with patch.object(G, "_finish", AsyncMock()) as finish:
-                await callback("state=incorrect&code=fake")
-                self.assertIsNotNone(G._pending_flow)
-                finish.assert_not_awaited()
-                await callback("state=" + args["state"][0] + "&error=access_denied")
-                await asyncio.sleep(0.01)
-                finish.assert_not_awaited()
-                self.assertIsNone(G._pending_flow)
+            start, callback = self.fake_oauth_server()
+            with patch("asyncio.start_server", start):
+                url = await G.begin_authorization("synthetic", timeout=1)
+                args = parse_qs(urlparse(url).query)
+                with patch.object(G, "_finish", AsyncMock()) as finish:
+                    await callback("state=incorrect&code=fake")
+                    self.assertIsNotNone(G._pending_flow)
+                    finish.assert_not_awaited()
+                    await callback("state=" + args["state"][0] + "&error=access_denied")
+                    await asyncio.sleep(0.01)
+                    finish.assert_not_awaited()
+                    self.assertIsNone(G._pending_flow)
+                    self.assertEqual(G._authorization["state"], "failed")
         asyncio.run(run())
 
     def test_verified_empty_body_snapshot_does_not_request_native_mail(self):
@@ -372,7 +384,8 @@ class GmailSource(unittest.TestCase):
         from contextlib import redirect_stdout
         module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/gmail_connect.py"))
         statuses = [{"connected": True, "authorizing": True, "accounts": [{"email": ME}]},
-                    {"connected": True, "authorizing": False, "accounts": [{"email": ME}, {"email": SCHOOL}]}]
+                    {"connected": True, "authorizing": False, "accounts": [{"email": ME}, {"email": SCHOOL}],
+                     "authorization": {"state": "connected", "email": SCHOOL}}]
         output = io.StringIO()
         with patch.object(sys, "argv", ["gmail_connect.py", "synthetic"]), \
              patch.object(G, "begin_authorization", AsyncMock(return_value="https://accounts.google.com/synthetic")), \
@@ -406,6 +419,214 @@ class GmailSource(unittest.TestCase):
         E._purge_raw_if_expired()
         self.assertIsNone(E._external_accounts[ME]["raw"])
         self.assertNotIn("Synthetic body", cache_store.load("email_sources"))
+
+    def test_native_diagnostic_update_preserves_current_header_bytes_without_provider(self):
+        E.configure_external_accounts({})
+        E.cache_emails(header("Native", "Earlier native copy"))
+        # Restored/current display bytes can precede the next native backing push.
+        current = header("Native", "Current usable copy")
+        E._headers = current
+        generation = E._headers_sync_generation
+        E.set_email_availability(True, read_source="local_index")
+        self.assertEqual(E._headers, current)
+        self.assertEqual(E._headers_sync_generation, generation)
+        self.assertIn("local cache", E.email_freshness_warning())
+
+    def test_bound_label_id_and_provider_address_reach_native_fallback(self):
+        self.accounts[ME]["mail_account_id"] = "native-A"
+        E.cache_emails(header("Personal", "Native fallback", native_id="native-A") +
+                      "\nC2\x01Personal\x01native-A\x01200\x010\x011")
+        E.configure_external_accounts(self.accounts)
+        E.external_email_error(ME, "headers", "offline")
+        for selector in ("Personal", "native-A", ME):
+            with self.subTest(selector=selector):
+                rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
+                self.assertEqual([r["subject"] for r in rows], ["Native fallback"])
+                self.assertIn("Personal", E.header_scan_coverage(rows, raw_headers=E._headers, account=selector)["cap_accounts"])
+                self.assertIn("offline", E.email_freshness_warning(selector))
+
+    def test_duplicate_google_body_labels_stay_ambiguous_after_provider_replacement(self):
+        self.accounts[ME]["mail_account_id"] = "native-A"
+        E.cache_emails(header("Google", "Native A", native_id="native-A") + "\n" +
+                      header("Google", "Native B", native_id="native-B"))
+        E.configure_external_accounts(self.accounts)
+        def native_body(native_id):
+            parts = G.raw_record(msg(native_id), "Google").split("\x01")
+            parts[3] = native_id
+            return "\x01".join(parts)
+        E.cache_raw_emails(native_body("native-A") + "\x02" + native_body("native-B"))
+        for use_provider in (False, True):
+            if use_provider:
+                self.publish(raw=G.raw_record(msg("provider"), ME))
+            selected, problem = E._raw_account_scope(E._parse_raw(), "Google")
+            self.assertFalse(selected)
+            self.assertIn("several email accounts", problem)
+            for selector in ("native-A", ME):
+                rows, problem = E._raw_account_scope(E._parse_raw(), selector)
+                self.assertFalse(problem)
+                self.assertEqual(len(rows), 1)
+                self.assertNotEqual(rows[0]["account_id"], "native-B")
+
+    def test_failure_immediately_selects_newer_native_after_provider_success(self):
+        self.publish(headers=header(subject="Provider old"))
+        E.cache_emails(header(subject="Native new"))
+        E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Provider old", E._headers)
+        original = E._external_accounts[ME]["headers_at"]
+        E.external_email_error(ME, "headers", "offline after native read")
+        self.assertIn("Native new", E._headers)
+        self.assertNotIn("Provider old", E._headers)
+        self.assertEqual(E._external_accounts[ME]["headers_at"], original)
+
+    def test_date_summary_discloses_history_error_while_recent_summary_stays_fresh(self):
+        self.publish(headers=header() + "\nC2\x01" + ME + "\x01" + ME + "\x01200\x010\x011",
+                     history=header(subject="Older cached history", stamp=time.time() - 86400))
+        E.external_email_error(ME, "history", "history fetch failed")
+        dated = asyncio.run(E.summarize_inbox_for_day("yesterday", unread=True))
+        self.assertIn("Gmail history cache", dated)
+        self.assertIn("history fetch failed", dated)
+        self.assertNotIn("history fetch failed", asyncio.run(E.summarize_inbox_recent()))
+
+    def test_missing_history_cannot_claim_empty_older_range(self):
+        self.publish(headers=header() + "\nC2\x01" + ME + "\x01" + ME + "\x01200\x010\x011")
+        output = asyncio.run(E.summarize_inbox_for_day("2025-01-01"))
+        self.assertIn("couldn’t verify", output)
+        self.assertIn("history cache", output)
+
+    def test_complete_fresh_headers_do_not_consume_obsolete_history(self):
+        self.publish(headers=header(subject="Current") + "\nC2\x01" + ME + "\x01" + ME + "\x011\x010\x010",
+                     history=header(subject="Obsolete history entry", stamp=time.time() - 86400))
+        E.external_email_error(ME, "history", "history offline")
+        output = asyncio.run(E.summarize_inbox_for_day("yesterday"))
+        self.assertNotIn("Obsolete history entry", output)
+        self.assertNotIn("history offline", output)
+        self.assertNotIn("couldn’t verify", output)
+
+    def test_native_history_has_its_own_timestamp_and_snapshot(self):
+        E.configure_external_accounts({})
+        E.cache_emails(header("Native", "Recent"))
+        E.cache_history_headers(header("Native", "Older", stamp=time.time() - 86400))
+        E.set_email_availability(True, read_source="mail_app")
+        E._native_history_at = time.time() - 3600
+        history = E.email_source_details(part="history")[0]
+        self.assertEqual(history["last_success"], E._native_history_at)
+        self.assertFalse(history["fresh"])
+        self.assertTrue(E.email_source_details()[0]["fresh"])
+
+    def test_old_epoch_cannot_dispatch_cached_or_refresh_token(self):
+        async def run(cached):
+            token = G._context.set((ME, dict(self.accounts[ME]), 0))
+            G._epochs[ME] = 1
+            G._access[ME] = {"token": "old-access" if cached else "", "expires": time.time() + 3600}
+            http = AsyncMock()
+            try:
+                with self.assertRaises(G.GmailError):
+                    await G._access_token(http)
+                http.post.assert_not_awaited()
+                http.get.assert_not_awaited()
+            finally:
+                G._context.reset(token)
+        asyncio.run(run(True))
+        asyncio.run(run(False))
+
+    def test_disconnect_during_backoff_prevents_another_api_dispatch(self):
+        async def run():
+            token = G._context.set((ME, dict(self.accounts[ME]), 0))
+            G._access[ME] = {"token": "synthetic", "expires": time.time() + 3600}
+            http = AsyncMock()
+            http.get.return_value = httpx.Response(429)
+            async def backoff(_):
+                G._epochs[ME] = 1
+            try:
+                with patch("asyncio.sleep", backoff), self.assertRaises(G.GmailError):
+                    await G._get(http, "messages")
+                http.get.assert_awaited_once()
+                http.post.assert_not_awaited()
+            finally:
+                G._context.reset(token)
+        asyncio.run(run())
+
+    def test_failed_current_cli_flow_does_not_report_older_account_success(self):
+        import io
+        import runpy
+        from contextlib import redirect_stdout
+        module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/gmail_connect.py"))
+        info = {"connected": True, "authorizing": False, "accounts": [{"email": ME}],
+                "authorization": {"state": "failed", "error": "Google sign-in declined"}}
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["gmail_connect.py", "synthetic"]), \
+             patch.object(G, "begin_authorization", AsyncMock(return_value="https://accounts.google.com/synthetic")), \
+             patch.object(G, "status", return_value=info), patch("webbrowser.open"), \
+             patch("asyncio.sleep", AsyncMock()), redirect_stdout(output), self.assertRaises(SystemExit):
+            asyncio.run(module["main"]())
+        self.assertNotIn("Connected:", output.getvalue())
+
+    def test_exact_address_native_uuid_keeps_one_identity_before_and_after_provider(self):
+        E.cache_emails(header(ME, "Native by exact address", native_id="native-A"))
+        E.configure_external_accounts(self.accounts)
+        for use_provider in (False, True):
+            if use_provider:
+                self.publish(headers=header(subject="Provider by exact address"))
+            for selector in (ME, "native-A"):
+                rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
+                self.assertEqual(len(rows), 1)
+                self.assertEqual(rows[0]["subject"], "Provider by exact address" if use_provider else "Native by exact address")
+        E.cache_emails(header(ME, "New native fallback", native_id="native-A"))
+        E.set_email_availability(True, read_source="mail_app")
+        E.external_email_error(ME, "headers", "offline")
+        for selector in (ME, "native-A"):
+            rows = E._filter_account_records(E._parse_header_records(E._headers), selector)
+            self.assertEqual(rows[0]["subject"], "New native fallback")
+
+    def test_queued_metadata_does_not_dispatch_after_disconnect_epoch(self):
+        async def run():
+            started, release = asyncio.Event(), asyncio.Event()
+            token = G._context.set((ME, dict(self.accounts[ME]), 0))
+            G._access[ME] = {"token": "fake", "expires": time.time() + 3600}
+            async def get(*args, **kwargs):
+                started.set()
+                await release.wait()
+                return httpx.Response(200, json=msg("one"))
+            http = AsyncMock()
+            http.get.side_effect = get
+            try:
+                with patch.object(G, "FETCH_CONCURRENCY", 1):
+                    pending = asyncio.create_task(G._ensure_meta(http, ["one", "two"]))
+                    await started.wait()
+                    G._epochs[ME] = 1
+                    release.set()
+                    with self.assertRaises(G.GmailError):
+                        await pending
+                    await asyncio.sleep(0)
+                    http.get.assert_awaited_once()
+                    http.post.assert_not_awaited()
+            finally:
+                G._context.reset(token)
+        asyncio.run(run())
+
+    def test_oauth_timeout_fences_inflight_exchange_and_profile_dispatch(self):
+        from urllib.parse import parse_qs, urlparse
+        async def run():
+            start, callback = self.fake_oauth_server()
+            started, release = asyncio.Event(), asyncio.Event()
+            async def post(*args, **kwargs):
+                started.set()
+                await release.wait()
+                return httpx.Response(200, json={"refresh_token": "fake", "access_token": "fake", "scope": G.SCOPE})
+            with patch("asyncio.start_server", start), patch.object(httpx.AsyncClient, "post", post), \
+                 patch.object(httpx.AsyncClient, "get", AsyncMock()) as get, patch.object(G, "_save_config") as save:
+                url = await G.begin_authorization("synthetic", timeout=0.02)
+                state = parse_qs(urlparse(url).query)["state"][0]
+                pending = asyncio.create_task(callback("state=" + state + "&code=fake"))
+                await started.wait()
+                await asyncio.sleep(0.05)
+                self.assertEqual(G._authorization["state"], "failed")
+                release.set()
+                await pending
+                get.assert_not_awaited()
+                save.assert_not_called()
+                self.assertEqual(G._authorization["state"], "failed")
+        asyncio.run(run())
 
     _original_accounts = staticmethod(G.connected_accounts)
 
