@@ -47,7 +47,8 @@ from scripts.toolbench.cases import load_cases, select  # noqa: E402
 
 DEFAULT_MODEL = "Ling-3.0-tiny-Wisp-V3-merged-oQ4e"
 RESULTS_ROOT = Path.home() / ".moe" / "evals" / "toolbench"  # resolved BEFORE WISP_HOME moves
-_TRANSIENT = re.compile(r"409|ModelLoadError|not loaded|ConnectError|RemoteProtocolError|choices", re.I)
+_TRANSIENT = re.compile(r"409|ModelLoadError|not loaded|ConnectError|RemoteProtocolError|choices|"
+                        r"connection unavailable|couldn't verify the local AI engine", re.I)
 
 
 def _git_sha() -> str:
@@ -115,11 +116,30 @@ async def _dry_run(args, cases) -> int:
     return 0
 
 
+async def _recover(client, model, *, wait: float = 240.0) -> None:
+    """Wait for the engine to come back and the model to be resident again.
+
+    oMLX can restart on its own mid-run (observed 2026-10-14: the server died
+    during a prefill with nothing in its log and was back 5s later). Polls
+    instead of failing on the first refused connection.
+    """
+    deadline = time.monotonic() + wait
+    last = None
+    while time.monotonic() < deadline:
+        try:
+            await client.make_resident(model)
+            return
+        except Exception as e:  # noqa: BLE001 — engine down or still loading; keep waiting
+            last = e
+            await asyncio.sleep(3.0)
+    raise RuntimeError(f"engine did not recover within {wait:.0f}s: {last}")
+
+
 async def _one(runner, score, client, model, case, world, names, args, run_id, trial, variant) -> dict:
-    """One trial, retried once on a transient engine error (409, reload, dropped stream)."""
+    """One trial, retried once after a transient engine error (409, restart, dropped stream)."""
     traj = await runner.run_case(client, model, case, world, timeout=args.timeout, max_steps=args.max_steps)
     if traj.get("error") and _TRANSIENT.search(traj["error"]):
-        await client.make_resident(model)
+        await _recover(client, model)
         traj = await runner.run_case(client, model, case, world, timeout=args.timeout,
                                      max_steps=args.max_steps)
     v = score(case, traj, registry_names=names, today=world.today)
@@ -145,18 +165,28 @@ async def _run(args, cases) -> int:
         if close:
             print(f"  close matches: {close}")
         return 2
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out = Path(args.out).expanduser() if args.out else RESULTS_ROOT / run_id
+    done: set[tuple] = set()
+    if args.resume:
+        out = Path(args.resume).expanduser()
+        prior = rep.load_rows(out)
+        run_id = prior[0]["run"] if prior else out.name
+        done = {(r.get("base_model", r["model"]), r.get("variant", "default"), r["case"], r["trial"])
+                for r in prior}
+        print(f"resuming {out}: {len(done)} trials already recorded")
+    else:
+        run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+        out = Path(args.out).expanduser() if args.out else RESULTS_ROOT / run_id
     out.mkdir(parents=True, exist_ok=True)
     meta = {"run": run_id, "git": _git_sha(), "models": models, "trials": args.trials,
             "cases": [c.id for c in cases], "started": time.time(), "exclusive": args.exclusive,
             "today": world.today.isoformat(), "max_steps": args.max_steps,
             "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all"}
-    (out / "meta.json").write_text(json.dumps(meta, indent=2))
+    if not args.resume:
+        (out / "meta.json").write_text(json.dumps(meta, indent=2))
     if _wisp_running():
         print("note: Wisp is running. It may unload a non-roster model mid-run; the harness "
               "reloads and retries once. Quit Wisp for the cleanest numbers.")
-    rows: list[dict] = []
+    rows: list[dict] = rep.load_rows(out) if args.resume else []
     started_loaded = await client.loaded_models()
     try:
         with (out / "results.jsonl").open("a") as fh:
@@ -167,7 +197,7 @@ async def _run(args, cases) -> int:
                             print(f"--exclusive: unloading {other}")
                             await client.unload(other)
                 print(f"\n== {model}: loading…")
-                await client.make_resident(model)
+                await _recover(client, model)
                 for variant in variants:
                     runner.set_thinking(client, model, variant)
                     print(f"-- thinking: {variant}")
@@ -175,6 +205,8 @@ async def _run(args, cases) -> int:
                     for trial in range(1, args.trials + 1):
                         for case in cases:
                             k += 1
+                            if (model, variant, case.id, trial) in done:
+                                continue
                             if not _swap_ok():
                                 print("STOP: memory pressure (free swap < 500MB and pressure high)")
                                 return 3
@@ -220,6 +252,8 @@ def main() -> int:
                     help="comma-separated variants: default, narration-off, off")
     ap.add_argument("--export-shingles", default="",
                     help="write hashed n-grams of every gate prompt (canonical + 50 seeded worlds) and exit")
+    ap.add_argument("--resume", default="", help="continue an interrupted run directory in place "
+                    "(same --models/--thinking/--trials/--split); finished trials are skipped")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--dry-run", action="store_true", help="route every case without a model")
     ap.add_argument("--report", default="", help="re-render a finished run directory")
