@@ -647,7 +647,7 @@ def native_identity_flows(tmp_path_factory):
 
 
 @pytest.mark.parametrize("case", ["success", "empty", "duplicate", "unavailable", "failed", "partial",
-    "closed_index", "closed_failed_index", "closed_empty", "closed_during_header", "closed_before_identity",
+    "closed_index", "closed_failed_index", "closed_empty", "closed_during_header", "closed_between_accounts", "closed_before_identity",
     "identity_failed", "identity_malformed", "identity_empty"])
 def test_actual_native_capture_flow_through_both_api_channels(store, monkeypatch, native_identity_flows, case):
     import ast

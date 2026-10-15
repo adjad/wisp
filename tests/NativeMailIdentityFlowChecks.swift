@@ -67,8 +67,9 @@ final class Reader {
     }
     func isMailRunning() -> Bool {
         touch("running"); runningChecks += 1
-        if which.hasPrefix("closed") { return false }
+        if ["closed_index", "closed_failed_index", "closed_empty"].contains(which) { return false }
         if which == "closed_during_header" { return runningChecks < 2 }
+        if which == "closed_between_accounts" { return runningChecks < 3 }
         if which == "closed_before_identity" { return runningChecks < 3 }
         return true
     }
@@ -78,7 +79,7 @@ final class Reader {
         case "empty": return .accounts([:])
         case "duplicate": return .duplicateLabels
         case "unavailable": return .unavailable
-        case "partial": return .accounts(["one": "A", "two": "B"])
+        case "partial", "closed_between_accounts": return .accounts(["one": "A", "two": "B"])
         default: return .accounts(["one": "A"])
         }
     }
@@ -106,7 +107,7 @@ final class Reader {
         var results: [[String: Any]] = []
         for which in ["success", "empty", "duplicate", "unavailable", "failed", "partial",
                       "closed_index", "closed_failed_index", "closed_empty", "closed_during_header",
-                      "closed_before_identity", "identity_failed", "identity_malformed", "identity_empty",
+                      "closed_between_accounts", "closed_before_identity", "identity_failed", "identity_malformed", "identity_empty",
                       "bad_http", "bad_json"] {
             let session = URLSession.shared
             session.requests = []; session.acknowledged = false
@@ -127,6 +128,17 @@ final class Reader {
                 let addresses = body["addresses"] as! [String]
                 precondition(addresses == (which == "success" ? ["me@example.test"] : []))
                 precondition(body["complete"] as! Bool == ["success", "empty", "identity_empty"].contains(which))
+            }
+            if which == "closed_during_header" {
+                precondition(reader.events == ["running", "accounts", "running"])
+            }
+            if which == "closed_between_accounts" || which == "closed_before_identity" {
+                precondition(reader.events == ["running", "accounts", "running", "headers", "running"])
+                precondition(reader.runningChecks == 3)
+                let legacy = session.requests.first { ($0["path"] as! String) == "/assistant/sync/emails" }!
+                let payload = legacy["body"] as! [String: Any]
+                let diagnostic = payload["diagnostics"] as! [String: Any]
+                precondition(diagnostic["available"] as! Bool == (which == "closed_before_identity"))
             }
             results.append(["case": which, "requests": session.requests, "events": reader.events])
         }

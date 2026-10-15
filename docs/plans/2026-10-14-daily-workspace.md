@@ -190,7 +190,7 @@ Actual fitting placements are reserved only in local copies before generated
 suggestions fill remaining gaps; stored pins, revisions and replay inputs do not
 change.
 
-Development checks passed 318 focused cases with no skips, including the
+After the fixture correction, development checks passed 319 focused cases with no skips, including the
 existing Today contracts. They compile exact
 production native scan/capture/post bodies and transport into
 `NativeMailIdentityFlowChecks.swift`'s inert collaborators, then replay recorded
@@ -202,6 +202,12 @@ The native fixture never invokes Foundation networking, Mail or AppleScript;
 its result is synthetic caller qualification, not native runtime QA. Equal/older
 partial results also preserve a newer complete receipt. The frozen successor
 needs fresh evidence for every final check.
+
+The first repair candidate `40e94aa7` passed its configured mechanical run but
+remained held: its native fixture used an overly broad initial-closed branch
+that shadowed two mid-read scenarios. The corrected fixture distinguishes those
+branches with exact execution traces and adds closure between two account reads;
+its successor requires fresh validation rather than inheriting the old result.
 
 The separately committed behavior v1 adapter remains held and is not grafted
 here. Its fake-producer tests do not establish integration: durable analysis
