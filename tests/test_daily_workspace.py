@@ -391,3 +391,111 @@ def test_today_and_direct_workspace_share_calendar_admission(cached_sources, mon
                           supplied["preferences"], supplied["sources"], now=NOW)
     assert today["replay"]["sources"] == original["sources"]
     assert today["replay"]["expected_plan"] == expected
+
+
+@pytest.fixture
+def composed_header_sources(cached_sources, monkeypatch):
+    """Actual public header accessors over synthetic in-memory backing only."""
+    store, _, mail, *_ = cached_sources
+    account = "work@example.test"
+    def header(label=account, native_id=account, message="message", subject="Assignment due Friday"):
+        return "\x01".join(["H2", str(int(NOW)), "U", label, native_id,
+            "Course", "course@example.test", message, subject, message])
+    backing = {account: dict(headers=header(), headers_at=NOW, headers_verified=True,
+        headers_error="", history=None, raw=None)}
+    for name, value in {"_external_accounts": backing, "_swift_headers": "", "_headers": header(),
+        "_email_available": False, "_email_read_source": "local_index", "_email_reason": "Synthetic Mail closed",
+        "_native_headers_at": 0, "_native_source": "", "_swift_identity": [],
+        "_raw_emails": "PRIVATE_BODY_WITHOUT_ELIGIBLE_SNAPSHOT"}.items():
+        monkeypatch.setattr(mail, name, value)
+    monkeypatch.setattr(mail.time, "time", lambda: NOW)
+    return store, mail, backing, header
+
+
+@pytest.mark.parametrize("condition", ["current", "stale", "future", "error", "restored", "invalid_receipt"])
+def test_actual_email_accessor_gates_header_only_daily_evidence(composed_header_sources, condition):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    account = "work@example.test"
+    source = backing[account]
+    if condition == "stale": source["headers_at"] = NOW - 301
+    if condition == "future": source["headers_at"] = NOW + 1
+    if condition == "error": source["headers_error"] = "Synthetic disconnected account"
+    if condition == "restored": source["headers_verified"] = False
+    if condition == "invalid_receipt": source["headers_at"] = "unknown"
+    original_stamp = source["headers_at"]
+    assert mail.header_rows()  # Display cache alone remains readable.
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] is (condition == "current")
+    assert bool(result["records"]) is (condition == "current")
+    assert source["headers_at"] == original_stamp  # Assessment cannot renew a receipt.
+    assessed = run(e={"email": result})
+    assert "PRIVATE_BODY_WITHOUT_ELIGIBLE_SNAPSHOT" not in render(assessed)
+    if result["records"]:
+        assert result["records"][0]["quote"] == "Assignment due Friday"
+        assert "Header-only" in result["records"][0]["review_reason"]
+        assert assessed["attention"][0]["due_ts"] is None
+        assert assessed["attention"][0]["needs_review"]
+
+
+def test_actual_email_accessor_keeps_fresh_account_separate_from_stale_account(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, header = composed_header_sources
+    stale = "stale@example.test"
+    backing[stale] = dict(headers=header(stale, stale, "old", "Old assignment due Friday"),
+        headers_at=NOW - 301, headers_verified=True, headers_error="", history=None, raw=None)
+    monkeypatch.setattr(mail, "_headers", header() + "\n" + backing[stale]["headers"])
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and [r["title"] for r in result["records"]] == ["Assignment due Friday"]
+    assert len(mail.email_source_details(part="headers")) == 2
+
+
+def test_actual_email_accessor_fresh_empty_is_bounded_evidence(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    backing["work@example.test"]["headers"] = ""
+    monkeypatch.setattr(mail, "_headers", "")
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and not result["records"] and result["inspected"] == 0
+    assert "bounded/unverified" in result["detail"]
+
+
+def test_actual_email_accessor_preserves_distinct_native_ids_with_duplicate_labels(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, _, header = composed_header_sources
+    rows = header("Work", "native-one") + "\n" + header("Work", "native-two")
+    for name, value in {"_external_accounts": {}, "_headers": rows, "_swift_headers": rows,
+        "_email_available": True, "_email_read_source": "mail_app", "_native_headers_at": NOW}.items():
+        monkeypatch.setattr(mail, name, value)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and len(result["records"]) == 2
+    assert len({r["id"] for r in result["records"]}) == 2
+    assert len({r["reference"] for r in result["records"]}) == 2
+
+
+def test_actual_email_receipt_change_during_header_read_withholds_evidence(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    actual_rows = mail.header_rows
+    def changed_rows():
+        rows = actual_rows()
+        backing["work@example.test"]["headers_error"] = "Revoked during assessment"
+        return rows
+    monkeypatch.setattr(mail, "header_rows", changed_rows)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert not result["ready"] and not result["records"]
+
+
+def test_eligible_immutable_body_snapshot_precedes_actual_header_fallback(composed_header_sources, monkeypatch):
+    from types import SimpleNamespace
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, _, _ = composed_header_sources
+    row = dict(ts=NOW, account_id="native-account", message_id="body-message", subject="Project question",
+        sender="Course", sender_address="course@example.test", body="Could you submit the project by Friday?", unread=False)
+    monkeypatch.setattr(mail, "raw_email_snapshot", lambda: SimpleNamespace(rows=(row,)))
+    def no_header_read(*args, **kwargs):
+        pytest.fail("An eligible immutable body snapshot should not trigger a second header assessment")
+    monkeypatch.setattr(mail, "email_source_details", no_header_read)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and result["records"][0]["reference"] == "email:native-account:body-message"
+    assert "Could you submit" in result["records"][0]["quote"]

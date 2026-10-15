@@ -154,6 +154,18 @@ Synthetic controls cover the actual persisted receipt writer accepting missing
 or future read-starts and clamping stale read-starts into stale sync times.
 These are development results; the successor requires fresh complete gates.
 
+PR #219's reviewed email provenance changes were subsequently merged into
+`main` as `dcb0ed5f`. The daily branch reconciles that base and preserves the
+union of Simulation QA registrations. Composition fixtures exercise the actual
+public `email_source_details` and `header_rows` against private synthetic
+backing: fresh/empty, stale/future/corrupt/restored/error receipts, account
+separation, duplicate native account labels, and a receipt changed during a
+read. Unverified body globals never supply text; an eligible immutable body
+snapshot retains precedence. Header text remains review context without a
+fabricated deadline or assignment. Fresh final gates use the pinned 3.13.14
+runtime through its verified normal subprocess launcher, with their own skip
+ledger; historical 3.14 runs are retained separately.
+
 Final delivery requires a clean current-main-reconciled pushed candidate,
 exact-SHA mechanical checks, required CI and distinct independent review plus
 synthetic specialist QA. No app launch, real model/provider/native access,
