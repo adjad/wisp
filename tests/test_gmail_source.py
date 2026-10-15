@@ -1864,5 +1864,445 @@ class HistoryPublicBinding(unittest.TestCase):
         self.assertEqual(len(captured), 8)
 
 
+class HistoryContinuation(unittest.TestCase):
+    setUp = HistoryPublicBinding.setUp
+    server = HistoryPublicBinding.server
+    admit = HistoryPublicBinding.admit
+    step = HistoryPublicBinding.step
+
+    def scan(self, *, cap=12):
+        self.scope = self.H.HistoryScope(100, 190, "inbox", cap)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, min(cap, 8) + 1)],
+                       "nextPageToken": "private-page-cursor"},
+                      {"messages": [{"id": str(i)} for i in range(9, cap + 1)]}]
+        self.old_grant = self.admit()
+        self.step()
+
+    def due(self):
+        self.now += 75
+        self.mono += 75
+
+    def fresh_grant(self, *, scope=None):
+        lease = G.history_account_lease(self.old_grant.account_lease.account.account_id)
+        return self.app.issue(lease, scope or self.scope)
+
+    def test_live_two_segment_scan_reauthenticates_and_never_renews_old_proof(self):
+        self.scan()
+        old = self.bridge.snapshot()
+        self.assertEqual([r.resource_id for r in old.records], ["1", "2", "3"])
+        self.assertTrue(callable(getattr(self.bridge, "prepare_continuation", None)),
+                        "The source needs a safe live traversal handoff, not a longer job TTL")
+        self.due()
+        handle = self.bridge.prepare_continuation()
+        before = len(self.calls)
+        status = self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(len(self.calls), before, "handoff must perform zero HTTP")
+        self.assertEqual((status["listed"], status["fetched"], status["pending"]), (8, 3, 5))
+        self.assertEqual(status["cached"], 0)
+        self.assertEqual(status["continuation"]["segment"], 2)
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt, required_refs=old.receipt.refs))
+        self.assertEqual(old.records[0].expires_at, 300)
+        self.assertEqual(old.records[0].read_started_at, 200)
+        self.step()
+        recent = self.bridge.snapshot()
+        self.assertEqual([r.resource_id for r in recent.records], ["4", "5", "6", "7"])
+        self.assertTrue(all(r.read_started_at == 275 and r.expires_at == 375 for r in recent.records))
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls[before:]][:2], ["token", "profile"])
+        self.step()
+        self.step()
+        self.assertEqual(self.bridge.status()["fetched"], 12)
+        self.assertEqual(self.bridge.status()["listed"], 12)
+        self.assertTrue(self.bridge.status()["eof_observed"])
+        self.assertEqual([r.url.params.get("pageToken") for r in self.calls if r.url.path.endswith("/messages")],
+                         [None, "private-page-cursor"])
+        ids = [r.url.path.rsplit("/", 1)[1] for r in self.calls if "/messages/" in r.url.path]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_handoff_requires_both_clocks_early_window_and_actual_pending_work(self):
+        self.scan()
+        for wall, mono in ((200, 0), (275, 0), (200, 75), (274, 74)):
+            with self.subTest(wall=wall, mono=mono):
+                self.now, self.mono = wall, mono
+                self.assertFalse(self.bridge.status()["continuation"]["available"])
+                with self.assertRaises(PermissionError):
+                    self.bridge.prepare_continuation()
+        self.now, self.mono = 275, 75
+        self.assertTrue(self.bridge.status()["continuation"]["available"])
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step(); self.step(); self.step()
+        self.due()
+        with self.assertRaises(PermissionError):
+            self.bridge.prepare_continuation()
+
+    def test_old_expiry_or_clock_rollback_cannot_restore_handle(self):
+        for wall, mono in ((300, 75), (275, 100), (199, 75), (275, -1)):
+            with self.subTest(wall=wall, mono=mono):
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                self.now, self.mono = wall, mono
+                before = len(self.calls)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+                self.assertEqual(before, len(self.calls))
+
+    def test_single_use_handle_cannot_be_cloned_serialized_forged_or_replayed(self):
+        import copy, pickle
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        self.assertIs(handle, self.bridge.prepare_continuation())
+        for operation in (copy.copy, copy.deepcopy, pickle.dumps, json.dumps):
+            with self.subTest(operation=operation.__name__), self.assertRaises(TypeError):
+                operation(handle)
+        for fake in ({"segment": 1}, object(), object.__new__(G.PublicContinuation)):
+            with self.subTest(fake=type(fake).__name__), self.assertRaises(PermissionError):
+                self.bridge.continue_scan(fake, grant=self.fresh_grant())
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.old_grant)
+        self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+
+    def test_same_scope_lease_application_and_original_start_are_required(self):
+        from dataclasses import replace
+        self.scan(); self.due()
+        handle, good = self.bridge.prepare_continuation(), self.fresh_grant()
+        for fake in (replace(good), replace(good, scope=self.H.HistoryScope(101, 190, "inbox", 12)),
+                     replace(good, account_lease=replace(good.account_lease))):
+            with self.subTest(fake=fake.scope.digest), self.assertRaises(PermissionError):
+                self.bridge.continue_scan(handle, grant=fake)
+        other_app = G.install_history_application(probe=lambda: self.permission)
+        self.addCleanup(other_app.revoke)
+        other_grant = other_app.issue(good.account_lease, self.scope)
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=other_grant)
+        # Even an otherwise-current new explicit Start severs the old lineage.
+        self.bridge.start(good)
+        self.due()
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+
+    def test_grant_already_attached_to_another_bridge_is_not_fresh(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        other = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 100),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(other.invalidate)
+        other.start(grant)
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=grant)
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+
+    def test_permission_session_role_scope_and_consent_changes_withdraw_handle(self):
+        from dataclasses import replace
+        changes = ({"session_id": "new-session"}, {"session_epoch": 2}, {"role_epoch": 2},
+                   {"role": "other"}, {"consent_epoch": 2}, {"global_learning": False},
+                   {"email_consent": False}, {"history_start": False}, {"account_ids": ()},
+                   {"scope_digests": ()})
+        for change in changes:
+            with self.subTest(change=change):
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                self.permission = replace(self.permission, **change)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+
+    def test_pause_reset_forget_terminal_revoke_and_config_change_reject_handoff(self):
+        for action in ("pause", "cancel", "forget", "revoke", "new_start", "config"):
+            with self.subTest(action=action):
+                # Reinstall only trusted test bootstrap after terminal revoke.
+                if action == "config":
+                    G.refresh_history_configuration()
+                self.app = G.install_history_application(probe=lambda: self.permission)
+                self.addCleanup(self.app.revoke)
+                self.bridge = G.new_public_history_bridge(application=self.app,
+                    limits=self.H.Limits(80000, 8000000, 32000000, 100),
+                    clock=lambda: self.now, monotonic=lambda: self.mono)
+                self.addCleanup(self.bridge.invalidate)
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                if action == "revoke": self.app.revoke()
+                elif action == "new_start": self.bridge.start(grant)
+                elif action == "config":
+                    self.config["client_secret"] = "rotated-test-only"
+                    G.refresh_history_configuration()
+                else: self.bridge.control(action)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                if action == "revoke":
+                    self.assertIsNone(self.app.refresh())
+                    with self.assertRaises(PermissionError): self.fresh_grant()
+
+    def test_public_status_checkpoint_and_handle_do_not_expose_traversal_or_tokens(self):
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        before = len(self.calls)
+        with patch.object(G, "load_config", side_effect=AssertionError("getter config I/O")), \
+             patch.object(G.httpx.AsyncClient, "request", side_effect=AssertionError("getter HTTP")):
+            encoded = json.dumps([self.bridge.status(), self.bridge.checkpoint()]) + repr(handle)
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        for private in ("private-page-cursor", "server-issued", "configured-refresh", "fake-secret",
+                        "listed_ids", "pending_ids", '"next_page"'):
+            self.assertNotIn(private, encoded)
+        self.assertEqual(before, len(self.calls))
+
+    def test_simultaneous_consumption_creates_only_one_new_segment(self):
+        import concurrent.futures, threading
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        grants = (self.fresh_grant(), self.fresh_grant())
+        barrier = threading.Barrier(2)
+        def consume(grant):
+            barrier.wait(timeout=5)
+            try:
+                self.bridge.continue_scan(handle, grant=grant)
+                return "started"
+            except PermissionError:
+                return "rejected"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(consume, grants))
+        self.assertCountEqual(results, ["started", "rejected"])
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+        self.assertEqual(len(self.calls), 6)
+
+    def test_transition_failure_withdraws_both_segments_and_consumes_handle(self):
+        self.scan(); self.due()
+        old = self.bridge.snapshot()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        with patch.object(self.bridge._provider, "_continue_segment", side_effect=RuntimeError("synthetic fault")):
+            with self.assertRaises(RuntimeError):
+                self.bridge.continue_scan(handle, grant=grant)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt))
+        self.assertIsNone(self.bridge.status()["binding"])
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=grant)
+
+    def test_total_unique_scope_cap_is_not_reset_by_handoff(self):
+        self.scan(cap=6); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step()
+        status = self.bridge.status()
+        self.assertEqual((status["listed"], status["fetched"], status["pending"]), (6, 6, 0))
+        self.assertTrue(status["capped"])
+        self.assertFalse(status["eof_observed"])
+        before = len(self.calls)
+        for _ in range(3): self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_segment_limit_and_no_progress_stop_partial_without_extra_dispatch(self):
+        self.budget = self.H.StepBudget(100, 1, 6, 400000, 30)
+        self.scope = self.H.HistoryScope(100, 190, "inbox", 100)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, 101)],
+                       "nextPageToken": "never-follow-after-cap"}]
+        self.old_grant = self.admit(); self.step()
+        for segment in range(2, 33):
+            self.due()
+            self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+            self.step()
+            self.assertEqual(self.bridge.status()["continuation"]["segment"], segment)
+        self.due()
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.assertEqual(self.bridge.status()["fetched"], 32)
+        self.step()
+        self.assertEqual(before, len(self.calls))
+        # A fresh explicit Start gets its own finite scope, never old authority.
+        self.now, self.mono = 200, 0
+        self.scan(); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.due()  # No new list/body progress in the second segment.
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_handoff_is_refused_while_source_http_is_in_flight(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        async def hook(request):
+            if "/messages/" in request.url.path:
+                self.assertFalse(self.bridge.status()["continuation"]["available"])
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+        self.hook = hook
+        self.step()
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+
+    def test_new_segment_withdrawal_at_each_http_boundary_cannot_publish(self):
+        for phase in ("token", "profile", "body"):
+            with self.subTest(phase=phase):
+                self.now, self.mono = 200, 0
+                self.hook = None
+                self.scan(); self.due()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                async def hook(request):
+                    tail = request.url.path.rsplit("/", 1)[1]
+                    if tail == phase or (phase == "body" and "/messages/" in request.url.path):
+                        self.bridge.control("forget")
+                self.hook = hook
+                before = len(self.calls)
+                self.step()
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+                self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "body": 3}[phase])
+
+    def test_new_segment_wrong_profile_token_error_and_cancellation_fail_closed(self):
+        for failure in ("profile", "token", "cancel"):
+            with self.subTest(failure=failure):
+                self.now, self.mono = 200, 0
+                self.hook = None; self.profile = ME; self.token_status = 200
+                self.scan(); self.due()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                if failure == "profile": self.profile = "wrong@gmail.com"
+                elif failure == "token": self.token_status = 500
+                else:
+                    async def cancel(request): raise asyncio.CancelledError()
+                    self.hook = cancel
+                if failure == "cancel":
+                    with self.assertRaises(asyncio.CancelledError): self.step()
+                else: self.step()
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+
+    def test_full_2000_scope_advances_across_segments_with_original_step_caps(self):
+        self.scope = self.H.HistoryScope(100, 190, "inbox", 2000)
+        self.bridge = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 1200),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(self.bridge.invalidate)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(first, first + 100)],
+                       **({"nextPageToken": f"cursor-{first + 100}"} if first < 1901 else {})}
+                      for first in range(1, 2001, 100)]
+        self.old_grant = self.admit()
+        handoffs = 0
+        for _ in range(600):
+            state = self.bridge.status()
+            if state["fetched"] == 2000: break
+            self.assertIn(state["state"], ("running", "capped"))
+            if state["continuation"]["available"]:
+                old = self.bridge.snapshot()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                handoffs += 1
+                self.assertEqual(self.bridge.status()["cached"], 0)
+                self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt))
+            before = len(self.calls)
+            self.step()
+            dispatched = self.calls[before:]
+            self.assertLessEqual(len(dispatched), 6)
+            self.assertLessEqual(sum("/messages/" in r.url.path for r in dispatched), 5)
+            self.now += 30; self.mono += 30
+        status = self.bridge.status()
+        self.assertEqual((status["listed"], status["fetched"]), (2000, 2000))
+        self.assertEqual(status["http_calls"], len(self.calls))
+        self.assertTrue(status["eof_observed"])
+        self.assertFalse(status["continuation"]["incomplete"])
+        self.assertGreater(handoffs, 1)
+        self.assertLess(handoffs, 32)
+        self.assertEqual(len([r for r in self.calls if r.url.path.endswith("/profile")]), handoffs + 1)
+        body_ids = [r.url.path.rsplit("/", 1)[1] for r in self.calls if "/messages/" in r.url.path]
+        self.assertEqual(len(set(body_ids)), 2000)
+        self.assertEqual(status["semantic_processing"], "not_performed")
+
+    def test_recovery_latch_invalidates_prepared_handle_without_restoring_credentials(self):
+        from service.config import quarantine
+        gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", gate):
+            client = G.HistoryHTTPClient.synthetic(self.server)
+            self.addCleanup(lambda: asyncio.run(client.aclose()))
+            self.http = client
+            G.refresh_history_configuration()
+            self.scan(); self.due()
+            handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+            try: gate.invalidate()
+            except quarantine.CredentialQuarantined: pass
+            with self.assertRaises(PermissionError): self.bridge.continue_scan(handle, grant=grant)
+            self.assertIsNone(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+
+    def test_late_body_publication_after_handoff_and_forget_is_withdrawn(self):
+        self.scan(); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        publish = self.bridge._provider._publish
+        def withdraw_then_publish(*args, **kwargs):
+            self.bridge.control("forget")
+            return publish(*args, **kwargs)
+        with patch.object(self.bridge._provider, "_publish", side_effect=withdraw_then_publish):
+            self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["cached"], 0)
+        self.assertEqual(self.bridge.status()["state"], "forgotten")
+
+    def test_expiry_during_atomic_metadata_copy_does_not_create_fresh_job(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        original = self.bridge._provider._continuation_status
+        def late_status():
+            status = original()
+            self.now, self.mono = 300, 100
+            return status
+        with patch.object(self.bridge._provider, "_continuation_status", side_effect=late_status):
+            with self.assertRaises((PermissionError, self.H._Withdrawn)):
+                self.bridge.continue_scan(handle, grant=grant)
+        self.assertIsNone(self.bridge.status()["binding"])
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_duplicate_page_or_empty_progress_cannot_extend_traversal_forever(self):
+        self.scan(); self.step()  # Drain first page before the handoff window.
+        self.due()
+        self.pages = [{"messages": [], "nextPageToken": "private-page-cursor"}]
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step()
+        self.assertTrue(self.bridge.status()["error"])
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.now, self.mono = 200, 0
+        self.pages = [{"messages": [], "nextPageToken": "no-progress"}]
+        self.old_grant = self.admit(); self.step(); self.due()
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_other_configured_account_grant_cannot_consume_this_account_cursor(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "other-refresh"}
+        accounts = G.refresh_history_configuration()
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest,), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        leases = {row.display_label: G.history_account_lease(row.account.account_id) for row in accounts}
+        self.old_grant = self.app.issue(leases[ME], self.scope)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, 9)], "nextPageToken": "same-scope-page"}]
+        self.bridge.start(self.old_grant); self.step(); self.due()
+        handle = self.bridge.prepare_continuation()
+        other = self.app.issue(leases[SCHOOL], self.scope)
+        with self.assertRaises(PermissionError): self.bridge.continue_scan(handle, grant=other)
+        self.assertEqual(self.bridge.status()["fetched"], 3)
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+        self.bridge.continue_scan(handle, grant=self.app.issue(leases[ME], self.scope))
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+
+    def test_same_account_handle_cannot_be_used_by_a_different_bridge(self):
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        other = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 100),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(other.invalidate)
+        other.start(self.fresh_grant())
+        with self.assertRaises(PermissionError): other.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(other.status()["fetched"], 0)
+        self.assertEqual(self.bridge.status()["fetched"], 3)
+
+
 if __name__ == "__main__":
     unittest.main()
