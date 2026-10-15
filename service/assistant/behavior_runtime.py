@@ -368,8 +368,12 @@ class BehaviorRuntime:
         return (target.identity, remote_active())
 
     def _bind_history(self, settings=None, role=None):
-        from service.config import authority_changes
+        from service.config import authority_changes, models_config
         settings = settings if settings is not None else self.local_engine().signal_settings()
+        # Settle an explicit trusted config read before taking the revision we
+        # bind. This also covers a role resolver or env override that does not
+        # itself read models_config; admission callbacks remain zero-I/O.
+        models_config()
         live = self.live()
         before = authority_changes.current()
         resolved = self._analysis_role()

@@ -355,6 +355,7 @@ def test_cancelling_tick_cannot_publish_late_interpretation(tmp_path, monkeypatc
 @pytest.mark.parametrize("text,expected", [
     ("The arbitrary work is due 2026-10-20 at 4pm UTC.", "2026-10-20T16:00:00+00:00"),
     ("The arbitrary work is due 2026-10-20 UTC.", "2026-10-20T00:00:00+00:00"),
+    ("The arbitrary work is due 2026-10-20 UTC+05:30.", "2026-10-20T00:00:00+05:30"),
 ])
 def test_unknown_utterance_date_keeps_independent_absolute_source_time(text, expected):
     choices = temporal_choices(text, None, "America/Los_Angeles")
@@ -369,6 +370,7 @@ def test_unknown_utterance_date_keeps_independent_absolute_source_time(text, exp
     "The arbitrary work is due 2026-10-20 at 4pm.",
     "The arbitrary work is due 2026-11-01 at 1:30am America/New_York.",
     "The arbitrary work is due 2026-03-08 at 2:30am America/New_York.",
+    "The arbitrary work is due 2011-12-30 Pacific/Apia.",
 ])
 def test_unknown_utterance_date_never_borrows_fetch_time_year_or_timezone(text):
     assert temporal_choices(text, None, "UTC") == []

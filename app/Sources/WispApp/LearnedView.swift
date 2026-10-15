@@ -150,7 +150,16 @@ final class LearnedModel: ObservableObject {
     private var emailHistoryRevision = 0
     private var emailHistoryAuthorityRevision = 0
     private var emailHistoryWorker: Task<Void, Never>?
-    private var emailHistoryWrites: [(account: String, command: String, scope: [String: Any]?)] = []
+    private struct HistoryIntent {
+        let account: String
+        let command: String
+        let scope: [String: Any]?
+        let session: String
+        let permissionRevision: NSNumber
+        let connection: String
+        let accountSet: String
+    }
+    private var emailHistoryWrites: [HistoryIntent] = []
     @Published var signals: [String: Any] = [:]
     @Published private(set) var signalState: SignalState = .loading
     @Published var activitySummary: [String: Any] = [:]
@@ -163,6 +172,7 @@ final class LearnedModel: ObservableObject {
     private var signalWorker: Task<Void, Never>?
     private var signalWrites: [(name: String, enabled: Bool)] = []
     private static let signalSaveError = "Source settings are unconfirmed. Refresh to check them before trying again."
+    private static let historySaveError = "History status is unconfirmed. Refresh to check it before trying again."
     private static let signalNames: Set<String> = [
         "activity", "websites", "email", "messages", "notes", "calendar_context",
         "reminders_context", "interpretation", "remote_analysis",
@@ -211,7 +221,17 @@ final class LearnedModel: ObservableObject {
                   let connection = account["connection_revision"] as? String, !connection.isEmpty,
                   let set = account["account_set_revision"] as? String, !set.isEmpty,
                   integer(account["control_revision"]) != nil,
-                  account["state"] is String, account["counts"] is [String: Any] else { return nil }
+                  account["state"] is String, let counts = account["counts"] as? [String: Any] else { return nil }
+            let countNames: Set<String> = ["listed", "fetched", "eligible", "failed", "evicted", "cached",
+                "cached_eligible", "pending", "http_calls"]
+            let flagNames: Set<String> = ["has_next_page", "eof_observed", "capped", "fresh"]
+            for (name, count) in counts {
+                if countNames.contains(name) {
+                    guard integer(count) != nil else { return nil }
+                } else if flagNames.contains(name) {
+                    guard let flag = count as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else { return nil }
+                } else { return nil }
+            }
         }
         return value
     }
@@ -223,11 +243,18 @@ final class LearnedModel: ObservableObject {
     func emailHistoryControl(account: String, command: String, scope: [String: Any]? = nil) {
         guard ["start", "pause", "reset"].contains(command), signalState == .ready,
               emailHistoryState == .ready || emailHistoryWorker != nil,
-              emailHistoryAccounts.contains(where: { $0["account_id"] as? String == account }),
+              let current = Self.historySnapshot(emailHistory),
+              let row = (current["accounts"] as? [[String: Any]])?.first(where: {
+                  $0["account_id"] as? String == account
+              }),
               command != "start" || (signalValue("email") == true && emailHistory["available"] as? Bool == true) else { return }
         emailHistoryRevision += 1
         emailHistoryWrites.removeAll { $0.account == account }
-        emailHistoryWrites.append((account, command, scope))
+        emailHistoryWrites.append(HistoryIntent(account: account, command: command, scope: scope,
+            session: current["session"] as! String,
+            permissionRevision: current["permission_revision"] as! NSNumber,
+            connection: row["connection_revision"] as! String,
+            accountSet: row["account_set_revision"] as! String))
         emailHistoryState = .saving
         guard emailHistoryWorker == nil else { return }
         emailHistoryWorker = Task { await drainEmailHistoryWrites() }
@@ -244,9 +271,13 @@ final class LearnedModel: ObservableObject {
             guard settingsRevision == signalRevision, authorityRevision == emailHistoryAuthorityRevision,
                   signalWorker == nil else { failed = true; break }
             guard let current = snapshot,
+                  current["session"] as? String == intent.session,
+                  current["permission_revision"] as? NSNumber == intent.permissionRevision,
                   let account = (current["accounts"] as? [[String: Any]])?.first(where: {
                       $0["account_id"] as? String == intent.account
-                  }), let revision = account["control_revision"] as? NSNumber else {
+                  }), account["connection_revision"] as? String == intent.connection,
+                  account["account_set_revision"] as? String == intent.accountSet,
+                  let revision = account["control_revision"] as? NSNumber else {
                 failed = true
                 continue
             }
@@ -279,9 +310,10 @@ final class LearnedModel: ObservableObject {
         if !failed, settingsRevision == signalRevision, authorityRevision == emailHistoryAuthorityRevision, let snapshot {
             emailHistory = snapshot
             emailHistoryState = .ready
+            if error == Self.historySaveError { error = "" }
         } else {
             emailHistoryUnavailable()
-            error = "History status is unconfirmed. Refresh to check it before trying again."
+            error = Self.historySaveError
         }
     }
 
@@ -335,6 +367,7 @@ final class LearnedModel: ObservableObject {
             if let value = Self.historySnapshot(emailReply) {
                 emailHistory = value
                 emailHistoryState = .ready
+                if error == Self.historySaveError { error = "" }
             } else { emailHistoryUnavailable() }
         }
         // A read started before/during a write cannot confirm current consent.
@@ -682,7 +715,8 @@ struct LearnedView: View {
                         let counts = account["counts"] as? [String: Any] ?? [:]
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text("Gmail account \(index + 1) · \(state.capitalized)")
+                                let label = account["display_label"] as? String ?? ""
+                                Text("\(label.isEmpty ? "Gmail account \(index + 1)" : label) · \(state.capitalized)")
                                 if let fetched = counts["fetched"] as? Int, let cached = counts["cached_eligible"] as? Int {
                                     Text("\(fetched) messages fetched · \(cached) currently usable")
                                         .font(.caption).foregroundStyle(.secondary)

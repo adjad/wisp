@@ -289,3 +289,177 @@ def test_reset_cannot_implicitly_restart_an_account_job(host):
     h.control(command(h,"reset"))
     assert h.cached_getters() == () and len(backend.opened) == 1
     assert h.status()["accounts"][0]["state"] == "off"
+
+
+@pytest.fixture
+def public_host(monkeypatch):
+    from service import config, gmail_source as G
+    from service.assistant.gmail_history_runtime import HistoryHost, PublicHistoryBackend
+    config.models_config()
+    source_config = {"client_id":"configured-client", "client_secret":"synthetic-secret",
+        "accounts":{"synthetic@example.invalid":{"refresh_token":"configured-refresh"}}}
+    monkeypatch.setattr(G,"load_config",lambda:source_config)
+    G.refresh_history_configuration()
+    clock, calls, hook = [NOW], [], [None]
+    backend = PublicHistoryBackend(clock=lambda:clock[0],monotonic=lambda:0)
+    h = HistoryHost(backend=backend)
+    h.bind(enabled=True,settings={"email":True},epoch="consent",role="synthetic-local")
+    async def server(request):
+        import httpx
+        from urllib.parse import parse_qs
+        calls.append(request)
+        if hook[0] is not None:
+            await hook[0](request)
+        if str(request.url) == G.TOKEN_URL:
+            form = parse_qs(request.content.decode())
+            assert form["client_id"] == ["configured-client"]
+            assert form["refresh_token"] == ["configured-refresh"]
+            return httpx.Response(200,json=dict(access_token="server-issued",scope=G.SCOPE,
+                token_type="Bearer",expires_in=3600))
+        assert request.headers["Authorization"] == "Bearer server-issued"
+        if request.url.path.endswith("/profile"):
+            return httpx.Response(200,json={"emailAddress":"synthetic@example.invalid"})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(200,json={"messages":[{"id":"51"}]})
+        return httpx.Response(200,json=message("51",TEXT,int(NOW-60)))
+    http = G.HistoryHTTPClient.synthetic(server)
+    yield SimpleNamespace(host=h,backend=backend,http=http,calls=calls,clock=clock,hook=hook,
+                          source_config=source_config,account=h.status()["accounts"][0]["account_id"])
+    h.invalidate("fixture complete",close=True)
+    asyncio.run(http.aclose())
+
+
+def test_source_owned_public_adapter_start_fetch_capture_and_terminal_restart(public_host, monkeypatch):
+    from service import gmail_source as G
+    p = public_host
+    assert p.calls == [] and p.host.cached_getters() == ()
+    row = p.host.status()["accounts"][0]
+    assert row["display_label"] == "synthetic@example.invalid" and row["account_id"] != row["display_label"]
+    p.host.control(command(p.host))
+    assert p.calls == []
+    asyncio.run(p.host.step(p.account,http=p.http,budget=H.StepBudget(100,5,6,400000,30)))
+    assert [r.url.path.rsplit("/",1)[-1] for r in p.calls] == ["token","profile","messages","51"]
+    batch = capture({"email":True},getters={"email":lambda **kw:None},now=NOW,
+                    gmail_history_getters=p.host.cached_getters)
+    assert len(batch.records) == 1 and batch.current()
+    def forbidden(*args,**kwargs):
+        raise AssertionError("Pure application/source read tried I/O")
+    with monkeypatch.context() as noio:
+        noio.setattr(G,"load_config",forbidden)
+        for _ in range(3):
+            assert p.host.status()["accounts"][0]["counts"]["fetched"] == 1
+            assert batch.current()
+    p.host.control(command(p.host,"pause"))
+    assert not batch.current() and p.host.cached_getters() == ()
+    p.host.control(command(p.host))  # New installed authority and new source-issued grant.
+    assert p.calls and len(p.calls) == 4
+    asyncio.run(p.host.step(p.account,http=p.http,budget=H.StepBudget(100,5,6,400000,30)))
+    assert len(p.calls) == 8 and len(p.host.cached_getters()) == 1
+
+
+@pytest.mark.parametrize("boundary", ["pause","reset","role","consent","config","stop"])
+def test_public_pipeline_withdrawal_during_http_cannot_publish(public_host, boundary):
+    from service import config
+    from service.assistant.gmail_history_runtime import HistoryConflict
+    p = public_host
+    p.host.control(command(p.host))
+    async def withdraw(request):
+        if not request.url.path.endswith("/51"):
+            return
+        if boundary in {"pause","reset"}:
+            p.host.control(command(p.host,boundary))
+        elif boundary == "role":
+            p.host.bind(enabled=True,settings={"email":True},epoch="consent",role="other")
+        elif boundary == "consent":
+            p.host.bind(enabled=True,settings={"email":False},epoch="consent",role="synthetic-local")
+        elif boundary == "config":
+            config.set_behavior_enabled(False)
+        else:
+            p.host.invalidate("Stop/Forget",close=True)
+    p.hook[0] = withdraw
+    with pytest.raises(HistoryConflict):
+        asyncio.run(p.host.step(p.account,http=p.http,budget=H.StepBudget(100,5,6,400000,30)))
+    assert len(p.calls) == 4 and p.host.cached_getters() == ()
+
+
+@pytest.mark.parametrize("withdraw", [None,"role","consent","source","forget"])
+def test_actual_configured_public_source_through_runtime_seed_and_day_plan(public_host, tmp_path, monkeypatch, withdraw):
+    import json
+    import sqlite3
+    import threading
+    from service import config, gmail_source as G
+    from service.assistant import behavior_runtime as runtime_module, daily_workspace as daily
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.assistant.behavior_interpreter import Interpreter
+    from service.assistant.store import AssistantStore
+    from service.behavior.engine import BehaviorEngine
+    from service.tools import email_tools
+
+    p = public_host
+    monkeypatch.setenv("WISP_BEHAVIOR","1")
+    monkeypatch.setattr(email_tools,"raw_email_snapshot",lambda **kwargs:None)
+    prompts = []
+    runtime = None
+    def complete(system,prompt,**kwargs):
+        rows = json.loads(prompt)["evidence"]
+        prompts.append(rows)
+        result = json.dumps(dict(patterns=[],links=[],demands=[dict(source_id=r["id"],quote=r["text"],
+            kind="preparation",title="Tentative preparation",ownership="user",importance="unknown",
+            temporal_id=r["temporal"][0]["id"]) for r in rows]))
+        if withdraw == "role":
+            config.set_role("fast","different-synthetic-role")
+        elif withdraw == "consent":
+            runtime.call("configure_signals",{"email":False},NOW)
+        elif withdraw == "source":
+            p.source_config["accounts"] = {}
+            G.refresh_history_configuration()
+        elif withdraw == "forget":
+            runtime.invalidate_history("Forget requested during model response")
+        return result
+    store = AssistantStore(tmp_path/"assistant.db")
+    turns = sqlite3.connect(":memory:")
+    turns.execute("CREATE TABLE turns (session_id TEXT, idx INTEGER, content TEXT, created_at REAL, role TEXT)")
+    sessions = SimpleNamespace(_db=turns,_lock=threading.Lock())
+    runtime = BehaviorRuntime(tmp_path/"behavior",clock=lambda:p.clock[0],
+        local_factory=lambda path:BehaviorEngine(path,tz="UTC",clock=lambda:p.clock[0]),
+        messages_fn=lambda:{},contact_name_fn=lambda s:s,calendar_sync_fn=lambda:{},
+        session_db_fn=lambda:sessions,behavior_interpreter=Interpreter(complete),
+        role_key_fn=lambda:"synthetic-local",gmail_history_backend=p.backend)
+    monkeypatch.setattr(runtime_module,"get_runtime",lambda:runtime)
+    monkeypatch.setattr(daily,"_availability_provider",None)
+    try:
+        runtime.call("configure_signals",{"email":True,"interpretation":True},NOW)
+        status = runtime.email_history_status()
+        assert status["available"] and p.calls == []
+        runtime.email_history_control(command(runtime._email_history))
+        asyncio.run(runtime._email_history.step(p.account,http=p.http,budget=H.StepBudget(100,5,6,400000,30)))
+        assert len(p.calls) == 4
+        runtime.work(store,NOW,force=True)
+        assert prompts and runtime.errors == {}
+        public = daily.availability_snapshot("2026-10-15","UTC",NOW)
+        if withdraw is not None:
+            assert not public.get("demands")
+            assert runtime._email_history.cached_getters() == ()
+            index = runtime.local_engine().seed_index()
+            assert index.store._conn.execute("SELECT COUNT(*) FROM behavior_seed_work").fetchone()[0] == 0
+            return
+        assert public["ready"] and len(public["demands"]) == 1
+        demand = public["demands"][0]
+        assert demand["observed_at"] is None and demand["importance"] == "unknown"
+        assert demand["action_authority"] == "none" and demand["reference"]["resource_id"] == "51"
+        assert demand["reference"]["account_id"] == p.account
+        state = dict(tasks=[],commitments=[],preferences=dict(start_minute=540,end_minute=1080,not_before=None),
+            sources={s:dict(available=True,last_sync=NOW,snapshot_started_at=NOW,
+                diagnostics=dict(coverage_start=NOW-28800,coverage_end=NOW+57600)) for s in ("calendar","reminders")})
+        workspace = daily.assess("2026-10-15","UTC",state,{},now=NOW,behavior=public)
+        suggestions = [b for b in workspace["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]
+        assert len(suggestions) == 1 and suggestions[0]["task_id"] is None
+        for _ in range(3):
+            assert daily.availability_snapshot("2026-10-15","UTC",NOW)["ready"]
+        assert len(p.calls) == 4 and len(prompts) == 1
+        assert TEXT not in "\n".join(runtime.local_engine()._store._conn.iterdump())
+        runtime.email_history_control(command(runtime._email_history,"pause"))
+        assert not daily.availability_snapshot("2026-10-15","UTC",NOW)["ready"]
+        assert len(p.calls) == 4 and len(prompts) == 1
+    finally:
+        runtime.stop();runtime.close();turns.close();store._db.close()

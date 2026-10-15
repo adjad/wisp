@@ -9,9 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 import secrets
 import threading
+import time
 from typing import Protocol
 
-from service.gmail_behavior_history import AccountIdentity, HistoryScope
+from service.gmail_behavior_history import AccountIdentity, HistoryScope, Limits, history_source_guard
+from service.gmail_source import HistoryPermissionState as Permission
 from service.config import authority_changes
 
 
@@ -41,18 +43,64 @@ class BackendProtocol(Protocol):
     def open(self, account: AccountIdentity, scope: HistoryScope, probe) -> BridgeProtocol: ...
 
 
-@dataclass(frozen=True)
-class Permission:
-    account_ids: tuple[str, ...]
-    scope_digests: tuple[str, ...]
-    session_id: str
-    session_epoch: int
-    role: str
-    role_epoch: int
-    consent_epoch: int
-    global_learning: bool
-    email_consent: bool
-    history_start: bool
+class PublicHistoryBackend:
+    """Cached configured accounts and source-issued grants, with no implicit I/O.
+
+    Existing Gmail connection/configuration work publishes the account registry.
+    Construction and account/status reads do not refresh it. A caller supplies an
+    explicit source-owned HTTP client and budget to each later host step.
+    """
+    def __init__(self, *, clock=time.time, monotonic=time.monotonic):
+        self._clock, self._monotonic = clock, monotonic
+
+    def accounts(self):
+        from service import gmail_source
+        return tuple(row.account for row in gmail_source.history_account_status())
+
+    def account_labels(self):
+        from service import gmail_source
+        return {row.account.account_id:row.display_label for row in gmail_source.history_account_status()}
+
+    def open(self, account, scope, probe):
+        from service import gmail_source
+        # Nothing here reads config, creates a client or performs network I/O.
+        # The probe is the host's atomic trusted memory projection, never JSON.
+        with history_source_guard():
+            lease = gmail_source.history_account_lease(account.account_id)
+            if lease is None or lease.account != account:
+                raise HistoryUnavailable("Gmail account changed before Start")
+            application = gmail_source.install_history_application(probe=probe)
+            bridge = None
+            try:
+                grant = application.issue(lease, scope)
+                bridge = gmail_source.new_public_history_bridge(application=application,
+                    limits=Limits(80000,8000000,32000000,1200),
+                    clock=self._clock,monotonic=self._monotonic)
+                bridge.start(grant)
+            except Exception:
+                application.revoke()
+                raise
+        return _PublicJob(application, bridge)
+
+
+class _PublicJob:
+    """Each Start owns one terminal application installation and fresh grant."""
+    def __init__(self, application, bridge):
+        self.application, self.bridge = application, bridge
+
+    def status(self):
+        return self.bridge.status()
+
+    def snapshot(self, *, expected_receipt=None, required_refs=()):
+        return self.bridge.snapshot(expected_receipt=expected_receipt,required_refs=required_refs)
+
+    def invalidate(self, reason="Application permission withdrawn"):
+        with history_source_guard():
+            self.application.revoke()
+            self.bridge.invalidate(reason)
+
+    async def step(self, *, http, budget):
+        return await self.bridge.step(http=http,budget=budget)
 
 
 @dataclass
@@ -93,13 +141,14 @@ class HistoryHost:
     def _withdraw(self, reason):
         # Lock order: host -> source guard. The source's callback never takes
         # this host lock, so source publication cannot reverse that order.
-        jobs = tuple(self._jobs.values())
-        for job in jobs:
-            job.permission = None
-            job.state = "paused"
-        for job in jobs:
-            if job.bridge is not None:
-                job.bridge.invalidate(reason)
+        with history_source_guard():
+            jobs = tuple(self._jobs.values())
+            for job in jobs:
+                job.permission = None
+                job.state = "paused"
+            for job in jobs:
+                if job.bridge is not None:
+                    job.bridge.invalidate(reason)
 
     def bind(self, *, enabled, settings, epoch, role):
         """Trusted server settings snapshot; calling this does not start a job."""
@@ -143,6 +192,10 @@ class HistoryHost:
         """Pure metadata. Source status must not fetch or renew any evidence."""
         with self._lock:
             accounts = self._accounts()
+            try:
+                labels = self._backend.account_labels() if self._backend is not None else {}
+            except (AttributeError, TypeError, ValueError):
+                labels = {}
             rows = []
             for account in accounts:
                 job = self._jobs.get(account.account_id)
@@ -159,6 +212,8 @@ class HistoryHost:
                 else:
                     state = job.state if job is not None else "off"
                 rows.append(dict(account_id=account.account_id, connection_revision=account.connection_revision,
+                    display_label=(labels.get(account.account_id, "") if isinstance(labels,dict)
+                        and isinstance(labels.get(account.account_id,""),str) else ""),
                     account_set_revision=account.account_set_revision,
                     control_revision=self._revisions.get(account.account_id, 0), state=state, counts=counts,
                     semantic_processing="separate", scope=(dict(start=job.scope.start, end=job.scope.end,
@@ -177,7 +232,7 @@ class HistoryHost:
                 or not isinstance(payload.get("account_id"), str)
                 or type(payload.get("revision")) is not int or payload["revision"] < 0):
             raise ValueError("A current account, revision and supported history command are required")
-        with self._lock:
+        with self._lock, history_source_guard():
             ident, command = payload["account_id"], payload["command"]
             revision = self._revisions.get(ident, 0)
             if (self._closed or payload["revision"] != revision or payload.get("session") != self._session
@@ -220,7 +275,8 @@ class HistoryHost:
                 job.authority = authority
                 self._jobs[ident] = job
                 job.permission = Permission((ident,), (scope.digest,), self._session, 1,
-                    "gmail_history", self._role_revision, self._policy_revision, True, True, True)
+                    "gmail_history", self._role_revision, self._policy_revision, True, True, True,
+                    ((ident,scope.digest),))
                 try:
                     job.bridge = self._backend.open(account, scope, lambda: self._permission(job))
                     job.state = "waiting"
@@ -235,12 +291,14 @@ class HistoryHost:
     def cached_getters(self):
         with self._lock:
             getters = []
+            accounts = self._accounts()
             for ident, job in self._jobs.items():
-                if self._permission(job) is None or job.bridge is None:
+                if self._permission(job) is None or job.bridge is None or job.account not in accounts:
                     continue
                 def getter(*, expected_receipt=None, required_refs=(), ident=ident, job=job):
                     with self._lock:
-                        if self._closed or self._jobs.get(ident) is not job or self._permission(job) is None:
+                        if (self._closed or self._jobs.get(ident) is not job or self._permission(job) is None
+                                or job.account not in self._accounts()):
                             return None
                         return job.bridge.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
                 getters.append(getter)
@@ -250,11 +308,13 @@ class HistoryHost:
         """One explicitly budgeted source step; no scheduler or default transport."""
         with self._lock:
             job = self._jobs.get(ident)
-            if self._closed or job is None or self._permission(job) is None or job.bridge is None:
+            if (self._closed or job is None or self._permission(job) is None or job.bridge is None
+                    or job.account not in self._accounts()):
                 raise HistoryUnavailable("No current explicitly started history job")
             bridge = job.bridge
         await bridge.step(http=http, budget=budget)
         with self._lock:
-            if self._jobs.get(ident) is not job or self._permission(job) is None:
+            if (self._jobs.get(ident) is not job or self._permission(job) is None
+                    or job.account not in self._accounts()):
                 raise HistoryConflict("History permission changed during source work")
             return self.status()

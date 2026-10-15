@@ -15,6 +15,12 @@ import Foundation
     static var getReply: [String: Any]?
     static var holdGet = false
     static var settingsReply: [String: Any]? = ["enabled": true]
+    static var historyReply: [String: Any]?
+    static var historyReplies: [[String: Any]?] = []
+    static var historyRequests: [Pending] = []
+    static var historyBodies: [[String: Any]] = []
+    static var historyGets: [Pending] = []
+    static var holdHistoryGet = false
     static var checks = 0
 
     func setBehaviorSignal(_ name: String, enabled: Bool) async -> [String: Any]? {
@@ -28,6 +34,14 @@ import Foundation
     }
     func behaviorSettings() async -> [String: Any]? { Self.settingsReply }
     func behaviorGet(_ name: String) async -> [String: Any]? {
+        if name == "email-history" {
+            if Self.holdHistoryGet {
+                return await withCheckedContinuation {
+                    Self.historyGets.append(Pending(reply: Self.historyReply, continuation: $0))
+                }
+            }
+            return Self.historyReply
+        }
         if name == "signals" {
             if Self.holdGet {
                 return await withCheckedContinuation {
@@ -39,7 +53,12 @@ import Foundation
         return name == "patterns" ? ["patterns": [[String: Any]]()] : [:]
     }
     func behaviorEmailHistoryControl(_ body: [String: Any]) async -> [String: Any]? {
-        fatalError("Unexpected email history mutation")
+        let index = Self.historyRequests.count
+        precondition(index < Self.historyReplies.count, "Unexpected history write")
+        Self.historyBodies.append(body)
+        return await withCheckedContinuation {
+            Self.historyRequests.append(Pending(reply: Self.historyReplies[index], continuation: $0))
+        }
     }
     func behaviorPredictions(day: String) async -> [String: Any]? { ["predictions": []] }
     func behaviorHistoryControl(_ source: String, command: String) async -> Bool {
@@ -64,6 +83,14 @@ import Foundation
         let item = gets[index]
         item.continuation.resume(returning: item.reply)
     }
+    static func releaseHistory(_ index: Int) {
+        let item = historyRequests[index]
+        item.continuation.resume(returning: item.reply)
+    }
+    static func releaseHistoryGet(_ index: Int) {
+        let item = historyGets[index]
+        item.continuation.resume(returning: item.reply)
+    }
     static func check(_ condition: @autoclosure () -> Bool, _ message: String) {
         precondition(condition(), message)
         checks += 1
@@ -75,6 +102,8 @@ import Foundation
         getReply = scenario["initial"] as? [String: Any]
         holdGet = false
         settingsReply = ["enabled": true]
+        historyReply = nil; historyReplies = []; historyRequests = []; historyBodies = []
+        historyGets = []; holdHistoryGet = false
     }
 }
 
@@ -278,6 +307,143 @@ import Foundation
         WispClient.getReply = crossReplies[1]
         await mixed.refresh()
         WispClient.check(mixed.signalState == .ready && mixed.signalValue("notes") == true, "Refresh recovery")
+        await historyControls(wire["history"] as? [String: Any] ?? historyFixture(), scenario: cross)
         print("synthetic signal settings checks passed: \(WispClient.checks) assertions")
+    }
+
+    static func historyFixture() -> [String: Any] {
+        func status(_ revision: Int, _ state: String) -> [String: Any] {
+            ["version": 1, "session": "synthetic-session", "permission_revision": 1,
+             "available": true, "accounts": [["account_id": "configured-one",
+                 "connection_revision": "connection-one", "account_set_revision": "set-one",
+                 "control_revision": revision, "state": state, "counts": [String: Any]()]]]
+        }
+        return ["initial": status(0, "off"), "started": status(1, "running"),
+                "paused": status(2, "paused"), "scope": ["start": 1791964800, "end": 1792051200,
+                    "selection": "mailbox", "message_cap": 100]]
+    }
+
+    @MainActor static func historyControls(_ wire: [String: Any], scenario: [String: Any]) async {
+        let initial = wire["initial"] as! [String: Any]
+        let started = wire["started"] as! [String: Any]
+        let paused = wire["paused"] as! [String: Any]
+        let scope = wire["scope"] as! [String: Any]
+        let account = (initial["accounts"] as! [[String: Any]])[0]["account_id"] as! String
+        func setup() {
+            WispClient.reset(scenario)
+            var signals = WispClient.getReply!
+            var settings = signals["settings"] as! [String: Any]
+            settings["email"] = true
+            signals["settings"] = settings
+            WispClient.getReply = signals
+            WispClient.historyReply = initial
+        }
+        setup()
+        WispClient.historyReplies = [started, paused]
+        let ordered = LearnedModel()
+        await ordered.refresh()
+        WispClient.check(ordered.emailHistoryState == .ready && WispClient.historyBodies.isEmpty,
+                         "History GET never starts acquisition")
+        ordered.emailHistoryControl(account: account, command: "start", scope: scope)
+        await WispClient.wait { WispClient.historyRequests.count == 1 }
+        for _ in 0..<1000 { ordered.emailHistoryControl(account: account, command: "pause") }
+        WispClient.check(ordered.emailHistoryState == .saving, "Pending history intent is unconfirmed")
+        WispClient.releaseHistory(0)
+        await WispClient.wait { WispClient.historyRequests.count == 2 }
+        WispClient.check(ordered.emailHistoryState == .saving, "Intermediate Start ACK is not displayed")
+        WispClient.check(WispClient.historyBodies[1]["command"] as? String == "pause" &&
+                         (WispClient.historyBodies[1]["revision"] as? NSNumber)?.intValue == 1,
+                         "Latest Pause follows acknowledged control revision")
+        WispClient.releaseHistory(1)
+        await WispClient.wait { ordered.emailHistoryState != .saving }
+        WispClient.check(ordered.emailHistoryAccounts[0]["state"] as? String == "paused" &&
+                         WispClient.historyRequests.count == 2, "History burst is coalesced and Pause wins")
+
+        // A connection/session change after an ambiguous Start cannot carry a
+        // queued explicit Start over to a newly connected account authority.
+        for changedField in ["session", "permission_revision", "connection_revision", "account_set_revision"] {
+            setup()
+            WispClient.historyReplies = [nil, started]
+            let changed = LearnedModel()
+            await changed.refresh()
+            changed.emailHistoryControl(account: account, command: "start", scope: scope)
+            await WispClient.wait { WispClient.historyRequests.count == 1 }
+            changed.emailHistoryControl(account: account, command: "start", scope: scope)
+            var rebound = initial
+            if changedField == "session" { rebound[changedField] = "new-session" }
+            else if changedField == "permission_revision" { rebound[changedField] = 999 }
+            else {
+                var rows = rebound["accounts"] as! [[String: Any]]
+                rows[0][changedField] = "new-source-revision"
+                rebound["accounts"] = rows
+            }
+            WispClient.historyReply = rebound
+            WispClient.releaseHistory(0)
+            await WispClient.settle()
+            // Release unexpected write so a failing implementation is still quiescent.
+            if WispClient.historyRequests.count > 1 { WispClient.releaseHistory(1) }
+            await WispClient.wait { changed.emailHistoryState != .saving }
+            WispClient.check(WispClient.historyRequests.count == 1 && changed.emailHistoryState == .unavailable,
+                             "Queued Start cannot transfer to changed \(changedField)")
+        }
+
+        setup()
+        WispClient.historyReplies = [started]
+        WispClient.changes = [["email": false]]
+        WispClient.replies = [scenario["initial"] as? [String: Any]]
+        let revoked = LearnedModel()
+        await revoked.refresh()
+        revoked.emailHistoryControl(account: account, command: "start", scope: scope)
+        await WispClient.wait { WispClient.historyRequests.count == 1 }
+        revoked.setSignal("email", enabled: false)
+        await WispClient.wait { WispClient.requests.count == 1 }
+        WispClient.releaseHistory(0)
+        await WispClient.settle()
+        WispClient.check(revoked.emailHistoryState == .unavailable && revoked.emailHistory.isEmpty,
+                         "Late Start ACK cannot restore history after consent intent")
+        WispClient.release(0)
+        await WispClient.wait { revoked.signalState != .saving }
+
+        setup()
+        WispClient.holdHistoryGet = true
+        let stale = LearnedModel()
+        let oldRead = Task { await stale.refresh() }
+        await WispClient.wait { WispClient.historyGets.count == 1 }
+        WispClient.holdHistoryGet = false
+        await stale.refresh()
+        WispClient.historyReplies = [started]
+        stale.emailHistoryControl(account: account, command: "start", scope: scope)
+        await WispClient.wait { WispClient.historyRequests.count == 1 }
+        WispClient.releaseHistory(0)
+        await WispClient.wait { stale.emailHistoryState != .saving }
+        WispClient.releaseHistoryGet(0)
+        await oldRead.value
+        WispClient.check(stale.emailHistoryAccounts[0]["state"] as? String == "running",
+                         "Stale pre-Start GET cannot roll back acknowledged history state")
+
+        var numericAvailable = started
+        numericAvailable["available"] = 1
+        var duplicate = started
+        duplicate["accounts"] = (started["accounts"] as! [[String: Any]]) + (started["accounts"] as! [[String: Any]])
+        var negativeCount = started
+        var countRows = negativeCount["accounts"] as! [[String: Any]]
+        countRows[0]["counts"] = ["fetched": -1]
+        negativeCount["accounts"] = countRows
+        for bad in [nil, initial, numericAvailable, duplicate, negativeCount] as [[String: Any]?] {
+            setup()
+            WispClient.historyReplies = [bad]
+            let failed = LearnedModel()
+            await failed.refresh()
+            failed.emailHistoryControl(account: account, command: "start", scope: scope)
+            await WispClient.wait { WispClient.historyRequests.count == 1 }
+            WispClient.releaseHistory(0)
+            await WispClient.wait { failed.emailHistoryState != .saving }
+            WispClient.check(failed.emailHistoryState == .unavailable && failed.emailHistory.isEmpty,
+                             "Malformed, stale or ambiguous history ACK is unknown")
+            WispClient.historyReply = started
+            await failed.refresh()
+            WispClient.check(failed.emailHistoryState == .ready && failed.error.isEmpty,
+                             "Fresh history read recovers uncertainty and clears its error")
+        }
     }
 }

@@ -82,14 +82,39 @@ def temporal_choices(text, ts, timezone):
                 )
             )
         elif value.precision == "date" and value.year and value.month and value.day:
-            z = ZoneInfo(value.timezone or timezone)
-            dt = datetime(value.year, value.month, value.day, tzinfo=z)
+            # Components and zone were already validated by temporal_facts.
+            # Resolve its fixed-offset zones with datetime's ISO support; these
+            # are not IANA keys. Do not reinterpret the source's natural text.
+            zone_name = value.timezone or timezone
+            if not isinstance(zone_name, str):
+                continue
+            try:
+                z = ZoneInfo(zone_name)
+            except (KeyError, ValueError):
+                try:
+                    z = datetime.fromisoformat("2000-01-01T00:00:00" + zone_name.removeprefix("UTC")).tzinfo
+                except (TypeError, ValueError):
+                    continue
+            wall = datetime(value.year, value.month, value.day)
+            try:
+                next_wall = wall + timedelta(days=1)
+            except OverflowError:
+                continue
+            boundaries = []
+            for boundary in (wall, next_wall):
+                instants = {boundary.replace(tzinfo=z, fold=fold).timestamp() for fold in (0, 1)
+                    if boundary.replace(tzinfo=z, fold=fold).astimezone(utc.utc).astimezone(z).replace(tzinfo=None) == boundary}
+                if len(instants) != 1:
+                    break
+                boundaries.append(instants.pop())
+            if len(boundaries) != 2 or boundaries[1] <= boundaries[0]:
+                continue
             out.append(
                 dict(
                     id=str(len(out)),
                     quote=fact.span.quote,
-                    start=dt.timestamp(),
-                    end=(dt + timedelta(days=1)).timestamp(),
+                    start=boundaries[0],
+                    end=boundaries[1],
                     precision="date",
                 )
             )
