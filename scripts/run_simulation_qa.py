@@ -397,6 +397,15 @@ ADDITIONAL_FULL_TESTS = {
     # Supplied fake snapshots/analyzers, disposable behavior DBs and metadata-only
     # history/relation checks; no native, provider, real model or user-state access.
     "tests/test_behavior_source_index.py",
+    # Publication ordering and history use synthetic authorities, MockTransport,
+    # fake source snapshots and disposable databases; no real accounts or native IO.
+    "tests/test_gmail_behavior_history.py",
+    "tests/test_behavior_gmail_history.py",
+    "tests/test_behavior_config_authority_changes.py",
+    "tests/test_behavior_history_driver.py",
+    "tests/test_behavior_publication_boundary.py",
+    "tests/test_native_source_publication_stamps.py",
+    "tests/test_retained_source_publication_stamps.py",
     "tests/test_behavior_associations.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",

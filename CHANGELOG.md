@@ -4,6 +4,24 @@ All notable changes to Wisp are documented here.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-15
+
+### Added
+
+- Weekly behavior reports distinguish scheduled commitments from dated task completions and compare weeks only where source coverage supports the comparison. Calendar entries never establish attendance or completed work.
+- Opt-in app and idle observations support recurring device-use patterns. The day planner can show tentative busy windows, possible time away and source-backed preparation suggestions, while preserving calendar commitments, pins and user edits. Website visits provide context, not measured time on a site; Focus/DND and historical activity that Wisp never collected remain unknown.
+- Calendar and completed-reminder history scans, plus explicitly started, bounded per-account Gmail scans, can seed available evidence. Progress distinguishes fetched, usable and analyzed records; partial coverage remains visible. Gmail scans require a new Start after restart and do not train the model or create permanent mailbox memory.
+- Separate controls govern source evidence, semantic interpretation and remote analysis. Planning suggestions require current source and permission evidence; disable, revocation, expiry, changed content and Forget withhold dependent suggestions. Inferences do not authorize external event changes or communications.
+
+### Changed
+
+- Bundled-engine setup supports public model download, progress, cancellation and retry without exposing the engine’s private login key. Readiness requires a live model-list response, and the setup test accepts only a complete visible assistant reply. Changing configuration or closing setup invalidates older test results.
+
+### Fixed
+
+- Task-evidence responses recover from malformed structured output through the existing bounded fallback instead of exposing raw response data.
+- Recurring availability windows require shared supporting dates and covered observations. Computer inactivity alone cannot become a confident busy label.
+
 ## [1.3.3] - 2026-10-14
 
 ### Added
