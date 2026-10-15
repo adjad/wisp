@@ -215,14 +215,14 @@ def _contact_windows(inp: Inputs) -> list[Nudge]:
         name = p.subject
         last_in, last_out = inp.last_messages.get(name, (None, None))
         rng = fmt_range(w.start_minute, w.end_minute)
-        mixed = bool(p.stats.get("calls"))
-        has_messages = bool(p.stats.get("messages"))
+        mixed, has_messages = predict._contact_source_counts(p)
         source = ("Messages and scheduled calls" if mixed and has_messages else
                   "Scheduled calls" if mixed else "Recorded messages" if has_messages else
                   "Contact timing (source details unavailable)")
-        timing = f"{source} with {name} recur in this window ({rng}); attendance is unknown" if mixed else (
-            f"Recorded messages with {name} recur in this window ({rng})")
-        if p.stats.get("messages") or last_in or last_out:
+        timing = (f"{source} with {name} recur in this window ({rng}); attendance is unknown" if mixed else
+                  f"Recorded messages with {name} recur in this window ({rng})" if has_messages else
+                  f"Saved contact window with {name}: {rng}; source details are unavailable")
+        if has_messages or last_in is not None or last_out is not None:
             if (last_in is None or (last_out is not None and last_out >= last_in)
                     or not (UNANSWERED_AFTER_S < inp.now - last_in < UNANSWERED_STALE_S)):
                 continue
@@ -258,7 +258,7 @@ def _preview_item(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) -> s
     if pr.kind == "usage":
         return f"{predict.usage_phrase(pr.subject)} with Wisp around {t}"
     p = patterns.get(pr.pattern_id)
-    calls, messages = (p.stats.get("calls"), p.stats.get("messages")) if p else (0, 0)
+    calls, messages = predict._contact_source_counts(p)
     source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
               else "Recorded message window" if messages else "Contact timing (source details unavailable)")
     return f"{source} with {pr.subject} from {t}"

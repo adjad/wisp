@@ -452,6 +452,44 @@ def test_unknown_coverage_never_generates_zero_activity_comparison(engine):
     assert "observed records only" in report["summary"]
 
 
+@pytest.mark.parametrize("coverage,busy_hours,expected_gap", [
+    ("unknown", 0, None), ("unknown", 1, None), ("partial", 1, None),
+    ("full", 0, 45), ("full", 45, 0), ("current_only", 0, 45),
+])
+def test_unbooked_hours_require_complete_current_calendar_coverage(
+    engine, coverage, busy_hours, expected_gap,
+):
+    first = datetime.fromtimestamp(NOW, TZ).date() - timedelta(days=7)
+    start, end = day_start(first, TZ), day_start(first + timedelta(days=7), TZ)
+    weekdays = [first + timedelta(days=n) for n in range(7)
+                if (first + timedelta(days=n)).weekday() < 5]
+    rows = [Observation(f"busy:{n}", "event", day_start(day, TZ) + 9*3600,
+                        end_ts=day_start(day, TZ) + (18 if busy_hours == 45 else 10)*3600,
+                        category="meeting")
+            for n, day in enumerate(weekdays[:5 if busy_hours == 45 else 1])]
+    if busy_hours:
+        engine.observe(rows)
+    if coverage != "unknown":
+        a = start - 28*86400 if coverage == "full" else start
+        b = start + 10*3600 if coverage == "partial" else end
+        engine.record_coverage("calendar", a, b, "complete", NOW)
+    report = engine.weekly()
+    metrics = {m["id"]: m for m in report["metrics"]}
+    gap = metrics["calendar_gap_hours"]
+    assert gap["value"] == expected_gap
+    assert metrics["scheduled_meeting_hours"]["value"] == busy_hours
+    line = next(line for line in report["summary"].splitlines()
+                if "Unbooked weekday hours" in line)
+    if expected_gap is None:
+        assert gap["value_reason"] == "incomplete_calendar_coverage"
+        assert "unknown" in line and "coverage" in line
+        assert gap["change"] is None and gap["baseline_weekly_average"] is None
+    else:
+        assert gap["value_reason"] is None
+        assert f": {expected_gap:g} hours" in line
+        assert gap["comparison"] == ("available" if coverage == "full" else "insufficient_coverage")
+
+
 def test_unknown_end_times_do_not_turn_into_free_or_focused_hours(engine):
     engine.observe(
         [

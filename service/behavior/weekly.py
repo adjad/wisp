@@ -180,13 +180,19 @@ def weekly_report(observations, coverage, now, tz):
             full = False
         average = round(sum(history) / 4, 3) if full else None
         delta = round(current - average, 3) if average is not None else None
+        value_reason = (
+            "missing_event_end_times" if needs_ends and not duration_complete[0] else
+            "incomplete_calendar_coverage" if key == "calendar_gap_hours"
+            and fractions[source][0] < 0.999999 else None
+        )
         metrics.append(
             {
                 "id": key,
                 "label": label,
                 "unit": unit,
                 "source": source,
-                "value": None if needs_ends and not duration_complete[0] else current,
+                "value": None if value_reason else current,
+                "value_reason": value_reason,
                 "coverage": round(fractions[source][0], 4),
                 "baseline_weekly_average": average,
                 "change": delta,
@@ -212,7 +218,9 @@ def render_report(report):
     ]
     for m in report["metrics"]:
         if m["value"] is None:
-            lines.append(f"- {m['label']}: unknown because event end times are missing")
+            reason = ("Calendar coverage is incomplete" if m.get("value_reason") == "incomplete_calendar_coverage"
+                      else "event end times are missing")
+            lines.append(f"- {m['label']}: unknown because {reason}")
             continue
         text = f"- {m['label']}: {m['value']:g} {m['unit']}"
         if m["baseline_weekly_average"] is not None:

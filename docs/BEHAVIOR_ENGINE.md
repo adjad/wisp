@@ -302,6 +302,10 @@ hours, adjacent meeting pairs, unbooked weekday hours in 09:00–18:00, dated re
 completions, and observed calendar moves/removals. These are measurements, not a
 productivity score. Calendar gaps do not establish focused work. No completion rate
 uses calendar plans as its denominator.
+Unbooked hours are unknown unless the current report window has complete Calendar
+coverage and usable event end times. Uncovered hours are never counted as free.
+Contact source labels require positive integer source counts; confirming an old
+pattern does not supply missing message or scheduled-call provenance.
 
 All comparison windows must have explicit complete coverage for their source;
 otherwise values are labeled observed records only, with no change or percentage.

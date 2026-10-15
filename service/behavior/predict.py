@@ -127,6 +127,12 @@ def _activities(live, upcoming, now, end, tz) -> list[Prediction]:
     return out
 
 
+def _contact_source_counts(p: Pattern | None) -> tuple[bool, bool]:
+    """Only recorded positive integer counts establish a contact source."""
+    values = (p.stats.get("calls"), p.stats.get("messages")) if p else (None, None)
+    return tuple(type(value) is int and value > 0 for value in values)
+
+
 def _contacts(live, now, end, tz) -> list[Prediction]:
     out = []
     for p in live:
@@ -137,7 +143,7 @@ def _contacts(live, now, end, tz) -> list[Prediction]:
             continue
         s, e = occ[0]
         part = p.stats.get("daypart", "")
-        calls, messages = p.stats.get("calls"), p.stats.get("messages")
+        calls, messages = _contact_source_counts(p)
         source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
                   else "Recorded messages" if messages else "Contact timing (source details unavailable)")
         because = (f"{source} with {p.subject} on {p.support} of the last {p.opportunities} "

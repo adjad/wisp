@@ -145,6 +145,7 @@ def test_contact_window_needs_an_unanswered_message(tmp_path, persona):
 
 @pytest.mark.parametrize("calls,messages,source", [
     (8, 0, "Scheduled calls"), (4, 4, "Messages and scheduled calls"), (0, 8, "Recorded message"),
+    (1, 0, "Scheduled calls"), (1, 1, "Messages and scheduled calls"), (0, 1, "Recorded message"),
 ])
 def test_contact_outputs_keep_the_source_without_claiming_conversation(calls, messages, source):
     from service.behavior.profile import prediction_line
@@ -162,6 +163,45 @@ def test_contact_outputs_keep_the_source_without_claiming_conversation(calls, me
     text = " ".join((cw.title, cw.body, cw.because, preview.body, line)).lower()
     assert all(phrase not in text for phrase in ("talk with", "usually call", "in touch"))
     assert cw.actions[0].type == "open_prompt" and not cw.actions[0].auto
+
+
+@pytest.mark.parametrize("stats", [
+    {}, {"calls": 0, "messages": 0}, {"calls": -1, "messages": -2},
+    {"calls": True, "messages": False}, {"calls": "8", "messages": "4"},
+    {"calls": float("nan"), "messages": float("inf")},
+    {"calls": 1.0, "messages": 1.5}, {"calls": None, "messages": object()},
+])
+def test_contact_nudge_with_unknown_or_invalid_source_counts_stays_unknown(stats):
+    from service.behavior import predict
+    from service.behavior.profile import prediction_line
+
+    p = Pattern("old-contact", "contact_rhythm", "Sam", "Saved timing", Window((), 420, 1080),
+                confidence=.9, support=8, opportunities=10, stats=stats, status="confirmed")
+    nudge = N._contact_windows(N.Inputs(NOW, TZ, [p], [], {}, [], {}))[0]
+    pr = predict._contacts([p], NOW, NOW+3600, TZ)[0]
+    texts = (nudge.body, nudge.because, pr.because,
+             N._preview_item(pr, TZ, {p.id: p}), prediction_line(pr, TZ, {p.id: p}))
+    assert all("source details" in text for text in texts)
+    assert all("Recorded message" not in text and "Scheduled calls" not in text for text in texts)
+    assert all(action.type == "open_prompt" and not action.auto for action in nudge.actions)
+
+
+@pytest.mark.parametrize("stats", [{}, {"calls": 0, "messages": 0}])
+def test_confirmed_orphan_contact_does_not_gain_message_provenance(tmp_path, stats):
+    engine = BehaviorEngine(tmp_path / "orphan.db", clock=lambda: NOW, tz=str(TZ))
+    try:
+        p = Pattern("orphan", "contact_rhythm", "Sam", "Older timing", Window((), 420, 1080),
+                    confidence=.9, support=8, opportunities=10, stats=stats)
+        engine._store.replace_patterns([p], NOW-100)
+        engine.set_pattern_status(p.id, "confirmed")
+        engine._store.replace_patterns([], NOW)
+        assert engine._store.get_pattern(p.id).status == "confirmed"
+        nudge = next(n for n in engine.generate_nudges(NOW) if n.kind == "contact_window")
+        assert "source details" in nudge.body
+        assert "Recorded messages" not in nudge.body
+        assert all(not action.auto for action in nudge.actions)
+    finally:
+        engine.close()
 
 
 def test_schedule_change_outputs_do_not_claim_user_agency_or_skipping(eng):
