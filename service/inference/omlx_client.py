@@ -839,6 +839,10 @@ class OMLXClient:
         # assistant history on the next turn.
         if self.managed:
             _demote_unclosed_think(final_message, finish_reason)
+        # Cut off by max_tokens before any answer: lets the agent loop tell a
+        # budget exhaustion (a retry reproduces it) from an unparseable reply.
+        if finish_reason == "length" and not tool_calls and not final_message["content"].strip():
+            final_message["_truncated"] = True
         yield {"kind": "final", "message": final_message}
 
     def activity_key(self, model: str) -> str:
