@@ -137,6 +137,7 @@ def load_model(a, *, for_training: bool = True):
     model.print_trainable_parameters()
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     model.enable_input_require_grads()
+    model.train()  # checkpointing only runs in training mode
     return tok, model
 
 
