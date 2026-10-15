@@ -519,9 +519,33 @@ Built {stats['built']}. Plan: `docs/plans/2026-10-14-mellum-finetune.md`.
                                              "rows_by_source", "prompt_tokens", "completion_tokens")}, indent=2))
 
 
+def cmd_package(args) -> None:
+    """mellum-r1-data.zip for the A6000 VM: data, trainer and a per-file sha256 manifest."""
+    import zipfile
+    trainer = ROOT / "training/mellum-r1-train/train.py"
+    files = {n: HERE / n for n in ("train.jsonl", "dev.jsonl", "stats.json", "validation.json",
+                                   "DATA_CARD.md", "ROUTER_FINDINGS.md")}
+    files["train/train.py"] = trainer
+    missing = [n for n, f in files.items() if not f.exists()]
+    if missing:
+        raise SystemExit(f"package: missing {missing} - run render/validate/stats first")
+    if not json.loads((HERE / "validation.json").read_text()).get("ok"):
+        raise SystemExit("package: validation.json is not ok - run validate")
+    sha = lambda f: hashlib.sha256(f.read_bytes()).hexdigest()  # noqa: E731
+    manifest = {"built": datetime.now().isoformat(timespec="seconds"), "files": {n: sha(f) for n, f in files.items()}}
+    z = HERE / "mellum-r1-data.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        for n, f in files.items():
+            zf.write(f, n)
+        zf.writestr("MANIFEST.json", json.dumps(manifest, indent=2))
+    rec = {"zip": z.name, "sha256": sha(z), "bytes": z.stat().st_size, "manifest": manifest}
+    (HERE / "upload-zip.json").write_text(json.dumps(rec, indent=2) + "\n")
+    print(f"package: {z.name} {rec['bytes'] / 1e6:.1f}MB sha256 {rec['sha256']}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["pool", "gold", "distill", "render", "validate", "stats", "all"])
+    ap.add_argument("cmd", choices=["pool", "gold", "distill", "render", "validate", "stats", "package", "all"])
     ap.add_argument("--per-world", type=int, default=1, help="items per family per world (pool)")
     ap.add_argument("--k", type=int, default=2, help="max Mellum tries per distill item (later tries only on failure)")
     ap.add_argument("--retry-temperature", type=float, default=0.6, help="tool-step temperature for retries")
@@ -530,7 +554,7 @@ def main() -> int:
     ap.add_argument("--template-checks", type=int, default=200, help="validate: rows to re-render and compare")
     ap.add_argument("--no-template", action="store_true", help="validate: skip tokenizer checks")
     args = ap.parse_args()
-    steps = ["pool", "gold", "distill", "render", "validate", "stats"] if args.cmd == "all" else [args.cmd]
+    steps = ["pool", "gold", "distill", "render", "validate", "stats", "package"] if args.cmd == "all" else [args.cmd]
     for s in steps:
         globals()[f"cmd_{s}"](args)
     return 0
