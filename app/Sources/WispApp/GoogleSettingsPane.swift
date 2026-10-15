@@ -115,7 +115,12 @@ final class GoogleAccountModel: ObservableObject {
 
     func disableWorkspace() {
         Task {
-            _ = await request("POST", "assistant/google/workspace/disable", body: [:], timeout: 30)
+            guard let response = await request("POST", "assistant/google/workspace/disable", body: [:], timeout: 30),
+                  response["ok"] as? Bool == true else {
+                wsMessage = "Couldn’t confirm Google Workspace removal. Check its status or try again."
+                await refreshWorkspace()
+                return
+            }
             wsMessage = "Google Workspace removed."
             await refreshWorkspace()
         }

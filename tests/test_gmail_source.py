@@ -527,6 +527,87 @@ print('unknown body rejected')
                 self.assertEqual(E._native_raw_at, 0)
                 self.assertIsNone(E._external_accounts[ME]["raw"])
 
+    def test_registered_body_lookup_rejects_corrupt_provider_age_before_composition(self):
+        from service.tools.registry import REGISTRY, run_tool
+        for invalid in ("broken-receipt", {}, float("nan"), float("inf"), 0,
+                        -1, time.time() + 3600, time.time() - 8 * 86400):
+            with self.subTest(receipt=invalid):
+                E.cache_raw_emails(G.raw_record(msg("native", "Valid native fallback"), "iCloud"))
+                self.publish(raw=G.raw_record(msg("provider", "Rejected provider body"), ME))
+                original = E._native_raw_at = time.time() - 3600
+                E._external_accounts[ME]["raw_at"] = invalid
+                E._raw_emails_at = time.time()
+                E.set_email_availability(False, reason="Synthetic native refresh failed", read_source="local_index")
+                ensure = E._ensure_email_cache
+                async def bounded(*, want_raw=False):
+                    await ensure(want_raw=want_raw, timeout_seconds=0)
+                with patch.object(E, "_ensure_email_cache", bounded), \
+                     patch.object(G, "refresh_if_stale", AsyncMock()), \
+                     patch("service.assistant.hub.hub.publish", AsyncMock()):
+                    output = asyncio.run(run_tool(REGISTRY["view_emails"], {"count": 10}))
+                self.assertIn("Valid native fallback", output)
+                self.assertNotIn("Rejected provider body", output)
+                self.assertNotIn("error running", output)
+                self.assertEqual(E._native_raw_at, original)
+                self.assertEqual(E._raw_emails_at, original)
+
+    def test_corrupt_persisted_receipt_retains_native_body_in_fresh_process(self):
+        E.cache_emails(header("iCloud", "Native header", native_id="native-cloud"))
+        E.cache_raw_emails(G.raw_record(msg("native", "Persisted native fallback"), "iCloud"))
+        self.publish(raw=G.raw_record(msg("provider", "Corrupt provider body"), ME))
+        saved = json.loads(cache_store.load("email_sources"))
+        original = time.time() - 3600
+        saved["native_raw_at"] = original
+        for part in ("headers", "history", "raw"):
+            saved["accounts"][ME][part + "_at"] = "broken-receipt"
+        cache_store.save("email_sources", json.dumps(saved))
+        code = r'''
+import asyncio, importlib, json, sys
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+from service.tools import cache_store
+cache_store.CACHE_DIR = Path(sys.argv[1])
+from service.tools import email_tools as E
+from service import gmail_source as G
+from service.tools.registry import REGISTRY, run_tool
+E = importlib.reload(E)
+account = sys.argv[2]
+assert E._external_accounts[account]['raw_at'] == 0
+E.set_email_availability(False, reason='Synthetic native refresh failed', read_source='local_index')
+ensure = E._ensure_email_cache
+async def bounded(*, want_raw=False):
+    await ensure(want_raw=want_raw, timeout_seconds=0)
+with patch.object(G, 'connected_accounts', return_value={account: {'client_id': 'synthetic', 'refresh_token': 'fake'}}), \
+     patch.object(G, 'refresh_if_stale', AsyncMock()), \
+     patch('service.assistant.hub.hub.publish', AsyncMock()), \
+     patch.object(E, '_ensure_email_cache', bounded):
+    output = asyncio.run(run_tool(REGISTRY['view_emails'], {'count': 10}))
+assert 'Persisted native fallback' in output and 'Corrupt provider body' not in output, output
+assert 'error running' not in output, output
+assert E._native_raw_at == float(sys.argv[3]) and E._raw_emails_at == float(sys.argv[3])
+assert E._external_accounts[account]['raw'] is None
+assert E.email_source_details(part='raw')[0]['last_success'] is None
+assert 'Corrupt provider body' not in cache_store.load('email_raw')
+print('fresh process retained original native fallback')
+'''
+        result = subprocess.run([sys.executable, "-c", code, str(cache_store.CACHE_DIR), ME, str(original)],
+                                check=True, capture_output=True, text=True)
+        self.assertIn("fresh process retained original native fallback", result.stdout)
+
+    def test_invalid_header_receipt_is_unverified_without_reading_bodies(self):
+        self.publish(headers=header(subject="Unverified header fallback"))
+        for part in ("headers", "history", "raw"):
+            E._external_accounts[ME][part + "_at"] = "broken-receipt"
+        with patch.object(G, "refresh_if_stale", AsyncMock()), \
+             patch.object(E, "_parse_raw", side_effect=AssertionError("Digest must not read bodies")), \
+             patch("service.assistant.hub.hub.publish", AsyncMock()):
+            output = asyncio.run(E.summarize_emails())
+        self.assertIn("Unverified header fallback", output)
+        self.assertIn("stale or unverified", output)
+        self.assertFalse(E._external_fresh())
+        self.assertFalse(E.external_recent_complete(ME))
+        self.assertIsNone(E.email_source_details()[0]["last_success"])
+
     def test_registered_dated_unread_uses_current_identity_before_date_filter(self):
         self.accounts[ME]["mail_account_id"] = "native-A"
         E.configure_external_accounts(self.accounts)

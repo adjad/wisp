@@ -41,6 +41,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 import hashlib
+import math
 import re
 import threading
 import time
@@ -133,6 +134,15 @@ _raw_mail_snapshot: RawEmailSnapshot | None = None
 _headers = cache_store.load("email_headers")
 _history = cache_store.load("email_history")
 _raw_emails = cache_store.load("email_raw")
+def _source_receipt(value) -> float:
+    """Unknown or corrupt source metadata cannot attest a successful refresh."""
+    try:
+        stamp = float(value or 0)
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+    return stamp if math.isfinite(stamp) and 0 < stamp <= time.time() else 0.0
+
+
 def _cache_file_exists(name: str) -> bool | None:
     """None means this adapter cannot attest filesystem provenance."""
     path = getattr(cache_store, "_path", None)
@@ -217,14 +227,16 @@ def _restore_email_sources() -> None:
         return
     try:
         saved = json.loads(cache_store.load("email_sources") or "{}")
-        _native_headers_at = float(saved.get("native_headers_at") or 0)
+        _native_headers_at = _source_receipt(saved.get("native_headers_at"))
         _native_source = str(saved.get("native_source") or "")
-        _native_raw_at = float(saved.get("native_raw_at") or _native_raw_at)
-        _native_history_at = float(saved.get("native_history_at") or 0)
+        _native_raw_at = _source_receipt(saved.get("native_raw_at") or _native_raw_at)
+        _native_history_at = _source_receipt(saved.get("native_history_at"))
         for address, item in saved.get("accounts", {}).items():
             if isinstance(item, dict) and "@" in address:
                 _external_accounts[address] = {**item, "verified": False,
-                    "headers_verified": False, "history_verified": False, "raw_verified": False}
+                    "headers_verified": False, "history_verified": False, "raw_verified": False,
+                    **{part + "_at": _source_receipt(item.get(part + "_at"))
+                       for part in ("headers", "history", "raw")}}
     except (ValueError, TypeError, AttributeError):
         _external_accounts = {}
 
@@ -321,12 +333,14 @@ def _covered_source(label: str, native_id: str, address: str, item: dict) -> boo
 def _provider_selected(address: str, item: dict, part: str) -> bool:
     if item.get(part) is None:
         return False
-    stamp = float(item.get(part + "_at") or 0)
+    stamp = _source_receipt(item.get(part + "_at"))
+    if part == "raw" and not stamp:
+        return False  # Rejected body receipts must not shadow valid native data.
     if item.get(part + "_verified") and not item.get(part + "_error") and 0 <= time.time() - stamp <= _EXTERNAL_MAX_AGE:
         return True
     # A successful later native read is a better fallback than a failed provider
     # snapshot. Its server freshness is still disclosed separately.
-    native_stamp = {"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at)
+    native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
     native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
     records = native.split(_RAW_RS if part == "raw" else "\n")
     matched = any(_covered_source(*_source_identity(record, raw=part == "raw"), address, item)
@@ -409,7 +423,8 @@ def _external_fresh() -> bool:
     now = time.time()
     return bool(_external_accounts) and all(
         item.get("headers_verified") and not item.get("headers_error") and
-        0 <= now - float(item.get("headers_at") or 0) <= _EXTERNAL_MAX_AGE
+        0 < _source_receipt(item.get("headers_at")) and
+        0 <= now - _source_receipt(item.get("headers_at")) <= _EXTERNAL_MAX_AGE
         for item in _external_accounts.values())
 
 
@@ -543,7 +558,7 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
     for address, item in _external_accounts.items():
         if selected is not None and _account_group(address, address) not in selected:
             continue
-        stamp = float(item.get(part + "_at") or 0)
+        stamp = _source_receipt(item.get(part + "_at"))
         error = str(item.get(part + "_error") or "")
         fresh = bool(item.get(part + "_verified") and stamp and not error and 0 <= now - stamp <= _EXTERNAL_MAX_AGE)
         result.append({"account": address, "source": "gmail", "fresh": fresh,
@@ -558,7 +573,7 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
                for address, item in _external_accounts.items()):
             continue
         observed[native_id or label] = label
-    native_stamp = {"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at)
+    native_stamp = _source_receipt({"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at))
     for label in observed.values():
         # Mail.app read completion still cannot prove a server fetch completed.
         result.append({"account": label, "source": _email_read_source or _native_source or "saved_cache",
@@ -573,7 +588,8 @@ def email_source_details(account: str | None = None, *, part: str = "headers") -
 def external_recent_complete(address: str) -> bool:
     item = _external_accounts.get(address, {})
     if (not item.get("headers_verified") or item.get("headers_error") or
-            not 0 <= time.time() - float(item.get("headers_at") or 0) <= _EXTERNAL_MAX_AGE):
+            not _source_receipt(item.get("headers_at")) or
+            not 0 <= time.time() - _source_receipt(item.get("headers_at")) <= _EXTERNAL_MAX_AGE):
         return False
     headers = item.get("headers")
     if headers == "":
@@ -882,11 +898,8 @@ def _purge_raw_if_expired(*, persist: bool = True) -> None:
     with _raw_snapshot_lock:
         now = time.time()
         def receipt(value) -> float:
-            try:
-                stamp = float(value or 0)
-            except (ValueError, TypeError):
-                return 0.0
-            return stamp if stamp > 0 and 0 <= now - stamp <= _RAW_TTL_SECONDS else 0.0
+            stamp = _source_receipt(value)
+            return stamp if stamp and 0 <= now - stamp <= _RAW_TTL_SECONDS else 0.0
 
         for item in _external_accounts.values():
             if item.get("raw") is not None and not receipt(item.get("raw_at")):
