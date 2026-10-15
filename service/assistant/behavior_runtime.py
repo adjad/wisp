@@ -53,7 +53,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from types import MappingProxyType
-from service.publication_authority import Authority, PublicationUnavailable, Witness, publication, revocation
+from service.publication_authority import Authority, PublicationUnavailable, Witness, assert_mutation_allowed, mutating, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
 
@@ -355,7 +355,11 @@ class BehaviorRuntime:
         if self._stopped:
             raise RuntimeStopped("behavior runtime was stopped")
         if self._local_engine is None:
-            self._local_engine = self._local_factory(self.home / ENGINE_DB)
+            with revocation(),self._gate:
+                if self._stopped:
+                    raise RuntimeStopped("behavior runtime was stopped")
+                if self._local_engine is None:
+                    self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
 
     def call(self, method: str, *args, **kwargs):
@@ -608,16 +612,25 @@ class BehaviorRuntime:
             def admit():
                 return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
                         and batch.current() and self._analysis_role() == role)
+            seed_index = engine.seed_index() if batch.snapshots else None
+            index_tokens = ((seed_index.publication_token(),) if seed_index is not None and
+                any(s.enabled and s.available and s.records for s in batch.snapshots) else ())
+            baseline = None
             def prepare():
-                extra = ()
+                extra = index_tokens
                 if settings["settings"]["activity"]:
-                    extra = (engine.prepare_availability_publication_witness(
+                    extra += (engine.prepare_availability_publication_witness(
                         patterns,day.isoformat(),zone,batch.visits,now),)
-                return self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,extra=extra)
+                witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,extra=extra)
+                return Witness.combine(baseline,witness) if baseline is not None else witness
+            baseline = prepare()
+            if type(baseline) is not Witness or not baseline.current():
+                self._availability_cache = None
+                return
             interpreter = self._interpreter or Interpreter()
             result = None
             if batch.snapshots:
-                seed = Seed(engine.seed_index())
+                seed = Seed(seed_index)
                 def analyze(context, *, admit):
                     nonlocal result
                     result = interpreter.interpret(context, patterns, now=now, timezone=zone,
@@ -631,7 +644,8 @@ class BehaviorRuntime:
                 progress = seed.run(batch.snapshots, epoch=seed_epoch, now=now, timezone=zone,
                                     analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate,
                                     prepare_publication=prepare)
-                status_witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation)
+                status_witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,
+                    extra=(baseline,*index_tokens))
                 try:
                     with publication(status_witness) as lease,self._gate:
                         self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=seed_epoch, at=now,
@@ -711,6 +725,8 @@ class BehaviorRuntime:
                 return empty
             engine = self.local_engine()
             settings = engine.signal_settings()
+            if not settings["settings"]["interpretation"]:
+                return empty
             cache = self._availability_cache
             role = self._analysis_role()
             def raw_view():
@@ -730,6 +746,7 @@ class BehaviorRuntime:
                         and type(cache.get("publication_witness")) is Witness and cache["publication_witness"].current()
                         and cache["batch"].current())
             index = engine.seed_index(create=False) if settings["settings"]["interpretation"] else None
+            index_tokens = (index.publication_token(),) if index is not None else ()
             if index is None and not cache_available():
                 return raw_view()
             self._bind_history(settings, role)
@@ -767,9 +784,9 @@ class BehaviorRuntime:
                     generated_at=min((v["analyzed_at"] for v in durable_demands+links if _finite(v.get("analyzed_at"))), default=now),
                     detail="Source-grounded tentative hypotheses; uncertainty and source limits apply.")
                 if not cache_ok or not cache_current():
-                    return (self._publish_prepared_view(empty,settings,role,batch) or withdrawn()) if current() else withdrawn()
+                    return (self._publish_prepared_view(empty,settings,role,batch,extra=index_tokens) or withdrawn()) if current() else withdrawn()
                 if (len(batch.receipts) < len(cache["batch"].receipts) or batch.detail != cache["batch"].detail):
-                    return (self._publish_prepared_view(empty,settings,role,batch) or withdrawn()) if current() else withdrawn()
+                    return (self._publish_prepared_view(empty,settings,role,batch,extra=index_tokens) or withdrawn()) if current() else withdrawn()
                 proofs = cache["pattern_proofs"]
                 matching = [p for p in patterns if isinstance(proofs.get(p["id"]), str)
                             and proofs[p["id"]] == self._pattern_proof(p)]
@@ -788,7 +805,7 @@ class BehaviorRuntime:
                     observed_context=engine.availability_context(timezone, now=now))
                 pattern_witness = engine.prepare_availability_publication_witness(patterns,day,timezone,batch.visits,now,days=1)
                 return self._publish_prepared_view(value,settings,role,batch,
-                    extra=(pattern_witness,cache["publication_witness"]),cache=cache) or withdrawn()
+                    extra=(*index_tokens,pattern_witness,cache["publication_witness"]),cache=cache) or withdrawn()
             except Exception:
                 return withdrawn()
             finally:
@@ -982,11 +999,6 @@ class BehaviorRuntime:
                 changed = self._ingest(store, now, stamps) or changed
                 stamps["ingest"] = now
                 self.last["ingest"] = now
-            explicit = bool(self._email_history.worker_jobs())
-            fast_pending = explicit and any(self._history_backlog().values())
-            if self._history_driver.analysis_due(
-                    wanted=fast_pending or now-self._availability_attempt >= INGEST_EVERY_S,explicit=explicit):
-                self._refresh_availability(now)
             nudges: list = []
             try:
                 if force or changed or now - stamps["mine"] >= MINE_EVERY_S:
@@ -1003,6 +1015,11 @@ class BehaviorRuntime:
                 self.errors.pop("engine", None)
             except Exception as exc:  # noqa: BLE001
                 self.errors["engine"] = f"{type(exc).__name__}: {exc}"[:200]
+            explicit = bool(self._email_history.worker_jobs())
+            fast_pending = explicit and any(self._history_backlog().values())
+            if self._history_driver.analysis_due(
+                    wanted=fast_pending or now-self._availability_attempt >= INGEST_EVERY_S,explicit=explicit):
+                self._refresh_availability(now)
             if self._card is None or self.clock() - self._card[0] >= CARD_TTL_S:
                 self.refresh_card(now)
             return nudges, key
@@ -1452,7 +1469,7 @@ def get_runtime() -> BehaviorRuntime | None:
     global _runtime
     if not enabled():
         return None
-    with _runtime_lock:
+    with revocation(),_runtime_lock:
         if _forgetting:
             return None
         if _runtime is None:
@@ -1479,15 +1496,20 @@ def forget_all(store, home: Path | None = None) -> dict:
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
     global _runtime, _forgetting
+    assert_mutation_allowed()
     explicit_home = Path(home) if home is not None else None
     with _forget_lock:
-        with _runtime_lock:
+        with revocation(),_runtime_lock:
+            runtime = _runtime
+            if runtime is not None:
+                runtime._publication.withdraw()
+                runtime.invalidate_history("Behavior data is being forgotten")
             _forgetting = True            # get_runtime() answers None until the files are gone
-            runtime, _runtime = _runtime, None
+            _runtime = None
         try:
             return _forget_locked(store, runtime, explicit_home)
         finally:
-            with _runtime_lock:
+            with revocation(),_runtime_lock:
                 _forgetting = False
 
 
@@ -1531,6 +1553,7 @@ AGE_OUT_EVERY_S = 6 * 3600.0
 _last_age_out: float | None = None
 
 
+@mutating
 def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int]:
     """Apply the retention limits (observations 180 days, nudges 30 days) to what is
     already on disk, whether or not learning is on. Plain SQL on its own connections:
@@ -1539,6 +1562,7 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
     home = Path(home) if home is not None else _home()
     now = time.time() if now is None else float(now)
     out = {"observations": 0, "nudges": 0, "delivered": 0}
+    from service.behavior.engine import database_mutation as engine_database_mutation
 
     def run(name: str, statements: list[tuple[str, str, float]]) -> None:
         path = home / name
@@ -1559,26 +1583,28 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             if conn is not None:
                 conn.close()
 
-    run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
-                    ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
-                    ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
-                    ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
-    run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
-    path = home / ENGINE_DB
-    if path.exists():
-        conn = None
-        try:
-            conn = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30)
-            from service.behavior.source_index import prune_connection
-            with conn:
-                removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
-            if removed:
-                out["seed_metadata"] = removed
-        except sqlite3.DatabaseError:
-            pass
-        finally:
-            if conn is not None:
-                conn.close()
+    from service.behavior.source_index import database_mutation
+    with engine_database_mutation(home/ENGINE_DB),database_mutation(home/ENGINE_DB):
+        run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
+                        ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
+                        ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
+                        ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
+        run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+        path = home / ENGINE_DB
+        if path.exists():
+            conn = None
+            try:
+                conn = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30)
+                from service.behavior.source_index import prune_connection
+                with conn:
+                    removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
+                if removed:
+                    out["seed_metadata"] = removed
+            except sqlite3.DatabaseError:
+                pass
+            finally:
+                if conn is not None:
+                    conn.close()
     return out
 
 
@@ -1597,7 +1623,10 @@ async def _maybe_age_out(home: Path | None = None) -> None:
 def set_runtime(runtime: BehaviorRuntime | None) -> None:
     """Install (tests, rehearsal tooling) or drop the process runtime."""
     global _runtime
-    with _runtime_lock:
+    with revocation(),_runtime_lock:
+        if _runtime is not None and _runtime is not runtime:
+            _runtime._publication.withdraw()
+            _runtime.invalidate_history("Behavior runtime replaced")
         _runtime = runtime
 
 

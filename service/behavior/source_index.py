@@ -10,9 +10,13 @@ from __future__ import annotations
 import json
 import math
 import hashlib
+import weakref
 from collections.abc import Mapping
+from contextlib import contextmanager
+from pathlib import Path
+from functools import wraps
 
-from service.publication_authority import PublicationLease, PublicationUnavailable
+from service.publication_authority import Authority, PublicationLease, PublicationUnavailable, mutating, revocation
 
 
 class CallerTransactionActive(PublicationUnavailable):
@@ -21,6 +25,43 @@ class CallerTransactionActive(PublicationUnavailable):
 
 class _PublicationDeclined(Exception):
     pass
+
+
+class _IndexHead:
+    def __init__(self):
+        self.authority = Authority("behavior-seed-progress-epoch",owner=self)
+
+
+_heads = weakref.WeakValueDictionary()
+
+
+@contextmanager
+def database_mutation(path):
+    """Order external retention of existing metadata, without opening an index."""
+    from service.behavior.activity import database_identity
+    with revocation():
+        head = _heads.get(database_identity(Path(path)))
+        if head is not None:
+            head.authority.withdraw()
+        yield
+        if head is not None:
+            head.authority.publish()
+
+
+def _ordered_mutation(function):
+    @wraps(function)
+    def call(self,*args,**kwargs):
+        lease = kwargs.get("lease")
+        if lease is not None:
+            if type(lease) is not PublicationLease or not lease.covers(self._head.authority):
+                raise PublicationUnavailable("An active prepared metadata publication lease is required")
+            return function(self,*args,**kwargs)
+        with revocation():
+            self._head.authority.withdraw()
+            result = function(self,*args,**kwargs)
+            self._head.authority.publish()
+            return result
+    return call
 
 SOURCES = ("email", "messages", "notes", "calendar", "reminders")
 MAX_RECORDS = 10000
@@ -101,18 +142,36 @@ def _work_rank(row, now):
 
 class SourceIndex:
     def __init__(self, store):
+        from service.behavior.activity import database_identity
         self.store = store
         self._account_picks = {}
-        with store._lock, store._conn:
-            store._conn.executescript(SCHEMA)
+        with revocation():
+            with store._lock:
+                if store._conn.in_transaction:
+                    raise CallerTransactionActive("Seed initialization was not applied inside a caller-owned transaction")
+                with store._conn:
+                    store._conn.executescript(SCHEMA)
+            identity = database_identity(store.path,store._conn)
+            head = _heads.get(identity)
+            if head is None:
+                head = _IndexHead()
+                head.authority.publish()
+                _heads[identity] = head
+            self._head = head
+
+    def publication_token(self):
+        return self._head.authority.token()
 
     def _epoch(self):
         return self.store.meta_get("behavior_seed_epoch")
 
+    @mutating
     def reset(self, epoch=None):
         """A new consent epoch or Forget never inherits prior analysis."""
+        self._head.authority.withdraw()
         with self.store._lock, self.store._conn:
             self._reset(epoch)
+        self._head.authority.publish()
 
     def _reset(self, epoch):
         self._account_picks.clear()
@@ -123,11 +182,14 @@ class SourceIndex:
             self.store._conn.execute("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                      (key, json.dumps(value)))
 
+    @mutating
     def revoke(self, source):
         if source not in SOURCES:
             raise ValueError("Unsupported seed source")
+        self._head.authority.withdraw()
         with self.store._lock, self.store._conn:
             self._revoke(source)
+        self._head.authority.publish()
 
     def _revoke(self, source):
         self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE record_id IN "
@@ -151,7 +213,8 @@ class SourceIndex:
             if predicate(json.loads(row["payload"])):
                 self.store._conn.execute("DELETE FROM behavior_seed_work WHERE id=?", (row["id"],))
 
-    def sync(self, records, manifests, *, epoch, now):
+    @_ordered_mutation
+    def sync(self, records, manifests, *, epoch, now, lease=None):
         """Index only already-normalized, eligible records supplied by the host.
 
         A missing record in a capped publication is not a source deletion. Keep
@@ -305,7 +368,8 @@ class SourceIndex:
                     result.append(groups[account].pop(0)[1])
         return tuple(result)
 
-    def select(self, records, *, now, limit=4):
+    @_ordered_mutation
+    def select(self, records, *, now, limit=4, lease=None):
         """Rotate sources/accounts; alternate recent work and retained backlog."""
         if type(limit) is not int or not 1 <= limit <= 8:
             raise ValueError("Invalid seed batch size")
@@ -363,7 +427,11 @@ class SourceIndex:
         """
         if not admit():
             return False
-        return self._finish_atomic(anchors, context, proposals, epoch=epoch, now=now, work=work)
+        with revocation():
+            self._head.authority.withdraw()
+            result = self._finish_atomic(anchors, context, proposals, epoch=epoch, now=now, work=work)
+            self._head.authority.publish()
+            return result
 
     def finish_prepared(self, anchors, context, proposals, *, epoch, now, lease, work=()):
         """Publish under an already-held outer application publication lease.
@@ -373,7 +441,7 @@ class SourceIndex:
         typed memory checks run here; no source or admission callback runs in
         the transaction. The caller retains the lease through our commit.
         """
-        if type(lease) is not PublicationLease or not lease.current():
+        if type(lease) is not PublicationLease or not lease.covers(self._head.authority):
             return False
         return self._finish_atomic(anchors, context, proposals, epoch=epoch, now=now, work=work, lease=lease)
 
@@ -461,7 +529,8 @@ class SourceIndex:
             self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=0 WHERE record_id=? AND retrying=2", (ident,))
         return True
 
-    def defer(self, anchors, *, epoch, now):
+    @_ordered_mutation
+    def defer(self, anchors, *, epoch, now, lease=None):
         with self.store._lock, self.store._conn:
             if self._epoch() != epoch:
                 return
@@ -518,9 +587,13 @@ class SourceIndex:
                 "SELECT id,revision FROM behavior_seed_records WHERE state='analyzed'")
                 if current.get(row["id"]) == row["revision"]}
 
+    @mutating
     def prune(self, *, now, retention=180*86400):
+        self._head.authority.withdraw()
         with self.store._lock, self.store._conn:
-            return prune_connection(self.store._conn, now-retention)
+            removed = prune_connection(self.store._conn, now-retention)
+        self._head.authority.publish()
+        return removed
 
 
 def prune_connection(conn, cutoff):

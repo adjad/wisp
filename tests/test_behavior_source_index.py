@@ -314,7 +314,7 @@ def _prepared_case(index):
     authority.publish()
     clock = Clock(live=False)
     clock.observe(NOW,100)
-    witness = Witness.combine(authority.token(clock=clock,expires_wall=NOW+10,expires_monotonic=110))
+    witness = Witness.combine(authority.token(clock=clock,expires_wall=NOW+10,expires_monotonic=110),index.publication_token())
     a,b,c = records
     links = [dict(relation="possibly_related", left_id=a["id"], right_id=r["id"],
                   left_quote=a["text"], right_quote=r["text"]) for r in (b,c)]
@@ -555,6 +555,45 @@ def test_seed_prepared_path_never_defers_or_commits_a_refused_caller_transaction
     assert conn.execute("SELECT count(*) FROM behavior_seed_records WHERE attempts>0 OR covered>0").fetchone()[0] == 0
     conn.rollback()
     assert conn.execute("SELECT 1 FROM meta WHERE key='unrelated-caller-value'").fetchone() is None
+
+
+def test_shared_index_reset_aba_cannot_finish_an_older_prepared_analysis(index):
+    from service.publication_authority import Authority,Witness
+    second_store = Store(index.store.path)
+    other = SourceIndex(second_store)
+    authority = Authority("synthetic-source")
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    records,manifests,_ = prepare([snap()])
+    def analyze(*args,**kwargs):
+        other.reset("consent-one")
+        other.sync(records,manifests,epoch="consent-one",now=NOW)
+        return {"links":[]}
+    try:
+        result = Seed(index).run([snap()],epoch="consent-one",now=NOW,analysis_enabled=True,
+            analyze=analyze,admit=lambda:True,prepare_publication=lambda:witness)
+        assert result["state"] == "cancelled"
+        assert index.store._conn.execute("SELECT sum(covered),sum(attempts) FROM behavior_seed_records").fetchone()[:] == (0,0)
+        result = Seed(index).run([snap()],epoch="consent-one",now=NOW+1,analysis_enabled=True,
+            analyze=lambda *args,**kwargs:{"links":[]},admit=lambda:True,prepare_publication=lambda:witness)
+        assert result["state"] == "advanced"
+        for mutate in (lambda:other.revoke("email"),lambda:other.prune(now=NOW+181*86400)):
+            before = index.publication_token()
+            mutate()
+            assert not before.current() and index.publication_token().current()
+    finally:
+        second_store.close()
+
+
+def test_prepared_finish_requires_this_indexes_epoch_in_the_actual_lease(index):
+    from service.publication_authority import Authority,Witness,publication
+    records,anchors,links,_,_,_ = _prepared_case(index)
+    unrelated = Authority("unrelated-source")
+    unrelated.publish()
+    before = _seed_rows(index)
+    with publication(Witness.combine(unrelated.token())) as lease:
+        assert not index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,lease=lease)
+    assert _seed_rows(index) == before
 
 
 def test_aged_derivations_reopen_still_current_exact_revision(index):

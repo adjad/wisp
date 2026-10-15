@@ -215,6 +215,10 @@ class PublicationLease:
         return (not self._closed and self._thread==threading.get_ident()
                 and getattr(_local,"publisher",None) is self and self.witness.current())
 
+    def covers(self, authority):
+        return (type(authority) is Authority and self.current()
+                and any(token._authority is authority for token in self.witness.tokens))
+
 
 @contextmanager
 def publication(witness):

@@ -254,6 +254,9 @@ class Seed:
             with self.index.store._lock:
                 if self.index.store._conn.in_transaction:
                     raise CallerTransactionActive("Seed preparation was not applied inside a caller-owned transaction")
+            prepare_application = prepare_publication
+            index_token = self.index.publication_token()
+            prepare_publication = lambda: Witness.combine(prepare_application(),index_token)
         if analysis_enabled is not True:
             with revocation(),publication():
                 self.index.reset()
@@ -268,8 +271,8 @@ class Seed:
         with _publication_scope(guard,publication,prepare_publication) as (current,lease):
             if not current:
                 return dict(state="unavailable", sources={}, analyzed=0)
-            self.index.sync(records, manifests, epoch=epoch, now=now)
-            anchors = self.index.select(records, now=now)
+            self.index.sync(records, manifests, epoch=epoch, now=now,lease=lease)
+            anchors = self.index.select(records, now=now,lease=lease)
         context = context_for(anchors, records)
         included = {r["id"] for r in context}
         anchors = [r for r in anchors if r["id"] in included]
@@ -311,7 +314,7 @@ class Seed:
             except Exception:
                 with _publication_scope(guard,publication,prepare_publication) as (current,lease):
                     if current:
-                        self.index.defer(anchors, epoch=epoch, now=now)
+                        self.index.defer(anchors, epoch=epoch, now=now,lease=lease)
                         state = "deferred"
                     else:
                         state = "cancelled"

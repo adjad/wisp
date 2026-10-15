@@ -262,3 +262,141 @@ def test_direct_activity_ingest_invalidates_prepared_routines_even_without_engin
         assert result["accepted"] == 1 and not witness.current()
     finally:
         engine.close()
+
+
+def test_shared_database_settings_and_content_heads_cross_aliases_but_close_is_local(tmp_path):
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior.types import Observation
+    path = tmp_path/"shared.db"
+    first = BehaviorEngine(path,clock=lambda:100,tz="UTC")
+    alias = tmp_path/"alias.db"
+    alias.symlink_to(path)
+    second = BehaviorEngine(alias,clock=lambda:100,tz="UTC")
+    other = BehaviorEngine(tmp_path/"other.db",clock=lambda:100,tz="UTC")
+    try:
+        first.configure_signals({"email":True,"calendar_context":True},100)
+        original = first.signal_settings()
+        settings = first.prepare_settings_publication_token(original)
+        other_settings = other.prepare_settings_publication_token(other.signal_settings())
+        second.configure_signals({"email":False},101)
+        assert not settings.current() and other_settings.current()
+        row = Observation("shared-event","event",200,end_ts=260,subject="Original",source="calendar",source_id="one")
+        first.observe_snapshot("calendar",[row],window_start=100,window_end=300,taken_at=100)
+        context = first.semantic_history("calendar",100,expected_sync=100,metadata=True)
+        content = first.prepare_semantic_publication_token("calendar",context,100,expected_sync=100)
+        from dataclasses import replace
+        second.observe([replace(row,subject="Updated through another connection")])
+        assert not content.current()
+        current = second.semantic_history("calendar",100,expected_sync=100,metadata=True)
+        first_content = first.prepare_semantic_publication_token("calendar",current,100,expected_sync=100)
+        second_content = second.prepare_semantic_publication_token("calendar",current,100,expected_sync=100)
+        second_settings = second.prepare_settings_publication_token(second.signal_settings())
+        assert first_content.current() and second_content.current()
+        first.close()
+        assert not first_content.current() and second_content.current() and second_settings.current()
+        assert second.prepare_semantic_publication_token("calendar",current,100,expected_sync=100).current()
+        assert other_settings.current()
+    finally:
+        first.close();second.close();other.close()
+
+
+def test_content_preparation_cannot_bind_new_head_to_bytes_read_before_another_writer(tmp_path,monkeypatch):
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior.types import Observation
+    first = BehaviorEngine(tmp_path/"race.db",clock=lambda:100,tz="UTC")
+    second = BehaviorEngine(tmp_path/"race.db",clock=lambda:100,tz="UTC")
+    try:
+        first.configure_signals({"calendar_context":True},100)
+        row = Observation("event","event",200,end_ts=260,subject="Original",source="calendar",source_id="one")
+        first.observe_snapshot("calendar",[row],window_start=100,window_end=300,taken_at=100)
+        context = first.semantic_history("calendar",100,expected_sync=100,metadata=True)
+        read = first.semantic_history
+        def changed_after_read(*args,**kwargs):
+            result = read(*args,**kwargs)
+            from dataclasses import replace
+            second.observe([replace(row,subject="Changed after the full read")])
+            return result
+        monkeypatch.setattr(first,"semantic_history",changed_after_read)
+        assert first.prepare_semantic_publication_token("calendar",context,100,expected_sync=100) is None
+    finally:
+        first.close();second.close()
+
+
+def test_retention_withdraws_live_proofs_without_constructing_an_engine_or_runtime(tmp_path,monkeypatch):
+    from service.assistant import behavior_runtime as runtime_module
+    from service.behavior import engine as engine_module
+    from service.behavior.types import Observation
+    from service.behavior.source_index import SourceIndex
+    now = 1792051200.0
+    engine = engine_module.BehaviorEngine(tmp_path/runtime_module.ENGINE_DB,clock=lambda:now,tz="UTC")
+    try:
+        engine.configure_signals({"calendar_context":True},now)
+        row = Observation("old-event","event",now-86400,end_ts=now-86300,subject="Old plan",source="calendar",source_id="one")
+        engine.observe_snapshot("calendar",[row],window_start=now-2*86400,window_end=now,taken_at=now)
+        context = engine.semantic_history("calendar",now,expected_sync=now,metadata=True)
+        content = engine.prepare_semantic_publication_token("calendar",context,now,expected_sync=now)
+        settings = engine.prepare_settings_publication_token(engine.signal_settings())
+        index = SourceIndex(engine._store)
+        index_token = index.publication_token()
+        def forbidden(*args,**kwargs):
+            raise AssertionError("Retention tried to construct an engine/runtime")
+        with monkeypatch.context() as closed:
+            closed.setattr(runtime_module,"BehaviorRuntime",forbidden)
+            closed.setattr(engine_module,"BehaviorEngine",forbidden)
+            result = runtime_module.age_out(tmp_path,now+181*86400)
+        assert result["observations"] == 1
+        assert not content.current() and not settings.current() and not index_token.current()
+        assert index.publication_token().current()
+        assert engine.prepare_settings_publication_token(engine.signal_settings()).current()
+    finally:
+        engine.close()
+
+
+def test_reentrant_forget_stop_close_and_singleton_replacement_leave_state_untouched(tmp_path,monkeypatch):
+    from service.assistant import behavior_runtime as module
+    from service.assistant.store import AssistantStore
+    monkeypatch.setenv("WISP_BEHAVIOR","1")
+    monkeypatch.setattr(module,"_runtime",None)
+    monkeypatch.setattr(module,"_forgetting",False)
+    runtime = module.BehaviorRuntime(tmp_path/"runtime")
+    store = AssistantStore(tmp_path/"assistant.db")
+    module.set_runtime(runtime)
+    witness = Witness.combine(runtime._publication.token())
+    try:
+        with publication(witness):
+            for change in (lambda:module.forget_all(store,runtime.home),runtime.stop,runtime.close,lambda:module.set_runtime(None)):
+                with pytest.raises(PublicationBusy):
+                    change()
+                assert module._runtime is runtime and not module._forgetting and not runtime._stopped
+                assert witness.current() and (runtime.home/module.RUNTIME_DB).exists()
+        result = module.forget_all(store,runtime.home)
+        assert result["files_deleted"] >= 1 and module._runtime is None and not module._forgetting
+        assert not witness.current() and not (runtime.home/module.RUNTIME_DB).exists()
+    finally:
+        runtime.close();store._db.close()
+
+
+def test_stop_releases_application_barrier_before_waiting_for_the_worker(tmp_path,monkeypatch):
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    runtime = BehaviorRuntime(tmp_path)
+    withdrawn = threading.Event()
+    original = runtime._publication.withdraw
+    def withdraw():
+        original()
+        withdrawn.set()
+    monkeypatch.setattr(runtime._publication,"withdraw",withdraw)
+    runtime._work_lock.acquire()
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            stopping = pool.submit(runtime.stop)
+            try:
+                assert withdrawn.wait(3)
+                def probe():
+                    with revocation():
+                        return True
+                assert pool.submit(probe).result(timeout=3) and not stopping.done()
+            finally:
+                runtime._work_lock.release()
+            stopping.result(timeout=3)
+    finally:
+        runtime.close()

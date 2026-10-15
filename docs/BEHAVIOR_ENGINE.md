@@ -757,7 +757,11 @@ Nudge candidates are evaluated every minute, or on changed/forced passes, under 
 existing daily budget and policy. Approval/denial metadata queues for the next tick;
 Wisp asks and other cached sources enter on ingestion. Enabling learning pokes a tick.
 
-The new semantic availability adapter gets at most one attempt per five minutes.
+The semantic availability adapter normally gets at most one attempt per five minutes.
+An explicitly started Gmail history scan permits one global acquisition step and
+one interpretation opportunity per 30 seconds; forced runs cannot bypass that
+limit. Ingestion, mining and retention finish before the new interpretation is
+published, so maintenance cannot immediately invalidate a just-produced result.
 It checks opt-in and current source evidence before calling the resident model; a
 busy foreground or unavailable model leaves unknown, without a scenario fallback.
 Planning/API reads never invoke inference. Weekly reports are rolling seven-complete-
@@ -766,3 +770,29 @@ model job or automatic weekly notification is added. Native history pages have t
 own bounded resumable cadence. Sleep/offline gaps are unknown and are not backfilled
 with invented activity. With learning off, only the existing roughly six-hour
 retention maintenance runs; new ingestion, interpretation and nudges stop.
+
+### Publication and withdrawal ordering
+
+The default runtime prepares complete source/configuration/database checks before
+taking its publication lease or runtime gate. Publication then checks only typed,
+process-local memory proofs and cancellation/expiry, and owns the seed transaction
+through commit. Record proofs bind selected revisions; an unrelated Gmail page
+append preserves existing selected messages, while eviction or replacement does
+not. Database mutation heads are shared by live connections to the same database;
+instance lifetime is separate, so closing one connection does not disable another.
+Retention, explicit reset/revocation, settings changes, cancellation and Forget
+participate in the same ordering. Forget releases the barrier before waiting for
+workers to stop. Caller-owned outer seed transactions are refused unchanged;
+deferral cannot commit them accidentally.
+
+For cooperating public APIs, a withdrawal that wins the barrier prevents later
+publication. If publication wins, its transaction finishes before withdrawal can
+acknowledge completion. A same-thread reentrant change raises `PublicationBusy`
+before changing permission or source state; a caller can retry after publication.
+It is never silently queued or reported as applied. This is an application ordering
+contract, not a veto of arbitrary SQLite COMMIT instructions. Expiry is checked at
+the logical publication decision; disk commit is not promised to precede a wall
+clock deadline. Reads withhold expired proof. Raw SQL, filesystem changes and private
+state edits outside the public protocol do not have immediate memory observability.
+The compatibility seed `finish` entry is not used by the default runtime and does
+not provide this prepared-source publication contract.

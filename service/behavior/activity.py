@@ -11,12 +11,14 @@ import json
 import math
 import re
 import secrets
+import weakref
 from collections import defaultdict
+from contextlib import contextmanager
 from zoneinfo import ZoneInfo
 
 from service.behavior.store import _obs_row
 from service.behavior.types import Observation
-from service.publication_authority import Authority, mutating
+from service.publication_authority import Authority, mutating, revocation
 
 DEFAULTS = dict(
     activity=False,
@@ -37,6 +39,53 @@ def finite(x):
     return type(x) in (int, float) and math.isfinite(x)
 
 
+def database_identity(path, connection=None):
+    if str(path) == ":memory:":
+        return ("memory",id(connection))
+    try:
+        value = path.stat()
+        return ("inode",value.st_dev,value.st_ino)
+    except OSError:
+        return ("path",str(path.resolve()))
+
+
+class _DataHead:
+    def __init__(self):
+        self.settings = Authority("behavior-source-preferences",owner=self)
+        self.snapshot = None
+        self.data = Authority("behavior-activity-data",owner=self)
+        self.revision = 0
+
+
+_heads = weakref.WeakValueDictionary()
+
+
+@mutating
+def invalidate_database_publications(identity):
+    head = _heads.get(identity)
+    if head is not None:
+        head.settings.withdraw()
+        head.snapshot = None
+        head.data.withdraw()
+        head.revision += 2
+
+
+@contextmanager
+def database_mutation(identity):
+    with revocation():
+        head = _heads.get(identity)
+        if head is not None:
+            head.settings.withdraw()
+            head.snapshot = None
+            head.data.withdraw()
+            head.revision += 1
+        try:
+            yield
+        finally:
+            if head is not None:
+                head.revision += 1
+
+
 class Activity:
     def __init__(self, store):
         self.store = store
@@ -45,16 +94,41 @@ class Activity:
         self.token = None
         self.expiry = 0.0
         self.capture_since = 0.0
-        self._publication = Authority("behavior-source-preferences",owner=self)
-        self._publication_snapshot = None
-        self._data_publication = Authority("behavior-activity-data",owner=self)
-        self._data_revision = 0
+        self._closed = False
+        self._lifetime = Authority("behavior-activity-instance",owner=self)
+        self._database_identity = database_identity(store.path,store._conn)
+        with revocation():
+            head = _heads.get(self._database_identity)
+            if head is None:
+                head = _DataHead()
+                _heads[self._database_identity] = head
+            self._head = head
+            self._publication,self._data_publication = head.settings,head.data
+            self._lifetime.publish()
+
+    @property
+    def _publication_snapshot(self):
+        return self._head.snapshot
+
+    @_publication_snapshot.setter
+    def _publication_snapshot(self,value):
+        self._head.snapshot = value
+
+    @property
+    def _data_revision(self):
+        return self._head.revision
+
+    @_data_revision.setter
+    def _data_revision(self,value):
+        self._head.revision = value
 
     def settings(self):
         return {**DEFAULTS, **(self.store.meta_get("signal_settings", {}) or {})}
 
     @mutating
     def configure(self, changes, now):
+        if self._closed:
+            raise ValueError("Activity source is closed")
         if (
             not isinstance(changes, dict)
             or not changes
@@ -68,7 +142,7 @@ class Activity:
             elif type(value) is not bool:
                 raise ValueError("Source preferences must be true or false")
         self.invalidate_publication()
-        with self.store._lock, self.store._conn:
+        with self._data_change(),self.store._lock, self.store._conn:
             settings = {**self.settings(), **changes}
             self._meta("signal_settings", settings)
             self._meta("signal_epoch", secrets.token_hex(16))
@@ -89,20 +163,35 @@ class Activity:
         self._publication.withdraw()
         self._publication_snapshot = None
         self._invalidate_data()
+        self._data_revision += 1
+
+    @mutating
+    def close_publication(self):
+        self._lifetime.withdraw()
+        self._closed = True
 
     def _invalidate_data(self):
         self._data_publication.withdraw()
         self._data_revision += 1
 
+    @contextmanager
+    def _data_change(self):
+        self._invalidate_data()
+        try:
+            yield
+        finally:
+            self._data_revision += 1
+
     @mutating
     def prepare_data_token(self, expected_revision):
         # The engine compares actual data under its Store lock first. This
         # memory-only second stage refuses a change between read and binding.
-        if expected_revision != self._data_revision:
+        if self._closed or expected_revision % 2 or expected_revision != self._data_revision:
             return None
         if self._data_publication.token() is None:
             self._data_publication.publish()
-        return self._data_publication.token()
+        from service.publication_authority import Witness
+        return Witness.combine(self._lifetime.token(),self._data_publication.token())
 
     @mutating
     def prepare_publication_token(self, expected):
@@ -111,6 +200,8 @@ class Activity:
         Construction/restored database content alone is not readiness. Direct
         configure callers invalidate the same head as the engine wrapper.
         """
+        if self._closed:
+            return None
         with self.store._lock:
             actual = dict(settings=self.settings(),epoch=self.store.meta_get("signal_epoch","initial"))
             if not isinstance(expected,dict) or expected != actual:
@@ -120,7 +211,8 @@ class Activity:
                 self._publication.withdraw()
                 self._publication_snapshot = state
                 self._publication.publish()
-            return self._publication.token()
+            from service.publication_authority import Witness
+            return Witness.combine(self._lifetime.token(),self._publication.token())
 
     def _meta(self, key, value):
         self.store._conn.execute(
@@ -130,6 +222,8 @@ class Activity:
 
     @mutating
     def lease(self, client, now):
+        if self._closed:
+            raise ValueError("Activity source is closed")
         if not isinstance(client, str) or not re.fullmatch(
             r"[a-zA-Z0-9-]{16,80}", client
         ):
@@ -153,6 +247,8 @@ class Activity:
 
     @mutating
     def ingest(self, payload, now):
+        if self._closed:
+            raise ValueError("Activity source is closed")
         if not isinstance(payload, dict) or not isinstance(
             payload.get("intervals"), list
         ):
@@ -246,33 +342,33 @@ class Activity:
                 and old.get("sequence", 0) >= rows[0]["sequence"]
             ):
                 raise ValueError("Stale or overlapping activity receipt")
-            self._invalidate_data()
-            self.store._conn.executemany(
-                "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?)",
-                [_obs_row(o) for o in observations],
-            )
-            buckets = {int(o.ts // BIN) * BIN for o in observations}
-            buckets |= {int((o.end_ts - 0.001) // BIN) * BIN for o in observations}
-            for start in buckets:
-                self._aggregate(start)
-            self._meta(
-                "activity_receipt",
-                dict(
-                    digest=digest,
-                    end=observations[-1].end_ts,
-                    observed_at=now,
-                    client=self.client,
-                    sequence=rows[-1]["sequence"],
-                ),
-            )
-            self.store._conn.execute(
-                "DELETE FROM observations WHERE kind='device_activity' AND ts < ?",
-                (now - 7 * 86400,),
-            )
-            self.store._conn.execute(
-                "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?",
-                (now - 56 * 86400,),
-            )
+            with self._data_change():
+                self.store._conn.executemany(
+                    "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?)",
+                    [_obs_row(o) for o in observations],
+                )
+                buckets = {int(o.ts // BIN) * BIN for o in observations}
+                buckets |= {int((o.end_ts - 0.001) // BIN) * BIN for o in observations}
+                for start in buckets:
+                    self._aggregate(start)
+                self._meta(
+                    "activity_receipt",
+                    dict(
+                        digest=digest,
+                        end=observations[-1].end_ts,
+                        observed_at=now,
+                        client=self.client,
+                        sequence=rows[-1]["sequence"],
+                    ),
+                )
+                self.store._conn.execute(
+                    "DELETE FROM observations WHERE kind='device_activity' AND ts < ?",
+                    (now - 7 * 86400,),
+                )
+                self.store._conn.execute(
+                    "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?",
+                    (now - 56 * 86400,),
+                )
         return {"accepted": len(observations), "duplicate": False}
 
     def _aggregate(self, start):

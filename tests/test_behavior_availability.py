@@ -618,6 +618,8 @@ def test_actual_message_subset_runtime_rehydrates_old_analysis_only_with_current
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     messages, clock = live_message_publication
     initial = clock[0]
+    from service.publication_authority import Clock
+    monkeypatch.setattr(messages,"LIVE_CLOCK",Clock())
     quote = "The arbitrary preparation is due tomorrow at 4pm UTC."
     stamp = datetime.fromtimestamp(initial-60, ZoneInfo("UTC")).isoformat()
     carrier = v3_carrier([record(guid="complete", text=quote, timestamp=stamp),
@@ -679,6 +681,8 @@ def test_actual_message_subset_runtime_withholds_mid_analysis_changes(tmp_path, 
     from service.assistant.behavior_interpreter import Interpreter
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     messages, clock = live_message_publication
+    from service.publication_authority import Clock
+    monkeypatch.setattr(messages,"LIVE_CLOCK",Clock())
     quote = "The arbitrary preparation is due tomorrow at 4pm UTC."
     stamp = datetime.fromtimestamp(clock[0]-60, ZoneInfo("UTC")).isoformat()
     carrier = v3_carrier([record(text=quote, timestamp=stamp)], coverage=dict(attempted=2, truncated=1))
@@ -732,10 +736,14 @@ def test_actual_seed_runtime_retains_prior_work_without_model_on_planning_read(t
     from service.assistant.behavior_interpreter import Interpreter
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     live, calls, role = [True], [], ["fake"]
+    from service.publication_authority import Authority,Witness
+    source = Authority("synthetic-bounded-email-source")
+    source.publish()
     text = "The payload assessment is due tomorrow at 4pm UTC."
     publication = Snapshot("email", tuple(dict(id=str(i), text=text+f" Item {i}.", source_time=NOW,
         time_basis="source_timestamp", direction="incoming") for i in range(6)),
-        enabled=True, available=True, current=lambda: live[0], publication_complete=True)
+        enabled=True, available=True, current=lambda: live[0], publication_complete=True,
+        publication_witness=Witness.combine(source.token()))
     def sources(_):
         return Batch([], [], [], {"email": "bounded test publication"}, (publication,))
     def complete(_system, prompt, **_):
@@ -903,26 +911,34 @@ def test_runtime_retained_calendar_adapter_checks_original_receipt_and_canonical
 
 
 def test_completed_reminder_context_is_partial_and_needs_current_original_native_receipt(tmp_path, monkeypatch):
-    from types import SimpleNamespace
+    from service.assistant import store as store_module
+    from service.assistant.store import AssistantStore
     from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.publication_authority import Clock
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
-    receipt = dict(available=True, last_sync=NOW, snapshot_started_at=NOW-10, diagnostics={})
-    runtime = BehaviorRuntime(tmp_path, clock=lambda: NOW, calendar_sync_fn=lambda: {},
-        local_factory=lambda p: BehaviorEngine(p, tz="UTC", clock=lambda: NOW))
+    clock = [NOW]
+    monkeypatch.setattr(store_module.time,"time",lambda:clock[0])
+    monkeypatch.setattr(store_module,"LIVE_CLOCK",Clock())
+    planning = AssistantStore(tmp_path/"planning.db")
+    planning.sync_source("reminders",[],diagnostics=dict(authorized=True,snapshot_started_at=NOW-10))
+    runtime = BehaviorRuntime(tmp_path/"runtime",clock=lambda:clock[0],calendar_sync_fn=lambda:{},
+        local_factory=lambda p:BehaviorEngine(p,tz="UTC",clock=lambda:clock[0]))
     try:
-        runtime._planning_store = SimpleNamespace(today_snapshot=lambda *a: {"sources": {"reminders": receipt}})
+        runtime._planning_store = planning
         engine = runtime.local_engine()
-        engine.configure_signals({"reminders_context": True}, NOW)
-        engine.observe([Observation("completed-one", "reminder_done", NOW-86400, subject="Completed work", source="reminders",
-            attrs=dict(completion_time_known=True, evidence_basis="recorded_completion", completion_ts=NOW-86400))])
-        batch = runtime._source_batch(engine.signal_settings()["settings"], NOW)
+        engine.configure_signals({"reminders_context":True},NOW)
+        engine.observe([Observation("completed-one","reminder_done",NOW-86400,subject="Completed work",source="reminders",
+            attrs=dict(completion_time_known=True,evidence_basis="recorded_completion",completion_ts=NOW-86400))])
+        batch = runtime._source_batch(engine.signal_settings()["settings"],NOW)
         snapshot = next(s for s in batch.snapshots if s.source == "reminders")
         assert snapshot.available and not snapshot.publication_complete and len(snapshot.records) == 1
         assert snapshot.records[0]["evidence_basis"] == "recorded_completion"
-        receipt["snapshot_started_at"] = NOW-1300
-        assert not batch.current()
+        assert snapshot.publication_witness.current()
+        clock[0] += 1300
+        assert not batch.current() and not snapshot.publication_witness.current()
     finally:
         runtime.close()
+        planning._db.close()
 
 
 # These real core modules are copied from the checkout under test into a private
@@ -934,6 +950,8 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/__init__.py',
     'service/assistant/__init__.py',
     'service/assistant/behavior_interpreter.py',
+    'service/assistant/behavior_history_driver.py',
+    'service/assistant/gmail_history_runtime.py',
     'service/assistant/behavior_runtime.py',
     'service/assistant/behavior_seed.py',
     'service/assistant/behavior_sources.py',
@@ -971,6 +989,10 @@ _PUBLIC_PLANNING_SOURCES = (
     'service/inference/__init__.py',
     'service/message_content.py',
     'service/paths.py',
+    'service/publication_authority.py',
+    'service/gmail_behavior_history.py',
+    'service/gmail_source.py',
+    'service/config/authority_changes.py',
     'service/tasks/__init__.py',
     'service/tasks/temporal.py',
     'service/temporal_facts.py',
@@ -1157,7 +1179,15 @@ def facade(name, exports, package=False):
 
 def forbidden(*a, **k):
     return deny('external facade call')
-facade('service.config', {'role_to_model': forbidden, 'user_facing_summary_kwargs': forbidden}, package=True)
+def prepared_config():
+    from service.config import authority_changes
+    authority_changes.observe({'fixture': 'fixed-local-role'},valid=True,expected=authority_changes.current())
+    return {}
+config_boundary = facade('service.config', {'role_to_model': forbidden, 'user_facing_summary_kwargs': forbidden,
+    'models_config': prepared_config}, package=True)
+config_boundary.__path__ = [str(SOURCE / 'service/config')]
+config_boundary.authority_changes = importlib.import_module('service.config.authority_changes')
+RESULT['facades']['service.config']['exports'].append('authority_changes (actual manifest module)')
 facade('service.idle', {})
 facade('service.assistant.hub', {'hub': types.SimpleNamespace(publish=forbidden, emit=forbidden)})
 class NoClient:
@@ -1185,6 +1215,7 @@ from service.assistant.store import AssistantStore
 from service.assistant.today import day_bounds
 from service.paths import MOE_DIR
 from service.tools import email_tools as emails, imessage_tools as messages, notes_tools as notes
+from service.publication_authority import Clock
 assert MOE_DIR.resolve() == ROOT / 'state'
 assert daily._availability_provider is None
 LIVE = [True]
@@ -1213,6 +1244,10 @@ class Case:
         self.source = source; self.calls = []; self.role = ['fixture-fast']; self.ownership = ownership; self.mutation = mutation
         self.engine_zone = engine_zone; self.include_links = include_links; self.pattern_availability = pattern_availability
         self.initial = CLOCK[0]; self.source_time = stamp if stamp is not None else self.initial - 60
+        # Cases deliberately jump across dates/DST. Each is an independent
+        # synthetic source clock epoch; old live tokens are never rearmed.
+        messages.LIVE_CLOCK = Clock()
+        notes.LIVE_CLOCK = Clock()
         self.text = 'The arbitrary preparation is due 2026-11-02 at 16:00 UTC.'
         if source == 'notes':
             self.text = 'Review the arbitrary roadmap with the team.'
@@ -1308,9 +1343,9 @@ def main():
             assert c.runtime.local_engine()._store._conn.total_changes == changes
             assert c.store._db.total_changes == assistant_changes
             passed(source + ': repeated GET no model/no source receipt renewal/no behavior DB write')
-            CLOCK[0] = stamp + ttl
+            CLOCK[0] = stamp + ttl - .001
             assert public()['demands'], source
-            CLOCK[0] = stamp + ttl + 1
+            CLOCK[0] = stamp + ttl
             assert not public()['demands'], source
             assert len(c.calls) == 1
             passed(source + ': exact source TTL boundary and expiry')

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -40,6 +42,33 @@ PHRASE_BUDGET_S = 10.0
 _SNAPSHOT_ATTRS = ("organizer", "organizer_is_user", "attendees", "calendar", "location", "all_day")
 
 
+class _ContentHead:
+    def __init__(self):
+        self.authority = Authority("behavior-retained-content",owner=self)
+        self.revision = 0
+
+
+_content_heads = weakref.WeakValueDictionary()
+
+
+@contextmanager
+def database_mutation(path):
+    """Retention can withdraw existing live proofs without opening an engine."""
+    from service.behavior.activity import database_identity, database_mutation as activity_mutation
+    identity = database_identity(Path(path))
+    with revocation():
+        head = _content_heads.get(identity)
+        if head is not None:
+            head.authority.withdraw()
+            head.revision += 1
+        try:
+            with activity_mutation(identity):
+                yield
+        finally:
+            if head is not None:
+                head.revision += 1
+
+
 class Phraser(Protocol):
     """Optional LLM helper. Must be safe to be None or to fail (return None):
     the engine then uses its code-composed text."""
@@ -65,30 +94,58 @@ class BehaviorEngine:
         # Snapshot diffing and mining read-modify-write the store; serialize them.
         self._lock = threading.RLock()
         self._seed_index = None
-        self._content_publication = Authority("behavior-retained-content",owner=self)
-        self._content_revision = 0
+        self._lifetime = Authority("behavior-engine-instance",owner=self)
+        with revocation():
+            identity = self._activity._database_identity
+            head = _content_heads.get(identity)
+            if head is None:
+                head = _ContentHead()
+                _content_heads[identity] = head
+            self._content_head = head
+            self._content_publication = head.authority
+            self._lifetime.publish()
         self._closed = False
+
+    @property
+    def _content_revision(self):
+        return self._content_head.revision
+
+    @_content_revision.setter
+    def _content_revision(self,value):
+        self._content_head.revision = value
 
     def _invalidate_content(self):
         self._content_publication.withdraw()
         self._content_revision += 1
 
+    @contextmanager
+    def _content_change(self,changed=True):
+        if changed:
+            self._invalidate_content()
+        try:
+            yield
+        finally:
+            if changed:
+                self._content_revision += 1
+
     def _prepare_content_token(self, revision):
         # Called only after a full comparison released Engine/Store locks.
         # A writer changes this revision before touching its observations.
         with revocation():
-            if self._closed or revision != self._content_revision:
+            if self._closed or revision % 2 or revision != self._content_revision:
                 return None
             if self._content_publication.token() is None:
                 self._content_publication.publish()
-            return self._content_publication.token()
+            return Witness.combine(self._lifetime.token(),self._content_publication.token())
 
     def prepare_semantic_publication_token(self, source, expected, now, *, expected_sync=None):
         with self._lock,self._store._lock:
-            if self._closed or expected is None or self.semantic_history(
+            revision = self._content_revision
+            if self._closed or revision % 2 or expected is None or self.semantic_history(
                     source,now,expected_sync=expected_sync,metadata=True) != expected:
                 return None
-            revision = self._content_revision
+            if revision != self._content_revision:
+                return None
         return self._prepare_content_token(revision)
 
     def prepare_availability_publication_witness(self, expected, first_day, timezone, visits, now, *, days=7):
@@ -97,18 +154,18 @@ class BehaviorEngine:
             return None
         first = date.fromisoformat(first_day)
         with self._lock,self._store._lock:
-            if self._closed:
+            revision,data_revision = self._content_revision,self._activity._data_revision
+            if self._closed or revision % 2 or data_revision % 2:
                 return None
             actual = [p for offset in range(days) for p in self.availability_patterns(
                 (first+timedelta(days=offset)).isoformat(),timezone,visits,now)]
-            if actual != expected:
+            if actual != expected or revision != self._content_revision or data_revision != self._activity._data_revision:
                 return None
-            revision,data_revision = self._content_revision,self._activity._data_revision
         return Witness.combine(self._prepare_content_token(revision),self._activity.prepare_data_token(data_revision))
 
     def seed_index(self, *, create=True):
         from service.behavior.source_index import SourceIndex
-        with self._lock, self._store._lock:
+        with revocation(),self._lock, self._store._lock:
             if self._seed_index is None:
                 if not create and not self._store._conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='behavior_seed_records'").fetchone():
@@ -157,6 +214,8 @@ class BehaviorEngine:
     def prepare_settings_publication_token(self, expected):
         from service.publication_authority import revocation
         with revocation(),self._lock:
+            if self._closed:
+                return None
             return self._activity.prepare_publication_token(expected)
 
     def activity_summary(self, now=None):
@@ -211,9 +270,9 @@ class BehaviorEngine:
     def close(self) -> None:
         from service.publication_authority import revocation
         with revocation(),self._lock:
-            self._invalidate_content()
+            self._lifetime.withdraw()
             self._closed = True
-            self._activity.invalidate_publication()
+            self._activity.close_publication()
             self._store.close()
 
     # ---- helpers ------------------------------------------------------------
@@ -257,8 +316,7 @@ class BehaviorEngine:
         current = tuple(self._prepare(o) for o in observations)
         if not current:
             return 0
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             return self._store.upsert_observations(current)
 
     def observe_snapshot(self, source: str, observations: Iterable[Observation], *,
@@ -280,8 +338,7 @@ class BehaviorEngine:
         forward is never paired as a move (it must fall inside the previous
         window). A vanished event that already started is left alone."""
         current = [self._prepare(o) for o in observations]
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             prev = self._store.get_snapshot(source)
             upserted = self._store.upsert_observations(current)
             # An id that is back is not cancelled or moved after all: drop both
@@ -381,17 +438,16 @@ class BehaviorEngine:
                 expired = expired or self._store._conn.execute(
                     "SELECT 1 FROM observations WHERE (kind='device_activity' AND ts<?) "
                     "OR (kind='activity_bin' AND ts<?) LIMIT 1",(now-7*86400,now-56*86400)).fetchone()
-            if expired:
-                self._invalidate_content()
-            obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
-            from service.behavior.evidence import pattern_evidence
-            mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
-            self._store.replace_patterns(mined, now)
-            self._store.meta_set("last_mined_at", now)
-            self._store.prune(now)    # retention: observations 180d, nudges 30d
-            if self._seed_index is not None:
-                self._seed_index.prune(now=now)
-            return self._live_patterns()
+            with self._content_change(bool(expired)):
+                obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
+                from service.behavior.evidence import pattern_evidence
+                mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
+                self._store.replace_patterns(mined, now)
+                self._store.meta_set("last_mined_at", now)
+                self._store.prune(now)    # retention: observations 180d, nudges 30d
+                if self._seed_index is not None:
+                    self._seed_index.prune(now=now)
+                return self._live_patterns()
 
     def patterns(self, *, status: str | None = None, kind: str | None = None) -> list[Pattern]:
         return self._store.patterns(status=status, kind=kind)
@@ -547,20 +603,17 @@ class BehaviorEngine:
 
     def history_next(self, source: str) -> dict:
         from service.behavior.history import History
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             return History(self._store).next(source, self._now(None))
 
     def history_control(self, source: str, command: str) -> dict:
         from service.behavior.history import History
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             return History(self._store).control(source, command, self._now(None))
 
     def history_ingest(self, source: str, payload: dict) -> dict:
         from service.behavior.history import History
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             result = History(self._store).ingest(source,payload,self._now(None),self._prepare)
         # No model call while holding a permission/source mutation barrier.
         if result.get("retained_rows",0):
@@ -568,8 +621,7 @@ class BehaviorEngine:
         return result
 
     def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
-        with revocation(),self._lock:
-            self._invalidate_content()
+        with revocation(),self._lock,self._content_change():
             self._store.record_coverage(source, start, end, state, now)
 
     def weekly(self, now: float | None = None) -> dict:

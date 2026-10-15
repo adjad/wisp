@@ -93,7 +93,7 @@ def test_history_source_expiry_is_not_renewed_by_readback(history):
     assert not capture({"email": True}, getters=publications(history), now=original).records
 
 
-def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(history, tmp_path, monkeypatch):
+def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(public_host, tmp_path, monkeypatch):
     import json
     import sqlite3
     import threading
@@ -104,6 +104,9 @@ def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(history, 
     from service.assistant.store import AssistantStore
     from service.behavior.engine import BehaviorEngine
 
+    history = public_host
+    history.host.control(command(history.host))
+    asyncio.run(history.host.step(history.account,http=history.http,budget=H.StepBudget(100,5,6,400000,30)))
     monkeypatch.setenv("WISP_BEHAVIOR", "1")
     prompts, role = [], ["isolated-local-role"]
     def complete(system, prompt, **kwargs):
@@ -120,7 +123,8 @@ def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(history, 
         local_factory=lambda p: BehaviorEngine(p, tz="UTC", clock=lambda: history.clock[0]),
         messages_fn=lambda: {}, contact_name_fn=lambda s:s, calendar_sync_fn=lambda: {},
         session_db_fn=lambda:sessions, behavior_sources_fn=lambda settings: capture(settings,
-            getters=publications(history), now=history.clock[0]),
+            getters={"email":lambda **kwargs:None},now=history.clock[0],
+            gmail_history_getters=history.host.cached_getters),
         behavior_interpreter=Interpreter(complete), role_key_fn=lambda:role[0])
     monkeypatch.setattr(runtime_module, "get_runtime", lambda:runtime)
     monkeypatch.setattr(daily, "_availability_provider", None)
@@ -134,7 +138,7 @@ def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(history, 
         assert work["quote"] == TEXT and work["observed_at"] is None
         assert work["action_authority"] == "none" and work["importance"] == "unknown"
         assert work["reference"]["resource_id"] == "51"
-        calls = len(history.http.calls)
+        calls = len(history.calls)
         state = dict(tasks=[], commitments=[], preferences=dict(start_minute=540,end_minute=1080,not_before=None),
             sources={s:dict(available=True,last_sync=NOW,snapshot_started_at=NOW,
                 diagnostics=dict(coverage_start=NOW-28800,coverage_end=NOW+57600)) for s in ("calendar","reminders")})
@@ -144,14 +148,14 @@ def test_actual_public_gmail_evidence_to_runtime_and_proposed_day_plan(history, 
         assert workspace["attention"][0]["importance"] == "unknown"
         for _ in range(3):
             assert daily.availability_snapshot("2026-10-15", "UTC", NOW)["ready"]
-        assert len(prompts) == 1 and len(history.http.calls) == calls
+        assert len(prompts) == 1 and len(history.calls) == calls
         assert TEXT not in "\n".join(runtime.local_engine()._store._conn.iterdump())
         role[0] = "different-role"
         assert not daily.availability_snapshot("2026-10-15", "UTC", NOW)["ready"]
         role[0] = "isolated-local-role"
-        history.permission[0] = None
+        history.host.invalidate("Synthetic source permission withdrawn")
         assert not daily.availability_snapshot("2026-10-15", "UTC", NOW)["ready"]
-        assert len(prompts) == 1 and len(history.http.calls) == calls
+        assert len(prompts) == 1 and len(history.calls) == calls
     finally:
         runtime.stop();runtime.close();turns.close();store._db.close()
 
