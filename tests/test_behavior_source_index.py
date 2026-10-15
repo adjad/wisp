@@ -532,6 +532,31 @@ def test_seed_prepared_path_missing_stamp_refuses_before_any_indexing(index):
     assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_records").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("during_analysis",[False,True])
+def test_seed_prepared_path_never_defers_or_commits_a_refused_caller_transaction(index,during_analysis):
+    from service.behavior.source_index import CallerTransactionActive
+    from service.publication_authority import Authority,Witness
+    authority = Authority("synthetic-seed-source")
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    conn = index.store._conn
+    def begin_outer():
+        conn.execute("INSERT INTO meta VALUES ('unrelated-caller-value','true')")
+    def analyze(*args,**kwargs):
+        begin_outer()
+        return {"links":[]}
+    if not during_analysis:
+        begin_outer()
+    with pytest.raises(CallerTransactionActive):
+        Seed(index).run([snap()],epoch="consent-one",now=NOW,analysis_enabled=True,
+            analyze=analyze,admit=lambda:True,prepare_publication=lambda:witness)
+    assert conn.in_transaction
+    assert conn.execute("SELECT value FROM meta WHERE key='unrelated-caller-value'").fetchone()[0] == "true"
+    assert conn.execute("SELECT count(*) FROM behavior_seed_records WHERE attempts>0 OR covered>0").fetchone()[0] == 0
+    conn.rollback()
+    assert conn.execute("SELECT 1 FROM meta WHERE key='unrelated-caller-value'").fetchone() is None
+
+
 def test_aged_derivations_reopen_still_current_exact_revision(index):
     records, manifests, _ = prepare([snap(n=1)])
     index.sync(records, manifests, epoch="consent-one", now=NOW)

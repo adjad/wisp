@@ -16,7 +16,7 @@ import math
 import re
 
 from service.behavior.associations import materialize
-from service.behavior.source_index import PASSAGE_BYTES, PASSAGE_CHARS, SOURCES
+from service.behavior.source_index import CallerTransactionActive, PASSAGE_BYTES, PASSAGE_CHARS, SOURCES
 from service.publication_authority import PublicationUnavailable, Witness, publication as ordered_publication, revocation
 
 MAX_SOURCE_RECORDS = 2000
@@ -250,6 +250,10 @@ class Seed:
 
     def run(self, snapshots, *, epoch, now, analysis_enabled=False, analyze=None, admit=lambda: False,
             publication=nullcontext, timezone="UTC", prepare_publication=None):
+        if prepare_publication is not None:
+            with self.index.store._lock:
+                if self.index.store._conn.in_transaction:
+                    raise CallerTransactionActive("Seed preparation was not applied inside a caller-owned transaction")
         if analysis_enabled is not True:
             with revocation(),publication():
                 self.index.reset()
@@ -300,6 +304,10 @@ class Seed:
                         state, analyzed = "advanced", len(anchors)
                     else:
                         state = "cancelled"
+            except CallerTransactionActive:
+                # Deferring under a connection context would commit the very
+                # outer transaction finish_prepared explicitly refused to own.
+                raise
             except Exception:
                 with _publication_scope(guard,publication,prepare_publication) as (current,lease):
                     if current:
