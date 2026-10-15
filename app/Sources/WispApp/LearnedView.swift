@@ -74,11 +74,21 @@ struct LearnedPrediction: Identifiable {
         switch kind {
         case "cancel_risk": return "The schedule for \(subject) may change"
         case "habit_conflict": return "\(subject) clashes with a routine"
-        case "contact": return "Usually in touch with \(subject)"
+        case "contact": return "Possible contact window with \(subject)"
         case "usage":
             let phrase = Self.usagePhrases[subject] ?? "asking about \(subject)"
             return phrase.prefix(1).uppercased() + phrase.dropFirst() + " with Wisp"
         default: return subject
+        }
+    }
+}
+
+enum LearnedWeeklyValue {
+    static func unknownReason(_ metric: [String: Any]) -> String {
+        switch metric["value_reason"] as? String {
+        case "incomplete_calendar_coverage": return "Cannot calculate while Calendar coverage is incomplete."
+        case "missing_event_end_times": return "Cannot calculate while event end times are missing."
+        default: return "Cannot calculate from the available evidence."
         }
     }
 }
@@ -329,7 +339,7 @@ struct LearnedView: View {
                         Text("\(value.formatted(.number.precision(.fractionLength(0...1)))) \(unit) observed · \(Int(coverage * 100))% of period covered")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        Text("Cannot calculate while event end times are missing.").font(.caption).foregroundStyle(.secondary)
+                        Text(LearnedWeeklyValue.unknownReason(metric)).font(.caption).foregroundStyle(.secondary)
                     }
                     if let baseline = metric["baseline_weekly_average"] as? NSNumber,
                        let change = metric["change"] as? NSNumber {

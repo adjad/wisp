@@ -204,6 +204,45 @@ def test_confirmed_orphan_contact_does_not_gain_message_provenance(tmp_path, sta
         engine.close()
 
 
+@pytest.mark.parametrize("version", [None, 2])
+@pytest.mark.parametrize("calls,messages,source,basis", [
+    (None, None, "source counts unavailable", "unknown"), (0, 0, "source counts unavailable", "unknown"),
+    (True, "4", "source counts unavailable", "unknown"), (-1, -2, "source counts unavailable", "unknown"),
+    (1.0, float("nan"), "source counts unavailable", "unknown"),
+    (1, 0, "Scheduled calls", "scheduled"), (0, 1, "Recorded messages", "observed"),
+    (1, 1, "Messages and scheduled calls", "mixed"),
+])
+def test_stored_contact_normalization_is_consistent_across_public_surfaces(tmp_path, monkeypatch, version, calls, messages, source, basis):
+    from service.behavior.evidence import pattern_evidence
+    engine = BehaviorEngine(tmp_path / "source.db", clock=lambda: NOW, tz=str(TZ))
+    original = "You talk to Sam every morning."
+    stats = dict(calls=calls, messages=messages)
+    if version is not None:
+        stats["evidence_version"] = version
+    p = Pattern("old", "contact_rhythm", "Sam", original, Window((), 420, 1080),
+                confidence=.9, support=8, opportunities=10, stats=stats)
+    try:
+        engine._store.replace_patterns([p], NOW)
+        engine.set_pattern_status(p.id, "confirmed")
+        saved = engine.patterns()[0]
+        import json
+        json.dumps(saved.to_dict(), allow_nan=False)
+        assert saved.stats["basis"] == basis and source in saved.statement
+        assert saved.stats["original_statement"] == original and saved.status == "confirmed"
+        assert pattern_evidence(saved) == saved
+        texts = (engine.profile_card(NOW), engine.describe("Sam", NOW)["summary"])
+        assert all(source in text and "You talk" not in text for text in texts)
+        from types import SimpleNamespace
+        from service.tools import behavior_tools
+        from service.assistant import behavior_runtime
+        monkeypatch.setattr(behavior_tools, "_runtime", lambda: SimpleNamespace(clock=lambda: NOW))
+        monkeypatch.setattr(behavior_runtime, "predictions_for", lambda *_: engine.predict(NOW))
+        text = behavior_tools.predict_my_day("today")
+        assert "possible contact window" in text and "likely to talk" not in text
+    finally:
+        engine.close()
+
+
 def test_schedule_change_outputs_do_not_claim_user_agency_or_skipping(eng):
     predictions = eng.predict(NOW)
     assert any(p.kind == "cancel_risk" for p in predictions)

@@ -199,7 +199,7 @@ def predict_my_day(day: str = "tomorrow") -> str:
     label = ("Today" if day == "today" else "Tomorrow") + datetime.fromtimestamp(start).strftime(" (%A, %B %-d)")
     if not preds:
         return f"{label}: I don't have enough learned routine to predict anything specific yet."
-    names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "likely to talk",
+    names = {"activity": "likely", "cancel_risk": "may be cancelled", "contact": "possible contact window",
              "habit_conflict": "conflicts with a habit", "usage": "you usually ask Wisp about this"}
     lines = [f"{label}, based on your learned routines (probabilities, not commitments):"]
     for p in preds[:12]:

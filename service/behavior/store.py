@@ -26,9 +26,15 @@ from service.behavior.types import Nudge, Observation, Pattern
 SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
 # Retention (applied by prune(), which the engine runs during mine()). Mining
-# looks back ~16 weeks and feedback memory is 30 days, so nothing older is read.
+# looks back ~16 weeks; overlapping Calendar occupancy remains report evidence.
 OBSERVATION_RETENTION_S = 180 * 86400
 NUDGE_RETENTION_S = 30 * 86400
+# A scheduled interval remains relevant until its end ages out. Other kinds
+# retain their original timestamp limit; invalid/unbounded ends grant no lease.
+OBSERVATION_EXPIRY_SQL = """DELETE FROM observations WHERE
+ CASE WHEN kind='event' AND typeof(end_ts) IN ('integer','real')
+ AND end_ts > ts AND end_ts <= 1.7976931348623157e308
+ THEN end_ts ELSE ts END < ?"""
 PATTERN_STATUSES = ("active", "confirmed", "rejected")
 
 _SCHEMA = """
@@ -151,10 +157,12 @@ class Store:
 
     def prune(self, now: float, *, observation_retention_s: float = OBSERVATION_RETENTION_S,
               nudge_retention_s: float = NUDGE_RETENTION_S) -> dict[str, int]:
-        """Drop observations older than 180 days and nudges older than 30 days
+        """Age points by timestamp and valid scheduled intervals by their end.
+
+        Apply the 180-day observation and 30-day nudge limits
         (seq never goes backwards: AUTOINCREMENT keeps the counter)."""
         with self._lock, self._conn:
-            obs = self._conn.execute("DELETE FROM observations WHERE ts < ?",
+            obs = self._conn.execute(OBSERVATION_EXPIRY_SQL,
                                      (now - observation_retention_s,)).rowcount
             nud = self._conn.execute("DELETE FROM nudges WHERE created_at < ?",
                                      (now - nudge_retention_s,)).rowcount

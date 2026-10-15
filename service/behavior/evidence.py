@@ -36,12 +36,39 @@ def basis(o: Observation) -> str:
     return "unknown"
 
 
+def _contact_source_counts(p: Pattern | None) -> tuple[bool, bool]:
+    values = (p.stats.get("calls"), p.stats.get("messages")) if p else (None, None)
+    return tuple(type(value) is int and value > 0 for value in values)
+
+
 def pattern_evidence(p: Pattern) -> Pattern:
     """Normalize old saved/confirmed statements on read without changing verdicts.
 
     The original statement remains available for traceability. In particular an
     orphan confirmed v1 habit must not bypass the new semantics before re-mining.
     """
+    if p.kind == "contact_rhythm":
+        calls, messages = _contact_source_counts(p)
+        stats = dict(p.stats)
+        # Invalid legacy counts are unknown, including non-finite values that
+        # cannot be emitted by the JSON API. Preserve the original wording only.
+        for key in ("calls", "messages"):
+            value = stats.get(key)
+            stats[key] = value if type(value) is int and value >= 0 else None
+        stats["basis"] = "mixed" if calls and messages else "scheduled" if calls else "observed" if messages else "unknown"
+        if calls or messages:
+            from service.behavior.timeutil import when_phrase
+            part = stats.get("daypart")
+            when = (when_phrase(p.window.weekdays, part, most=len(p.window.weekdays) != 1)
+                    if isinstance(part, str) and part in {"morning", "afternoon", "evening", "night"} else "in this window")
+            source = "Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls else "Recorded messages"
+            statement = f"{source} with {p.subject} recur {when} ({_range(p)})"
+            if calls:
+                statement += "; attendance unknown"
+        else:
+            statement = f"Saved contact window with {p.subject} ({_range(p)}); recorded message/call source counts unavailable"
+        stats.update(evidence_version=2, original_statement=stats.get("original_statement", p.statement))
+        return replace(p, statement=statement, stats=stats)
     if p.stats.get("evidence_version") == 2:
         return p
     stats = dict(p.stats)
@@ -93,12 +120,6 @@ def pattern_evidence(p: Pattern) -> Pattern:
         ).replace(
             "lunch is usually free", "the midday calendar gap is usually"
         )
-    elif p.kind == "contact_rhythm":
-        stats["basis"] = "mixed" if stats.get("calls", 0) else "observed"
-        if stats["basis"] == "mixed" and not statement.startswith(
-            "Messages and scheduled calls"
-        ):
-            statement = f"Message timing and scheduled calls suggest a recurring window with {p.subject} ({_range(p)})"
     else:
         stats["basis"] = "observed"
     stats.update(evidence_version=2, original_statement=p.statement)

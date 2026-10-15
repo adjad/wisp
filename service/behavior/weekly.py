@@ -77,17 +77,21 @@ def weekly_report(observations, coverage, now, tz):
     evidence = {key: [] for key, *_ in specs}
     missing_ends = 0
     duration_complete = []
+    count_complete = []
     for index, (first, last, start, end) in enumerate(windows):
         missing_in_window = sum(
             o.end_ts is None
             for o in observations
-            if o.kind == "event" and start <= o.ts < end
+            if o.kind == "event" and o.ts < end
         )
         duration_complete.append(missing_in_window == 0)
+        count_complete.append(not any(o.kind == "event" and o.end_ts is None and o.ts < start
+                                      and o.category in {"meeting", "one_on_one", "call"} for o in observations))
         events = [
             o
             for o in observations
-            if o.kind == "event" and o.ts < end and (o.end_ts or o.ts) > start
+            if o.kind == "event" and o.ts < end
+            and ((o.end_ts is None and o.ts >= start) or (o.end_ts is not None and o.end_ts > start))
         ]
         meetings = [
             o
@@ -178,10 +182,13 @@ def weekly_report(observations, coverage, now, tz):
         }
         if needs_ends and not all(duration_complete):
             full = False
+        if key == "scheduled_meetings" and not all(count_complete):
+            full = False
         average = round(sum(history) / 4, 3) if full else None
         delta = round(current - average, 3) if average is not None else None
         value_reason = (
-            "missing_event_end_times" if needs_ends and not duration_complete[0] else
+            "missing_event_end_times" if (needs_ends and not duration_complete[0])
+            or (key == "scheduled_meetings" and not count_complete[0]) else
             "incomplete_calendar_coverage" if key == "calendar_gap_hours"
             and fractions[source][0] < 0.999999 else None
         )

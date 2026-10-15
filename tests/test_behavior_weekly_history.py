@@ -511,6 +511,57 @@ def test_unknown_end_times_do_not_turn_into_free_or_focused_hours(engine):
     assert "end times are missing" in report["summary"]
 
 
+def test_history_ingest_mining_retains_calendar_interval_overlapping_retention(engine):
+    job = engine.history_next("calendar")
+    end = day_start(datetime.fromtimestamp(NOW, TZ).date(), TZ)
+    result = engine.history_ingest("calendar", batch(job, [{
+        "source_id": "long-interval", "title": "Extended calendar interval",
+        "when_ts": NOW-190*86400, "end_ts": end, "all_day": True,
+    }]))
+    assert result["retained_rows"] == 1 and engine.status()["observation_total"] == 1
+    metric = next(m for m in engine.weekly()["metrics"] if m["id"] == "calendar_gap_hours")
+    assert metric["value"] == 0 and metric["baseline_weekly_average"] == 0
+
+
+@pytest.mark.parametrize("date", ["2026-10-14", "2026-03-09", "2026-11-02"])
+@pytest.mark.parametrize("offset", [3600, 8*86400, 35*86400+3600])
+def test_unknown_ended_carry_in_does_not_establish_unbooked_hours(tmp_path, date, offset):
+    now = datetime.fromisoformat(date).replace(hour=12, tzinfo=TZ).timestamp()
+    today = datetime.fromtimestamp(now, TZ).date()
+    start = day_start(today-timedelta(days=7), TZ)
+    engine = BehaviorEngine(tmp_path / "carry.db", clock=lambda: now, tz=str(TZ))
+    try:
+        engine.observe([Observation("unresolved", "event", start-offset, category="meeting")])
+        engine.record_coverage("calendar", day_start(today-timedelta(days=42), TZ), now, "complete", now)
+        report = engine.weekly()
+        assert report["missing_event_ends"] == 1
+        metrics = {m["id"]: m for m in report["metrics"]}
+        for key in ("calendar_gap_hours", "scheduled_meeting_hours", "scheduled_focus_hours", "adjacent_meeting_pairs"):
+            assert metrics[key]["value"] is None and metrics[key]["change"] is None
+            assert metrics[key]["baseline_weekly_average"] is None
+        assert "end times are missing" in report["summary"]
+    finally:
+        engine.close()
+
+
+def test_known_event_end_at_report_boundary_still_allows_unbooked_hours(engine):
+    start = day_start(datetime.fromtimestamp(NOW, TZ).date()-timedelta(days=7), TZ)
+    engine.observe([Observation("ended", "event", start-3600, end_ts=start, category="meeting")])
+    engine.record_coverage("calendar", start-28*86400, NOW, "complete", NOW)
+    report = engine.weekly()
+    gap = next(m for m in report["metrics"] if m["id"] == "calendar_gap_hours")
+    assert report["missing_event_ends"] == 0 and gap["value"] == 45
+    assert gap["baseline_weekly_average"] == 45
+
+
+def test_unknown_end_starting_exactly_at_week_boundary_is_a_scheduled_booking(engine):
+    start = day_start(datetime.fromtimestamp(NOW, TZ).date()-timedelta(days=7), TZ)
+    engine.observe([Observation("point", "event", start, category="meeting")])
+    metrics = {m["id"]: m for m in engine.weekly()["metrics"]}
+    assert metrics["scheduled_meetings"]["value"] == 1
+    assert metrics["calendar_gap_hours"]["value"] is None
+
+
 def test_weekly_conversation_uses_the_same_grounded_report(monkeypatch, engine):
     from service.tools import behavior_tools
 

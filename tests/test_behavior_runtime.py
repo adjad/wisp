@@ -833,3 +833,37 @@ def test_a_failing_contact_lookup_falls_back_to_the_handle(tmp_path):
     rt, eng = make_runtime(tmp_path, messages=messages, contact_name_fn=boom)
     assert rt._ingest_messages(NOW) is True
     assert eng.obs["msg:m1"].subject == "+15555550101"
+
+
+@pytest.mark.parametrize("mode", ["enabled", "off"])
+def test_observation_retention_keeps_only_valid_overlapping_calendar_intervals(tmp_path, monkeypatch, mode):
+    from service.behavior.store import Store, OBSERVATION_RETENTION_S
+    from service.behavior.types import Observation
+    from service.assistant import behavior_runtime
+    now = 1792051200.0
+    cutoff = now-OBSERVATION_RETENTION_S
+    home = tmp_path / mode
+    store = Store(home / behavior_runtime.ENGINE_DB)
+    rows = [Observation("end-before", "event", now-190*86400, end_ts=cutoff-1),
+            Observation("end-at", "event", now-190*86400, end_ts=cutoff),
+            Observation("end-after", "event", now-190*86400, end_ts=cutoff+1),
+            Observation("end-now", "event", now-190*86400, end_ts=now),
+            Observation("unknown-end", "event", now-190*86400),
+            Observation("invalid-end", "event", now-190*86400, end_ts=float("inf")),
+            Observation("old-message", "message_in", now-190*86400, end_ts=now),
+            Observation("old-reminder", "reminder_done", now-190*86400, end_ts=now),
+            Observation("point-at", "event", cutoff),
+            Observation("recent-message", "message_in", cutoff+1)]
+    try:
+        store.upsert_observations(rows)
+        if mode == "enabled":
+            result = store.prune(now)
+        else:
+            def prohibited(*_args, **_kwargs):
+                raise AssertionError("Off-state retention constructed a runtime")
+            monkeypatch.setattr(behavior_runtime, "get_runtime", prohibited)
+            result = behavior_runtime.age_out(home=home, now=now)
+        assert result["observations"] == 5
+        assert {r.id for r in store.observations()} == {"end-at", "end-after", "end-now", "point-at", "recent-message"}
+    finally:
+        store.close()

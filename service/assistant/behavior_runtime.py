@@ -1027,7 +1027,7 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
     """Apply the retention limits (observations 180 days, nudges 30 days) to what is
     already on disk, whether or not learning is on. Plain SQL on its own connections:
     it never starts the engine, the phraser or a runtime, and never migrates a database."""
-    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S
+    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S, OBSERVATION_EXPIRY_SQL
     home = Path(home) if home is not None else _home()
     now = time.time() if now is None else float(now)
     out = {"observations": 0, "nudges": 0, "delivered": 0}
@@ -1049,7 +1049,7 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             if conn is not None:
                 conn.close()
 
-    run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
+    run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
                     ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
     run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
     return out

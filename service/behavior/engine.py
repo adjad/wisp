@@ -315,9 +315,11 @@ class BehaviorEngine:
             return False
         for pid in n.pattern_ids:
             p = self._store.get_pattern(pid)
+            from service.behavior.evidence import _contact_source_counts
+            calls, messages = _contact_source_counts(p)
             if (p is None or p.kind != "contact_rhythm" or p.status == "rejected"
-                    or p.stats.get("basis") != "observed" or p.stats.get("calls")
-                    or not p.stats.get("messages") or not p.evidence):
+                    or p.stats.get("basis") != "observed" or calls or not messages
+                    or type(p.stats.get("calls")) is not int or p.stats["calls"] != 0 or not p.evidence):
                 return False
             for oid in p.evidence:
                 o = self._store.get_observation(oid)

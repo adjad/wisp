@@ -151,7 +151,8 @@ final class CalendarReader {
         guard historyTask == nil else { return }
         historyTask = Task { @MainActor [weak self] in
             defer { self?.historyTask = nil }
-            // Bound work per minute. A failed upload leaves the backend cursor
+            // Bound work per invocation; startup may invoke multiple passes.
+            // A failed upload leaves the backend cursor
             // unchanged; the next pass re-reads the same page.
             for _ in 0..<8 {
                 guard self?.isAuthorized == true,

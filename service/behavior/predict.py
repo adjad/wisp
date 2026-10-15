@@ -129,8 +129,8 @@ def _activities(live, upcoming, now, end, tz) -> list[Prediction]:
 
 def _contact_source_counts(p: Pattern | None) -> tuple[bool, bool]:
     """Only recorded positive integer counts establish a contact source."""
-    values = (p.stats.get("calls"), p.stats.get("messages")) if p else (None, None)
-    return tuple(type(value) is int and value > 0 for value in values)
+    from service.behavior.evidence import _contact_source_counts as counts
+    return counts(p)
 
 
 def _contacts(live, now, end, tz) -> list[Prediction]:

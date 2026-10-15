@@ -306,6 +306,12 @@ Unbooked hours are unknown unless the current report window has complete Calenda
 coverage and usable event end times. Uncovered hours are never counted as free.
 Contact source labels require positive integer source counts; confirming an old
 pattern does not supply missing message or scheduled-call provenance.
+This normalization also applies to existing v2 stored patterns, tool summaries,
+profiles and native headlines. Invalid counts remain unknown and cannot authorize
+optional model phrasing. A Calendar interval is retained while its known end
+overlaps the 180-day retention period, including while learning is off. The
+16-week mining horizon remains separate. An unknown end on an earlier-starting
+event leaves possible overlap unresolved; it never establishes unbooked hours.
 
 All comparison windows must have explicit complete coverage for their source;
 otherwise values are labeled observed records only, with no change or percentage.
@@ -328,8 +334,9 @@ reminders, or synthesize cancellations.
 
 Calendar scans backwards in ranges shorter than EventKit's four-year ceiling.
 There is no public oldest-event query, so empty ranges do not terminate the scan.
-The explicit lower bound is Gregorian 0001-01-01 UTC. Each minute performs at most
-eight bounded Calendar queries off the main thread. Completed reminders initially
+The explicit lower bound is Gregorian 0001-01-01 UTC. Each invocation performs at most
+eight bounded Calendar queries off the main thread. Startup may repeat invocations;
+there is no aggregate per-minute cap or live performance qualification. Completed reminders initially
 query the accessible date range in one pass, including completed undated tasks.
 A page over 10,000 rows automatically reduces its date span without advancing the
 cursor. A still-overfull one-day page, unavailable access or invalid source row
