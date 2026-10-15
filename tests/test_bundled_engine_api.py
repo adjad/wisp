@@ -171,7 +171,8 @@ def test_first_launch_and_stickiness() -> None:
             check("stored choice has no restart flag", body(later)["configured_mode"] == expected
                   and body(later)["restart_required"] is False)
             if expected == "bundled":
-                check("built-in setup is ready before process starts", first["setup_engine"]["state"] == "ok"
+                check("built-in setup offers start before process answers", first["setup_engine"]["state"] == "warn"
+                      and first["setup_engine"].get("action") == "start_engine"
                       and first["profile"] == "Wisp's built-in engine")
                 check("built-in setup offers model download", first["setup_model"].get("action") == "download_model")
     with tempfile.TemporaryDirectory() as t:

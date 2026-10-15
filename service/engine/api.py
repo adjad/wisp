@@ -77,6 +77,8 @@ async def _lifespan(app):
 
 
 router = APIRouter(prefix="/engine", tags=["engine"], lifespan=_lifespan)
+from .downloads import router as downloads_router
+router.include_router(downloads_router)
 
 
 async def external_engine_running(*, port: int = 8000, timeout: float = 0.3,

@@ -236,6 +236,25 @@ def test_smoke_arguments_and_port_refusal() -> None:
             check(f"reserved smoke port {port} refused", False)
         except smoke.SmokeError:
             check(f"reserved smoke port {port} refused", True)
+    def answer(content="OK", finish="stop", role="assistant"):
+        return {"choices": [{"message": {"role": role, "content": content}, "finish_reason": finish}]}
+    for bad in ({}, {"choices": []}, {"choices": [None]}, {"choices": [{"finish_reason": "stop"}]},
+                answer(None), answer(""), answer("  "), answer("<think>thinking</think>"),
+                answer("<think>unfinished"), answer("OK<think>unfinished"),
+                answer("<think>done</think>OK<think>unfinished"),
+                answer("OK</think>"), answer("<think>nested<think>inner</think></think>OK"),
+                answer("OK<THINK>unfinished"), answer("OK", "length"), answer("OK", "error"),
+                answer("OK", None), answer("OK", role="user"),
+                {**answer(), "error": {"message": "synthetic provider failure"}},
+                {**answer(), "error": {}}, {**answer(), "error": "failed"}):
+        try:
+            smoke.visible_chat_answer(bad)
+            check("smoke refuses missing, truncated or invisible answers", False)
+        except smoke.SmokeError:
+            check("smoke refuses missing, truncated or invisible answers", True)
+    check("smoke requires a complete visible assistant reply", smoke.visible_chat_answer(answer()) == "OK")
+    check("smoke hides completed reasoning", smoke.visible_chat_answer(answer("<think>thinking</think> OK")) == "OK")
+    check("a null optional error is not a failure", smoke.visible_chat_answer({**answer(), "error": None}) == "OK")
 
 
 def test_source_identity() -> None:
