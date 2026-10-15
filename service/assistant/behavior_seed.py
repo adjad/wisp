@@ -234,7 +234,8 @@ class Seed:
         # Rotate finite byte-capped input before normalization so completed
         # prefix records cannot keep an unread tail out of every later pass.
         snapshots = tuple(replace(s,records=self.index.prioritize(s.source,s.records))
-                          if isinstance(s,Snapshot) else s for s in snapshots)
+                          if isinstance(s,Snapshot) and isinstance(s.records,tuple)
+                             and s.enabled is True and s.available is True else s for s in snapshots)
         records, manifests, receipts = prepare(snapshots)
         guard = lambda: _current(receipts, admit)
         with publication():

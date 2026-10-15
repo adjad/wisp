@@ -724,22 +724,33 @@ struct LearnedView: View {
                                 if counts["capped"] as? Bool == true {
                                     Text("The selected query was capped; more history may exist.").font(.caption)
                                 } else if counts["eof_observed"] as? Bool == true {
-                                    Text("End of the requested query reached; interpretation is separate.").font(.caption)
+                                    Text("All result pages listed; message fetching and interpretation may still be pending.").font(.caption)
+                                }
+                                if let detail = account["detail"] as? String, !detail.isEmpty {
+                                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                                }
+                                if let continuation = account["continuation"] as? [String: Any],
+                                   continuation["incomplete"] as? Bool == true {
+                                    Text("Some of the selected history remains unread.").font(.caption)
                                 }
                             }
                             Spacer()
                             Button("Start scan") { model.emailHistoryControl(account: id, command: "start", scope: emailScanScope) }
                                 .disabled(emailScanScope == nil || model.signalValue("email") != true)
                             Button("Pause") { model.emailHistoryControl(account: id, command: "pause") }
-                                .disabled(!["running", "waiting", "complete"].contains(state))
+                                .disabled(!["running", "waiting", "exhausted", "capped", "partial"].contains(state))
                             Button("Reset") { model.emailHistoryControl(account: id, command: "reset") }
                                 .disabled(state == "off")
                         }
                     }
                 }
                 .disabled(model.emailHistoryState != .ready || model.signalState != .ready)
-                Text("Choose up to two years and an explicit message limit. Start allows a bounded read for that account; pause withdraws its current evidence. Reset does not start another scan.")
+                Text("Choose up to two years and an explicit message limit. Start allows a bounded read for that account; pause withdraws its current evidence. Reset does not start another scan. Planning uses only current source evidence.")
                     .font(.caption).foregroundStyle(.secondary)
+                if model.signalValue("interpretation") != true {
+                    Text("Interpretation is off. Reading email history will not create planning suggestions.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 if let sources = model.seedProgress["sources"] as? [String: Any],
                    let email = sources["email"] as? [String: Any], let analyzed = email["analyzed"] as? Int {
                     Text("\(analyzed) cached email records interpreted; this does not mean the mailbox is fully analyzed.")

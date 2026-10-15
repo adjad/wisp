@@ -5,10 +5,12 @@ message rhythm, what they ask Wisp), predicts the next day, and sends a few
 **nudges** before being asked. Calendar entries describe scheduled plans, never verified attendance or completion. Some nudges carry a small, reversible action
 that Wisp performs on its own, always with an **Undo**.
 
-**Code mines, the model only talks.** Patterns, predictions and nudge decisions
-are deterministic statistics with evidence ids. An optional LLM (the
-*phraser*) may reword a nudge body and label ambiguous event titles from a
-fixed list. It never decides, and never adds facts.
+Patterns, predictions and nudge decisions use deterministic statistics with
+evidence ids. An optional *phraser* can reword a nudge body and classify ambiguous
+calendar titles. Separately enabled interpretation can propose source-grounded
+relationships, preparation demands and tentative availability hypotheses. Those
+hypotheses remain uncertain; a model response grants no calendar or messaging
+authority and cannot establish attendance, completed work or importance.
 
 **On by default; turn off in Settings or with `WISP_BEHAVIOR=0`.** Settings ->
 Privacy & Access -> "Learn my routines" saves `behavior.enabled` in
@@ -33,6 +35,77 @@ the list, "Coming up today" shows today's predictions with their `because`
 lines. The same window shows weekly measurements and source history controls.
 It uses behavior endpoints for settings, status, patterns, predictions, weekly
 reports and history progress; it does not ask whether individual events happened.
+
+## Explicit email history and cold start
+
+Gmail history is separate from the interactive recent-mail cache and native
+Mail.app publications. Enable email evidence, choose a connected account, date
+range and message limit, and explicitly select **Start scan**. Each account has
+its own Start/Pause/Reset controls. Reading status or opening a day plan does not
+start or fetch a scan. Enabling email evidence alone does not authorize a history
+job; enabling interpretation is a separate choice. Interpretation off produces
+no email-based planning suggestions, and unread input backpressure can pause
+further acquisition until interpretation can advance.
+
+The existing behavior scheduler ticks every 30 seconds. During a current explicit
+scan, the runtime permits at most one acquisition step across all accounts and
+one interpretation opportunity per 30 seconds. Forced runs and repeated pokes
+cannot bypass these monotonic limits. Each acquisition step keeps the original
+6 HTTP requests, 5 full bodies, 400,000 accepted bytes and 30-second new-dispatch
+budget. Token refresh and authenticated account verification consume that same
+HTTP budget. Interpretation retains at most 4 anchor passages and the existing
+16 KB input bound. Normal ingestion/interpretation stays on its five-minute
+cadence without pending explicit history work; mining ordinarily runs every
+30 minutes or after changed observations. Calendar synchronization can also
+trigger ingestion sooner.
+
+The driver rotates accounts. Semantic processing rotates sources and accounts,
+alternates recent records with retained backlog, and advances unfinished passages.
+Ordering timestamps help choose records but never become evidence of when an
+email was written, when an activity happened, or when a relative deadline falls.
+Completed prefixes move behind unread input before byte limits are applied.
+Backpressure bounds the interpretation backlog instead of prefetching a whole
+mailbox into memory. No new independent scheduler or parallel model worker runs.
+
+Each original explicit account scan covers at most 2,000 unique messages and
+730 days, with at most 32 volatile continuation segments. A segment lasts at most
+20 minutes on both clocks. While still current, its source-owned continuation
+can transfer bounded traversal metadata to a fresh grant/segment before expiry.
+The driver drains needed cached interpretation work before handoff. Handoff
+immediately discards the old bodies, token, receipts and record proofs; it never
+extends their original lifetime. The new segment refreshes and verifies account
+ownership again. Late, expired, revoked, failed or non-progressing jobs cannot
+silently restart. A new explicit Start is required. Clients created for a step
+close after it, including cancellation; borrowed test clients remain caller-owned.
+
+Fetched messages, currently usable bodies, pagination EOF and interpreted records
+are different measurements. EOF means result pages ended; it does not prove all
+bodies were usable, all passages were interpreted, or an exhaustive account
+history. Caps, unsupported MIME, omissions, unavailable sources, expired proofs,
+and partial scans must remain visible. Large scans may take many ticks; synthetic
+tests establish bounds and behavior, not a real-world completion time.
+
+Body text stays in bounded transient source caches. The behavior database retains
+bounded identities, revisions, passage progress and grounded derivation metadata,
+not raw mail bodies or credentials. Checkpoints and previous Start selections do
+not restore permission across a restart. Source account IDs are currently tied
+to the configured source's process lifetime; durable cross-restart identity and
+automatic resume are not provided by this beta implementation.
+
+Planning and progress readback require current source proof. When that proof
+expires or is withdrawn, earlier derived email suggestions are withheld until
+fresh evidence is available. An initial scan therefore is not permanent mailbox
+memory or model training. Fully specified absolute dates with source timezones
+can ground tentative work even when original email time is unknown; relative
+dates, missing years/zones and ambiguous/nonexistent local times stay unresolved.
+
+Activity/app-use capture starts after permission; browser visits do not establish
+dwell time, and away time does not establish whether the human is busy. Historical
+screen time and Focus/DND history that Wisp never collected cannot be reconstructed.
+Calendar plans remain separate from completed behavior. Calendar commitments,
+pins and user edits take precedence over hypotheses. Inferred routines and email
+demands grant no permission to send communications or automatically create,
+move or cancel calendar events.
 
 ## Data flow
 

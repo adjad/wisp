@@ -574,7 +574,8 @@ class BehaviorRuntime:
                                     analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate)
                 with self._gate:
                     if admit():
-                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=self._seed_epoch(settings, role), at=now)
+                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=self._seed_epoch(settings, role), at=now,
+                            receipt_checks=tuple(batch.receipts))
             if result is None and (patterns or (batch.records and not batch.snapshots)):
                 # Empty/finished seed: at most one guarded call to interpret
                 # current activity patterns, never a second source-history call.
@@ -609,7 +610,14 @@ class BehaviorRuntime:
             if (self._seed_status is None or self._seed_status["epoch"] != settings["epoch"]
                     or self._seed_status["role_digest"] != self._seed_epoch(settings, self._analysis_role())):
                 return dict(state="not_started", sources={}, detail="Waiting for a permitted current publication.")
-            return {k:v for k,v in self._seed_status.items() if k not in {"epoch", "role_digest"}}
+            try:
+                current = all(check() is True for check in self._seed_status["receipt_checks"])
+            except Exception:
+                current = False
+            if not current:
+                return dict(state="unavailable",sources={},
+                    detail="Earlier processing is not current coverage; source evidence is unavailable or expired.")
+            return {k:v for k,v in self._seed_status.items() if k not in {"epoch", "role_digest", "receipt_checks"}}
 
     def planning_context(self, day, timezone, now=None):
         """Read current evidence; neither analysis nor receipt freshness is renewed."""
@@ -1119,9 +1127,15 @@ class BehaviorRuntime:
             finally:
                 del self._availability_cancel.event
         try:
-            backlog = await asyncio.to_thread(self._history_worker_state)
-            if backlog is not None and self.live():
-                await self._history_driver.advance(pending=lambda account:backlog.get(account,0))
+            try:
+                backlog = await asyncio.to_thread(self._history_worker_state)
+                if backlog is not None and self.live():
+                    await self._history_driver.advance(pending=lambda account:backlog.get(account,0))
+            except Exception:
+                # A source/cleanup failure withdraws email history without
+                # preventing ingestion of other permitted sources this tick.
+                self._email_history.invalidate("History worker is unavailable")
+                self.errors["email_history"] = "History is unavailable; other permitted sources can still be used."
             nudges, key = await asyncio.to_thread(run_work)
         except asyncio.CancelledError:
             cancellation.set()

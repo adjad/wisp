@@ -103,7 +103,9 @@ def test_cancel_during_http_withdraws_job_and_closes_owned_client(driver_host):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("account_count,fault",[(1,None),(2,None),(1,"pause_http"),(1,"cancel_http"),(1,"role_model")])
+@pytest.mark.parametrize("account_count,fault",[(1,None),(2,None),(1,"pause_http"),(1,"cancel_http"),(1,"role_model"),
+    (1,"continuation"),(1,"continuation_drain"),(1,"late"),(1,"segment_limit"),(1,"close_failure"),
+    (1,"commit_withdrawal"),(1,"commit_boundary")])
 def test_default_runtime_driver_advances_public_history_into_day_planning(public_host, tmp_path, monkeypatch, account_count, fault):
     import json
     import sqlite3
@@ -118,7 +120,7 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
     from tests.test_behavior_runtime import FakeHub
     p = public_host
     p.messages.clear()
-    p.messages.update({str(i):message(str(i),TEXT,int(NOW-i-1)) for i in range(12)})
+    p.messages.update({str(i):message(str(i),TEXT,int(NOW-i-1)) for i in range(200 if fault == "segment_limit" else 12)})
     if account_count == 2:
         p.source_config["accounts"]["second@example.invalid"] = {"refresh_token":"second-refresh"}
         G.refresh_history_configuration()
@@ -130,6 +132,12 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
     prompts,clients = [],[]
     def client_factory():
         http = G.HistoryHTTPClient.synthetic(p.server)
+        if fault == "close_failure":
+            close = http.aclose
+            async def broken_close():
+                await close()
+                raise RuntimeError("Synthetic cleanup failure")
+            http.aclose = broken_close
         clients.append(http)
         return http
     def complete(system,prompt,**kwargs):
@@ -152,8 +160,20 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
         gmail_history_client_factory=client_factory,history_monotonic=lambda:p.clock[0])
     monkeypatch.setattr(br,"get_runtime",lambda:runtime)
     monkeypatch.setattr(daily,"_availability_provider",None)
+    publication_started,withdrawn_at_boundary = [False],[False]
     try:
         runtime.call("configure_signals",{"email":True,"interpretation":True},NOW)
+        if fault in {"commit_withdrawal","commit_boundary"}:
+            def withdraw_at_write(sql):
+                if sql.startswith("INSERT INTO behavior_seed_work"):
+                    publication_started[0] = True
+                if (not withdrawn_at_boundary[0] and publication_started[0] and
+                        (fault == "commit_withdrawal" and sql.startswith("INSERT INTO behavior_seed_work") or
+                         fault == "commit_boundary" and sql == "COMMIT")):
+                    from service import config
+                    withdrawn_at_boundary[0] = True
+                    config.set_role("fast","changed-at-publication")
+            runtime.local_engine()._store._conn.set_trace_callback(withdraw_at_write)
         assert runtime.email_history_status()["accounts"] and clients == [] and prompts == []
         assert p.calls == []
         asyncio.run(runtime.tick(store,FakeHub(),now=p.clock[0]))
@@ -162,6 +182,8 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
             body = command(runtime._email_history)
             body.update({key:row[key] for key in ("account_id","connection_revision","account_set_revision")})
             body["revision"] = row["control_revision"]
+            if fault == "segment_limit":
+                body["scope"]["message_cap"] = 2000
             runtime.email_history_control(body)
         assert clients == [] and p.calls == []
         async def run():
@@ -189,8 +211,18 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
                 assert not daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
                 return
             await runtime.tick(store,FakeHub(),now=p.clock[0])
+            if fault == "close_failure":
+                assert len(p.calls) == 6 and prompts == []
+                assert runtime._email_history.cached_getters() == () and clients[0]._client.is_closed
+                assert "email_history" in runtime.errors and runtime.last["tick"] == p.clock[0]
+                p.clock[0] += 30
+                await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                assert len(p.calls) == 6 and len(clients) == 1 and prompts == []
+                return
             assert len(p.calls) == 6 and len(prompts) == 1
-            if fault == "role_model":
+            if fault in {"role_model","commit_withdrawal","commit_boundary"}:
+                if fault != "role_model":
+                    assert withdrawn_at_boundary[0], "The requested write/COMMIT withdrawal boundary was reached"
                 assert runtime._email_history.cached_getters() == ()
                 assert not daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
                 assert runtime.local_engine().seed_index().store._conn.execute(
@@ -199,6 +231,71 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
                 return
             assert runtime.seed_progress()["sources"]["email"]["analyzed"] == 3
             assert daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
+            if fault == "segment_limit":
+                for segment in range(2,33):
+                    p.clock[0] = NOW+(segment-1)*900
+                    before = len(p.calls)
+                    await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                    assert len(p.calls)-before <= 6
+                    assert runtime.email_history_status()["accounts"][0]["continuation"]["segment"] == segment
+                calls,models = len(p.calls),len(prompts)
+                p.clock[0] = NOW+32*900
+                await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                row = runtime.email_history_status()["accounts"][0]
+                assert row["state"] == "partial" and row["continuation"]["blocked_reason"] == "segment_limit"
+                assert row["counts"]["fetched"] < 200 and row["counts"]["pending"] > 0
+                assert len(p.calls) == calls and len(prompts) == models and len(clients) == 32
+                assert daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["ready"]
+                p.clock[0] += 30
+                await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                assert len(p.calls) == calls and all(client._client.is_closed for client in clients)
+                return
+            if fault in {"continuation","continuation_drain","late"}:
+                from service.assistant.behavior_sources import capture
+                if fault == "continuation_drain":
+                    p.clock[0] = NOW+30
+                    await runtime.tick(store,FakeHub(),now=p.clock[0])
+                    assert len(p.calls) == 11 and len(prompts) == 2
+                    assert runtime.seed_progress()["sources"]["email"]["pending"] == 1
+                batch = capture({"email":True},getters={"email":lambda **kwargs:None},now=p.clock[0],
+                                gmail_history_getters=runtime._email_history.cached_getters)
+                old = {d["id"] for d in daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]}
+                assert batch.current() and old
+                if fault == "late":
+                    p.clock[0] = NOW+1200
+                    assert runtime.seed_progress()["state"] == "unavailable"
+                    await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                    assert len(p.calls) == 6 and len(prompts) == 1 and len(clients) == 1
+                    assert not batch.current()
+                    assert not daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
+                    return
+                p.clock[0] = NOW+900
+                await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                if fault == "continuation_drain":
+                    assert len(p.calls) == 11 and len(prompts) == 3  # Drain before dropping any old proof.
+                    assert batch.current()
+                    assert runtime.seed_progress()["sources"]["email"]["pending"] == 0
+                    p.clock[0] = NOW+930
+                    await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                    expected_cache,expected_calls,expected_prompts = 4,17,4
+                else:
+                    assert len(p.calls) == 12 and len(prompts) == 2
+                    for delta in (930,960):
+                        p.clock[0] = NOW+delta
+                        await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
+                    expected_cache,expected_calls,expected_prompts = 9,17,4
+                row = runtime.email_history_status()["accounts"][0]
+                assert row["continuation"]["segment"] == 2
+                assert row["counts"]["fetched"] == 12 and row["counts"]["cached_eligible"] == expected_cache
+                assert len(p.calls) == expected_calls and len(prompts) == expected_prompts
+                assert not batch.current()  # Old source times/proofs were withdrawn, not renewed.
+                assert len({r["id"] for rows in prompts for r in rows}) == 12
+                current = daily.availability_snapshot("2026-10-15","UTC",p.clock[0])
+                assert current["ready"] and not old.intersection(d["id"] for d in current["demands"])
+                assert all(client._client.is_closed for client in clients)
+                assert len([r for r in p.calls if r.url.path.endswith("/profile")]) == 2
+                assert len([r for r in p.calls if r.url.path.endswith("/token")]) == 2
+                return
             for delta in (0,1,29):
                 p.clock[0] = NOW+delta
                 await runtime.tick(store,FakeHub(),now=p.clock[0],force=True)
@@ -222,6 +319,6 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
                 assert all(d["action_authority"] == "none" and d["observed_at"] is None for d in public["demands"])
             assert len(p.calls) == calls and len(prompts) == expected_prompts
         asyncio.run(run())
-        assert runtime.errors == {}
+        assert runtime.errors == {} if fault != "close_failure" else set(runtime.errors) == {"email_history"}
     finally:
         runtime.stop();runtime.close();turns.close();store._db.close()

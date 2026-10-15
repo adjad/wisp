@@ -327,7 +327,13 @@ def public_host(monkeypatch):
         if request.url.path.endswith("/profile"):
             return httpx.Response(200,json={"emailAddress":token_owners[bearer]})
         if request.url.path.endswith("/messages"):
-            return httpx.Response(200,json={"messages":[{"id":ident} for ident in messages]})
+            start = int(request.url.params.get("pageToken","0"))
+            size = int(request.url.params.get("maxResults","100"))
+            ids = list(messages)
+            page = {"messages":[{"id":ident} for ident in ids[start:start+size]]}
+            if start+size < len(ids):
+                page["nextPageToken"] = str(start+size)
+            return httpx.Response(200,json=page)
         return httpx.Response(200,json=messages[request.url.path.rsplit("/",1)[-1]])
     http = G.HistoryHTTPClient.synthetic(server)
     yield SimpleNamespace(host=h,backend=backend,http=http,calls=calls,clock=clock,hook=hook,

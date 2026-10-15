@@ -70,15 +70,33 @@ class HistoryDriver:
             if self._last_account in ids:
                 offset = (ids.index(self._last_account)+1) % len(jobs)
                 jobs = jobs[offset:]+jobs[:offset]
+            draining = False
             for row in jobs:
                 count = pending(row["account_id"])
+                continuation = row.get("continuation") or {}
+                if continuation.get("blocked_reason"):
+                    selected = row
+                    break
+                if continuation.get("available") is True and type(count) is int and count > 0:
+                    draining = True
+                    continue
                 if type(count) is int and 0 <= count < PENDING_RECORDS:
                     selected = row
                     break
             if selected is None:
-                return dict(state="backpressure")
+                return dict(state="draining" if draining else "backpressure")
             self._last_dispatch = now  # Reserve before any client creation/await.
             self._last_account = selected["account_id"]
+            continuation = selected.get("continuation") or {}
+            if continuation.get("available") is True or continuation.get("blocked_reason"):
+                if not self.host.continue_job(selected["account_id"],selected["revision"]):
+                    current = next((row for row in self.host.status()["accounts"]
+                                    if row["account_id"] == selected["account_id"]),None)
+                    if current is not None and current["state"] == "partial":
+                        return dict(state="partial")
+                    self.host.pause_job(selected["account_id"],selected["revision"],
+                        "The continuation window closed. Start again with current permission.")
+                    return dict(state="paused")
             client = self._borrowed
             if client is None:
                 client = self._factory()

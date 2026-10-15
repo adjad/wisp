@@ -85,13 +85,14 @@ class PublicHistoryBackend:
             except Exception:
                 application.revoke()
                 raise
-        return _PublicJob(application, bridge)
+        return _PublicJob(application, bridge, account, scope)
 
 
 class _PublicJob:
     """Each Start owns one terminal application installation and fresh grant."""
-    def __init__(self, application, bridge):
+    def __init__(self, application, bridge, account, scope):
         self.application, self.bridge = application, bridge
+        self.account, self.scope = account, scope
 
     def status(self):
         return self.bridge.status()
@@ -106,6 +107,25 @@ class _PublicJob:
 
     async def step(self, *, http, budget):
         return await self.bridge.step(http=http,budget=budget)
+
+    def handoff(self):
+        from service import gmail_source
+        with history_source_guard():
+            state = self.bridge.status()["continuation"]
+            if state["blocked_reason"]:
+                try:
+                    self.bridge.prepare_continuation()  # Source stops truthful partial.
+                except PermissionError:
+                    return False
+            if not state["available"]:
+                return False
+            lease = gmail_source.history_account_lease(self.account.account_id)
+            if lease is None or lease.account != self.account:
+                raise HistoryUnavailable("Gmail account changed before continuation")
+            grant = self.application.issue(lease,self.scope)
+            handle = self.bridge.prepare_continuation()
+            self.bridge.continue_scan(handle,grant=grant)
+            return True
 
 
 @dataclass
@@ -194,6 +214,19 @@ class HistoryHost:
         except Exception:
             return ()
 
+    @staticmethod
+    def _continuation(value):
+        if not isinstance(value,dict) or type(value.get("schema")) is not int or value["schema"] != 1:
+            return None
+        if (type(value.get("segment")) is not int or not 0 <= value["segment"] <= 32
+                or type(value.get("maximum_segments")) is not int or value["maximum_segments"] != 32
+                or any(type(value.get(name)) is not bool for name in ("handoff_due","available","incomplete"))
+                or not isinstance(value.get("blocked_reason"),str)
+                or value["blocked_reason"] not in {"","no_progress","segment_limit"}):
+            return None
+        return {name:value[name] for name in ("schema","segment","maximum_segments","handoff_due",
+                "available","incomplete","blocked_reason")}
+
     def status(self):
         """Pure metadata. Source status must not fetch or renew any evidence."""
         with self._lock:
@@ -206,6 +239,8 @@ class HistoryHost:
             for account in accounts:
                 job = self._jobs.get(account.account_id)
                 counts = {}
+                continuation = None
+                detail = job.detail if job else ""
                 if job is not None and job.account == account and job.permission is not None and job.bridge is not None:
                     value = job.bridge.status()
                     for name in ("listed", "fetched", "eligible", "failed", "evicted", "cached",
@@ -215,6 +250,12 @@ class HistoryHost:
                     for name in ("has_next_page", "eof_observed", "capped", "fresh"):
                         counts[name] = value.get(name) is True
                     state = value.get("state") if isinstance(value.get("state"), str) else "unavailable"
+                    continuation = self._continuation(value.get("continuation"))
+                    if state not in {"running","waiting","exhausted","capped","partial"}:
+                        counts = {}
+                        detail = "Current history evidence is unavailable or expired. Start again to resume."
+                    elif state == "partial":
+                        detail = "The scan stopped with partial coverage. A new Start requires current permission."
                 else:
                     state = job.state if job is not None else "off"
                 rows.append(dict(account_id=account.account_id, connection_revision=account.connection_revision,
@@ -222,7 +263,7 @@ class HistoryHost:
                         and isinstance(labels.get(account.account_id,""),str) else ""),
                     account_set_revision=account.account_set_revision,
                     control_revision=self._revisions.get(account.account_id, 0), state=state, counts=counts,
-                    detail=job.detail if job else "",
+                    detail=detail, continuation=continuation,
                     semantic_processing="separate", scope=(dict(start=job.scope.start, end=job.scope.end,
                         selection=job.scope.selection, message_cap=job.scope.message_cap) if job else None)))
             return dict(version=1, session=self._session,
@@ -305,12 +346,23 @@ class HistoryHost:
                     continue
                 value = job.bridge.status()
                 state = value.get("state")
-                if state not in {"waiting","running","capped","exhausted"}:
+                if state not in {"waiting","running","capped","exhausted","partial"}:
                     continue
                 pending = value.get("pending",0)
                 rows.append(dict(account_id=ident,revision=job.revision,
-                    acquisition_pending=(state in {"waiting","running"} or type(pending) is int and pending > 0)))
+                    continuation=self._continuation(value.get("continuation")),
+                    acquisition_pending=(state != "partial" and
+                        (state in {"waiting","running"} or type(pending) is int and pending > 0))))
             return tuple(rows)
+
+    def continue_job(self, ident, revision):
+        with self._lock, history_source_guard():
+            job = self._jobs.get(ident)
+            if (job is None or job.revision != revision or self._permission(job) is None
+                    or job.bridge is None or job.account not in self._accounts()):
+                raise HistoryConflict("History changed before continuation")
+            handoff = getattr(job.bridge,"handoff",None)
+            return handoff() if handoff is not None else False
 
     def observe_accounts(self):
         # Resolve source configuration outside both the host and source locks.
