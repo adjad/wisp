@@ -79,6 +79,7 @@ final class SetupGuideModel: ObservableObject {
     @Published var refreshError: String?
     private var testGeneration = 0
     private var statusGeneration = 0
+    private var downloadGeneration = 0
     private var monitoringStopped = false
     private let session: URLSession
 
@@ -91,6 +92,7 @@ final class SetupGuideModel: ObservableObject {
 
     private func beginMutation() {
         statusGeneration += 1
+        downloadGeneration += 1
         statusIsCurrent = false
         loading = false
         invalidateTest()
@@ -103,6 +105,11 @@ final class SetupGuideModel: ObservableObject {
     }
 
     private func accept(_ next: SetupStatus) {
+        if next.omlx.adminUrl != status?.omlx.adminUrl || next.omlx.bundled != status?.omlx.bundled {
+            downloadGeneration += 1
+            downloads = []
+            downloadError = nil
+        }
         if !next.ready || configuration(next) != configuration(status) { invalidateTest() }
         status = next
         statusIsCurrent = true
@@ -205,7 +212,7 @@ final class SetupGuideModel: ObservableObject {
         monitoringStopped = false
         await refresh()
         while !Task.isCancelled && !monitoringStopped {
-            if status?.omlx.bundled == true { await refreshDownloads() }
+            if status?.omlx.bundled == true && busy == nil { await refreshDownloads() }
             do { try await Task.sleep(nanoseconds: 3_000_000_000) }
             catch { return }
             guard !monitoringStopped else { return }
@@ -213,31 +220,43 @@ final class SetupGuideModel: ObservableObject {
         }
     }
 
-    func stopMonitoring() { monitoringStopped = true }
+    func stopMonitoring() {
+        monitoringStopped = true
+        downloadGeneration += 1
+    }
 
     func shouldOfferRedownload(_ model: String) -> Bool {
         downloads.first(where: { $0.model == model })?.state == "completed"
             && !(status?.models.installed.contains(where: { $0.id == model }) ?? false)
     }
 
-    func refreshDownloads() async {
-        guard status?.omlx.bundled == true else { return }
+    func refreshDownloads(duringAction: Bool = false) async {
+        guard status?.omlx.bundled == true, !monitoringStopped,
+              busy == nil || duringAction else { return }
+        downloadGeneration += 1
+        let generation = downloadGeneration
         do {
             let decoder = JSONDecoder()
             decoder.keyDecodingStrategy = .convertFromSnakeCase
-            downloads = try decoder.decode(Downloads.self, from: await call("GET", "engine/downloads")).tasks
+            let next = try decoder.decode(Downloads.self, from: await call("GET", "engine/downloads")).tasks
+            guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            downloads = next
             downloadError = nil
-        } catch { downloadError = "Wisp couldn't check the download. Choose Check again to retry." }
+        } catch {
+            guard generation == downloadGeneration, !monitoringStopped, !Task.isCancelled else { return }
+            downloadError = "Wisp couldn't check the download. Choose Check again to retry."
+        }
     }
 
     func download(_ model: String, cancel: Bool = false) async {
         guard busy == nil else { return }
+        downloadGeneration += 1
         busy = cancel ? "Cancelling download…" : "Starting download…"
         defer { busy = nil }
         do {
             _ = try await call("POST", cancel ? "engine/downloads/cancel" : "engine/downloads",
                                body: ["model": model], timeout: 180)
-            await refreshDownloads()
+            await refreshDownloads(duringAction: true)
             await refresh(quiet: true)
             message = nil
         } catch { fail(error) }

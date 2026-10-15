@@ -130,6 +130,8 @@ def _embedding_dimensions(payload: dict) -> int:
 
 def visible_chat_answer(payload: object) -> str:
     """A 200 or a choices envelope is not evidence that a model can answer."""
+    if isinstance(payload, dict) and payload.get("error") is not None:
+        raise SmokeError("Chat completion returned an error")
     choices = payload.get("choices") if isinstance(payload, dict) else None
     choice = choices[0] if isinstance(choices, list) and choices else None
     if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
@@ -140,9 +142,12 @@ def visible_chat_answer(payload: object) -> str:
     content = message.get("content")
     if not isinstance(content, str):
         raise SmokeError("Chat completion has no visible answer")
-    content = re.sub(r"(?s)<think>.*?</think>", "", content)
-    # An unclosed reasoning block is not a visible answer either.
-    content = content.split("<think>", 1)[0].strip()
+    # Only complete, non-nested reasoning spans may be removed. A visible
+    # prefix cannot turn an unfinished or malformed response into a pass.
+    content = re.sub(r"(?is)<think>(?:(?!</?think>).)*</think>", "", content)
+    if "<think" in content.lower() or "</think" in content.lower():
+        raise SmokeError("Chat completion has unfinished reasoning")
+    content = content.strip()
     if not content:
         raise SmokeError("Chat completion has no visible answer")
     return content

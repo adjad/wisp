@@ -170,6 +170,91 @@ struct SetupGuideChecks {
         await model.refresh()
         check(!model.shouldOfferRedownload("MISSING"), "Successful discovery ends the missing-files recovery state")
 
+        func transfer(_ state: String) -> [String: Any] {
+            ["tasks": [["model": "A", "state": state, "progress": 25,
+                        "downloaded_bytes": 25, "total_bytes": 100, "bytes_per_second": 0]]]
+        }
+        configure("A")
+        let transfers = SetupGuideModel(session: session)
+        await transfers.refresh()
+        var downloadRequests = 0
+        SetupHTTP.configure { _ in
+            downloadRequests += 1
+            return (200, transfer(downloadRequests == 1 ? "downloading" : "cancelled"),
+                    downloadRequests == 1 ? 0.15 : 0)
+        }
+        let delayedDownload = Task { await transfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        await transfers.refreshDownloads()
+        await delayedDownload.value
+        check(transfers.downloads.first?.state == "cancelled", "An older progress response cannot replace newer cancellation")
+
+        downloadRequests = 0
+        SetupHTTP.configure { _ in
+            downloadRequests += 1
+            return downloadRequests == 1 ? (503, ["detail": "Old download failure"], 0.15)
+                                         : (200, transfer("pending"), 0)
+        }
+        let delayedDownloadError = Task { await transfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        await transfers.refreshDownloads()
+        await delayedDownloadError.value
+        check(transfers.downloads.first?.state == "pending" && transfers.downloadError == nil,
+              "A delayed old failure cannot restore an error after a successful status")
+
+        downloadRequests = 0
+        SetupHTTP.configure { request in
+            if request.url!.path == "/engine/downloads" {
+                downloadRequests += 1
+                return (200, transfer(downloadRequests == 1 ? "downloading" : "cancelled"),
+                        downloadRequests == 1 ? 0.15 : 0)
+            }
+            if request.url!.path == "/engine/downloads/cancel" { return (200, [:], 0) }
+            return (200, setupSnapshot("A"), 0)
+        }
+        let preCancelPoll = Task { await transfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        await transfers.download("A", cancel: true)
+        await preCancelPoll.value
+        check(transfers.downloads.first?.state == "cancelled", "Cancel invalidates progress requests begun before its mutation")
+
+        SetupHTTP.configure { _ in (200, transfer("downloading"), 0.1) }
+        let preClosePoll = Task { await transfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        transfers.stopMonitoring()
+        await preClosePoll.value
+        check(transfers.downloads.first?.state == "cancelled", "Closing the setup window rejects an in-flight progress response")
+
+        configure("A")
+        let retryTransfers = SetupGuideModel(session: session)
+        await retryTransfers.refresh()
+        downloadRequests = 0
+        SetupHTTP.configure { request in
+            if request.url!.path == "/engine/downloads" {
+                if request.httpMethod == "POST" { return (200, [:], 0) }
+                downloadRequests += 1
+                return (200, transfer(downloadRequests == 1 ? "completed" : "pending"),
+                        downloadRequests == 1 ? 0.15 : 0)
+            }
+            return (200, setupSnapshot("A"), 0)
+        }
+        let preRetryPoll = Task { await retryTransfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        await retryTransfers.download("A")
+        await preRetryPoll.value
+        check(retryTransfers.downloads.first?.state == "pending", "Retry invalidates old completed status while the engine owns the new task ID")
+
+        SetupHTTP.configure { request in
+            if request.url!.path == "/engine/downloads" { return (200, transfer("completed"), 0.15) }
+            return (200, setupSnapshot("A", bundled: false), 0)
+        }
+        let oldEnginePoll = Task { await retryTransfers.refreshDownloads() }
+        while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+        await retryTransfers.refresh()
+        await oldEnginePoll.value
+        check(retryTransfers.downloads.isEmpty && retryTransfers.downloadError == nil,
+              "A previous engine context cannot publish download state after mode changes")
+
         configure("B")
         let monitor = Task { await model.monitor() }
         while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
