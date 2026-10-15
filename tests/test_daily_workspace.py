@@ -376,8 +376,8 @@ def test_original_locator_revision_quote_and_ages_survive_without_mutation():
 
 
 @pytest.mark.parametrize("change", [dict(source_receipt_at=None), dict(source_receipt_at=NOW - 1201),
-    dict(source_receipt_at=NOW + 1), dict(analyzed_at=None), dict(analyzed_at=NOW - 1201),
-    dict(analyzed_at=NOW + 1), dict(observed_at=NOW + 1), dict(observed_at=NOW - 1), dict(timezone="UTC"),
+    dict(source_receipt_at=NOW + 1), dict(analyzed_at=None),
+    dict(analyzed_at=NOW + 1), dict(observed_at=NOW + 1), dict(observed_at=NOW - 1), dict(timezone="Unknown/Zone"),
     dict(confidence=.8), dict(importance="high"), dict(action_authority="send"), dict(ownership="other"),
     dict(status="completed"), dict(evidence=[]), dict(reference="invented://source"),
     dict(due_ts=at(12)), dict(due_range=[at(17), at(16)]),
@@ -433,7 +433,7 @@ def public_behavior(monkeypatch):
 
 
 @pytest.mark.parametrize("value", [None, {}, dict(version=2), context(ready=False), context(ready=1),
-    context(version=True), context(timezone="UTC"), context(generated_at=NOW - 1201),
+    context(version=True), context(timezone="UTC"), context(generated_at=None),
     context(generated_at=NOW + 1), context(evidence_checked_at=NOW - 1201),
     context(evidence_checked_at=NOW + 1), context(windows=None), context(demands=None),
     context(source_coverage=[]), context(source_coverage={"email": True}),
@@ -480,7 +480,8 @@ def test_each_public_read_rechecks_authority_without_caching_or_inference(public
 def test_fresh_public_read_cannot_renew_old_analysis_or_source_receipt(public_behavior):
     from service.assistant import daily_workspace as daily
     public_behavior.planning_context = lambda *args: context(evidence_checked_at=NOW, generated_at=NOW - 1201)
-    assert not daily.availability_snapshot(DAY, ZONE, NOW)["ready"]
+    snapshot = daily.availability_snapshot(DAY, ZONE, NOW)
+    assert snapshot["ready"] and snapshot["generated_at"] == NOW - 1201
     raw = context(demands=[demand(source_receipt_at=NOW - 1201)])
     public_behavior.planning_context = lambda *args: raw
     snapshot = daily.availability_snapshot(DAY, ZONE, NOW)
@@ -910,3 +911,108 @@ def test_actual_calendar_route_persists_admission_through_today_workspace_and_em
     finally:
         mail.close()
         actual._db.close()
+
+
+@pytest.mark.parametrize("age", [1801, 2 * 86400, 30 * 86400])
+def test_durable_analysis_survives_fresh_checked_proof_without_renewing_ages(age):
+    work = demand(analyzed_at=NOW - age)
+    raw = context(generated_at=NOW - age, demands=[work], associations=[dict(analyzed_at=NOW - age)])
+    before = deepcopy(raw)
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=raw)
+    assert result["attention"][0]["analyzed_at"] == NOW - age
+    assert result["behavior_context"]["generated_at"] == NOW - age
+    assert result["attention"][0]["source_receipt_at"] == NOW - 120 and raw == before
+
+
+@pytest.mark.parametrize("source,ttl", [("email", 1200), ("messages", 600), ("notes", 86400), ("calendar", 1200), ("reminders", 1200)])
+def test_source_receipt_limits_are_independent_of_durable_analysis(source, ttl):
+    for age, accepted in [(ttl, True), (ttl + 1, False)]:
+        work = demand(source=source, analyzed_at=NOW - 3 * 86400, source_receipt_at=NOW - age)
+        raw = context(generated_at=NOW - 3 * 86400, demands=[work])
+        result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=raw)
+        assert bool(result["attention"]) is accepted
+        if accepted:
+            assert result["attention"][0]["source_receipt_at"] == NOW - age
+
+
+def test_hour_old_notes_publication_and_old_link_do_not_hide_fresh_window():
+    work = demand(source="notes", analyzed_at=NOW - 2 * 86400, source_receipt_at=NOW - 3600)
+    raw = context(generated_at=NOW - 2 * 86400, windows=[busy()], demands=[work],
+        associations=[dict(analyzed_at=NOW - 5 * 86400)])
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=raw)
+    assert result["attention"][0]["source_receipt_at"] == NOW - 3600
+    assert result["tentative_count"] == 1 and result["suggested_count"] == 1
+
+
+@pytest.mark.parametrize("field", ["analyzed_at", "source_receipt_at"])
+@pytest.mark.parametrize("bad", [None, True, 0, float("nan"), float("inf"), NOW + 1])
+def test_durable_original_timestamps_must_be_finite_and_ordered(field, bad):
+    assert not assess(DAY, ZONE, state(), {}, now=NOW,
+        behavior=context(demands=[demand(**{field: bad})]))["attention"]
+    assert not assess(DAY, ZONE, state(), {}, now=NOW,
+        behavior=context(evidence_checked_at=NOW - 2, demands=[demand(**{field: NOW - 1})]))["attention"]
+
+
+@pytest.mark.parametrize("source_zone", ["UTC", "America/New_York", "Asia/Tokyo"])
+def test_analysis_timezone_is_preserved_while_deadline_instants_stay_absolute(source_zone):
+    work = demand(timezone=source_zone)
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))
+    item = result["attention"][0]
+    assert item["analysis_timezone"] == source_zone and result["timezone"] == ZONE
+    assert item["due_range"] == work["due_range"] and item["due_ts"] == work["due_ts"]
+    assert result["suggested_count"] == 1
+
+
+@pytest.mark.parametrize("day,seconds", [("2026-03-08", 23 * 3600), ("2026-11-01", 25 * 3600)])
+@pytest.mark.parametrize("source_zone", ["UTC", "Asia/Tokyo"])
+def test_absolute_deadline_and_holds_respect_query_day_across_dst(day, seconds, source_zone):
+    from service.assistant.today import day_bounds
+    lo, hi = day_bounds(day, ZONE)
+    assert hi - lo == seconds
+    now = lo + 60
+    # Use unambiguous afternoon hours; absolute evidence can span either day boundary.
+    noon = datetime.fromisoformat(day + "T12:00:00").replace(tzinfo=ZoneInfo(ZONE)).timestamp()
+    due = noon + 3600
+    st = state()
+    st["sources"]["calendar"].update(last_sync=now, snapshot_started_at=now,
+        diagnostics=dict(coverage_start=lo, coverage_end=hi))
+    raw = context(timezone=ZONE, generated_at=now - 3 * 86400, evidence_checked_at=now,
+        demands=[demand(timezone=source_zone, analyzed_at=now - 3 * 86400,
+            source_receipt_at=now, observed_at=now - 10 * 86400,
+            endpoint=demand()["endpoint"] | {"source_time": now - 10 * 86400},
+            due_ts=due, due_range=[due, due + 60])], windows=[
+            busy("previous", start=lo - 3600, end=lo, observed_at=now - 86400),
+            busy("opening", start=lo - 3600, end=lo + 3600, observed_at=now - 86400),
+            busy("closing", start=hi - 3600, end=hi + 3600, observed_at=now - 86400),
+            busy("following", start=hi, end=hi + 3600, observed_at=now - 86400)])
+    original = deepcopy(raw)
+    result = assess(day, ZONE, st, {}, now=now, behavior=raw)
+    item = result["attention"][0]
+    assert item["analysis_timezone"] == source_zone and item["due_range"] == [due, due + 60]
+    holds = {b["pattern_id"]: b for b in result["proposed_plan"]["blocks"] if b["kind"] == "behavior"}
+    assert set(holds) == {"opening", "closing"}
+    assert holds["opening"]["start"] == lo and holds["opening"]["end"] == lo + 3600
+    assert holds["closing"]["start"] == hi - 3600 and holds["closing"]["end"] == hi
+    assert result["suggested_count"] == 1
+    for block in result["proposed_plan"]["blocks"]:
+        assert lo <= block["start"] < block["end"] <= hi
+        if block["kind"] == "suggestion":
+            assert block["end"] <= due
+    assert raw == original
+
+
+def test_cross_midnight_source_date_range_remains_a_half_open_absolute_range():
+    from service.assistant.today import day_bounds
+    source_zone = "Asia/Tokyo"
+    beginning = datetime(2026, 10, 15, tzinfo=ZoneInfo(source_zone)).timestamp()
+    ending = datetime(2026, 10, 16, tzinfo=ZoneInfo(source_zone)).timestamp()
+    work = demand(timezone=source_zone, due_ts=None, due_range=[beginning, ending], deadline_precision="date")
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))
+    item = result["attention"][0]
+    assert item["due_range"] == [beginning, ending] and item["due_ts"] is None
+    assert item["analysis_timezone"] == source_zone and item["deadline_precision"] == "date"
+    assert datetime.fromtimestamp(beginning, ZoneInfo(ZONE)).isoformat() == "2026-10-14T08:00:00-07:00"
+    assert datetime.fromtimestamp(ending, ZoneInfo(ZONE)).isoformat() == "2026-10-15T08:00:00-07:00"
+    lo, hi = day_bounds(DAY, ZONE)
+    assert all(lo <= b["start"] < b["end"] <= hi for b in result["proposed_plan"]["blocks"])
+    assert "source range [Oct 14, 8:00 AM, Oct 15, 8:00 AM)" in render(result)

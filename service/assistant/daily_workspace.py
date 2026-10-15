@@ -19,7 +19,8 @@ from service.assistant.today import build_plan, day_bounds
 SOURCES = ("calendar", "reminders", "email", "messages", "notes")
 MAX_ITEMS = 80
 MAX_SUGGESTIONS = 8
-BEHAVIOR_MAX_AGE = 20 * 60
+BEHAVIOR_PROOF_MAX_AGE = 20 * 60
+SOURCE_RECEIPT_MAX_AGE = dict(email=1200, messages=600, notes=86400, calendar=1200, reminders=1200)
 _availability_provider = None
 
 
@@ -61,7 +62,13 @@ def availability_snapshot(day, timezone, now):
 
 
 def _fresh(stamp, now):
-    return finite(stamp) and 0 <= now - stamp <= BEHAVIOR_MAX_AGE
+    return finite(stamp) and 0 <= now - stamp <= BEHAVIOR_PROOF_MAX_AGE
+
+
+def _original(stamp, checked_at):
+    # Old analysis is durable when the public producer revalidates its exact
+    # current source revision. Never turn the checked time into analysis time.
+    return finite(stamp) and 0 < stamp <= checked_at
 
 
 def valid_availability(value, timezone, now):
@@ -69,9 +76,8 @@ def valid_availability(value, timezone, now):
     return (finite(now) and isinstance(value, dict)
         and type(value.get("version")) is int and value["version"] == 1
         and value.get("ready") is True and value.get("timezone") == timezone
-        and _fresh(value.get("generated_at"), now)
         and _fresh(value.get("evidence_checked_at"), now)
-        and value["generated_at"] <= value["evidence_checked_at"]
+        and _original(value.get("generated_at"), value["evidence_checked_at"])
         and all(isinstance(value.get(k, []), list) for k in ("windows", "demands", "associations"))
         and isinstance(value.get("source_coverage", {}), dict)
         and all(isinstance(k, str) and isinstance(v, str)
@@ -116,20 +122,21 @@ def _behavior_demand(demand, timezone, now, checked_at):
     if (source not in ("email", "messages", "notes", "calendar", "reminders")
             or not isinstance(ident, str) or not 1 <= len(ident) <= 200
             or demand.get("kind") not in ("preparation", "task", "meeting_request")
-            or demand.get("timezone") != timezone or demand.get("ownership") not in ("user", "unknown")
+            or not isinstance(demand.get("timezone"), str) or demand.get("ownership") not in ("user", "unknown")
             or demand.get("status") not in ("tentative", "unresolved")
             or demand.get("confidence") is not None or demand.get("importance") != "unknown"
             or demand.get("action_authority") != "none"
             or not isinstance(quote, str) or not 8 <= len(quote) <= 800
             or not isinstance(endpoint, dict) or not isinstance(reference, dict)
             or reference.get("source") != source or not _refs(demand.get("evidence"))
-            or not _fresh(demand.get("source_receipt_at"), now)
-            or not _fresh(demand.get("analyzed_at"), now)
-            or max(demand["source_receipt_at"], demand["analyzed_at"]) > checked_at):
+            or not _original(demand.get("source_receipt_at"), checked_at)
+            or not _original(demand.get("analyzed_at"), checked_at)
+            or not 0 <= now - demand["source_receipt_at"] <= SOURCE_RECEIPT_MAX_AGE[source]):
         return None
     try:
+        ZoneInfo(demand["timezone"])
         quote_hash = hashlib.sha256(quote.encode("utf-8")).hexdigest()
-    except UnicodeEncodeError:
+    except (UnicodeEncodeError, ValueError, KeyError):
         return None
     start, end = endpoint.get("start"), endpoint.get("end")
     if (endpoint.get("source") != source or endpoint.get("record_id") != demand.get("source_id")
@@ -176,7 +183,8 @@ def _behavior_demand(demand, timezone, now, checked_at):
     item.update(quote=quote, reference=json.dumps(reference, sort_keys=True, ensure_ascii=False), source_id=demand["source_id"],
         source_reference=deepcopy(reference), evidence=deepcopy(demand["evidence"]),
         endpoint=deepcopy(endpoint), source_receipt_at=demand["source_receipt_at"],
-        analyzed_at=demand["analyzed_at"], observed_at=observed, confidence=None,
+        analyzed_at=demand["analyzed_at"], analysis_timezone=demand["timezone"],
+        observed_at=observed, confidence=None,
         time_evidence=deepcopy(demand.get("time_evidence")),
         earliest_start=demand.get("earliest_start"),
         priority_dimensions=deepcopy(demand.get("priority_dimensions")),

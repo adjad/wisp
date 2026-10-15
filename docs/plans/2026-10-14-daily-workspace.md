@@ -63,34 +63,121 @@ future grounded date/instant and valid adjustable default duration may propose a
 User-authored work and explicit priorities continue to win; an inferred importance
 hypothesis cannot override them. No automatic topic-specific task kind exists.
 
-Consumer development base: `bebf005e45af3b3c0dd5bbfc45078c60e998c28e`;
-worktree `/Users/adijain/.codex/worktrees/daily-behavior-context/MOE_Project`,
-branch `codex/daily-behavior-context`, single writer
-`/root/consumer_adapter_builder`, under the root's
-`WISP_DAILY_BEHAVIOR_CONSUMER_SINGLE_WRITER_HELPER_ACK_20261015.json`.
-Only this module, its tests and this plan are in the assigned delta. Frozen PR232
-and the separately owned producer are not modified.
+Current consumer development input is daily candidate
+`ccbf2baf60ebc933079249f60924d16bc7e76863` and inspected producer
+`c137853b5614f869080830325416670bb71551ce`. The consumer worktree is
+`/Users/adijain/.codex/worktrees/daily-behavior-context/MOE_Project`, branch
+`codex/daily-behavior-context`. The parent chat
+`01a13e33-ce4e-7a53-bf23-deea0f38417a` is the sole current writer; the earlier
+adapter helper has finished. The assigned delta contains only this document,
+`service/assistant/daily_workspace.py`, and `tests/test_daily_workspace.py`.
+Frozen PR232 and the producer worktree remain unchanged.
 
-The actual producer is absent from this base. Its development snapshot
-`587961a5885865e5254e4053c9c541f7952fdcc5` was inspected statically, including the
-public wrapper, `BehaviorRuntime.planning_context`, availability windows,
-commitments, source adapters, seed materialization and association work proofs.
-Only wire-shaped fakes and a fake public wrapper are executed here. Durable
-`associations.materialize_work` supplies the proof fields above; the older
-cache-only `commitments.validate` shape does not supply original analysis,
-publication receipt or a saved endpoint, so those demands are withheld. Supporting
-that older path requires the producer owner to expose these exact proofs rather
-than synthesizing them in this consumer.
+The original adapter commit `cc20fd33` was reconciled by ordinary merges:
+`0bdaf3b6` inherited the then-current daily candidate, and `96a11b23` inherited
+CCBF. The latter has parents `0bdaf3b6` and CCBF, no conflicts, and preserved
+the two uncommitted semantic repair files in place. Its index contained only
+the incoming daily changes. Outside the three owned paths, the consumer
+inherits CCBF blobs exactly. These are development inputs, not a qualified
+combined application or a PR merge request.
 
-Admission conservatively retains the daily consumer's 20-minute analysis limit
-and applies it independently to original publication/analysis and read timestamps;
-new reads cannot extend it. Original source time can be older (or unknown for
-Notes), while recurrent window observations retain the existing 21-day limit.
-This can withhold otherwise reusable durable hypotheses until fresh analysis is
-published. Source coverage remains descriptive, never a blanket adequacy claim.
-Consent, generation, role, and current source-revision checks remain the public
-producer's responsibility on every call; consumer fakes verify the read seam and
-revocation behavior, not the producer's implementation of those checks.
+The actual producer is absent from this branch. Its C137 public wrapper,
+`BehaviorRuntime.planning_context`, default cached source adapters, seed/index
+materialization and durable work proofs have been inspected. Both wire-shaped
+contract tests and the bounded actual-public composition fixture described below
+have executed. Durable
+`associations.materialize_work` supplies original analysis/publication proofs
+and saved endpoints. Older cache-only demands without those proofs remain
+withheld; the consumer does not invent missing evidence.
+
+The current repair separates the original timestamps from current proof.
+`evidence_checked_at` must be finite, nonfuture and within 20 minutes.
+`generated_at` and demand `analyzed_at` remain their original finite positive
+timestamps, no later than checked time. They may be days old when the public
+producer still verifies the unchanged source revision. Receipt eligibility is
+source-specific: Mail 1,200 seconds, Messages 600, Notes 86,400, and native
+Calendar/Reminders 1,200. The consumer's limits supplement the producer's
+per-read revision, epoch, permission, coverage and role checks; they cannot
+make arbitrary JSON current. Reading never changes analysis or publication
+times, renews a receipt, collects sources or calls a model.
+
+An older association does not invalidate a fresh recurrence window or durable
+work item. Windows retain their separate recurrence/cache contract. Source
+analysis timezone is validated and retained as `analysis_timezone`, independently
+of the selected display timezone. Absolute `due_range` instants remain
+unchanged, including source dates that cross the displayed midnight. Date
+ranges stay half-open ranges; no exact deadline is invented. The selected day's
+23/25-hour DST bounds and authored/Calendar precedence still govern placement.
+Unknown ownership, duration or deadline remains review-only.
+
+The bounded **actual-public composition proof passed 42 distinct checks**, with
+zero unexpected effects and no skips. The fixture uses 53 unchanged production
+source files pinned to C137 (producer and source adapters), CCBF (consumer
+surroundings and private Store), and this branch's exact repaired adapter bytes.
+It runs the real public `planning_context` wrapper, default canonical cached
+getters and `capture`, Interpreter with an explicit fake completion, actual
+Seed/SourceIndex/BehaviorEngine/Store, the default consumer, a private actual
+AssistantStore, and the actual Today planner. No producer wrapper, evidence
+getter, source eligibility check, recurrence miner or planner is mocked.
+
+The actual proof covers Mail/Messages/Notes receipt expiry at the exact boundary,
+changed revisions, revoked sources, role/consent changes, stop and cancellation;
+30-minute and days-old durable analysis with fresh proof; a one-hour-old Notes
+read; unknown ownership/deadline review-only behavior; repeated reads without
+inference, source timestamp renewal or database writes; source UTC instant/date
+ranges preserved across displayed midnight and 23/25-hour DST days; unchanged
+authored tasks; and persisted Calendar partial-to-complete recovery.
+Synthetic covered activity bins from five weeks go through the actual miner and
+fake semantic completion to produce 14–16 and 18–19 tentative holds. A real
+saved cross-source association and work retain their old analysis while a fresh
+window interpretation is accepted. These examples are synthetic, correctable
+hypotheses and do not establish an actual class or attendance.
+
+The fixture suppresses only the tools package's aggregate register-all
+initializer, retaining real canonical submodule paths and source bodies.
+Explicit, recorded config/idle/hub/model boundary facades deny unexpected calls.
+Every database/write stays in fresh private HOME/WISP_HOME/TMPDIR; import,
+process, network and outside-private path guards run before production imports.
+Actual AssistantStore's pure discovery/browser schema dependencies are included;
+no browser reader or discovery worker starts. Facade source paths, callback and
+constructor inspection, selected Git blobs/SHA-256, commands, environment, guard
+self-controls, attempts and post-run source hashes are recorded.
+**Normal application initialization, native sources, real models/providers,
+inbox delivery, installed-app behavior and beta readiness are not qualified.**
+The possible-away producer extension is not included.
+
+Development proof command: `/usr/local/bin/python3
+/tmp/wisp-consumer-ccbf-c137-public-controller.py`, launching pinned
+`/private/tmp/wisp-behavior-py313.fxCgTl/bin/python` against a fresh immutable
+source snapshot with private HOME/WISP_HOME/TMPDIR and `WISP_BEHAVIOR=0`; only
+the synthetic runtime's explicit enabled/settings boundary is active.
+`WISP_TODAY_WINDOW_CHECK` remains unset. The final pre-freeze 42-case evidence is
+`/private/tmp/wisp-consumer-c137-public-attempt-re6spblz`, including
+`SOURCE_INPUT_MANIFEST.json`, `BOOTSTRAP_IMPORT_CONSTRUCTOR_EFFECTS_MANIFEST.json`,
+`facades/actual-public-proof.py`, `evidence/actual-public-result.json`,
+`evidence/controller-receipt.json` and the complete attempt log.
+
+Failed development attempts remain preserved: missing inspected pure migration
+and message-digest callback dependencies caused hard import-guard stops;
+a preparation field-name error repeated the guarded setup failure. An initially
+misordered Notes publication was correctly rejected by native read-start
+ordering. Yearless date prose was correctly kept unknown; the proof retains
+that negative and adds explicit ISO-year positive oracles. Excessive synthetic
+inter-case clock increments moved a baseline beyond its deadline; the fixture
+now keeps baseline positives current while preserving TTL and old-analysis tests.
+None required a production repair or weaker source/action guard.
+
+Private synthetic focused validation before freeze:
+`/usr/local/bin/python3` launches
+`/private/tmp/wisp-behavior-py313.fxCgTl/bin/python -m pytest -q -rs -p
+no:cacheprovider tests/test_daily_workspace.py tests/test_today_plan.py` with
+private HOME/WISP_HOME/TMPDIR, worktree PYTHONPATH, no bytecode and
+`WISP_BEHAVIOR=0`. **276 passed, no skips, two existing dependency deprecations**,
+including five DST/range-boundary additions. Evidence is
+`/tmp/wisp-consumer-ccbf-c137-dst-focused.{json,log}`. Fresh checks bind the final
+committed development head separately. Primary PR232 was independently gated
+and merged as `65faddf90868a81e9435cab192180dc08e2fd1bc` with the exact CCBF tree;
+its 15 formal omissions plus four custom live Notes branches remain separate.
 
 The producer's root-owned retention/checkpoint repair, producer qualification,
 and a root-acknowledged combined/current-main candidate remain integration
