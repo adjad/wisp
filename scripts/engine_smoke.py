@@ -6,9 +6,11 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import socket
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +128,26 @@ def _embedding_dimensions(payload: dict) -> int:
     return len(vector)
 
 
+def visible_chat_answer(payload: object) -> str:
+    """A 200 or a choices envelope is not evidence that a model can answer."""
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        raise SmokeError("Chat completion did not finish successfully")
+    message = choice.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise SmokeError("Chat completion has no assistant message")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise SmokeError("Chat completion has no visible answer")
+    content = re.sub(r"(?s)<think>.*?</think>", "", content)
+    # An unclosed reasoning block is not a visible answer either.
+    content = content.split("<think>", 1)[0].strip()
+    if not content:
+        raise SmokeError("Chat completion has no visible answer")
+    return content
+
+
 def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None,
               embedding_model: str | None = None, rerank_model: str | None = None) -> dict:
     engine_root = Path(engine_root).resolve(strict=True)
@@ -138,9 +160,11 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None,
         layout = EngineLayout(engine_root, Path(temp_data) / "data")
         manager = EngineManager(layout, port=port, extra_model_dirs=(model_dir,))
         try:
+            started = time.monotonic()
             manager.start()
             if not asyncio.run(manager.wait_ready(timeout=300)):
                 raise SmokeError("Bundled engine did not become ready")
+            startup_seconds = time.monotonic() - started
 
             headers = {"Authorization": f"Bearer {manager.api_key}"}
             base = f"http://127.0.0.1:{port}"
@@ -160,17 +184,17 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None,
                                    if _model_id(item) not in (embedding_model, rerank_model)]
                 selected_model, model_bytes = choose_smallest_model(chat_candidates, model_dir, model)
 
+                started = time.monotonic()
                 chat_response = client.post(f"{base}/v1/chat/completions", json={
                     "model": selected_model,
                     "messages": [{"role": "user", "content": "Reply with OK."}],
-                    "max_tokens": 8,
+                    "max_tokens": 512,
                     "temperature": 0,
                 })
                 chat_response.raise_for_status()
                 chat_payload = chat_response.json()
-                choices = chat_payload.get("choices") if isinstance(chat_payload, dict) else None
-                if not isinstance(choices, list) or not choices:
-                    raise SmokeError("Chat completion response has no choices")
+                chat_text = visible_chat_answer(chat_payload)
+                chat_seconds = time.monotonic() - started
 
                 embedding_dimensions = None
                 if embedding_model is not None:
@@ -198,9 +222,11 @@ def run_smoke(engine_root: Path, model_dir: Path, model: str | None = None,
                     "model": selected_model,
                     "model_bytes": model_bytes,
                     "chat_completion": "passed",
+                    "startup_seconds": round(startup_seconds, 3),
+                    "chat_seconds": round(chat_seconds, 3),
                     "embedding_dimensions": embedding_dimensions,
                     "rerank_results": rerank_results,
-                    "chat_text": (choices[0].get("message") or {}).get("content"),
+                    "chat_text": chat_text,
                 }
         finally:
             manager.stop()

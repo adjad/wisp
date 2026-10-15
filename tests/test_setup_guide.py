@@ -122,6 +122,18 @@ def test_ready_when_engine_runs_and_roles_resolve():
     assert _check(s, "search")["state"] == "ok"
 
 
+def test_bundled_engine_needs_live_readiness_and_always_offers_retry(monkeypatch):
+    monkeypatch.setattr(guide, "main_engine_profile", lambda: guide.BUNDLED)
+    fresh = _status(installed=[], running=False, is_installed=False)
+    cached = _status(installed=[Q4], running=False, roles=_roles(Q4))
+    for status in (fresh, cached):
+        assert not status["ready"] and status["omlx"]["bundled"] is True
+        assert _check(status, "engine")["state"] == "warn"
+        assert _check(status, "engine")["action"] == "start_engine"
+    recovered = _status(installed=[Q4], running=True, roles=_roles(Q4))
+    assert recovered["ready"] and _check(recovered, "engine")["state"] == "ok"
+
+
 def test_roles_bound_to_another_endpoint_are_not_reported_missing():
     roles = _roles(Q6)
     roles["reasoning"] = {"model": "gemma:latest", "endpoint": "local_provider"}

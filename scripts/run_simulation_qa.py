@@ -272,6 +272,7 @@ ADDITIONAL_FULL_TESTS = {
     # disposable temp directories with a private HOME; no oMLX, user data or network.
     "tests/test_bundled_attribution.py",
     "tests/test_bundled_engine_api.py",
+    "tests/test_engine_downloads.py",
     "tests/test_bundled_engine.py",
     "tests/test_bundled_engine_mode.py",
     # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.

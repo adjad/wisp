@@ -217,7 +217,11 @@ struct EngineSettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
-                    if let url = engine.adminURL {
+                    if engine.mode == .bundled {
+                        Button("Set up engine and models…") {
+                            NotificationCenter.default.post(name: .wispOpenSetupGuide, object: nil)
+                        }
+                    } else if let url = engine.adminURL {
                         Button("Open engine dashboard") {
                             NSWorkspace.shared.open(url)
                         }
