@@ -198,6 +198,7 @@ PROFILE_TESTS = {
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
         "tests/test_tool_consolidation.py",
+        "tests/test_terse_tool_schemas.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
