@@ -7,16 +7,58 @@ enum WispClient {
     static let baseURL = URL(string: "http://127.0.0.1:54321")!
 }
 
+
+// Explicit test-transport ordering; no response deadline establishes a race.
+final class SetupReplyGate {
+    private let lock = NSLock()
+    private var arrived = false
+    private var released = false
+    private var delivery: (() -> Void)?
+
+    var captured: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return arrived
+    }
+    func capture(_ next: @escaping () -> Void) {
+        lock.lock()
+        arrived = true
+        let sendNow = released
+        if !sendNow { delivery = next }
+        lock.unlock()
+        if sendNow { DispatchQueue.global().async(execute: next) }
+    }
+    func release() {
+        lock.lock()
+        released = true
+        let next = delivery
+        delivery = nil
+        lock.unlock()
+        if let next { DispatchQueue.global().async(execute: next) }
+    }
+}
+
+@MainActor
+func waitForSetupRequest(_ condition: () -> Bool) async throws -> Bool {
+    let deadline = ProcessInfo.processInfo.systemUptime + 10
+    while !condition() {
+        if ProcessInfo.processInfo.systemUptime >= deadline { return false }
+        try await Task.sleep(nanoseconds: 1_000_000)
+    }
+    return true
+}
+
 final class SetupHTTP: URLProtocol {
     typealias Handler = (URLRequest) -> (Int, [String: Any], Double)
     private static let lock = NSLock()
     private static var handler: Handler = { _ in (500, [:], 0) }
     private static var paths: [String] = []
+    private static var replyGates: [String: [SetupReplyGate]] = [:]
 
-    static func configure(_ next: @escaping Handler) {
+    static func configure(holds: [String: [SetupReplyGate]] = [:], _ next: @escaping Handler) {
         lock.lock(); defer { lock.unlock() }
         handler = next
         paths = []
+        replyGates = holds
     }
     static func saw(_ path: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
@@ -32,15 +74,19 @@ final class SetupHTTP: URLProtocol {
         Self.lock.lock()
         Self.paths.append(request.url!.path)
         let answer = Self.handler(request)
+        let path = request.url!.path
+        let gate = Self.replyGates[path]?.isEmpty == false ? Self.replyGates[path]?.removeFirst() : nil
         Self.lock.unlock()
         let response = HTTPURLResponse(url: request.url!, statusCode: answer.0,
                                        httpVersion: "HTTP/1.1", headerFields: ["Content-Type": "application/json"])!
         let data = try! JSONSerialization.data(withJSONObject: answer.1)
-        DispatchQueue.global().asyncAfter(deadline: .now() + answer.2) { [self] in
+        let deliver = { [self] in
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)
         }
+        if let gate { gate.capture(deliver) }
+        else { DispatchQueue.global().asyncAfter(deadline: .now() + answer.2, execute: deliver) }
     }
     override func stopLoading() {}
 }
@@ -70,8 +116,8 @@ struct SetupGuideChecks {
             }
             checks += 1
         }
-        func configure(_ model: String, delayChat: Double = 0) {
-            SetupHTTP.configure { request in
+        func configure(_ model: String, delayChat: Double = 0, chatGate: SetupReplyGate? = nil) {
+            SetupHTTP.configure(holds: chatGate.map { ["/chat": [$0]] } ?? [:]) { request in
                 if request.url!.path == "/chat" {
                     return (200, ["content": "OK", "setup_test": "complete_visible_assistant_v1"], delayChat)
                 }
@@ -283,29 +329,39 @@ struct SetupGuideChecks {
         check(SetupHTTP.count("/setup/status") == 1,
               "Stopping during the initial failed request prevents every hidden retry")
 
-        // Stop fences both outcomes, and the retained model can perform a new
-        // test on reopen without an old completion clearing its busy state.
+        // Hold both replies explicitly. Finish the stale request while the
+        // fresh request remains in flight; only then release the fresh reply.
         for code in [200, 503] {
             configure("A")
             let closed = SetupGuideModel(session: session)
             await closed.refresh()
-            SetupHTTP.configure { _ in
+            let oldReply = SetupReplyGate()
+            SetupHTTP.configure(holds: ["/chat": [oldReply]]) { _ in
                 (code, code == 200 ? ["content": "OK", "setup_test": "complete_visible_assistant_v1"]
-                                  : ["detail": "Delayed synthetic failure"], 0.15)
+                                  : ["detail": "Delayed synthetic failure"], 0)
             }
             let delayed = Task { await closed.test() }
-            while !SetupHTTP.saw("/chat") { try await Task.sleep(nanoseconds: 1_000_000) }
+            guard try await waitForSetupRequest({ oldReply.captured }) else {
+                throw NSError(domain: "SetupGuideChecks", code: 1,
+                              userInfo: [NSLocalizedDescriptionKey: "Old test request never arrived"])
+            }
             closed.stopMonitoring()
             check(closed.testResult == nil && !closed.testing, "Stop clears test evidence and busy state")
-            configure("A", delayChat: 0.25)
+            let freshReply = SetupReplyGate()
+            configure("A", chatGate: freshReply)
             let reopen = Task { await closed.monitor() }
-            while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+            guard try await waitForSetupRequest({ SetupHTTP.saw("/engine/downloads") }) else {
+                throw NSError(domain: "SetupGuideChecks", code: 2,
+                              userInfo: [NSLocalizedDescriptionKey: "Reopened monitor never reached downloads"])
+            }
             let fresh = Task { await closed.test() }
-            for _ in 0..<50 where !SetupHTTP.saw("/chat") { try await Task.sleep(nanoseconds: 1_000_000) }
-            check(SetupHTTP.saw("/chat"), "Reopen can start a test before the old request finishes")
+            let freshArrived = try await waitForSetupRequest({ freshReply.captured })
+            check(freshArrived, "Reopen can start a test before the old request finishes")
+            oldReply.release()
             await delayed.value
             check(closed.testResult == nil, "Stop fences delayed test HTTP\(code)")
             check(closed.testing, "An old completion cannot clear a reopened test's busy state")
+            freshReply.release()
             await fresh.value
             check(closed.testResult?.hasPrefix("Works") == true, "Reopened retained model can pass a fresh test")
             closed.stopMonitoring()
