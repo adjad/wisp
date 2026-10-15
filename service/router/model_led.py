@@ -332,11 +332,11 @@ class ToolSpec:
     unavailable_reason: str = ""
 
     def schema(self) -> dict:
-        # Same authoritative metadata shape as registry.Tool.schema(). The
-        # registry bridge does not execute a function or reconstruct arguments.
-        return {"type": "function", "function": {
-            "name": self.name, "description": self.description,
-            "parameters": self.parameters}}
+        # Same model-facing shape as registry.tool_schemas(), terse mode
+        # included, so discovered schemas match what the scoped route sends.
+        # The registry bridge does not execute a function or reconstruct arguments.
+        from service.tools.registry import model_schema
+        return model_schema(self.name, self.description, self.parameters)
 
 
 def registry_specs(registry: Mapping[str, object]) -> tuple[ToolSpec, ...]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import inspect
 import hashlib
 import re
@@ -354,9 +355,68 @@ def searchable_tool_names() -> set[str]:
     return {name for name in REGISTRY if is_tool_searchable(name)}
 
 
+# JSON-schema keywords whose values are themselves schemas (or maps/lists of
+# them). Everything else under a schema node — default, enum, const, examples —
+# is literal DATA, and a "description" key there belongs to the data.
+_SCHEMA_MAP_KEYS = ("properties", "patternProperties", "$defs", "definitions")
+_SCHEMA_LIST_KEYS = ("anyOf", "oneOf", "allOf", "prefixItems")
+_SCHEMA_ONE_KEYS = ("items", "additionalProperties", "not", "contains",
+                    "if", "then", "else", "propertyNames")
+
+
+def _strip_parameter_descriptions(node: Any, keep: frozenset[str] = frozenset()) -> Any:
+    """Copy of a JSON schema without `description` prose on schema nodes.
+
+    Only schema positions are walked, so a property literally NAMED
+    "description" (create_tool's argument) and a "description" key inside a
+    default/enum/const value both survive. Properties listed in `keep` keep
+    their prose: a few parameters carry a safety rule or a format the model
+    cannot infer from the name (see short_descriptions.KEEP_PARAMETER_PROSE)."""
+    if not isinstance(node, dict):
+        return copy.deepcopy(node)
+    out = {}
+    for key, value in node.items():
+        if key == "description" and isinstance(value, str):
+            continue
+        if key in _SCHEMA_MAP_KEYS and isinstance(value, dict):
+            out[key] = {name: (copy.deepcopy(sub) if key == "properties" and name in keep
+                               else _strip_parameter_descriptions(sub))
+                        for name, sub in value.items()}
+        elif key in _SCHEMA_LIST_KEYS and isinstance(value, list):
+            out[key] = [_strip_parameter_descriptions(sub) for sub in value]
+        elif key in _SCHEMA_ONE_KEYS and isinstance(value, dict):
+            out[key] = _strip_parameter_descriptions(value)
+        else:
+            out[key] = copy.deepcopy(value)
+    return out
+
+
+def model_schema(name: str, description: str, parameters: dict) -> dict:
+    """The schema the MODEL is shown for one tool.
+
+    Full by default. With terse mode on: the one-line description and bare
+    parameters, built from copies so the registry's stored objects are never
+    touched and retrieval keeps indexing the full description. Every path that
+    hands schemas to the model goes through here, including model-led schema
+    discovery, so the model never sees a mix it was not trained on."""
+    from service.config import terse_tool_schemas_enabled
+    if terse_tool_schemas_enabled():
+        from service.tools.short_descriptions import KEEP_PARAMETER_PROSE, SHORT
+        # Only tools the model was trained on in terse form are shortened.
+        # Skill/MCP/user-authored tools have no entry and keep every word,
+        # parameters included: nothing else would tell the model their rules.
+        if name in SHORT:
+            description = SHORT[name]
+            parameters = _strip_parameter_descriptions(
+                parameters, KEEP_PARAMETER_PROSE.get(name, frozenset()))
+    return {"type": "function",
+            "function": {"name": name, "description": description, "parameters": parameters}}
+
+
 def tool_schemas(names: list[str] | None = None) -> list[dict]:
     tools = REGISTRY.values() if names is None else [REGISTRY[n] for n in names if n in REGISTRY]
-    return [t.schema() for t in tools if not t.unavailable_reason]
+    return [model_schema(t.name, t.description, t.parameters)
+            for t in tools if not t.unavailable_reason]
 
 
 def _arg_hint(tool: Tool) -> str:
