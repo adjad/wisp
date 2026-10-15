@@ -458,6 +458,20 @@ validation or forward accuracy claim has been established. State identifiers cur
 follow the retained prototype anchor and may change when that anchor expires;
 persistent semantic verdicts are therefore not stored against those identifiers.
 
+Prototypes establish cluster membership. A reported window's descriptors are
+computed from the actual shared supporting dates and bins for that final window;
+an app used at another hour cannot supply its context. This changes descriptor
+provenance without changing clustering, recurrence thresholds or identifier rules.
+
+Both semantic admission and window application require finite positive observed
+app support before accepting an occupied hypothesis. Correlated idle, inactive and
+screen-sleep descriptors, or point website visits, cannot satisfy that requirement.
+Active app support is a minimum evidence boundary, not proof of busyness. Raw
+recurring-away patterns and an unknown interpretation remain available as context.
+Version 1 currently has only an occupied window kind; a separate possible-away
+planning hint still needs an explicit producer/consumer kind, label and placement
+contract. This repair does not claim that away-only routines already reserve time.
+
 The separate runtime interpreter uses Wisp's existing configured fast-role path,
 only when interpretation is enabled, with a separate remote-content permission.
 It is bounded to eight source excerpts, 24 recurring candidates, 40 KB input,

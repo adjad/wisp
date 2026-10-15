@@ -39,6 +39,20 @@ def _similarity(a, b):
     )
 
 
+def has_active_app_support(pattern):
+    """Minimum semantic support, never proof that a person is occupied.
+
+    The correlated device-absence features and point website visits cannot
+    supply observed app activity. Unknown/invalid support remains unknown.
+    """
+    descriptors = pattern.get("descriptors")
+    return isinstance(descriptors, dict) and any(
+        isinstance(key, str) and key.startswith("app:") and len(key) > 4
+        and type(value) in (int, float) and 0 < value <= 1 and math.isfinite(value)
+        for key, value in descriptors.items()
+    )
+
+
 def discover(bins, visits, day, timezone, now):
     """Unsupervised personal prototypes + covered weekday/time recurrence.
 
@@ -129,11 +143,6 @@ def discover(bins, visits, day, timezone, now):
                 eligible=set(eligible),
                 hits=hits,
                 evidence=[hits[d].id for d in matching][-5:],
-                descriptors={
-                    k: round(v, 3)
-                    for k, v in sorted(prototype["vector"].items())
-                    if v >= 0.05
-                },
             )
         )
 
@@ -167,6 +176,12 @@ def discover(bins, visits, day, timezone, now):
         valid, sample_dates, eligible, observed_at, evidence = cohort(group)
         if not valid:
             continue
+        samples = [x["hits"][d] for d in sorted(sample_dates) for x in group]
+        vector = defaultdict(float)
+        for sample in samples:
+            for key, value in _vector(sample).items():
+                vector[key] += value / len(samples)
+        descriptors = {key: round(value, 3) for key, value in sorted(vector.items()) if value >= 0.05}
         first, last = group[0]["minute"], group[-1]["minute"] + 15
         start, end = at_minute(target, first, tz), at_minute(target, last, tz)
         if (
@@ -206,7 +221,7 @@ def discover(bins, visits, day, timezone, now):
                 distinct_weeks=len({d.isocalendar()[:2] for d in sample_dates}),
                 observed_at=observed_at,
                 evidence=evidence,
-                descriptors=c["descriptors"],
+                descriptors=descriptors,
                 website_visit_context=domains,
                 confidence=min(0.85, 0.5 + 0.3 * hit / n + 0.01 * min(n, 5)),
                 coverage="adequate",
@@ -223,7 +238,8 @@ def apply_interpretations(patterns, interpretations):
     windows = []
     for item in interpretations:
         p = by_id.get(item.get("pattern_id"))
-        if p is None or item.get("availability") != "likely_occupied":
+        if (p is None or item.get("availability") != "likely_occupied"
+                or not has_active_app_support(p)):
             continue
         windows.append(
             {

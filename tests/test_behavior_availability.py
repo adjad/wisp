@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from service.behavior.engine import BehaviorEngine
-from service.behavior.availability import discover, competing_activity
+from service.behavior.availability import discover, competing_activity, apply_interpretations
 from service.behavior.types import Observation
 
 NOW = datetime(2026, 10, 19, 8, tzinfo=ZoneInfo("UTC")).timestamp()
@@ -39,6 +39,52 @@ def test_label_free_recurrence_and_renaming():
     ]
     assert "availability unknown" in a[0]["interpretation"]
     assert a[0]["end"] - a[0]["start"] == 1800
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_window_descriptors_never_borrow_apps_from_other_hours(reverse):
+    from dataclasses import replace
+    rows = []
+    for original in history(weeks=3):
+        if not original.id.endswith(":600"):
+            continue
+        for hour in (8, 9, 10, 12, 13, 14, 15, 16, 17, 18, 19, 20):
+            start = original.ts + (hour-10)*3600
+            apps = {"org.arbitrary.Alpha": 900} if hour == 10 else {"org.arbitrary.Alpha": 720, "net.unseen.Omega": 180}
+            rows.append(replace(original, id=original.id+":"+str(hour), ts=start, end_ts=start+900,
+                                attrs={**original.attrs, "apps": apps}))
+    result = discover(list(reversed(rows)) if reverse else rows, [], "2026-10-19", "UTC", NOW)
+    pattern = next(p for p in result if datetime.fromtimestamp(p["start"], ZoneInfo("UTC")).hour == 10)
+    assert pattern["descriptors"] == {"app:org.arbitrary.Alpha": 1.0}
+    assert pattern["support"] == pattern["opportunities"] == pattern["distinct_weeks"] == 3
+    assert pattern["end"]-pattern["start"] == 900
+
+
+def test_merged_descriptors_use_only_shared_supporting_dates():
+    from dataclasses import replace
+    rows = changing_history({(2, 600), (3, 615)})
+    rows = [replace(o, attrs={**o.attrs, "apps": {"org.arbitrary.Alpha": 720, "net.unseen.Omega": 180}})
+            if (int(o.id.split(":")[1]), int(o.id.split(":")[2])) in {(3, 600), (2, 615)} else o
+            for o in rows]
+    result = discover(rows, [], "2026-10-19", "UTC", NOW)
+    assert len(result) == 1
+    pattern = result[0]
+    assert pattern["support"] == 3 and pattern["opportunities"] == 5
+    assert pattern["end"]-pattern["start"] == 1800
+    assert pattern["descriptors"] == {"app:org.arbitrary.Alpha": 1.0}
+
+
+def test_recurring_away_remains_unknown_context_without_occupied_promotion():
+    from dataclasses import replace
+    rows = [replace(o, attrs={**o.attrs, "apps": {}, "idle": 900, "inactive": 900, "screen_sleep": 900})
+            for o in history()]
+    patterns = discover(rows, [], "2026-10-19", "UTC", NOW)
+    assert len(patterns) == 1 and patterns[0]["support"] == 5
+    assert "availability unknown" in patterns[0]["interpretation"]
+    model_proposal = dict(pattern_id=patterns[0]["id"], availability="likely_occupied",
+                          evidence=patterns[0]["evidence"], reason="Untrusted occupation guess")
+    assert apply_interpretations(patterns, [model_proposal]) == []
+    assert patterns[0]["descriptors"] == {"device:idle": .333, "device:inactive": .333, "device:screen_sleep": .333}
 
 
 def test_missing_coverage_is_unknown_and_minimum_distinct_weeks():

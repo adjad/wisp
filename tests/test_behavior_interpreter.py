@@ -134,6 +134,51 @@ def test_model_cannot_publish_arbitrary_pattern_or_evidence():
     assert result["patterns"] == []
 
 
+@pytest.mark.parametrize("descriptors", [
+    {"device:idle": .333}, {"device:inactive": .333}, {"device:screen_sleep": .333},
+    {"device:idle": .333, "device:inactive": .333, "device:screen_sleep": .333},
+    {}, {"app:arbitrary": 0}, {"app:arbitrary": True}, {"app:arbitrary": "1"},
+    {"app:arbitrary": -1}, {"app:arbitrary": 2}, {"app:arbitrary": 1 << 1024},
+    {"app:arbitrary": float("inf")}, {"app:arbitrary": float("nan")},
+])
+def test_host_rejects_occupied_semantics_without_active_app_support(descriptors):
+    from service.behavior.availability import apply_interpretations
+    p = dict(id="p1", evidence=["o1"], descriptors=descriptors, support=3, opportunities=4,
+             website_visit_context=["arbitrary.example"])
+    raw = json.dumps(dict(demands=[], patterns=[dict(pattern_id="p1", evidence=["o1"],
+        reason="A schema-valid but unsupported activity claim", availability="likely_occupied")]))
+    result = Interpreter(lambda *a, **k: raw).interpret([], [p], now=NOW, timezone="UTC")
+    assert result["state"] in ("tentative", "unknown")
+    assert all(v["availability"] != "likely_occupied" for v in result["patterns"])
+    assert apply_interpretations([p], [dict(pattern_id="p1", availability="likely_occupied")]) == []
+    assert p["evidence"] == ["o1"]
+
+
+@pytest.mark.parametrize("descriptors", [{"app:arbitrary": 1}, {"app:unseen": .2, "device:idle": .25}])
+def test_supported_active_and_mixed_hypotheses_remain_tentative(descriptors):
+    from service.behavior.availability import apply_interpretations
+    p = dict(id="p1", evidence=["o1"], descriptors=descriptors, support=3, opportunities=4)
+    proposal = dict(pattern_id="p1", evidence=["o1"], reason="Tentative interpretation", availability="likely_occupied")
+    result = Interpreter(lambda *a, **k: json.dumps(dict(demands=[], patterns=[proposal]))).interpret(
+        [], [p], now=NOW, timezone="UTC")
+    assert result["patterns"] == [proposal]
+    windows = apply_interpretations([p], result["patterns"])
+    assert len(windows) == 1 and windows[0]["basis"] == "inferred"
+    assert "not verified attendance" in windows[0]["because"]
+
+
+def test_unknown_away_interpretation_preserves_raw_context():
+    from service.behavior.availability import apply_interpretations
+    p = dict(id="p1", evidence=["o1"], descriptors={"device:idle": .333})
+    proposal = dict(pattern_id="p1", evidence=["o1"], reason="Activity unknown; possible recurring absence",
+                    availability="unknown")
+    result = Interpreter(lambda *a, **k: json.dumps(dict(demands=[], patterns=[proposal]))).interpret(
+        [], [p], now=NOW, timezone="UTC")
+    assert result["patterns"] == [proposal]
+    assert apply_interpretations([p], result["patterns"]) == []
+    assert p == dict(id="p1", evidence=["o1"], descriptors={"device:idle": .333})
+
+
 def test_source_generation_and_disable_invalidate_cached_planning(
     tmp_path, monkeypatch
 ):
