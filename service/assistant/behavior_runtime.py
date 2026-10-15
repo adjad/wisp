@@ -69,7 +69,7 @@ FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
 STOP_WAIT_S = 30.0         # stop() waits this long for a delivery/action already in flight
 CARD_TTL_S = 60.0
 CARD_MAX_BYTES = 700
-HISTORY_S = 56 * 86400
+HISTORY_S = 180 * 86400   # full retained history; older native pages are scanned separately
 AHEAD_S = 21 * 86400
 ASK_LIMIT = 500
 
@@ -322,6 +322,11 @@ class BehaviorRuntime:
     def call(self, method: str, *args, **kwargs):
         """Call an engine method. KeyError/ValueError are semantic answers
         (404/400) and propagate."""
+        if method.startswith("history_"):
+            with self._in_flight(), self._work_lock:
+                if not self.live():
+                    raise RuntimeStopped("behavior learning stopped")
+                return getattr(self.local_engine(), method)(*args, **kwargs)
         return getattr(self.local_engine(), method)(*args, **kwargs)
 
     async def acall(self, method: str, *args, **kwargs):
@@ -382,7 +387,7 @@ class BehaviorRuntime:
         from service.behavior.types import Observation
         out = []
         for r in rows:
-            if r.get("all_day") or not _finite(r.get("when_ts")) or not r.get("title"):
+            if not _finite(r.get("when_ts")) or not r.get("title"):
                 continue
             when = float(r["when_ts"])
             sid = str(r.get("source_id") or r.get("id") or "")
@@ -390,7 +395,8 @@ class BehaviorRuntime:
             # CalendarReader sets organizer only when it is NOT the current user.
             organizer = str(r.get("organizer") or "").strip()
             attrs = {"calendar": r.get("context") or "", "organizer": organizer,
-                     "organizer_is_user": not organizer}
+                     "organizer_is_user": not organizer, "all_day": bool(r.get("all_day")),
+                     "evidence_basis": "scheduled", "outcome": "unknown"}
             out.append(Observation(id=f"cal:{sid}:{int(when)}", kind="event", ts=when,
                                    subject=str(r["title"]), source="calendar", end_ts=end,
                                    source_id=sid, attrs=attrs))
@@ -406,6 +412,12 @@ class BehaviorRuntime:
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
                            window_start=start, window_end=end, taken_at=float(last_sync)) or {}
+        diagnostics = sync.get("diagnostics") or {}
+        lo, hi = diagnostics.get("coverage_start"), diagnostics.get("coverage_end")
+        if _finite(lo) and _finite(hi) and float(hi) > float(lo):
+            # Source-declared coverage only; never derive it from the first event.
+            self.call("record_coverage", "calendar", max(start,float(lo)), min(end,float(hi)),
+                      "complete", float(last_sync))
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
 
@@ -431,14 +443,15 @@ class BehaviorRuntime:
             if kind is None or not _finite(r.get("when_ts")):
                 continue
             ts = float(r["when_ts"])
-            if kind == "reminder_done" and _finite(r.get("updated_at")):
-                ts = float(r["updated_at"])
+            # Generic updated_at and due time do not establish completion time.
+            # Native completionDate arrives through the separate history reader.
             obs.append(Observation(
                 id=f"rem:{r['source']}:{r.get('source_id') or r['id']}:{int(float(r['when_ts']))}",
                 kind=kind, ts=ts, subject=str(r.get("title") or ""), source="reminders",
                 source_id=str(r.get("source_id") or ""),
                 attrs={"list": "" if r["source"] == "manual" else (r.get("context") or ""),
-                       "status": r.get("status") or "active", "due_ts": float(r["when_ts"])}))
+                       "status": r.get("status") or "active", "due_ts": float(r["when_ts"]),
+                       "completion_time_known": False}))
         return bool(obs) and bool(self.call("observe", obs))
 
     def _ingest_messages(self, now: float) -> bool:
@@ -820,6 +833,8 @@ class BehaviorRuntime:
                 item = json.loads(r["payload"])
             except ValueError:
                 continue
+            from service.behavior.types import Nudge
+            item = Nudge.from_dict(item).to_dict()
             actions = self.actions_for(r["id"])
             live = {a["idx"] for a in actions if a["undone_at"] is None}
             for idx, action in enumerate(item.get("actions") or []):
@@ -1012,7 +1027,7 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
     """Apply the retention limits (observations 180 days, nudges 30 days) to what is
     already on disk, whether or not learning is on. Plain SQL on its own connections:
     it never starts the engine, the phraser or a runtime, and never migrates a database."""
-    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S
+    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S, OBSERVATION_EXPIRY_SQL
     home = Path(home) if home is not None else _home()
     now = time.time() if now is None else float(now)
     out = {"observations": 0, "nudges": 0, "delivered": 0}
@@ -1034,7 +1049,7 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             if conn is not None:
                 conn.close()
 
-    run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
+    run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
                     ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
     run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
     return out

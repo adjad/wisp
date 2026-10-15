@@ -1,6 +1,10 @@
 import SwiftUI
 import AppKit
 
+private extension Dictionary where Key == String, Value == Any {
+    var selfID: String { self["id"] as? String ?? "unknown" }
+}
+
 // "What Wisp has learned": every routine the behavior engine (service/behavior)
 // mined, grouped by kind, with the counts behind it, plus today's predictions.
 // The user can confirm a routine or mark it "Not true"; a rejected routine stops
@@ -68,13 +72,23 @@ struct LearnedPrediction: Identifiable {
 
     var headline: String {
         switch kind {
-        case "cancel_risk": return "\(subject) may get skipped"
+        case "cancel_risk": return "The schedule for \(subject) may change"
         case "habit_conflict": return "\(subject) clashes with a routine"
-        case "contact": return "Usually in touch with \(subject)"
+        case "contact": return "Possible contact window with \(subject)"
         case "usage":
             let phrase = Self.usagePhrases[subject] ?? "asking about \(subject)"
             return phrase.prefix(1).uppercased() + phrase.dropFirst() + " with Wisp"
         default: return subject
+        }
+    }
+}
+
+enum LearnedWeeklyValue {
+    static func unknownReason(_ metric: [String: Any]) -> String {
+        switch metric["value_reason"] as? String {
+        case "incomplete_calendar_coverage": return "Cannot calculate while Calendar coverage is incomplete."
+        case "missing_event_end_times": return "Cannot calculate while event end times are missing."
+        default: return "Cannot calculate from the available evidence."
         }
     }
 }
@@ -127,6 +141,8 @@ final class LearnedModel: ObservableObject {
     @Published var today: [LearnedPrediction] = []
     @Published var sources: [String: Int] = [:]
     @Published var lastMined: Double?
+    @Published var weekly: [String: Any] = [:]
+    @Published var history: [String: Any] = [:]
     @Published var busy: Set<String> = []
     @Published var error = ""
     private let client = WispClient()
@@ -149,7 +165,9 @@ final class LearnedModel: ObservableObject {
         async let status = client.behaviorGet("status")
         async let listed = client.behaviorGet("patterns")
         async let predicted = client.behaviorPredictions(day: "today")
-        let (s, l, p) = await (status, listed, predicted)
+        async let measured = client.behaviorGet("weekly")
+        async let scanned = client.behaviorGet("history")
+        let (s, l, p, w, h) = await (status, listed, predicted, measured, scanned)
         guard requested == revision else { return }
         guard let l, let rows = l["patterns"] as? [[String: Any]] else {
             phase = .failed("Couldn't load what Wisp learned. Try Refresh.")
@@ -165,7 +183,14 @@ final class LearnedModel: ObservableObject {
         sources = (engine?["observations"] as? [String: Any] ?? [:])
             .compactMapValues { ($0 as? NSNumber)?.intValue }
         lastMined = (engine?["last_mined_at"] as? NSNumber)?.doubleValue
+        weekly = w ?? [:]
+        history = h?["sources"] as? [String: Any] ?? [:]
         phase = .ready
+    }
+
+    func historyControl(_ source: String, command: String) async {
+        if await client.behaviorHistoryControl(source, command: command) { await refresh() }
+        else { error = "Couldn't update the history scan. Try again." }
     }
 
     func set(_ pattern: LearnedPattern, to status: String) async {
@@ -257,18 +282,19 @@ struct LearnedView: View {
         case .failed(let text):
             message("Nothing to show", text)
         case .ready:
-            if model.patterns.isEmpty {
-                message("Nothing learned yet",
-                        "Wisp needs a few weeks of calendar events, messages or Wisp requests before a routine stands out.")
-            } else {
-                list
-            }
+            list
         }
     }
 
     private var list: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 18) {
+                weeklySection
+                historySection
+                if model.patterns.isEmpty {
+                    Text("Wisp can estimate routines from existing accessible history. Results appear as sources finish syncing; completion remains unknown unless recorded.")
+                        .foregroundStyle(.secondary)
+                }
                 if !model.today.isEmpty { todaySection }
                 ForEach(LearnedSection.allCases) { section in
                     let rows = model.active.filter { LearnedSection.of($0.kind) == section }
@@ -287,12 +313,77 @@ struct LearnedView: View {
                     }
                 }
                 if !model.error.isEmpty { Text(model.error).foregroundStyle(.red) }
-                Text("Every routine comes from counting what happened, not from a model's guess. "
+                Text("Calendar patterns describe scheduled activities. Recorded completions and observed interactions are separate evidence. "
                      + "\"Not true\" stops Wisp from using it for predictions, nudges and answers. "
                      + "To erase everything, use \"Forget what Wisp learned…\" in Settings.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             .padding(20)
+        }
+    }
+
+    private var weeklySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Your last seven complete days", systemImage: "chart.bar").font(.headline)
+            if let first = model.weekly["start_date"] as? String,
+               let end = model.weekly["end_date_exclusive"] as? String {
+                Text("\(first) to \(end) · ending at midnight")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(model.weekly["metrics"] as? [[String: Any]] ?? [], id: \.selfID) { metric in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(metric["label"] as? String ?? "Activity").font(.subheadline)
+                    let unit = metric["unit"] as? String ?? ""
+                    let coverage = (metric["coverage"] as? NSNumber)?.doubleValue ?? 0
+                    if let value = (metric["value"] as? NSNumber)?.doubleValue {
+                        Text("\(value.formatted(.number.precision(.fractionLength(0...1)))) \(unit) observed · \(Int(coverage * 100))% of period covered")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(LearnedWeeklyValue.unknownReason(metric)).font(.caption).foregroundStyle(.secondary)
+                    }
+                    if let baseline = metric["baseline_weekly_average"] as? NSNumber,
+                       let change = metric["change"] as? NSNumber {
+                        Text("Prior four-week average: \(baseline.doubleValue.formatted(.number.precision(.fractionLength(0...1)))) · change: \(change.doubleValue.formatted(.number.sign(strategy: .always()).precision(.fractionLength(0...1))))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("More complete history is needed for comparison.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Text("Unbooked calendar time does not establish focused work. Missing history is not zero activity.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var historySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("History scan", systemImage: "clock.arrow.circlepath").font(.headline)
+            ForEach(["calendar", "completed_reminders"], id: \.self) { source in
+                let job = model.history[source] as? [String: Any]
+                let state = job?["state"] as? String ?? "waiting"
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(source == "calendar" ? "Calendar plans" : "Completed reminders")
+                        Text(state == "waiting" ? "Waiting for source access and sync" : state.capitalized)
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let count = job?["rows"] as? Int {
+                            Text("\(count) records scanned; recent evidence informs current routines")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        if let error = job?["error"] as? String, !error.isEmpty {
+                            Text(error).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    Button(state == "scanning" ? "Pause" : state == "complete" ? "Scan again" : "Resume") {
+                        Task { await model.historyControl(source, command: state == "scanning" ? "pause" : state == "complete" ? "restart" : "resume") }
+                    }
+                }
+            }
+            Text("Reads records currently accessible to Calendar and Reminders. Deleted records and past app usage cannot be reconstructed. Older records remain subject to retention.")
+                .font(.caption).foregroundStyle(.secondary)
         }
     }
 

@@ -60,7 +60,11 @@ class Observation:
     attrs: dict[str, Any] = field(default_factory=dict, hash=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        from service.behavior.evidence import basis, completion_time
+        result = asdict(self)
+        result.update(evidence_basis=basis(self), completed_at=completion_time(self),
+                      outcome="marked_complete" if self.kind == "reminder_done" else "unknown")
+        return result
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Observation":
@@ -209,6 +213,7 @@ class Nudge:
     evidence: tuple[str, ...] = ()   # observation ids
     actions: tuple[Action, ...] = () # offered actions (auto ones are performed by the Mac runtime)
     seq: int = 0                     # monotonically increasing cursor assigned by the store
+    evidence_version: int = 2
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -216,18 +221,23 @@ class Nudge:
             "because": self.because, "created_at": self.created_at, "expires_at": self.expires_at,
             "priority": self.priority, "pattern_ids": list(self.pattern_ids),
             "evidence": list(self.evidence), "actions": [a.to_dict() for a in self.actions],
-            "seq": self.seq,
+            "seq": self.seq, "evidence_version": self.evidence_version,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Nudge":
+        legacy_contact = d.get("evidence_version") != 2 and d.get("kind") == "contact_window"
+        legacy = (d.get("evidence_version") != 2 and d.get("kind") in
+                  {"habit_missed", "habit_conflict", "cancel_likely", "day_preview", "contact_window"})
         return cls(
-            id=str(d["id"]), kind=str(d["kind"]), title=str(d.get("title", "")),
-            body=str(d.get("body", "")), because=str(d.get("because", "")),
+            id=str(d["id"]), kind=str(d["kind"]),
+            title=("Review an older routine suggestion" if legacy_contact else "Review an older calendar suggestion") if legacy else str(d.get("title", "")),
+            body=("Source details for this older contact suggestion are unavailable; actual communication is unknown." if legacy_contact else "This suggestion used calendar plans. Whether the activity happened is unknown.") if legacy else str(d.get("body", "")),
+            because=("Source details unavailable" if legacy_contact else "Calendar evidence; completion unknown") if legacy else str(d.get("because", "")),
             created_at=float(d.get("created_at", 0.0)), expires_at=d.get("expires_at"),
             priority=float(d.get("priority", 0.0)), pattern_ids=tuple(d.get("pattern_ids") or ()),
             evidence=tuple(d.get("evidence") or ()),
-            actions=tuple(a for a in (Action.from_dict(x) for x in d.get("actions") or ()) if a),
+            actions=() if legacy else tuple(a for a in (Action.from_dict(x) for x in d.get("actions") or ()) if a),
             seq=int(d.get("seq", 0)),
         )
 
@@ -236,7 +246,8 @@ class Nudge:
         Required keys for the app: type, nudge_id, title, body, because."""
         return {"type": "nudge", "nudge_id": self.id, "kind": self.kind, "title": self.title,
                 "body": self.body, "because": self.because, "priority": self.priority,
-                "actions": [a.to_dict() for a in self.actions], "expires_at": self.expires_at}
+                "actions": [a.to_dict() for a in self.actions], "expires_at": self.expires_at,
+                "evidence_version": self.evidence_version}
 
 
 FEEDBACK_VERDICTS = ("useful", "not_now", "wrong", "undo")

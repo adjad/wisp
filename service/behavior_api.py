@@ -182,6 +182,43 @@ async def behavior_patterns(status: str | None = None, kind: str | None = None) 
     return {"patterns": [p.to_dict() for p in patterns]}
 
 
+@router.get("/weekly")
+async def behavior_weekly() -> dict[str, Any]:
+    return await _runtime().acall("weekly")
+
+
+@router.get("/history")
+async def behavior_history() -> dict[str, Any]:
+    return {"sources": await _runtime().acall("history_status")}
+
+
+@router.get("/history/{source}/next")
+async def behavior_history_next(source: str) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_next", source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/batch")
+async def behavior_history_batch(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    runtime = _runtime()
+    try:
+        result = await runtime.acall("history_ingest",source,body)
+        runtime.invalidate_card()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/control")
+async def behavior_history_control(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_control",source,_body(body).get("command"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+
 @router.post("/patterns/{pattern_id}")
 async def behavior_pattern_status(pattern_id: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
     runtime = _runtime()
