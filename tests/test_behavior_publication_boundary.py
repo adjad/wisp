@@ -102,6 +102,36 @@ def test_expiry_and_clock_rollback_do_not_renew_tokens():
     assert not witness.current()  # A recovered reading cannot rearm the same clock epoch.
 
 
+def test_builtin_clock_observations_latch_rollback_without_rearming(monkeypatch):
+    from service import publication_authority as module
+    reading = [100,50]
+    monkeypatch.setattr(module.time,"time",lambda:reading[0])
+    monkeypatch.setattr(module.time,"monotonic",lambda:reading[1])
+    clock = Clock()
+    authority,_ = ready()
+    witness = Witness.combine(authority.token(clock=clock,expires_wall=110,expires_monotonic=60))
+    reading[:] = [105,55]
+    assert witness.current()
+    reading[:] = [104,56]
+    assert not witness.current()
+    reading[:] = [106,57]
+    assert not witness.current()
+
+
+def test_source_owner_drop_invalidates_a_memory_stamp_without_a_getter():
+    import gc
+    class Owner:
+        pass
+    owner = Owner()
+    authority = Authority("synthetic-owned-source",owner=owner)
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    assert witness.current()
+    del owner
+    gc.collect()
+    assert not witness.current()
+
+
 def test_memory_witness_check_never_calls_config_or_sql_or_file_io(monkeypatch):
     from service import config
     authority,witness = ready()

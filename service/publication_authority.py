@@ -13,6 +13,7 @@ import inspect
 import math
 import threading
 import time
+import weakref
 
 
 class PublicationBusy(RuntimeError):
@@ -91,7 +92,10 @@ class Clock:
     def read(self):
         if self._invalid:
             return None
-        return (time.time(),time.monotonic()) if self._live else self._reading
+        if self._live:
+            reading = (time.time(),time.monotonic())
+            self.observe(*reading)
+        return None if self._invalid else self._reading
 
 
 LIVE_CLOCK = Clock()
@@ -105,11 +109,12 @@ class _State:
 
 class Authority:
     """A source/application-owned head; construction itself grants nothing."""
-    def __init__(self, label):
+    def __init__(self, label, *, owner=None):
         if not isinstance(label,str) or not label or len(label)>128:
             raise ValueError("A bounded source kind is required")
         self.label = label
         self._head = _State(0,False)
+        self._owner = weakref.ref(owner) if owner is not None else None
 
     @mutating
     def withdraw(self):
@@ -153,6 +158,8 @@ class Token:
     def current(self):
         # Known memory cells and clock primitives only. No callbacks or locks.
         if self._authority._head is not self._state or not self._state.ready:
+            return False
+        if self._authority._owner is not None and self._authority._owner() is None:
             return False
         if self._bounds is not None:
             clock,start_wall,end_wall,start_mono,end_mono = self._bounds

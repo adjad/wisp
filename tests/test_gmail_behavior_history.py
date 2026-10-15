@@ -593,6 +593,55 @@ class ProviderContract(unittest.TestCase):
         self.assertEqual(self.provider.status()["evicted"], 1)
         self.assertEqual(len(self.http.calls), 4)
 
+    def test_cache_memory_witness_survives_append_but_not_eviction_or_pause(self):
+        self.provider = self.make_provider(limits=dataclasses.replace(self.limits, account_cache_bytes=60))
+        self.http = FakeHTTP(pages=[{"messages":[{"id":"51"}],"nextPageToken":"2"},
+                                   {"messages":[{"id":"52"}],"nextPageToken":"3"},
+                                   {"messages":[{"id":"53"}]}],
+                             messages={"51":message(),"52":message("52","y"*26),"53":message("53","z"*26)})
+        self.start(); self.step()
+        first = self.provider.snapshot()
+        witness = first.cache_witness
+        self.assertTrue(witness.current())
+        self.assertIsNone(first.publication_witness)  # Core cache alone grants no application authority.
+        self.step()
+        self.assertTrue(witness.current())
+        self.step()
+        self.assertFalse(witness.current())
+        self.assertFalse(self.provider.snapshot(expected_receipt=first.receipt).complete)
+        newest = self.provider.snapshot().cache_witness
+        self.assertTrue(newest.current())
+        self.provider.control("pause")
+        self.assertFalse(newest.current())
+
+    def test_cache_memory_witness_is_pure_and_reentrant_forget_is_not_applied(self):
+        from service.publication_authority import PublicationBusy,publication
+        self.start(); self.step()
+        snapshot = self.provider.snapshot()
+        witness = snapshot.cache_witness
+        calls = len(self.http.calls)
+        with publication(witness):
+            with self.assertRaises(PublicationBusy):
+                self.provider.control("forget")
+            with patch.object(self.provider,"_admission",side_effect=AssertionError("Full admission callback")), \
+                 patch.object(self.provider,"snapshot",side_effect=AssertionError("Full source getter")), \
+                 patch.object(self.provider,"_clock",side_effect=AssertionError("Synthetic clock callback")):
+                self.assertTrue(witness.current())
+        self.assertEqual(len(self.http.calls),calls)
+        self.assertEqual(self.provider.snapshot().records,snapshot.records)
+        self.provider.control("forget")
+        self.assertFalse(witness.current())
+
+    def test_cache_memory_witness_is_invalid_after_original_clock_expiry(self):
+        self.start(); self.step()
+        witness = self.provider.snapshot().cache_witness
+        self.now,self.mono = 299,99
+        self.assertIsNotNone(self.provider.snapshot())  # Preparation observes numeric synthetic clocks.
+        self.assertTrue(witness.current())
+        self.now,self.mono = 300,100
+        self.assertIsNone(self.provider.snapshot())
+        self.assertFalse(witness.current())
+
     def test_global_cache_cap_across_sources_does_not_cross_account_deduplicate(self):
         gc.collect()
         limits = dataclasses.replace(self.limits, global_cache_bytes=30)

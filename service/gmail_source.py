@@ -32,7 +32,7 @@ import threading
 import time
 import weakref
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from contextvars import ContextVar
 from email.header import decode_header, make_header
 from email.utils import parseaddr
@@ -41,6 +41,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from service.paths import MOE_DIR
+from service.publication_authority import Authority, Witness, mutating, revocation
 
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -108,6 +109,7 @@ def invalidate_behavior_history(reason="invalidated") -> None:
 
 # --- config / token -----------------------------------------------------------
 
+@mutating
 def load_config() -> dict:
     with _history_config_lock:
         try:
@@ -119,6 +121,7 @@ def load_config() -> dict:
         return data
 
 
+@mutating
 def _save_config(cfg: dict) -> None:
     with _history_config_lock:
         _withdraw_history_configuration()
@@ -610,21 +613,22 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     if generation != _flow_generation:
         return
     email = email.strip().lower()
-    cfg = load_config()
-    accounts = connected_accounts(cfg)
-    if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
-                               for other, item in accounts.items()):
-        raise GmailError("That Mail account is already linked to a different Google account")
-    invalidate_behavior_history()
-    _epochs[email] = _epochs.get(email, 0) + 1
-    _access.pop(email, None)
-    _last.pop(email, None)
-    accounts[email] = {"client_id": client_id, "client_secret": client_secret,
-                       "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
-    _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
-    from service.tools import email_tools as E
-    E.configure_external_accounts(accounts)
-    E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
+    with revocation():
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
+                                   for other, item in accounts.items()):
+            raise GmailError("That Mail account is already linked to a different Google account")
+        invalidate_behavior_history()
+        _epochs[email] = _epochs.get(email, 0) + 1
+        _access.pop(email, None)
+        _last.pop(email, None)
+        accounts[email] = {"client_id": client_id, "client_secret": client_secret,
+                           "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
+        _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
+        from service.tools import email_tools as E
+        E.configure_external_accounts(accounts)
+        E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
     # Header-only first connection; bodies remain on demand.
     asyncio.create_task(sync(("headers",)))
     return email
@@ -633,34 +637,35 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
 async def disconnect(account: str = "") -> None:
     """Invalidate before awaiting revocation; a late fetch cannot restore access."""
     global _pending_flow, _flow_generation
-    invalidate_behavior_history("disconnected")
-    _withdraw_history_configuration()
-    from service.tools import email_tools as E
-    _flow_generation += 1
-    _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
-    if _pending_flow:
-        _pending_flow["server"].close()
-        _pending_flow = None
-    cfg = load_config()
-    accounts = connected_accounts(cfg)
-    removed = {email: item for email, item in accounts.items() if not account or email == account.lower()}
-    for email in removed:
-        accounts.pop(email)
-        _epochs[email] = _epochs.get(email, 0) + 1
-        _access.pop(email, None)
-        _last.pop(email, None)
-        _errors.pop(email, None)
-        for key in list(_meta):
-            if key[0] == email:
-                _meta.pop(key, None)
-    if accounts:
-        _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
-                      "accounts": accounts})
-    else:
-        with _history_config_lock:
-            CONFIG_PATH.unlink(missing_ok=True)
-            _observe_history_config({})
-    E.configure_external_accounts(accounts)
+    with revocation():
+        invalidate_behavior_history("disconnected")
+        _withdraw_history_configuration()
+        from service.tools import email_tools as E
+        _flow_generation += 1
+        _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
+        if _pending_flow:
+            _pending_flow["server"].close()
+            _pending_flow = None
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        removed = {email: item for email, item in accounts.items() if not account or email == account.lower()}
+        for email in removed:
+            accounts.pop(email)
+            _epochs[email] = _epochs.get(email, 0) + 1
+            _access.pop(email, None)
+            _last.pop(email, None)
+            _errors.pop(email, None)
+            for key in list(_meta):
+                if key[0] == email:
+                    _meta.pop(key, None)
+        if accounts:
+            _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
+                          "accounts": accounts})
+        else:
+            with _history_config_lock:
+                CONFIG_PATH.unlink(missing_ok=True)
+                _observe_history_config({})
+        E.configure_external_accounts(accounts)
     for item in removed.values():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
@@ -684,6 +689,7 @@ _history_config_digest = None
 _history_registry_gate = None
 _history_recovery_gates = weakref.WeakSet()
 _history_http_clients = weakref.WeakSet()
+_history_configuration_authority = Authority("gmail-configured-accounts")
 
 
 @dataclass(frozen=True)
@@ -724,10 +730,12 @@ class _HistoryConfigured:
     refresh_token: str = field(repr=False)
 
 
+@mutating
 def _withdraw_history_configuration():
     """Memory withdrawal before config I/O or connection-changing awaits."""
     global _history_config_digest, _history_registry_gate
     with _history_guard():
+        _history_configuration_authority.withdraw()
         _history_config_digest = None
         _history_registry_gate = None
         _history_records.clear()
@@ -737,15 +745,16 @@ def _withdraw_history_configuration():
 def _history_recovery_blocked():
     """Cached latch only: metadata/admission must not import or check disk."""
     module = sys.modules.get("service.config.quarantine")
-    gate = getattr(module, "_gate", None)
+    gate = module.current_gate() if module is not None else None
     return module is not None and (gate is None or gate.blocked)
 
 
 def _history_cached_gate():
     module = sys.modules.get("service.config.quarantine")
-    return getattr(module, "_gate", None)
+    return module.current_gate() if module is not None else None
 
 
+@mutating
 def _observe_history_config(cfg):
     """Only explicit source config observations call this; never a getter."""
     global _history_config_digest, _history_registry_gate
@@ -778,6 +787,7 @@ def _observe_history_config(cfg):
             return
         if digest == _history_config_digest and gate is _history_registry_gate:
             return
+        _history_configuration_authority.withdraw()
         invalidate_behavior_history()
         _history_records.clear()
         set_revision = secrets.token_hex(16)
@@ -793,8 +803,10 @@ def _observe_history_config(cfg):
             _history_records[opaque_id] = _HistoryConfigured(lease, address, client, secret, refresh)
         _history_config_digest = digest
         _history_registry_gate = gate
+        _history_configuration_authority.publish()
 
 
+@mutating
 def refresh_history_configuration():
     """Explicit trusted bootstrap read. Status/admission getters never call it."""
     _register_history_recovery()
@@ -893,6 +905,7 @@ class HistoryApplicationAuthority:
         self._revoked = False
         self._grants = weakref.WeakSet()
         self._bridges = weakref.WeakSet()
+        self._publication = Authority("gmail-history-application", owner=self)
 
     def __reduce_ex__(self, protocol):
         raise TypeError("History application authority cannot be restored")
@@ -909,15 +922,19 @@ class HistoryApplicationAuthority:
             except Exception:
                 state = None
             if state != self._state:
+                self._publication.withdraw()
                 self._grants.clear()
                 for bridge in list(self._bridges):
                     bridge.invalidate("revoked")
                 self._state = state
+                if state is not None:
+                    self._publication.publish()
             return state
 
     def revoke(self):
         """Terminal installation withdrawal; reinstall via trusted bootstrap."""
         with _history_guard():
+            self._publication.withdraw()
             self._revoked = True
             self._state = None
             self._grants.clear()
@@ -951,9 +968,10 @@ def _history_grant_current(grant):
             and state.allows(grant.account_lease, grant.scope))
 
 
+@mutating
 def _register_history_recovery():
     from service.config import quarantine
-    gate = quarantine._gate  # Source integration only; behavior uses public bridge.
+    gate = quarantine.current_gate()
     with _history_guard():
         if gate not in _history_recovery_gates:
             gate.callbacks.append(_withdraw_history_configuration)
@@ -1000,7 +1018,7 @@ class HistoryHTTPClient:
         from service.config import quarantine
         # Recovery I/O is explicit transport work OUTSIDE the history guard.
         # No source/admission/getter callback checks disk or acquires its lock.
-        if quarantine._gate is not self._gate:
+        if quarantine.current_gate() is not self._gate:
             _withdraw_history_configuration()
             raise GmailError("History credential authority changed")
         refresh_history_configuration()
@@ -1048,7 +1066,8 @@ class PublicHistoryBridge:
 
     All currentness/cache operations use the SAME core guard. Application probes
     read immutable memory without taking any other lock. Explicit config I/O uses
-    config mutex -> history guard for withdrawal/publication, never the reverse.
+    application barrier -> config mutex -> history guard for withdrawal/publication,
+    never the reverse. No application lease spans a provider await.
     """
     def __init__(self, *, application, limits, clock=time.time, monotonic=time.monotonic):
         from service.gmail_behavior_history import HistoryProvider
@@ -1104,11 +1123,11 @@ class PublicHistoryBridge:
 
     def invalidate(self, reason="invalidated"):
         with _history_guard():
+            self._provider.invalidate(reason)
             if self._grant is not None:
                 self._application._grants.discard(self._grant)
             self._grant = self._token = None
             self._continuation = self._start_identity = None
-            self._provider.invalidate(reason)
 
     def prepare_continuation(self):
         """Issue one live handoff before expiry; no HTTP, disk I/O or await."""
@@ -1182,7 +1201,14 @@ class PublicHistoryBridge:
     def snapshot(self, *, expected_receipt=None, required_refs=()):
         with _history_guard():
             self.status()
-            return self._provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+            snapshot = self._provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+            if snapshot is None:
+                return None
+            from service.config import quarantine
+            witness = Witness.combine(snapshot.cache_witness,
+                _history_configuration_authority.token(), self._application._publication.token(),
+                quarantine.publication_token(_history_registry_gate))
+            return replace(snapshot, publication_witness=witness)
 
     def checkpoint(self):
         with _history_guard():

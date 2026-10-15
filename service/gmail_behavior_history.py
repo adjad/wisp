@@ -31,6 +31,8 @@ from dataclasses import asdict, dataclass, field
 from email.message import Message
 from typing import Awaitable, Callable
 
+from service.publication_authority import Authority, Clock, Witness, revocation
+
 API = "https://gmail.googleapis.com/gmail/v1/users/me"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 _LOCK = threading.RLock()
@@ -40,11 +42,12 @@ _LOCK = threading.RLock()
 def history_source_guard():
     """Shared source/application/cache publication lock; no I/O or await inside.
 
-    Configuration writers may acquire their I/O mutex before this guard, release
-    this guard, do I/O, then publish. Admission probes must only read immutable
-    memory and must never acquire a configuration/settings/SQLite/network lock.
+    The application revocation barrier is outermost, before source/cache locks.
+    Configuration writers enter that barrier before their I/O mutex, release
+    this source guard for I/O, then publish. Admission probes only read memory
+    and must never acquire a configuration/settings/SQLite/network lock.
     """
-    with _LOCK:
+    with revocation(), _LOCK:
         yield
 
 
@@ -419,6 +422,10 @@ class HistorySnapshot:
     records: tuple[HistoryRecord, ...]
     missing_refs: tuple[RecordRef, ...]
     complete: bool
+    # Cache/job proof only. The public bridge must additionally qualify its
+    # configured account, application permission and credential recovery gate.
+    cache_witness: Witness | None = field(default=None, compare=False, repr=False)
+    publication_witness: Witness | None = field(default=None, compare=False, repr=False)
 
 
 # Raw bodies live only here. Owners are weak, so dropping a source drops its
@@ -435,12 +442,21 @@ class _Cache:
         for key, (owner_ref, row) in list(self.entries.items()):
             owner = owner_ref()
             if owner is None or not owner._record_current(row):
-                self.entries.pop(key, None)
+                self._drop(key)
+
+    def _drop(self, key):
+        item = self.entries.get(key)
+        if item is not None:
+            owner_ref,row = item
+            owner = owner_ref()
+            if owner is not None:
+                owner._withdraw_record(row.ref)
+            self.entries.pop(key, None)
 
     def remove(self, owner):
         for key in list(self.entries):
             if key[0] == owner._cache_id:
-                self.entries.pop(key, None)
+                self._drop(key)
 
     def rows(self, owner):
         self.sweep()
@@ -450,7 +466,10 @@ class _Cache:
         self.sweep()
         if not owner._record_current(row):
             raise _Withdrawn()
-        self.entries[(owner._cache_id, row.resource_id)] = (weakref.ref(owner), row)
+        key = (owner._cache_id, row.resource_id)
+        self._drop(key)
+        owner._publish_record(row)
+        self.entries[key] = (weakref.ref(owner), row)
         self.owners[owner] = owner.limits.global_cache_bytes
         global_cap = min(self.owners.values())
         def size(rows):
@@ -459,7 +478,8 @@ class _Cache:
                or size(self.rows(owner)) > owner.limits.account_cache_bytes):
             own_over = size(self.rows(owner)) > owner.limits.account_cache_bytes
             key = next(k for k, (ref, _) in self.entries.items() if not own_over or ref() is owner)
-            ref, _ = self.entries.pop(key)
+            ref, _ = self.entries[key]
+            self._drop(key)
             victim = ref()
             if victim is not None and victim._job is not None:
                 victim._job.evicted += 1
@@ -518,7 +538,7 @@ class _HTTP:
         return self.job.admission
 
     async def request(self, method, url, **kwargs):
-        with _LOCK:
+        with revocation(), _LOCK:
             self.provider._require(self.job)
             if (self.calls >= self.budget.http_calls
                     or not 0 <= self.provider._monotonic() - self.started < self.budget.dispatch_seconds):
@@ -530,7 +550,7 @@ class _HTTP:
             self.calls += 1
             self.job.http_calls += 1
         response = await self.http.request(method, url, **{**kwargs, "follow_redirects": False})
-        with _LOCK:
+        with revocation(), _LOCK:
             self.provider._require(self.job)
         return response
 
@@ -562,6 +582,39 @@ class HistoryProvider:
         self._receipt = None
         self._state = "off"
         self._stepping = False
+        self._publication = Authority("gmail-history-cache-job", owner=self)
+        self._record_stamps = {}
+        self._publication_clock = None
+
+    def _withdraw_record(self, ref):
+        stamp = self._record_stamps.get(ref)
+        if stamp is not None:
+            stamp.withdraw()
+            self._record_stamps.pop(ref, None)
+
+    def _publish_record(self, row):
+        if row.body.eligible:
+            stamp = Authority("gmail-history-cache-record", owner=self)
+            stamp.publish()
+            self._record_stamps[row.ref] = stamp
+
+    def _start_publication(self):
+        # Only builtin clocks run from a pure production witness. Injected
+        # synthetic clock callbacks are sampled during source preparation.
+        self._publication_clock = Clock(live=self._clock is time.time and self._monotonic is time.monotonic)
+        self._publication_clock.observe(self._clock(), self._monotonic())
+        self._publication.publish()
+
+    def _cache_witness(self, job, selected):
+        if not selected or any(not row.body.eligible for row in selected):
+            return None
+        self._publication_clock.observe(self._clock(), self._monotonic())
+        tokens = [self._publication.token(clock=self._publication_clock,
+            expires_wall=job.read_started_at+self.limits.ttl_seconds,
+            expires_monotonic=job.monotonic_started_at+self.limits.ttl_seconds)]
+        tokens.extend(self._record_stamps[row.ref].token() if row.ref in self._record_stamps else None
+                      for row in selected)
+        return Witness.combine(*tokens)
 
     def _current_admission(self):
         try:
@@ -593,7 +646,8 @@ class HistoryProvider:
 
     def invalidate(self, reason="invalidated"):
         """Synchronous withdrawal: call before Forget/revoke/disconnect awaits."""
-        with _LOCK:
+        with revocation(), _LOCK:
+            self._publication.withdraw()
             _CACHE.remove(self)
             _CACHE.owners.pop(self, None)
             self._job = self._receipt = None
@@ -602,7 +656,7 @@ class HistoryProvider:
                 "paused", "cancelled", "revoked", "forgotten", "disconnected", "invalidated") else "invalidated"
 
     def control(self, action, *, scope=None):
-        with _LOCK:
+        with revocation(), _LOCK:
             actions = {"pause": "paused", "cancel": "cancelled", "revoke": "revoked", "forget": "forgotten"}
             if action in actions:
                 self.invalidate(actions[action])
@@ -618,13 +672,14 @@ class HistoryProvider:
             if not math.isfinite(now) or not math.isfinite(mono) or now < 0:
                 raise ValueError("Finite history clock required")
             self._job = _Job(admission, scope, secrets.token_hex(24), now, mono)
+            self._start_publication()
             _CACHE.owners[self] = self.limits.global_cache_bytes
             self._state = "running"
             return self.status()
 
     def status(self):
         """No HTTP, token, lazy provider initialization or freshness renewal."""
-        with _LOCK:
+        with revocation(), _LOCK:
             job = self._job
             if job is not None and not self._current(job):
                 self.invalidate()
@@ -649,7 +704,7 @@ class HistoryProvider:
 
     def checkpoint(self):
         """Metadata export only. No API restores admission/proofs from this data."""
-        with _LOCK:
+        with revocation(), _LOCK:
             status = self.status()
             job = self._job
             return {"schema": 1, "status": status,
@@ -659,7 +714,7 @@ class HistoryProvider:
 
     def _continuation_status(self):
         """Private source seam; public receipts and reference schemas stay v3."""
-        with _LOCK:
+        with revocation(), _LOCK:
             job = self._job
             current = job is not None and self._current(job)
             pending = bool(current and (job.pending or (job.next_page and not job.capped)))
@@ -676,7 +731,7 @@ class HistoryProvider:
                     "incomplete": incomplete, "blocked_reason": reason if pending and due else ""}
 
     def _stop_continuation(self, reason):
-        with _LOCK:
+        with revocation(), _LOCK:
             job = self._job
             if job is not None and self._current(job):
                 job.stopped = True
@@ -689,7 +744,7 @@ class HistoryProvider:
         Copy bounded traversal metadata, then withdraw ALL old raw/proof state.
         The caller installs a fresh source grant first; no token or body crosses.
         """
-        with _LOCK:
+        with revocation(), _LOCK:
             old = self._job
             if not self._continuation_status()["available"]:
                 raise PermissionError("Current progressing history segment required")
@@ -704,12 +759,13 @@ class HistoryProvider:
             self._require(old)  # Copying metadata must not cross the old expiry.
             self.invalidate()
             self._job = new
+            self._start_publication()
             _CACHE.owners[self] = self.limits.global_cache_bytes
             self._state = "running"
             self._require(new)
 
     def snapshot(self, *, expected_receipt=None, required_refs=()):
-        with _LOCK:
+        with revocation(), _LOCK:
             self.status()  # Current trusted state, expiry and withdrawals, no I/O.
             job, current = self._job, self._receipt
             if job is None or current is None:
@@ -742,7 +798,8 @@ class HistoryProvider:
             selected = tuple(rows[ref] for ref in refs if ref in rows)
             for row in selected:
                 _CACHE.entries.move_to_end((self._cache_id, row.resource_id))
-            return HistorySnapshot(receipt, selected, missing, not missing)
+            return HistorySnapshot(receipt, selected, missing, not missing,
+                                   self._cache_witness(job, selected) if not missing else None)
 
     def _receipt_digest(self, receipt):
         data = asdict(receipt)
@@ -811,7 +868,7 @@ class HistoryProvider:
         """
         if not isinstance(budget, StepBudget):
             raise ValueError("Explicit history step budget required")
-        with _LOCK:
+        with revocation(), _LOCK:
             job = self._job
             if job is None or self._stepping or job.stopped:
                 return self.status()
@@ -860,7 +917,7 @@ class HistoryProvider:
                         raise ValueError("Invalid provider resource identity")
                     if mid not in job.listed and mid not in ids:
                         ids.append(mid)
-                with _LOCK:
+                with revocation(), _LOCK:
                     self._require(job)
                     job.pending.extend(ids)
                     job.listed.update(dict.fromkeys(ids))
@@ -889,12 +946,12 @@ class HistoryProvider:
                 if response.status_code != 200:
                     raise ValueError("Provider body failed")
                 data = response.json()
-                with _LOCK:
+                with revocation(), _LOCK:
                     self._require(job)
                     job.fetched += 1
                     accepted += self._publish(job, mid, data, fetch_started, received)
                     job.pending.pop(0)
-            with _LOCK:
+            with revocation(), _LOCK:
                 self._require(job)
                 job.error = ""
                 self._state = "capped" if job.capped else "exhausted" if job.eof and not job.pending else "running"
@@ -907,11 +964,11 @@ class HistoryProvider:
                 self.invalidate("cancelled")
             raise
         except Exception:
-            with _LOCK:
+            with revocation(), _LOCK:
                 if self._job is job and self._current(job):
                     job.failed += 1
                     job.error = "History step failed; coverage is partial"
         finally:
-            with _LOCK:
+            with revocation(), _LOCK:
                 self._stepping = False
         return self.status()

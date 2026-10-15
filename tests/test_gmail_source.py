@@ -1457,6 +1457,59 @@ class HistoryPublicBinding(unittest.TestCase):
         self.assertEqual(snapshot.records[0].resource_id, "51")
         self.assertEqual(len(self.calls), 4)
 
+    def test_public_memory_witness_binds_source_application_config_and_recovery_without_io(self):
+        from service.publication_authority import PublicationBusy,publication
+        from service.config import quarantine
+        self.admit(); self.step()
+        snapshot = self.bridge.snapshot()
+        witness = snapshot.publication_witness
+        self.assertIsNotNone(witness)
+        original = G._history_config_digest
+        gate = quarantine.current_gate()
+        with publication(witness):
+            for operation in (self.app.revoke,lambda:self.bridge.control("pause"),
+                              lambda:G._save_config(self.config),gate.invalidate):
+                with self.assertRaises(PublicationBusy):
+                    operation()
+                self.assertTrue(witness.current())
+            self.assertFalse(self.app._revoked or gate.blocked)
+            self.assertEqual(G._history_config_digest,original)
+            with patch.object(G,"load_config",side_effect=AssertionError("Config I/O")), \
+                 patch.object(self.bridge,"snapshot",side_effect=AssertionError("Source getter")), \
+                 patch.object(gate,"generation",side_effect=AssertionError("Recovery file I/O")), \
+                 patch.object(self.app,"_probe",side_effect=AssertionError("Application callback")):
+                self.assertTrue(witness.current())
+        self.app.revoke()
+        self.assertFalse(witness.current())
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_public_memory_witness_is_withdrawn_before_config_or_recovery_mutation_ack(self):
+        from service.config import quarantine
+        self.admit(); self.step()
+        witness = self.bridge.snapshot().publication_witness
+        G._withdraw_history_configuration()
+        self.assertFalse(witness.current())
+        # Re-admission requires current source/bootstrap state, not saved tokens.
+        G.refresh_history_configuration()
+        self.pages = [{"messages":[{"id":"51"}]}]
+        self.admit(); self.step()
+        witness = self.bridge.snapshot().publication_witness
+        gate = quarantine.RecoveryGate(home=lambda:Path(os.environ["HOME"]))
+        # Use a separate private gate; avoid latching the shared test gate.
+        with patch.object(quarantine,"_gate",gate):
+            G.refresh_history_configuration()
+            self.assertFalse(witness.current())
+            http = G.HistoryHTTPClient.synthetic(self.server)
+            self.addCleanup(lambda:asyncio.run(http.aclose()))
+            self.http = http
+            self.pages = [{"messages":[{"id":"51"}]}]
+            self.admit(); self.step()
+            current = self.bridge.snapshot().publication_witness
+            self.assertTrue(current.current())
+            with self.assertRaises(quarantine.CredentialQuarantined):
+                gate.invalidate()
+            self.assertFalse(current.current())
+
     def test_wrong_actual_token_owner_is_rejected_even_when_grant_declares_right_account(self):
         self.admit()
         self.profile = "other@gmail.com"
