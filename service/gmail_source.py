@@ -450,7 +450,8 @@ async def run() -> None:
 # --- OAuth (installed-app loopback + PKCE) -----------------------------------
 
 async def begin_authorization(client_id: str, client_secret: str = "",
-                              timeout: float = 300.0, mail_account_id: str = "") -> str:
+                              timeout: float = 300.0, mail_account_id: str = "", *,
+                              include_receipt: bool = False) -> str | dict:
     """Start the loopback listener and return the Google consent URL."""
     global _pending_flow, _flow_generation
     _flow_generation += 1
@@ -458,6 +459,7 @@ async def begin_authorization(client_id: str, client_secret: str = "",
     _authorization.update(state="authorizing", generation=generation, error="", email="")
     if _pending_flow:
         _pending_flow["server"].close()
+        _pending_flow = None
     verifier = secrets.token_urlsafe(64)
     challenge = base64.urlsafe_b64encode(
         hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -498,7 +500,16 @@ async def begin_authorization(client_id: str, client_secret: str = "",
         writer.close()
         done.set()
 
-    server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    try:
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+    except Exception as exc:
+        if generation == _flow_generation:
+            _authorization.update(state="failed", error="Couldn’t start Google sign-in. Try again.")
+            _flow_generation += 1
+        raise GmailError("Couldn’t start Google sign-in. Try again.") from exc
+    if generation != _flow_generation:
+        server.close()
+        raise GmailError("This sign-in attempt was replaced by another attempt. Try again.")
     port = server.sockets[0].getsockname()[1]
     redirect = f"http://127.0.0.1:{port}"
     _pending_flow = {"server": server}
@@ -516,10 +527,11 @@ async def begin_authorization(client_id: str, client_secret: str = "",
             _pending_flow = None
 
     asyncio.create_task(expire())
-    return AUTH_URL + "?" + urlencode({
+    url = AUTH_URL + "?" + urlencode({
         "client_id": client_id, "redirect_uri": redirect, "response_type": "code",
         "scope": SCOPE, "code_challenge": challenge, "code_challenge_method": "S256",
         "state": state, "access_type": "offline", "prompt": "consent"})
+    return {"auth_url": url, "generation": generation} if include_receipt else url
 
 
 async def _finish(client_id, client_secret, code, verifier, redirect, *,

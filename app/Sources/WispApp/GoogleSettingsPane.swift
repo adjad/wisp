@@ -22,6 +22,7 @@ final class GoogleAccountModel: ObservableObject {
     @Published var selectedMailAccountID = ""
     @Published var authorizationState = "idle"
     @Published var authorizationError = ""
+    @Published var authorizationGeneration: Int?
     @Published var connected = false
     @Published var email = ""
     @Published var authorizing = false
@@ -56,6 +57,7 @@ final class GoogleAccountModel: ObservableObject {
         let authorization = s["authorization"] as? [String: Any] ?? [:]
         authorizationState = authorization["state"] as? String ?? "idle"
         authorizationError = authorization["error"] as? String ?? ""
+        authorizationGeneration = authorization["generation"] as? Int
         lastError = s["last_error"] as? String ?? ""
         hasSavedSecret = s["has_secret"] as? Bool ?? false
         if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
@@ -155,14 +157,20 @@ final class GoogleAccountModel: ObservableObject {
         guard !id.isEmpty else { message = "Enter your OAuth client ID first."; return }
         message = ""
         authorizing = true
+        polling?.cancel()
         Task {
             let body: [String: Any] = ["client_id": id,
                                        "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
                                        "mail_account_id": selectedMailAccountID]
-            guard let r = await request("POST", "assistant/gmail/connect", body: body),
-                  r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
-                  let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
+            guard let r = await request("POST", "assistant/gmail/connect", body: body) else {
                 message = "Couldn't start Google sign-in."
+                authorizing = false
+                return
+            }
+            guard r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
+                  let generation = r["generation"] as? Int,
+                  let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
+                message = r["error"] as? String ?? "Couldn't confirm this Google sign-in attempt. Try again."
                 authorizing = false
                 return
             }
@@ -170,7 +178,7 @@ final class GoogleAccountModel: ObservableObject {
             NSWorkspace.shared.open(url)
             message = "Finish signing in with Google in your browser."
             authorizing = true
-            watchForCompletion()
+            watchForCompletion(generation: generation)
         }
     }
 
@@ -186,20 +194,27 @@ final class GoogleAccountModel: ObservableObject {
         }
     }
 
-    private func watchForCompletion() {
+    private func watchForCompletion(generation: Int) {
         polling?.cancel()
         polling = Task { [weak self] in
             for _ in 0..<150 {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, !Task.isCancelled else { return }
                 await self.refresh()
+                guard !Task.isCancelled else { return }
+                if let current = self.authorizationGeneration, current != generation {
+                    self.message = "This sign-in attempt was replaced by another attempt. Check the connected accounts below."
+                    return
+                }
                 if !self.authorizing {
-                    self.message = self.authorizationState == "connected"
+                    self.message = self.authorizationGeneration == generation && self.authorizationState == "connected"
                         ? "Account connected. Check its refresh status below."
                         : (self.authorizationError.isEmpty ? "Sign-in did not finish. Try again." : self.authorizationError)
                     return
                 }
             }
+            guard let self, !Task.isCancelled else { return }
+            self.message = "Couldn’t confirm Google sign-in. Check connected accounts or try again."
         }
     }
 

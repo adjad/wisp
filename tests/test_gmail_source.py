@@ -284,7 +284,8 @@ from service.tools import email_tools as E
 E = importlib.reload(E)
 E.configure_external_accounts(json.loads(sys.argv[2]))
 print(json.dumps({'headers': E._headers, 'history': E._history, 'raw': E._raw_emails,
-                  'native': E._swift_headers, 'native_raw_at': E._native_raw_at}))
+                  'native': E._swift_headers, 'native_raw_at': E._native_raw_at,
+                  'native_identity': E._swift_identity, 'identity': E.get_identity_emails()}))
 """
         result = subprocess.run([sys.executable, "-c", code, str(cache_store.CACHE_DIR),
                                  json.dumps(accounts or {})], check=True, capture_output=True, text=True)
@@ -298,7 +299,8 @@ print(json.dumps({'headers': E._headers, 'history': E._history, 'raw': E._raw_em
             self.assertEqual(cache_store.load("email_mail_" + part), "")
         E.configure_external_accounts({})
         self.assertEqual(self.restarted_cache(), {
-            "headers": "", "history": "", "raw": "", "native": "", "native_raw_at": 0.0})
+            "headers": "", "history": "", "raw": "", "native": "", "native_raw_at": 0.0,
+            "native_identity": [], "identity": []})
         self.assertNotIn("Disconnected", cache_store.load("email_headers"))
         self.assertNotIn("Synthetic body", cache_store.load("email_raw"))
 
@@ -380,6 +382,228 @@ print(json.dumps({'headers': E._headers, 'history': E._history, 'raw': E._raw_em
         for part in ("headers", "history", "raw", "native"):
             self.assertNotIn("Provider secret", restored[part])
 
+    def test_fresh_identity_write_failure_cannot_promote_provider_after_cold_restart(self):
+        for name in ("email_mail_identity", "email_sources", "identity_emails"):
+            cache_store._path(name).unlink(missing_ok=True)
+        original = cache_store.save
+        def fail_ownership(name, value):
+            if name not in {"email_mail_identity", "email_sources"}:
+                original(name, value)
+        with patch.object(cache_store, "save", fail_ownership):
+            E.configure_external_accounts(self.accounts)
+            self.assertIn(ME, E.get_identity_emails())
+            E.cache_identity([])
+        self.assertNotIn(ME, cache_store.load("identity_emails"))
+        restored = self.restarted_cache()
+        self.assertEqual(restored["native_identity"], [])
+        self.assertEqual(restored["identity"], [])
+        self.assertEqual(cache_store.load("email_mail_identity"), "")
+        self.assertEqual(cache_store.load("identity_emails"), "")
+
+    def test_identity_disconnect_preserves_genuine_native_and_other_provider(self):
+        native = "synthetic.native@icloud.com"
+        self.accounts[SCHOOL] = {"client_id": "other", "refresh_token": "other"}
+        E.configure_external_accounts(self.accounts)
+        E.cache_identity([native])
+        E.configure_external_accounts({SCHOOL: self.accounts[SCHOOL]})
+        restored = self.restarted_cache({SCHOOL: self.accounts[SCHOOL]})
+        self.assertEqual(restored["native_identity"], [native])
+        self.assertEqual(restored["identity"], [native, SCHOOL])
+        self.assertNotIn(ME, cache_store.load("identity_emails"))
+
+    def test_load_save_only_adapter_import_does_not_assume_native_provenance(self):
+        code = """
+import importlib, json, sys, types
+from service.tools import email_tools as E
+import service.tools
+adapter = types.ModuleType('service.tools.cache_store')
+values = {'email_headers': '1700000000 | R | provider@gmail.com | Sender | Unknown provenance',
+          'email_history': '', 'email_raw': '', 'identity_emails': 'provider@gmail.com'}
+def load(name):
+    if name not in values:
+        raise RuntimeError('Private key unavailable in staged adapter')
+    return values[name]
+adapter.load = load
+def save(*args):
+    raise AssertionError('Staged cache is read only')
+adapter.save = save
+sys.modules[adapter.__name__] = adapter
+service.tools.cache_store = adapter
+E = importlib.reload(E)
+assert E._swift_headers == '' and E._swift_identity == [] and E._external_accounts == {}
+assert E.email_sync_state() == 'syncing'
+print('safe staged import')
+"""
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+        self.assertIn("safe staged import", result.stdout)
+
+    def test_registered_dated_unread_uses_current_identity_before_date_filter(self):
+        self.accounts[ME]["mail_account_id"] = "native-A"
+        E.configure_external_accounts(self.accounts)
+        start, end, _ = E._day_bounds("yesterday")
+        historical = header("Personal", "Stale historical unread", stamp=end - 60, native_id="native-A").split("\x01")
+        historical[2] = "U"
+        E.cache_history_headers("\x01".join(historical))
+        self.publish(headers=header(subject="Current read copy") + f"\nC2\x01{ME}\x01{ME}\x01200\x010\x011")
+        G._last[ME] = {"headers": time.time()}
+        for scope in ({"day": "yesterday"}, {"period": "yesterday"}):
+            with self.subTest(scope=scope):
+                result = asyncio.run(E.summarize_emails(account=ME, unread=True, **scope))
+                self.assertNotIn("Stale historical unread", result)
+                self.assertNotIn("1 unread", result)
+        historical[7] = "<historical-only@synthetic.invalid>"
+        historical[8] = "Historical-only unread"
+        E.cache_history_headers("\x01".join(historical))
+        for scope in ({"day": "yesterday"}, {"period": "yesterday"}):
+            with self.subTest(positive=scope):
+                result = asyncio.run(E.summarize_emails(account=ME, unread=True, **scope))
+                self.assertIn("Historical-only unread", result)
+
+    def test_no_gmail_closed_mail_refreshes_headers_without_fetching_bodies(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_emails(header("iCloud", "Earlier native snapshot", native_id="native-cloud"))
+        E.set_email_availability(True, read_source="local_index")
+        async def native(event):
+            self.assertEqual(event, {"type": "sync_assistant_sources_now", "sources": ["email"]})
+            E.cache_emails(header("iCloud", "New local-index arrival", native_id="native-cloud"))
+            E.set_email_availability(True, read_source="local_index")
+        with patch("service.assistant.hub.hub.publish", native), patch.object(G, "_get", AsyncMock()) as get:
+            output = asyncio.run(E.summarize_emails(day="today"))
+            get.assert_not_awaited()
+        self.assertIn("New local-index arrival", output)
+        self.assertIn("server freshness is unverified", output)
+        self.assertNotIn("Settings ▸ Google", output)
+
+    def test_no_gmail_failed_native_refresh_displays_retained_headers_with_original_age(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_emails(header("Exchange", "Retained native message", native_id="native-exchange"))
+        E.set_email_availability(True, read_source="mail_app")
+        original_age = E._native_headers_at = time.time() - 3600
+        E.set_email_availability(False, "Local Mail index could not be refreshed", read_source="local_index")
+        with patch("service.assistant.hub.hub.publish", AsyncMock()):
+            output = asyncio.run(E.summarize_emails())
+        self.assertIn("Retained native message", output)
+        self.assertIn("Local Mail index could not be refreshed", output)
+        self.assertIn("last local read", output)
+        self.assertIn("unverified", output)
+        self.assertNotIn("Settings ▸ Google", output)
+        self.assertEqual(E._native_headers_at, original_age)
+        self.assertEqual(E.email_sync_state(), "unavailable")
+
+    def test_optional_gmail_failure_does_not_disable_native_fallback(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_emails(header("iCloud", "Native without Google", native_id="native-cloud"))
+        E.set_email_availability(True, read_source="mail_app")
+        with patch.object(G, "refresh_if_stale", AsyncMock(side_effect=ImportError("Optional Google unavailable"))):
+            output = asyncio.run(E.summarize_emails())
+        self.assertIn("Native without Google", output)
+
+    def test_missing_optional_gmail_import_still_uses_native_mail(self):
+        import builtins
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_emails(header("iCloud", "Native with no Gmail module", native_id="native-cloud"))
+        E.set_email_availability(True, read_source="mail_app")
+        original = builtins.__import__
+        def without_gmail(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "service" and "gmail_source" in fromlist:
+                raise ModuleNotFoundError("Optional Gmail source unavailable")
+            return original(name, globals, locals, fromlist, level)
+        with patch("builtins.__import__", without_gmail):
+            output = asyncio.run(E.summarize_emails())
+        self.assertIn("Native with no Gmail module", output)
+
+    def test_no_configured_gmail_does_not_keep_restored_provider_snapshots_or_identity(self):
+        self.publish(headers=header(subject="Disconnected provider snapshot"))
+        E.cache_emails(header("iCloud", "Permitted native fallback", native_id="native-cloud"))
+        E.set_email_availability(True, read_source="mail_app")
+        self.accounts.clear()  # Persisted account removal precedes source-cache cleanup.
+        output = asyncio.run(E.summarize_emails())
+        self.assertIn("Permitted native fallback", output)
+        self.assertNotIn("Disconnected provider snapshot", output)
+        self.assertFalse(E._external_accounts)
+        self.assertNotIn(ME, E.get_identity_emails())
+
+    def test_connected_google_does_not_hide_non_google_native_fallback(self):
+        self.publish(headers=header(subject="Private Google message"))
+        G._last[ME] = {"headers": time.time()}
+        E.cache_emails(header("Exchange", "Retained Exchange message", native_id="native-exchange"))
+        E.set_email_availability(False, "Exchange local refresh failed", read_source="local_index")
+        with patch("service.assistant.hub.hub.publish", AsyncMock()):
+            output = asyncio.run(E.summarize_emails(account="Exchange"))
+        self.assertIn("Retained Exchange message", output)
+        self.assertIn("Exchange local refresh failed", output)
+        self.assertNotIn("Private Google message", output)
+        self.assertNotIn("Settings ▸ Google", output)
+
+    def test_failed_google_refresh_attempts_new_native_fallback_before_old_provider_cache(self):
+        self.accounts[ME]["mail_account_id"] = "native-A"
+        E.configure_external_accounts(self.accounts)
+        E.cache_emails(header("Personal", "Old native copy", native_id="native-A"))
+        E.set_email_availability(True, read_source="mail_app")
+        E._native_headers_at = time.time() - 3600
+        self.publish(headers=header(subject="Old provider copy"))
+        async def native(event):
+            self.assertEqual(event, {"type": "sync_assistant_sources_now", "sources": ["email"]})
+            E.cache_emails(header("Personal", "New native fallback", native_id="native-A"))
+            E.set_email_availability(True, read_source="mail_app")
+        with patch.object(G, "_sync_headers", AsyncMock(side_effect=G.GmailError("Google offline"))), \
+             patch("service.assistant.hub.hub.publish", native):
+            output = asyncio.run(E.summarize_emails(account=ME))
+        self.assertIn("New native fallback", output)
+        self.assertNotIn("Old provider copy", output)
+        self.assertIn("Google offline", output)
+
+    def test_no_gmail_failed_empty_or_marker_only_cache_cannot_claim_empty_inbox(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        for snapshot in ("", "C3\x01iCloud\x01native-cloud\x01failed"):
+            E.cache_emails(snapshot)
+            E.set_email_availability(False, "Mail is closed and the local index is unavailable", read_source="local_index")
+            with patch("service.assistant.hub.hub.publish", AsyncMock()):
+                output = asyncio.run(E.summarize_emails(day="today"))
+            self.assertIn("couldn’t verify your inbox", output)
+            self.assertNotIn("No emails found.", output)
+            self.assertNotIn("Grant Wisp", output)
+
+    def test_explicit_body_request_refreshes_stale_native_fallback_without_gmail(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_emails(header("iCloud", "Old native headers"))
+        E.cache_raw_emails(G.raw_record(msg("old", "Old native body"), "iCloud"))
+        E.set_email_availability(True, read_source="local_index")
+        original_age = E._native_raw_at = time.time() - 3600
+        async def native(event):
+            self.assertEqual(event, {"type": "sync_emails_now"})
+            E.cache_raw_emails(G.raw_record(msg("new", "New native body"), "iCloud"))
+            E.set_email_availability(True, read_source="local_index")
+        with patch("service.assistant.hub.hub.publish", native):
+            output = asyncio.run(E.view_emails(query="New native body"))
+        self.assertIn("New native body", output)
+        self.assertNotIn("Old native body", output)
+        self.assertGreater(E._native_raw_at, original_age)
+        self.assertIn("unverified", output)
+
+    def test_no_gmail_body_refresh_failure_preserves_age_and_cannot_revive_expired_body(self):
+        self.accounts.clear()
+        E.configure_external_accounts({})
+        E.cache_raw_emails(G.raw_record(msg("retained", "Retained native body"), "iCloud"))
+        E.set_email_availability(False, "Mail unavailable", read_source="local_index")
+        old = E._native_raw_at = time.time() - 3600
+        with patch("service.assistant.hub.hub.publish", AsyncMock()) as publish:
+            asyncio.run(E._ensure_email_cache(want_raw=True, timeout_seconds=0))
+            publish.assert_awaited_once_with({"type": "sync_emails_now"})
+        self.assertEqual(E._native_raw_at, old)
+        self.assertIn("Retained native body", E._raw_emails)
+        E._native_raw_at = time.time() - 8 * 86400
+        with patch("service.assistant.hub.hub.publish", AsyncMock()):
+            asyncio.run(E._ensure_email_cache(want_raw=True, timeout_seconds=0))
+        self.assertFalse(E._raw_emails)
+        self.assertNotIn("Retained native body", self.restarted_cache()["raw"])
+
     def test_failed_disconnect_display_write_never_relabels_provider_as_native(self):
         self.publish(headers=header(subject="Old provider display"))
         original = cache_store.save
@@ -438,12 +662,81 @@ print(json.dumps({'headers': E._headers, 'history': E._history, 'raw': E._raw_em
         async def start(callback, *args):
             callbacks.append(callback)
             return server
-        async def callback(query):
+        async def callback(query, index=0):
             reader = SimpleNamespace(readline=AsyncMock(return_value=f"GET /?{query} HTTP/1.1\r\n".encode()))
             writer = SimpleNamespace(close=Mock(), write=Mock(), drain=AsyncMock())
-            await callbacks[0](reader, writer)
+            await callbacks[index](reader, writer)
             return writer
         return start, callback
+
+    def test_atomic_connect_receipts_distinguish_superseding_http_flow(self):
+        import ast
+        from typing import Any
+        from fastapi import FastAPI
+        from service import google_workspace as workspace
+        source = Path(__file__).resolve().parents[1] / "service/main.py"
+        route = next(n for n in ast.parse(source.read_text()).body
+                     if isinstance(n, ast.AsyncFunctionDef) and n.name == "gmail_connect")
+        app = FastAPI()
+        exec(compile(ast.Module(body=[route], type_ignores=[]), str(source), "exec"), {"app": app, "Any": Any})
+        async def run():
+            start, callback = self.fake_oauth_server()
+            with patch("asyncio.start_server", start), patch.object(workspace, "saved_credentials", return_value=("", "")), \
+                 patch.object(G, "_finish", AsyncMock(return_value=SCHOOL)):
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://synthetic.invalid") as client:
+                    first = (await client.post("/assistant/gmail/connect", json={"client_id": "synthetic"})).json()
+                    second = (await client.post("/assistant/gmail/connect", json={"client_id": "synthetic"})).json()
+                from urllib.parse import parse_qs, urlparse
+                state = parse_qs(urlparse(second["auth_url"]).query)["state"][0]
+                await callback("state=" + state + "&code=fake", index=1)
+                await asyncio.sleep(0)
+                status = G.status()["authorization"]
+                self.assertTrue(first["ok"] and second["ok"])
+                self.assertNotEqual(first["generation"], second["generation"])
+                self.assertEqual(second["generation"], status["generation"])
+                self.assertNotEqual(first["generation"], status["generation"])
+                self.assertEqual((status["state"], status["email"]), ("connected", SCHOOL))
+        asyncio.run(run())
+
+    def test_superseded_listener_start_cannot_replace_or_close_newer_flow(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        async def run():
+            entered, release = asyncio.Event(), asyncio.Event()
+            old = SimpleNamespace(sockets=[SimpleNamespace(getsockname=lambda: ("127.0.0.1", 54321))], close=Mock())
+            new = SimpleNamespace(sockets=[SimpleNamespace(getsockname=lambda: ("127.0.0.1", 54322))], close=Mock())
+            calls = 0
+            async def start(*args):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    entered.set()
+                    await release.wait()
+                    return old
+                return new
+            with patch("asyncio.start_server", start):
+                pending = asyncio.create_task(G.begin_authorization("first", include_receipt=True))
+                await entered.wait()
+                receipt = await G.begin_authorization("second", include_receipt=True)
+                release.set()
+                with self.assertRaisesRegex(G.GmailError, "replaced"):
+                    await pending
+                self.assertIs(G._pending_flow["server"], new)
+                old.close.assert_called_once()
+                new.close.assert_not_called()
+                self.assertEqual(receipt["generation"], G._authorization["generation"])
+                self.assertEqual(G._authorization["state"], "authorizing")
+        asyncio.run(run())
+
+    def test_failed_listener_start_has_terminal_feedback_without_pending_flow(self):
+        async def run():
+            with patch("asyncio.start_server", AsyncMock(side_effect=OSError("synthetic private detail"))):
+                with self.assertRaisesRegex(G.GmailError, "start Google sign-in"):
+                    await G.begin_authorization("synthetic", include_receipt=True)
+            self.assertIsNone(G._pending_flow)
+            self.assertEqual(G._authorization["state"], "failed")
+            self.assertNotIn("private detail", G._authorization["error"])
+        asyncio.run(run())
 
     def test_unrelated_oauth_callback_cannot_finish_or_cancel_active_flow(self):
         from urllib.parse import urlparse, parse_qs

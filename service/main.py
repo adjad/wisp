@@ -2859,8 +2859,12 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
         from service.tools.email_tools import native_email_accounts
         if native_id not in {row["id"] for row in native_email_accounts()}:
             return {"ok": False, "error": "That Mail account is no longer available; refresh Settings and select it again"}
-    return {"ok": True, "auth_url": await gmail_source.begin_authorization(
-        client_id, secret, mail_account_id=native_id)}
+    try:
+        receipt = await gmail_source.begin_authorization(
+            client_id, secret, mail_account_id=native_id, include_receipt=True)
+    except gmail_source.GmailError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, **receipt}
 
 
 @app.post("/assistant/gmail/disconnect")
