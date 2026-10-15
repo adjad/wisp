@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -112,6 +114,8 @@ class GmailSource(unittest.TestCase):
             client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=revoke)
             asyncio.run(G.disconnect(ME))
             client.return_value.__aenter__.return_value.post.assert_awaited_once()
+        self.assertEqual(provider.status()["state"], "disconnected")
+        self.assertIsNone(provider.snapshot(expected_receipt=receipt))
 
     def test_history_forget_synchronously_withdraws_without_affecting_native_fallback(self):
         from test_gmail_behavior_history import FakeHTTP, token
@@ -1376,6 +1380,488 @@ print('fresh process retained original native fallback')
         asyncio.run(run())
 
     _original_accounts = staticmethod(G.connected_accounts)
+
+
+class HistoryPublicBinding(unittest.TestCase):
+    """Public bridge uses source config and actual fake token owner, no caller token."""
+    def setUp(self):
+        from service import gmail_behavior_history as H
+        self.H = H
+        self.config = {"client_id": "configured-client", "client_secret": "fake-secret",
+                       "accounts": {ME: {"refresh_token": "configured-refresh"}}}
+        self.enterContext(patch.object(G, "load_config", lambda: self.config))
+        G.refresh_history_configuration()
+        self.scope = H.HistoryScope(100, 190, "inbox", 100)
+        self.permission = None
+        self.app = G.install_history_application(probe=lambda: self.permission)
+        self.addCleanup(self.app.revoke)
+        self.bridge = G.new_public_history_bridge(application=self.app,
+            limits=H.Limits(80000, 8000000, 32000000, 100), clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(self.bridge.invalidate)
+        self.calls = []
+        self.profile = ME
+        self.hook = None
+        self.token_scope = G.SCOPE
+        self.token_status = 200
+        self.message_status = 200
+        self.pages = [{"messages": [{"id": "51"}]}]
+        self.now, self.mono = 200, 0
+        self.http = G.HistoryHTTPClient.synthetic(self.server)
+        self.addCleanup(lambda client=self.http: asyncio.run(client.aclose()))
+        self.budget = H.StepBudget(100, 5, 6, 400000, 30)
+
+    async def server(self, request):
+        from test_gmail_behavior_history import message
+        from urllib.parse import parse_qs
+        self.calls.append(request)
+        if self.hook:
+            await self.hook(request)
+        if str(request.url) == G.TOKEN_URL:
+            form = parse_qs(request.content.decode())
+            self.assertEqual(form["client_id"], ["configured-client"])
+            self.assertEqual(form["refresh_token"], ["configured-refresh"])
+            return httpx.Response(self.token_status, json={"access_token": "server-issued", "scope": self.token_scope,
+                                             "token_type": "Bearer", "expires_in": 3600})
+        self.assertEqual(request.headers["Authorization"], "Bearer server-issued")
+        if request.url.path.endswith("/profile"):
+            return httpx.Response(200, json={"emailAddress": self.profile})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(self.message_status, json=self.pages.pop(0) if self.pages else {})
+        return httpx.Response(self.message_status, json=message(request.url.path.rsplit("/", 1)[1]))
+
+    def admit(self):
+        accounts = G.history_account_status()
+        self.assertEqual(len(accounts), 1, "Configured source must publish a public account lease")
+        lease = G.history_account_lease(accounts[0].account.account_id)
+        self.assertIsNotNone(lease)
+        self.permission = G.HistoryPermissionState((lease.account.account_id,), (self.scope.digest,),
+            "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        grant = self.app.issue(lease, self.scope)
+        self.bridge.start(grant)
+        return grant
+
+    def step(self):
+        return asyncio.run(self.bridge.step(http=self.http, budget=self.budget))
+
+    def test_default_off_public_metadata_and_step_do_not_touch_network(self):
+        self.assertEqual(self.bridge.status()["state"], "off")
+        self.assertIsNone(self.bridge.snapshot())
+        self.step()
+        self.assertEqual(self.calls, [])
+
+    def test_actual_configured_source_refresh_profile_list_body_pipeline(self):
+        self.admit()
+        self.step()
+        snapshot = self.bridge.snapshot()
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.records[0].resource_id, "51")
+        self.assertEqual(len(self.calls), 4)
+
+    def test_wrong_actual_token_owner_is_rejected_even_when_grant_declares_right_account(self):
+        self.admit()
+        self.profile = "other@gmail.com"
+        self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls], ["token", "profile"])
+
+    def test_public_status_snapshot_checkpoint_currentness_have_zero_io(self):
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        with patch.object(G, "load_config", side_effect=AssertionError("getter config I/O")), \
+             patch.object(G.httpx.AsyncClient, "request", side_effect=AssertionError("getter network")), \
+             patch("service.config.quarantine.check", side_effect=AssertionError("getter recovery I/O")):
+            accounts = G.history_account_status()
+            self.assertEqual(accounts[0].display_label, ME)
+            self.assertIsNotNone(G.history_account_lease(accounts[0].account.account_id))
+            for _ in range(3):
+                self.bridge.status()
+                self.bridge.checkpoint()
+                current = E.provider_history_snapshot(self.bridge, expected_receipt=receipt,
+                    required_refs=(receipt.refs[0],))
+                self.assertTrue(current.complete)
+        self.assertEqual(len(self.calls), 4)
+
+    def test_payload_and_cloned_lease_grant_cannot_install_or_restart_permission(self):
+        with self.assertRaises(ValueError):
+            G.install_history_application(probe={"history_start": True})
+        with self.assertRaises(ValueError):
+            G.HistoryApplicationAuthority(probe=lambda: self.permission)
+        with self.assertRaises(PermissionError):
+            self.bridge.start({"account_id": "chosen", "history_start": True})
+        grant = self.admit()
+        with self.assertRaises(PermissionError):
+            self.app.issue(dataclasses.replace(grant.account_lease), self.scope)
+        with self.assertRaises(PermissionError):
+            self.bridge.start(dataclasses.replace(grant))
+        self.bridge.control("forget")
+        with self.assertRaises(PermissionError):
+            self.bridge.start(grant)
+        self.assertEqual(self.calls, [])
+
+    def test_no_source_account_or_application_permission_cannot_issue(self):
+        lease = G.history_account_lease(G.history_account_status()[0].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+        grant = self.admit()
+        original = self.permission
+        for updates in ({"global_learning": False}, {"email_consent": False}, {"history_start": False},
+                        {"role": "other"}, {"account_ids": ()}, {"scope_digests": ()},
+                        {"session_epoch": True}, {"session_id": ""}):
+            self.permission = dataclasses.replace(original, **updates)
+            with self.assertRaises(PermissionError):
+                self.app.issue(lease, self.scope)
+            self.assertIsNone(self.bridge.snapshot())
+        self.permission = original
+        G._withdraw_history_configuration()
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+    def test_multiple_account_scope_sets_must_not_imply_a_cross_product_grant(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+        G.refresh_history_configuration()
+        accounts = G.history_account_status()
+        second = dataclasses.replace(self.scope, start=90)
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest, second.digest), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        first_lease = G.history_account_lease(accounts[0].account.account_id)
+        second_lease = G.history_account_lease(accounts[1].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(first_lease, second)
+        self.permission = dataclasses.replace(self.permission, account_scopes=(
+            (first_lease.account.account_id, self.scope.digest), (second_lease.account.account_id, second.digest)))
+        self.assertIsNotNone(self.app.issue(first_lease, self.scope))
+        self.assertIsNotNone(self.app.issue(second_lease, second))
+        with self.assertRaises(PermissionError):
+            self.app.issue(first_lease, second)
+        with self.assertRaises(PermissionError):
+            self.app.issue(second_lease, self.scope)
+
+    def test_token_post_profile_get_and_body_get_share_six_call_budget(self):
+        self.pages = [{"messages": [{"id": str(i)} for i in range(5)]}]
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 6)
+        status = self.bridge.status()
+        self.assertEqual(status["http_calls"], 6)
+        self.assertEqual(status["fetched"], 3)
+        self.assertEqual(status["pending"], 2)
+        self.step()  # Exact same verified token lease, no refresh/profile repeat.
+        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(self.bridge.status()["cached"], 5)
+
+    def test_budget_exhaustion_before_profile_never_caches_unverified_token(self):
+        self.admit()
+        asyncio.run(self.bridge.step(http=self.http, budget=self.H.StepBudget(100, 5, 1, 400000, 30)))
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNone(self.bridge.snapshot())
+        self.step()
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls],
+                         ["token", "token", "profile", "messages", "51"])
+
+    def test_invalid_scope_failed_refresh_and_read_revocation_fail_closed_without_retry(self):
+        self.admit()
+        self.token_scope = "https://www.googleapis.com/auth/gmail.metadata"
+        self.step()
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertIn("authorization", self.bridge.status()["binding_error"])
+        self.token_scope = G.SCOPE
+        self.token_status = 400
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 2)
+        self.assertIsNone(self.bridge.snapshot())
+        self.token_status = 200
+        self.message_status = 401
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 5)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(G.history_account_status(), ())
+
+    def test_every_await_checks_role_session_consent_and_no_late_forget_recreation(self):
+        for boundary in ("token", "profile", "messages", "51"):
+            for mutation in ("session_epoch", "role_epoch", "consent_epoch", "session_id", "role",
+                             "history_start", "global_learning", "email_consent", "forget", "pause", "cancel"):
+                with self.subTest(boundary=boundary, mutation=mutation):
+                    G.refresh_history_configuration()
+                    self.admit()
+                    self.pages = [{"messages": [{"id": "51"}]}]
+                    fired = []
+                    async def change(request):
+                        if request.url.path.rsplit("/", 1)[1] == boundary:
+                            fired.append(True)
+                            if mutation in ("forget", "pause", "cancel"):
+                                self.bridge.control(mutation)
+                            elif mutation in ("history_start", "global_learning", "email_consent"):
+                                self.permission = dataclasses.replace(self.permission, **{mutation: False})
+                            elif mutation in ("session_id", "role"):
+                                self.permission = dataclasses.replace(self.permission, **{mutation: "changed"})
+                            else:
+                                self.permission = dataclasses.replace(self.permission,
+                                    **{mutation: getattr(self.permission, mutation) + 1})
+                            await asyncio.sleep(0)
+                    self.hook = change
+                    before = len(self.calls)
+                    self.step()
+                    self.assertTrue(fired)
+                    self.assertIsNone(self.bridge.snapshot())
+                    self.assertEqual(self.bridge.status()["cached"], 0)
+                    self.assertFalse(self.bridge.status()["fresh"])
+                    self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "messages": 3, "51": 4}[boundary])
+                    self.hook = None
+
+    def test_client_credentials_accountset_mutations_at_each_await_revoke_old_source(self):
+        for boundary in ("token", "profile", "messages", "51"):
+            for mutation in ("client_id", "client_secret", "refresh_token", "accountset"):
+                with self.subTest(boundary=boundary, mutation=mutation):
+                    self.config = {"client_id": "configured-client", "client_secret": "fake-secret",
+                                   "accounts": {ME: {"refresh_token": "configured-refresh"}}}
+                    G.refresh_history_configuration()
+                    old_grant = self.admit()
+                    self.pages = [{"messages": [{"id": "51"}]}]
+                    fired = []
+                    async def change(request):
+                        if request.url.path.rsplit("/", 1)[1] == boundary:
+                            fired.append(True)
+                            if mutation == "accountset":
+                                self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+                            elif mutation == "refresh_token":
+                                self.config["accounts"][ME][mutation] = "changed"
+                            else:
+                                self.config[mutation] = "changed"
+                            G.refresh_history_configuration()
+                            await asyncio.sleep(0)
+                    self.hook = change
+                    before = len(self.calls)
+                    self.step()
+                    self.assertTrue(fired)
+                    self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "messages": 3, "51": 4}[boundary])
+                    self.assertIsNone(self.bridge.snapshot())
+                    with self.assertRaises(PermissionError):
+                        self.bridge.start(old_grant)
+                    self.hook = None
+
+    def test_explicit_application_refresh_and_revoke_withdraw_without_getter_or_await(self):
+        self.admit()
+        self.step()
+        self.permission = dataclasses.replace(self.permission, global_learning=False)
+        self.app.refresh()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertFalse(self.bridge.status()["fresh"])
+        self.app.revoke()
+        self.permission = dataclasses.replace(self.permission, global_learning=True)
+        lease = G.history_account_lease(G.history_account_status()[0].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+    def test_source_configuration_save_and_failed_save_withdraw_before_io(self):
+        self.admit()
+        self.step()
+        with patch.object(G.os, "open", side_effect=OSError("synthetic write failure")):
+            with self.assertRaises(OSError):
+                G._save_config(self.config)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(G.history_account_status(), ())
+
+    def test_authorization_begin_withdraws_history_before_its_first_await(self):
+        self.admit()
+        self.step()
+        observed = []
+        async def listener(*args, **kwargs):
+            observed.append(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+            raise OSError("synthetic listener blocked")
+        with patch.multiple(G, _pending_flow=None, _flow_generation=0, _authorization={}), \
+             patch.object(G.asyncio, "start_server", listener):
+            with self.assertRaises(G.GmailError):
+                asyncio.run(G.begin_authorization("other-client"))
+        self.assertEqual(observed, [None])
+
+    def test_disconnect_withdraws_public_bridge_before_revoke_and_keeps_native_cache(self):
+        self.admit()
+        self.step()
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(G, "CONFIG_PATH", Path(folder) / "gmail.json"), \
+             patch.object(G.httpx, "AsyncClient") as client:
+            seen = []
+            async def revoke(*args, **kwargs):
+                seen.append(self.bridge.snapshot())
+                return httpx.Response(200)
+            client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=revoke)
+            with patch.object(E, "_swift_headers", "genuine-native"):
+                asyncio.run(G.disconnect(ME))
+                self.assertEqual(E._swift_headers, "genuine-native")
+        self.assertEqual(seen, [None])
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["state"], "disconnected")
+
+    def test_cached_older_refs_and_v3_time_schema_stay_valid_after_unrelated_page(self):
+        self.pages = [{"messages": [{"id": "51"}], "nextPageToken": "next"},
+                      {"messages": [{"id": "52"}]}]
+        self.admit()
+        self.step()
+        original = self.bridge.snapshot()
+        receipt = self.H.HistoryReceipt.from_metadata(json.loads(json.dumps(original.receipt.to_metadata())))
+        ref = self.H.RecordRef.from_metadata(json.loads(json.dumps(original.records[0].ref.to_metadata())))
+        self.step()
+        before = len(self.calls)
+        older = E.provider_history_snapshot(self.bridge, expected_receipt=receipt, required_refs=(ref,))
+        self.assertTrue(older.complete)
+        self.assertEqual(len(self.calls), before)
+        self.assertIsNone(older.records[0].event_at)
+        self.assertFalse(older.records[0].time_qualification.relative_deadlines_supported)
+
+    def test_unannounced_config_mutation_during_await_is_observed_before_publication(self):
+        self.admit()
+        async def mutate(request):
+            if request.url.path.endswith("/51"):
+                self.config["accounts"][ME]["refresh_token"] = "new-unannounced-credential"
+        self.hook = mutate
+        self.step()
+        self.assertEqual(len(self.calls), 4)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertFalse(self.bridge.status()["fresh"])
+
+    def test_sync_credential_recovery_and_gate_change_prevent_late_request_publication(self):
+        from service.config import quarantine
+        gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", gate):
+            self.http = G.HistoryHTTPClient.synthetic(self.server)
+            G.refresh_history_configuration()
+            self.admit()
+            async def recover(request):
+                if request.url.path.endswith("/51"):
+                    try:
+                        gate.invalidate()
+                    except quarantine.CredentialQuarantined:
+                        pass
+            self.hook = recover
+            self.step()
+            self.assertIsNone(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+            asyncio.run(self.http.aclose())
+        # A client bound to an older gate cannot dispatch after authority replacement.
+        self.hook = None
+        G.refresh_history_configuration()
+        self.admit()
+        before = len(self.calls)
+        with patch.object(quarantine, "_gate", quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))):
+            self.step()
+        self.assertEqual(len(self.calls), before)
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_replaced_recovery_authority_invalidates_pure_getters_without_disk_or_network(self):
+        from service.config import quarantine
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        new_gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", new_gate), \
+             patch.object(G, "load_config", side_effect=AssertionError("getter config read")), \
+             patch.object(new_gate, "check", side_effect=AssertionError("getter recovery read")):
+            self.assertIsNone(self.bridge.snapshot(expected_receipt=receipt))
+            self.assertEqual(G.history_account_status(), ())
+
+    def test_expiry_does_not_renew_via_public_bridge_or_metadata_roundtrip(self):
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        self.now, self.mono = 299, 99
+        self.assertEqual(self.bridge.snapshot().receipt.expires_at, receipt.expires_at)
+        self.now, self.mono = 300, 100
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=receipt))
+        before = len(self.calls)
+        self.step()
+        self.assertEqual(len(self.calls), before)
+
+    def test_source_bridge_does_not_accept_caller_token_or_arbitrary_http_client(self):
+        self.admit()
+        with self.assertRaises(TypeError):
+            asyncio.run(self.bridge.step(http=self.http, budget=self.budget, token="declared-right-account"))
+        with self.assertRaises(ValueError):
+            asyncio.run(self.bridge.step(http=object(), budget=self.budget))
+        with self.assertRaises(ValueError):
+            asyncio.run(self.bridge.step(http=object.__new__(G.HistoryHTTPClient), budget=self.budget))
+        self.assertEqual(self.calls, [])
+
+    def test_pure_source_readback_does_not_wait_for_configuration_io_mutex(self):
+        self.admit()
+        self.step()
+        rows = []
+        def readback():
+            rows.append(E.provider_history_snapshot(self.bridge))
+        thread = threading.Thread(target=readback, daemon=True)
+        with G._history_config_lock:
+            thread.start()
+            thread.join(timeout=1)
+            completed = not thread.is_alive()
+        thread.join(timeout=1)
+        self.assertTrue(completed, "Getter acquired configuration mutex under history guard")
+        self.assertFalse(thread.is_alive())
+        self.assertIsNotNone(rows[0])
+
+    def test_source_owned_clients_do_not_follow_redirects_or_retry_errors(self):
+        self.admit()
+        async def redirect(request):
+            self.calls.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.test/leak"})
+        client = G.HistoryHTTPClient.synthetic(redirect)
+        asyncio.run(self.bridge.step(http=client, budget=self.budget))
+        asyncio.run(client.aclose())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(str(self.calls[0].url), G.TOKEN_URL)
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_cancelled_source_step_withdraws_verified_token_and_existing_records(self):
+        self.pages = [{"messages": [{"id": "51"}], "nextPageToken": "next"}]
+        self.admit()
+        self.step()
+        self.assertEqual(self.bridge.status()["cached"], 1)
+        async def cancelled(request):
+            raise asyncio.CancelledError()
+        self.hook = cancelled
+        with self.assertRaises(asyncio.CancelledError):
+            self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["state"], "cancelled")
+
+    def test_two_configured_accounts_use_their_actual_credentials_and_never_deduplicate(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+        G.refresh_history_configuration()
+        accounts = G.history_account_status()
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest,), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        captured = []
+        async def configured_server(request):
+            from urllib.parse import parse_qs
+            from test_gmail_behavior_history import message
+            captured.append(request)
+            if str(request.url) == G.TOKEN_URL:
+                refresh = parse_qs(request.content.decode())["refresh_token"][0]
+                return httpx.Response(200, json={"access_token": refresh, "scope": G.SCOPE,
+                                                 "token_type": "Bearer", "expires_in": 3600})
+            if request.url.path.endswith("/profile"):
+                owner = SCHOOL if request.headers["Authorization"] == "Bearer school-refresh" else ME
+                return httpx.Response(200, json={"emailAddress": owner})
+            return httpx.Response(200, json={"messages": [{"id": "51"}]} if request.url.path.endswith("/messages") else message())
+        client = G.HistoryHTTPClient.synthetic(configured_server)
+        bridges = []
+        for account in accounts:
+            source = G.new_public_history_bridge(application=self.app, limits=self.H.Limits(80000, 8000000, 32000000, 100),
+                clock=lambda: 200, monotonic=lambda: 0)
+            self.addCleanup(source.invalidate)
+            source.start(self.app.issue(G.history_account_lease(account.account.account_id), self.scope))
+            asyncio.run(source.step(http=client, budget=self.budget))
+            bridges.append(source)
+        asyncio.run(client.aclose())
+        rows = [source.snapshot().records[0] for source in bridges]
+        self.assertEqual([row.resource_id for row in rows], ["51", "51"])
+        self.assertNotEqual(rows[0].account.account_id, rows[1].account.account_id)
+        self.assertNotEqual(rows[0].ref, rows[1].ref)
+        self.assertEqual(len(captured), 8)
 
 
 if __name__ == "__main__":

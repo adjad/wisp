@@ -25,6 +25,7 @@ import secrets
 import threading
 import time
 import weakref
+from contextlib import contextmanager
 from collections import OrderedDict
 from dataclasses import asdict, dataclass, field
 from email.message import Message
@@ -33,6 +34,18 @@ from typing import Awaitable, Callable
 API = "https://gmail.googleapis.com/gmail/v1/users/me"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 _LOCK = threading.RLock()
+
+
+@contextmanager
+def history_source_guard():
+    """Shared source/application/cache publication lock; no I/O or await inside.
+
+    Configuration writers may acquire their I/O mutex before this guard, release
+    this guard, do I/O, then publish. Admission probes must only read immutable
+    memory and must never acquire a configuration/settings/SQLite/network lock.
+    """
+    with _LOCK:
+        yield
 
 
 def _positive(value, maximum, *, integer=False):
@@ -506,7 +519,7 @@ class _HTTP:
             if (self.calls >= self.budget.http_calls
                     or not 0 <= self.provider._monotonic() - self.started < self.budget.dispatch_seconds):
                 raise _BudgetStop()
-            valid_get = (method == "GET" and (url == API + "/messages" or
+            valid_get = (method == "GET" and (url in (API + "/messages", API + "/profile") or
                 re.fullmatch(re.escape(API) + r"/messages/[A-Za-z0-9_-]{1,256}", url)))
             if not (valid_get or (method == "POST" and url == TOKEN_URL)):
                 raise ValueError("History transport endpoint not allowed")
