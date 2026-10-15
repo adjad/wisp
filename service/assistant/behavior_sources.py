@@ -7,6 +7,7 @@ The receipt must still be current at publication and at every planning read.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from datetime import datetime
 import math
@@ -40,7 +41,56 @@ def _notes_eligible(snapshot, now):
             and receipt.get("received_at") == snapshot.body_received_at)
 
 
-def capture(settings, getters=None, *, retained=(), now=None):
+def _gmail_records(publications):
+    """Adapt already permitted source-owned caches, never acquire history here.
+
+    Each callable must be a public source snapshot getter. Captured receipts
+    recheck only the exact complete records used, so another page publication
+    cannot invalidate unchanged evidence or admit a partial body.
+    """
+    from service.gmail_behavior_history import HistorySnapshot
+    rows, checks, stamps, omitted = [], [], [], 0
+    try:
+        getters = publications() if callable(publications) else ()
+        if not isinstance(getters, (tuple, list)):
+            return rows, checks, stamps, omitted
+        for getter in getters:
+            if not callable(getter):
+                continue
+            try:
+                snapshot = getter()
+                if not isinstance(snapshot, HistorySnapshot):
+                    continue
+                selected = tuple(r for r in snapshot.records if r.body.eligible)
+                omitted += len(snapshot.records)-len(selected)
+                if not selected:
+                    continue
+                refs = tuple(r.ref for r in selected)
+                def current(g=getter, receipt=snapshot.receipt, refs=refs):
+                    value = g(expected_receipt=receipt, required_refs=refs)
+                    return (isinstance(value, HistorySnapshot) and value.complete is True
+                            and not value.missing_refs and tuple(r.ref for r in value.records) == refs)
+                if not current():
+                    continue
+                checks.append(current)
+                stamps.append(snapshot.receipt.read_started_at)
+                for r in selected:
+                    identity = json.dumps(["gmail", r.account.account_id, r.resource_id], separators=(",", ":"))
+                    rows.append(dict(id="email:"+hashlib.sha256(identity.encode()).hexdigest()[:24],
+                        source="email", text=r.body.text, ts=None, source_time=None, time_basis="unknown",
+                        ordering_at=r.provider_internal_at, direction="unknown", evidence_basis="source_statement",
+                        reference=dict(source="email", provider="gmail", account_id=r.account.account_id,
+                            resource_id=r.resource_id, connection_revision=r.account.connection_revision,
+                            account_set_revision=r.account.account_set_revision)))
+            except Exception:
+                # An invalid Gmail publication cannot suppress valid native Mail.
+                continue
+    except Exception:
+        pass
+    return rows, checks, stamps, omitted
+
+
+def capture(settings, getters=None, *, retained=(), now=None, gmail_history_getters=None):
     # Inject getters in tests: importing an adapter never reads a user's cache.
     if getters is None:
         getters = {}
@@ -61,6 +111,8 @@ def capture(settings, getters=None, *, retained=(), now=None):
         if settings.get("notes"):
             from service.tools.notes_tools import raw_notes_snapshot
             getters["notes"] = raw_notes_snapshot
+    if gmail_history_getters is not None:
+        getters = dict(getters, gmail_history=gmail_history_getters)
     now = time.time() if now is None else now
     records, visits, receipts, detail, seeds = [], [], [], {}, []
     for source in ("email", "messages", "notes", "websites"):
@@ -158,10 +210,28 @@ def capture(settings, getters=None, *, retained=(), now=None):
                               publication_complete=(record_scope["publication_complete"] if record_scope is not None else True),
                               omitted=(record_scope["known_omitted"] if record_scope is not None else 0),
                               published_at=snapshot.synced_at if source == "email" else snapshot.get("captured_at")))
+    if settings.get("email") and getters.get("gmail_history") is not None:
+        history_rows, history_checks, stamps, omitted = _gmail_records(getters["gmail_history"])
+        if history_rows:
+            original = next(s for s in seeds if s.source == "email")
+            checks = ([original.current] if original.available else []) + history_checks
+            combined_current = lambda checks=tuple(checks): all(check() is True for check in checks)
+            if original.available and type(original.published_at) in (int, float):
+                stamps.append(original.published_at)
+            combined = Snapshot("email", original.records+tuple(history_rows), enabled=True, available=True,
+                current=combined_current, publication_complete=False, omitted=original.omitted+omitted,
+                published_at=min(stamps), scope="cached_publication")
+            seeds = [combined if s.source == "email" else s for s in seeds]
+            receipts.extend(history_checks)
+            records.extend(dict(r, text=r["text"][:2400]) for r in history_rows)
+            detail["email"] = (f"{len(history_rows)} current complete Gmail history bodies; bounded cached subset, "
+                "original event time and exhaustive mailbox/semantic coverage unknown. "
+                + ("Native Mail evidence also available." if original.available else "Native Mail unavailable."))
     for snapshot in retained:
         seeds.append(snapshot)
         if snapshot.available:
             receipts.append(snapshot.current)
         detail[snapshot.source] = "Retained 180-day evidence, not attendance or exhaustive history." if snapshot.available else "Current permitted retained evidence unavailable."
-    records.sort(key=lambda r: r["ts"], reverse=True)
+    records.sort(key=lambda r: r.get("ts") if type(r.get("ts")) in (int, float)
+                 else r.get("ordering_at") or 0, reverse=True)
     return Batch(records[:8], visits[:10000], receipts, detail, tuple(seeds))

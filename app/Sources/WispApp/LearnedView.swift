@@ -145,6 +145,12 @@ final class LearnedModel: ObservableObject {
     @Published var lastMined: Double?
     @Published var weekly: [String: Any] = [:]
     @Published var history: [String: Any] = [:]
+    @Published private(set) var emailHistory: [String: Any] = [:]
+    @Published private(set) var emailHistoryState: SignalState = .loading
+    private var emailHistoryRevision = 0
+    private var emailHistoryAuthorityRevision = 0
+    private var emailHistoryWorker: Task<Void, Never>?
+    private var emailHistoryWrites: [(account: String, command: String, scope: [String: Any]?)] = []
     @Published var signals: [String: Any] = [:]
     @Published private(set) var signalState: SignalState = .loading
     @Published var activitySummary: [String: Any] = [:]
@@ -181,7 +187,108 @@ final class LearnedModel: ObservableObject {
         return settings
     }
 
+    private func emailHistoryUnavailable() {
+        emailHistory = [:]
+        emailHistoryState = .unavailable
+    }
+
+    private static func historySnapshot(_ value: [String: Any]?) -> [String: Any]? {
+        func integer(_ value: Any?) -> Int? {
+            guard let n = value as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(),
+                  n.doubleValue.isFinite, n.doubleValue.rounded() == n.doubleValue,
+                  n.doubleValue >= 0, n.doubleValue < Double(Int.max) else { return nil }
+            return n.intValue
+        }
+        guard let value, integer(value["version"]) == 1,
+              let session = value["session"] as? String, !session.isEmpty,
+              integer(value["permission_revision"]) != nil,
+              let available = value["available"] as? NSNumber,
+              CFGetTypeID(available) == CFBooleanGetTypeID(),
+              let accounts = value["accounts"] as? [[String: Any]] else { return nil }
+        var ids = Set<String>()
+        for account in accounts {
+            guard let id = account["account_id"] as? String, !id.isEmpty, ids.insert(id).inserted,
+                  let connection = account["connection_revision"] as? String, !connection.isEmpty,
+                  let set = account["account_set_revision"] as? String, !set.isEmpty,
+                  integer(account["control_revision"]) != nil,
+                  account["state"] is String, account["counts"] is [String: Any] else { return nil }
+        }
+        return value
+    }
+
+    var emailHistoryAccounts: [[String: Any]] {
+        emailHistory["accounts"] as? [[String: Any]] ?? []
+    }
+
+    func emailHistoryControl(account: String, command: String, scope: [String: Any]? = nil) {
+        guard ["start", "pause", "reset"].contains(command), signalState == .ready,
+              emailHistoryState == .ready || emailHistoryWorker != nil,
+              emailHistoryAccounts.contains(where: { $0["account_id"] as? String == account }),
+              command != "start" || (signalValue("email") == true && emailHistory["available"] as? Bool == true) else { return }
+        emailHistoryRevision += 1
+        emailHistoryWrites.removeAll { $0.account == account }
+        emailHistoryWrites.append((account, command, scope))
+        emailHistoryState = .saving
+        guard emailHistoryWorker == nil else { return }
+        emailHistoryWorker = Task { await drainEmailHistoryWrites() }
+    }
+
+    private func drainEmailHistoryWrites() async {
+        let settingsRevision = signalRevision
+        let authorityRevision = emailHistoryAuthorityRevision
+        var snapshot = Self.historySnapshot(emailHistory)
+        var failed = false
+        while !emailHistoryWrites.isEmpty {
+            let intent = emailHistoryWrites.removeFirst()
+            if snapshot == nil { snapshot = Self.historySnapshot(await client.behaviorGet("email-history")) }
+            guard settingsRevision == signalRevision, authorityRevision == emailHistoryAuthorityRevision,
+                  signalWorker == nil else { failed = true; break }
+            guard let current = snapshot,
+                  let account = (current["accounts"] as? [[String: Any]])?.first(where: {
+                      $0["account_id"] as? String == intent.account
+                  }), let revision = account["control_revision"] as? NSNumber else {
+                failed = true
+                continue
+            }
+            var body: [String: Any] = ["command": intent.command, "account_id": intent.account,
+                "connection_revision": account["connection_revision"]!,
+                "account_set_revision": account["account_set_revision"]!, "revision": revision,
+                "session": current["session"]!, "permission_revision": current["permission_revision"]!]
+            if let scope = intent.scope { body["scope"] = scope }
+            let reply = Self.historySnapshot(await client.behaviorEmailHistoryControl(body))
+            guard settingsRevision == signalRevision, authorityRevision == emailHistoryAuthorityRevision,
+                  signalWorker == nil else { failed = true; break }
+            if let reply, reply["session"] as? String == current["session"] as? String,
+               (reply["permission_revision"] as? NSNumber) == (current["permission_revision"] as? NSNumber),
+               let row = (reply["accounts"] as? [[String: Any]])?.first(where: {
+                   $0["account_id"] as? String == intent.account
+               }), (row["control_revision"] as? NSNumber)?.intValue == revision.intValue + 1,
+               row["connection_revision"] as? String == account["connection_revision"] as? String,
+               row["account_set_revision"] as? String == account["account_set_revision"] as? String,
+               let state = row["state"] as? String,
+               (intent.command == "pause" ? state == "paused" :
+                    intent.command == "reset" ? state == "off" : ["waiting", "running", "complete"].contains(state)) {
+                snapshot = reply
+            } else {
+                snapshot = nil
+                failed = true
+            }
+        }
+        emailHistoryWrites = []
+        emailHistoryWorker = nil
+        if !failed, settingsRevision == signalRevision, authorityRevision == emailHistoryAuthorityRevision, let snapshot {
+            emailHistory = snapshot
+            emailHistoryState = .ready
+        } else {
+            emailHistoryUnavailable()
+            error = "History status is unconfirmed. Refresh to check it before trying again."
+        }
+    }
+
     private func signalsUnavailable() {
+        emailHistoryAuthorityRevision += 1
+        emailHistoryWrites = []
+        emailHistoryUnavailable()
         signals = [:]
         activitySummary = [:]
         seedProgress = [:]
@@ -195,6 +302,8 @@ final class LearnedModel: ObservableObject {
         revision += 1
         let requested = revision
         let signalRequested = signalRevision
+        let historyRequested = emailHistoryRevision
+        let readHistory = emailHistoryWorker == nil && signalWorker == nil
         let readSignals = signalWorker == nil
         guard let settings = await client.behaviorSettings() else {
             if requested == revision { phase = .failed("Couldn't reach Wisp. Is it running?") }
@@ -215,10 +324,19 @@ final class LearnedModel: ObservableObject {
         async let predicted = client.behaviorPredictions(day: "today")
         async let measured = client.behaviorGet("weekly")
         async let scanned = client.behaviorGet("history")
+        async let emailScanned = readHistory ? client.behaviorGet("email-history") : nil
         async let signalSettings = readSignals ? client.behaviorGet("signals") : nil
         let signalReply = await signalSettings
+        let emailReply = await emailScanned
         let (s, l, p, w, h) = await (status, listed, predicted, measured, scanned)
         guard requested == revision else { return }
+        if readHistory, historyRequested == emailHistoryRevision, signalRequested == signalRevision,
+           emailHistoryWorker == nil, signalWorker == nil {
+            if let value = Self.historySnapshot(emailReply) {
+                emailHistory = value
+                emailHistoryState = .ready
+            } else { emailHistoryUnavailable() }
+        }
         // A read started before/during a write cannot confirm current consent.
         if readSignals, signalRequested == signalRevision, signalWorker == nil {
             if let snapshot = Self.signalSnapshot(signalReply) {
@@ -253,6 +371,9 @@ final class LearnedModel: ObservableObject {
         // Capture UI intent synchronously, before scheduling any async work.
         // Keep at most one pending intent per source (nine), plus one in flight.
         signalRevision += 1
+        emailHistoryRevision += 1
+        emailHistoryWrites = []
+        emailHistoryUnavailable()
         signalWrites.removeAll { $0.name == name }
         signalWrites.append((name, enabled))
         signalState = .saving
@@ -342,6 +463,10 @@ final class LearnedWindow {
 struct LearnedView: View {
     @StateObject private var model = LearnedModel()
     @State private var showRejected = false
+    @State private var emailScanFrom = Date()
+    @State private var emailScanThrough = Date()
+    @State private var emailScanLimit = ""
+    @State private var emailScanSelection = "mailbox"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -389,6 +514,7 @@ struct LearnedView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 weeklySection
                 historySection
+                emailHistorySection
                 signalSection
                 if model.patterns.isEmpty {
                     Text("Wisp can estimate routines from existing accessible history. Results appear as sources finish syncing; completion remains unknown unless recorded.")
@@ -515,6 +641,76 @@ struct LearnedView: View {
                 Text(title)
                 Spacer()
                 Text(model.signalState == .saving ? "Pending" : "Unknown").foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var emailScanScope: [String: Any]? {
+        let calendar = Calendar.current
+        let start = calendar.startOfDay(for: emailScanFrom)
+        guard let end = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: emailScanThrough)),
+              let cap = Int(emailScanLimit), (1...2000).contains(cap), start < end,
+              end.timeIntervalSince(start) <= 730 * 86400 else { return nil }
+        return ["start": Int(start.timeIntervalSince1970), "end": Int(end.timeIntervalSince1970),
+                "selection": emailScanSelection, "message_cap": cap]
+    }
+
+    private var emailHistorySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Gmail history", systemImage: "envelope.badge").font(.headline)
+            if model.emailHistoryState == .unavailable {
+                Text("History status is unavailable. Refresh to check your connection and scan progress.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if model.emailHistory["available"] as? Bool != true || model.emailHistoryAccounts.isEmpty {
+                Text("History is unavailable until a Gmail connection is ready. Your existing email setting does not start a history scan.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack {
+                    DatePicker("From", selection: $emailScanFrom, displayedComponents: .date)
+                    DatePicker("Through", selection: $emailScanThrough, displayedComponents: .date)
+                }
+                HStack {
+                    Picker("Read", selection: $emailScanSelection) {
+                        Text("Mailbox, excluding spam and trash").tag("mailbox")
+                        Text("Inbox only").tag("inbox")
+                    }
+                    TextField("Message limit (1–2,000)", text: $emailScanLimit).frame(maxWidth: 190)
+                }
+                ForEach(Array(model.emailHistoryAccounts.enumerated()), id: \.offset) { index, account in
+                    if let id = account["account_id"] as? String {
+                        let state = account["state"] as? String ?? "unknown"
+                        let counts = account["counts"] as? [String: Any] ?? [:]
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Gmail account \(index + 1) · \(state.capitalized)")
+                                if let fetched = counts["fetched"] as? Int, let cached = counts["cached_eligible"] as? Int {
+                                    Text("\(fetched) messages fetched · \(cached) currently usable")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                                if counts["capped"] as? Bool == true {
+                                    Text("The selected query was capped; more history may exist.").font(.caption)
+                                } else if counts["eof_observed"] as? Bool == true {
+                                    Text("End of the requested query reached; interpretation is separate.").font(.caption)
+                                }
+                            }
+                            Spacer()
+                            Button("Start scan") { model.emailHistoryControl(account: id, command: "start", scope: emailScanScope) }
+                                .disabled(emailScanScope == nil || model.signalValue("email") != true)
+                            Button("Pause") { model.emailHistoryControl(account: id, command: "pause") }
+                                .disabled(!["running", "waiting", "complete"].contains(state))
+                            Button("Reset") { model.emailHistoryControl(account: id, command: "reset") }
+                                .disabled(state == "off")
+                        }
+                    }
+                }
+                .disabled(model.emailHistoryState != .ready || model.signalState != .ready)
+                Text("Choose up to two years and an explicit message limit. Start allows a bounded read for that account; pause withdraws its current evidence. Reset does not start another scan.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let sources = model.seedProgress["sources"] as? [String: Any],
+                   let email = sources["email"] as? [String: Any], let analyzed = email["analyzed"] as? Int {
+                    Text("\(analyzed) cached email records interpreted; this does not mean the mailbox is fully analyzed.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
         }
     }

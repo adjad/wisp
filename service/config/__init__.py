@@ -77,6 +77,8 @@ def _user_overlay() -> dict:
 def user_overlay_valid() -> bool:
     """False when ``config.yaml`` exists but is unreadable or not a mapping."""
     _user_overlay()
+    if not _overlay_valid and _authority_changes.current().ready:
+        _authority_changes.invalidate()
     return _overlay_valid
 
 
@@ -90,13 +92,52 @@ def _deep_merge(base: dict, over: dict) -> dict:
     return out
 
 
+from . import authority_changes as _authority_changes
+
+
 @lru_cache
-def models_config() -> dict:
-    """Effective config = packaged defaults with the user overlay merged on top."""
+def _effective_config() -> dict:
     return _deep_merge(_packaged_config(), _user_overlay())
 
 
-def _save_overlay(update: dict) -> None:
+_raw_overlay_cache_clear = _user_overlay.cache_clear
+_effective_cache_clear = _effective_config.cache_clear
+
+
+def _authority_projection(value):
+    return {key: value.get(key) for key in ("behavior", "roles", "inference")}
+
+
+def models_config() -> dict:
+    """Resolve config normally; stabilize history authority only after a safe read.
+
+    An unsettled read clears private caches first. A concurrent writer changes
+    the revision, so that read cannot grant readiness even if its cache result
+    arrives late. Direct file edits remain unobserved until an explicit reload.
+    """
+    before = _authority_changes.current()
+    if not before.ready and before.pending == 0:
+        _raw_overlay_cache_clear()
+        _effective_cache_clear()
+    value = _effective_config()
+    _authority_changes.observe(_authority_projection(value), valid=_overlay_valid, expected=before)
+    return value
+
+
+def _clear_config_caches():
+    _authority_changes.invalidate()
+    _raw_overlay_cache_clear()
+    _effective_cache_clear()
+
+
+# Preserve callers' public cache API; clears withdraw authority immediately.
+_user_overlay.cache_clear = _clear_config_caches
+models_config.cache_clear = _clear_config_caches
+models_config.cache_info = _effective_config.cache_info
+models_config.cache_parameters = _effective_config.cache_parameters
+
+
+def _write_overlay(update: dict) -> dict:
     """Serialize read/merge/atomic replacement; never truncate the live overlay."""
     import fcntl
     import os
@@ -119,8 +160,25 @@ def _save_overlay(update: dict) -> None:
         finally:
             if os.path.exists(path):
                 os.unlink(path)
-    _user_overlay.cache_clear()
-    models_config.cache_clear()
+    return merged
+
+
+def _save_overlay(update: dict) -> None:
+    relevant = isinstance(update, dict) and bool(set(update) & {"behavior", "roles", "inference"})
+    before = _authority_changes.current()
+    token = _authority_changes.begin() if relevant else None
+    try:
+        merged = _write_overlay(update)
+    finally:
+        # The atomic writer has released its file lock before callbacks or
+        # cache invalidation. Failure never preserves a previous grant.
+        _raw_overlay_cache_clear()
+        _effective_cache_clear()
+        if token is not None:
+            _authority_changes.finish(token)
+    if not relevant:
+        _authority_changes.observe(_authority_projection(_deep_merge(_packaged_config(), merged)),
+                                   valid=True, expected=before)
 
 
 def get_daily_summary_hour() -> int:

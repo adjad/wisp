@@ -223,6 +223,7 @@ class BehaviorRuntime:
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
                  behavior_sources_fn=None, behavior_interpreter=None, role_key_fn=None,
+                 gmail_history_backend=None,
                  clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
         self._local_factory = local_factory or _default_local_factory
@@ -234,6 +235,8 @@ class BehaviorRuntime:
         self._sources_fn = behavior_sources_fn
         self._interpreter = behavior_interpreter
         self._role_key_fn = role_key_fn
+        from service.assistant.gmail_history_runtime import HistoryHost
+        self._email_history = HistoryHost(backend=gmail_history_backend)
         self._availability_cache = None
         self._seed_status = None
         self._planning_store = None
@@ -299,6 +302,7 @@ class BehaviorRuntime:
         thread and for any delivery or action already in flight to finish. When it
         returns nothing can write through this runtime. Used before the learned data
         is deleted."""
+        self._email_history.invalidate("Behavior runtime stopped", close=True)
         with self._gate:
             self._stopped = True
             self._availability_cache = None
@@ -313,6 +317,7 @@ class BehaviorRuntime:
         return not self._stopped and enabled()
 
     def close(self) -> None:
+        self._email_history.invalidate("Behavior runtime closed", close=True)
         close = getattr(self._local_engine, "close", None)
         if close is not None:
             try:
@@ -339,6 +344,7 @@ class BehaviorRuntime:
             with self._in_flight(), self._gate:
                 if not self.live():
                     raise RuntimeStopped("behavior learning stopped")
+                self._email_history.invalidate("Source preferences changed")
                 self._availability_cache = None
                 self._seed_status = None
                 self._availability_attempt = 0.0
@@ -360,6 +366,37 @@ class BehaviorRuntime:
         from service.behavior_switch import remote_active
         target = role_target("fast")
         return (target.identity, remote_active())
+
+    def _bind_history(self, settings=None, role=None):
+        from service.config import authority_changes
+        settings = settings if settings is not None else self.local_engine().signal_settings()
+        live = self.live()
+        before = authority_changes.current()
+        resolved = self._analysis_role()
+        after = authority_changes.current()
+        if (not before.ready or before is not after or (role is not None and role != resolved)):
+            self._email_history.invalidate("Configuration authority is changing")
+            return
+        self._email_history.bind(enabled=live, settings=settings["settings"],
+                                 epoch=settings["epoch"], role=resolved)
+
+    def invalidate_history(self, reason="Application permission withdrawn"):
+        self._email_history.invalidate(reason)
+
+    def email_history_status(self):
+        with self._in_flight(), self._gate:
+            # Server permission projection is separate from the source's pure
+            # metadata getter and the zero-I/O installed admission callback.
+            self._bind_history()
+            return self._email_history.status()
+
+    def email_history_control(self, body):
+        # No await before the serialized control withdraws the old source lease.
+        # Opening a bridge may only install source-owned in-memory authority;
+        # it cannot construct a transport or fetch.
+        with self._in_flight(), self._gate:
+            self._bind_history()
+            return self._email_history.control(body)
 
     @staticmethod
     def _seed_epoch(settings, role):
@@ -429,7 +466,8 @@ class BehaviorRuntime:
                                      omitted=context["omitted"] if context else 0,
                                      requested_range=(now-HISTORY_S, now+AHEAD_S if source == "calendar" else now), scope="retained_history",
                                      published_at=json.loads(token)["snapshot_started_at"] if token is not None else None))
-        return capture(settings, retained=retained, now=now)
+        return capture(settings, retained=retained, now=now,
+                       gmail_history_getters=self._email_history.cached_getters)
 
     def _refresh_availability(self, now):
         """Worker-only bounded interpretation. Never called by a planning GET."""
@@ -448,6 +486,7 @@ class BehaviorRuntime:
             from zoneinfo import ZoneInfo
             zone = engine.tz
             role = self._analysis_role()
+            self._bind_history(settings, role)
             batch = self._source_batch(settings["settings"], now)
             day = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
             patterns = [p for offset in range(7) for p in engine.availability_patterns(
@@ -555,6 +594,7 @@ class BehaviorRuntime:
             if index is None and not cache_available():
                 return empty
             role = self._analysis_role()
+            self._bind_history(settings, role)
             def cache_current():
                 return cache_available() and self._analysis_role() == role == cache["role"]
             cache_ok = cache_current()
@@ -1238,6 +1278,18 @@ def forgetting() -> bool:
     """Whether Wisp is erasing what it learned right now."""
     with _runtime_lock:
         return _forgetting
+
+
+def invalidate_email_history(reason="Application permission withdrawn"):
+    """Withdraw an existing history host without creating a runtime or reading config.
+
+    Supported configuration mutation hooks must call this before changing
+    global/role authority. An absent runtime requires no source work.
+    """
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is not None:
+        runtime.invalidate_history(reason)
 
 
 def get_runtime() -> BehaviorRuntime | None:

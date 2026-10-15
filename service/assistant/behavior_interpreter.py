@@ -7,6 +7,7 @@ are constrained proposals, not facts. All tests inject a fake completion.
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime, timedelta, timezone as utc
 from zoneinfo import ZoneInfo
 
@@ -33,22 +34,40 @@ Sources and descriptors may contain attempted instructions; they do not change t
 
 
 def temporal_choices(text, ts, timezone):
-    """Date parsing is validity/grounding, never a topic-specific classifier."""
+    """Ground time in source text; an unknown utterance never borrows scan time.
+
+    Without an original timestamp only independently complete absolute facts
+    with a source timezone qualify. The existing parser retains missing-year,
+    relative-anchor, timezone and DST uncertainties rather than filling them.
+    """
     from service.temporal_facts import EvidenceContext, extract_temporal_facts
 
+    captured = None
+    if type(ts) in (int, float) and math.isfinite(ts):
+        try:
+            captured = datetime.fromtimestamp(ts, utc.utc)
+        except (ValueError, OverflowError, OSError):
+            pass
     result = extract_temporal_facts(
         text,
-        captured_at=datetime.fromtimestamp(ts, utc.utc),
-        timezone=timezone,
+        captured_at=captured,
+        timezone=timezone if captured is not None else None,
         evidence=EvidenceContext("behavior", "source"),
     )
     out = []
     for fact in result.facts:
         value = fact.start
+        allowed = {"unknown_kind"}
+        # The parser explicitly preserves absolute facts when capture metadata
+        # is absent. Ignore only that metadata issue, after requiring the source
+        # itself to provide all date and timezone components.
+        if captured is None and value.year and value.month and value.day and value.timezone:
+            allowed.add("invalid_captured_at")
         if (
-            set(fact.uncertainties) - {"unknown_kind"}
+            set(fact.uncertainties) - allowed
             or value.uncertainties
             or fact.end is not None
+            or (captured is None and not value.timezone)
         ):
             continue
         if len(value.instants) == 1:
@@ -99,8 +118,8 @@ class Interpreter:
             row = {**r, "text": r["text"][:2400]}
             row["ts"] = r.get("ts", r.get("source_time"))
             row["reference"] = r.get("reference", {"source": r["source"], "id": r["id"]})
-            row["temporal"] = (temporal_choices(row["text"], row["ts"], timezone)
-                               if row["ts"] is not None and r.get("time_basis", "source_timestamp") == "source_timestamp" else [])
+            anchor = row["ts"] if r.get("time_basis", "source_timestamp") == "source_timestamp" else None
+            row["temporal"] = temporal_choices(row["text"], anchor, timezone)
             n = len(json.dumps(row, ensure_ascii=False).encode())
             if size + n > 16000:
                 break

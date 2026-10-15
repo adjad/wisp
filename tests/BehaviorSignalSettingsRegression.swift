@@ -38,6 +38,9 @@ import Foundation
         }
         return name == "patterns" ? ["patterns": [[String: Any]]()] : [:]
     }
+    func behaviorEmailHistoryControl(_ body: [String: Any]) async -> [String: Any]? {
+        fatalError("Unexpected email history mutation")
+    }
     func behaviorPredictions(day: String) async -> [String: Any]? { ["predictions": []] }
     func behaviorHistoryControl(_ source: String, command: String) async -> Bool {
         fatalError("History mutation forbidden")

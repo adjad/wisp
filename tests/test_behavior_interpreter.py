@@ -350,3 +350,42 @@ def test_cancelling_tick_cannot_publish_late_interpretation(tmp_path, monkeypatc
     finally:
         release.set()
         runtime.close()
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("The arbitrary work is due 2026-10-20 at 4pm UTC.", "2026-10-20T16:00:00+00:00"),
+    ("The arbitrary work is due 2026-10-20 UTC.", "2026-10-20T00:00:00+00:00"),
+])
+def test_unknown_utterance_date_keeps_independent_absolute_source_time(text, expected):
+    choices = temporal_choices(text, None, "America/Los_Angeles")
+    assert len(choices) == 1
+    assert choices[0]["start"] == datetime.fromisoformat(expected).timestamp()
+    assert choices[0]["quote"] in text
+
+
+@pytest.mark.parametrize("text", [
+    "The arbitrary work is due tomorrow at 4pm UTC.",
+    "The arbitrary work is due October 20 at 4pm UTC.",
+    "The arbitrary work is due 2026-10-20 at 4pm.",
+    "The arbitrary work is due 2026-11-01 at 1:30am America/New_York.",
+    "The arbitrary work is due 2026-03-08 at 2:30am America/New_York.",
+])
+def test_unknown_utterance_date_never_borrows_fetch_time_year_or_timezone(text):
+    assert temporal_choices(text, None, "UTC") == []
+
+
+def test_interpreter_uses_absolute_source_span_without_inventing_observed_time():
+    text = "The arbitrary work is due 2026-10-20 at 4pm UTC."
+    r = dict(record(text), ts=None, time_basis="unknown")
+    prompts = []
+    def complete(system, prompt, **kwargs):
+        row = json.loads(prompt)["evidence"][0]
+        prompts.append(row)
+        return json.dumps(dict(patterns=[], demands=[dict(source_id=row["id"],
+            quote=text, kind="preparation", title="Prepare", temporal_id=row["temporal"][0]["id"],
+            ownership="user", importance="unknown")]))
+    result = Interpreter(complete).interpret([r], [], now=NOW, timezone="America/Los_Angeles")
+    assert result["demands"][0]["due_ts"] == datetime(2026, 10, 20, 16, tzinfo=timezone.utc).timestamp()
+    assert result["demands"][0]["observed_at"] is None
+    assert result["demands"][0]["importance"] == "unknown"
+    assert prompts[0]["ts"] is None

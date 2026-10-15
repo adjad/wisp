@@ -99,6 +99,8 @@ async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str,
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     from service.config import set_behavior_enabled
     from service.tools.behavior_tools import sync_availability
+    if value is False:
+        behavior_runtime.invalidate_email_history("Learning was switched off")
     try:
         await asyncio.to_thread(set_behavior_enabled, value)
     except (ValueError, OSError, yaml.YAMLError) as exc:
@@ -132,6 +134,7 @@ async def behavior_forget(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="JSON object body required") from exc
     if not isinstance(body, dict) or body.get("confirm") is not True:
         raise HTTPException(status_code=422, detail="confirm must be true")
+    behavior_runtime.invalidate_email_history("Forget was requested")
     store, hub = _store_hub()
     result = await asyncio.to_thread(behavior_runtime.forget_all, store)
     try:
@@ -229,6 +232,24 @@ async def behavior_availability(day: str, timezone: str):
 @router.get("/history")
 async def behavior_history() -> dict[str, Any]:
     return {"sources": await _runtime().acall("history_status")}
+
+
+@router.get("/email-history")
+async def email_history_status() -> dict[str, Any]:
+    return _runtime().email_history_status()
+
+
+@router.post("/email-history/control")
+async def email_history_control(body: dict[str, Any]) -> dict[str, Any]:
+    from service.assistant.gmail_history_runtime import HistoryConflict, HistoryUnavailable
+    try:
+        # Pure source account/lease control, with no await or HTTP before a
+        # pause/reset withdraws prior proof. Fetching is separate source work.
+        return _runtime().email_history_control(_body(body))
+    except (HistoryConflict, HistoryUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="A current account, revision and explicit bounded scope are required") from exc
 
 
 @router.get("/history/{source}/next")

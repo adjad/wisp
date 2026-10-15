@@ -241,8 +241,9 @@ class Seed:
                     raise ValueError("Ungrounded seed interpretation")
                 from service.behavior.associations import work_metadata
                 from service.assistant.behavior_interpreter import temporal_choices
-                grounded = [dict(r, temporal=temporal_choices(r["text"], r["source_time"], timezone)
-                                 if r["time_basis"] == "source_timestamp" else []) for r in context]
+                grounded = [dict(r, temporal=temporal_choices(r["text"],
+                                 r["source_time"] if r["time_basis"] == "source_timestamp" else None,
+                                 timezone)) for r in context]
                 work = work_metadata(response.get("demands", []), grounded, now=now, timezone=timezone)
                 with publication():
                     if guard() and anchors and self.index.finish(anchors, context, response["links"], epoch=epoch, now=now, admit=guard, work=work):

@@ -531,3 +531,36 @@ def test_malformed_metadata_and_unicode_do_not_create_false_time_or_crash_seed()
     records, detail, _ = prepare([publication])
     assert len(records) == 1 and records[0]["source_time"] is None and records[0]["direction"] == "unknown"
     assert detail["email"]["skipped"] == 1
+
+
+@pytest.mark.parametrize("text,window", [
+    ("The arbitrary work is due 2026-10-20 at 4pm UTC.", [1792512000.0, 1792512060.0]),
+    ("The arbitrary work is due tomorrow at 4pm UTC.", None),
+])
+def test_seed_regrounds_absolute_time_without_an_utterance_anchor(index, text, window):
+    from service.assistant.behavior_interpreter import Interpreter
+    raw = dict(id="opaque-email", text=text, source_time=None, time_basis="unknown",
+               evidence_basis="source_statement", reference={"source": "email", "message_id": "opaque"})
+    snapshot = Snapshot("email", (raw,), enabled=True, available=True, current=lambda: True,
+                        publication_complete=False, published_at=NOW)
+    def complete(system, prompt, **kwargs):
+        row = json.loads(prompt)["evidence"][0]
+        return json.dumps(dict(patterns=[], links=[], demands=[dict(source_id=row["id"],
+            quote=text, kind="preparation", title="Prepare", ownership="user", importance="unknown",
+            temporal_id=row["temporal"][0]["id"] if row["temporal"] else None)]))
+    def analyze(rows, *, admit):
+        result = Interpreter(complete).interpret(rows, [], now=NOW, timezone="UTC", admit=admit, associations=True)
+        assert result["state"] == "tentative"
+        return dict(links=[], demands=[{k:d.get(k) for k in
+            ("source_id", "quote", "kind", "ownership", "due_range", "importance_hypothesis")}
+            for d in result["demands"]], processed_ids=result["record_ids"])
+    seed = Seed(index)
+    result = seed.run([snapshot], epoch="source-consent", now=NOW, analysis_enabled=True,
+                      analyze=analyze, admit=lambda: True)
+    assert result["state"] == "advanced"
+    work = seed.demands([snapshot], epoch="source-consent", now=NOW, admit=lambda: True)
+    assert len(work) == 1 and work[0]["due_range"] == window
+    assert work[0]["observed_at"] is None and work[0]["action_authority"] == "none"
+    assert work[0]["status"] == ("tentative" if window else "unresolved")
+    persisted = "\n".join(index.store._conn.iterdump())
+    assert text not in persisted and "Prepare" not in persisted
