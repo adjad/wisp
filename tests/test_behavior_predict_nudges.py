@@ -584,3 +584,75 @@ def test_usage_phrases_cover_every_runtime_topic():
     for name, _ in _TOPICS:
         assert not P.usage_phrase(name).startswith("asking about"), name
     assert P.usage_phrase("cooking") == "asking about cooking"
+
+
+
+@pytest.mark.parametrize("other_connection", [False, True])
+@pytest.mark.parametrize("change", ["reject", "mute", "undo", "remine", "unchanged"])
+def test_prepared_nudge_respects_acknowledged_policy_changes(tmp_path, monkeypatch, other_connection, change):
+    """Actual public reject route or feedback/mining may finish while wording waits."""
+    import asyncio
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service import behavior_api
+    from service import publication_authority
+    held, release = threading.Event(), threading.Event()
+    class HeldPhraser:
+        def categorize(self, *_):
+            return {}
+        def phrase(self, *_):
+            assert not publication_authority._barrier._is_owned()
+            held.set()
+            assert release.wait(3)
+            return "A synthetic contact window is available."
+    path = tmp_path / "policy.db"
+    engine = BehaviorEngine(path, phraser=HeldPhraser(), clock=lambda: NOW, tz=TZ.key)
+    writer = BehaviorEngine(path, clock=lambda: NOW, tz=TZ.key) if other_connection else engine
+    runtime = BehaviorRuntime(tmp_path / "runtime", local_factory=lambda _: writer, clock=lambda: NOW)
+    monkeypatch.setattr(behavior_api, "_runtime", lambda: runtime)
+    try:
+        engine.observe([Observation("incoming", "message_in", NOW-3*3600,
+                                    subject="Synthetic contact", source="messages")])
+        pattern = Pattern("contact", "contact_rhythm", "Synthetic contact", "Observed timing",
+                          Window((),420,1080), confidence=.8, support=8,
+                          evidence=("incoming",), stats={"messages":8,"calls":0})
+        engine._store.replace_patterns([pattern], NOW)
+        engine._store.meta_set("last_mined_at", NOW)
+        # An older ledger entry supplies the public feedback target without
+        # consuming today's attention budget or the new candidate's identity.
+        prior = Nudge("earlier", "contact_window", "Earlier", "Earlier", "Recorded timing",
+                      NOW-3*86400, pattern_ids=(pattern.id,))
+        engine._store.insert_nudge(prior)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            pending = pool.submit(engine.generate_nudges, NOW)
+            try:
+                assert held.wait(3), "the real candidate must reach optional wording"
+                if change == "reject":
+                    task = pool.submit(asyncio.run, behavior_api.behavior_pattern_status(pattern.id, {"status":"rejected"}))
+                    assert task.result(timeout=2)["ok"]
+                elif change in {"mute", "undo"}:
+                    if change == "mute":
+                        writer.feedback(Feedback(prior.id, "wrong", NOW-60))
+                        writer.feedback(Feedback(prior.id, "not_now", NOW-30))
+                    else:
+                        writer.feedback(Feedback(prior.id, "undo", NOW-30))
+                elif change == "remine":
+                    writer.mine(NOW)
+                committed_before_release = engine._store.nudge_count()
+            finally:
+                release.set()
+            made = pending.result(timeout=3)
+        if change == "unchanged":
+            assert len([n for n in made if n.kind=="contact_window"])==1
+        else:
+            assert not [n for n in made if n.kind=="contact_window"]
+            assert engine._store.nudge_count()==committed_before_release
+        if change == "reject":
+            assert asyncio.run(behavior_api.behavior_pattern_status(pattern.id, {"status":"active"}))["ok"]
+            fresh = engine.generate_nudges(NOW)
+            assert len([n for n in fresh if n.kind=="contact_window"])==1
+    finally:
+        runtime.close()
+        if writer is not engine:
+            engine.close()

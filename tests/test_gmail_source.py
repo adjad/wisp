@@ -119,7 +119,7 @@ class GmailSource(unittest.TestCase):
         return provider, scope
 
     def test_provider_history_fetches_beyond_recent_fifty_without_native_complete_promotion(self):
-        from test_gmail_behavior_history import FakeHTTP, message, token
+        from tests.test_gmail_behavior_history import FakeHTTP, message, token
         provider, scope = self.history_provider()
         http = FakeHTTP(pages=[{"messages": [{"id": str(i)} for i in range(55)]}],
                         messages={str(i): message(str(i)) for i in range(55)})
@@ -143,7 +143,7 @@ class GmailSource(unittest.TestCase):
         self.assertEqual((E._raw_emails, E._swift_raw), ("", ""))
 
     def test_provider_disconnect_withdraws_history_before_revocation_await(self):
-        from test_gmail_behavior_history import FakeHTTP, token
+        from tests.test_gmail_behavior_history import FakeHTTP, token
         from service.gmail_behavior_history import StepBudget
         provider, scope = self.history_provider()
         provider.control("start", scope=scope)
@@ -160,7 +160,7 @@ class GmailSource(unittest.TestCase):
         self.assertIsNone(provider.snapshot(expected_receipt=receipt))
 
     def test_history_forget_synchronously_withdraws_without_affecting_native_fallback(self):
-        from test_gmail_behavior_history import FakeHTTP, token
+        from tests.test_gmail_behavior_history import FakeHTTP, token
         from service.gmail_behavior_history import StepBudget
         provider, scope = self.history_provider()
         native = header("iCloud", "Native fallback preserved", native_id="native-cloud")
@@ -1453,7 +1453,7 @@ class HistoryPublicBinding(unittest.TestCase):
         self.budget = H.StepBudget(100, 5, 6, 400000, 30)
 
     async def server(self, request):
-        from test_gmail_behavior_history import message
+        from tests.test_gmail_behavior_history import message
         from urllib.parse import parse_qs
         self.calls.append(request)
         if self.hook:
@@ -1932,7 +1932,7 @@ class HistoryPublicBinding(unittest.TestCase):
         captured = []
         async def configured_server(request):
             from urllib.parse import parse_qs
-            from test_gmail_behavior_history import message
+            from tests.test_gmail_behavior_history import message
             captured.append(request)
             if str(request.url) == G.TOKEN_URL:
                 refresh = parse_qs(request.content.decode())["refresh_token"][0]

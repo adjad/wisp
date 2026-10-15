@@ -33,7 +33,7 @@ MOVE_PAIR_MAX_S = 7 * 86400
 # across an integer boundary changes the id. A "move" smaller than this is the
 # same event re-read: no event_moved, and no event_cancelled either.
 MOVE_MIN_S = 60
-# Phrasing runs under the engine lock, so it must stay bounded:
+# Phrasing runs outside the engine and publication locks, but stays bounded:
 # per generate pass, phrase at most this many nudges, and start no phrase call
 # once this much wall time has passed since the pass began (mining included).
 # Worst case is ~budget + one phraser timeout; the rest keep their template text.
@@ -46,6 +46,7 @@ class _ContentHead:
     def __init__(self):
         self.authority = Authority("behavior-retained-content",owner=self)
         self.revision = 0
+        self.policy_revision = 0
 
 
 _content_heads = weakref.WeakValueDictionary()
@@ -127,6 +128,19 @@ class BehaviorEngine:
         finally:
             if changed:
                 self._content_revision += 1
+
+    @contextmanager
+    def _policy_change(self):
+        # Shared by every Engine connection to this database. An odd revision
+        # is a pending change; failed writes also invalidate old preparations.
+        self._content_head.policy_revision += 1
+        try:
+            yield
+        finally:
+            self._content_head.policy_revision += 1
+
+    def _nudge_revision(self):
+        return self._content_revision, self._content_head.policy_revision
 
     def _prepare_content_token(self, revision):
         # Called only after a full comparison released Engine/Store locks.
@@ -438,7 +452,7 @@ class BehaviorEngine:
                 expired = expired or self._store._conn.execute(
                     "SELECT 1 FROM observations WHERE (kind='device_activity' AND ts<?) "
                     "OR (kind='activity_bin' AND ts<?) LIMIT 1",(now-7*86400,now-56*86400)).fetchone()
-            with self._content_change(bool(expired)):
+            with self._content_change(bool(expired)), self._policy_change():
                 obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
                 from service.behavior.evidence import pattern_evidence
                 mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
@@ -455,7 +469,7 @@ class BehaviorEngine:
     def set_pattern_status(self, pattern_id: str, status: str) -> Pattern:
         """status: active | confirmed | rejected. Rejected patterns never drive
         predictions/nudges/profile until set back to active/confirmed."""
-        with self._lock:
+        with revocation(), self._lock, self._policy_change():
             return self._store.set_pattern_status(pattern_id, status)
 
     # ---- predicting / acting ------------------------------------------------
@@ -495,6 +509,9 @@ class BehaviorEngine:
         if self._store.meta_get("last_mined_at") is None:
             self.mine(now)
         with self._lock:
+            revision = self._nudge_revision()
+            if any(value % 2 for value in revision):
+                return []
             patterns = self._live_patterns()
             if not patterns:
                 return []
@@ -518,7 +535,8 @@ class BehaviorEngine:
             recent = self._store.nudges_created_since(day_start(today - timedelta(days=1), self._tz))
             chosen = nudge_mod.select(candidates, now=now, tz=self._tz, recent=recent, fb=fb,
                                       exists=self._store.has_nudge)
-            revision = self._content_revision
+            if self._nudge_revision() != revision:
+                return []
         created = []
         phrased = 0
         for n in chosen:      # highest priority first, so the best ones get phrased
@@ -527,9 +545,11 @@ class BehaviorEngine:
                 phrased += 1
                 n = self._phrase(n)
             with revocation(),self._lock:
-                if self._closed or self._content_revision != revision:
+                if self._closed or self._nudge_revision() != revision:
                     return created
-                stored = self._store.insert_nudge(n)
+                with self._policy_change():
+                    stored = self._store.insert_nudge(n)
+                revision = self._nudge_revision()
                 if stored is not None:
                     created.append(stored)
         return created
@@ -584,7 +604,7 @@ class BehaviorEngine:
         mute, and that kind+pattern's auto actions become offers)."""
         if fb.verdict not in FEEDBACK_VERDICTS:
             raise ValueError(f"unknown verdict {fb.verdict!r}")
-        with self._lock:
+        with revocation(), self._lock, self._policy_change():
             n = self._store.get_nudge(fb.nudge_id)
             kind = n.kind if n else ""
             key = nudge_mod.pattern_key(n) if n else ""

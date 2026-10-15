@@ -77,10 +77,15 @@ class Clock:
         if type(live) is not bool:
             raise TypeError("A known clock mode is required")
         self._live = live
+        self._lock = threading.RLock()
         self._reading = None
         self._invalid = False
 
     def observe(self, wall, monotonic):
+        with self._lock:
+            self._observe(wall, monotonic)
+
+    def _observe(self, wall, monotonic):
         if not _finite(wall) or not _finite(monotonic):
             self._reading = None
             self._invalid = True
@@ -90,12 +95,18 @@ class Clock:
             self._reading = (float(wall),float(monotonic))
 
     def read(self):
-        if self._invalid:
-            return None
-        if self._live:
-            reading = (time.time(),time.monotonic())
-            self.observe(*reading)
-        return None if self._invalid else self._reading
+        # Sampling and recording have one order, including readers outside the
+        # application publication lease. This lock never acquires that lease.
+        with self._lock:
+            if self._invalid:
+                return None
+            if self._live:
+                self._observe(time.time(),time.monotonic())
+            return None if self._invalid else self._reading
+
+    @property
+    def live(self):
+        return self._live
 
 
 LIVE_CLOCK = Clock()
