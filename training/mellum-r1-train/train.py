@@ -111,11 +111,14 @@ def cmd_preflight(a) -> int:
 def load_model(a, *, for_training: bool = True):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    try:
-        import flash_attn  # noqa: F401
-        impl = "flash_attention_2"    # supports Mellum's 1024-token sliding window natively
-    except ImportError:
-        impl = "sdpa"
+    impl = "sdpa"
+    if a.attn in ("auto", "flash"):
+        try:
+            import flash_attn  # noqa: F401
+            impl = "flash_attention_2"    # supports Mellum's 1024-token sliding window natively
+        except ImportError:
+            if a.attn == "flash":
+                sys.exit("--attn flash but flash_attn is not installed")
     tok = AutoTokenizer.from_pretrained(a.base)
     model = AutoModelForCausalLM.from_pretrained(a.base, dtype=torch.bfloat16, attn_implementation=impl,
                                                  device_map={"": 0})
@@ -167,34 +170,62 @@ def evaluate(model, rows, dev) -> dict:
 
 
 def cmd_smoke(a) -> int:
-    """The N longest training rows, forward+backward each, one optimizer step."""
+    """The N longest training rows, forward+backward each, one optimizer step.
+
+    Writes OUT/smoke.json for `run.sh auto`. Exit 0 = memory OK, 3 = tight, 4 = out of memory.
+    The first row is excluded from the speed figure (CUDA warm-up)."""
     import torch
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
     tok, model = load_model(a)
     toks, _ = tokenize(tok, load_rows(Path(a.data), "train"), a.max_len)
+    dev, _ = tokenize(tok, load_rows(Path(a.data), "dev"), a.max_len)
     toks.sort(key=lambda t: -(len(t[1]) + len(t[2])))
     worst = toks[: a.smoke_rows]
     opt = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=a.lr, fused=True)
     torch.cuda.reset_peak_memory_stats()
-    t0 = time.time()
-    for i, (rid, p, c) in enumerate(worst):
-        loss, _, kept = row_loss(model, p, c, 0)
-        (loss / len(worst)).backward()
-        print(f"  row {i + 1}/{len(worst)} {rid}: {len(p) + len(c)} tokens, loss {loss.item():.3f}, "
-              f"peak {torch.cuda.max_memory_allocated() / 2**30:.1f}GiB"
-              + ("" if kept else "  (WARNING: model ignored logits_to_keep - full logits computed)"))
-    opt.step()
+    total = torch.cuda.get_device_properties(0).total_memory / 2**30
+    res = {"max_len": a.max_len, "attn": model.config._attn_implementation, "ok": False}
+    t0, timed = time.time(), 0
+    try:
+        for i, (rid, p, c) in enumerate(worst):
+            if i == 1:
+                torch.cuda.synchronize()
+                t0 = time.time()
+            loss, _, kept = row_loss(model, p, c, 0)
+            (loss / len(worst)).backward()
+            if i >= 1:
+                timed += len(p) + len(c)
+            res["logits_to_keep"] = kept
+            print(f"  row {i + 1}/{len(worst)} {rid}: {len(p) + len(c)} tokens, loss {loss.item():.3f}, "
+                  f"peak {torch.cuda.max_memory_allocated() / 2**30:.1f}GiB"
+                  + ("" if kept else "  (WARNING: model ignored logits_to_keep - full logits computed)"))
+        opt.step()
+        torch.cuda.synchronize()
+    except torch.cuda.OutOfMemoryError:
+        res.update(reason="oom", peak_gib=round(torch.cuda.max_memory_allocated() / 2**30, 1))
+        (out / "smoke.json").write_text(json.dumps(res, indent=2))
+        print(f"SMOKE: CUDA OUT OF MEMORY at --max-len {a.max_len}")
+        return 4
     dt = time.time() - t0
     peak, reserved = torch.cuda.max_memory_allocated() / 2**30, torch.cuda.max_memory_reserved() / 2**30
-    total = torch.cuda.get_device_properties(0).total_memory / 2**30
-    ntok = sum(len(p) + len(c) for _, p, c in worst)
+    tok_s = timed / dt
     all_tok = sum(len(p) + len(c) for _, p, c in toks)
-    est = dt / ntok * all_tok * a.epochs / 60
-    print(f"SMOKE: {len(worst)} longest rows ({ntok} tokens) in {dt:.0f}s = {ntok / dt:.0f} tok/s; "
-          f"peak allocated {peak:.1f}GiB, reserved {reserved:.1f}GiB of {total:.0f}GiB; "
-          f"full run estimate ~{est:.0f} min for {a.epochs} epochs over {len(toks)} rows")
+    dev_tok = sum(len(p) + len(c) for _, p, c in dev)
+    epoch_min = all_tok / tok_s / 60
+    steps = math.ceil(len(toks) / a.accum)
+    # Dev evals are forward-only, roughly a third of a training token's cost.
+    eval_min = dev_tok / tok_s / 60 / 3 * max(1, steps // a.eval_every)
     headroom = total - reserved
+    res.update(ok=headroom >= 4, reason="" if headroom >= 4 else "tight", tok_s=round(tok_s),
+               peak_gib=round(peak, 1), reserved_gib=round(reserved, 1), total_gib=round(total, 1),
+               epoch_min=round(epoch_min, 1), eval_min_per_epoch=round(eval_min, 1), rows=len(toks))
+    (out / "smoke.json").write_text(json.dumps(res, indent=2))
+    print(f"SMOKE: {len(worst)} longest rows, {tok_s:.0f} tok/s; peak allocated {peak:.1f}GiB, reserved "
+          f"{reserved:.1f}GiB of {total:.0f}GiB; one epoch ~{epoch_min + eval_min:.0f} min incl. evals "
+          f"({a.epochs} epochs ~{(epoch_min + eval_min) * a.epochs:.0f} min) over {len(toks)} rows")
     print("MEMORY OK" if headroom >= 4 else f"MEMORY TIGHT: {headroom:.1f}GiB headroom - lower --max-len (README)")
-    return 0
+    return 0 if headroom >= 4 else 3
 
 
 # ------------------------------------------------------------------ train
@@ -280,6 +311,16 @@ def cmd_train(a) -> int:
                     shutil.rmtree(old, ignore_errors=True)
             if state["step"] >= total:
                 break
+            if a.stop_at and time.time() >= a.stop_at:
+                ev = evaluate(model, dev, 0)
+                d = save(f"step-{state['step']:05d}")
+                if state["best"] is None or ev["dev_loss"] < state["best"][1]:
+                    state["best"] = (d.name, ev["dev_loss"])
+                    shutil.rmtree(out / "best", ignore_errors=True)
+                    shutil.copytree(d, out / "best")
+                log(logf, event="stopped_at_deadline", step=state["step"], of=total, **ev, best=state["best"])
+                total = state["step"]       # ends the outer loop too
+                break
     save("final")
     log(logf, event="done", best=state["best"], minutes=round((time.time() - t0) / 60, 1))
     return 0
@@ -329,6 +370,8 @@ def main() -> int:
     ap.add_argument("--alpha", type=int, default=32)
     ap.add_argument("--eval-every", type=int, default=50, help="optimizer steps between dev evals")
     ap.add_argument("--smoke-rows", type=int, default=8)
+    ap.add_argument("--attn", choices=["auto", "flash", "sdpa"], default="auto")
+    ap.add_argument("--stop-at", type=float, default=0, help="train: unix time to stop at (saves + evals first)")
     ap.add_argument("--seed", type=int, default=20261015)
     ap.add_argument("--template-sha", default="4593a34d52f3364ac13ce57f4bea5688924e8942da6df8201e411db17e729f48",
                     help="sha256 of the chat_template.jinja the data was rendered with")

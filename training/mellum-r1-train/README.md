@@ -33,6 +33,11 @@ On the VM:
 | 7 | `!~/wisp/run.sh merge` | best adapter → bf16 merged model, checked against adapter on a dev row | `merged model saved` |
 | 8 | `!~/wisp/run.sh package` | adapter zip + merged shard checksums | sha256 lines |
 
+**Overnight, unattended:** after `check` and `unpack`, run `!~/wisp/run.sh auto <hours until you need it>` instead of
+cells 3–8. It runs preflight, smoke (falling back to SDPA and lower length caps if memory is short), training with as
+many epochs (≤2) as fit before the deadline, merge and package. Training stops cleanly 30 minutes before the
+deadline, and a crash is resumed once. In the morning, `!~/wisp/run.sh autostatus` shows `ALL DONE` or the `STOP:` reason.
+
 If anything fails:
 - **Resume after a stop:** `!~/wisp/run.sh train ~/wisp/mellum-r1-lora/step-NNNNN`
 - **Lower the length cap** after OOM or `MEMORY TIGHT`: `!~/wisp/run.sh smoke 10240`, then `!~/wisp/run.sh train "" 10240`.

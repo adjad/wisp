@@ -63,6 +63,7 @@ cat > "$WORK/run.sh" <<'RUN'
 #!/bin/bash
 # Mellum R1 steps. Usage from a notebook cell: !~/wisp/run.sh <step>
 # In order: check  unpack  preflight  smoke  train  status  merge  package
+# Unattended overnight: auto <hours>  then  autostatus
 set -uo pipefail
 WORK="$(cd "$(dirname "$0")" && pwd)"
 PY="$WORK/venv/bin/python"
@@ -140,6 +141,64 @@ package)
   sha256sum "$WORK/mellum-r1-adapter.zip"
   [ -d "$MERGED" ] && { du -sh "$MERGED"; (cd "$MERGED" && sha256sum *.safetensors > SHA256SUMS && cat SHA256SUMS); }
   echo "download wisp/mellum-r1-adapter.zip (small) and, for quantizing on the Mac, the files in $MERGED" ;;
+auto)
+  # Unattended: preflight -> smoke (lowering the length cap / dropping flash-attn until memory fits)
+  # -> train with as many epochs (max 2) as fit before the deadline -> merge -> package.
+  # Usage: !~/wisp/run.sh auto <hours until you need it>   e.g. auto 8
+  [ -f "$DATA/train.jsonl" ] || { "$0" unpack || exit 1; }
+  if [ -f "$WORK/auto.pid" ] && kill -0 "$(cat "$WORK/auto.pid")" 2>/dev/null; then die "auto already running (pid $(cat "$WORK/auto.pid"))"; fi
+  nohup setsid "$0" _auto "${2:-8}" > "$WORK/auto.log" 2>&1 < /dev/null & echo $! > "$WORK/auto.pid"
+  sleep 2; echo "overnight run started (pid $(cat "$WORK/auto.pid")); it survives closing the notebook."
+  echo "check it with: !~/wisp/run.sh autostatus" ;;
+_auto)
+  say() { echo "== $(date '+%F %T %Z') $*"; }
+  END=$("$PY" -c "import time,sys; print(int(time.time() + float(sys.argv[1]) * 3600))" "${2:-8}")
+  say "deadline $(date -d "@$END" '+%F %T %Z') (${2:-8} h from now)"
+  T preflight --data "$DATA" --base "$(base)" || { say "STOP: preflight failed"; exit 1; }
+  touch "$DATA/PREFLIGHT_OK"
+  ML=""; ATTN=""
+  for try in "12288 auto" "12288 sdpa" "10240 sdpa" "8192 sdpa"; do
+    set -- $try
+    say "smoke --max-len $1 --attn $2"
+    T smoke --data "$DATA" --base "$(base)" --out "$OUT" --max-len "$1" --attn "$2" 2>&1 | tee "$DATA/smoke.log"
+    rc=${PIPESTATUS[0]}
+    if [ "$rc" -eq 0 ]; then ML=$1; ATTN=$2; break; fi
+    say "smoke failed (exit $rc: 3 = memory tight, 4 = out of memory, other = crash); trying the next setting"
+  done
+  [ -n "$ML" ] || { say "STOP: no setting passed smoke - see $DATA/smoke.log"; exit 1; }
+  EP=$("$PY" - "$OUT/smoke.json" "$END" <<'PY'
+import json, sys, time
+s = json.load(open(sys.argv[1])); end = float(sys.argv[2])
+per = (s["epoch_min"] + s["eval_min_per_epoch"]) * 1.15        # 15% safety on the smoke speed
+avail = (end - time.time()) / 60 - 30                         # merge + package + load margin
+print(max(1, min(2, int(avail // per))))
+PY
+)
+  STOP=$(( END - 30 * 60 ))
+  say "smoke passed at --max-len $ML --attn $ATTN; training $EP epoch(s); hard stop $(date -d "@$STOP" '+%T %Z')"
+  for attempt in 1 2; do
+    RES=""
+    if [ "$attempt" -eq 2 ]; then
+      LAST=$(ls -d "$OUT"/step-* 2>/dev/null | tail -1)
+      [ -d "$OUT/oom-recovery" ] && LAST="$OUT/oom-recovery"   # newer than any step checkpoint
+      [ -n "$LAST" ] && RES="--resume $LAST"
+      [ -d "$OUT/oom-recovery" ] && ML=$(( ML - 2048 ))
+      ATTN=sdpa
+      say "retrying: $RES --max-len $ML --attn $ATTN"
+    fi
+    "$PY" "$DATA/train/train.py" train --data "$DATA" --base "$(base)" --out "$OUT" --epochs "$EP" \
+      --max-len "$ML" --attn "$ATTN" --stop-at "$STOP" $RES >> "$DATA/train.out" 2>&1 && break
+    say "train exited with an error (attempt $attempt) - tail of train.out:"; tail -5 "$DATA/train.out"
+    [ "$attempt" -eq 2 ] && { say "STOP: training failed twice"; exit 1; }
+  done
+  say "training done: $(grep -E '"event": "(done|stopped_at_deadline)"' "$OUT/train.log.jsonl" | tail -1)"
+  "$0" merge || { say "STOP: merge failed (adapter is in $OUT/best)"; exit 1; }
+  "$0" package
+  say "ALL DONE - download wisp/mellum-r1-adapter.zip and the merged folder" ;;
+autostatus)
+  if [ -f "$WORK/auto.pid" ] && kill -0 "$(cat "$WORK/auto.pid")" 2>/dev/null; then echo "AUTO RUNNING (pid $(cat "$WORK/auto.pid"))"; else echo "auto not running"; fi
+  [ -f "$WORK/auto.log" ] && grep '^== ' "$WORK/auto.log" | tail -12
+  "$0" status 2>/dev/null | tail -6 ;;
 *)
   sed -n '2,3p' "$0" ;;
 esac
