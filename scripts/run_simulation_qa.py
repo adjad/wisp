@@ -81,6 +81,7 @@ PROFILE_TESTS = {
     "conversation": {
         "tests/test_conversation_memory.py",
         "tests/test_conversational_skills.py",
+        "tests/test_mac_controls_skill.py",
         "tests/test_contextual_outbound_routing.py",
         "tests/test_workflow_bindings.py",
         "tests/test_workflow_engine.py",

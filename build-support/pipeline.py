@@ -627,7 +627,9 @@ def validate_structure(bundle: Path, meta: dict):
                 "Contents/Resources/backend/service/main.py", "Contents/Resources/backend/service/config/models.yaml",
                 "Contents/Resources/backend/service/config/policy.yaml",
                 "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
-                "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md"]
+                "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
+                "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"]
     for name in required:
         if not (bundle / name).is_file():
             raise BuildError(f"Missing bundle resource: {name}")
