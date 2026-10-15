@@ -1,0 +1,33 @@
+- id: web_bitcoin
+  prompt: "What's the current price of Bitcoin?"
+  expect: [{any_of: [web_search, web_fetch, get_stock_price]}]
+  answer: {contains_any: ["98,400", "98400"]}
+- id: web_weather_oakland
+  prompt: "What's the weather in {city} tomorrow?"
+  expect: [{tool: get_weather, args: {location: {icontains: "{city}"}}}]
+  answer: {contains_any: ["{high_tomorrow}", sunny]}
+- id: web_stock_apple
+  prompt: "How is Apple stock doing?"
+  expect: [{tool: get_stock_price, args: {symbols: {contains_any: [aapl, apple]}}}]
+  answer: {contains_all: ["231.45"]}
+- id: web_news_exchange
+  prompt: "search the web for news about Example Exchange trading hours"
+  expect: [{tool: web_search}]
+  answer: {contains_any: ["8pm", "8 pm", "8 p.m"]}
+- id: web_jacket_today
+  prompt: "will I need a jacket today in {city}?"
+  expect: [{tool: get_weather, args: {location: {icontains: "{city}"}}}]
+  answer: {contains_any: [fog, "64", "55"]}
+- id: web_stock_nvidia
+  prompt: "what's nvidia trading at?"
+  expect: [{tool: get_stock_price}]
+  answer: {contains_all: ["142.88"]}
+- id: web_bitcoin_news
+  prompt: "look up the latest news on bitcoin"
+  expect: [{any_of: [web_search, web_fetch]}]
+  answer: {contains_any: ["98,4", "98400"]}
+- id: web_msft
+  split: dev
+  prompt: "MSFT price?"
+  expect: [{tool: get_stock_price}]
+  answer: {contains_all: ["448.10"]}

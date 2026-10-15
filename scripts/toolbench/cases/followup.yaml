@@ -1,0 +1,68 @@
+# Multi-turn: the prompt only makes sense with the earlier turn.
+- id: fu_and_tomorrow
+  history:
+    - user: "what's on my calendar today?"
+      assistant: "Nothing on your calendar today — just a reminder to water the plants at 6pm."
+      tools: get_upcoming
+  prompt: "and tmrw?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: ["{dentist}", dentist]}
+  trap: "2026-10-13 eval: get_upcoming x9"
+- id: fu_second_email
+  history:
+    - user: "show my unread emails"
+      assistant: "1. Mom — Flight details\n2. {bank} — Your statement is ready\n3. {coworker} — Q3 budget review moved"
+      tools: view_emails
+  prompt: "open the second one"
+  expect: [{tool: view_emails}]
+  answer: {contains_all: ["{balance}"]}
+- id: fu_reply_mom
+  history:
+    - user: "read mom's latest email"
+      assistant: "Mom says her flight lands Friday at {flight_time} at SFO, terminal 2."
+      tools: view_emails
+  prompt: "reply saying I'll be there"
+  expect: [{any_of: [reply_to_email, draft_email]}]
+  forbid: [send_message, forward_email]
+- id: fu_work_account
+  history:
+    - user: "summarize my personal email"
+      assistant: "Mom sent her flight details, your {bank} statement is ready, and the landlord says the water is off Tuesday."
+      tools: summarize_emails
+  prompt: "and my work account?"
+  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  answer: {contains_any: [budget, "{coworker_first}"]}
+- id: fu_remind_pickup
+  history:
+    - user: "when does mom's flight land?"
+      assistant: "Friday at {flight_time} at SFO, terminal 2."
+      tools: view_emails
+  prompt: "remind me thursday night to leave early for the pickup"
+  expect: [{tool: add_reminder, args: {when_iso: {weekday: thursday}}}]
+  forbid: [send_message, send_email]
+- id: fu_tell_him_yes
+  history:
+    - user: "what did {friend_first} text me?"
+      assistant: "{friend_first} asked about dinner at {restaurant} at {dinner_time} on Saturday."
+      tools: view_messages
+  prompt: "tell him yes"
+  expect: [{any_of: [send_message, draft_message], args: {to: {icontains: "{friend_first}"}}}]
+  forbid: [send_email]
+- id: fu_cancel_class
+  split: dev
+  history:
+    - user: "what's on my calendar this week?"
+      assistant: "Your dentist appointment tomorrow, the Q3 budget review, brunch on Sunday and your {class_word} class."
+      tools: get_upcoming
+  prompt: "cancel the {class_word} one"
+  expect: [{tool: cancel_event, args: {title: {icontains: "{class_word}"}}}]
+  forbid: [clear_reminders]
+- id: fu_how_much
+  split: dev
+  history:
+    - user: "do I have an email from {bank}?"
+      assistant: "Yes — {bank} says your statement is ready."
+      tools: view_emails
+  prompt: "how much is it?"
+  expect: [{any_of: [view_emails, summarize_emails, triage_inbox]}]
+  answer: {contains_all: ["{balance}"]}
