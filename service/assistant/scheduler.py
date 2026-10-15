@@ -13,10 +13,13 @@ credential-free sources (e.g. a mail IMAP connector) can still poll from here.
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+import math
 import json
 import time
 from datetime import date, datetime
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating, revocation
 from service import idle
 from service.assistant.store import assistant_store
 from service.assistant.reminders import due_reminders
@@ -51,9 +54,59 @@ _sync_status: dict[str, dict] = {
 # When this backend started: a source the app has never reported is measured from here.
 STARTED_AT = time.time()
 
+# Receipt authority is deliberately process-local; only record_sync can arm it.
+_behavior_calendar_authority = Authority("native-calendar-permission")
+_behavior_calendar_metadata = None
+_behavior_calendar_expires_monotonic = 0.0
 
+
+def _behavior_calendar_receipt(value):
+    if type(value) is not dict:
+        return None
+    diagnostics = value.get("diagnostics")
+    if (type(diagnostics) is not dict or value.get("available") is not True
+            or value.get("syncing") is not False or diagnostics.get("authorized") is not True
+            or diagnostics.get("complete", True) is not True
+            or diagnostics.get("partial", False) is not False):
+        return None
+    last, started = value.get("last_sync"), diagnostics.get("snapshot_started_at")
+    if any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0 for t in (last, started)):
+        return None
+    coverage = tuple(diagnostics.get(key) for key in ("coverage_start", "coverage_end"))
+    if any(t is not None and (type(t) not in (int, float) or not math.isfinite(t)) for t in coverage):
+        return None
+    return (last, started, *coverage)
+
+
+def prepare_behavior_source_publication_witness(source, snapshot) -> Witness | None:
+    """Qualify copied current Calendar permission metadata, never event content.
+
+    Preparation compares authoritative process-issued metadata outside the
+    publisher lease. The resulting witness reads memory/known clocks only.
+    """
+    with revocation():
+        return _prepare_behavior_source_publication_witness(source, snapshot)
+
+
+def _prepare_behavior_source_publication_witness(source, snapshot):
+    if source != "calendar":
+        return None
+    metadata = _behavior_calendar_receipt(snapshot)
+    if (metadata is None or metadata != _behavior_calendar_metadata
+            or metadata != _behavior_calendar_receipt(_sync_status.get(source))):
+        return None
+    return Witness.combine(_behavior_calendar_authority.token(clock=LIVE_CLOCK,
+        expires_wall=min(metadata[:2])+1200,
+        expires_monotonic=_behavior_calendar_expires_monotonic))
+
+
+@mutating
 def record_sync(source: str, count: int, diagnostics: dict | None = None) -> None:
-    diagnostics = diagnostics or {}
+    global _behavior_calendar_metadata, _behavior_calendar_expires_monotonic
+    diagnostics = deepcopy(diagnostics or {})
+    if source == "calendar":
+        _behavior_calendar_authority.withdraw()
+        _behavior_calendar_metadata = None
     # A completed EventKit read with authorized=false is unavailable, not a
     # successful empty calendar/reminder list.
     syncing = bool(diagnostics.get("syncing"))
@@ -72,10 +125,16 @@ def record_sync(source: str, count: int, diagnostics: dict | None = None) -> Non
         "available": available, "syncing": syncing, "reason": reason, "count": count,
         "last_sync": now, "diagnostics": diagnostics, "syncing_since": since,
     }
+    if source == "calendar":
+        metadata = _behavior_calendar_receipt(_sync_status[source])
+        if metadata is not None and all(0 <= now-t < 1200 for t in metadata[:2]):
+            _behavior_calendar_metadata = metadata
+            _behavior_calendar_expires_monotonic = time.monotonic()+min(metadata[:2])+1200-now
+            _behavior_calendar_authority.publish()
 
 
 def connectors_status() -> dict[str, dict]:
-    return dict(_sync_status)
+    return deepcopy(_sync_status)  # A status caller cannot mutate the authority cache.
 
 
 _behavior_task: asyncio.Task | None = None
