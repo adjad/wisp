@@ -128,6 +128,37 @@ def test_saved_edges_rehydrate_only_from_fresh_unchanged_current_publications(tm
         store.close()
 
 
+def test_link_retention_boundary_reopens_both_exact_current_endpoints(tmp_path):
+    store = Store(tmp_path / "retained-link.db")
+    try:
+        index = SourceIndex(store)
+        seed = Seed(index)
+        pubs = snapshots()
+        records, manifests, _ = prepare(pubs)
+        analyze = lambda records, **_: {"links": [proposal(records)]}
+        seed.run(pubs, epoch="one", now=NOW, analysis_enabled=True, analyze=analyze, admit=lambda: True)
+        boundary = NOW+180*86400
+        index.sync(records, manifests, epoch="one", now=boundary+1)
+        index.prune(now=boundary)
+        assert len(index.edges()) == 1  # exact retention boundary remains inclusive
+        index.prune(now=boundary+1)
+        assert index.edges() == []
+        assert {r["id"] for r in index.select(records, now=boundary+1)} == {r["id"] for r in records}
+        assert index.select([], now=boundary+1) == []
+        called = []
+        result = seed.run(pubs, epoch="one", now=boundary+1, analysis_enabled=True,
+                          analyze=lambda *_a, **_k: called.append(True), admit=lambda: False)
+        assert called == [] and result["state"] == "unavailable"
+        seed.run(pubs, epoch="one", now=boundary+2, analysis_enabled=True, analyze=analyze, admit=lambda: True)
+        edge = index.edges()[0]
+        assert edge["analyzed_at"] == boundary+2
+        assert all(edge[side]["source_time"] == NOW for side in ("left", "right"))
+        assert all(index.status(records)[source]["expired_derivations"] == 1 for source in ("email", "calendar"))
+        assert seed.materialize(pubs, epoch="one", admit=lambda: False) == []
+    finally:
+        store.close()
+
+
 def test_model_mutating_input_cannot_publish_a_fabricated_quote(tmp_path):
     store = Store(tmp_path / "behavior.db")
     try:
@@ -152,6 +183,47 @@ def test_revoke_or_epoch_change_during_analysis_cannot_publish_links(tmp_path):
         result = Seed(index).run(snapshots(), epoch="one", now=NOW, analysis_enabled=True,
                                  analyze=analyze, admit=lambda: True)
         assert result["state"] == "cancelled" and index.edges() == []
+    finally:
+        store.close()
+
+
+def test_expired_durable_work_reanalyzes_with_original_source_time_and_deadline(tmp_path):
+    from service.assistant.behavior_interpreter import Interpreter
+    publication = Snapshot("email", (dict(id="dated-source", text="Your submission is due 2028-04-14 at 3pm UTC.",
+        source_time=NOW, time_basis="source_timestamp"),), enabled=True, available=True,
+        published_at=NOW, current=lambda: True, publication_complete=True)
+    clock = [NOW]
+    calls = []
+    def complete(_system, prompt, **_):
+        row = json.loads(prompt)["evidence"][0]
+        calls.append(clock[0])
+        return json.dumps(dict(patterns=[], links=[], demands=[dict(source_id=row["id"], quote=row["text"],
+            kind="task", title="Review submission", temporal_id=row["temporal"][0]["id"],
+            ownership="user", importance="unknown")]))
+    interpreter = Interpreter(complete)
+    def analyze(rows, *, admit):
+        result = interpreter.interpret(rows, [], now=clock[0], timezone="UTC", associations=True, admit=admit)
+        return dict(links=result["link_proposals"], demands=result["demands"])
+    store = Store(tmp_path / "aged-work.db")
+    try:
+        index = SourceIndex(store)
+        seed = Seed(index)
+        seed.run([publication], epoch="one", now=NOW, analysis_enabled=True, analyze=analyze, admit=lambda: True)
+        original = seed.demands([publication], epoch="one", now=NOW, admit=lambda: True)[0]
+        later = NOW+181*86400
+        refreshed = replace(publication, published_at=later)
+        records, manifests, _ = prepare([refreshed])
+        index.sync(records, manifests, epoch="one", now=later)
+        index.prune(now=later)
+        assert seed.demands([refreshed], epoch="one", now=later, admit=lambda: True) == []
+        clock[0] = later
+        seed.run([refreshed], epoch="one", now=later, analysis_enabled=True, analyze=analyze, admit=lambda: True)
+        restored = seed.demands([refreshed], epoch="one", now=later, admit=lambda: True)[0]
+        assert calls == [NOW, later]
+        assert restored["due_range"] == original["due_range"] and restored["due_ts"] == original["due_ts"]
+        assert restored["observed_at"] == original["observed_at"] == NOW
+        assert restored["source_receipt_at"] == later and restored["analyzed_at"] == later
+        assert restored["confidence"] is None and restored["action_authority"] == "none"
     finally:
         store.close()
 

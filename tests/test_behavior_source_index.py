@@ -203,10 +203,248 @@ def test_checkpoint_retention_is_bounded(index, monkeypatch):
     assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_records").fetchone()[0] == 0
 
 
+def _work(record, deadline, ident=None, ownership="user"):
+    from service.behavior.associations import digest
+    quote = record["text"][:800]
+    return dict(id=ident or "work:"+record["id"],
+                endpoint=dict(record_id=record["id"], source=record["source"], revision=record["revision"],
+                              start=0, end=len(quote), sha256=digest(quote)),
+                kind="task", ownership=ownership, due_ts=None,
+                due_range=[deadline, deadline+86400] if deadline is not None else None,
+                deadline_precision="date" if deadline is not None else "unknown", analyzed_at=NOW)
+
+
+def _finish(index, records, *, now=NOW, work=()):
+    anchors = index.select(records, now=now)
+    assert index.finish(anchors, records, [], epoch="consent-one", now=now,
+                        admit=lambda: True, work=work)
+    return anchors
+
+
+def test_aged_derivations_reopen_still_current_exact_revision(index):
+    records, manifests, _ = prepare([snap(n=1)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    saved = _work(records[0], NOW+400*86400)
+    _finish(index, records, work=[saved])
+    later = NOW+181*86400
+    index.sync(records, manifests, epoch="consent-one", now=later)
+    index.prune(now=later)
+    assert index.work() == []
+    anchors = index.select(records, now=later)
+    assert len(anchors) == 1 and anchors[0]["text_start"] == 0
+    assert index.status(records)["email"]["expired_derivations"] == 1
+    assert index.finish(anchors, records, [], epoch="consent-one", now=later,
+                        admit=lambda: True, work=[dict(saved, analyzed_at=later)])
+    index.prune(now=later+1)
+    assert len(index.work()) == 1 and index.select(records, now=later+1) == []
+
+
+def test_capacity_keeps_nearest_grounded_ranges_and_reports_loss_without_churn(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 2)
+    records, manifests, _ = prepare([snap(n=4)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    deadlines = [NOW+86400, NOW+2*86400, NOW+90*86400, None]
+    # Earlier urgent work must survive later analysis of remote or unknown dates.
+    for n, (record, deadline) in enumerate(zip(records, deadlines)):
+        anchor = dict(record, text_start=0)
+        assert index.finish([anchor], records, [], epoch="consent-one", now=NOW+n,
+                            admit=lambda: True, work=[_work(record, deadline)])
+    assert {w["endpoint"]["record_id"] for w in index.work()} == {r["id"] for r in records[:2]}
+    info = index.status(records)["email"]
+    assert info["state"] == "capacity_limited" and info["coverage"] == "partial"
+    assert info["capacity_deferred"] == 2 and info["derived_omitted_records"] == 2
+    for n in range(5):
+        index.sync(records, manifests, epoch="consent-one", now=NOW+10+n)
+        assert index.select(records, now=NOW+10+n) == []
+
+
+def test_capacity_freeing_retries_a_bounded_record(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap(n=2)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    for n, record in enumerate(records):
+        assert index.finish([dict(record, text_start=0)], records, [], epoch="consent-one", now=NOW+n,
+                            admit=lambda: True, work=[_work(record, NOW+(n+1)*86400)])
+    assert index.select(records, now=NOW+2) == []
+    index.store._conn.execute("DELETE FROM behavior_seed_work")
+    retry = index.select(records, now=NOW+3)
+    assert len(retry) == 1 and retry[0]["id"] == records[1]["id"] and retry[0]["text_start"] == 0
+    assert index.finish(retry, records, [], epoch="consent-one", now=NOW+3,
+                        admit=lambda: True, work=[_work(records[1], NOW+2*86400)])
+    assert index.select(records, now=NOW+4) == []
+
+
+def test_initial_two_thousand_record_seed_keeps_imminent_work(index):
+    records, manifests, _ = prepare([replace(snap(n=2000), omitted=0)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    for n in range(0, len(records), 4):
+        chunk = records[n:n+4]
+        work = [_work(r, NOW+(i+1)*86400 if i < 1000 else None)
+                for i, r in enumerate(records[n:n+4], start=n)]
+        assert index.finish([dict(r, text_start=0) for r in chunk], records, [],
+                            epoch="consent-one", now=NOW+n/10000, admit=lambda: True, work=work)
+    assert len(index.work()) == 1000
+    assert {w["endpoint"]["record_id"] for w in index.work()} == {r["id"] for r in records[:1000]}
+    assert index.status(records)["email"]["capacity_deferred"] == 1000
+    assert index.select(records, now=NOW+1) == []
+
+
+def test_capacity_eviction_preserves_unfinished_long_record_passage(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap(), snap("messages", text="Long statement. "+"x"*5000)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    short, long = records
+    assert index.finish([dict(short, text_start=0)], records, [], epoch="consent-one", now=NOW,
+                        admit=lambda: True, work=[_work(short, NOW+86400)])
+    passage = index.select(records, now=NOW+1)
+    assert len(passage) == 1 and passage[0]["id"] == long["id"]
+    assert index.finish(passage, records, [], epoch="consent-one", now=NOW+1,
+                        admit=lambda: True, work=[_work(long, NOW+2*86400)])
+    cursor = index.store._conn.execute("SELECT cursor FROM behavior_seed_records WHERE id=?", (long["id"],)).fetchone()[0]
+    following = index.select(records, now=NOW+2)
+    assert len(following) == 1 and following[0]["text_start"] == cursor > 0
+
+
+def test_passed_range_releases_capacity_without_claiming_completion(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap(n=3)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    for n, record in enumerate(records):
+        assert index.finish([dict(record, text_start=0)], records, [], epoch="consent-one", now=NOW+n,
+                            admit=lambda: True, work=[_work(record, NOW+(n+1)*86400)])
+    assert index.select(records, now=NOW+10) == []
+    # The first date range's exclusive end has passed. Only one free slot
+    # releases one old capacity-deferred record, never all victims at once.
+    later = NOW+2*86400
+    anchors = index.select(records, now=later)
+    assert len(anchors) == 1
+    assert index.status(records)["email"]["capacity_deferred"] == 1
+    assert anchors[0]["source_time"] == next(r["source_time"] for r in records if r["id"] == anchors[0]["id"])
+    index.reset("other-consent")
+    assert not index.finish(anchors, records, [], epoch="consent-one", now=later,
+                            admit=lambda: True, work=[_work(anchors[0], later+86400)])
+    assert index.work() == []
+
+
+def test_capacity_retry_needs_current_bytes_and_revocation_purges_markers(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap(n=2)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    for n, record in enumerate(records):
+        assert index.finish([dict(record, text_start=0)], records, [], epoch="consent-one", now=NOW+n,
+                            admit=lambda: True, work=[_work(record, NOW+(n+1)*86400)])
+    index.store._conn.execute("DELETE FROM behavior_seed_work")
+    assert index.select([], now=NOW+2) == []
+    assert index.status(records)["email"]["capacity_deferred"] == 1
+    index.revoke("email")
+    assert index.select(records, now=NOW+3) == []
+    assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_capacity").fetchone()[0] == 0
+
+
+def test_multiple_expired_demands_never_generate_capacity_retry_churn(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap()])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    work = [_work(records[0], NOW-3*86400, "old:1"), _work(records[0], NOW-2*86400, "old:2")]
+    _finish(index, records, work=work)
+    assert index.work() == []
+    for offset in range(1, 6):
+        index.sync(records, manifests, epoch="consent-one", now=NOW+offset)
+        assert index.select(records, now=NOW+offset) == []
+    assert index.status(records)["email"]["capacity_deferred"] == 0
+
+
+def test_full_link_capacity_does_not_block_independent_work_recovery(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    records, manifests, _ = prepare([snap(), snap("messages"), snap("calendar")])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    a, b, c = records
+    proposals = [dict(relation="possibly_related", left_id=a["id"], right_id=r["id"],
+                      left_quote=a["text"], right_quote=r["text"]) for r in (b, c)]
+    assert index.finish([dict(r, text_start=0) for r in records], records, proposals,
+                        epoch="consent-one", now=NOW, admit=lambda: True,
+                        work=[_work(a, NOW+2*86400), _work(b, NOW+86400)])
+    assert {r[0] for r in index.store._conn.execute("SELECT kind FROM behavior_seed_capacity WHERE record_id=?", (a["id"],))} == {"work", "links"}
+    index.store._conn.execute("DELETE FROM behavior_seed_work")
+    retry = index.select(records, now=NOW+1)
+    assert len(retry) == 1 and retry[0]["id"] == a["id"]
+    assert index.finish(retry, records, [], epoch="consent-one", now=NOW+1,
+                        admit=lambda: True, work=[_work(a, NOW+2*86400)])
+    assert len(index.edges()) == 1 and index.work()[0]["endpoint"]["record_id"] == a["id"]
+    assert index.select(records, now=NOW+2) == []
+
+
+def test_retry_slot_is_reserved_across_long_passages_and_released_if_bytes_disappear(index, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    publication = replace(snap(n=4), records=tuple(dict(r, text=r["text"]+("x"*5000 if n else ""))
+                                                 for n, r in enumerate(snap(n=4).records)))
+    records, manifests, _ = prepare([publication])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    by_id = {r["id"]: r for r in records}
+    for tick in range(12):
+        anchors = index.select(records, now=NOW+tick)
+        if not anchors:
+            break
+        work = [_work(by_id[r["id"]], NOW+(records.index(by_id[r["id"]])+1)*86400)
+                for r in anchors if r["text_start"] == 0]
+        assert index.finish(anchors, records, [], epoch="consent-one", now=NOW+tick,
+                            admit=lambda: True, work=work)
+    assert index.status(records)["email"]["capacity_deferred"] == 3
+    index.store._conn.execute("DELETE FROM behavior_seed_work")
+    first = index.select(records, now=NOW+20, limit=1)
+    assert len(first) == 1 and first[0]["text_start"] == 0
+    assert index.finish(first, records, [], epoch="consent-one", now=NOW+20, admit=lambda: True)
+    next_passage = index.select(records, now=NOW+21)
+    assert len(next_passage) == 1 and next_passage[0]["id"] == first[0]["id"]
+    assert next_passage[0]["text_start"] > 0
+    assert index.status(records)["email"]["capacity_retrying"] == 1
+    remaining = [r for r in records if r["id"] != first[0]["id"]]
+    replacement = index.select(remaining, now=NOW+22)
+    assert len(replacement) == 1 and replacement[0]["id"] != first[0]["id"]
+    # When the omitted publication returns, it cannot consume the other retry's
+    # reservation. Its preserved cursor waits for a fresh free slot.
+    again = index.select(records, now=NOW+23)
+    assert len(again) == 1 and again[0]["id"] == replacement[0]["id"]
+
+
+def test_old_index_version_restarts_once_and_capacity_markers_survive_reopen(tmp_path, monkeypatch):
+    import service.behavior.source_index as module
+    monkeypatch.setattr(module, "MAX_EDGES", 1)
+    path = tmp_path / "old-index.db"
+    store = Store(path)
+    index = SourceIndex(store)
+    records, manifests, _ = prepare([snap(n=2)])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    for n, record in enumerate(records):
+        assert index.finish([dict(record, text_start=0)], records, [], epoch="consent-one", now=NOW+n,
+                            admit=lambda: True, work=[_work(record, NOW+(n+1)*86400)])
+    store.close()
+    store = Store(path)
+    try:
+        index = SourceIndex(store)
+        index.sync(records, manifests, epoch="consent-one", now=NOW+2)
+        assert index.status(records)["email"]["state"] == "capacity_limited"
+        assert index.select(records, now=NOW+2) == []
+        store.meta_set("behavior_seed_version", module.VERSION-1)
+        index.sync(records, manifests, epoch="consent-one", now=NOW+3)
+        assert len(index.select(records, now=NOW+3)) == 2
+        assert index.work() == [] and index.status(records)["email"]["capacity_deferred"] == 0
+    finally:
+        store.close()
+
+
 def test_new_extractor_version_reanalyzes_without_reusing_prior_checkpoint(index, monkeypatch):
     import service.behavior.source_index as module
     run(index, [snap()])
-    monkeypatch.setattr(module, "VERSION", 2)
+    monkeypatch.setattr(module, "VERSION", module.VERSION+1)
     assert run(index, [snap()], NOW+1)["analyzed"] == 1
 
 

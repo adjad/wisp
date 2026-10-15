@@ -16,7 +16,7 @@ MAX_EDGES = 1000
 PASSAGE_CHARS = 2400
 PASSAGE_BYTES = 1400
 OVERLAP = 160
-VERSION = 1
+VERSION = 2
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS behavior_seed_sources (
  source TEXT PRIMARY KEY, manifest TEXT NOT NULL, observed_at REAL NOT NULL
@@ -34,7 +34,57 @@ CREATE TABLE IF NOT EXISTS behavior_seed_links (
 CREATE TABLE IF NOT EXISTS behavior_seed_work (
  id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS behavior_seed_capacity (
+ record_id TEXT NOT NULL, revision TEXT NOT NULL, kind TEXT NOT NULL,
+ deferred_at REAL NOT NULL, retrying INTEGER NOT NULL DEFAULT 0,
+ PRIMARY KEY(record_id,kind)
+);
 """
+
+
+def _endpoints(item, kind):
+    return (item["left"], item["right"]) if kind == "links" else (item["endpoint"],)
+
+
+def _loss_counts(conn):
+    row = conn.execute("SELECT value FROM meta WHERE key='behavior_seed_loss_counts'").fetchone()
+    try:
+        value = json.loads(row[0]) if row else {}
+        return {source: {key: count for key, count in entry.items()
+                         if key in ("expired_derivations", "capacity_evictions")
+                         and type(count) is int and count >= 0}
+                for source, entry in value.items() if source in SOURCES and isinstance(entry, dict)} if isinstance(value, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _count_loss(conn, endpoint, key):
+    source = endpoint.get("source")
+    if source not in SOURCES:
+        return
+    counts = _loss_counts(conn)
+    entry = counts.setdefault(source, {})
+    old = entry.get(key, 0)
+    entry[key] = (old if type(old) is int and old >= 0 else 0) + 1
+    conn.execute("INSERT INTO meta VALUES ('behavior_seed_loss_counts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (json.dumps(counts),))
+
+
+def _future_range(item, now):
+    value = item.get("due_range")
+    if (isinstance(value, (list, tuple)) and len(value) == 2
+            and all(type(v) in (int, float) and math.isfinite(v) for v in value)
+            and value[0] <= value[1]):
+        return value if value[1] > now else False
+    return None
+
+
+def _work_rank(row, now):
+    item = json.loads(row["payload"])
+    window = _future_range(item, now)
+    if window:
+        return (0 if item.get("ownership") == "user" else 1, window[1], window[0], row["id"])
+    return (3 if window is False else 2, 0, 0, row["id"])
 
 
 class SourceIndex:
@@ -52,9 +102,10 @@ class SourceIndex:
             self._reset(epoch)
 
     def _reset(self, epoch):
-        for table in ("behavior_seed_links", "behavior_seed_work", "behavior_seed_records", "behavior_seed_sources"):
+        for table in ("behavior_seed_capacity", "behavior_seed_links", "behavior_seed_work", "behavior_seed_records", "behavior_seed_sources"):
             self.store._conn.execute("DELETE FROM " + table)
-        for key, value in (("behavior_seed_epoch", epoch), ("behavior_seed_turn", 0), ("behavior_seed_version", VERSION)):
+        for key, value in (("behavior_seed_epoch", epoch), ("behavior_seed_turn", 0), ("behavior_seed_version", VERSION),
+                           ("behavior_seed_loss_counts", {})):
             self.store._conn.execute("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                      (key, json.dumps(value)))
 
@@ -65,10 +116,16 @@ class SourceIndex:
             self._revoke(source)
 
     def _revoke(self, source):
+        self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE record_id IN "
+                                 "(SELECT id FROM behavior_seed_records WHERE source=?)", (source,))
         self.store._conn.execute("DELETE FROM behavior_seed_records WHERE source=?", (source,))
         self.store._conn.execute("DELETE FROM behavior_seed_sources WHERE source=?", (source,))
         self._remove_links(lambda e: source in (e["left"]["source"], e["right"]["source"]))
         self._remove_work(lambda w: w["endpoint"]["source"] == source)
+        counts = _loss_counts(self.store._conn)
+        if source in counts:
+            counts.pop(source)
+            self.store._conn.execute("UPDATE meta SET value=? WHERE key='behavior_seed_loss_counts'", (json.dumps(counts),))
 
     def _remove_links(self, predicate):
         for row in self.store._conn.execute("SELECT id,payload FROM behavior_seed_links").fetchall():
@@ -117,6 +174,73 @@ class SourceIndex:
             if stale:
                 self._remove_links(lambda e: e["left"]["record_id"] in stale or e["right"]["record_id"] in stale)
                 self._remove_work(lambda w: w["endpoint"]["record_id"] in stale)
+            self._clean_capacity()
+
+    def _clean_capacity(self):
+        self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE NOT EXISTS "
+                                 "(SELECT 1 FROM behavior_seed_records r WHERE r.id=record_id AND r.revision=behavior_seed_capacity.revision)")
+
+    def _trim(self, kind, now):
+        table = "behavior_seed_" + kind
+        rows = list(self.store._conn.execute("SELECT id,payload,created_at FROM " + table))
+        rows.sort(key=(lambda r: _work_rank(r, now)) if kind == "work" else lambda r: (-r["created_at"], r["id"]))
+        for row in rows[MAX_EDGES:]:
+            self.store._conn.execute("DELETE FROM " + table + " WHERE id=?", (row["id"],))
+            for end in _endpoints(json.loads(row["payload"]), kind):
+                current = self.store._conn.execute("SELECT 1 FROM behavior_seed_records WHERE id=? AND revision=?",
+                                                   (end["record_id"], end["revision"])).fetchone()
+                if current:
+                    self.store._conn.execute("INSERT INTO behavior_seed_capacity VALUES (?,?,?,?,0) ON CONFLICT(record_id,kind) "
+                                             "DO UPDATE SET retrying=CASE WHEN retrying>0 THEN 2 ELSE 0 END",
+                                             (end["record_id"], end["revision"], kind, now))
+                    _count_loss(self.store._conn, end, "capacity_evictions")
+
+    def _expire_work(self, now):
+        # Passed deadline ranges are already withheld by materialize_work. Their
+        # metadata can release space; this asserts neither completion nor attendance.
+        for row in self.store._conn.execute("SELECT id,payload FROM behavior_seed_work").fetchall():
+            item = json.loads(row["payload"])
+            if _future_range(item, now) is False:
+                self.store._conn.execute("DELETE FROM behavior_seed_work WHERE id=?", (row["id"],))
+                _count_loss(self.store._conn, item["endpoint"], "expired_derivations")
+
+    def _release_capacity(self, current, now, limit):
+        self._expire_work(now)
+        # A missing publication must not reserve space indefinitely. Preserve
+        # its retry cursor, but require new capacity credit when it returns.
+        for row in self.store._conn.execute("SELECT * FROM behavior_seed_capacity WHERE retrying>0").fetchall():
+            record = current.get(row["record_id"])
+            if record is None or record["revision"] != row["revision"]:
+                self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=0 WHERE record_id=? AND kind=?",
+                                         (row["record_id"], row["kind"]))
+                self.store._conn.execute("UPDATE behavior_seed_records SET state='capacity_deferred' WHERE id=? AND state!='analyzed'",
+                                         (row["record_id"],))
+        free = {kind: max(0, MAX_EDGES-self.store._conn.execute("SELECT count(*) FROM behavior_seed_"+kind).fetchone()[0]
+                           -self.store._conn.execute("SELECT count(*) FROM behavior_seed_capacity WHERE kind=? AND retrying>0", (kind,)).fetchone()[0])
+                for kind in ("work", "links")}
+        grouped = {}
+        for row in self.store._conn.execute("SELECT c.*,r.state FROM behavior_seed_capacity c JOIN behavior_seed_records r "
+                                            "ON r.id=c.record_id AND r.revision=c.revision ORDER BY c.deferred_at,c.record_id"):
+            record = current.get(row["record_id"])
+            if row["retrying"] == 0 and row["state"] in ("analyzed", "capacity_deferred") and record and record["revision"] == row["revision"]:
+                entry = grouped.setdefault(row["record_id"], dict(kinds=set(), state=row["state"]))
+                entry["kinds"].add(row["kind"])
+        released = 0
+        for ident, entry in grouped.items():
+            if released >= limit:
+                break
+            kinds = {kind for kind in entry["kinds"] if free.get(kind, 0) > 0}
+            if not kinds:
+                continue
+            # Reserve at most one record per free slot. Insert/evict activity at
+            # a full cap never creates retry credit, avoiding a rescan loop.
+            for kind in kinds:
+                free[kind] -= 1
+                self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=1 WHERE record_id=? AND kind=?", (ident, kind))
+            if entry["state"] == "analyzed":
+                self.store._conn.execute("UPDATE behavior_seed_records SET cursor=0,covered=0 WHERE id=?", (ident,))
+            self.store._conn.execute("UPDATE behavior_seed_records SET state='pending',retry_at=0 WHERE id=?", (ident,))
+            released += 1
 
     def select(self, records, *, now, limit=4):
         """Round-robin sources and least-recently attempted record revisions."""
@@ -125,7 +249,8 @@ class SourceIndex:
         current = {r["id"]: r for r in records}
         queues = {s: [] for s in SOURCES}
         with self.store._lock, self.store._conn:
-            rows = self.store._conn.execute("SELECT * FROM behavior_seed_records WHERE state!='analyzed' AND retry_at<=? "
+            self._release_capacity(current, now, limit)
+            rows = self.store._conn.execute("SELECT * FROM behavior_seed_records WHERE state IN ('pending','deferred') AND retry_at<=? "
                                             "ORDER BY attempted_at,id", (now,)).fetchall()
             turn = self.store.meta_get("behavior_seed_turn", 0)
             turn = turn if type(turn) is int else 0
@@ -173,10 +298,13 @@ class SourceIndex:
                 old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
                 if old is None or old["revision"] != end["revision"]:
                     return False
+            completed = []
             for r in anchors:
                 end = r["text_start"] + len(r["text"])
                 total = self.store._conn.execute("SELECT chars FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()[0]
                 done = end >= total
+                if done:
+                    completed.append(r["id"])
                 self.store._conn.execute("UPDATE behavior_seed_records SET cursor=?,covered=?,state=?,attempts=attempts+1,"
                                          "attempted_at=?,retry_at=0 WHERE id=?",
                                          (total if done else max(r["text_start"]+1, end-OVERLAP), end,
@@ -185,14 +313,21 @@ class SourceIndex:
                 e = dict(e, analyzed_at=now)
                 self.store._conn.execute("INSERT INTO behavior_seed_links VALUES (?,?,?) ON CONFLICT(id) DO NOTHING",
                                          (e["id"], json.dumps(e, sort_keys=True, allow_nan=False), now))
+            self._expire_work(now)
             for w in work:
+                if _future_range(w, now) is False:
+                    _count_loss(self.store._conn, w["endpoint"], "expired_derivations")
+                    continue
                 self.store._conn.execute("INSERT INTO behavior_seed_work VALUES (?,?,?) ON CONFLICT(id) "
                                          "DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at",
                                          (w["id"], json.dumps(w, sort_keys=True, allow_nan=False), now))
-            self.store._conn.execute("DELETE FROM behavior_seed_work WHERE id IN (SELECT id FROM behavior_seed_work "
-                                     "ORDER BY created_at DESC,id LIMIT -1 OFFSET ?)", (MAX_EDGES,))
-            self.store._conn.execute("DELETE FROM behavior_seed_links WHERE id IN (SELECT id FROM behavior_seed_links "
-                                     "ORDER BY created_at DESC,id LIMIT -1 OFFSET ?)", (MAX_EDGES,))
+            self._trim("work", now)
+            self._trim("links", now)
+            for ident in completed:
+                # A reservation lasts through every passage. A fresh eviction
+                # during this retry stays deferred instead of being forgiven.
+                self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE record_id=? AND retrying=1", (ident,))
+                self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=0 WHERE record_id=? AND retrying=2", (ident,))
             return True
 
     def defer(self, anchors, *, epoch, now):
@@ -217,18 +352,29 @@ class SourceIndex:
         with self.store._lock:
             manifests = {r["source"]: json.loads(r["manifest"]) for r in self.store._conn.execute("SELECT * FROM behavior_seed_sources")}
             rows = list(self.store._conn.execute("SELECT * FROM behavior_seed_records"))
+            capacity_rows = list(self.store._conn.execute("SELECT * FROM behavior_seed_capacity"))
+            capacity = {(r["record_id"], r["revision"]) for r in capacity_rows}
+            waiting = {(r["record_id"], r["revision"]) for r in capacity_rows if r["retrying"] == 0}
+            retrying = {(r["record_id"], r["revision"]) for r in capacity_rows if r["retrying"] > 0}
+            losses = _loss_counts(self.store._conn)
         result = {}
         for source in SOURCES:
             manifest = manifests.get(source, dict(state="off", eligible=0, omitted=0))
             eligible = [r for r in rows if r["source"] == source and r["id"] in current and current[r["id"]]["revision"] == r["revision"]]
             counts = {state: sum(r["state"] == state for r in eligible) for state in ("pending", "deferred", "analyzed")}
+            limited = sum((r["id"], r["revision"]) in capacity for r in eligible)
             not_indexed = max(0, manifest["eligible"]-len(eligible))
             result[source] = dict(manifest, **counts, indexed=len(eligible), unresolved=sum(r["source"] == source for r in rows)-len(eligible),
+                                  capacity_deferred=sum((r["id"], r["revision"]) in waiting for r in eligible),
+                                  capacity_retrying=sum((r["id"], r["revision"]) in retrying for r in eligible),
+                                  derived_omitted_records=limited,
+                                  expired_derivations=losses.get(source, {}).get("expired_derivations", 0),
+                                  capacity_evictions=losses.get(source, {}).get("capacity_evictions", 0),
                                   not_indexed=not_indexed,
                                   coverage="partial" if (not manifest.get("publication_complete") or manifest.get("omitted")
-                                                          or manifest.get("skipped") or not_indexed) else "bounded_publication",
+                                                          or manifest.get("skipped") or not_indexed or limited) else "bounded_publication",
                                   analyzed_characters=sum(r["covered"] for r in eligible),
-                                  state=("seeded" if counts["analyzed"] == len(eligible) else "scanning")
+                                  state=("capacity_limited" if limited else "seeded" if counts["analyzed"] == len(eligible) else "scanning")
                                         if manifest["state"] == "available" else manifest["state"],
                                   completion_scope="bounded current publication; never an exhaustive source history")
         return result
@@ -249,14 +395,31 @@ def prune_connection(conn, cutoff):
         if table not in tables:
             continue
         for ident, payload, created in conn.execute("SELECT id,payload,created_at FROM "+table).fetchall():
+            ends = ()
             try:
                 item = json.loads(payload)
-                refs = [item["left"]["record_id"], item["right"]["record_id"]] if table.endswith("links") else [item["endpoint"]["record_id"]]
+                ends = _endpoints(item, "links" if table.endswith("links") else "work")
+                if any(not isinstance(e, dict) or any(not isinstance(e.get(key), str)
+                       for key in ("record_id", "revision", "source")) for e in ends):
+                    raise ValueError("Invalid derivation endpoint")
+                refs = [e["record_id"] for e in ends]
                 keep = created >= cutoff and all(ref in known for ref in refs)
             except (ValueError, TypeError, KeyError):
                 keep = False
+                ends = ()
             if not keep:
                 removed += conn.execute("DELETE FROM "+table+" WHERE id=?", (ident,)).rowcount
+                if type(created) in (int, float) and math.isfinite(created) and created < cutoff:
+                    for end in ends:
+                        # Only an exact surviving revision can be reopened. It
+                        # remains unusable without fresh host-supplied bytes.
+                        changed = conn.execute("UPDATE behavior_seed_records SET cursor=0,covered=0,state='pending',retry_at=0 "
+                                               "WHERE id=? AND revision=?", (end["record_id"], end["revision"])).rowcount
+                        if changed:
+                            _count_loss(conn, end, "expired_derivations")
+    if "behavior_seed_capacity" in tables:
+        conn.execute("DELETE FROM behavior_seed_capacity WHERE NOT EXISTS "
+                     "(SELECT 1 FROM behavior_seed_records r WHERE r.id=record_id AND r.revision=behavior_seed_capacity.revision)")
     if "behavior_seed_sources" in tables:
         removed += conn.execute("DELETE FROM behavior_seed_sources WHERE observed_at<?", (cutoff,)).rowcount
     return removed
