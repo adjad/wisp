@@ -162,3 +162,33 @@ def test_real_config_revocation_is_refused_before_overlay_or_authority_change(tm
     assert config.USER_CONFIG.exists() and not witness.current()
     assert config.get_behavior_enabled() is False
     config.models_config.cache_clear()
+
+
+def test_direct_engine_and_activity_settings_changes_withdraw_the_same_memory_stamp(tmp_path,monkeypatch):
+    from service.behavior.engine import BehaviorEngine
+    engine = BehaviorEngine(tmp_path/"settings.db",clock=lambda:100,tz="UTC")
+    try:
+        engine.configure_signals({"email":True,"interpretation":True},100)
+        before = engine.signal_settings()
+        witness = Witness.combine(engine.prepare_settings_publication_token(before))
+        assert witness.current()
+        with publication(witness):
+            with pytest.raises(PublicationBusy):
+                engine.configure_signals({"interpretation":False},101)
+            with pytest.raises(PublicationBusy):
+                engine._activity.configure({"interpretation":False},101)
+            def forbidden(*args,**kwargs):
+                raise AssertionError("Memory witness attempted settings SQL")
+            with monkeypatch.context() as pure:
+                pure.setattr(engine,"signal_settings",forbidden)
+                pure.setattr(engine._store,"meta_get",forbidden)
+                assert witness.current()
+        assert engine.signal_settings() == before
+        engine._activity.configure({"interpretation":False},101)
+        assert not witness.current() and engine.prepare_settings_publication_token(before) is None
+        current = Witness.combine(engine.prepare_settings_publication_token(engine.signal_settings()))
+        assert current.current()
+        engine.close()
+        assert not current.current()
+    finally:
+        engine.close()

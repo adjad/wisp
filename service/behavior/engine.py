@@ -113,6 +113,11 @@ class BehaviorEngine:
         with self._lock:
             return dict(settings=self._activity.settings(), epoch=self._store.meta_get("signal_epoch", "initial"))
 
+    def prepare_settings_publication_token(self, expected):
+        from service.publication_authority import revocation
+        with revocation(),self._lock:
+            return self._activity.prepare_publication_token(expected)
+
     def activity_summary(self, now=None):
         with self._lock:
             if not self._activity.settings()["activity"]:
@@ -128,7 +133,8 @@ class BehaviorEngine:
                         meaning="This Mac only; awake time and idle time do not measure human attention or availability.")
 
     def configure_signals(self, changes, now=None):
-        with self._lock:
+        from service.publication_authority import revocation
+        with revocation(),self._lock:
             self._activity.configure(changes, self._now(now))
             # Any epoch change invalidates prior content analysis admission.
             if self._seed_index is not None or self._store._conn.execute(
@@ -162,7 +168,10 @@ class BehaviorEngine:
                                       self._store.observations(kinds=["activity_bin"], since=now-56*86400), timezone)
 
     def close(self) -> None:
-        self._store.close()
+        from service.publication_authority import revocation
+        with revocation():
+            self._activity.invalidate_publication()
+            self._store.close()
 
     # ---- helpers ------------------------------------------------------------
     def _now(self, now: float | None) -> float:

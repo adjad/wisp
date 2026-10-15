@@ -349,7 +349,8 @@ class BehaviorRuntime:
         """Call an engine method. KeyError/ValueError are semantic answers
         (404/400) and propagate."""
         if method == "configure_signals":
-            with self._in_flight(), self._gate:
+            from service.publication_authority import revocation
+            with revocation(), self._in_flight(), self._gate:
                 if not self.live():
                     raise RuntimeStopped("behavior learning stopped")
                 self._email_history.invalidate("Source preferences changed")

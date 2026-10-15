@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 from service.behavior.store import _obs_row
 from service.behavior.types import Observation
+from service.publication_authority import Authority, mutating
 
 DEFAULTS = dict(
     activity=False,
@@ -44,10 +45,13 @@ class Activity:
         self.token = None
         self.expiry = 0.0
         self.capture_since = 0.0
+        self._publication = Authority("behavior-source-preferences",owner=self)
+        self._publication_snapshot = None
 
     def settings(self):
         return {**DEFAULTS, **(self.store.meta_get("signal_settings", {}) or {})}
 
+    @mutating
     def configure(self, changes, now):
         if (
             not isinstance(changes, dict)
@@ -61,6 +65,7 @@ class Activity:
                     raise ValueError("Duration estimate must be 15–120 minutes")
             elif type(value) is not bool:
                 raise ValueError("Source preferences must be true or false")
+        self.invalidate_publication()
         with self.store._lock, self.store._conn:
             settings = {**self.settings(), **changes}
             self._meta("signal_settings", settings)
@@ -76,6 +81,29 @@ class Activity:
             # Source text is never persisted here. Disable immediately changes
             # both capture eligibility and every planning read.
         return settings
+
+    @mutating
+    def invalidate_publication(self):
+        self._publication.withdraw()
+        self._publication_snapshot = None
+
+    @mutating
+    def prepare_publication_token(self, expected):
+        """Full settings comparison during preparation, never from a witness.
+
+        Construction/restored database content alone is not readiness. Direct
+        configure callers invalidate the same head as the engine wrapper.
+        """
+        with self.store._lock:
+            actual = dict(settings=self.settings(),epoch=self.store.meta_get("signal_epoch","initial"))
+            if not isinstance(expected,dict) or expected != actual:
+                return None
+            state = (tuple(sorted(actual["settings"].items())),actual["epoch"])
+            if self._publication_snapshot != state:
+                self._publication.withdraw()
+                self._publication_snapshot = state
+                self._publication.publish()
+            return self._publication.token()
 
     def _meta(self, key, value):
         self.store._conn.execute(
