@@ -53,6 +53,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 from types import MappingProxyType
+from service.publication_authority import Authority, PublicationUnavailable, Witness, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
 
@@ -266,6 +267,7 @@ class BehaviorRuntime:
         # began before stop() can land after it returns, and none can begin afterwards.
         self._gate = threading.Condition()
         self._inflight = 0
+        self._publication = Authority("behavior-runtime",owner=self)
         self.home.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -278,6 +280,7 @@ class BehaviorRuntime:
                 nudge_id TEXT NOT NULL, idx INTEGER NOT NULL, type TEXT NOT NULL,
                 commitment_id TEXT, title TEXT, when_ts REAL, created_at REAL NOT NULL,
                 undone_at REAL, PRIMARY KEY (nudge_id, idx))""")
+        self._publication.publish()
 
     # ---- runtime-local storage -----------------------------------------------
     def kv_get(self, key: str, default: str | None = None) -> str | None:
@@ -310,11 +313,15 @@ class BehaviorRuntime:
         thread and for any delivery or action already in flight to finish. When it
         returns nothing can write through this runtime. Used before the learned data
         is deleted."""
-        self._email_history.invalidate("Behavior runtime stopped", close=True)
+        with revocation():
+            self._publication.withdraw()
+            self._email_history.invalidate("Behavior runtime stopped", close=True)
+            with self._gate:
+                self._stopped = True
+                self._availability_cache = None
+                self._seed_status = None
+        # Never retain the outer barrier while waiting for worker/inflight work.
         with self._gate:
-            self._stopped = True
-            self._availability_cache = None
-            self._seed_status = None
             self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
         with self._work_lock:
             pass
@@ -325,7 +332,13 @@ class BehaviorRuntime:
         return not self._stopped and enabled()
 
     def close(self) -> None:
-        self._email_history.invalidate("Behavior runtime closed", close=True)
+        with revocation():
+            self._publication.withdraw()
+            self._email_history.invalidate("Behavior runtime closed", close=True)
+            with self._gate:
+                self._stopped = True
+                self._availability_cache = None
+                self._seed_status = None
         close = getattr(self._local_engine, "close", None)
         if close is not None:
             try:
@@ -397,7 +410,7 @@ class BehaviorRuntime:
         self._email_history.invalidate(reason)
 
     def email_history_status(self):
-        with self._in_flight(), self._gate:
+        with revocation(),self._in_flight(), self._gate:
             # Server permission projection is separate from the source's pure
             # metadata getter and the zero-I/O installed admission callback.
             self._bind_history()
@@ -407,7 +420,7 @@ class BehaviorRuntime:
         # No await before the serialized control withdraws the old source lease.
         # Opening a bridge may only install source-owned in-memory authority;
         # it cannot construct a transport or fetch.
-        with self._in_flight(), self._gate:
+        with revocation(),self._in_flight(), self._gate:
             self._bind_history()
             return self._email_history.control(body)
 
@@ -472,34 +485,42 @@ class BehaviorRuntime:
         retained = []
         store = self._planning_store
         day = datetime.fromtimestamp(now, ZoneInfo(engine.tz)).date().isoformat()
-        def permission(source):
+        def permission(source, *, prepare=False):
             if source == "calendar":
                 value = self._calendar_sync_fn() or {}
             elif store is not None:
                 value = store.today_snapshot(day, engine.tz)["sources"].get(source, {})
             else:
-                return None
+                return (None,None) if prepare else None
             if (value.get("available") is not True or value.get("syncing") or not _finite(value.get("last_sync"))
                     or not 0 <= self.clock()-value["last_sync"] <= 1200):
-                return None
+                return (None,None) if prepare else None
             diagnostics = value.get("diagnostics") or {}
             if diagnostics.get("complete") is False or diagnostics.get("partial"):
-                return None
+                return (None,None) if prepare else None
             start = diagnostics.get("snapshot_started_at") if source == "calendar" else value.get("snapshot_started_at")
             if (not _finite(start) or float(start) <= 0 or not 0 <= self.clock()-start <= 1200
                     or (source == "calendar" and diagnostics.get("authorized") is not True)):
-                return None
+                return (None,None) if prepare else None
             # A receipt contains no calendar title/event diagnostic lists.
-            return json.dumps(dict(last_sync=value["last_sync"], snapshot_started_at=start,
+            receipt = json.dumps(dict(last_sync=value["last_sync"], snapshot_started_at=start,
                                    coverage_start=diagnostics.get("coverage_start"),
                                    coverage_end=diagnostics.get("coverage_end")), sort_keys=True, allow_nan=False)
+            if not prepare:
+                return receipt
+            if source == "calendar":
+                from service.assistant.scheduler import prepare_behavior_source_publication_witness
+                witness = prepare_behavior_source_publication_witness(source,value)
+            else:
+                witness = store.prepare_behavior_source_publication_witness(source,value)
+            return receipt,witness
         for source, flag in (("calendar", "calendar_context"), ("reminders", "reminders_context")):
             if not settings.get(flag):
                 retained.append(Snapshot(source))
                 continue
             token = None
             try:
-                token = permission(source)
+                token,permission_witness = permission(source,prepare=True)
                 expected = json.loads(token)["last_sync"] if token is not None and source == "calendar" else None
                 context = engine.semantic_history(source, now, expected_sync=expected, metadata=True) if token is not None else None
                 records = context["records"] if context is not None else []
@@ -511,16 +532,46 @@ class BehaviorRuntime:
                     rows = engine.semantic_history(s, now, expected_sync=expected, metadata=True)
                     return rows is not None and hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest() == digest
                 valid = token is not None and context is not None and current()
+                content_token = engine.prepare_semantic_publication_token(source,context,now,expected_sync=expected) if valid else None
+                witness = Witness.combine(permission_witness,content_token)
             except Exception:
                 records, context, valid = [], None, False
                 current = lambda: False
+                witness = None
             retained.append(Snapshot(source, tuple(records or []), enabled=True, available=valid,
                                      current=current, publication_complete=bool(context and context["complete"]),
                                      omitted=context["omitted"] if context else 0,
                                      requested_range=(now-HISTORY_S, now+AHEAD_S if source == "calendar" else now), scope="retained_history",
-                                     published_at=json.loads(token)["snapshot_started_at"] if token is not None else None))
+                                     published_at=json.loads(token)["snapshot_started_at"] if token is not None else None,
+                                     publication_witness=witness))
         return capture(settings, retained=retained, now=now,
                        gmail_history_getters=self._email_history.cached_getters)
+
+    def _prepare_publication_witness(self,settings,role,batch=None,*,cancellation=None,extra=()):
+        """Full preparation outside the application lease and Runtime gate."""
+        from service.config import authority_changes
+        before = authority_changes.current()
+        if (not before.ready or not self.live() or cancellation is not None and cancellation.is_set()
+                or self._analysis_role() != role):
+            return None
+        engine = self.local_engine()
+        if engine.signal_settings() != settings or batch is not None and not batch.current():
+            return None
+        settings_token = engine.prepare_settings_publication_token(settings)
+        if authority_changes.current() is not before:
+            return None
+        return Witness.combine(self._publication.token(cancelled_by=cancellation),settings_token,
+            authority_changes.publication_token(before),*(batch.prepared_witnesses() if batch is not None else ()),*extra)
+
+    def _publish_prepared_view(self,value,settings,role,batch=None,*,extra=(),cache=None):
+        witness = self._prepare_publication_witness(settings,role,batch,extra=extra)
+        try:
+            with publication(witness) as lease,self._gate:
+                if lease.current() and (cache is None or self._availability_cache is cache):
+                    return value
+        except PublicationUnavailable:
+            pass
+        return None
 
     def _refresh_availability(self, now):
         """Worker-only bounded interpretation. Never called by a planning GET."""
@@ -539,6 +590,7 @@ class BehaviorRuntime:
             from zoneinfo import ZoneInfo
             zone = engine.tz
             role = self._analysis_role()
+            seed_epoch = self._seed_epoch(settings,role)
             self._bind_history(settings, role)
             batch = self._source_batch(settings["settings"], now)
             day = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
@@ -554,9 +606,14 @@ class BehaviorRuntime:
                 ident, proof = pattern["id"], self._pattern_proof(pattern)
                 proofs[ident] = proof if ident not in proofs or proofs[ident] == proof else None
             def admit():
-                with self._gate:
-                    return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
-                            and batch.current() and self._analysis_role() == role)
+                return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
+                        and batch.current() and self._analysis_role() == role)
+            def prepare():
+                extra = ()
+                if settings["settings"]["activity"]:
+                    extra = (engine.prepare_availability_publication_witness(
+                        patterns,day.isoformat(),zone,batch.visits,now),)
+                return self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,extra=extra)
             interpreter = self._interpreter or Interpreter()
             result = None
             if batch.snapshots:
@@ -571,12 +628,16 @@ class BehaviorRuntime:
                     work = [{k:d.get(k) for k in ("source_id", "quote", "kind", "ownership", "due_range", "importance_hypothesis")}
                             for d in result.get("demands", [])]
                     return dict(links=result.get("link_proposals", []), demands=work, processed_ids=result.get("record_ids", []))
-                progress = seed.run(batch.snapshots, epoch=self._seed_epoch(settings, role), now=now, timezone=zone,
-                                    analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate)
-                with self._gate:
-                    if admit():
-                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=self._seed_epoch(settings, role), at=now,
-                            receipt_checks=tuple(batch.receipts))
+                progress = seed.run(batch.snapshots, epoch=seed_epoch, now=now, timezone=zone,
+                                    analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate,
+                                    prepare_publication=prepare)
+                status_witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation)
+                try:
+                    with publication(status_witness) as lease,self._gate:
+                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=seed_epoch, at=now,
+                            receipt_checks=tuple(batch.receipts),publication_witness=status_witness)
+                except PublicationUnavailable:
+                    self._seed_status = None
             if result is None and (patterns or (batch.records and not batch.snapshots)):
                 # Empty/finished seed: at most one guarded call to interpret
                 # current activity patterns, never a second source-history call.
@@ -584,41 +645,52 @@ class BehaviorRuntime:
                     default_minutes=settings["settings"]["default_block_minutes"],
                     remote_allowed=settings["settings"]["remote_analysis"], admit=admit)
             result = result or dict(state="tentative", patterns=[], demands=[])
+            witness = prepare()
             # Drop bodies before keeping a receipt. No source text persisted.
+            batch.publication_witnesses = batch.prepared_witnesses()
             batch.records = []
             batch.visits = []
             batch.snapshots = ()
-            with self._gate:
-                if (not cancellation.is_set() and self.live() and engine.signal_settings() == settings and batch.current()
-                        and self._analysis_role() == role and result.get("state") == "tentative"):
+            with publication(witness) as lease,self._gate:
+                if lease.current() and result.get("state") == "tentative":
                     self._availability_cache = dict(epoch=settings["epoch"], batch=batch, result=result,
                                                     at=now, role=role, timezone=zone, cancellation=cancellation,
-                                                    pattern_proofs=MappingProxyType(proofs))
+                                                    pattern_proofs=MappingProxyType(proofs),publication_witness=witness)
                 else:
                     self._availability_cache = None
+        except PublicationUnavailable:
+            self._availability_cache = None
         except Exception:
             self._availability_cache = None
             self.errors["availability"] = "Interpretation unavailable; no availability assumed."
 
     def seed_progress(self):
-        with self._in_flight(), self._gate:
+        with self._in_flight():
             engine = self.local_engine()
             if not hasattr(engine, "signal_settings"):
                 return dict(state="unavailable", sources={}, detail="Source interpretation is unavailable.")
             settings = engine.signal_settings()
             if not self.live() or not settings["settings"]["interpretation"]:
                 return dict(state="off", detail="Source interpretation is off.", sources={})
-            if (self._seed_status is None or self._seed_status["epoch"] != settings["epoch"]
-                    or self._seed_status["role_digest"] != self._seed_epoch(settings, self._analysis_role())):
+            progress = self._seed_status
+            if (progress is None or progress["epoch"] != settings["epoch"]
+                    or progress["role_digest"] != self._seed_epoch(settings, self._analysis_role())):
                 return dict(state="not_started", sources={}, detail="Waiting for a permitted current publication.")
             try:
-                current = all(check() is True for check in self._seed_status["receipt_checks"])
+                current = all(check() is True for check in progress["receipt_checks"])
             except Exception:
                 current = False
             if not current:
                 return dict(state="unavailable",sources={},
                     detail="Earlier processing is not current coverage; source evidence is unavailable or expired.")
-            return {k:v for k,v in self._seed_status.items() if k not in {"epoch", "role_digest", "receipt_checks"}}
+            try:
+                with publication(progress.get("publication_witness")) as lease,self._gate:
+                    if self._seed_status is progress and lease.current():
+                        return {k:v for k,v in progress.items() if k not in {
+                            "epoch", "role_digest", "receipt_checks", "publication_witness"}}
+            except PublicationUnavailable:
+                pass
+            return dict(state="unavailable",sources={},detail="Source evidence was withdrawn before progress readback.")
 
     def planning_context(self, day, timezone, now=None):
         """Read current evidence; neither analysis nor receipt freshness is renewed."""
@@ -634,12 +706,17 @@ class BehaviorRuntime:
         empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
                      evidence_checked_at=now, windows=[], demands=[], patterns=[], associations=[], source_coverage={},
                      detail="No current inferred availability; an empty calendar does not prove free time.")
-        with self._in_flight(), self._gate:
+        with self._in_flight():
             if not self.live():
                 return empty
             engine = self.local_engine()
             settings = engine.signal_settings()
             cache = self._availability_cache
+            role = self._analysis_role()
+            def raw_view():
+                proof = engine.prepare_availability_publication_witness(
+                    empty["patterns"],day,timezone,(),now,days=1)
+                return self._publish_prepared_view(empty,settings,role,extra=(proof,)) or dict(empty,patterns=[])
             first = datetime.fromtimestamp(now, ZoneInfo(timezone)).date()
             in_horizon = first <= target <= first+timedelta(days=6)
             if in_horizon:
@@ -650,11 +727,11 @@ class BehaviorRuntime:
                         and self.live() and engine.signal_settings() == settings
                         and settings["settings"]["interpretation"] and cache["epoch"] == settings["epoch"]
                         and cache["timezone"] == timezone and 0 <= now-cache["at"] <= 300
+                        and type(cache.get("publication_witness")) is Witness and cache["publication_witness"].current()
                         and cache["batch"].current())
             index = engine.seed_index(create=False) if settings["settings"]["interpretation"] else None
             if index is None and not cache_available():
-                return empty
-            role = self._analysis_role()
+                return raw_view()
             self._bind_history(settings, role)
             def cache_current():
                 return cache_available() and self._analysis_role() == role == cache["role"]
@@ -662,7 +739,7 @@ class BehaviorRuntime:
             # Durable work needs fresh source proof even after pattern analysis
             # expires. Pattern-only reads capture nothing until cache admission.
             if index is None and not cache_ok:
-                return empty
+                return raw_view()
             batch = None
             def withdrawn():
                 return dict(empty, ready=False, windows=[], demands=[], associations=[])
@@ -690,9 +767,9 @@ class BehaviorRuntime:
                     generated_at=min((v["analyzed_at"] for v in durable_demands+links if _finite(v.get("analyzed_at"))), default=now),
                     detail="Source-grounded tentative hypotheses; uncertainty and source limits apply.")
                 if not cache_ok or not cache_current():
-                    return empty if current() else withdrawn()
+                    return (self._publish_prepared_view(empty,settings,role,batch) or withdrawn()) if current() else withdrawn()
                 if (len(batch.receipts) < len(cache["batch"].receipts) or batch.detail != cache["batch"].detail):
-                    return empty if current() else withdrawn()
+                    return (self._publish_prepared_view(empty,settings,role,batch) or withdrawn()) if current() else withdrawn()
                 proofs = cache["pattern_proofs"]
                 matching = [p for p in patterns if isinstance(proofs.get(p["id"]), str)
                             and proofs[p["id"]] == self._pattern_proof(p)]
@@ -705,10 +782,13 @@ class BehaviorRuntime:
                 windows = apply_interpretations(matching, result["patterns"])
                 if not current() or not cache_current():
                     return withdrawn()
-                return dict(empty, ready=True, windows=windows, demands=demands,
+                value = dict(empty, ready=True, windows=windows, demands=demands,
                     generated_at=min(empty["generated_at"], cache["at"]),
                     detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
                     observed_context=engine.availability_context(timezone, now=now))
+                pattern_witness = engine.prepare_availability_publication_witness(patterns,day,timezone,batch.visits,now,days=1)
+                return self._publish_prepared_view(value,settings,role,batch,
+                    extra=(pattern_witness,cache["publication_witness"]),cache=cache) or withdrawn()
             except Exception:
                 return withdrawn()
             finally:
@@ -1139,9 +1219,10 @@ class BehaviorRuntime:
                 self.errors["email_history"] = "History is unavailable; other permitted sources can still be used."
             nudges, key = await asyncio.to_thread(run_work)
         except asyncio.CancelledError:
-            cancellation.set()
-            self._email_history.invalidate("Behavior tick cancelled")
-            self._availability_cache = None
+            with revocation():
+                cancellation.set()
+                self._email_history.invalidate("Behavior tick cancelled")
+                self._availability_cache = None
             raise
         published: list[dict] = []
         for nudge in sorted(nudges, key=lambda n: n.seq):

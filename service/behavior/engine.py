@@ -19,9 +19,10 @@ from typing import Any, Iterable, Protocol
 
 from service.behavior import miners, nudges as nudge_mod, predict as predict_mod, profile as profile_mod
 from service.behavior.categorize import categorize, label_leftovers, needs_category
-from service.behavior.store import Store
+from service.behavior.store import OBSERVATION_EXPIRY_SQL, OBSERVATION_RETENTION_S, Store
 from service.behavior.timeutil import day_end, day_start, local_dt, resolve_tz, tz_name
 from service.behavior.types import FEEDBACK_VERDICTS, Feedback, Nudge, Observation, Pattern, Prediction
+from service.publication_authority import Authority, Witness, revocation
 
 MINE_LOOKBACK_S = 16 * 7 * 86400     # routines older than ~4 months say little about next week
 NUDGE_HORIZON_S = 24 * 3600          # minimum look-ahead; see nudge_horizon()
@@ -64,6 +65,46 @@ class BehaviorEngine:
         # Snapshot diffing and mining read-modify-write the store; serialize them.
         self._lock = threading.RLock()
         self._seed_index = None
+        self._content_publication = Authority("behavior-retained-content",owner=self)
+        self._content_revision = 0
+        self._closed = False
+
+    def _invalidate_content(self):
+        self._content_publication.withdraw()
+        self._content_revision += 1
+
+    def _prepare_content_token(self, revision):
+        # Called only after a full comparison released Engine/Store locks.
+        # A writer changes this revision before touching its observations.
+        with revocation():
+            if self._closed or revision != self._content_revision:
+                return None
+            if self._content_publication.token() is None:
+                self._content_publication.publish()
+            return self._content_publication.token()
+
+    def prepare_semantic_publication_token(self, source, expected, now, *, expected_sync=None):
+        with self._lock,self._store._lock:
+            if self._closed or expected is None or self.semantic_history(
+                    source,now,expected_sync=expected_sync,metadata=True) != expected:
+                return None
+            revision = self._content_revision
+        return self._prepare_content_token(revision)
+
+    def prepare_availability_publication_witness(self, expected, first_day, timezone, visits, now, *, days=7):
+        from datetime import date
+        if type(days) is not int or not 1 <= days <= 7:
+            return None
+        first = date.fromisoformat(first_day)
+        with self._lock,self._store._lock:
+            if self._closed:
+                return None
+            actual = [p for offset in range(days) for p in self.availability_patterns(
+                (first+timedelta(days=offset)).isoformat(),timezone,visits,now)]
+            if actual != expected:
+                return None
+            revision,data_revision = self._content_revision,self._activity._data_revision
+        return Witness.combine(self._prepare_content_token(revision),self._activity.prepare_data_token(data_revision))
 
     def seed_index(self, *, create=True):
         from service.behavior.source_index import SourceIndex
@@ -143,11 +184,11 @@ class BehaviorEngine:
             return self.signal_settings()
 
     def activity_lease(self, client, now=None):
-        with self._lock:
+        with revocation(),self._lock:
             return self._activity.lease(client, self._now(now))
 
     def observe_activity(self, payload, now=None):
-        with self._lock:
+        with revocation(),self._lock:
             return self._activity.ingest(payload, self._now(now))
 
     def availability_patterns(self, day, timezone, visits=(), now=None):
@@ -169,7 +210,9 @@ class BehaviorEngine:
 
     def close(self) -> None:
         from service.publication_authority import revocation
-        with revocation():
+        with revocation(),self._lock:
+            self._invalidate_content()
+            self._closed = True
             self._activity.invalidate_publication()
             self._store.close()
 
@@ -211,8 +254,12 @@ class BehaviorEngine:
     # ---- ingest -----------------------------------------------------------
     def observe(self, observations: Iterable[Observation]) -> int:
         """Upsert by Observation.id (idempotent). Returns rows inserted/updated."""
-        with self._lock:
-            return self._store.upsert_observations(self._prepare(o) for o in observations)
+        current = tuple(self._prepare(o) for o in observations)
+        if not current:
+            return 0
+        with revocation(),self._lock:
+            self._invalidate_content()
+            return self._store.upsert_observations(current)
 
     def observe_snapshot(self, source: str, observations: Iterable[Observation], *,
                          window_start: float, window_end: float, taken_at: float) -> dict:
@@ -233,7 +280,8 @@ class BehaviorEngine:
         forward is never paired as a move (it must fall inside the previous
         window). A vanished event that already started is left alone."""
         current = [self._prepare(o) for o in observations]
-        with self._lock:
+        with revocation(),self._lock:
+            self._invalidate_content()
             prev = self._store.get_snapshot(source)
             upserted = self._store.upsert_observations(current)
             # An id that is back is not cancelled or moved after all: drop both
@@ -323,8 +371,19 @@ class BehaviorEngine:
         """Run all miners over the timeline; persist; keep user status
         (confirmed/rejected) across re-mining. Returns active+confirmed patterns."""
         now = self._now(now)
-        with self._lock:
-            obs = self._load(ask_phraser=True, since=now - MINE_LOOKBACK_S, until=now)
+        # Optional model labeling is preparation, outside the application
+        # barrier and Engine lock. Re-read observations for the actual write.
+        self._load(ask_phraser=True,since=now-MINE_LOOKBACK_S,until=now)
+        with revocation(),self._lock:
+            with self._store._lock:
+                prune_query = OBSERVATION_EXPIRY_SQL.replace("DELETE FROM observations","SELECT 1 FROM observations",1)
+                expired = self._store._conn.execute(prune_query+" LIMIT 1",(now-OBSERVATION_RETENTION_S,)).fetchone()
+                expired = expired or self._store._conn.execute(
+                    "SELECT 1 FROM observations WHERE (kind='device_activity' AND ts<?) "
+                    "OR (kind='activity_bin' AND ts<?) LIMIT 1",(now-7*86400,now-56*86400)).fetchone()
+            if expired:
+                self._invalidate_content()
+            obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
             from service.behavior.evidence import pattern_evidence
             mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
             self._store.replace_patterns(mined, now)
@@ -377,9 +436,9 @@ class BehaviorEngine:
         Returns only newly created ones."""
         now = self._now(now)
         started = time.monotonic()
+        if self._store.meta_get("last_mined_at") is None:
+            self.mine(now)
         with self._lock:
-            if self._store.meta_get("last_mined_at") is None:
-                self.mine(now)
             patterns = self._live_patterns()
             if not patterns:
                 return []
@@ -403,17 +462,21 @@ class BehaviorEngine:
             recent = self._store.nudges_created_since(day_start(today - timedelta(days=1), self._tz))
             chosen = nudge_mod.select(candidates, now=now, tz=self._tz, recent=recent, fb=fb,
                                       exists=self._store.has_nudge)
-            created = []
-            phrased = 0
-            for n in chosen:      # highest priority first, so the best ones get phrased
-                if (self._phraser is not None and self._can_phrase(n) and phrased < PHRASE_MAX_PER_PASS
-                        and time.monotonic() - started < PHRASE_BUDGET_S):
-                    phrased += 1
-                    n = self._phrase(n)
+            revision = self._content_revision
+        created = []
+        phrased = 0
+        for n in chosen:      # highest priority first, so the best ones get phrased
+            if (self._phraser is not None and self._can_phrase(n) and phrased < PHRASE_MAX_PER_PASS
+                    and time.monotonic() - started < PHRASE_BUDGET_S):
+                phrased += 1
+                n = self._phrase(n)
+            with revocation(),self._lock:
+                if self._closed or self._content_revision != revision:
+                    return created
                 stored = self._store.insert_nudge(n)
                 if stored is not None:
                     created.append(stored)
-            return created
+        return created
 
     def _can_phrase(self, n: Nudge) -> bool:
         """Only a message-only rhythm backed by retained message evidence.
@@ -484,25 +547,30 @@ class BehaviorEngine:
 
     def history_next(self, source: str) -> dict:
         from service.behavior.history import History
-        with self._lock:
+        with revocation(),self._lock:
+            self._invalidate_content()
             return History(self._store).next(source, self._now(None))
 
     def history_control(self, source: str, command: str) -> dict:
         from service.behavior.history import History
-        with self._lock:
+        with revocation(),self._lock:
+            self._invalidate_content()
             return History(self._store).control(source, command, self._now(None))
 
     def history_ingest(self, source: str, payload: dict) -> dict:
         from service.behavior.history import History
-        with self._lock:
+        with revocation(),self._lock:
+            self._invalidate_content()
             result = History(self._store).ingest(source,payload,self._now(None),self._prepare)
-            # Mine only recent evidence; old scans must not revive obsolete routines.
-            if result.get("retained_rows",0):
-                self.mine()
-            return result
+        # No model call while holding a permission/source mutation barrier.
+        if result.get("retained_rows",0):
+            self.mine()
+        return result
 
     def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
-        self._store.record_coverage(source, start, end, state, now)
+        with revocation(),self._lock:
+            self._invalidate_content()
+            self._store.record_coverage(source, start, end, state, now)
 
     def weekly(self, now: float | None = None) -> dict:
         from service.behavior.weekly import weekly_report, render_report

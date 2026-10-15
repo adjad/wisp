@@ -124,7 +124,9 @@ class Authority:
     def publish(self):
         self._head = _State(self._head.revision+1,True)
 
-    def token(self, *, clock=None, expires_wall=None, expires_monotonic=None):
+    def token(self, *, clock=None, expires_wall=None, expires_monotonic=None, cancelled_by=None):
+        if cancelled_by is not None and type(cancelled_by) is not threading.Event:
+            raise TypeError("Only a known cancellation event can qualify a token")
         head = self._head
         if not head.ready:
             return None
@@ -138,7 +140,7 @@ class Authority:
                     or now[0]>=expires_wall or now[1]>=expires_monotonic):
                 return None
             bounds = (clock,now[0],expires_wall,now[1],expires_monotonic)
-        return Token(self,head,bounds,_issuer)
+        return Token(self,head,bounds,_issuer,cancelled_by)
 
 
 @dataclass(frozen=True,eq=False,repr=False)
@@ -147,10 +149,13 @@ class Token:
     _state: _State
     _bounds: tuple | None = field(repr=False)
     _issuer: object = field(repr=False)
+    _cancellation: threading.Event | None = field(default=None,repr=False)
 
     def __post_init__(self):
         if self._issuer is not _issuer or type(self._authority) is not Authority or type(self._state) is not _State:
             raise TypeError("Only a source-issued memory stamp is accepted")
+        if self._cancellation is not None and type(self._cancellation) is not threading.Event:
+            raise TypeError("Only a known cancellation event can qualify a token")
 
     def __reduce_ex__(self, protocol):
         raise TypeError("Publication tokens cannot restore authority")
@@ -160,6 +165,8 @@ class Token:
         if self._authority._head is not self._state or not self._state.ready:
             return False
         if self._authority._owner is not None and self._authority._owner() is None:
+            return False
+        if self._cancellation is not None and self._cancellation._flag:
             return False
         if self._bounds is not None:
             clock,start_wall,end_wall,start_mono,end_mono = self._bounds

@@ -105,7 +105,7 @@ def test_cancel_during_http_withdraws_job_and_closes_owned_client(driver_host):
 
 @pytest.mark.parametrize("account_count,fault",[(1,None),(2,None),(1,"pause_http"),(1,"cancel_http"),(1,"role_model"),
     (1,"continuation"),(1,"continuation_drain"),(1,"late"),(1,"segment_limit"),(1,"close_failure"),
-    (1,"commit_withdrawal"),(1,"commit_boundary")])
+    (1,"commit_withdrawal"),(1,"commit_boundary"),(1,"withdraw_prepared")])
 def test_default_runtime_driver_advances_public_history_into_day_planning(public_host, tmp_path, monkeypatch, account_count, fault):
     import json
     import sqlite3
@@ -161,8 +161,12 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
     monkeypatch.setattr(br,"get_runtime",lambda:runtime)
     monkeypatch.setattr(daily,"_availability_provider",None)
     publication_started,withdrawn_at_boundary = [False],[False]
+    rejected_at_boundary = []
     try:
         runtime.call("configure_signals",{"email":True,"interpretation":True},NOW)
+        from service.config import authority_changes
+        from service.publication_authority import PublicationBusy
+        authority_before = authority_changes.current()
         if fault in {"commit_withdrawal","commit_boundary"}:
             def withdraw_at_write(sql):
                 if sql.startswith("INSERT INTO behavior_seed_work"):
@@ -172,8 +176,23 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
                          fault == "commit_boundary" and sql == "COMMIT")):
                     from service import config
                     withdrawn_at_boundary[0] = True
-                    config.set_role("fast","changed-at-publication")
+                    try:
+                        config.set_role("fast","changed-at-publication")
+                    except PublicationBusy as error:
+                        rejected_at_boundary.append(error)
+                    else:
+                        raise AssertionError("Reentrant withdrawal was falsely acknowledged")
             runtime.local_engine()._store._conn.set_trace_callback(withdraw_at_write)
+        if fault == "withdraw_prepared":
+            prepare = runtime._prepare_publication_witness
+            def prepare_then_withdraw(*args,**kwargs):
+                witness = prepare(*args,**kwargs)
+                if prompts and not withdrawn_at_boundary[0]:
+                    from service import config
+                    config.set_role("fast","changed-before-publication")
+                    withdrawn_at_boundary[0] = True
+                return witness
+            monkeypatch.setattr(runtime,"_prepare_publication_witness",prepare_then_withdraw)
         assert runtime.email_history_status()["accounts"] and clients == [] and prompts == []
         assert p.calls == []
         asyncio.run(runtime.tick(store,FakeHub(),now=p.clock[0]))
@@ -220,13 +239,33 @@ def test_default_runtime_driver_advances_public_history_into_day_planning(public
                 assert len(p.calls) == 6 and len(clients) == 1 and prompts == []
                 return
             assert len(p.calls) == 6 and len(prompts) == 1
-            if fault in {"role_model","commit_withdrawal","commit_boundary"}:
-                if fault != "role_model":
-                    assert withdrawn_at_boundary[0], "The requested write/COMMIT withdrawal boundary was reached"
+            if fault in {"role_model","withdraw_prepared"}:
+                if fault == "withdraw_prepared":
+                    assert withdrawn_at_boundary[0] and authority_changes.current() is not authority_before
                 assert runtime._email_history.cached_getters() == ()
                 assert not daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
-                assert runtime.local_engine().seed_index().store._conn.execute(
-                    "SELECT COUNT(*) FROM behavior_seed_work").fetchone()[0] == 0
+                conn = runtime.local_engine().seed_index().store._conn
+                for table in ("work","links","capacity"):
+                    assert conn.execute("SELECT COUNT(*) FROM behavior_seed_"+table).fetchone()[0] == 0
+                assert conn.execute("SELECT coalesce(sum(covered),0),coalesce(sum(attempts),0) FROM behavior_seed_records").fetchone()[:] == (0,0)
+                assert clients[0]._client.is_closed
+                return
+            if fault in {"commit_withdrawal","commit_boundary"}:
+                # Supported public ordering contract: a same-thread mutation
+                # cannot take effect or acknowledge success during publication.
+                assert withdrawn_at_boundary[0] and len(rejected_at_boundary) == 1
+                assert "not applied" in str(rejected_at_boundary[0])
+                assert authority_changes.current() is authority_before
+                assert runtime._email_history.cached_getters()
+                assert daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
+                conn = runtime.local_engine().seed_index().store._conn
+                assert conn.execute("SELECT count(*) FROM behavior_seed_work").fetchone()[0] == 3
+                assert not conn.in_transaction
+                from service import config
+                config.set_role("fast","changed-at-publication")  # Actual retry, outside the lease.
+                assert authority_changes.current() is not authority_before
+                assert runtime._email_history.cached_getters() == ()
+                assert not daily.availability_snapshot("2026-10-15","UTC",p.clock[0])["demands"]
                 assert clients[0]._client.is_closed
                 return
             assert runtime.seed_progress()["sources"]["email"]["analyzed"] == 3

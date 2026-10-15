@@ -192,3 +192,73 @@ def test_direct_engine_and_activity_settings_changes_withdraw_the_same_memory_st
         assert not current.current()
     finally:
         engine.close()
+
+
+def test_cancellation_uses_a_known_event_flag_without_an_arbitrary_callback(monkeypatch):
+    authority,_ = ready()
+    event = threading.Event()
+    witness = Witness.combine(authority.token(cancelled_by=event))
+    with pytest.raises(TypeError):
+        authority.token(cancelled_by={"cancelled":False})
+    def forbidden():
+        raise AssertionError("Cancellation callback ran inside the pure witness")
+    monkeypatch.setattr(event,"is_set",forbidden)
+    with publication(witness):
+        assert witness.current()
+    with revocation():
+        event.set()
+    assert not witness.current()
+
+
+def test_retained_engine_content_stamp_is_exact_pure_and_withdrawn_before_replacement(tmp_path,monkeypatch):
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior.types import Observation
+    engine = BehaviorEngine(tmp_path/"retained.db",clock=lambda:100,tz="UTC")
+    try:
+        engine.configure_signals({"calendar_context":True},100)
+        row = Observation("calendar-one","event",200,end_ts=260,subject="Synthetic plan",source="calendar",source_id="one")
+        engine.observe_snapshot("calendar",[row],window_start=100,window_end=300,taken_at=100)
+        context = engine.semantic_history("calendar",100,expected_sync=100,metadata=True)
+        witness = Witness.combine(engine.prepare_semantic_publication_token("calendar",context,100,expected_sync=100))
+        assert witness.current()
+        with publication(witness):
+            with pytest.raises(PublicationBusy):
+                engine.observe([row])
+            with pytest.raises(PublicationBusy):
+                engine.history_control("calendar","restart")
+            with pytest.raises(PublicationBusy):
+                engine._activity.ingest({},100)
+            def forbidden(*args,**kwargs):
+                raise AssertionError("Content witness queried semantic SQL")
+            with monkeypatch.context() as pure:
+                pure.setattr(engine,"semantic_history",forbidden)
+                pure.setattr(engine._store,"observations",forbidden)
+                assert witness.current()
+        from dataclasses import replace
+        engine.observe_snapshot("calendar",[replace(row,subject="Changed plan")],window_start=100,window_end=300,taken_at=101)
+        assert not witness.current()
+        assert engine.prepare_semantic_publication_token("calendar",context,101,expected_sync=100) is None
+    finally:
+        engine.close()
+
+
+def test_direct_activity_ingest_invalidates_prepared_routines_even_without_engine_wrapper(tmp_path):
+    from service.behavior.engine import BehaviorEngine
+    from tests.test_behavior_availability import history,NOW
+    from datetime import datetime,timedelta,timezone
+    engine = BehaviorEngine(tmp_path/"activity-data.db",clock=lambda:NOW,tz="UTC")
+    try:
+        engine.configure_signals({"activity":True},NOW-100)
+        engine.observe(history())
+        first = datetime.fromtimestamp(NOW,timezone.utc).date()
+        patterns = [p for offset in range(7) for p in engine.availability_patterns(
+            (first+timedelta(days=offset)).isoformat(),"UTC",now=NOW)]
+        assert patterns
+        witness = engine.prepare_availability_publication_witness(patterns,first.isoformat(),"UTC",(),NOW)
+        assert witness.current()
+        lease = engine.activity_lease("collector-session-1234",NOW-60)
+        result = engine._activity.ingest(dict(lease=lease,intervals=[dict(start=NOW-45,end=NOW-30,
+            idle_seconds=0,sequence=1,bundle="test.App",timezone="UTC",screen_awake=True,session_active=True)]),NOW)
+        assert result["accepted"] == 1 and not witness.current()
+    finally:
+        engine.close()

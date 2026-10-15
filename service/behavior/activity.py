@@ -47,6 +47,8 @@ class Activity:
         self.capture_since = 0.0
         self._publication = Authority("behavior-source-preferences",owner=self)
         self._publication_snapshot = None
+        self._data_publication = Authority("behavior-activity-data",owner=self)
+        self._data_revision = 0
 
     def settings(self):
         return {**DEFAULTS, **(self.store.meta_get("signal_settings", {}) or {})}
@@ -86,6 +88,21 @@ class Activity:
     def invalidate_publication(self):
         self._publication.withdraw()
         self._publication_snapshot = None
+        self._invalidate_data()
+
+    def _invalidate_data(self):
+        self._data_publication.withdraw()
+        self._data_revision += 1
+
+    @mutating
+    def prepare_data_token(self, expected_revision):
+        # The engine compares actual data under its Store lock first. This
+        # memory-only second stage refuses a change between read and binding.
+        if expected_revision != self._data_revision:
+            return None
+        if self._data_publication.token() is None:
+            self._data_publication.publish()
+        return self._data_publication.token()
 
     @mutating
     def prepare_publication_token(self, expected):
@@ -111,6 +128,7 @@ class Activity:
             (key, json.dumps(value, allow_nan=False)),
         )
 
+    @mutating
     def lease(self, client, now):
         if not isinstance(client, str) or not re.fullmatch(
             r"[a-zA-Z0-9-]{16,80}", client
@@ -133,6 +151,7 @@ class Activity:
                 expires_at=self.expiry,
             )
 
+    @mutating
     def ingest(self, payload, now):
         if not isinstance(payload, dict) or not isinstance(
             payload.get("intervals"), list
@@ -227,6 +246,7 @@ class Activity:
                 and old.get("sequence", 0) >= rows[0]["sequence"]
             ):
                 raise ValueError("Stale or overlapping activity receipt")
+            self._invalidate_data()
             self.store._conn.executemany(
                 "INSERT INTO observations VALUES (?,?,?,?,?,?,?,?,?)",
                 [_obs_row(o) for o in observations],
