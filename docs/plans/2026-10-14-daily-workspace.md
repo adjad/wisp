@@ -141,6 +141,19 @@ native provenance when matchable, Notes require read-start freshness, preview
 bodies are transient, malformed submission receipts persist unknown, terminal
 outcomes survive later sweeps, and identity revocation wins stale/equal replays.
 
+The `08ee09f9` candidate was held after additional isolated helper tests found
+identity expiry could be hidden by a same-account refresh, and the Today
+workspace assessed Calendar freshness differently from the direct workspace.
+Identity expiry now breaks consent continuity before beginning or replacing a
+capture, including time spent pending. Expired or clock-invalid captures revoke
+verification with a handled validation error. Continuous fresh same-account
+refreshes preserve consent; a verification gap requires another preview and
+confirmation. Both workspace entry points share native Calendar admission,
+while the original Today plan and debug replay retain their existing contract.
+Synthetic controls cover the actual persisted receipt writer accepting missing
+or future read-starts and clamping stale read-starts into stale sync times.
+These are development results; the successor requires fresh complete gates.
+
 Final delivery requires a clean current-main-reconciled pushed candidate,
 exact-SHA mechanical checks, required CI and distinct independent review plus
 synthetic specialist QA. No app launch, real model/provider/native access,

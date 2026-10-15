@@ -103,10 +103,10 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     items, coverage, suggestions = [], [], []
     seen = set()
     receipt = state["sources"].get("calendar", {})
-    diagnostics = receipt.get("diagnostics") or {}
-    if receipt.get("complete") is False or diagnostics.get("complete") is False or diagnostics.get("partial"):
+    from service.tools.everyday import _native_receipt_current
+    if not _native_receipt_current(receipt, now):
         state = {**state, "sources": {**state["sources"], "calendar": {**receipt, "available": False,
-                  "reason": "Calendar read is partial; refresh before planning flexible work"}}}
+                  "reason": "Calendar receipt is missing, stale or partial; refresh before planning flexible work"}}}
     base = build_plan(day, timezone, state["tasks"], state["commitments"],
                       state["preferences"], state["sources"], now=now)
     for source in SOURCES:
@@ -483,12 +483,6 @@ def collect_evidence(store, state, day, timezone, *, now):
 
 def workspace(store, day, timezone, *, now, behavior=None, ignored_windows=()):
     state = store.today_snapshot(day, timezone)
-    # Preserve the original planner endpoint, but this richer proposal also
-    # honors explicit partial-read receipts before suggesting flexible work.
-    from service.tools.everyday import _native_receipt_current
-    state["sources"] = {name: dict(info) for name, info in state["sources"].items()}
-    if not _native_receipt_current(state["sources"].get("calendar", {}), now):
-        state["sources"].setdefault("calendar", {}).update(available=False, reason="Calendar receipt is missing, stale or partial")
     evidence = collect_evidence(store, state, day, timezone, now=now)
     return assess(day, timezone, state, evidence, now=now, behavior=behavior,
                   ignored_windows=ignored_windows)

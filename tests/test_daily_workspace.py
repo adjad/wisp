@@ -337,3 +337,57 @@ def test_header_only_fallback_requires_matching_fresh_per_account_contract(cache
     assert result["ready"] and "Header-only" in result["records"][0]["review_reason"]
     details[0]["fresh"] = False
     assert not collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]["records"]
+
+
+@pytest.mark.parametrize("case", ["current", "missing_start", "future_start", "stale_start",
+    "stale_sync", "partial", "incomplete", "syncing", "failed", "short_coverage",
+    "persisted_current", "persisted_missing", "persisted_future", "persisted_stale"])
+def test_today_and_direct_workspace_share_calendar_admission(cached_sources, monkeypatch, case):
+    from types import SimpleNamespace
+    from service.assistant import daily_workspace as daily, daily_workspace_api as api, today_api
+    from service.assistant.today import build_plan
+    store, db, *_ = cached_sources
+    supplied = state() | dict(revision=0)
+    receipt = supplied["sources"]["calendar"]
+    if case == "missing_start": receipt.pop("snapshot_started_at")
+    if case == "future_start": receipt["snapshot_started_at"] = NOW + 1
+    if case == "stale_start": receipt["snapshot_started_at"] = NOW - 1201
+    if case == "stale_sync": receipt["last_sync"] = NOW - 181
+    if case == "partial": receipt["diagnostics"]["partial"] = True
+    if case == "incomplete": receipt["complete"] = False
+    if case == "syncing": receipt["syncing"] = True
+    if case == "failed": receipt["available"] = False
+    if case == "short_coverage": receipt["diagnostics"]["coverage_end"] = at(12)
+    if case.startswith("persisted_"):
+        import json
+        from service.assistant.store import AssistantStore
+        diagnostics = dict(receipt["diagnostics"])
+        if case != "persisted_missing":
+            diagnostics["snapshot_started_at"] = NOW + {"persisted_current": 0,
+                "persisted_future": 1, "persisted_stale": -1201}[case]
+        db.execute("CREATE UNIQUE INDEX source_identity ON today_source_sync(source)")
+        AssistantStore._today_sync_receipt(SimpleNamespace(_db=db), "calendar", diagnostics, NOW, available=True)
+        receipt = json.loads(db.execute("SELECT payload FROM today_source_sync WHERE source='calendar'").fetchone()[0])
+        supplied["sources"]["calendar"] = receipt
+        assert receipt["last_sync"] == (NOW - 1201 if case == "persisted_stale" else NOW)
+    original = deepcopy(supplied)
+    monkeypatch.setattr(store, "today_snapshot", lambda *args: supplied, raising=False)
+    monkeypatch.setattr(today_api, "assistant_store", store)
+    monkeypatch.setattr(today_api.time, "time", lambda: NOW)
+    monkeypatch.setattr(api, "email_store", lambda: SimpleNamespace(ignored=lambda *args: []))
+    monkeypatch.setattr(api, "availability", lambda *args: None)
+    db.execute("INSERT INTO commitments VALUES(?,?,?,?,?,?,?)",
+               ("work", "reminders", "native:work", "Synthetic work", at(17), "reminder", "active"))
+    today = today_api.snapshot(DAY, ZONE, debug=True)
+    direct = daily.workspace(store, DAY, ZONE, now=NOW)
+    assert today["workspace"] == direct
+    ready = case in {"current", "persisted_current"}
+    assert direct["proposed_plan"]["sources"]["calendar"]["ready"] is ready
+    assert next(s["ready"] for s in direct["source_coverage"] if s["source"] == "calendar") is ready
+    assert bool([b for b in direct["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]) is ready
+    assert supplied == original
+    # The original Today planner and its replay retain their established input contract.
+    expected = build_plan(DAY, ZONE, supplied["tasks"], supplied["commitments"],
+                          supplied["preferences"], supplied["sources"], now=NOW)
+    assert today["replay"]["sources"] == original["sources"]
+    assert today["replay"]["expected_plan"] == expected

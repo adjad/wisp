@@ -335,6 +335,95 @@ def test_server_capture_order_and_empty_receipts_revoke_without_client_clock(sto
         assert client.post("/workspace/email/identity", json=latest | success | dict(started_at=at())).status_code == 422
 
 
+@pytest.mark.parametrize("begin_age,end_age,observation,failed,overlap,continuous", [
+    (540, 590, "none", False, False, True),
+    (600, 600, "none", False, False, True),
+    (660, 660, "none", False, False, False),
+    (660, 660, "before", False, False, False),
+    (540, 660, "none", False, False, False),
+    (540, 660, "pending", False, False, False),
+    (660, 720, "pending", False, False, False),
+    (540, 660, "none", False, True, False),
+    (540, 660, "none", True, False, False),
+    (540, 1141, "none", False, False, False),
+    (540, 539, "none", False, False, False),
+])
+def test_capture_refresh_preserves_consent_only_without_identity_expiry(
+        store, monkeypatch, begin_age, end_age, observation, failed, overlap, continuous):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api, day_plan_email as delivery
+    base = at(hour=7, minute=50)
+    clock = [base]
+    for name, value in {"_email_store": store, "_identity": SelfIdentity(), "_identity_started": 0,
+        "_identity_generation": 0, "_identity_capture_at": 0, "_identity_epoch": "synthetic-epoch",
+        "_identity_previous": (), "_identity_settled": False}.items():
+        monkeypatch.setattr(api, name, value)
+    monkeypatch.setattr(api.time, "time", lambda: clock[0])
+    monkeypatch.setattr(delivery, "_policy_allows", lambda _: True)
+    monkeypatch.setattr(api, "email_contents", lambda *args: dict(subject="Plan", body="Synthetic plan", ready=True))
+    app = FastAPI(); app.include_router(api.router)
+    success = dict(addresses=["me@example.test"], available=True, complete=True)
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
+        def begin():
+            result = client.post("/workspace/email/identity/begin")
+            assert result.status_code == 200
+            return result.json()
+        def complete(capture, values=success):
+            return client.post("/workspace/email/identity", json=capture | values)
+        assert complete(begin()).status_code == 200
+        original_epoch = api.self_identity().epoch
+        settings = dict(day="2026-10-14", recipient="me@example.test", timezone=ZONE, minute=480)
+        preview = client.post("/workspace/email/preview", json=settings).json()
+        assert client.post("/workspace/email/enable", json=dict(token=preview["token"], confirmed=True)).status_code == 200
+        clock[0] = base + begin_age
+        if observation == "before":
+            assert not api.get_email_settings()["consent_current"]
+        capture = begin()
+        if overlap:
+            older, capture = capture, begin()
+            assert complete(older).json() == dict(ok=False, superseded=True)
+            assert not api.self_identity().complete
+        clock[0] = base + end_age
+        if observation == "pending":
+            assert not api.get_email_settings()["consent_current"]
+        response = complete(capture, dict(addresses=[], available=False, complete=False) if failed else success)
+        invalid_capture = end_age - begin_age > 600 or end_age < begin_age
+        assert response.status_code == (422 if invalid_capture else 200)
+        if failed or invalid_capture:
+            assert not api.self_identity().complete
+            clock[0] = base + max(begin_age, end_age) + 1
+            assert complete(begin()).status_code == 200
+        assert api.get_email_settings()["consent_current"] is continuous
+        assert (api.self_identity().epoch == original_epoch) is continuous
+        clock[0] = max(clock[0], base + 600)
+        calls = []
+        async def sender(*args):
+            calls.append(args)
+            return dict(ok=True, status="succeeded")
+        result = asyncio.run(deliver_due(store, identity=api.self_identity, compose=api.email_contents,
+            sender=sender, policy_allows=lambda _: True, clock=lambda: clock[0]))
+        assert len(calls) == int(continuous)
+        assert result == ("submitted" if continuous else "connected_accounts_changed_review_settings")
+        if not continuous:
+            # A fresh identity restores eligibility only after another review.
+            preview = client.post("/workspace/email/preview", json=settings).json()
+            assert client.post("/workspace/email/enable", json=dict(token=preview["token"], confirmed=True)).status_code == 200
+            assert api.get_email_settings()["consent_current"]
+
+
+def test_direct_identity_replacement_checks_expiry_without_status_read(monkeypatch):
+    from service.assistant import daily_workspace_api as api
+    base = at()
+    for name, value in {"_identity": SelfIdentity(), "_identity_started": 0,
+        "_identity_epoch": "synthetic-epoch", "_identity_previous": (), "_identity_settled": False}.items():
+        monkeypatch.setattr(api, name, value)
+    api.publish_identity(["me@example.test"], available=True, complete=True, started_at=base, now=base)
+    epoch = api._identity.epoch
+    api.publish_identity(["me@example.test"], available=True, complete=True, started_at=base + 601, now=base + 601)
+    assert api._identity.epoch != epoch
+
+
 @pytest.mark.parametrize("blocked", ["policy", "paused", "identity", "reconnect", "body", "recipient"])
 def test_final_native_admission_rechecks_all_host_boundaries(store, monkeypatch, blocked):
     from types import SimpleNamespace

@@ -65,12 +65,23 @@ def email_store():
         return _email_store
 
 
+def _expire_identity(now):
+    """Break consent continuity even while a replacement capture is pending.
+
+    Call with the identity lock held. The last settled read-start remains the
+    expiry basis when begin has temporarily cleared the public account list.
+    """
+    global _identity, _identity_epoch, _identity_previous
+    stamp = _identity.received_at if _identity.complete else _identity_started
+    if (_identity.complete or _identity_previous) and not 0 <= now - stamp <= 600:
+        _identity_epoch = secrets.token_hex(16)
+        _identity_previous = ()
+        _identity = SelfIdentity(epoch=_identity_epoch)
+
+
 def self_identity():
-    global _identity, _identity_epoch
     with _identity_lock:
-        if _identity.complete and not 0 <= time.time() - _identity.received_at <= 600:
-            _identity_epoch = secrets.token_hex(16)
-            _identity = SelfIdentity(epoch=_identity_epoch)
+        _expire_identity(time.time())
         return _identity
 
 
@@ -87,6 +98,7 @@ def publish_identity(addresses, *, available, complete, started_at, now):
             or not isinstance(addresses, list) or len(addresses) > 100):
         raise ValueError("Invalid connected-account identity receipt")
     with _identity_lock:
+        _expire_identity(now)
         if started_at < _identity_started:
             return
         revoked = not available or not complete
@@ -107,8 +119,10 @@ def publish_identity(addresses, *, available, complete, started_at, now):
 async def begin_identity():
     global _identity_generation, _identity_capture_at, _identity, _identity_settled
     with _identity_lock:
+        now = time.time()
+        _expire_identity(now)
         _identity_generation += 1
-        _identity_capture_at = time.time()
+        _identity_capture_at = now
         _identity_settled = False
         _identity = SelfIdentity(epoch=_identity_epoch)
         return dict(session=_identity_session, generation=_identity_generation)
@@ -125,6 +139,7 @@ class IdentityReceipt(BaseModel):
 
 @router.post("/email/identity")
 async def complete_identity(body: IdentityReceipt):
+    global _identity, _identity_started, _identity_epoch, _identity_previous, _identity_settled
     with _identity_lock:
         if body.session != _identity_session or body.generation != _identity_generation:
             return {"ok": False, "superseded": True}
@@ -134,8 +149,13 @@ async def complete_identity(body: IdentityReceipt):
                              started_at=started, now=time.time())
         except ValueError as exc:
             # A malformed latest success is unavailable, never permission to reuse
-            # an older account list. Failures do not need valid address metadata.
-            publish_identity([], available=False, complete=False, started_at=started, now=time.time())
+            # an older account list. Revoke directly: an expired capture timestamp
+            # cannot itself be republished as a valid failure receipt.
+            _identity_epoch = secrets.token_hex(16)
+            _identity_previous = ()
+            _identity_started = max(_identity_started, started)
+            _identity_settled = True
+            _identity = SelfIdentity(epoch=_identity_epoch)
             raise HTTPException(422, str(exc)) from exc
     return {"ok": True}
 
