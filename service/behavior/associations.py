@@ -85,8 +85,74 @@ def materialize(edge, records):
             return None
         quotes.append(quote)
     return dict(edge, left_quote=quotes[0], right_quote=quotes[1],
+                source_receipts={end["source"]: by_id[end["record_id"]].get("publication_at") for end in (edge["left"], edge["right"])},
                 uncertainty="Proposed relationship; neither corroboration nor attendance is verified.",
                 action_authority="none", importance="unknown", confidence=None)
+
+
+def work_metadata(demands, records, *, now, timezone="UTC"):
+    """Reground validated work into minimal metadata, without titles or quotes."""
+    from service.behavior.commitments import validate as validate_work
+    by_id = {r["id"]: r for r in records}
+    out = []
+    for d in demands:
+        if not isinstance(d, dict) or any(k in d for k in ("action", "approved", "auto", "actions")):
+            raise ValueError("Work cannot grant authority")
+        r = by_id.get(d.get("source_id"))
+        if r is None or r["evidence_basis"] == "recorded_completion":
+            raise ValueError("Unknown work evidence")
+        times = r.get("temporal", [])
+        # Runtime supplies its actual timezone for temporal parsing. A demand
+        # must match an already supplied host temporal choice, not a model date.
+        time_id = next((t["id"] for t in times if [t["start"], t["end"]] == d.get("due_range")), None)
+        record = dict(r, ts=r["source_time"], reference=r.get("reference", {"source": r["source"], "id": r["id"]}), temporal=times)
+        proposal = dict(source_id=r["id"], quote=d.get("quote"), kind=d.get("kind"),
+                        title="Possible source-backed work", temporal_id=time_id,
+                        ownership=d.get("ownership"), importance=d.get("importance_hypothesis", "unknown"))
+        checked = validate_work([proposal], [record], now=now)
+        if not checked or checked[0]["due_range"] != d.get("due_range"):
+            raise ValueError("Ungrounded work or time")
+        endpoint = _endpoint(r, d["quote"])
+        if endpoint is None:
+            raise ValueError("Ambiguous work quotation")
+        value = checked[0]
+        temporal = next((t for t in times if [t["start"], t["end"]] == value["due_range"]), None)
+        time_evidence = None
+        if temporal is not None:
+            start = endpoint["start"] + d["quote"].find(temporal["quote"])
+            time_evidence = dict(start=start, end=start+len(temporal["quote"]), sha256=digest(temporal["quote"]))
+        ident = digest(json.dumps([endpoint, value["kind"]], sort_keys=True))
+        out.append(dict(id="work:"+ident[:32], endpoint=endpoint, kind=value["kind"],
+                        ownership=value["ownership"], due_ts=value["due_ts"], due_range=value["due_range"],
+                        deadline_precision=value["deadline_precision"], importance_hypothesis=value["importance_hypothesis"],
+                        time_evidence=time_evidence, timezone=timezone, analyzed_at=now))
+    return out
+
+
+def materialize_work(saved, records, *, now, default_minutes=30):
+    endpoint = saved["endpoint"]
+    r = next((r for r in records if r["id"] == endpoint["record_id"] and r["source"] == endpoint["source"]
+              and r["revision"] == endpoint["revision"]), None)
+    if r is None:
+        return None
+    quote = r["text"][endpoint["start"]:endpoint["end"]]
+    if digest(quote) != endpoint["sha256"]:
+        return None
+    window = saved["due_range"]
+    if window is not None and window[1] <= now:
+        return None
+    value = dict(saved, source=r["source"], source_id=r["id"],
+                 reference=r.get("reference", {"source": r["source"], "id": r["id"]}),
+                 title=" ".join(quote.split())[:120], quote=quote, basis="inferred", confidence=None,
+                 status="tentative" if saved["ownership"] == "user" and window else "unresolved",
+                 earliest_start=now, suggested_minutes=default_minutes,
+                 duration_basis="adjustable default; not observed effort", importance="unknown",
+                 observed_at=r["source_time"], evidence=[r["id"]], action_authority="none",
+                 source_receipt_at=r.get("publication_at"),
+                 because="Source-backed work hypothesis; ownership, effort and relevance remain uncertain.")
+    from service.behavior.priorities import dimensions
+    value["priority_dimensions"] = dimensions(value, now=now)
+    return value
 
 
 SYSTEM = """Find possible relationships across arbitrary personal source passages.

@@ -14,6 +14,7 @@ SOURCES = ("email", "messages", "notes", "calendar", "reminders")
 MAX_RECORDS = 10000
 MAX_EDGES = 1000
 PASSAGE_CHARS = 2400
+PASSAGE_BYTES = 1400
 OVERLAP = 160
 VERSION = 1
 SCHEMA = """
@@ -28,6 +29,9 @@ CREATE TABLE IF NOT EXISTS behavior_seed_records (
  retry_at REAL NOT NULL DEFAULT 0, seen_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS behavior_seed_links (
+ id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS behavior_seed_work (
  id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL
 );
 """
@@ -48,7 +52,7 @@ class SourceIndex:
             self._reset(epoch)
 
     def _reset(self, epoch):
-        for table in ("behavior_seed_links", "behavior_seed_records", "behavior_seed_sources"):
+        for table in ("behavior_seed_links", "behavior_seed_work", "behavior_seed_records", "behavior_seed_sources"):
             self.store._conn.execute("DELETE FROM " + table)
         for key, value in (("behavior_seed_epoch", epoch), ("behavior_seed_turn", 0), ("behavior_seed_version", VERSION)):
             self.store._conn.execute("INSERT INTO meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -64,11 +68,17 @@ class SourceIndex:
         self.store._conn.execute("DELETE FROM behavior_seed_records WHERE source=?", (source,))
         self.store._conn.execute("DELETE FROM behavior_seed_sources WHERE source=?", (source,))
         self._remove_links(lambda e: source in (e["left"]["source"], e["right"]["source"]))
+        self._remove_work(lambda w: w["endpoint"]["source"] == source)
 
     def _remove_links(self, predicate):
         for row in self.store._conn.execute("SELECT id,payload FROM behavior_seed_links").fetchall():
             if predicate(json.loads(row["payload"])):
                 self.store._conn.execute("DELETE FROM behavior_seed_links WHERE id=?", (row["id"],))
+
+    def _remove_work(self, predicate):
+        for row in self.store._conn.execute("SELECT id,payload FROM behavior_seed_work").fetchall():
+            if predicate(json.loads(row["payload"])):
+                self.store._conn.execute("DELETE FROM behavior_seed_work WHERE id=?", (row["id"],))
 
     def sync(self, records, manifests, *, epoch, now):
         """Index only already-normalized, eligible records supplied by the host.
@@ -95,6 +105,7 @@ class SourceIndex:
                 if old is not None and old["revision"] != r["revision"]:
                     self.store._conn.execute("DELETE FROM behavior_seed_records WHERE id=?", (r["id"],))
                     self._remove_links(lambda e: r["id"] in (e["left"]["record_id"], e["right"]["record_id"]))
+                    self._remove_work(lambda w: w["endpoint"]["record_id"] == r["id"])
                 self.store._conn.execute("INSERT INTO behavior_seed_records(id,source,revision,chars,seen_at) VALUES (?,?,?,?,?) "
                                          "ON CONFLICT(id) DO UPDATE SET seen_at=excluded.seen_at",
                                          (r["id"], r["source"], r["revision"], len(r["text"]), now))
@@ -105,6 +116,7 @@ class SourceIndex:
                 self.store._conn.execute("DELETE FROM behavior_seed_records WHERE id=?", (ident,))
             if stale:
                 self._remove_links(lambda e: e["left"]["record_id"] in stale or e["right"]["record_id"] in stale)
+                self._remove_work(lambda w: w["endpoint"]["record_id"] in stale)
 
     def select(self, records, *, now, limit=4):
         """Round-robin sources and least-recently attempted record revisions."""
@@ -122,7 +134,8 @@ class SourceIndex:
         for row in rows:
             r = current.get(row["id"])
             if r is not None and r["revision"] == row["revision"]:
-                queues[r["source"]].append(dict(r, text=r["text"][row["cursor"]:row["cursor"] + PASSAGE_CHARS],
+                text = r["text"][row["cursor"]:row["cursor"] + PASSAGE_CHARS].encode()[:PASSAGE_BYTES].decode("utf-8", errors="ignore")
+                queues[r["source"]].append(dict(r, text=text,
                                                 text_start=row["cursor"]))
         selected = []
         while len(selected) < limit and any(queues.values()):
@@ -131,7 +144,7 @@ class SourceIndex:
                     selected.append(queues[source].pop(0))
         return selected
 
-    def finish(self, anchors, context, proposals, *, epoch, now, admit):
+    def finish(self, anchors, context, proposals, *, epoch, now, admit, work=()):
         """CAS progress and validated links together, or publish neither.
 
         The host's admission guard includes live source receipts, permissions,
@@ -139,8 +152,12 @@ class SourceIndex:
         """
         from service.behavior.associations import validate
         edges = validate(proposals, context)
+        # Never acquire the host's consent gate while holding the Store lock.
+        # Seed holds that publication gate before entering this method.
+        if not admit():
+            return False
         with self.store._lock, self.store._conn:
-            if self._epoch() != epoch or not admit():
+            if self._epoch() != epoch:
                 return False
             for r in anchors:
                 old = self.store._conn.execute("SELECT revision,cursor FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()
@@ -151,6 +168,11 @@ class SourceIndex:
                     old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
                     if old is None or old["revision"] != end["revision"]:
                         return False
+            for w in work:
+                end = w["endpoint"]
+                old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
+                if old is None or old["revision"] != end["revision"]:
+                    return False
             for r in anchors:
                 end = r["text_start"] + len(r["text"])
                 total = self.store._conn.execute("SELECT chars FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()[0]
@@ -160,8 +182,15 @@ class SourceIndex:
                                          (total if done else max(r["text_start"]+1, end-OVERLAP), end,
                                           "analyzed" if done else "pending", now, r["id"]))
             for e in edges:
+                e = dict(e, analyzed_at=now)
                 self.store._conn.execute("INSERT INTO behavior_seed_links VALUES (?,?,?) ON CONFLICT(id) DO NOTHING",
                                          (e["id"], json.dumps(e, sort_keys=True, allow_nan=False), now))
+            for w in work:
+                self.store._conn.execute("INSERT INTO behavior_seed_work VALUES (?,?,?) ON CONFLICT(id) "
+                                         "DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at",
+                                         (w["id"], json.dumps(w, sort_keys=True, allow_nan=False), now))
+            self.store._conn.execute("DELETE FROM behavior_seed_work WHERE id IN (SELECT id FROM behavior_seed_work "
+                                     "ORDER BY created_at DESC,id LIMIT -1 OFFSET ?)", (MAX_EDGES,))
             self.store._conn.execute("DELETE FROM behavior_seed_links WHERE id IN (SELECT id FROM behavior_seed_links "
                                      "ORDER BY created_at DESC,id LIMIT -1 OFFSET ?)", (MAX_EDGES,))
             return True
@@ -178,6 +207,10 @@ class SourceIndex:
     def edges(self):
         with self.store._lock:
             return [json.loads(r[0]) for r in self.store._conn.execute("SELECT payload FROM behavior_seed_links ORDER BY created_at DESC,id")]
+
+    def work(self):
+        with self.store._lock:
+            return [json.loads(r[0]) for r in self.store._conn.execute("SELECT payload FROM behavior_seed_work ORDER BY created_at DESC,id")]
 
     def status(self, records):
         current = {r["id"]: r for r in records}
@@ -202,6 +235,28 @@ class SourceIndex:
 
     def prune(self, *, now, retention=180*86400):
         with self.store._lock, self.store._conn:
-            self.store._conn.execute("DELETE FROM behavior_seed_records WHERE seen_at<?", (now-retention,))
-            known = {r[0] for r in self.store._conn.execute("SELECT id FROM behavior_seed_records")}
-            self._remove_links(lambda e: e["left"]["record_id"] not in known or e["right"]["record_id"] not in known)
+            return prune_connection(self.store._conn, now-retention)
+
+
+def prune_connection(conn, cutoff):
+    """Retention without constructing an engine, migrating, or creating tables."""
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "behavior_seed_records" not in tables:
+        return 0
+    removed = conn.execute("DELETE FROM behavior_seed_records WHERE seen_at<?", (cutoff,)).rowcount
+    known = {r[0] for r in conn.execute("SELECT id FROM behavior_seed_records")}
+    for table in ("behavior_seed_links", "behavior_seed_work"):
+        if table not in tables:
+            continue
+        for ident, payload, created in conn.execute("SELECT id,payload,created_at FROM "+table).fetchall():
+            try:
+                item = json.loads(payload)
+                refs = [item["left"]["record_id"], item["right"]["record_id"]] if table.endswith("links") else [item["endpoint"]["record_id"]]
+                keep = created >= cutoff and all(ref in known for ref in refs)
+            except (ValueError, TypeError, KeyError):
+                keep = False
+            if not keep:
+                removed += conn.execute("DELETE FROM "+table+" WHERE id=?", (ident,)).rowcount
+    if "behavior_seed_sources" in tables:
+        removed += conn.execute("DELETE FROM behavior_seed_sources WHERE observed_at<?", (cutoff,)).rowcount
+    return removed

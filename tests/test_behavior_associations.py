@@ -154,3 +154,61 @@ def test_revoke_or_epoch_change_during_analysis_cannot_publish_links(tmp_path):
         assert result["state"] == "cancelled" and index.edges() == []
     finally:
         store.close()
+
+
+def test_work_hypotheses_survive_later_batches_restart_and_cache_age_without_copying_quotes(tmp_path):
+    from service.assistant.behavior_interpreter import Interpreter
+    path = tmp_path / "behavior.db"
+    text = "Your antenna calibration is due tomorrow at 4pm UTC."
+    publication = Snapshot("messages", tuple(dict(id=str(i), text=text+f" Item {i}.", source_time=NOW,
+        time_basis="source_timestamp", direction="incoming") for i in range(9)),
+        enabled=True, available=True, current=lambda: True, publication_complete=True)
+    def complete(_system, prompt, **_):
+        rows = json.loads(prompt)["evidence"]
+        return json.dumps(dict(patterns=[], links=[], demands=[dict(source_id=r["id"], quote=r["text"],
+            kind="preparation", title="Prepare calibration", temporal_id=r["temporal"][0]["id"],
+            ownership="user", importance="unknown") for r in rows]))
+    interpreter = Interpreter(complete)
+    def analyze(rows, *, admit):
+        result = interpreter.interpret(rows, [], now=NOW, timezone="UTC", associations=True, admit=admit)
+        assert result["state"] == "tentative"
+        return dict(links=result["link_proposals"], demands=result["demands"])
+    store = Store(path)
+    try:
+        seed = Seed(SourceIndex(store))
+        for offset in range(3):
+            result = seed.run([publication], epoch="one", now=NOW+offset, analysis_enabled=True,
+                              analyze=analyze, admit=lambda: True)
+            assert result["state"] == "advanced"
+        assert len(seed.demands([publication], epoch="one", now=NOW+1800, admit=lambda: True)) == 9
+        dump = "\n".join(store._conn.iterdump())
+        assert text not in dump and "Prepare calibration" not in dump
+    finally:
+        store.close()
+    store = Store(path)
+    try:
+        seed = Seed(SourceIndex(store))
+        demands = seed.demands([publication], epoch="one", now=NOW+1800, admit=lambda: True)
+        assert len(demands) == 9
+        assert all(d["importance"] == "unknown" and d["confidence"] is None and d["action_authority"] == "none" for d in demands)
+        assert seed.demands([publication], epoch="one", now=NOW+3*86400, admit=lambda: True) == []
+        assert seed.demands([replace(publication, available=False)], epoch="one", now=NOW, admit=lambda: True) == []
+        assert seed.demands([replace(publication, enabled=False)], epoch="one", now=NOW, admit=lambda: True) == []
+    finally:
+        store.close()
+
+
+def test_multilingual_batch_retains_cross_source_context_within_byte_budget(tmp_path):
+    from service.assistant.behavior_seed import context_for
+    store = Store(tmp_path / "behavior.db")
+    try:
+        copies = [replace(s, records=tuple(dict(r, text="共同材料 "+"🦉"*3000) for r in s.records)) for s in snapshots()]
+        records, manifests, _ = prepare(copies)
+        index = SourceIndex(store)
+        index.sync(records, manifests, epoch="one", now=NOW)
+        context = context_for(index.select(records, now=NOW), records)
+        assert {r["source"] for r in context} == {"email", "calendar"}
+        assert len(json.dumps(context, ensure_ascii=False).encode()) <= 16000
+        assert all(r["text"].startswith("共同材料") for r in context)
+    finally:
+        store.close()

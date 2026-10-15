@@ -7,6 +7,8 @@ progress is not saved permission: materialization always needs current evidence.
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import nullcontext
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import json
@@ -14,7 +16,7 @@ import math
 import re
 
 from service.behavior.associations import materialize
-from service.behavior.source_index import PASSAGE_CHARS, SOURCES
+from service.behavior.source_index import PASSAGE_BYTES, PASSAGE_CHARS, SOURCES
 
 MAX_SOURCE_RECORDS = 2000
 MAX_RECORD_CHARS = 64000
@@ -35,6 +37,7 @@ class Snapshot:
     requested_range: tuple | None = None
     declared_range: tuple | None = None
     scope: str = "cached_publication"
+    published_at: float | None = None
 
 
 def _number(value):
@@ -44,6 +47,10 @@ def _number(value):
 def _range(value):
     return list(value) if (isinstance(value, (list, tuple)) and len(value) == 2
                            and all(_number(v) for v in value) and value[0] < value[1]) else None
+
+
+def _choice(value, allowed, default="unknown"):
+    return value if isinstance(value, str) and value in allowed else default
 
 
 def prepare(snapshots):
@@ -61,7 +68,7 @@ def prepare(snapshots):
         info = dict(state="off", eligible=0, seen=0, skipped=0, omitted=0,
                     requested_range=_range(snap.requested_range), declared_range=_range(snap.declared_range),
                     observed_range=None, publication_complete=snap.publication_complete is True,
-                    scope=snap.scope if snap.scope in {"cached_publication", "retained_history"} else "cached_publication",
+                    scope=_choice(snap.scope, {"cached_publication", "retained_history"}, "cached_publication"),
                     record_cap=MAX_SOURCE_RECORDS)
         manifests[source] = info
         if snap.enabled is not True:
@@ -79,18 +86,29 @@ def prepare(snapshots):
         info["seen"] = len(snap.records)
         info["omitted"] += max(0, len(snap.records)-MAX_SOURCE_RECORDS)
         for raw in snap.records[:MAX_SOURCE_RECORDS]:
-            if not isinstance(raw, dict):
+            if not isinstance(raw, Mapping):
                 info["skipped"] += 1
                 continue
             identity, text = raw.get("id"), raw.get("text")
+            if (_choice(raw.get("status"), {"done", "completed", "cancelled", "dismissed"}) != "unknown"
+                    and not (source == "reminders" and raw.get("evidence_basis") == "recorded_completion")):
+                info["skipped"] += 1
+                continue
             if not isinstance(identity, str) or not 1 <= len(identity) <= 1000 or not isinstance(text, str) or not text.strip():
                 info["skipped"] += 1
                 continue
-            size = len(text.encode("utf-8"))
-            if len(text) > MAX_RECORD_CHARS or used+size > MAX_BYTES or source_bytes+size > MAX_SOURCE_BYTES:
+            if len(text) > MAX_RECORD_CHARS:
                 info["omitted"] += 1
                 continue
-            ident = source + ":" + hashlib.sha256(identity.encode()).hexdigest()[:32]
+            try:
+                size, identity_bytes = len(text.encode("utf-8")), identity.encode("utf-8")
+            except UnicodeError:
+                info["skipped"] += 1
+                continue
+            if used+size > MAX_BYTES or source_bytes+size > MAX_SOURCE_BYTES:
+                info["omitted"] += 1
+                continue
+            ident = source + ":" + hashlib.sha256(identity_bytes).hexdigest()[:32]
             if ident in seen:
                 # Conflicting duplicate identities cannot choose their own winner.
                 prior = next((r for r in records if r["id"] == ident), None)
@@ -104,23 +122,29 @@ def prepare(snapshots):
                 info["skipped"] += 1
                 continue
             seen.add(ident)
-            basis = raw.get("evidence_basis", "unknown")
-            if basis not in {"scheduled", "recorded_completion", "observed", "source_statement", "unknown"}:
-                basis = "unknown"
+            basis = _choice(raw.get("evidence_basis"), {"scheduled", "recorded_completion", "observed", "source_statement"})
             if source == "calendar":
                 basis = "scheduled"
             elif source in {"email", "messages", "notes"}:
                 basis = "source_statement"
-            time_basis, stamp = raw.get("time_basis", "unknown"), raw.get("source_time")
-            if time_basis not in {"source_timestamp", "scheduled_time", "completion_time"} or not _number(stamp):
+            time_basis, stamp = _choice(raw.get("time_basis"), {"source_timestamp", "scheduled_time", "completion_time"}), raw.get("source_time")
+            if time_basis == "unknown" or not _number(stamp):
                 time_basis, stamp = "unknown", None
             # Notes lack an original utterance date. Even a caller-supplied
             # modified_at/source_time must not anchor relative words in prose.
             if source == "notes":
                 time_basis, stamp = "unknown", None
-            revision = hashlib.sha256(json.dumps([text, stamp, time_basis, basis], ensure_ascii=False).encode()).hexdigest()
+            direction = _choice(raw.get("direction"), {"incoming", "outgoing"})
+            status = _choice(raw.get("status"), {"active", "pending"})
+            revision = hashlib.sha256(json.dumps([text, stamp, time_basis, basis, direction, status], ensure_ascii=False).encode()).hexdigest()
+            reference = raw.get("reference")
+            reference = {str(k):v for k,v in reference.items() if isinstance(k, str) and len(k) <= 80
+                         and isinstance(v, str) and len(v) <= 1000} if isinstance(reference, Mapping) and len(reference) <= 6 else {}
             records.append(dict(id=ident, source=source, revision=revision, text=text,
-                                source_time=stamp, time_basis=time_basis, evidence_basis=basis))
+                                source_time=stamp, time_basis=time_basis, evidence_basis=basis,
+                                direction=direction,
+                                publication_at=snap.published_at if _number(snap.published_at) else None,
+                                reference=reference or {"source": source, "id": ident}))
             used += size
             source_bytes += size
             info["eligible"] += 1
@@ -155,7 +179,7 @@ def context_for(anchors, records):
             if not matches:
                 continue
             start = max(0, matches[0]-160)
-            text = r["text"][start:start+PASSAGE_CHARS]
+            text = r["text"][start:start+PASSAGE_CHARS].encode()[:PASSAGE_BYTES].decode("utf-8", errors="ignore")
             other = words(text)
             score = len(terms & other) / max(1, len(terms | other))
             ranked.append((score, r["id"], dict(r, text=text, text_start=start)))
@@ -167,6 +191,9 @@ def context_for(anchors, records):
                 ids.add(ident)
     result, size = [], 0
     for r in selected:
+        # Opaque native references are unnecessary in a semantic prompt. Keep
+        # them only in the current host snapshot for later source resolution.
+        r = {k:v for k,v in r.items() if k not in {"reference", "publication_at"}}
         n = len(json.dumps(r, ensure_ascii=False).encode())
         if size+n <= MAX_INPUT_BYTES:
             result.append(r)
@@ -178,16 +205,19 @@ class Seed:
     def __init__(self, index):
         self.index = index
 
-    def run(self, snapshots, *, epoch, now, analysis_enabled=False, analyze=None, admit=lambda: False):
+    def run(self, snapshots, *, epoch, now, analysis_enabled=False, analyze=None, admit=lambda: False,
+            publication=nullcontext, timezone="UTC"):
         if analysis_enabled is not True:
-            self.index.reset()
+            with publication():
+                self.index.reset()
             return dict(state="off", sources=self.index.status([]), analyzed=0)
         records, manifests, receipts = prepare(snapshots)
         guard = lambda: _current(receipts, admit)
-        if not guard():
-            return dict(state="unavailable", sources={}, analyzed=0)
-        self.index.sync(records, manifests, epoch=epoch, now=now)
-        anchors = self.index.select(records, now=now)
+        with publication():
+            if not guard():
+                return dict(state="unavailable", sources={}, analyzed=0)
+            self.index.sync(records, manifests, epoch=epoch, now=now)
+            anchors = self.index.select(records, now=now)
         context = context_for(anchors, records)
         included = {r["id"] for r in context}
         anchors = [r for r in anchors if r["id"] in included]
@@ -197,23 +227,35 @@ class Seed:
             try:
                 # An analyzer cannot mutate the authoritative passages it cites.
                 response = analyze(deepcopy(context), admit=guard)
-                if not isinstance(response, dict) or set(response) != {"links"} or not isinstance(response["links"], list):
+                if (not isinstance(response, dict) or not {"links"} <= set(response) <= {"links", "demands", "processed_ids"}
+                        or not isinstance(response["links"], list) or not isinstance(response.get("demands", []), list)):
                     raise ValueError("Unusable seed interpretation")
+                processed = response.get("processed_ids", [r["id"] for r in context])
+                if not isinstance(processed, list) or any(not isinstance(i, str) or i not in included for i in processed):
+                    raise ValueError("Unknown analyzed record")
+                anchors = [r for r in anchors if r["id"] in processed]
                 from service.behavior.associations import MAX_LINKS, validate
                 if (len(json.dumps(response, ensure_ascii=False).encode()) > 16000
                         or len(response["links"]) > MAX_LINKS
                         or any(not validate([p], context) for p in response["links"])):
                     raise ValueError("Ungrounded seed interpretation")
-                if guard() and self.index.finish(anchors, context, response["links"], epoch=epoch, now=now, admit=guard):
-                    state, analyzed = "advanced", len(anchors)
-                else:
-                    state = "cancelled"
+                from service.behavior.associations import work_metadata
+                from service.assistant.behavior_interpreter import temporal_choices
+                grounded = [dict(r, temporal=temporal_choices(r["text"], r["source_time"], timezone)
+                                 if r["time_basis"] == "source_timestamp" else []) for r in context]
+                work = work_metadata(response.get("demands", []), grounded, now=now, timezone=timezone)
+                with publication():
+                    if guard() and anchors and self.index.finish(anchors, context, response["links"], epoch=epoch, now=now, admit=guard, work=work):
+                        state, analyzed = "advanced", len(anchors)
+                    else:
+                        state = "cancelled"
             except Exception:
-                if guard():
-                    self.index.defer(anchors, epoch=epoch, now=now)
-                    state = "deferred"
-                else:
-                    state = "cancelled"
+                with publication():
+                    if guard():
+                        self.index.defer(anchors, epoch=epoch, now=now)
+                        state = "deferred"
+                    else:
+                        state = "cancelled"
         return dict(state=state, sources=self.index.status(records) if guard() else {}, analyzed=analyzed,
                     detail="Progress covers supplied bounded records, not an exhaustive account or device history.")
 
@@ -231,3 +273,13 @@ class Seed:
             if len(result) >= limit:
                 break
         return result if self.index._epoch() == epoch and _current(receipts, admit) else []
+
+    def demands(self, snapshots, *, epoch, now, default_minutes=30, admit=lambda: False):
+        from service.behavior.associations import materialize_work
+        records, _, receipts = prepare(snapshots)
+        if self.index._epoch() != epoch or not _current(receipts, admit):
+            return []
+        values = [v for w in self.index.work()
+                  if (v := materialize_work(w, records, now=now, default_minutes=default_minutes)) is not None]
+        values.sort(key=lambda d: (d["due_ts"] if d["due_ts"] is not None else float("inf"), d["id"]))
+        return values[:100] if self.index._epoch() == epoch and _current(receipts, admit) else []

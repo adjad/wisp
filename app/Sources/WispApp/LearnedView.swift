@@ -137,6 +137,7 @@ final class LearnedModel: ObservableObject {
     @Published var activitySummary: [String: Any] = [:]
     @Published var busy: Set<String> = []
     @Published var error = ""
+    @Published var seedProgress: [String: Any] = [:]
     private let client = WispClient()
     private var revision = 0
 
@@ -165,6 +166,7 @@ final class LearnedModel: ObservableObject {
         guard requested == revision else { return }
         signals = signalReply?["settings"] as? [String: Any] ?? [:]
         activitySummary = signalReply?["activity"] as? [String: Any] ?? [:]
+        seedProgress = signalReply?["seed"] as? [String: Any] ?? [:]
         guard let l, let rows = l["patterns"] as? [[String: Any]] else {
             phase = .failed("Couldn't load what Wisp learned. Try Refresh.")
             return
@@ -368,10 +370,28 @@ struct LearnedView: View {
                 .font(.caption).foregroundStyle(.secondary)
             signalToggle("activity", "App, idle and screen-state metadata")
             signalToggle("websites", "Website visit context from enabled Browser History")
-            signalToggle("email", "Recent email passages for possible commitments")
-            signalToggle("messages", "Recent message passages for possible commitments")
+            signalToggle("email", "Accessible cached email bodies")
+            signalToggle("messages", "Accessible cached messages")
+            signalToggle("notes", "Current Notes contents")
+            signalToggle("calendar_context", "Retained calendar plans (attendance unknown)")
+            signalToggle("reminders_context", "Recorded reminder completion history")
             signalToggle("interpretation", "Interpret selected context with Wisp's configured model")
             signalToggle("remote_analysis", "Allow selected context to reach a configured remote model")
+            if model.signals["interpretation"] as? Bool == true {
+                Text("Initial context analysis").font(.subheadline.weight(.semibold))
+                let sources = model.seedProgress["sources"] as? [String: [String: Any]] ?? [:]
+                ForEach(["email", "messages", "notes", "calendar", "reminders"], id: \.self) { source in
+                    let info = sources[source] ?? [:]
+                    let state = info["state"] as? String ?? "waiting"
+                    let analyzed = info["analyzed"] as? Int ?? 0
+                    let indexed = info["indexed"] as? Int ?? 0
+                    let omitted = info["omitted"] as? Int ?? 0
+                    Text("\(source.capitalized): \(analyzed) of \(indexed) accessible records processed · \(state)\(omitted > 0 ? " · \(omitted) omitted" : "")")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Text("Progress resumes across launches and advances through bounded passages. A processed seed covers accessible cached records, not your whole mailbox or account history. Links and work suggestions remain hypotheses and require current source evidence.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if model.signals["activity"] as? Bool == true,
                let seconds = model.activitySummary["covered_seconds"] as? Double {
                 Text("Last seven days: \(Int(seconds / 60)) minutes of device observations collected.")

@@ -80,10 +80,11 @@ def test_long_records_advance_passages_instead_of_marking_unread_tail_analyzed(i
     publication = snap(text=text)
     result = run(index, [publication])
     assert result["sources"]["email"]["analyzed"] == 0
-    assert result["sources"]["email"]["analyzed_characters"] == 2400
+    assert 0 < result["sources"]["email"]["analyzed_characters"] < len(text)
     result = run(index, [publication], NOW+1)
     assert result["sources"]["email"]["analyzed"] == 0
-    result = run(index, [publication], NOW+2)
+    for tick in range(2, 10):
+        result = run(index, [publication], NOW+tick)
     assert result["sources"]["email"]["analyzed"] == 1
     assert result["sources"]["email"]["analyzed_characters"] == len(text)+1
 
@@ -223,3 +224,34 @@ def test_empty_fresh_publication_differs_from_unavailable(index):
     info = result["sources"]["email"]
     assert info["state"] == "seeded" and info["coverage"] == "bounded_publication"
     assert info["indexed"] == 0 and info["observed_range"] is None
+
+
+def test_admission_is_rechecked_inside_publication_gate_before_sync(index):
+    from contextlib import contextmanager
+    live = [True]
+    @contextmanager
+    def publication():
+        live[0] = False  # simulate revocation before this pass gets the host gate
+        index.reset("new-consent")
+        yield
+    result = Seed(index).run([snap()], epoch="old-consent", now=NOW, analysis_enabled=True,
+        analyze=lambda *a, **k: {"links": []}, admit=lambda: live[0], publication=publication)
+    assert result["state"] == "unavailable" and index._epoch() == "new-consent"
+    assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_records").fetchone()[0] == 0
+
+
+def test_only_records_actually_included_in_interpreter_input_advance(index):
+    def analyze(rows, **_):
+        return dict(links=[], processed_ids=[rows[0]["id"]])
+    result = Seed(index).run([snap(n=4)], epoch="one", now=NOW, analysis_enabled=True,
+                            analyze=analyze, admit=lambda: True)
+    assert result["analyzed"] == 1 and result["sources"]["email"]["analyzed"] == 1
+    assert result["sources"]["email"]["pending"] == 3
+
+
+def test_malformed_metadata_and_unicode_do_not_create_false_time_or_crash_seed():
+    publication = replace(snap(), records=(dict(id="valid", text="A safely readable passage.", source_time=[],
+        time_basis={}, direction=[], evidence_basis={}, status=[]), dict(id="bad", text="\ud800")))
+    records, detail, _ = prepare([publication])
+    assert len(records) == 1 and records[0]["source_time"] is None and records[0]["direction"] == "unknown"
+    assert detail["email"]["skipped"] == 1
