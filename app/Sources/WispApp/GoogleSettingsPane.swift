@@ -7,6 +7,19 @@ import SwiftUI
 /// opens the consent URL in the default browser, and shows connection status.
 @MainActor
 final class GoogleAccountModel: ObservableObject {
+    struct InboxAccount: Identifiable {
+        let id: String
+        let lastSync: Date?
+        let fresh: Bool
+        let error: String
+    }
+    struct MailAccount: Identifiable {
+        let id: String
+        let name: String
+    }
+    @Published var inboxAccounts: [InboxAccount] = []
+    @Published var mailAccounts: [MailAccount] = []
+    @Published var selectedMailAccountID = ""
     @Published var connected = false
     @Published var email = ""
     @Published var authorizing = false
@@ -41,7 +54,17 @@ final class GoogleAccountModel: ObservableObject {
         lastError = s["last_error"] as? String ?? ""
         hasSavedSecret = s["has_secret"] as? Bool ?? false
         if clientID.isEmpty { clientID = s["client_id"] as? String ?? "" }
-        if let t = s["last_headers_sync"] as? Double { lastSync = Date(timeIntervalSince1970: t) }
+        lastSync = (s["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:))
+        inboxAccounts = (s["accounts"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let address = row["email"] as? String else { return nil }
+            return InboxAccount(id: address,
+                lastSync: (row["last_headers_sync"] as? Double).map(Date.init(timeIntervalSince1970:)),
+                fresh: row["fresh"] as? Bool ?? false, error: row["last_error"] as? String ?? "")
+        }
+        mailAccounts = (s["mail_accounts"] as? [[String: Any]] ?? []).compactMap { row in
+            guard let id = row["id"] as? String, let name = row["name"] as? String else { return nil }
+            return MailAccount(id: id, name: name)
+        }
     }
 
     func refreshWorkspace() async {
@@ -127,10 +150,11 @@ final class GoogleAccountModel: ObservableObject {
         message = ""
         Task {
             let body: [String: Any] = ["client_id": id,
-                                       "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)]
+                                       "client_secret": clientSecret.trimmingCharacters(in: .whitespacesAndNewlines),
+                                       "mail_account_id": selectedMailAccountID]
             guard let r = await request("POST", "assistant/gmail/connect", body: body),
                   r["ok"] as? Bool == true, let s = r["auth_url"] as? String,
-                  let url = URL(string: s), url.host == "accounts.google.com" else {
+                  let url = URL(string: s), url.scheme == "https", url.host == "accounts.google.com" else {
                 message = "Couldn't start Google sign-in."
                 return
             }
@@ -142,10 +166,14 @@ final class GoogleAccountModel: ObservableObject {
         }
     }
 
-    func disconnect() {
+    func disconnect(_ account: String) {
         Task {
-            _ = await request("POST", "assistant/gmail/disconnect")
-            message = "Gmail disconnected. Wisp will use Mail.app again."
+            guard let response = await request("POST", "assistant/gmail/disconnect", body: ["account": account]),
+                  response["ok"] as? Bool == true else {
+                message = "Couldn’t confirm disconnect. Try again."
+                return
+            }
+            message = "Disconnected \(account). Its Mail cache may still be available."
             await refresh()
         }
     }
@@ -157,8 +185,10 @@ final class GoogleAccountModel: ObservableObject {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard let self, !Task.isCancelled else { return }
                 await self.refresh()
-                if self.connected { self.message = "Connected."; return }
-                if !self.authorizing { return }
+                if !self.authorizing {
+                    self.message = self.connected ? "Sign-in finished. Check each account’s refresh status below." : "Sign-in did not finish. Try again."
+                    return
+                }
             }
         }
     }
@@ -246,40 +276,60 @@ struct GoogleSettingsPane: View {
                 Divider()
 
                 // Direct Gmail inbox sync (feeds summaries and the daily brief)
-                DisclosureGroup("Inbox sync (direct Gmail, optional)") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 8) {
-                            Image(systemName: model.connected ? "checkmark.circle.fill" : "circle.dashed")
-                                .foregroundStyle(model.connected ? Color.green : Theme.textMuted)
-                            Text(model.connected
-                                 ? "Connected as \(model.email). Mail syncs straight from Google into summaries and the daily brief."
-                                 : "Not connected. Summaries use Mail.app, which has to be open to stay current.")
-                                .font(.caption).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Email with Mail closed").font(.system(size: 14, weight: .medium))
+                    Text("Connect each Google or school Google account you want Wisp to check. Wisp reads Google directly and checks for new mail when you ask. Other accounts continue to use Mail’s local cache.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    ForEach(model.inboxAccounts) { account in
+                        HStack(alignment: .top) {
+                            Image(systemName: account.fresh ? "checkmark.circle.fill" : "exclamationmark.circle")
+                                .foregroundStyle(account.fresh ? Color.green : Color.orange)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(account.id).font(.caption.weight(.medium))
+                                Text(account.fresh ? "Recently checked with Google" : "Cache stale or not yet verified")
+                                    .font(.caption).foregroundStyle(account.fresh ? Color.secondary : Color.orange)
+                                if let last = account.lastSync {
+                                    Text("Last successful refresh: \(last.formatted(date: .abbreviated, time: .shortened))")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                } else {
+                                    Text("No successful refresh recorded").font(.caption2).foregroundStyle(.secondary)
+                                }
+                                if !account.error.isEmpty {
+                                    Text(account.error).font(.caption).foregroundStyle(.orange)
+                                }
+                            }
                             Spacer()
-                            if model.connected { Button("Disconnect") { model.disconnect() } }
+                            Button("Disconnect") { model.disconnect(account.id) }
                         }
-                        if model.connected, let last = model.lastSync {
-                            Text("Last synced \(last.formatted(.relative(presentation: .named)))")
-                                .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if !model.mailAccounts.isEmpty {
+                        Picker("Corresponding Mail account", selection: $model.selectedMailAccountID) {
+                            Text("Match by email address").tag("")
+                            ForEach(model.mailAccounts) { account in
+                                Text(account.name).tag(account.id)
+                            }
                         }
-                        if !model.lastError.isEmpty {
-                            Text("Last sync problem: \(model.lastError)").font(.caption).foregroundStyle(.orange)
-                        }
-                        Button(model.authorizing ? "Waiting for Google…" : "Connect Gmail inbox sync") { model.connect() }
-                            .disabled(model.authorizing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
-                        if !model.message.isEmpty {
-                            Text(model.message).font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text("Read-only. Uses the same OAuth client and needs the Gmail API enabled.")
+                        Text("Select the same account if Mail uses a name such as “Google”. This keeps its older Mail copy from appearing twice.")
                             .font(.caption2).foregroundStyle(.secondary)
                     }
-                    .padding(.top, 6)
+                    Button(model.authorizing ? "Waiting for Google…" : "Connect or reconnect an email account") { model.connect() }
+                        .disabled(model.authorizing || model.clientID.trimmingCharacters(in: .whitespaces).isEmpty)
+                    if !model.message.isEmpty {
+                        Text(model.message).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Text("Read-only. Google sign-in requires your consent. A school administrator may restrict access. If a refresh fails, Wisp labels cached results and their last successful refresh.")
+                        .font(.caption2).foregroundStyle(.secondary)
                 }
             }
         }
         .task {
             await model.refresh()
             await model.refreshWorkspace()
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                guard !Task.isCancelled else { return }
+                await model.refresh()
+            }
         }
     }
 }

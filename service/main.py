@@ -2766,18 +2766,25 @@ async def gmail_connect(body: dict[str, Any]) -> dict[str, Any]:
     saved_id, saved_secret = google_workspace.saved_credentials()
     cfg = gmail_source.load_config()
     client_id = str(body.get("client_id") or cfg.get("client_id") or saved_id or "")
-    secret = str(body.get("client_secret") or cfg.get("client_secret") or "")
+    secret = str(body.get("client_secret") or
+                 (cfg.get("client_secret") if client_id == cfg.get("client_id") else "") or "")
     if not secret and client_id == (saved_id or client_id) and saved_id:
         secret = saved_secret      # same client as the Workspace setup: reuse its secret
     if not client_id:
         return {"ok": False, "error": "client_id is required"}
-    return {"ok": True, "auth_url": await gmail_source.begin_authorization(client_id, secret)}
+    native_id = str(body.get("mail_account_id") or "")
+    if native_id:
+        from service.tools.email_tools import native_email_accounts
+        if native_id not in {row["id"] for row in native_email_accounts()}:
+            return {"ok": False, "error": "That Mail account is no longer available; refresh Settings and select it again"}
+    return {"ok": True, "auth_url": await gmail_source.begin_authorization(
+        client_id, secret, mail_account_id=native_id)}
 
 
 @app.post("/assistant/gmail/disconnect")
-async def gmail_disconnect() -> dict[str, Any]:
+async def gmail_disconnect(body: dict[str, Any] | None = None) -> dict[str, Any]:
     from service import gmail_source
-    await gmail_source.disconnect()
+    await gmail_source.disconnect(str((body or {}).get("account") or ""))
     return {"ok": True}
 
 

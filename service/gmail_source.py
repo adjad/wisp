@@ -28,6 +28,7 @@ import os
 import re
 import secrets
 import time
+from contextvars import ContextVar
 from email.header import decode_header, make_header
 from email.utils import parseaddr
 from urllib.parse import parse_qs, urlencode, urlparse
@@ -51,17 +52,20 @@ BODY_CAP = 20000
 FETCH_CONCURRENCY = 4        # metadata get = 5 quota units; the cap is 250/s
 
 HEADERS_EVERY = 300
-RAW_EVERY = 900
 HISTORY_EVERY = 1800
 
 _FS = "\x01"
 _RS = "\x02"
 
-_meta: dict[str, dict] = {}      # message id -> parsed metadata (immutable)
-_last = {"headers": 0.0, "raw": 0.0, "history": 0.0}
-_last_error = ""
-_lock: asyncio.Lock | None = None
+_meta: dict[tuple[str, str], dict] = {}
+_last: dict[str, dict[str, float]] = {}
+_errors: dict[str, str] = {}
+_access: dict[str, dict] = {}
+_epochs: dict[str, int] = {}
+_locks: dict[tuple[str, str], asyncio.Lock] = {}
+_context: ContextVar[tuple[str, dict, int] | None] = ContextVar("gmail_account", default=None)
 _pending_flow: dict | None = None
+_flow_generation = 0
 
 
 # --- config / token -----------------------------------------------------------
@@ -77,47 +81,77 @@ def load_config() -> dict:
 def _save_config(cfg: dict) -> None:
     MOE_DIR.mkdir(parents=True, exist_ok=True)
     tmp = CONFIG_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         json.dump(cfg, handle)
     tmp.replace(CONFIG_PATH)
 
 
+def connected_accounts(cfg: dict | None = None) -> dict[str, dict]:
+    cfg = load_config() if cfg is None else cfg
+    accounts = cfg.get("accounts")
+    if not isinstance(accounts, dict):
+        accounts = {str(cfg.get("email") or "").lower(): cfg} if cfg.get("email") else {}
+    return {email.lower(): {"client_id": cfg.get("client_id", ""),
+                            "client_secret": cfg.get("client_secret", ""), **item}
+            for email, item in accounts.items() if isinstance(item, dict) and
+            item.get("refresh_token") and (item.get("client_id") or cfg.get("client_id"))}
+
+
 def is_connected() -> bool:
-    cfg = load_config()
-    return bool(cfg.get("refresh_token") and cfg.get("client_id") and cfg.get("email"))
+    return bool(connected_accounts())
 
 
 def status() -> dict:
+    from service.tools import email_tools as E
     cfg = load_config()
-    return {"connected": is_connected(), "email": cfg.get("email", ""),
-            "client_id": cfg.get("client_id", ""),   # never the secret
-            "has_secret": bool(cfg.get("client_secret")),
-            "last_headers_sync": _last["headers"] or None,
-            "last_error": _last_error,
-            "authorizing": _pending_flow is not None}
+    accounts = connected_accounts(cfg)
+    sources = {row["account"]: row for row in E.email_source_details() if row["source"] == "gmail"}
+    rows = [{"email": email, "last_headers_sync": sources.get(email, {}).get("last_success"),
+             "fresh": sources.get(email, {}).get("fresh", False),
+             "last_error": _errors.get(email) or sources.get(email, {}).get("error", ""),
+             "mail_account_id": item.get("mail_account_id", "")}
+            for email, item in accounts.items()]
+    first = rows[0] if rows else {}
+    return {"connected": bool(rows), "email": first.get("email", ""), "accounts": rows,
+            "client_id": cfg.get("client_id", ""), "has_secret": bool(cfg.get("client_secret")),
+            "last_headers_sync": first.get("last_headers_sync"), "last_error": first.get("last_error", ""),
+            "authorizing": _pending_flow is not None, "mail_accounts": E.native_email_accounts()}
 
 
-_access: dict = {"token": "", "expires": 0.0}
+def _current() -> tuple[str, dict, int]:
+    value = _context.get()
+    if value is None:
+        raise GmailError("No Gmail account selected")
+    return value
+
+
+def _still_connected() -> bool:
+    email, cfg, epoch = _current()
+    actual = connected_accounts().get(email)
+    return bool(actual and actual.get("refresh_token") == cfg.get("refresh_token") and
+                _epochs.get(email, 0) == epoch)
 
 
 async def _access_token(http: httpx.AsyncClient) -> str:
-    if _access["token"] and time.time() < _access["expires"] - 60:
-        return _access["token"]
-    cfg = load_config()
+    email, cfg, _ = _current()
+    cached = _access.get(email, {})
+    if cached.get("token") and time.time() < cached.get("expires", 0) - 60:
+        return cached["token"]
     response = await http.post(TOKEN_URL, data={
-        "client_id": cfg.get("client_id", ""),
-        "client_secret": cfg.get("client_secret", ""),
-        "refresh_token": cfg.get("refresh_token", ""),
-        "grant_type": "refresh_token"})
+        "client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
+        "refresh_token": cfg.get("refresh_token", ""), "grant_type": "refresh_token"})
     body = response.json() if response.content else {}
     if response.status_code != 200 or "access_token" not in body:
-        # invalid_grant = revoked/expired consent (Google "Testing" apps expire
-        # refresh tokens after 7 days) — the user has to reconnect.
-        raise GmailError(f"token refresh failed: {body.get('error', response.status_code)}")
-    _access["token"] = body["access_token"]
-    _access["expires"] = time.time() + float(body.get("expires_in", 3600))
-    return _access["token"]
+        raise GmailError("Google sign-in expired or was revoked; reconnect this account in Settings ▸ Google"
+                         if body.get("error") == "invalid_grant" else "Google token refresh failed")
+    if body.get("scope") and SCOPE not in str(body["scope"]).split():
+        raise GmailError("Gmail read access is missing; reconnect this account in Settings ▸ Google")
+    if not _still_connected():
+        raise GmailError("Gmail connection changed during refresh")
+    _access[email] = {"token": body["access_token"], "expires": time.time() + float(body.get("expires_in", 3600))}
+    return body["access_token"]
 
 
 class GmailError(RuntimeError):
@@ -130,7 +164,7 @@ async def _get(http: httpx.AsyncClient, path: str, params: dict | list | None = 
         response = await http.get(f"{API}/{path}", params=params,
                                   headers={"Authorization": f"Bearer {token}"})
         if response.status_code == 401:
-            _access["token"] = ""
+            _access.pop(_current()[0], None)
             continue
         if response.status_code in (429, 403, 500, 503) and attempt < 3:
             await asyncio.sleep(1.5 * (attempt + 1))
@@ -242,7 +276,8 @@ async def _list_ids(http, limit: int, *, query: str = "", unread: bool = False) 
 
 
 async def _ensure_meta(http, ids: list[str]) -> None:
-    missing = [i for i in ids if i not in _meta]
+    account = _current()[0]
+    missing = [i for i in ids if (account, i) not in _meta]
     gate = asyncio.Semaphore(FETCH_CONCURRENCY)
 
     async def one(message_id: str) -> None:
@@ -251,13 +286,14 @@ async def _ensure_meta(http, ids: list[str]) -> None:
                 ("format", "metadata"), ("metadataHeaders", "From"),
                 ("metadataHeaders", "To"), ("metadataHeaders", "Subject"),
                 ("metadataHeaders", "Message-ID")])
-            _meta[message_id] = parse_metadata(data)
+            _meta[(account, message_id)] = parse_metadata(data)
 
     await asyncio.gather(*(one(i) for i in missing))
 
 
 def _lines(ids: list[str], unread_ids: set[str], account: str) -> str:
-    rows = [header_line(_meta[i], account, i in unread_ids) for i in ids if i in _meta]
+    rows = [header_line(_meta[(account, i)], account, i in unread_ids)
+            for i in ids if (account, i) in _meta]
     return "\n".join(rows)
 
 
@@ -266,8 +302,12 @@ async def _sync_headers(http, account: str) -> None:
     ids = await _list_ids(http, HEADERS_LIMIT)
     unread = set(await _list_ids(http, HEADERS_LIMIT, unread=True))
     await _ensure_meta(http, ids)
-    email_tools.cache_external_emails(headers=_lines(ids, unread, account))
-    _last["headers"] = time.time()
+    if not _still_connected():
+        return
+    cap = int(len(ids) >= HEADERS_LIMIT)
+    headers = _lines(ids, unread, account) + f"\nC2\x01{account}\x01{account}\x01{len(ids)}\x010\x01{cap}"
+    email_tools.cache_external_emails(account=account, headers=headers)
+    _last.setdefault(account, {})["headers"] = time.time()
 
 
 async def _sync_raw(http, account: str) -> None:
@@ -280,9 +320,11 @@ async def _sync_raw(http, account: str) -> None:
             return await _get(http, f"messages/{message_id}", [("format", "full")])
 
     messages = await asyncio.gather(*(one(i) for i in ids))
-    email_tools.cache_external_emails(
+    if not _still_connected():
+        return
+    email_tools.cache_external_emails(account=account,
         raw=_RS.join(raw_record(m, account) for m in messages))
-    _last["raw"] = time.time()
+    _last.setdefault(account, {})["raw"] = time.time()
 
 
 async def _sync_history(http, account: str) -> None:
@@ -290,62 +332,117 @@ async def _sync_history(http, account: str) -> None:
     ids = await _list_ids(http, HISTORY_LIMIT, query=f"newer_than:{HISTORY_DAYS}d")
     unread = set(await _list_ids(http, HISTORY_LIMIT, unread=True))
     await _ensure_meta(http, ids)
-    email_tools.cache_external_emails(history=_lines(ids, unread, account))
-    _last["history"] = time.time()
+    if not _still_connected():
+        return
+    cap = int(len(ids) >= HISTORY_LIMIT)
+    history = _lines(ids, unread, account) + f"\nC2\x01{account}\x01{account}\x01{len(ids)}\x010\x01{cap}"
+    email_tools.cache_external_emails(account=account, history=history)
+    _last.setdefault(account, {})["history"] = time.time()
 
 
-async def sync(parts: tuple[str, ...] = ("headers",)) -> bool:
-    """Run the requested syncs; True when they all succeeded. Never raises."""
-    global _lock, _last_error
-    if not is_connected():
-        return False
-    if _lock is None:
-        _lock = asyncio.Lock()
-    account = load_config()["email"]
-    async with _lock:
+async def _sync_account(account: str, parts: tuple[str, ...]) -> bool:
+    from service.tools import email_tools as E
+    # Capture config INSIDE the per-account lock. Disconnect/reconnect increments
+    # an epoch and invalidates every in-flight publication and token write.
+    if len(parts) > 1:
+        return all(await asyncio.gather(*(_sync_account(account, (part,)) for part in parts)))
+    lock = _locks.setdefault((account, parts[0]), asyncio.Lock())
+    async with lock:
+        cfg = connected_accounts().get(account)
+        if cfg is None:
+            return False
+        token = _context.set((account, dict(cfg), _epochs.get(account, 0)))
+        part = parts[0]
         try:
-            from service.tools import email_tools
-            email_tools.set_external_account(account)
-            async with httpx.AsyncClient(timeout=30) as http:
+            async with httpx.AsyncClient(timeout=10) as http:
                 for part in parts:
                     await {"headers": _sync_headers, "raw": _sync_raw,
                            "history": _sync_history}[part](http, account)
-            _last_error = ""
+            if not _still_connected():
+                return False
+            if part == "headers":
+                _errors.pop(account, None)
             return True
-        except Exception as exc:  # noqa: BLE001 — a failed sync keeps the old cache
-            _last_error = str(exc)[:200]
+        except asyncio.CancelledError:
+            if _still_connected():
+                reason = "Google refresh timed out; showing the last available cache"
+                if part == "headers":
+                    _errors[account] = reason
+                E.external_email_error(account, part, reason)
+            raise
+        except Exception as exc:
+            if _still_connected():
+                # Never expose HTTP payloads, query strings, tokens, or PII in errors.
+                reason = str(exc) if isinstance(exc, GmailError) else "Google could not be reached; try again when online"
+                if part == "headers":
+                    _errors[account] = reason
+                E.external_email_error(account, part, reason)
             return False
+        finally:
+            _context.reset(token)
 
 
-async def refresh_if_stale(max_age: float = 60.0, timeout: float = 12.0) -> None:
-    """On-demand freshness for a user's mail question (see sync_status)."""
-    if is_connected() and time.time() - _last["headers"] > max_age:
+async def sync(parts: tuple[str, ...] = ("headers",)) -> bool:
+    from service.tools import email_tools as E
+    accounts = connected_accounts()
+    E.configure_external_accounts(accounts)
+    if not accounts:
+        return False
+    results = await asyncio.gather(*(_sync_account(account, parts) for account in accounts))
+    return all(results)
+
+
+async def refresh_if_stale(max_age: float = 60.0, timeout: float = 12.0,
+                           parts: tuple[str, ...] = ("headers",)) -> None:
+    """Bounded on-demand refresh. Checking headers never fetches bodies."""
+    from service.tools import email_tools as E
+    accounts = connected_accounts()
+    if not accounts:
+        return
+    E.configure_external_accounts(accounts)
+
+    async def refresh(account):
+        needed = tuple(part for part in parts if not _last.get(account, {}).get(part) or
+                       not 0 <= time.time() - _last[account][part] <= max_age)
+        if not needed:
+            return
         try:
-            await asyncio.wait_for(sync(("headers",)), timeout)
+            await asyncio.wait_for(_sync_account(account, needed), timeout)
         except asyncio.TimeoutError:
-            pass
+            for part in needed:
+                E.external_email_error(account, part, "Google refresh timed out; showing the last available cache")
+
+    await asyncio.gather(*(refresh(account) for account in accounts))
 
 
 async def run() -> None:
-    """Background loop: headers 5 min, bodies 15 min, history 30 min."""
+    """Fetch providers independently; a slow history walk cannot block new mail."""
+    from service.tools import email_tools as E
+    E.configure_external_accounts(connected_accounts())
     while True:
-        if is_connected():
-            now = time.time()
-            parts = ["headers"]
-            if now - _last["raw"] >= RAW_EVERY:
-                parts.append("raw")
-            if now - _last["history"] >= HISTORY_EVERY:
-                parts.append("history")
-            await sync(tuple(parts))
-        await asyncio.sleep(60 if not is_connected() else HEADERS_EVERY)
+        accounts = connected_accounts()
+        E.configure_external_accounts(accounts)
+        async def update(account, part):
+            try:
+                await asyncio.wait_for(_sync_account(account, (part,)), 30)
+            except asyncio.TimeoutError:
+                pass
+        now = time.time()
+        await asyncio.gather(*(update(account, part) for account in accounts
+                               for part, every in (("headers", HEADERS_EVERY), ("history", HISTORY_EVERY))
+                               if now - _last.get(account, {}).get(part, 0) >= every))
+        # Body content is fetched only for explicit body requests, not in the background.
+        await asyncio.sleep(60)
 
 
 # --- OAuth (installed-app loopback + PKCE) -----------------------------------
 
 async def begin_authorization(client_id: str, client_secret: str = "",
-                              timeout: float = 300.0) -> str:
+                              timeout: float = 300.0, mail_account_id: str = "") -> str:
     """Start the loopback listener and return the Google consent URL."""
-    global _pending_flow
+    global _pending_flow, _flow_generation
+    _flow_generation += 1
+    generation = _flow_generation
     if _pending_flow:
         _pending_flow["server"].close()
     verifier = secrets.token_urlsafe(64)
@@ -360,8 +457,11 @@ async def begin_authorization(client_id: str, client_secret: str = "",
         try:
             line = (await asyncio.wait_for(reader.readline(), 10)).decode("latin-1")
             query = parse_qs(urlparse(line.split(" ")[1]).query) if " " in line else {}
-            if query.get("state", [""])[0] == state and query.get("code"):
-                await _finish(client_id, client_secret, query["code"][0], verifier, redirect)
+            if query.get("state", [""])[0] != state or generation != _flow_generation:
+                return writer.close()  # Unrelated/stale callbacks cannot consume the active flow.
+            if query.get("code"):
+                await _finish(client_id, client_secret, query["code"][0], verifier, redirect,
+                              generation=generation, mail_account_id=mail_account_id)
                 message = "Gmail connected. You can close this tab and return to Wisp."
             elif query:
                 message = f"Gmail was not connected ({query.get('error', ['denied'])[0]})."
@@ -398,7 +498,8 @@ async def begin_authorization(client_id: str, client_secret: str = "",
         "state": state, "access_type": "offline", "prompt": "consent"})
 
 
-async def _finish(client_id, client_secret, code, verifier, redirect) -> None:
+async def _finish(client_id, client_secret, code, verifier, redirect, *,
+                  generation: int, mail_account_id: str = "") -> None:
     async with httpx.AsyncClient(timeout=30) as http:
         response = await http.post(TOKEN_URL, data={
             "client_id": client_id, "client_secret": client_secret, "code": code,
@@ -418,31 +519,60 @@ async def _finish(client_id, client_secret, code, verifier, redirect) -> None:
                                  headers={"Authorization": f"Bearer {body['access_token']}"})
         data = profile.json() if profile.content else {}
         email = data.get("emailAddress", "")
-    if not email:
+    if profile.status_code != 200 or not email:
         detail = (data.get("error") or {}) if isinstance(data.get("error"), dict) else {}
         reason = detail.get("message") or f"HTTP {profile.status_code}"
         raise GmailError(f"Google refused the Gmail profile request: {reason[:160]}")
-    _meta.clear()
-    _access.update(token=body["access_token"], expires=time.time() + float(body.get("expires_in", 3600)))
-    _save_config({"client_id": client_id, "client_secret": client_secret,
-                  "email": email, "refresh_token": body["refresh_token"]})
-    asyncio.create_task(sync(("headers", "raw", "history")))
-
-
-async def disconnect() -> None:
+    if generation != _flow_generation:
+        return
+    email = email.strip().lower()
     cfg = load_config()
-    token = cfg.get("refresh_token")
-    if token:
+    accounts = connected_accounts(cfg)
+    if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
+                               for other, item in accounts.items()):
+        raise GmailError("That Mail account is already linked to a different Google account")
+    _epochs[email] = _epochs.get(email, 0) + 1
+    _access.pop(email, None)
+    _last.pop(email, None)
+    accounts[email] = {"client_id": client_id, "client_secret": client_secret,
+                       "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
+    _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
+    from service.tools import email_tools as E
+    E.configure_external_accounts(accounts)
+    E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
+    # Header-only first connection; bodies remain on demand.
+    asyncio.create_task(sync(("headers",)))
+
+
+async def disconnect(account: str = "") -> None:
+    """Invalidate before awaiting revocation; a late fetch cannot restore access."""
+    global _pending_flow, _flow_generation
+    from service.tools import email_tools as E
+    _flow_generation += 1
+    if _pending_flow:
+        _pending_flow["server"].close()
+        _pending_flow = None
+    cfg = load_config()
+    accounts = connected_accounts(cfg)
+    removed = {email: item for email, item in accounts.items() if not account or email == account.lower()}
+    for email in removed:
+        accounts.pop(email)
+        _epochs[email] = _epochs.get(email, 0) + 1
+        _access.pop(email, None)
+        _last.pop(email, None)
+        _errors.pop(email, None)
+        for key in list(_meta):
+            if key[0] == email:
+                _meta.pop(key, None)
+    if accounts:
+        _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
+                      "accounts": accounts})
+    else:
+        CONFIG_PATH.unlink(missing_ok=True)
+    E.configure_external_accounts(accounts)
+    for item in removed.values():
         try:
-            async with httpx.AsyncClient(timeout=10) as http:
-                await http.post("https://oauth2.googleapis.com/revoke", data={"token": token})
-        except Exception:  # noqa: BLE001 — local removal is what matters
-            pass
-    try:
-        CONFIG_PATH.unlink()
-    except FileNotFoundError:
-        pass
-    _meta.clear()
-    _access.update(token="", expires=0.0)
-    from service.tools import email_tools
-    email_tools.set_external_account("")
+            async with httpx.AsyncClient(timeout=5) as http:
+                await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
+        except Exception:
+            pass  # Local disconnect already succeeded.

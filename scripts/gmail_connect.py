@@ -26,11 +26,15 @@ async def main() -> None:
     webbrowser.open(url)
     for _ in range(300):
         await asyncio.sleep(1)
-        if gmail_source.is_connected():
-            print("Connected:", gmail_source.load_config()["email"])
+        info = gmail_source.status()
+        if not info["authorizing"]:
+            if not info["connected"]:
+                sys.exit("Google sign-in did not finish. Try again.")
+            print("Connected accounts:", ", ".join(row["email"] for row in info["accounts"]))
             await asyncio.sleep(2)
             return
     sys.exit("Timed out waiting for consent.")
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

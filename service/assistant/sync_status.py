@@ -60,7 +60,10 @@ def source_status(source: str) -> dict:
                 "state": email.email_sync_state(), "count": 0,
                 "reason": email._email_reason,
                 "read_source": email._email_read_source,
-                "warning": email.email_freshness_warning()}
+                "warning": email.email_freshness_warning(),
+                "accounts": email.email_source_details(),
+                "fresh": bool(email.email_source_details()) and all(
+                    row["fresh"] for row in email.email_source_details())}
     if source == "messages":
         from service.tools.imessage_tools import messages_sync_state
         return {"id": source, "label": _LABELS[source],
@@ -90,9 +93,9 @@ def sources_snapshot(source_ids: Iterable[str] = DAILY_SOURCE_IDS) -> dict:
             "Turned off" if state == "disabled" else
             (source.get("reason") or "Could not read this source"))
         if source.get("warning"):
-            source["progress_detail"] = "Local Mail read complete; server freshness unverified"
+            source["progress_detail"] = "Cached email available; some accounts are stale or unverified"
         elif source["id"] == "email" and state == "ready":
-            source["progress_detail"] = "Mail data read"
+            source["progress_detail"] = "Email refreshed" if source.get("fresh") else "Email data read"
         if source["id"] == "browser_history" and state == "syncing":
             from service.tools.browser_history_tools import _BROWSERS, _completed
             completed = len(_completed.intersection(_BROWSERS))
