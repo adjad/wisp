@@ -1016,3 +1016,80 @@ def test_cross_midnight_source_date_range_remains_a_half_open_absolute_range():
     lo, hi = day_bounds(DAY, ZONE)
     assert all(lo <= b["start"] < b["end"] <= hi for b in result["proposed_plan"]["blocks"])
     assert "source range [Oct 14, 8:00 AM, Oct 15, 8:00 AM)" in render(result)
+
+
+
+def away(identity="away", **changes):
+    return busy(identity, kind="possible_unavailability", title="Possible time away",
+        prediction_target="computer_activity", availability="unknown", basis="inferred", action_authority="none",
+        because="Computer inactivity recurs; an optional planning assumption, not verified busyness.") | changes
+
+
+def authored_task(minutes=60, **changes):
+    return dict(id="authored", title="Authored priority work", day=DAY, timezone=ZONE, kind="task",
+        duration_minutes=minutes, priority=2, due_ts=None, pinned_start=None, status="active", revision=1) | changes
+
+
+def test_typed_time_away_stays_unknown_in_plan_and_shared_renderer():
+    raw = context(windows=[away()])
+    original = deepcopy(raw)
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=raw)
+    holds = [b for b in result["proposed_plan"]["blocks"] if b["kind"] == "behavior_away"]
+    assert len(holds) == result["tentative_count"] == 1
+    assert holds[0]["title"] == "Possible time away" and holds[0]["pattern_id"] == "away"
+    assert holds[0]["task_id"] is None
+    assert any("availability is unknown" in w for w in holds[0]["warnings"])
+    text = render(result)
+    assert "Possible time away · tentative" in text and "Likely busy" not in text
+    assert raw == original
+
+
+@pytest.mark.parametrize("change", [dict(kind="unknown"), dict(prediction_target=None),
+    dict(prediction_target="human_availability"), dict(availability=None), dict(availability="busy"),
+    dict(availability="free"), dict(basis=None), dict(basis="observed"),
+    dict(action_authority=None), dict(action_authority="send"), dict(current=False),
+    dict(coverage="partial"), dict(confidence=.64), dict(observed_at=NOW+1),
+    dict(observed_at=NOW-22*86400), dict(evidence=[]), dict(timezone="UTC")])
+def test_away_requires_typed_unknown_no_action_and_current_proof(change):
+    assert not run(windows=[away(**change)])["tentative_count"]
+
+
+def test_time_away_never_makes_fitting_authored_work_unschedulable():
+    st = state(); st["preferences"]["end_minute"] = 17*60
+    task = authored_task(8*60); st["tasks"] = [task]
+    before = deepcopy(st)
+    result = run(s=st, windows=[away(start=at(14), end=at(16))])
+    blocks = result["proposed_plan"]["blocks"]
+    assert not result["proposed_plan"]["unscheduled"]
+    assert [(b["start"], b["end"]) for b in blocks if b.get("task_id") == task["id"]] == [(at(9), at(17))]
+    assert not result["tentative_count"] and st == before
+
+
+def test_away_occupies_only_gaps_after_authored_placement_and_calendar():
+    st = state(); task = authored_task(); st["tasks"] = [task]
+    result = run(s=st, windows=[away(start=at(9), end=at(11))])
+    blocks = result["proposed_plan"]["blocks"]
+    assert [(b["start"], b["end"]) for b in blocks if b.get("task_id") == task["id"]] == [(at(9), at(10))]
+    assert [(b["start"], b["end"]) for b in blocks if b["kind"] == "behavior_away"] == [(at(10), at(11))]
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_busy_placements_establish_authored_fit_before_away_advice(reverse):
+    st = state(); st["preferences"]["end_minute"] = 17*60; task = authored_task(5*60); st["tasks"] = [task]
+    windows = [busy("busy", start=at(14), end=at(16)), away(start=at(10), end=at(12))]
+    if reverse:
+        windows.reverse()
+    before = deepcopy(st)
+    result = run(s=st, windows=windows)
+    blocks = result["proposed_plan"]["blocks"]
+    assert not result["proposed_plan"]["unscheduled"] and st == before
+    assert [(b["start"], b["end"]) for b in blocks if b.get("task_id") == task["id"]] == [(at(9), at(14))]
+    assert [b["pattern_id"] for b in blocks if b["kind"] == "behavior"] == ["busy"]
+    assert not any(b["kind"] == "behavior_away" for b in blocks)
+
+
+@pytest.mark.parametrize("ignored,remaining", [("busy", "away"), ("away", "busy")])
+def test_day_correction_ignores_each_inference_kind_by_stable_pattern_id(ignored, remaining):
+    result = run(windows=[busy("busy", start=at(14), end=at(16)), away(start=at(18), end=at(19))],
+        ignored_windows=[ignored])
+    assert [b["pattern_id"] for b in result["proposed_plan"]["blocks"] if b["kind"] in ("behavior", "behavior_away")] == [remaining]

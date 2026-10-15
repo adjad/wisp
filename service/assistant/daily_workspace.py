@@ -324,14 +324,16 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     occupied = [(max(lo, b["start"]), min(hi, b["end"])) for b in base["blocks"]
                 if finite(b.get("end")) and b["end"] > b["start"]
                 and (b.get("task_id") is None or b["task_id"] in pinned_ids)]
+    windows = []
     if supported_behavior:
         behavior_detail = clean(behavior.get("detail") or "Tentative hypotheses; availability and coverage remain uncertain.", 500)
         for window in (behavior.get("windows") or [])[:100]:
             if not isinstance(window, dict):
                 continue
             ident, start, end = window.get("id"), window.get("start"), window.get("end")
-            score, stamp = window.get("confidence"), window.get("observed_at")
-            if (not isinstance(ident, str) or not 1 <= len(ident) <= 200 or ident in ignored or window.get("kind") != "busy"
+            score, stamp, kind = window.get("confidence"), window.get("observed_at"), window.get("kind")
+            if (not isinstance(ident, str) or not 1 <= len(ident) <= 200 or ident in ignored
+                    or kind not in ("busy", "possible_unavailability")
                     or window.get("current") is not True or not clean(window.get("because"))
                     or window.get("timezone") != timezone or not _refs(window.get("evidence"))
                     or not all(finite(v) for v in (start, end, score, stamp))
@@ -339,21 +341,39 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                     or end <= start or end <= max(now, lo) or start >= hi
                     or window.get("coverage") not in ("adequate", "complete")):
                 continue
-            for index, (a, b) in enumerate(_remaining(max(lo, start), min(hi, end), occupied)):
-                behavioral.append(dict(id="behavior:" + str(ident) + ":" + str(index),
-                    source="manual", kind="event", title="Likely busy · " + clean(window.get("title") or "Usual routine"),
-                    when_ts=a, end_ts=b, all_day=False, pattern_id=str(ident),
-                    explanation=clean(window["because"], 500), confidence=score,
+            if kind == "possible_unavailability" and (
+                    window.get("prediction_target") != "computer_activity"
+                    or window.get("availability") != "unknown" or window.get("basis") != "inferred"
+                    or window.get("action_authority") != "none" or not isinstance(window.get("because"), str)):
+                continue
+            windows.append(window)
+
+    def reserve(kind, occupied):
+        for window in windows:
+            if window["kind"] != kind:
+                continue
+            away = kind == "possible_unavailability"
+            for index, (a, b) in enumerate(_remaining(max(lo, window["start"]), min(hi, window["end"]), occupied)):
+                behavioral.append(dict(id=("behavior-away:" if away else "behavior:") + window["id"] + ":" + str(index),
+                    source="manual", kind="event", title="Possible time away" if away else
+                        "Likely busy · " + clean(window.get("title") or "Usual routine"),
+                    when_ts=a, end_ts=b, all_day=False, pattern_id=window["id"], window_kind=kind,
+                    explanation=clean(window["because"], 500), confidence=window["confidence"],
                     coverage=window["coverage"], evidence=deepcopy(window["evidence"]),
-                    observed_at=stamp, validation=window.get("validation"),
+                    observed_at=window["observed_at"], validation=window.get("validation"),
                     semantic_reason=window.get("semantic_reason"), uncertainty=window.get("uncertainty")))
-    # Tentative windows prevent automatic flexible placement, never displace
-    # authored pins. The normal planner reports any conflicting explicit pin.
+
+    reserve("busy", occupied)
     authored_plan = build_plan(day, timezone, state["tasks"],
                                state["commitments"] + behavioral, state["preferences"], state["sources"], now=now)
     authored_starts = {b["task_id"]: b["start"] for b in authored_plan["blocks"] if b.get("task_id") is not None}
-    # Reserve actual authored placements before the planner sorts generated
-    # suggestions by urgency. These local copies never change a user's pins.
+    # Computer inactivity does not establish personal availability. Its optional
+    # advice can use only gaps left AFTER fitting authored work around busy time.
+    advisory_occupied = [(max(lo, b["start"]), min(hi, b["end"]) if finite(b.get("end")) else hi)
+                        for b in authored_plan["blocks"] if finite(b.get("start"))]
+    reserve("possible_unavailability", advisory_occupied)
+    # Local copies preserve fitting authored placements without changing pins,
+    # revisions, saved tasks or the existing busy-period planning contract.
     reserved_tasks = [dict(t, pinned_start=authored_starts[t["id"]])
                       if t.get("pinned_start") is None and t["id"] in authored_starts else t
                       for t in state["tasks"]]
@@ -364,11 +384,14 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
     for block in proposal["blocks"]:
         if block["id"] in behavior_by_id:
             origin = behavior_by_id[block["id"]]
-            block.update(kind="behavior", pattern_id=origin["pattern_id"], evidence=origin["explanation"],
+            away = origin["window_kind"] == "possible_unavailability"
+            block.update(kind="behavior_away" if away else "behavior", pattern_id=origin["pattern_id"], evidence=origin["explanation"],
                 evidence_refs=origin["evidence"], observed_at=origin["observed_at"],
                 recurrence_strength=origin["confidence"], validation=origin["validation"],
                 semantic_reason=origin["semantic_reason"], uncertainty=origin["uncertainty"])
-            block["warnings"].append("Tentative · " + origin["explanation"])
+            if away:
+                block.update(prediction_target="computer_activity", availability="unknown", action_authority="none")
+            block["warnings"].append(("Tentative · availability is unknown. " if away else "Tentative · ") + origin["explanation"])
         elif block.get("task_id") in source_by_task:
             origin = source_by_task[block["task_id"]]
             block.update(task_id=None, kind="suggestion", evidence_id=origin["evidence_id"])
@@ -404,7 +427,8 @@ def render(workspace, *, compact=False):
     plan = workspace["proposed_plan"]
     for block in plan["blocks"][:8 if compact else 30]:
         end = "–" + clock(block["end"]) if block["end"] is not None else " (end unknown)"
-        qualifier = " · tentative" if block["kind"] == "behavior" else " · estimated" if block["kind"] == "suggestion" else ""
+        qualifier = (" · tentative · availability unknown" if block["kind"] == "behavior_away" else
+                     " · tentative" if block["kind"] == "behavior" else " · estimated" if block["kind"] == "suggestion" else "")
         rows.append(f"• {clock(block['start'])}{end} {block['title']}{qualifier}")
     if not plan["blocks"]:
         rows.append("No time blocks yet.")
