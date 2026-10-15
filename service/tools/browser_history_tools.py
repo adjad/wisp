@@ -19,11 +19,16 @@ from __future__ import annotations
 import json
 import time
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating, revocation
 from service.tools import cache_store
 from service.tools.registry import register
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_period, resolve_span
 
 _BROWSERS = ("safari", "chrome")
+_publication_authority = Authority("native-browser-history")
+_publication_expires_monotonic = {b: 0.0 for b in _BROWSERS}
+_issued_snapshot = None
+_issued_bounds = None
 # A saved snapshot is not proof of consent in this process. Never restore
 # sensitive rows until the app has rechecked access and supplied a fresh read.
 _raw: dict[str, str] = {b: "" for b in _BROWSERS}
@@ -50,9 +55,20 @@ _privacy_current = False
 _TTL_SECONDS = 3 * 3600
 
 
+def _publish_remaining() -> None:
+    if (_enabled is True and _privacy_current is True and _revision > 0
+            and _revision == _applied_revision and any(_available[b] and
+                0 <= time.time()-_synced_at[b] < _TTL_SECONDS for b in _BROWSERS)):
+        _publication_authority.publish()
+
+
+@mutating
 def cache_browser_history(browser: str, raw: str, available: bool, reason: str = "") -> None:
     if browser not in _BROWSERS:
         return
+    global _issued_snapshot
+    _publication_authority.withdraw()
+    _issued_snapshot = None
     _available[browser] = available
     _reason[browser] = reason
     _completed.add(browser)
@@ -62,17 +78,23 @@ def cache_browser_history(browser: str, raw: str, available: bool, reason: str =
         _raw[browser] = ""
         _synced_at[browser] = 0.0
         _delete_history_files((browser,))
+        _publish_remaining()
         return
     _raw[browser] = raw
     _synced_at[browser] = time.time()
+    _publication_expires_monotonic[browser] = time.monotonic()+_TTL_SECONDS
     if raw:
         cache_store.save(f"browser_history_{browser}", raw)
     else:
         _delete_history_files((browser,))
+    _publish_remaining()
 
 
+@mutating
 def set_browser_history_enabled(enabled: bool) -> None:
-    global _enabled
+    global _enabled, _issued_snapshot
+    _publication_authority.withdraw()
+    _issued_snapshot = None
     if enabled and _enabled is False:
         _completed.clear()
         _available.update({browser: False for browser in _BROWSERS})
@@ -85,6 +107,7 @@ def set_browser_history_enabled(enabled: bool) -> None:
         _available.update({browser: False for browser in _BROWSERS})
         _completed.clear()
         _delete_history_files(_BROWSERS)
+    _publish_remaining()
 
 
 def _delete_history_files(browsers) -> None:
@@ -93,13 +116,14 @@ def _delete_history_files(browsers) -> None:
             (cache_store.CACHE_DIR / f"browser_history_{browser}.{suffix}").unlink(missing_ok=True)
 
 
+@mutating
 def apply_browser_history_sync(body: dict) -> bool:
     """Versioned full snapshot. Older/retried requests cannot undo a clear.
 
     Legacy per-browser pushes work only until a versioned client is seen.
     A new app sends both browsers together, including unavailable/empty ones.
     """
-    global _revision, _applied_revision, _privacy_current
+    global _revision, _applied_revision, _privacy_current, _issued_snapshot
     revision = body.get("revision")
     if revision is not None and (type(revision) is not int or revision <= 0):
         raise ValueError("revision must be a positive integer")
@@ -122,6 +146,8 @@ def apply_browser_history_sync(body: dict) -> bool:
                 raise ValueError("available must be a boolean")
             if not isinstance(snapshot.get("lines", ""), str):
                 raise ValueError("lines must be a string")
+    _publication_authority.withdraw()
+    _issued_snapshot = None
     if revision is not None:
         _revision = revision
     _privacy_current = False
@@ -146,7 +172,10 @@ def apply_browser_history_sync(body: dict) -> bool:
                 raise OSError("Could not persist browser privacy state")
             _applied_revision = revision
         _privacy_current = True
+        if enabled:
+            _publication_authority.publish()
     except OSError:
+        _publication_authority.withdraw()
         # No partial snapshot is available when persistence/clearing fails.
         _raw.update({browser: "" for browser in _BROWSERS})
         _synced_at.update({browser: 0.0 for browser in _BROWSERS})
@@ -168,12 +197,20 @@ def browser_history_sync_state() -> str:
     return "ready" if any(_available.values()) else "unavailable"
 
 
+@mutating
 def _purge_if_expired() -> None:
+    global _issued_snapshot
     now = time.time()
+    changed = False
     for b in _BROWSERS:
         if _synced_at[b] and (now - _synced_at[b]) > _TTL_SECONDS:
+            _publication_authority.withdraw()
+            changed = True
+            _issued_snapshot = None
             _raw[b] = ""
             _synced_at[b] = 0.0
+    if changed:
+        _publish_remaining()
 
 
 def _parse(browser: str) -> list[dict]:
@@ -303,11 +340,17 @@ async def search_browser_history(query: str | None = None, count: int | None = N
 
 
 def current_browser_snapshot(*, expected_receipt=None):
+    with revocation():
+        return _current_browser_snapshot(expected_receipt=expected_receipt)
+
+
+def _current_browser_snapshot(*, expected_receipt=None):
     """Immutable, consent-revision fenced cached point visits; no new scan.
 
     The receipt covers privacy state and both publications. Rechecking cannot
     extend freshness. No title/path/query is exported to behavior analysis.
     """
+    global _issued_snapshot, _issued_bounds
     import math
     import re
     from types import MappingProxyType
@@ -342,5 +385,21 @@ def current_browser_snapshot(*, expected_receipt=None):
                 rows.append(MappingProxyType(dict(ts=ts, host=host)))
     if before != receipt() or not stamps:
         return None
-    return MappingProxyType(dict(receipt=identity, captured_at=min(stamps), rows=tuple(rows),
+    _issued_snapshot = MappingProxyType(dict(receipt=identity, captured_at=min(stamps), rows=tuple(rows),
                                  coverage="bounded cached point visits; not dwell or complete history"))
+    selected = [b for b in _BROWSERS if _available[b] and 0 <= now-_synced_at[b] <= _TTL_SECONDS]
+    _issued_bounds = (min(stamps)+_TTL_SECONDS,
+                      min(_publication_expires_monotonic[b] for b in selected))
+    return _issued_snapshot
+
+
+def prepare_publication_witness(snapshot) -> Witness | None:
+    """Exact issued point-visit capture; no serialization restores authority."""
+    with revocation():
+        if (snapshot is None or snapshot is not _issued_snapshot or _enabled is not True
+                or _privacy_current is not True or _revision <= 0 or _revision != _applied_revision):
+            return None
+        if _issued_bounds is None:
+            return None
+        return Witness.combine(_publication_authority.token(clock=LIVE_CLOCK,
+            expires_wall=_issued_bounds[0], expires_monotonic=_issued_bounds[1]))
