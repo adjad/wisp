@@ -7,6 +7,7 @@ import pytest
 from service.assistant.behavior_seed import Seed, Snapshot, prepare
 from service.behavior.source_index import SourceIndex, SOURCES
 from service.behavior.store import Store
+from tests.test_message_content import live_message_publication, v3_carrier, record as message_record
 
 NOW = 1792051200.0
 
@@ -40,6 +41,43 @@ def test_default_off_never_analyzes_or_retains_index(index):
     assert result["state"] == "off" and result["analyzed"] == 0
     assert index.status([])["email"]["state"] == "off"
     assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_records").fetchone()[0] == 0
+
+
+def test_native_capped_messages_seed_complete_records_with_partial_coverage(index, live_message_publication):
+    from service.assistant.behavior_sources import capture
+    messages, clock = live_message_publication
+    rows = [message_record(guid=f"synthetic-{i}", text=f"A complete arbitrary source passage {i}.") for i in range(2000)]
+    messages.cache_messages(v3_carrier(rows, coverage=dict(attempted=2001, truncated=1)), True)
+    assert messages.structured_messages_snapshot()["coverage"]["status"] == "partial"
+    assert messages.structured_messages_snapshot_with_receipt() is None
+    batch = capture({"messages": True}, now=clock[0])
+    result = run(index, batch.snapshots, now=clock[0])
+    info = result["sources"]["messages"]
+    assert info["indexed"] == info["eligible"] == 2000
+    assert info["analyzed"] == 4 and info["pending"] == 1996
+    assert info["coverage"] == "partial" and info["publication_complete"] is False
+    assert info["omitted"] == 1 and "never an exhaustive" in info["completion_scope"]
+    assert batch.current()
+    clock[0] += 1
+    next_batch = capture({"messages": True}, now=clock[0])
+    restarted = SourceIndex(index.store)
+    resumed = run(restarted, next_batch.snapshots, now=clock[0])["sources"]["messages"]
+    assert resumed["analyzed"] == 8 and resumed["pending"] == 1992
+
+
+def test_one_partial_message_cannot_suppress_complete_rows_or_ground_a_quote(index, live_message_publication):
+    from service.assistant.behavior_sources import capture
+    messages, clock = live_message_publication
+    rows = [message_record(guid=f"synthetic-{i}", text=f"Complete arbitrary passage {i}.") for i in range(3)]
+    rows[1]["text"] = "Unfinished source passage must not ground work."
+    messages.cache_messages(v3_carrier(rows, partial=(1,)), True)
+    assert messages.structured_messages_snapshot_with_receipt() is None
+    batch = capture({"messages": True}, now=clock[0])
+    result = run(index, batch.snapshots, now=clock[0])["sources"]["messages"]
+    assert result["eligible"] == result["analyzed"] == 2
+    assert result["coverage"] == "partial" and result["omitted"] == 1
+    prepared, _, _ = prepare(batch.snapshots)
+    assert len(prepared) == 2 and all("Unfinished" not in r["text"] for r in prepared)
 
 
 def test_batches_advance_past_newest_eight_and_survive_restart(tmp_path):

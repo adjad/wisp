@@ -503,6 +503,19 @@ native permission receipt and retain their recorded-completion basis. They are
 context, not new outstanding work. Notes modification dates never date their prose.
 Gmail-only/header history remains unavailable without its separate public contract.
 
+Messages exposes a separate behavior-only complete-record subset. A capped V3
+publication or one individually partial record no longer discards other complete
+records. The aggregate remains partial: individually partial records are excluded,
+known omissions stay visible, and neither full history nor absence is inferred.
+A partial publication with no eligible complete records is unavailable; a valid
+fresh complete empty publication remains a distinct bounded-empty result. Native
+365-day/20,000-row and structured 2,000-record/4 MB limits are unchanged. Existing
+Messages inventory callers keep their stricter complete-publication contract.
+Behavior receipts bind the original backend receipt, generation, coverage and
+exact selected records. Every publication and planning read rechecks that proof;
+restored, stale, replaced, malformed or revoked evidence is withheld. Reading
+never renews its ten-minute receipt or invokes inference.
+
 Each pass selects up to four pending passages fairly across sources and retrieves
 possible related passages with a transient lexical index. This selects candidates
 without topic, app or domain rules. At most eight passages enter the same existing
@@ -532,8 +545,13 @@ Importance and confidence remain unknown; duration is an adjustable generic
 estimate. Unknown ownership/time stays unresolved. Links and work hypotheses
 cannot authorize calendar changes, sends, reminders or other actions.
 
-Native context uses original read-start times, not refreshed backend receipt age;
-bounded reminder history reports partial coverage until its scan completes.
+Calendar and Notes context use original native read-start times. Mail and Messages
+eligibility currently uses backend receipt age (20 and 10 minutes respectively),
+which does not establish when their native reads began. Notes has a separate
+24-hour limit with a matching successful live receipt. Re-grounding a saved work
+hypothesis in a new current publication preserves its original analysis and source
+times; it does not run inference on a planning read. Bounded reminder history
+reports partial coverage until its scan completes.
 Routine busy labels require the same supporting samples/descriptors/site context
 used by the interpreter and apply only within its seven-day forecast horizon.
 Source-backed deadlines keep their own validated time constraints independently.

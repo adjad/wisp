@@ -8,10 +8,54 @@ from service.assistant.behavior_seed import Seed, Snapshot, prepare
 from service.behavior.associations import materialize, validate
 from service.behavior.source_index import SourceIndex
 from service.behavior.store import Store
+from tests.test_message_content import live_message_publication, v3_carrier, record as message_record
 
 NOW = 1792051200.0
 A = "The prototype review is scheduled for Thursday; attendance remains unknown."
 B = "The prototype review moved to Friday; this is a proposed update."
+
+
+def test_actual_message_subset_links_require_complete_quotes_and_current_both_sides(tmp_path, live_message_publication):
+    from service.assistant.behavior_sources import capture
+    messages, clock = live_message_publication
+    incomplete = "The incomplete message claims the activity is confirmed."
+    carrier = v3_carrier([message_record(guid="complete", text=A),
+        message_record(guid="partial", text=incomplete)], partial=(1,))
+    messages.cache_messages(carrier, True)
+    other_current = [True]
+    email = Snapshot("email", (dict(id="other", text=B, source_time=clock[0], time_basis="source_timestamp"),),
+        enabled=True, available=True, current=lambda: other_current[0], publication_complete=True, published_at=clock[0])
+    def publications():
+        batch = capture({"messages": True}, now=clock[0])
+        return [s for s in batch.snapshots if s.source == "messages"]+[email]
+    records, _, _ = prepare(publications())
+    records.sort(key=lambda r: r["source"])
+    assert {r["text"] for r in records} == {A, B}
+    p = proposal(records, "updates")
+    message_side = "left" if records[0]["source"] == "messages" else "right"
+    assert validate([{**p, message_side+"_quote": incomplete}], records) == []
+    store = Store(tmp_path / "subset-links.db")
+    try:
+        seed = Seed(SourceIndex(store))
+        def analyze(context, **_):
+            return {"links": [proposal(sorted(context, key=lambda r: r["source"]), "updates")]}
+        result = seed.run(publications(), epoch="role-and-consent", now=clock[0], analysis_enabled=True,
+            analyze=analyze, admit=lambda: True)
+        assert result["state"] == "advanced"
+        links = seed.materialize(publications(), epoch="role-and-consent", admit=lambda: True)
+        assert len(links) == 1 and links[0]["action_authority"] == "none"
+        assert links[0]["confidence"] is None and links[0]["status"] == "proposed"
+        assert A not in "\n".join(store._conn.iterdump()) and incomplete not in "\n".join(store._conn.iterdump())
+        assert seed.materialize(publications(), epoch="changed-role", admit=lambda: True) == []
+        other_current[0] = False
+        assert seed.materialize(publications(), epoch="role-and-consent", admit=lambda: True) == []
+        other_current[0] = True
+        captured = publications()
+        messages.cache_messages("", False)
+        assert seed.materialize(captured, epoch="role-and-consent", admit=lambda: True) == []
+        assert seed.materialize(publications(), epoch="role-and-consent", admit=lambda: True) == []
+    finally:
+        store.close()
 
 
 def snapshots(current=lambda: True):

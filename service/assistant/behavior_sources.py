@@ -50,10 +50,10 @@ def capture(settings, getters=None, *, retained=(), now=None):
             getters["email"] = raw_email_snapshot
         if settings.get("messages"):
             from service.tools.imessage_tools import (
-                structured_messages_snapshot_with_receipt,
+                behavior_messages_snapshot_with_receipt,
             )
 
-            getters["messages"] = structured_messages_snapshot_with_receipt
+            getters["messages"] = behavior_messages_snapshot_with_receipt
         if settings.get("websites"):
             from service.tools.browser_history_tools import current_browser_snapshot
 
@@ -108,7 +108,15 @@ def capture(settings, getters=None, *, retained=(), now=None):
         generation = (
             snapshot.generation if source == "email" else snapshot["generation"]
         )
-        check = lambda g=getter, token=generation: g(expected_generation=token) is not None
+        record_scope = snapshot.get("record_scope") if source == "messages" else None
+        if source == "messages" and record_scope is not None:
+            proof = record_scope["proof"]
+            check = lambda g=getter, token=generation, proof=proof: g(expected_generation=token, expected_proof=proof) is not None
+            detail[source] = (f"Complete-record subset: {record_scope['selected']} eligible, "
+                f"{record_scope['excluded_partial']} individually partial excluded; aggregate "
+                f"{snapshot['coverage']['status']} coverage. Full history and absence remain unknown.")
+        else:
+            check = lambda g=getter, token=generation: g(expected_generation=token) is not None
         receipts.append(check)
         rows = snapshot.rows if source == "email" else snapshot["records"]
         source_records = []
@@ -147,7 +155,8 @@ def capture(settings, getters=None, *, retained=(), now=None):
                 source_records.append(record)
                 records.append(dict(record, text=text[:2400]))
         seeds.append(Snapshot(source, tuple(source_records), enabled=True, available=True, current=check,
-                              publication_complete=True,
+                              publication_complete=(record_scope["publication_complete"] if record_scope is not None else True),
+                              omitted=(record_scope["known_omitted"] if record_scope is not None else 0),
                               published_at=snapshot.synced_at if source == "email" else snapshot.get("captured_at")))
     for snapshot in retained:
         seeds.append(snapshot)

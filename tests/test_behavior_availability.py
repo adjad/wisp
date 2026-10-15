@@ -8,8 +8,123 @@ import pytest
 from service.behavior.engine import BehaviorEngine
 from service.behavior.availability import discover, competing_activity
 from service.behavior.types import Observation
+from tests.test_message_content import live_message_publication, record, v3_carrier
 
 NOW = datetime(2026, 10, 19, 8, tzinfo=ZoneInfo("UTC")).timestamp()
+
+
+def test_actual_message_subset_runtime_rehydrates_old_analysis_only_with_current_proof(tmp_path, monkeypatch, live_message_publication):
+    import json
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.assistant.behavior_sources import capture
+    from service.assistant.behavior_interpreter import Interpreter
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    messages, clock = live_message_publication
+    initial = clock[0]
+    quote = "The arbitrary preparation is due tomorrow at 4pm UTC."
+    stamp = datetime.fromtimestamp(initial-60, ZoneInfo("UTC")).isoformat()
+    carrier = v3_carrier([record(guid="complete", text=quote, timestamp=stamp),
+        record(guid="partial", text="An incomplete passage must never be interpreted.", timestamp=stamp)], partial=(1,))
+    messages.cache_messages(carrier, True)
+    calls, role = [], ["fake-local-role"]
+    def complete(_system, prompt, **_):
+        rows = json.loads(prompt)["evidence"]
+        calls.append(rows)
+        return json.dumps(dict(patterns=[], links=[], demands=[dict(source_id=r["id"], quote=r["text"],
+            kind="preparation", title="Prepare", temporal_id=r["temporal"][0]["id"],
+            ownership="user", importance="unknown") for r in rows]))
+    runtime = BehaviorRuntime(tmp_path, local_factory=lambda p: BehaviorEngine(p, tz="UTC", clock=lambda: clock[0]),
+        behavior_sources_fn=lambda s: capture(s, now=clock[0]), behavior_interpreter=Interpreter(complete),
+        role_key_fn=lambda: role[0], clock=lambda: clock[0])
+    day = datetime.fromtimestamp(initial, ZoneInfo("UTC")).date().isoformat()
+    try:
+        runtime.call("configure_signals", {"messages": True, "interpretation": True}, initial)
+        runtime._refresh_availability(initial)
+        first = runtime.planning_context(day, "UTC", initial)
+        assert first["ready"] and len(first["demands"]) == 1 and len(calls) == 1
+        assert [r["text"] for r in calls[0]] == [quote]
+        demand = first["demands"][0]
+        assert demand["source_receipt_at"] == initial and demand["observed_at"] == initial-60
+        assert demand["quote"] == quote and demand["action_authority"] == "none"
+        assert demand["confidence"] is None and demand["importance"] == "unknown"
+        assert "aggregate partial coverage" in first["source_coverage"]["messages"]
+        assert runtime.seed_progress()["sources"]["messages"]["publication_complete"] is False
+
+        clock[0] += 1800
+        assert runtime.planning_context(day, "UTC", clock[0])["demands"] == []
+        messages.cache_messages(carrier, True)  # new receipt, unchanged source passage
+        refreshed = runtime.planning_context(day, "UTC", clock[0])
+        assert len(refreshed["demands"]) == 1 and len(calls) == 1
+        assert refreshed["generated_at"] == first["generated_at"] == initial
+        assert refreshed["evidence_checked_at"] == clock[0]
+        assert refreshed["demands"][0]["analyzed_at"] == initial
+        assert refreshed["demands"][0]["source_receipt_at"] == clock[0]
+        assert refreshed["demands"][0]["observed_at"] == initial-60
+        role[0] = "different-role"
+        assert runtime.planning_context(day, "UTC", clock[0])["demands"] == []
+        role[0] = "fake-local-role"
+        assert len(runtime.planning_context(day, "UTC", clock[0])["demands"]) == 1
+        messages.cache_messages("", False)
+        assert runtime.planning_context(day, "UTC", clock[0])["demands"] == []
+        messages.cache_messages(carrier, True)
+        runtime.call("configure_signals", {"messages": False}, clock[0])
+        assert runtime.planning_context(day, "UTC", clock[0])["demands"] == []
+        assert len(calls) == 1  # planning reads and revocations never invoke inference
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("mutation", ["unavailable", "superseded", "same_generation_changed", "stale", "role", "consent", "stop"])
+def test_actual_message_subset_runtime_withholds_mid_analysis_changes(tmp_path, monkeypatch, live_message_publication, mutation):
+    import json
+    from service.assistant.behavior_runtime import BehaviorRuntime, RuntimeStopped
+    from service.assistant.behavior_sources import capture
+    from service.assistant.behavior_interpreter import Interpreter
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    messages, clock = live_message_publication
+    quote = "The arbitrary preparation is due tomorrow at 4pm UTC."
+    stamp = datetime.fromtimestamp(clock[0]-60, ZoneInfo("UTC")).isoformat()
+    carrier = v3_carrier([record(text=quote, timestamp=stamp)], coverage=dict(attempted=2, truncated=1))
+    messages.cache_messages(carrier, True)
+    role, calls = ["fake"], []
+    def complete(_system, prompt, **_):
+        rows = json.loads(prompt)["evidence"]
+        calls.append(rows)
+        if mutation == "unavailable":
+            messages.cache_messages("", False)
+        elif mutation == "superseded":
+            messages.cache_messages(carrier, True)
+        elif mutation == "same_generation_changed":
+            monkeypatch.setattr(messages, "_lines", v3_carrier([record(text="Changed source passage", timestamp=stamp)]))
+        elif mutation == "stale":
+            clock[0] += 601
+        elif mutation == "role":
+            role[0] = "changed"
+        elif mutation == "consent":
+            runtime.call("configure_signals", {"messages": False}, clock[0])
+        else:
+            runtime.stop()
+        return json.dumps(dict(patterns=[], links=[], demands=[dict(source_id=r["id"], quote=r["text"],
+            kind="preparation", title="Prepare", temporal_id=r["temporal"][0]["id"],
+            ownership="user", importance="unknown") for r in rows]))
+    runtime = BehaviorRuntime(tmp_path, local_factory=lambda p: BehaviorEngine(p, tz="UTC", clock=lambda: clock[0]),
+        behavior_sources_fn=lambda s: capture(s, now=clock[0]), behavior_interpreter=Interpreter(complete),
+        role_key_fn=lambda: role[0], clock=lambda: clock[0])
+    try:
+        runtime.call("configure_signals", {"messages": True, "interpretation": True}, clock[0])
+        engine = runtime.local_engine()
+        runtime._refresh_availability(clock[0])
+        assert len(calls) == 1 and runtime._availability_cache is None
+        day = datetime.fromtimestamp(clock[0], ZoneInfo("UTC")).date().isoformat()
+        if mutation == "stop":
+            with pytest.raises(RuntimeStopped):
+                runtime.planning_context(day, "UTC", clock[0])
+        else:
+            assert runtime.planning_context(day, "UTC", clock[0])["demands"] == []
+        assert len(calls) == 1
+        assert engine.seed_index().work() == []
+    finally:
+        runtime.close()
 
 
 def test_actual_seed_runtime_retains_prior_work_without_model_on_planning_read(tmp_path, monkeypatch):
