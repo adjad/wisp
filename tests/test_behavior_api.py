@@ -78,6 +78,37 @@ def test_disabled_status_and_409(client, monkeypatch):
         assert "Learn my routines" in resp.json()["detail"]
 
 
+def test_email_history_routes_require_explicit_current_account_control(client, monkeypatch, tmp_path):
+    from service.behavior.engine import BehaviorEngine
+    from tests.test_behavior_gmail_history import CoreBridgeBackend, command, NOW as HISTORY_NOW
+    monkeypatch.setenv("WISP_BEHAVIOR","1")
+    backend = CoreBridgeBackend([HISTORY_NOW])
+    runtime = br.BehaviorRuntime(tmp_path/"history",clock=lambda:HISTORY_NOW,
+        local_factory=lambda p:BehaviorEngine(p,tz="UTC",clock=lambda:HISTORY_NOW),
+        role_key_fn=lambda:"synthetic-local",gmail_history_backend=backend)
+    monkeypatch.setattr(behavior_api,"_runtime",lambda:runtime)
+    try:
+        runtime.call("configure_signals",{"email":True},HISTORY_NOW)
+        response = client.get("/behavior/email-history")
+        assert response.status_code == 200 and backend.opened == []
+        assert response.json()["accounts"][0]["state"] == "off"
+        body = command(runtime._email_history)
+        assert client.post("/behavior/email-history/control",json=body|{"email_consent":True}).status_code == 422
+        assert backend.opened == []
+        started = client.post("/behavior/email-history/control",json=body)
+        assert started.status_code == 200 and len(backend.opened) == 1
+        assert started.json()["accounts"][0]["counts"]["fetched"] == 0
+        assert client.post("/behavior/email-history/control",json=body).status_code == 409
+        assert client.get("/behavior/email-history").status_code == 200 and len(backend.opened) == 1
+        paused = client.post("/behavior/email-history/control",json=command(runtime._email_history,"pause"))
+        assert paused.status_code == 200 and paused.json()["accounts"][0]["state"] == "paused"
+        assert runtime._email_history.cached_getters() == ()
+        runtime.call("configure_signals",{"email":False},HISTORY_NOW)
+        assert client.post("/behavior/email-history/control",json=command(runtime._email_history)).status_code == 409
+    finally:
+        runtime.stop();runtime.close()
+
+
 def test_run_publishes_and_status(client, live, store):
     rt, engine, hub = live
     data = client.post("/behavior/run").json()

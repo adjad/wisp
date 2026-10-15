@@ -42,6 +42,7 @@ import asyncio
 from dataclasses import dataclass
 import hashlib
 import math
+from service.publication_authority import Authority, Clock, Witness, mutating
 import re
 import threading
 import time
@@ -119,6 +120,10 @@ _raw_reference_scan: dict = {}
 _raw_snapshot_lock = threading.RLock()
 _raw_snapshot_generation = 0
 _raw_mail_snapshot: RawEmailSnapshot | None = None
+_raw_publication = Authority("native-mail-body")
+_raw_availability = Authority("native-mail-availability")
+_raw_publication_clock = None
+_raw_publication_monotonic = None
 # Raw bodies carry real PII (addresses, order numbers, party plans) — purge
 # after a week rather than let it sit in process memory indefinitely.
 # MailReader.swift re-syncs raw content every 15 minutes, so in practice this
@@ -478,21 +483,28 @@ _swift_identity = _restored_native("identity", "\n".join(
     e for e in _identity_emails if e.casefold() not in _external_accounts)).splitlines()
 
 
+@mutating
 def set_email_availability(available: bool, reason: str = "",
                            syncing: bool = False, read_source: str = "") -> None:
     """Record whether the Swift MailReader's last sync could read the inbox."""
     global _email_available, _email_reason, _email_sync_pending, _email_read_source
     global _native_headers_at, _native_source
-    _email_available = available
-    _email_reason = reason
-    _email_sync_pending = syncing and available
-    _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
-    if available and not syncing:
-        _native_headers_at = time.time()
-        _native_source = _email_read_source
-        if _external_accounts:
-            _recompose_all()
-        _save_email_sources()
+    with _raw_snapshot_lock:
+        changed = _email_available is not available or _raw_availability.token() is None
+        if changed:
+            _raw_availability.withdraw()
+        _email_available = available
+        _email_reason = reason
+        _email_sync_pending = syncing and available
+        _email_read_source = read_source if read_source in {"local_index", "mail_app"} else ""
+        if available and not syncing:
+            _native_headers_at = time.time()
+            _native_source = _email_read_source
+            if _external_accounts:
+                _recompose_all()
+            _save_email_sources()
+        if available is True and changed:
+            _raw_availability.publish()
 
 
 def _no_inbox_message() -> str:
@@ -810,6 +822,20 @@ def _raw_snapshot_candidate(raw: str, coverage: dict | None, stamp: float) -> Ra
                             hashlib.sha256(raw.encode("utf-8")).hexdigest())
 
 
+def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=()):
+    """Pure, explicit provider evidence API; separate from native completeness.
+
+    No implicit source construction, cache warming, token refresh or network.
+    Callers must recheck the same receipt and record refs before using results.
+    Native-only raw_email_snapshot retains its existing admission contract.
+    """
+    from service.gmail_behavior_history import HistoryProvider
+    from service.gmail_source import PublicHistoryBridge
+    if not isinstance(provider, (HistoryProvider, PublicHistoryBridge)):
+        return None
+    return provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+
+
 def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSnapshot | None:
     """Read once for coherent provenance, or None for ineligible evidence.
 
@@ -827,9 +853,11 @@ def raw_email_snapshot(*, expected_generation: int | None = None) -> RawEmailSna
         return snapshot
 
 
+@mutating
 def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     global _raw_emails, _raw_emails_at, _raw_reference_scan
     global _raw_mail_snapshot, _raw_snapshot_generation, _swift_raw, _native_raw_at
+    global _raw_publication_clock, _raw_publication_monotonic
     raw = raw or ""
     stamp = time.time()
     scan = dict(coverage or {})
@@ -840,6 +868,10 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
     # bytes these account/message/coverage checks describe.
     candidate = _raw_snapshot_candidate(raw, scan, stamp)
     with _raw_snapshot_lock:
+        _raw_publication.withdraw()
+        _raw_publication_clock = Clock()
+        _raw_publication_monotonic = time.monotonic()
+        _raw_publication_clock.observe(stamp, _raw_publication_monotonic)
         _raw_snapshot_generation += 1
         snapshot = RawEmailSnapshot(_raw_snapshot_generation, candidate.synced_at,
             candidate.rows, candidate.accounts, candidate.failed_accounts, candidate.complete,
@@ -859,6 +891,27 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
                                "decode_complete": candidate.decode_complete}
         _raw_mail_snapshot = snapshot  # Atomic body + identity + coverage publication.
         _persist_composed_sources()
+        if snapshot.complete:
+            _raw_publication.publish()
+
+
+@mutating
+def prepare_publication_witness(snapshot):
+    """Qualify a captured native body publication outside the publish lease.
+
+    The returned witness never calls this getter, parses content, touches disk
+    or refreshes the source. Restored caches and caller-made copies cannot
+    acquire the live publication's stamp or extend its original receipt age.
+    """
+    with _raw_snapshot_lock:
+        if (type(snapshot) is not RawEmailSnapshot or _raw_mail_snapshot is not snapshot
+                or raw_email_snapshot(expected_generation=snapshot.generation) is not snapshot
+                or _raw_publication_clock is None or _raw_publication_monotonic is None):
+            return None
+        return Witness.combine(_raw_availability.token(),
+            _raw_publication.token(clock=_raw_publication_clock,
+                expires_wall=snapshot.synced_at+1200,
+                expires_monotonic=_raw_publication_monotonic+1200))
 
 
 def raw_reference_metadata() -> dict:
@@ -887,6 +940,7 @@ async def ensure_reply_source(timeout_seconds: float = 2.5) -> None:
         await asyncio.sleep(0.1)
 
 
+@mutating
 def _purge_raw_if_expired(*, persist: bool = True) -> None:
     """Admit bodies only from source snapshots with a valid original receipt.
 
@@ -907,6 +961,7 @@ def _purge_raw_if_expired(*, persist: bool = True) -> None:
                 item["raw_at"] = 0
                 changed = True
         if _swift_raw and not receipt(_native_raw_at):
+            _raw_publication.withdraw()
             _swift_raw = ""
             _native_raw_at = 0.0
             _raw_mail_snapshot = None

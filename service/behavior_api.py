@@ -99,6 +99,8 @@ async def set_behavior_settings(body: dict[str, Any] | None = None) -> dict[str,
         raise HTTPException(status_code=422, detail="enabled must be true or false")
     from service.config import set_behavior_enabled
     from service.tools.behavior_tools import sync_availability
+    if value is False:
+        behavior_runtime.invalidate_email_history("Learning was switched off")
     try:
         await asyncio.to_thread(set_behavior_enabled, value)
     except (ValueError, OSError, yaml.YAMLError) as exc:
@@ -132,6 +134,7 @@ async def behavior_forget(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="JSON object body required") from exc
     if not isinstance(body, dict) or body.get("confirm") is not True:
         raise HTTPException(status_code=422, detail="confirm must be true")
+    behavior_runtime.invalidate_email_history("Forget was requested")
     store, hub = _store_hub()
     result = await asyncio.to_thread(behavior_runtime.forget_all, store)
     try:
@@ -180,6 +183,100 @@ async def behavior_patterns(status: str | None = None, kind: str | None = None) 
         raise HTTPException(status_code=422, detail=f"kind must be one of {list(PATTERN_KINDS)}")
     patterns = await runtime.acall("patterns", status=status, kind=kind)
     return {"patterns": [p.to_dict() for p in patterns]}
+
+
+@router.get("/weekly")
+async def behavior_weekly() -> dict[str, Any]:
+    return await _runtime().acall("weekly")
+
+
+@router.get("/signals")
+async def behavior_signals():
+    runtime = _runtime()
+    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary"),
+            "seed": await asyncio.to_thread(runtime.seed_progress)}
+
+
+@router.put("/signals")
+async def behavior_signal_settings(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("configure_signals", _body(body))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/activity/lease")
+async def behavior_activity_lease(client: str):
+    try:
+        return await _runtime().acall("activity_lease", client)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/activity")
+async def behavior_activity(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("observe_activity", body)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail="Activity source changed or interval invalid") from exc
+
+
+@router.get("/availability")
+async def behavior_availability(day: str, timezone: str):
+    try:
+        return await asyncio.to_thread(_runtime().planning_context, day, timezone)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail="A local date and named timezone are required") from exc
+
+
+@router.get("/history")
+async def behavior_history() -> dict[str, Any]:
+    return {"sources": await _runtime().acall("history_status")}
+
+
+@router.get("/email-history")
+async def email_history_status() -> dict[str, Any]:
+    return _runtime().email_history_status()
+
+
+@router.post("/email-history/control")
+async def email_history_control(body: dict[str, Any]) -> dict[str, Any]:
+    from service.assistant.gmail_history_runtime import HistoryConflict, HistoryUnavailable
+    try:
+        # Pure source account/lease control, with no await or HTTP before a
+        # pause/reset withdraws prior proof. Fetching is separate source work.
+        return _runtime().email_history_control(_body(body))
+    except (HistoryConflict, HistoryUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="A current account, revision and explicit bounded scope are required") from exc
+
+
+@router.get("/history/{source}/next")
+async def behavior_history_next(source: str) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_next", source)
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/batch")
+async def behavior_history_batch(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    runtime = _runtime()
+    try:
+        result = await runtime.acall("history_ingest",source,body)
+        runtime.invalidate_card()
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=409,detail=str(exc)) from exc
+
+
+@router.post("/history/{source}/control")
+async def behavior_history_control(source: str, body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        return await _runtime().acall("history_control",source,_body(body).get("command"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc)) from exc
 
 
 @router.post("/patterns/{pattern_id}")

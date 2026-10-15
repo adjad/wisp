@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
@@ -19,9 +21,10 @@ from typing import Any, Iterable, Protocol
 
 from service.behavior import miners, nudges as nudge_mod, predict as predict_mod, profile as profile_mod
 from service.behavior.categorize import categorize, label_leftovers, needs_category
-from service.behavior.store import Store
+from service.behavior.store import OBSERVATION_EXPIRY_SQL, OBSERVATION_RETENTION_S, Store
 from service.behavior.timeutil import day_end, day_start, local_dt, resolve_tz, tz_name
 from service.behavior.types import FEEDBACK_VERDICTS, Feedback, Nudge, Observation, Pattern, Prediction
+from service.publication_authority import Authority, Witness, revocation
 
 MINE_LOOKBACK_S = 16 * 7 * 86400     # routines older than ~4 months say little about next week
 NUDGE_HORIZON_S = 24 * 3600          # minimum look-ahead; see nudge_horizon()
@@ -37,6 +40,33 @@ MOVE_MIN_S = 60
 PHRASE_MAX_PER_PASS = 2
 PHRASE_BUDGET_S = 10.0
 _SNAPSHOT_ATTRS = ("organizer", "organizer_is_user", "attendees", "calendar", "location", "all_day")
+
+
+class _ContentHead:
+    def __init__(self):
+        self.authority = Authority("behavior-retained-content",owner=self)
+        self.revision = 0
+
+
+_content_heads = weakref.WeakValueDictionary()
+
+
+@contextmanager
+def database_mutation(path):
+    """Retention can withdraw existing live proofs without opening an engine."""
+    from service.behavior.activity import database_identity, database_mutation as activity_mutation
+    identity = database_identity(Path(path))
+    with revocation():
+        head = _content_heads.get(identity)
+        if head is not None:
+            head.authority.withdraw()
+            head.revision += 1
+        try:
+            with activity_mutation(identity):
+                yield
+        finally:
+            if head is not None:
+                head.revision += 1
 
 
 class Phraser(Protocol):
@@ -55,15 +85,195 @@ class BehaviorEngine:
     def __init__(self, db_path: str | Path, *, phraser: Phraser | None = None,
                  clock=None, tz: str | None = None) -> None:
         self._store = Store(db_path)
+        from service.behavior.activity import Activity
+        self._activity = Activity(self._store)
         self._phraser = phraser
         self._clock = clock or time.time
         self._tz = resolve_tz(tz)
         self.tz = tz_name(self._tz)
         # Snapshot diffing and mining read-modify-write the store; serialize them.
         self._lock = threading.RLock()
+        self._seed_index = None
+        self._lifetime = Authority("behavior-engine-instance",owner=self)
+        with revocation():
+            identity = self._activity._database_identity
+            head = _content_heads.get(identity)
+            if head is None:
+                head = _ContentHead()
+                _content_heads[identity] = head
+            self._content_head = head
+            self._content_publication = head.authority
+            self._lifetime.publish()
+        self._closed = False
+
+    @property
+    def _content_revision(self):
+        return self._content_head.revision
+
+    @_content_revision.setter
+    def _content_revision(self,value):
+        self._content_head.revision = value
+
+    def _invalidate_content(self):
+        self._content_publication.withdraw()
+        self._content_revision += 1
+
+    @contextmanager
+    def _content_change(self,changed=True):
+        if changed:
+            self._invalidate_content()
+        try:
+            yield
+        finally:
+            if changed:
+                self._content_revision += 1
+
+    def _prepare_content_token(self, revision):
+        # Called only after a full comparison released Engine/Store locks.
+        # A writer changes this revision before touching its observations.
+        with revocation():
+            if self._closed or revision % 2 or revision != self._content_revision:
+                return None
+            if self._content_publication.token() is None:
+                self._content_publication.publish()
+            return Witness.combine(self._lifetime.token(),self._content_publication.token())
+
+    def prepare_semantic_publication_token(self, source, expected, now, *, expected_sync=None):
+        with self._lock,self._store._lock:
+            revision = self._content_revision
+            if self._closed or revision % 2 or expected is None or self.semantic_history(
+                    source,now,expected_sync=expected_sync,metadata=True) != expected:
+                return None
+            if revision != self._content_revision:
+                return None
+        return self._prepare_content_token(revision)
+
+    def prepare_availability_publication_witness(self, expected, first_day, timezone, visits, now, *, days=7):
+        from datetime import date
+        if type(days) is not int or not 1 <= days <= 7:
+            return None
+        first = date.fromisoformat(first_day)
+        with self._lock,self._store._lock:
+            revision,data_revision = self._content_revision,self._activity._data_revision
+            if self._closed or revision % 2 or data_revision % 2:
+                return None
+            actual = [p for offset in range(days) for p in self.availability_patterns(
+                (first+timedelta(days=offset)).isoformat(),timezone,visits,now)]
+            if actual != expected or revision != self._content_revision or data_revision != self._activity._data_revision:
+                return None
+        return Witness.combine(self._prepare_content_token(revision),self._activity.prepare_data_token(data_revision))
+
+    def seed_index(self, *, create=True):
+        from service.behavior.source_index import SourceIndex
+        with revocation(),self._lock, self._store._lock:
+            if self._seed_index is None:
+                if not create and not self._store._conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='behavior_seed_records'").fetchone():
+                    return None
+                self._seed_index = SourceIndex(self._store)
+            return self._seed_index
+
+    def semantic_history(self, source, now=None, *, expected_sync=None, metadata=False):
+        """Retained evidence only; caller must prove current native eligibility."""
+        with self._lock:
+            key = {"calendar": "calendar_context", "reminders": "reminders_context"}.get(source)
+            if key is None or not self._activity.settings()[key]:
+                return []
+            now = self._now(now)
+            rows = self._store.observations(kinds=["event"] if source == "calendar" else ["reminder_done"],
+                                            since=now-180*86400, until=now+21*86400 if source == "calendar" else now)
+            latest = self._store.get_snapshot("calendar") if source == "calendar" else None
+            if source == "calendar" and (latest is None or latest["taken_at"] != expected_sync):
+                return None
+            current_ids = {r["id"] for r in latest["items"]} if latest else set()
+            records = []
+            for o in rows:
+                if o.source != source or o.attrs.get("cancelled") or o.attrs.get("moved"):
+                    continue
+                if source == "calendar" and o.id not in current_ids:
+                    continue
+                if source == "reminders" and (o.attrs.get("completion_time_known") is not True
+                                               or o.attrs.get("evidence_basis") != "recorded_completion"):
+                    continue
+                from datetime import datetime, timezone
+                text = ("Scheduled, attendance unknown: " if source == "calendar" else "Recorded reminder completion: ") + o.subject
+                text += "\nSource time: " + datetime.fromtimestamp(o.ts, timezone.utc).isoformat()
+                records.append(dict(id=o.id, text=text, reference={"source": source, "source_id": o.source_id},
+                                    source_time=o.ts, time_basis="scheduled_time" if source == "calendar" else "completion_time",
+                                    evidence_basis="scheduled" if source == "calendar" else "recorded_completion"))
+            if metadata:
+                job = self.history_status().get("completed_reminders") if source == "reminders" else None
+                return dict(records=records[-2000:], omitted=max(0, len(records)-2000),
+                            complete=source == "calendar" or bool(job and job.get("state") == "complete"))
+            return records[-2000:]
+
+    def signal_settings(self):
+        with self._lock:
+            return dict(settings=self._activity.settings(), epoch=self._store.meta_get("signal_epoch", "initial"))
+
+    def prepare_settings_publication_token(self, expected):
+        from service.publication_authority import revocation
+        with revocation(),self._lock:
+            if self._closed:
+                return None
+            return self._activity.prepare_publication_token(expected)
+
+    def activity_summary(self, now=None):
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return {"state": "off"}
+            now = self._now(now)
+            bins = self._store.observations(kinds=["activity_bin"], since=now-7*86400, until=now-900)
+            return dict(state="observed", period="last seven days, completed bins only", timezone=self.tz,
+                        covered_seconds=sum(b.attrs.get("covered", 0) for b in bins),
+                        known_screen_awake_seconds=sum(b.attrs.get("awake", 0) for b in bins),
+                        idle_seconds=sum(b.attrs.get("idle", 0) for b in bins),
+                        foreground_seconds={app:sum(b.attrs.get("apps", {}).get(app, 0) for b in bins)
+                                            for app in set().union(*(b.attrs.get("apps", {}) for b in bins))},
+                        meaning="This Mac only; awake time and idle time do not measure human attention or availability.")
+
+    def configure_signals(self, changes, now=None):
+        from service.publication_authority import revocation
+        with revocation(),self._lock:
+            self._activity.configure(changes, self._now(now))
+            # Any epoch change invalidates prior content analysis admission.
+            if self._seed_index is not None or self._store._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='behavior_seed_records'").fetchone():
+                self.seed_index().reset(self.signal_settings()["epoch"])
+            return self.signal_settings()
+
+    def activity_lease(self, client, now=None):
+        with revocation(),self._lock:
+            return self._activity.lease(client, self._now(now))
+
+    def observe_activity(self, payload, now=None):
+        with revocation(),self._lock:
+            return self._activity.ingest(payload, self._now(now))
+
+    def availability_patterns(self, day, timezone, visits=(), now=None):
+        from service.behavior.availability import discover
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return []
+            return discover(self._store.observations(kinds=["activity_bin"], since=self._now(now)-56*86400),
+                            visits, day, timezone, self._now(now))
+
+    def availability_context(self, timezone, now=None):
+        from service.behavior.availability import competing_activity
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return []
+            now = self._now(now)
+            return competing_activity(self._store.observations(kinds=["event"], since=now-56*86400, until=now),
+                                      self._store.observations(kinds=["activity_bin"], since=now-56*86400), timezone)
 
     def close(self) -> None:
-        self._store.close()
+        from service.publication_authority import revocation
+        with revocation(),self._lock:
+            self._lifetime.withdraw()
+            self._closed = True
+            self._activity.close_publication()
+            self._store.close()
 
     # ---- helpers ------------------------------------------------------------
     def _now(self, now: float | None) -> float:
@@ -103,8 +313,11 @@ class BehaviorEngine:
     # ---- ingest -----------------------------------------------------------
     def observe(self, observations: Iterable[Observation]) -> int:
         """Upsert by Observation.id (idempotent). Returns rows inserted/updated."""
-        with self._lock:
-            return self._store.upsert_observations(self._prepare(o) for o in observations)
+        current = tuple(self._prepare(o) for o in observations)
+        if not current:
+            return 0
+        with revocation(),self._lock,self._content_change():
+            return self._store.upsert_observations(current)
 
     def observe_snapshot(self, source: str, observations: Iterable[Observation], *,
                          window_start: float, window_end: float, taken_at: float) -> dict:
@@ -125,7 +338,7 @@ class BehaviorEngine:
         forward is never paired as a move (it must fall inside the previous
         window). A vanished event that already started is left alone."""
         current = [self._prepare(o) for o in observations]
-        with self._lock:
+        with revocation(),self._lock,self._content_change():
             prev = self._store.get_snapshot(source)
             upserted = self._store.upsert_observations(current)
             # An id that is back is not cancelled or moved after all: drop both
@@ -141,6 +354,9 @@ class BehaviorEngine:
             self._store.delete_observations(gone)
             self._store.put_snapshot(source, taken_at=taken_at, window_start=window_start,
                                      window_end=window_end, items=[_snap_item(o) for o in current])
+            if (source=="calendar" and prev is not None
+                    and 0<taken_at-prev["taken_at"]<=600):
+                self._store.record_coverage("calendar_changes",prev["taken_at"],taken_at,"complete",taken_at)
         return {"upserted": upserted,
                 "cancelled": sum(1 for o in lifecycle if o.kind == "event_cancelled"),
                 "moved": sum(1 for o in lifecycle if o.kind == "event_moved")}
@@ -212,13 +428,26 @@ class BehaviorEngine:
         """Run all miners over the timeline; persist; keep user status
         (confirmed/rejected) across re-mining. Returns active+confirmed patterns."""
         now = self._now(now)
-        with self._lock:
-            obs = self._load(ask_phraser=True, since=now - MINE_LOOKBACK_S, until=now)
-            mined = miners.mine_all(obs, now, self._tz)
-            self._store.replace_patterns(mined, now)
-            self._store.meta_set("last_mined_at", now)
-            self._store.prune(now)    # retention: observations 180d, nudges 30d
-            return self._live_patterns()
+        # Optional model labeling is preparation, outside the application
+        # barrier and Engine lock. Re-read observations for the actual write.
+        self._load(ask_phraser=True,since=now-MINE_LOOKBACK_S,until=now)
+        with revocation(),self._lock:
+            with self._store._lock:
+                prune_query = OBSERVATION_EXPIRY_SQL.replace("DELETE FROM observations","SELECT 1 FROM observations",1)
+                expired = self._store._conn.execute(prune_query+" LIMIT 1",(now-OBSERVATION_RETENTION_S,)).fetchone()
+                expired = expired or self._store._conn.execute(
+                    "SELECT 1 FROM observations WHERE (kind='device_activity' AND ts<?) "
+                    "OR (kind='activity_bin' AND ts<?) LIMIT 1",(now-7*86400,now-56*86400)).fetchone()
+            with self._content_change(bool(expired)):
+                obs = self._load(since=now-MINE_LOOKBACK_S,until=now)
+                from service.behavior.evidence import pattern_evidence
+                mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
+                self._store.replace_patterns(mined, now)
+                self._store.meta_set("last_mined_at", now)
+                self._store.prune(now)    # retention: observations 180d, nudges 30d
+                if self._seed_index is not None:
+                    self._seed_index.prune(now=now)
+                return self._live_patterns()
 
     def patterns(self, *, status: str | None = None, kind: str | None = None) -> list[Pattern]:
         return self._store.patterns(status=status, kind=kind)
@@ -263,9 +492,9 @@ class BehaviorEngine:
         Returns only newly created ones."""
         now = self._now(now)
         started = time.monotonic()
+        if self._store.meta_get("last_mined_at") is None:
+            self.mine(now)
         with self._lock:
-            if self._store.meta_get("last_mined_at") is None:
-                self.mine(now)
             patterns = self._live_patterns()
             if not patterns:
                 return []
@@ -289,22 +518,49 @@ class BehaviorEngine:
             recent = self._store.nudges_created_since(day_start(today - timedelta(days=1), self._tz))
             chosen = nudge_mod.select(candidates, now=now, tz=self._tz, recent=recent, fb=fb,
                                       exists=self._store.has_nudge)
-            created = []
-            phrased = 0
-            for n in chosen:      # highest priority first, so the best ones get phrased
-                if (self._phraser is not None and phrased < PHRASE_MAX_PER_PASS
-                        and time.monotonic() - started < PHRASE_BUDGET_S):
-                    phrased += 1
-                    n = self._phrase(n)
+            revision = self._content_revision
+        created = []
+        phrased = 0
+        for n in chosen:      # highest priority first, so the best ones get phrased
+            if (self._phraser is not None and self._can_phrase(n) and phrased < PHRASE_MAX_PER_PASS
+                    and time.monotonic() - started < PHRASE_BUDGET_S):
+                phrased += 1
+                n = self._phrase(n)
+            with revocation(),self._lock:
+                if self._closed or self._content_revision != revision:
+                    return created
                 stored = self._store.insert_nudge(n)
                 if stored is not None:
                     created.append(stored)
-            return created
+        return created
+
+    def _can_phrase(self, n: Nudge) -> bool:
+        """Only a message-only rhythm backed by retained message evidence.
+
+        A legacy/mixed contact label, missing evidence or a stale calendar
+        reference cannot authorize presenting scheduled calls as communication.
+        """
+        if n.kind != "contact_window" or not n.pattern_ids:
+            return False
+        for pid in n.pattern_ids:
+            p = self._store.get_pattern(pid)
+            from service.behavior.evidence import _contact_source_counts
+            calls, messages = _contact_source_counts(p)
+            if (p is None or p.kind != "contact_rhythm" or p.status == "rejected"
+                    or p.stats.get("basis") != "observed" or calls or not messages
+                    or type(p.stats.get("calls")) is not int or p.stats["calls"] != 0 or not p.evidence):
+                return False
+            for oid in p.evidence:
+                o = self._store.get_observation(oid)
+                if (o is None or o.kind not in {"message_in", "message_out"}
+                        or o.source != "messages" or o.subject != p.subject):
+                    return False
+        return True
 
     def _phrase(self, n: Nudge) -> Nudge:
         """Let the optional model reword the body; the title and the evidence
         line stay code-composed. Any failure keeps the code text."""
-        if self._phraser is None:
+        if self._phraser is None or not self._can_phrase(n):
             return n
         facts = {"title": n.title, "body": n.body, "because": n.because,
                  "actions": [a.label for a in n.actions if a.label]}
@@ -341,6 +597,45 @@ class BehaviorEngine:
                 attrs={"nudge_id": fb.nudge_id, "verdict": fb.verdict, "pattern_id": key})])
 
     # ---- personal context ---------------------------------------------------
+    def history_status(self) -> dict:
+        from service.behavior.history import History
+        return History(self._store).status()
+
+    def history_next(self, source: str) -> dict:
+        from service.behavior.history import History
+        with revocation(),self._lock,self._content_change():
+            return History(self._store).next(source, self._now(None))
+
+    def history_control(self, source: str, command: str) -> dict:
+        from service.behavior.history import History
+        with revocation(),self._lock,self._content_change():
+            return History(self._store).control(source, command, self._now(None))
+
+    def history_ingest(self, source: str, payload: dict) -> dict:
+        from service.behavior.history import History
+        with revocation(),self._lock,self._content_change():
+            result = History(self._store).ingest(source,payload,self._now(None),self._prepare)
+        # No model call while holding a permission/source mutation barrier.
+        if result.get("retained_rows",0):
+            self.mine()
+        return result
+
+    def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
+        with revocation(),self._lock,self._content_change():
+            self._store.record_coverage(source, start, end, state, now)
+
+    def weekly(self, now: float | None = None) -> dict:
+        from service.behavior.weekly import weekly_report, render_report
+        now = self._now(now)
+        from service.behavior.timeutil import day_start, local_dt
+        start = day_start(local_dt(now, self._tz).date() - timedelta(days=35), self._tz)
+        with self._lock:
+            # Include events beginning before the report if their ends overlap.
+            obs = self._load()
+            report = weekly_report(obs,self._store.coverage(),now,self._tz)
+        report["summary"] = render_report(report)
+        return report
+
     def profile_card(self, now: float | None = None, max_bytes: int = 700) -> str:
         """Compact always-on 'who you are' text for the system prompt: top
         confirmed/high-confidence patterns + today's predictions. UTF-8 bytes

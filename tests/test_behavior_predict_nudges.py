@@ -8,7 +8,7 @@ import pytest
 from service.behavior import nudges as N
 from service.behavior.engine import BehaviorEngine
 from tests.fixtures.behavior_persona import generate_persona
-from service.behavior.types import Action, Feedback, Nudge, Observation
+from service.behavior.types import Action, Feedback, Nudge, Observation, Pattern, Prediction, Window
 
 TZ = ZoneInfo("America/Los_Angeles")
 D = 86400.0
@@ -74,7 +74,7 @@ def test_demo_nudges_fire_with_actions(eng, persona):
     hc = by_kind["habit_conflict"]
     remind, draft = hc.actions
     assert remind.type == "add_reminder" and remind.auto
-    assert remind.params["title"] == "Gym moved? — Harborline SSO check-in overlaps your usual workout"
+    assert remind.params["title"] == "Review calendar overlap: Harborline SSO check-in / Gym"
     conflict_ts = at(14, 7)
     assert remind.params["when_ts"] == conflict_ts - 12 * 3600       # 12h before (later than now)
     assert draft.type == "open_prompt" and not draft.auto
@@ -82,7 +82,7 @@ def test_demo_nudges_fire_with_actions(eng, persona):
     assert hc.expires_at == conflict_ts and persona.expected["conflict_event_id"] in hc.evidence
     cl = by_kind["cancel_likely"]
     hold, resched = cl.actions
-    assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Likely skip: Ops standup"
+    assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Schedule may change: Ops standup"
     assert hold.params["when_ts"] == at(13, 15, 45) and hold.params["end_ts"] == at(13, 16, 15)
     assert resched.params["prompt"] == "Draft a reschedule note for Ops standup" and not resched.auto
     assert by_kind["day_preview"].body.startswith("Likely today:")
@@ -119,7 +119,7 @@ def test_habit_missed_suggests_a_hold_in_a_free_slot(tmp_path, persona):
     (hold,) = miss.actions
     assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Morning lift (Wisp suggested)"
     assert hold.params["when_ts"] == at(14, 11) and hold.params["end_ts"] == at(14, 12)   # after the focus block
-    assert miss.title == "No workout today?"
+    assert miss.title == "Morning lift isn't on your calendar today"
     e.close()
 
 
@@ -141,6 +141,116 @@ def test_contact_window_needs_an_unanswered_message(tmp_path, persona):
     reply = Observation(id="m:out", kind="message_out", ts=at(13, 12, 30), subject="Dev Malik", source="messages")
     assert run([ask, reply], at(13, 14, 45)) == []                    # answered
     assert run([ask], at(13, 13, 0)) == []                            # outside the 2-5pm window
+
+
+@pytest.mark.parametrize("calls,messages,source", [
+    (8, 0, "Scheduled calls"), (4, 4, "Messages and scheduled calls"), (0, 8, "Recorded message"),
+    (1, 0, "Scheduled calls"), (1, 1, "Messages and scheduled calls"), (0, 1, "Recorded message"),
+])
+def test_contact_outputs_keep_the_source_without_claiming_conversation(calls, messages, source):
+    from service.behavior.profile import prediction_line
+    p = Pattern("contact", "contact_rhythm", "Sam", "Source timing", Window((1,), 420, 600),
+                confidence=.9, support=8, opportunities=10,
+                stats={"calls": calls, "messages": messages, "basis": "mixed" if calls else "observed"})
+    pr = Prediction("contact", "Sam", NOW, end_ts=NOW + 3600,
+                    probability=.9, because="Source timing", pattern_id=p.id)
+    inp = N.Inputs(NOW, TZ, [p], [pr], {}, [], {"Sam": (NOW - 3 * 3600, None)} if messages else {})
+    candidates = N.build_candidates(inp)
+    cw = next(n for n in candidates if n.kind == "contact_window")
+    preview = next(n for n in candidates if n.kind == "day_preview")
+    line = prediction_line(pr, TZ, {p.id: p})
+    assert all(source in s for s in (cw.body, cw.because, preview.body, line))
+    text = " ".join((cw.title, cw.body, cw.because, preview.body, line)).lower()
+    assert all(phrase not in text for phrase in ("talk with", "usually call", "in touch"))
+    assert cw.actions[0].type == "open_prompt" and not cw.actions[0].auto
+
+
+@pytest.mark.parametrize("stats", [
+    {}, {"calls": 0, "messages": 0}, {"calls": -1, "messages": -2},
+    {"calls": True, "messages": False}, {"calls": "8", "messages": "4"},
+    {"calls": float("nan"), "messages": float("inf")},
+    {"calls": 1.0, "messages": 1.5}, {"calls": None, "messages": object()},
+])
+def test_contact_nudge_with_unknown_or_invalid_source_counts_stays_unknown(stats):
+    from service.behavior import predict
+    from service.behavior.profile import prediction_line
+
+    p = Pattern("old-contact", "contact_rhythm", "Sam", "Saved timing", Window((), 420, 1080),
+                confidence=.9, support=8, opportunities=10, stats=stats, status="confirmed")
+    nudge = N._contact_windows(N.Inputs(NOW, TZ, [p], [], {}, [], {}))[0]
+    pr = predict._contacts([p], NOW, NOW+3600, TZ)[0]
+    texts = (nudge.body, nudge.because, pr.because,
+             N._preview_item(pr, TZ, {p.id: p}), prediction_line(pr, TZ, {p.id: p}))
+    assert all("source details" in text for text in texts)
+    assert all("Recorded message" not in text and "Scheduled calls" not in text for text in texts)
+    assert all(action.type == "open_prompt" and not action.auto for action in nudge.actions)
+
+
+@pytest.mark.parametrize("stats", [{}, {"calls": 0, "messages": 0}])
+def test_confirmed_orphan_contact_does_not_gain_message_provenance(tmp_path, stats):
+    engine = BehaviorEngine(tmp_path / "orphan.db", clock=lambda: NOW, tz=str(TZ))
+    try:
+        p = Pattern("orphan", "contact_rhythm", "Sam", "Older timing", Window((), 420, 1080),
+                    confidence=.9, support=8, opportunities=10, stats=stats)
+        engine._store.replace_patterns([p], NOW-100)
+        engine.set_pattern_status(p.id, "confirmed")
+        engine._store.replace_patterns([], NOW)
+        assert engine._store.get_pattern(p.id).status == "confirmed"
+        nudge = next(n for n in engine.generate_nudges(NOW) if n.kind == "contact_window")
+        assert "source details" in nudge.body
+        assert "Recorded messages" not in nudge.body
+        assert all(not action.auto for action in nudge.actions)
+    finally:
+        engine.close()
+
+
+@pytest.mark.parametrize("version", [None, 2])
+@pytest.mark.parametrize("calls,messages,source,basis", [
+    (None, None, "source counts unavailable", "unknown"), (0, 0, "source counts unavailable", "unknown"),
+    (True, "4", "source counts unavailable", "unknown"), (-1, -2, "source counts unavailable", "unknown"),
+    (1.0, float("nan"), "source counts unavailable", "unknown"),
+    (1, 0, "Scheduled calls", "scheduled"), (0, 1, "Recorded messages", "observed"),
+    (1, 1, "Messages and scheduled calls", "mixed"),
+])
+def test_stored_contact_normalization_is_consistent_across_public_surfaces(tmp_path, monkeypatch, version, calls, messages, source, basis):
+    from service.behavior.evidence import pattern_evidence
+    engine = BehaviorEngine(tmp_path / "source.db", clock=lambda: NOW, tz=str(TZ))
+    original = "You talk to Sam every morning."
+    stats = dict(calls=calls, messages=messages)
+    if version is not None:
+        stats["evidence_version"] = version
+    p = Pattern("old", "contact_rhythm", "Sam", original, Window((), 420, 1080),
+                confidence=.9, support=8, opportunities=10, stats=stats)
+    try:
+        engine._store.replace_patterns([p], NOW)
+        engine.set_pattern_status(p.id, "confirmed")
+        saved = engine.patterns()[0]
+        import json
+        json.dumps(saved.to_dict(), allow_nan=False)
+        assert saved.stats["basis"] == basis and source in saved.statement
+        assert saved.stats["original_statement"] == original and saved.status == "confirmed"
+        assert pattern_evidence(saved) == saved
+        texts = (engine.profile_card(NOW), engine.describe("Sam", NOW)["summary"])
+        assert all(source in text and "You talk" not in text for text in texts)
+        from types import SimpleNamespace
+        from service.tools import behavior_tools
+        from service.assistant import behavior_runtime
+        monkeypatch.setattr(behavior_tools, "_runtime", lambda: SimpleNamespace(clock=lambda: NOW))
+        monkeypatch.setattr(behavior_runtime, "predictions_for", lambda *_: engine.predict(NOW))
+        text = behavior_tools.predict_my_day("today")
+        assert "possible contact window" in text and "likely to talk" not in text
+    finally:
+        engine.close()
+
+
+def test_schedule_change_outputs_do_not_claim_user_agency_or_skipping(eng):
+    predictions = eng.predict(NOW)
+    assert any(p.kind == "cancel_risk" for p in predictions)
+    assert any(p.kind == "habit_conflict" for p in predictions)
+    nudges = eng.generate_nudges(NOW)
+    texts = [p.because for p in predictions] + [
+        " ".join((n.title, n.body, n.because, *(a.label + str(a.params) for a in n.actions))) for n in nudges]
+    assert all(word not in " ".join(texts).lower() for word in ("you cancelled", "you moved", "skip"))
 
 
 # --------------------------------------------------------------- the budget
@@ -302,7 +412,7 @@ def test_demo_sunday_1pm_both_presets_fire(tmp_path):
         ("habit_conflict", "Foundry export check-in overlaps your workout")]
     e.observe(backtoback())
     b2b = e.generate_nudges(SUN)
-    assert [(n.kind, n.title) for n in b2b] == [("cancel_likely", "You might skip Board deck prep")]
+    assert [(n.kind, n.title) for n in b2b] == [("cancel_likely", "The schedule for Board deck prep may change")]
     assert b2b[0].expires_at == ts(12, 15, 30)
     assert any(a.type == "add_hold" and a.auto for a in b2b[0].actions)
     e.close()
@@ -312,7 +422,7 @@ def test_demo_presets_fire_without_warmup_in_one_pass(tmp_path):
     e, _ = demo_engine(tmp_path, SUN)
     e.observe([foundry()] + backtoback())
     made = sorted((n.kind, n.title) for n in e.generate_nudges(SUN))
-    assert made == [("cancel_likely", "You might skip Board deck prep"),
+    assert made == [("cancel_likely", "The schedule for Board deck prep may change"),
                     ("habit_conflict", "Foundry export check-in overlaps your workout"),
                     ("habit_conflict", "Harborline SSO check-in overlaps your workout")]
     e.close()
@@ -365,7 +475,7 @@ def test_monday_3pm_and_late_night_runs(tmp_path):
     assert e.generate_nudges(ts(11, 22, 30)) == []                    # quiet hours
     mon = [n for n in e.generate_nudges(ts(12, 15, 0)) if n.kind == "cancel_likely"
            and datetime.fromtimestamp(n.expires_at, TZ).date().day == 12]
-    assert [n.title for n in mon] == ["You might skip Board deck prep"]
+    assert [n.title for n in mon] == ["The schedule for Board deck prep may change"]
     e.close()
 
 

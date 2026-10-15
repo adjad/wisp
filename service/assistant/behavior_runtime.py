@@ -38,8 +38,10 @@ Forgetting and retention
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -50,6 +52,8 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
+from types import MappingProxyType
+from service.publication_authority import Authority, PublicationUnavailable, Witness, assert_mutation_allowed, mutating, publication, revocation
 
 log = logging.getLogger("wisp.behavior")
 
@@ -69,7 +73,7 @@ FORCE_WAIT_S = 30.0        # /behavior/run waits this long for a running tick
 STOP_WAIT_S = 30.0         # stop() waits this long for a delivery/action already in flight
 CARD_TTL_S = 60.0
 CARD_MAX_BYTES = 700
-HISTORY_S = 56 * 86400
+HISTORY_S = 180 * 86400   # full retained history; older native pages are scanned separately
 AHEAD_S = 21 * 86400
 ASK_LIMIT = 500
 
@@ -220,6 +224,9 @@ class BehaviorRuntime:
                  contact_name_fn: Callable[[str], str] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
+                 behavior_sources_fn=None, behavior_interpreter=None, role_key_fn=None,
+                 gmail_history_backend=None, gmail_history_client_factory=None,
+                 history_monotonic: Callable[[], float] = time.monotonic,
                  clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
         self._local_factory = local_factory or _default_local_factory
@@ -228,6 +235,22 @@ class BehaviorRuntime:
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
         self._session_db_fn = session_db_fn or _default_session_db
         self.clock = clock
+        self._sources_fn = behavior_sources_fn
+        self._interpreter = behavior_interpreter
+        self._role_key_fn = role_key_fn
+        from service.assistant.gmail_history_runtime import HistoryHost, PublicHistoryBackend
+        from service.assistant.behavior_history_driver import HistoryDriver
+        self._email_history = HistoryHost(backend=gmail_history_backend if gmail_history_backend is not None
+            else PublicHistoryBackend(clock=clock,monotonic=history_monotonic))
+        self._history_driver = HistoryDriver(self._email_history,client_factory=gmail_history_client_factory,
+            monotonic=history_monotonic)
+        self._history_discovery_at = None
+        self._history_monotonic = history_monotonic
+        self._availability_cache = None
+        self._seed_status = None
+        self._planning_store = None
+        self._availability_attempt = 0.0
+        self._availability_cancel = threading.local()
         self._local_engine = None
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
@@ -244,6 +267,7 @@ class BehaviorRuntime:
         # began before stop() can land after it returns, and none can begin afterwards.
         self._gate = threading.Condition()
         self._inflight = 0
+        self._publication = Authority("behavior-runtime",owner=self)
         self.home.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.home / RUNTIME_DB), check_same_thread=False)
         self._db.row_factory = sqlite3.Row
@@ -256,6 +280,7 @@ class BehaviorRuntime:
                 nudge_id TEXT NOT NULL, idx INTEGER NOT NULL, type TEXT NOT NULL,
                 commitment_id TEXT, title TEXT, when_ts REAL, created_at REAL NOT NULL,
                 undone_at REAL, PRIMARY KEY (nudge_id, idx))""")
+        self._publication.publish()
 
     # ---- runtime-local storage -----------------------------------------------
     def kv_get(self, key: str, default: str | None = None) -> str | None:
@@ -288,8 +313,15 @@ class BehaviorRuntime:
         thread and for any delivery or action already in flight to finish. When it
         returns nothing can write through this runtime. Used before the learned data
         is deleted."""
+        with revocation():
+            self._publication.withdraw()
+            self._email_history.invalidate("Behavior runtime stopped", close=True)
+            with self._gate:
+                self._stopped = True
+                self._availability_cache = None
+                self._seed_status = None
+        # Never retain the outer barrier while waiting for worker/inflight work.
         with self._gate:
-            self._stopped = True
             self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
         with self._work_lock:
             pass
@@ -300,6 +332,13 @@ class BehaviorRuntime:
         return not self._stopped and enabled()
 
     def close(self) -> None:
+        with revocation():
+            self._publication.withdraw()
+            self._email_history.invalidate("Behavior runtime closed", close=True)
+            with self._gate:
+                self._stopped = True
+                self._availability_cache = None
+                self._seed_status = None
         close = getattr(self._local_engine, "close", None)
         if close is not None:
             try:
@@ -316,13 +355,462 @@ class BehaviorRuntime:
         if self._stopped:
             raise RuntimeStopped("behavior runtime was stopped")
         if self._local_engine is None:
-            self._local_engine = self._local_factory(self.home / ENGINE_DB)
+            with revocation(),self._gate:
+                if self._stopped:
+                    raise RuntimeStopped("behavior runtime was stopped")
+                if self._local_engine is None:
+                    self._local_engine = self._local_factory(self.home / ENGINE_DB)
         return self._local_engine
 
     def call(self, method: str, *args, **kwargs):
         """Call an engine method. KeyError/ValueError are semantic answers
         (404/400) and propagate."""
+        if method == "configure_signals":
+            from service.publication_authority import revocation
+            with revocation(), self._in_flight(), self._gate:
+                if not self.live():
+                    raise RuntimeStopped("behavior learning stopped")
+                self._email_history.invalidate("Source preferences changed")
+                self._availability_cache = None
+                self._seed_status = None
+                self._availability_attempt = 0.0
+                return self.local_engine().configure_signals(*args, **kwargs)
+        if method.startswith("history_") or method in {"observe_activity", "activity_lease"}:
+            with self._in_flight(), self._work_lock:
+                if not self.live():
+                    raise RuntimeStopped("behavior learning stopped")
+                if method == "configure_signals":
+                    self._availability_cache = None
+                    self._availability_attempt = 0.0
+                return getattr(self.local_engine(), method)(*args, **kwargs)
         return getattr(self.local_engine(), method)(*args, **kwargs)
+
+    def _analysis_role(self):
+        if self._role_key_fn is not None:
+            return self._role_key_fn()
+        from service.config.endpoints import role_target
+        from service.behavior_switch import remote_active
+        target = role_target("fast")
+        return (target.identity, remote_active())
+
+    def _bind_history(self, settings=None, role=None):
+        from service.config import authority_changes, models_config
+        settings = settings if settings is not None else self.local_engine().signal_settings()
+        # Settle an explicit trusted config read before taking the revision we
+        # bind. This also covers a role resolver or env override that does not
+        # itself read models_config; admission callbacks remain zero-I/O.
+        models_config()
+        live = self.live()
+        before = authority_changes.current()
+        resolved = self._analysis_role()
+        after = authority_changes.current()
+        if (not before.ready or before is not after or (role is not None and role != resolved)):
+            self._email_history.invalidate("Configuration authority is changing")
+            return
+        self._email_history.bind(enabled=live, settings=settings["settings"],
+                                 epoch=settings["epoch"], role=resolved)
+
+    def invalidate_history(self, reason="Application permission withdrawn"):
+        self._email_history.invalidate(reason)
+
+    def email_history_status(self):
+        with revocation(),self._in_flight(), self._gate:
+            # Server permission projection is separate from the source's pure
+            # metadata getter and the zero-I/O installed admission callback.
+            self._bind_history()
+            return self._email_history.status()
+
+    def email_history_control(self, body):
+        # No await before the serialized control withdraws the old source lease.
+        # Opening a bridge may only install source-owned in-memory authority;
+        # it cannot construct a transport or fetch.
+        with revocation(),self._in_flight(), self._gate:
+            self._bind_history()
+            return self._email_history.control(body)
+
+    def _history_backlog(self):
+        """Cached source proofs plus metadata-only progress; no source I/O/model."""
+        from service.assistant.behavior_sources import capture
+        from service.assistant.behavior_seed import record_metadata
+        batch = capture({"email":True},getters={"email":lambda **kwargs:None},now=self.clock(),
+                        gmail_history_getters=self._email_history.cached_getters)
+        records = [metadata for snapshot in batch.snapshots for raw in snapshot.records
+                   if (metadata := record_metadata(snapshot.source,raw)) is not None]
+        index = self.local_engine().seed_index(create=False)
+        analyzed = index.analyzed_ids(records) if index is not None else set()
+        counts,done = {},{}
+        for record in records:
+            account = record["reference"].get("account_id")
+            counts[account] = counts.get(account,0)+1
+            if record["id"] in analyzed:
+                done[account] = done.get(account,0)+1
+        return {row["account_id"]:max(0,counts.get(row["account_id"],0)-done.get(row["account_id"],0))
+                for row in self._email_history.status()["accounts"]}
+
+    def _history_worker_state(self):
+        """Worker-only discovery; construction, status and planning never call it."""
+        with self._work_lock:
+            if not self.live():
+                return None
+            engine = self.local_engine()
+            if not hasattr(engine,"signal_settings"):
+                return None
+            settings = engine.signal_settings()
+            if not settings["settings"]["email"]:
+                return None
+            self._bind_history(settings)
+            moment = self._history_monotonic()
+            if (type(moment) not in (int,float) or not math.isfinite(moment)):
+                return None
+            if self._history_discovery_at is None or moment-self._history_discovery_at >= TICK_S:
+                self._history_discovery_at = moment
+                self._email_history.observe_accounts()
+                self._bind_history(settings)
+            return self._history_backlog() if self.live() else None
+
+    @staticmethod
+    def _seed_epoch(settings, role):
+        return settings["epoch"] + ":" + hashlib.sha256(repr(role).encode()).hexdigest()
+
+    @staticmethod
+    def _pattern_proof(pattern):
+        try:
+            return hashlib.sha256(json.dumps(pattern, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        except (TypeError, ValueError, UnicodeError, OverflowError):
+            return None
+
+    def _source_batch(self, settings, now):
+        if self._sources_fn is not None:
+            return self._sources_fn(settings)
+        from service.assistant.behavior_sources import capture
+        from service.assistant.behavior_seed import Snapshot
+        from zoneinfo import ZoneInfo
+        engine = self.local_engine()
+        retained = []
+        store = self._planning_store
+        day = datetime.fromtimestamp(now, ZoneInfo(engine.tz)).date().isoformat()
+        def permission(source, *, prepare=False):
+            if source == "calendar":
+                value = self._calendar_sync_fn() or {}
+            elif store is not None:
+                value = store.today_snapshot(day, engine.tz)["sources"].get(source, {})
+            else:
+                return (None,None) if prepare else None
+            if (value.get("available") is not True or value.get("syncing") or not _finite(value.get("last_sync"))
+                    or not 0 <= self.clock()-value["last_sync"] <= 1200):
+                return (None,None) if prepare else None
+            diagnostics = value.get("diagnostics") or {}
+            if diagnostics.get("complete") is False or diagnostics.get("partial"):
+                return (None,None) if prepare else None
+            start = diagnostics.get("snapshot_started_at") if source == "calendar" else value.get("snapshot_started_at")
+            if (not _finite(start) or float(start) <= 0 or not 0 <= self.clock()-start <= 1200
+                    or (source == "calendar" and diagnostics.get("authorized") is not True)):
+                return (None,None) if prepare else None
+            # A receipt contains no calendar title/event diagnostic lists.
+            receipt = json.dumps(dict(last_sync=value["last_sync"], snapshot_started_at=start,
+                                   coverage_start=diagnostics.get("coverage_start"),
+                                   coverage_end=diagnostics.get("coverage_end")), sort_keys=True, allow_nan=False)
+            if not prepare:
+                return receipt
+            if source == "calendar":
+                from service.assistant.scheduler import prepare_behavior_source_publication_witness
+                witness = prepare_behavior_source_publication_witness(source,value)
+            else:
+                witness = store.prepare_behavior_source_publication_witness(source,value)
+            return receipt,witness
+        for source, flag in (("calendar", "calendar_context"), ("reminders", "reminders_context")):
+            if not settings.get(flag):
+                retained.append(Snapshot(source))
+                continue
+            token = None
+            try:
+                token,permission_witness = permission(source,prepare=True)
+                expected = json.loads(token)["last_sync"] if token is not None and source == "calendar" else None
+                context = engine.semantic_history(source, now, expected_sync=expected, metadata=True) if token is not None else None
+                records = context["records"] if context is not None else []
+                digest = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+                def current(s=source, token=token, digest=digest):
+                    if token is None or permission(s) != token:
+                        return False
+                    expected = json.loads(token)["last_sync"] if s == "calendar" else None
+                    rows = engine.semantic_history(s, now, expected_sync=expected, metadata=True)
+                    return rows is not None and hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest() == digest
+                valid = token is not None and context is not None and current()
+                content_token = engine.prepare_semantic_publication_token(source,context,now,expected_sync=expected) if valid else None
+                witness = Witness.combine(permission_witness,content_token)
+            except Exception:
+                records, context, valid = [], None, False
+                current = lambda: False
+                witness = None
+            retained.append(Snapshot(source, tuple(records or []), enabled=True, available=valid,
+                                     current=current, publication_complete=bool(context and context["complete"]),
+                                     omitted=context["omitted"] if context else 0,
+                                     requested_range=(now-HISTORY_S, now+AHEAD_S if source == "calendar" else now), scope="retained_history",
+                                     published_at=json.loads(token)["snapshot_started_at"] if token is not None else None,
+                                     publication_witness=witness))
+        return capture(settings, retained=retained, now=now,
+                       gmail_history_getters=self._email_history.cached_getters)
+
+    def _prepare_publication_witness(self,settings,role,batch=None,*,cancellation=None,extra=()):
+        """Full preparation outside the application lease and Runtime gate."""
+        from service.config import authority_changes
+        before = authority_changes.current()
+        if (not before.ready or not self.live() or cancellation is not None and cancellation.is_set()
+                or self._analysis_role() != role):
+            return None
+        engine = self.local_engine()
+        if engine.signal_settings() != settings or batch is not None and not batch.current():
+            return None
+        settings_token = engine.prepare_settings_publication_token(settings)
+        if authority_changes.current() is not before:
+            return None
+        return Witness.combine(self._publication.token(cancelled_by=cancellation),settings_token,
+            authority_changes.publication_token(before),*(batch.prepared_witnesses() if batch is not None else ()),*extra)
+
+    def _publish_prepared_view(self,value,settings,role,batch=None,*,extra=(),cache=None):
+        witness = self._prepare_publication_witness(settings,role,batch,extra=extra)
+        try:
+            with publication(witness) as lease,self._gate:
+                if lease.current() and (cache is None or self._availability_cache is cache):
+                    return value
+        except PublicationUnavailable:
+            pass
+        return None
+
+    def _refresh_availability(self, now):
+        """Worker-only bounded interpretation. Never called by a planning GET."""
+        self._availability_attempt = now
+        cancellation = getattr(self._availability_cancel, "event", None) or threading.Event()
+        engine = self.local_engine()
+        if not hasattr(engine, "signal_settings"):
+            return
+        settings = engine.signal_settings()
+        if not settings["settings"]["interpretation"] or not self.live():
+            self._availability_cache = None
+            return
+        try:
+            from service.assistant.behavior_interpreter import Interpreter
+            from service.assistant.behavior_seed import Seed
+            from zoneinfo import ZoneInfo
+            zone = engine.tz
+            role = self._analysis_role()
+            seed_epoch = self._seed_epoch(settings,role)
+            self._bind_history(settings, role)
+            batch = self._source_batch(settings["settings"], now)
+            day = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
+            patterns = [p for offset in range(7) for p in engine.availability_patterns(
+                (day+timedelta(days=offset)).isoformat(), zone, batch.visits, now)]
+            if not batch.current():
+                self._availability_cache = None
+                return
+            # Bind the complete input before interpretation. Stable IDs alone
+            # cannot admit revised cohorts, bounds, sites or descriptors.
+            proofs = {}
+            for pattern in patterns:
+                ident, proof = pattern["id"], self._pattern_proof(pattern)
+                proofs[ident] = proof if ident not in proofs or proofs[ident] == proof else None
+            def admit():
+                return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
+                        and batch.current() and self._analysis_role() == role)
+            seed_index = engine.seed_index() if batch.snapshots else None
+            index_tokens = ((seed_index.publication_token(),) if seed_index is not None and
+                any(s.enabled and s.available and s.records for s in batch.snapshots) else ())
+            baseline = None
+            def prepare():
+                extra = index_tokens
+                if settings["settings"]["activity"]:
+                    extra += (engine.prepare_availability_publication_witness(
+                        patterns,day.isoformat(),zone,batch.visits,now),)
+                witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,extra=extra)
+                return Witness.combine(baseline,witness) if baseline is not None else witness
+            baseline = prepare()
+            if type(baseline) is not Witness or not baseline.current():
+                self._availability_cache = None
+                return
+            interpreter = self._interpreter or Interpreter()
+            result = None
+            if batch.snapshots:
+                seed = Seed(seed_index)
+                def analyze(context, *, admit):
+                    nonlocal result
+                    result = interpreter.interpret(context, patterns, now=now, timezone=zone,
+                        default_minutes=settings["settings"]["default_block_minutes"],
+                        remote_allowed=settings["settings"]["remote_analysis"], admit=admit, associations=True)
+                    if result.get("state") != "tentative":
+                        raise ValueError("Seed interpretation unavailable")
+                    work = [{k:d.get(k) for k in ("source_id", "quote", "kind", "ownership", "due_range", "importance_hypothesis")}
+                            for d in result.get("demands", [])]
+                    return dict(links=result.get("link_proposals", []), demands=work, processed_ids=result.get("record_ids", []))
+                progress = seed.run(batch.snapshots, epoch=seed_epoch, now=now, timezone=zone,
+                                    analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate,
+                                    prepare_publication=prepare)
+                status_witness = self._prepare_publication_witness(settings,role,batch,cancellation=cancellation,
+                    extra=(baseline,*index_tokens))
+                try:
+                    with publication(status_witness) as lease,self._gate:
+                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=seed_epoch, at=now,
+                            receipt_checks=tuple(batch.receipts),publication_witness=status_witness)
+                except PublicationUnavailable:
+                    self._seed_status = None
+            if result is None and (patterns or (batch.records and not batch.snapshots)):
+                # Empty/finished seed: at most one guarded call to interpret
+                # current activity patterns, never a second source-history call.
+                result = interpreter.interpret([] if batch.snapshots else batch.records, patterns, now=now, timezone=zone,
+                    default_minutes=settings["settings"]["default_block_minutes"],
+                    remote_allowed=settings["settings"]["remote_analysis"], admit=admit)
+            result = result or dict(state="tentative", patterns=[], demands=[])
+            witness = prepare()
+            # Drop bodies before keeping a receipt. No source text persisted.
+            batch.publication_witnesses = batch.prepared_witnesses()
+            batch.records = []
+            batch.visits = []
+            batch.snapshots = ()
+            with publication(witness) as lease,self._gate:
+                if lease.current() and result.get("state") == "tentative":
+                    self._availability_cache = dict(epoch=settings["epoch"], batch=batch, result=result,
+                                                    at=now, role=role, timezone=zone, cancellation=cancellation,
+                                                    pattern_proofs=MappingProxyType(proofs),publication_witness=witness)
+                else:
+                    self._availability_cache = None
+        except PublicationUnavailable:
+            self._availability_cache = None
+        except Exception:
+            self._availability_cache = None
+            self.errors["availability"] = "Interpretation unavailable; no availability assumed."
+
+    def seed_progress(self):
+        with self._in_flight():
+            engine = self.local_engine()
+            if not hasattr(engine, "signal_settings"):
+                return dict(state="unavailable", sources={}, detail="Source interpretation is unavailable.")
+            settings = engine.signal_settings()
+            if not self.live() or not settings["settings"]["interpretation"]:
+                return dict(state="off", detail="Source interpretation is off.", sources={})
+            progress = self._seed_status
+            if (progress is None or progress["epoch"] != settings["epoch"]
+                    or progress["role_digest"] != self._seed_epoch(settings, self._analysis_role())):
+                return dict(state="not_started", sources={}, detail="Waiting for a permitted current publication.")
+            try:
+                current = all(check() is True for check in progress["receipt_checks"])
+            except Exception:
+                current = False
+            if not current:
+                return dict(state="unavailable",sources={},
+                    detail="Earlier processing is not current coverage; source evidence is unavailable or expired.")
+            try:
+                with publication(progress.get("publication_witness")) as lease,self._gate:
+                    if self._seed_status is progress and lease.current():
+                        return {k:v for k,v in progress.items() if k not in {
+                            "epoch", "role_digest", "receipt_checks", "publication_witness"}}
+            except PublicationUnavailable:
+                pass
+            return dict(state="unavailable",sources={},detail="Source evidence was withdrawn before progress readback.")
+
+    def planning_context(self, day, timezone, now=None):
+        """Read current evidence; neither analysis nor receipt freshness is renewed."""
+        from service.behavior.availability import apply_interpretations
+        from service.assistant.behavior_sources import Batch
+        from datetime import date
+        from zoneinfo import ZoneInfo
+        target = date.fromisoformat(day)
+        if target.isoformat() != day:
+            raise ValueError("A local date is required")
+        ZoneInfo(timezone)
+        now = self.clock() if now is None else now
+        empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
+                     evidence_checked_at=now, windows=[], demands=[], patterns=[], associations=[], source_coverage={},
+                     detail="No current inferred availability; an empty calendar does not prove free time.")
+        with self._in_flight():
+            if not self.live():
+                return empty
+            engine = self.local_engine()
+            settings = engine.signal_settings()
+            if not settings["settings"]["interpretation"]:
+                return empty
+            cache = self._availability_cache
+            role = self._analysis_role()
+            def raw_view():
+                proof = engine.prepare_availability_publication_witness(
+                    empty["patterns"],day,timezone,(),now,days=1)
+                return self._publish_prepared_view(empty,settings,role,extra=(proof,)) or dict(empty,patterns=[])
+            first = datetime.fromtimestamp(now, ZoneInfo(timezone)).date()
+            in_horizon = first <= target <= first+timedelta(days=6)
+            if in_horizon:
+                empty["patterns"] = engine.availability_patterns(day, timezone, now=now)
+            def cache_available():
+                return (in_horizon and cache is not None and self._availability_cache is cache
+                        and "pattern_proofs" in cache and not cache["cancellation"].is_set()
+                        and self.live() and engine.signal_settings() == settings
+                        and settings["settings"]["interpretation"] and cache["epoch"] == settings["epoch"]
+                        and cache["timezone"] == timezone and 0 <= now-cache["at"] <= 300
+                        and type(cache.get("publication_witness")) is Witness and cache["publication_witness"].current()
+                        and cache["batch"].current())
+            index = engine.seed_index(create=False) if settings["settings"]["interpretation"] else None
+            index_tokens = (index.publication_token(),) if index is not None else ()
+            if index is None and not cache_available():
+                return raw_view()
+            self._bind_history(settings, role)
+            def cache_current():
+                return cache_available() and self._analysis_role() == role == cache["role"]
+            cache_ok = cache_current()
+            # Durable work needs fresh source proof even after pattern analysis
+            # expires. Pattern-only reads capture nothing until cache admission.
+            if index is None and not cache_ok:
+                return raw_view()
+            batch = None
+            def withdrawn():
+                return dict(empty, ready=False, windows=[], demands=[], associations=[])
+            try:
+                batch = self._source_batch(settings["settings"], now)
+                def current():
+                    return (isinstance(batch, Batch) and self.live() and engine.signal_settings() == settings
+                            and self._analysis_role() == role and batch.current())
+                if not current():
+                    return withdrawn()
+                patterns = engine.availability_patterns(day, timezone, batch.visits, now) if in_horizon else []
+                empty["patterns"] = patterns
+                durable_demands, links = [], []
+                if index is not None and batch.snapshots:
+                    from service.assistant.behavior_seed import Seed
+                    seed = Seed(index)
+                    epoch = self._seed_epoch(settings, role)
+                    durable_demands = seed.demands(batch.snapshots, epoch=epoch, now=now,
+                        default_minutes=settings["settings"]["default_block_minutes"], admit=current)
+                    links = seed.materialize(batch.snapshots, epoch=epoch, admit=current)
+                if not current():
+                    return withdrawn()
+                empty.update(demands=durable_demands, associations=links, source_coverage=batch.detail,
+                    ready=bool(durable_demands or links),
+                    generated_at=min((v["analyzed_at"] for v in durable_demands+links if _finite(v.get("analyzed_at"))), default=now),
+                    detail="Source-grounded tentative hypotheses; uncertainty and source limits apply.")
+                if not cache_ok or not cache_current():
+                    return (self._publish_prepared_view(empty,settings,role,batch,extra=index_tokens) or withdrawn()) if current() else withdrawn()
+                if (len(batch.receipts) < len(cache["batch"].receipts) or batch.detail != cache["batch"].detail):
+                    return (self._publish_prepared_view(empty,settings,role,batch,extra=index_tokens) or withdrawn()) if current() else withdrawn()
+                proofs = cache["pattern_proofs"]
+                matching = [p for p in patterns if isinstance(proofs.get(p["id"]), str)
+                            and proofs[p["id"]] == self._pattern_proof(p)]
+                result = cache["result"]
+                from copy import deepcopy
+                demands = durable_demands or deepcopy(result["demands"])
+                for demand in demands:
+                    if demand.get("due_range") and demand["due_range"][1] <= now:
+                        demand["status"] = "unresolved"
+                windows = apply_interpretations(matching, result["patterns"])
+                if not current() or not cache_current():
+                    return withdrawn()
+                value = dict(empty, ready=True, windows=windows, demands=demands,
+                    generated_at=min(empty["generated_at"], cache["at"]),
+                    detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
+                    observed_context=engine.availability_context(timezone, now=now))
+                pattern_witness = engine.prepare_availability_publication_witness(patterns,day,timezone,batch.visits,now,days=1)
+                return self._publish_prepared_view(value,settings,role,batch,
+                    extra=(*index_tokens,pattern_witness,cache["publication_witness"]),cache=cache) or withdrawn()
+            except Exception:
+                return withdrawn()
+            finally:
+                if isinstance(batch, Batch):
+                    batch.records, batch.visits, batch.snapshots = [], [], ()
 
     async def acall(self, method: str, *args, **kwargs):
         return await asyncio.to_thread(self.call, method, *args, **kwargs)
@@ -382,7 +870,7 @@ class BehaviorRuntime:
         from service.behavior.types import Observation
         out = []
         for r in rows:
-            if r.get("all_day") or not _finite(r.get("when_ts")) or not r.get("title"):
+            if not _finite(r.get("when_ts")) or not r.get("title"):
                 continue
             when = float(r["when_ts"])
             sid = str(r.get("source_id") or r.get("id") or "")
@@ -390,7 +878,8 @@ class BehaviorRuntime:
             # CalendarReader sets organizer only when it is NOT the current user.
             organizer = str(r.get("organizer") or "").strip()
             attrs = {"calendar": r.get("context") or "", "organizer": organizer,
-                     "organizer_is_user": not organizer}
+                     "organizer_is_user": not organizer, "all_day": bool(r.get("all_day")),
+                     "evidence_basis": "scheduled", "outcome": "unknown"}
             out.append(Observation(id=f"cal:{sid}:{int(when)}", kind="event", ts=when,
                                    subject=str(r["title"]), source="calendar", end_ts=end,
                                    source_id=sid, attrs=attrs))
@@ -406,6 +895,12 @@ class BehaviorRuntime:
         observations = self.calendar_observations(rows)
         result = self.call("observe_snapshot", "calendar", observations,
                            window_start=start, window_end=end, taken_at=float(last_sync)) or {}
+        diagnostics = sync.get("diagnostics") or {}
+        lo, hi = diagnostics.get("coverage_start"), diagnostics.get("coverage_end")
+        if _finite(lo) and _finite(hi) and float(hi) > float(lo):
+            # Source-declared coverage only; never derive it from the first event.
+            self.call("record_coverage", "calendar", max(start,float(lo)), min(end,float(hi)),
+                      "complete", float(last_sync))
         stamps["cal_sync"] = last_sync
         return any(int(result.get(k) or 0) for k in ("upserted", "cancelled", "moved"))
 
@@ -431,14 +926,15 @@ class BehaviorRuntime:
             if kind is None or not _finite(r.get("when_ts")):
                 continue
             ts = float(r["when_ts"])
-            if kind == "reminder_done" and _finite(r.get("updated_at")):
-                ts = float(r["updated_at"])
+            # Generic updated_at and due time do not establish completion time.
+            # Native completionDate arrives through the separate history reader.
             obs.append(Observation(
                 id=f"rem:{r['source']}:{r.get('source_id') or r['id']}:{int(float(r['when_ts']))}",
                 kind=kind, ts=ts, subject=str(r.get("title") or ""), source="reminders",
                 source_id=str(r.get("source_id") or ""),
                 attrs={"list": "" if r["source"] == "manual" else (r.get("context") or ""),
-                       "status": r.get("status") or "active", "due_ts": float(r["when_ts"])}))
+                       "status": r.get("status") or "active", "due_ts": float(r["when_ts"]),
+                       "completion_time_known": False}))
         return bool(obs) and bool(self.call("observe", obs))
 
     def _ingest_messages(self, now: float) -> bool:
@@ -490,6 +986,7 @@ class BehaviorRuntime:
             key = "local"
             if not self.live():
                 return [], key
+            self._planning_store = store
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             changed = self._flush_decisions()
             sync = {}
@@ -518,6 +1015,11 @@ class BehaviorRuntime:
                 self.errors.pop("engine", None)
             except Exception as exc:  # noqa: BLE001
                 self.errors["engine"] = f"{type(exc).__name__}: {exc}"[:200]
+            explicit = bool(self._email_history.worker_jobs())
+            fast_pending = explicit and any(self._history_backlog().values())
+            if self._history_driver.analysis_due(
+                    wanted=fast_pending or now-self._availability_attempt >= INGEST_EVERY_S,explicit=explicit):
+                self._refresh_availability(now)
             if self._card is None or self.clock() - self._card[0] >= CARD_TTL_S:
                 self.refresh_card(now)
             return nudges, key
@@ -715,7 +1217,30 @@ class BehaviorRuntime:
     async def _tick_locked(self, store, hub, now: float | None, force: bool) -> list[dict]:
         now = now if now is not None else self.clock()
         self.expire_events(store, now)
-        nudges, key = await asyncio.to_thread(self.work, store, now, force=force)
+        cancellation = threading.Event()
+        def run_work():
+            self._availability_cancel.event = cancellation
+            try:
+                return self.work(store, now, force=force)
+            finally:
+                del self._availability_cancel.event
+        try:
+            try:
+                backlog = await asyncio.to_thread(self._history_worker_state)
+                if backlog is not None and self.live():
+                    await self._history_driver.advance(pending=lambda account:backlog.get(account,0))
+            except Exception:
+                # A source/cleanup failure withdraws email history without
+                # preventing ingestion of other permitted sources this tick.
+                self._email_history.invalidate("History worker is unavailable")
+                self.errors["email_history"] = "History is unavailable; other permitted sources can still be used."
+            nudges, key = await asyncio.to_thread(run_work)
+        except asyncio.CancelledError:
+            with revocation():
+                cancellation.set()
+                self._email_history.invalidate("Behavior tick cancelled")
+                self._availability_cache = None
+            raise
         published: list[dict] = []
         for nudge in sorted(nudges, key=lambda n: n.seq):
             if not self.live():
@@ -820,6 +1345,8 @@ class BehaviorRuntime:
                 item = json.loads(r["payload"])
             except ValueError:
                 continue
+            from service.behavior.types import Nudge
+            item = Nudge.from_dict(item).to_dict()
             actions = self.actions_for(r["id"])
             live = {a["idx"] for a in actions if a["undone_at"] is None}
             for idx, action in enumerate(item.get("actions") or []):
@@ -900,6 +1427,7 @@ class BehaviorRuntime:
                 "SELECT COUNT(*) FROM actions WHERE undone_at IS NULL").fetchone()[0]
         try:
             info["engine"] = self.call("status")
+            info["seed"] = self.seed_progress()
         except Exception as exc:  # noqa: BLE001
             info["engine"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
         return info
@@ -924,12 +1452,24 @@ def forgetting() -> bool:
         return _forgetting
 
 
+def invalidate_email_history(reason="Application permission withdrawn"):
+    """Withdraw an existing history host without creating a runtime or reading config.
+
+    Supported configuration mutation hooks must call this before changing
+    global/role authority. An absent runtime requires no source work.
+    """
+    with _runtime_lock:
+        runtime = _runtime
+    if runtime is not None:
+        runtime.invalidate_history(reason)
+
+
 def get_runtime() -> BehaviorRuntime | None:
     """The process runtime, or None when behavior learning is off or being erased."""
     global _runtime
     if not enabled():
         return None
-    with _runtime_lock:
+    with revocation(),_runtime_lock:
         if _forgetting:
             return None
         if _runtime is None:
@@ -956,15 +1496,20 @@ def forget_all(store, home: Path | None = None) -> dict:
     completed or moved are kept. If learning is still on, Wisp starts over from
     the next ingest."""
     global _runtime, _forgetting
+    assert_mutation_allowed()
     explicit_home = Path(home) if home is not None else None
     with _forget_lock:
-        with _runtime_lock:
+        with revocation(),_runtime_lock:
+            runtime = _runtime
+            if runtime is not None:
+                runtime._publication.withdraw()
+                runtime.invalidate_history("Behavior data is being forgotten")
             _forgetting = True            # get_runtime() answers None until the files are gone
-            runtime, _runtime = _runtime, None
+            _runtime = None
         try:
             return _forget_locked(store, runtime, explicit_home)
         finally:
-            with _runtime_lock:
+            with revocation(),_runtime_lock:
                 _forgetting = False
 
 
@@ -1008,14 +1553,16 @@ AGE_OUT_EVERY_S = 6 * 3600.0
 _last_age_out: float | None = None
 
 
+@mutating
 def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int]:
     """Apply the retention limits (observations 180 days, nudges 30 days) to what is
     already on disk, whether or not learning is on. Plain SQL on its own connections:
     it never starts the engine, the phraser or a runtime, and never migrates a database."""
-    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S
+    from service.behavior.store import NUDGE_RETENTION_S, OBSERVATION_RETENTION_S, OBSERVATION_EXPIRY_SQL
     home = Path(home) if home is not None else _home()
     now = time.time() if now is None else float(now)
     out = {"observations": 0, "nudges": 0, "delivered": 0}
+    from service.behavior.engine import database_mutation as engine_database_mutation
 
     def run(name: str, statements: list[tuple[str, str, float]]) -> None:
         path = home / name
@@ -1027,6 +1574,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30)
             with conn:
                 for key, sql, cutoff in statements:
+                    if "kind=" in sql and "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(observations)")}:
+                        continue
                     out[key] += int(conn.execute(sql, (cutoff,)).rowcount or 0)
         except sqlite3.DatabaseError:
             pass          # unreadable or a different schema: leave it alone
@@ -1034,9 +1583,28 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             if conn is not None:
                 conn.close()
 
-    run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
-                    ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
-    run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+    from service.behavior.source_index import database_mutation
+    with engine_database_mutation(home/ENGINE_DB),database_mutation(home/ENGINE_DB):
+        run(ENGINE_DB, [("observations", OBSERVATION_EXPIRY_SQL, now - OBSERVATION_RETENTION_S),
+                        ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
+                        ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
+                        ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
+        run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+        path = home / ENGINE_DB
+        if path.exists():
+            conn = None
+            try:
+                conn = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30)
+                from service.behavior.source_index import prune_connection
+                with conn:
+                    removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
+                if removed:
+                    out["seed_metadata"] = removed
+            except sqlite3.DatabaseError:
+                pass
+            finally:
+                if conn is not None:
+                    conn.close()
     return out
 
 
@@ -1055,7 +1623,10 @@ async def _maybe_age_out(home: Path | None = None) -> None:
 def set_runtime(runtime: BehaviorRuntime | None) -> None:
     """Install (tests, rehearsal tooling) or drop the process runtime."""
     global _runtime
-    with _runtime_lock:
+    with revocation(),_runtime_lock:
+        if _runtime is not None and _runtime is not runtime:
+            _runtime._publication.withdraw()
+            _runtime.invalidate_history("Behavior runtime replaced")
         _runtime = runtime
 
 
@@ -1119,3 +1690,9 @@ def predictions_for(runtime: BehaviorRuntime, day: str, now: float | None = None
     start, end = day_bounds(day, now)
     preds = runtime.call("predict", now, horizon_s=max(60.0, end - now))
     return sorted((p for p in preds if start <= float(p.ts) < end), key=lambda p: p.ts)
+
+
+def planning_context(day: str, timezone: str, now: float | None = None):
+    """Public planner adapter; disabled/forgetting is unavailable, never free."""
+    runtime = get_runtime()
+    return None if runtime is None else runtime.planning_context(day, timezone, now)

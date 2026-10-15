@@ -228,13 +228,69 @@ def test_real_engine_uses_phraser_and_payloads_fit_remote_profile(tmp_path):
                          window_end=now + 14 * 86400, taken_at=now)
     eng.mine(now=now)
     nudges = eng.generate_nudges(now=now)
+    # Schedule-sensitive bodies remain deterministic. Exercise wording on an
+    # observed-contact nudge instead, retaining the same remote payload checks.
+    from service.behavior.types import Nudge, Observation, Pattern
+    eng.observe([Observation("sam-observed", "message_in", now - 3 * 3600, subject="Sam", source="messages")])
+    eng._store.replace_patterns(eng.patterns() + [Pattern(
+        "sam-messages", "contact_rhythm", "Sam", "Recorded messages with Sam",
+        evidence=("sam-observed",), stats={"messages": 1, "calls": 0})], now)
+    contact = eng._phrase(Nudge(id="contact-probe",kind="contact_window",title="Reply to Sam?",
+                                body="Sam messaged you 3h ago.",because="Observed messages",created_at=now,
+                                pattern_ids=("sam-messages",)))
     eng.close()
     assert nudges and seen
-    phrased = [n for n in nudges if n.body.startswith("Heads up:")]
-    assert phrased, [n.body for n in nudges]
+    assert contact.body.startswith("Heads up:")
+    assert all(not n.body.startswith("Heads up:") for n in nudges if n.kind != "contact_window")
+
+
+@pytest.mark.parametrize("case", ["mixed", "calendar_only", "missing", "wrong_source", "rejected", "message_only"])
+def test_contact_wording_requires_retained_message_only_evidence(tmp_path, case):
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior.types import Nudge, Observation, Pattern
+    rec = Recorder(_reply("Recorded message timing suggests this window."))
+    phraser = OpenAIPhraser("http://127.0.0.1:11434", "/v1", model="example-model",
+                            transport=httpx.MockTransport(rec))
+    eng = BehaviorEngine(tmp_path / "b.db", phraser=phraser)
+    observation = Observation("evidence", "event" if case == "calendar_only" else "message_in", 100,
+                              subject="Sam", source="demo" if case == "wrong_source" else "messages")
+    if case != "missing":
+        eng.observe([observation])
+    p = Pattern("contact", "contact_rhythm", "Sam", "Source timing",
+                evidence=("evidence",), stats={"messages": 0 if case == "calendar_only" else 1,
+                                              "calls": 1 if case in {"mixed", "calendar_only"} else 0},
+                status="rejected" if case == "rejected" else "active")
+    eng._store.replace_patterns([p], 200)
+    if case == "rejected":
+        eng.set_pattern_status(p.id, "rejected")
+    n = Nudge("n", "contact_window", "Review window", "Source timing", "counts", 200, pattern_ids=(p.id,))
+    result = eng._phrase(n)
+    assert len(rec.requests) == (1 if case == "message_only" else 0)
+    assert (result != n) == (case == "message_only")
+    eng.close()
 
 
 # ------------------------------------------------- review regressions (repair pass)
+
+@pytest.mark.parametrize("calls,messages", [(0, True), (0, "8"), (0, -1), (0, 1.0),
+                                           (0, float("inf")), (None, 1), (False, 1), ("0", 1)])
+def test_invalid_contact_counts_cannot_authorize_optional_model_phrasing(tmp_path, calls, messages):
+    from service.behavior.engine import BehaviorEngine
+    from service.behavior.types import Nudge, Observation, Pattern
+    rec = Recorder(_reply("Recorded message timing suggests this window."))
+    phraser = OpenAIPhraser("http://127.0.0.1:11434", "/v1", model="example-model",
+                            transport=httpx.MockTransport(rec))
+    engine = BehaviorEngine(tmp_path / "counts.db", phraser=phraser)
+    try:
+        engine.observe([Observation("message", "message_in", 100, subject="Sam", source="messages")])
+        p = Pattern("contact", "contact_rhythm", "Sam", "Older timing", evidence=("message",),
+                    stats=dict(calls=calls, messages=messages, basis="observed", evidence_version=2))
+        engine._store.replace_patterns([p], 200)
+        n = Nudge("n", "contact_window", "Saved timing", "Unknown timing", "counts", 200, pattern_ids=(p.id,))
+        assert not engine._can_phrase(n) and engine._phrase(n) == n
+        assert rec.requests == []
+    finally:
+        engine.close()
 
 def test_echoed_no_think_is_stripped():
     assert make(Recorder(_reply("Gym at 07:00 on Tuesday. /no_think"))).phrase("x", FACTS) == \

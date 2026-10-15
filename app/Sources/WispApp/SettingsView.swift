@@ -1036,8 +1036,9 @@ struct SettingsView: View {
     /// inference server is configured (the learned summary is part of the prompt,
     /// and wording / event labeling would send calendar titles to that server).
     private var behaviorExplanation: String {
-        let sources = "Learns from your calendar, reminders, message timing (never message text) "
-            + "and how you use Wisp. Nudges at most 4 a day. "
+        let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
+            + "Optional app, website, email and message interpretation has separate source controls in What Wisp has learned. "
+            + "Nudges at most 4 a day. "
         guard loader.behaviorEnabled else {
             return "Off. Wisp is not learning your routines or sending nudges. What it already "
                 + "learned stays on this Mac and is still deleted automatically as it ages; "

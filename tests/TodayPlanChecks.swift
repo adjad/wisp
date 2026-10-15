@@ -43,6 +43,27 @@ struct TodayPlanChecks {
         check(false, message)
     }
 
+    @MainActor
+    static func evidenceLabelChecks() throws {
+        func block(_ kind: String) throws -> TodayBlock {
+            let data = try JSONSerialization.data(withJSONObject: [
+                "id": "fixture-hold", "title": "Possible time away", "start": 1000.0, "end": 2000.0,
+                "kind": kind, "warnings": ["Availability is unknown"], "pattern_id": "opaque-pattern"
+            ] as [String: Any])
+            return try JSONDecoder().decode(TodayBlock.self, from: data)
+        }
+        let away = try block("behavior_away")
+        check(away.evidenceLabel == "Computer inactivity · availability unknown")
+        check(!away.evidenceLabel.lowercased().contains("busy"))
+        check(away.inferenceIgnoreHelp == "Ignore this possible time away for the selected day")
+        check(away.pattern_id == "opaque-pattern" && away.task_id == nil)
+        let busy = try block("behavior")
+        check(busy.evidenceLabel == "Tentative busy period · behavioral evidence")
+        check(busy.inferenceIgnoreHelp == "Ignore this tentative busy period for the selected day")
+        check(try block("calendar").evidenceLabel == "Calendar")
+        check(try block("suggestion").evidenceLabel == "Source-backed suggestion · estimated duration")
+    }
+
     // Run with WISP_TODAY_WINDOW_CHECK=1 in an isolated macOS GUI session. The
     // same retained NSWindow and SwiftUI view are exercised without Wisp or a service.
     @MainActor
@@ -154,6 +175,7 @@ struct TodayPlanChecks {
     }
     @MainActor
     static func main() async throws {
+        try evidenceLabelChecks()
         let zone = TimeZone(identifier: "America/Los_Angeles")!
         let model = TodayModel(timezone: zone)
         check(model.clock(instant("2026-09-24T07:00:00Z").timeIntervalSince1970) == "12:00 AM")

@@ -117,11 +117,20 @@ def _activities(live, upcoming, now, end, tz) -> list[Prediction]:
         for s, e in occurrences(p.window, now, end, tz):
             on_cal = [ev.id for ev in upcoming if miners.matches_habit(ev, p)
                       and ev.ts < e and _end(ev) > s]
-            because = f"{label} on {habit_evidence(p)}" + ("; it's on your calendar" if on_cal else "")
+            because = (f"Calendar scheduled {label} on {habit_evidence(p)}; completion unknown"
+                       if p.stats.get("basis", "scheduled") == "scheduled" else
+                       f"Recorded task completions: {label} on {habit_evidence(p)}")
+            because += "; it's on your calendar" if on_cal else ""
             out.append(Prediction(kind="activity", subject=label, ts=s, end_ts=e,
                                   probability=activity_probability(p, now), because=because,
                                   pattern_id=p.id, refs=tuple(on_cal)))
     return out
+
+
+def _contact_source_counts(p: Pattern | None) -> tuple[bool, bool]:
+    """Only recorded positive integer counts establish a contact source."""
+    from service.behavior.evidence import _contact_source_counts as counts
+    return counts(p)
 
 
 def _contacts(live, now, end, tz) -> list[Prediction]:
@@ -134,7 +143,10 @@ def _contacts(live, now, end, tz) -> list[Prediction]:
             continue
         s, e = occ[0]
         part = p.stats.get("daypart", "")
-        because = (f"You were in touch with {p.subject} on {p.support} of the last {p.opportunities} "
+        calls, messages = _contact_source_counts(p)
+        source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
+                  else "Recorded messages" if messages else "Contact timing (source details unavailable)")
+        because = (f"{source} with {p.subject} on {p.support} of the last {p.opportunities} "
                    f"{p.stats.get('days', 'days')} ({part}s, "
                    f"{fmt_range(p.window.start_minute, p.window.end_minute)})")
         out.append(Prediction(kind="contact", subject=p.subject, ts=s, end_ts=e,
@@ -162,8 +174,8 @@ def _cancel_risks(live, events, now, end, tz) -> list[Prediction]:
         if not matches:
             continue
         p = max(matches, key=lambda m: (m.stats.get("rate", 0), m.support))
-        because = (f"You cancelled {p.support} of the last {p.opportunities} "
-                   f"{miners.bucket_phrase(p.stats['bucket'])}")
+        because = (f"Calendar records show {p.support} of the last {p.opportunities} "
+                   f"{miners.bucket_phrase(p.stats['bucket'])} were removed before their start")
         pred = Prediction(kind="cancel_risk", subject=o.subject, ts=o.ts, end_ts=_end(o),
                           probability=round(float(p.stats.get("rate", 0)), 2), because=because,
                           pattern_id=p.id, refs=(o.id,))
@@ -189,11 +201,11 @@ def _conflicts(live, upcoming, now, end, tz) -> list[Prediction]:
                     continue
                 prot = protection.get(h.id)
                 day = DAY_NAMES[local_dt(s, tz).weekday()]
-                because = (f"{ev.subject} overlaps your usual {noun} on {day} "
-                           f"({label} on {habit_evidence(h)})")
+                because = (f"{ev.subject} overlaps time usually scheduled for your {noun} on {day} "
+                           f"({label} on {habit_evidence(h)}; completion unknown)")
                 if prot is not None and prot.stats.get("collisions"):
-                    because += (f"; you moved or cancelled {prot.support} of the last "
-                                f"{prot.opportunities} things booked over it")
+                    because += (f"; {prot.support} of the last {prot.opportunities} "
+                                "overlapping calendar bookings were moved or removed")
                     prob = prot.stats.get("rate", h.confidence)
                 else:
                     prob = h.confidence

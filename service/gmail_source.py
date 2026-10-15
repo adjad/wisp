@@ -27,7 +27,12 @@ import json
 import os
 import re
 import secrets
+import sys
+import threading
 import time
+import weakref
+import math
+from dataclasses import asdict, dataclass, field, replace
 from contextvars import ContextVar
 from email.header import decode_header, make_header
 from email.utils import parseaddr
@@ -36,6 +41,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 import httpx
 
 from service.paths import MOE_DIR
+from service.publication_authority import Authority, Witness, mutating, revocation
 
 SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -67,26 +73,66 @@ _context: ContextVar[tuple[str, dict, int] | None] = ContextVar("gmail_account",
 _pending_flow: dict | None = None
 _flow_generation = 0
 _authorization: dict = {"state": "idle", "generation": 0, "error": ""}
+_behavior_history_sources: weakref.WeakSet = weakref.WeakSet()
+_history_config_lock = threading.RLock()
+
+
+def new_behavior_history(*, admission, limits, clock=time.time, monotonic=time.monotonic):
+    """Explicit disabled provider core; trusted admission/transport wiring is caller-owned.
+
+    No production caller starts this provider. It never borrows the interactive
+    recent-body cache or weakens native raw_email_snapshot completeness.
+    """
+    from service.gmail_behavior_history import HistoryProvider
+    source = HistoryProvider(admission=admission, limits=limits, clock=clock, monotonic=monotonic)
+    with _history_guard():
+        _behavior_history_sources.add(source)
+    return source
+
+
+def invalidate_behavior_history(reason="invalidated") -> None:
+    """Synchronous withdrawal for consent/Forget/account-set lifecycle adapters.
+
+    Account-set revisions bind every job, so changing even one connection
+    conservatively withdraws all registered history leases before any await.
+    Native Mail fallback and interactive caches follow their existing lifecycle.
+    """
+    with _history_guard():
+        for source in list(_behavior_history_sources):
+            # A later config observation must not erase the user's withdrawal
+            # reason. Read only source-owned memory, never admission callbacks.
+            state = getattr(getattr(source, "_provider", source), "_state", "")
+            keep = state if reason == "invalidated" and state in (
+                "paused", "cancelled", "revoked", "forgotten", "disconnected") else reason
+            source.invalidate(keep)
 
 
 # --- config / token -----------------------------------------------------------
 
+@mutating
 def load_config() -> dict:
-    try:
-        data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {}
-    except Exception:  # noqa: BLE001 — absent/corrupt means "not connected"
-        return {}
+    with _history_config_lock:
+        try:
+            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            data = data if isinstance(data, dict) else {}
+        except Exception:  # noqa: BLE001 — absent/corrupt means "not connected"
+            data = {}
+        _observe_history_config(data)
+        return data
 
 
+@mutating
 def _save_config(cfg: dict) -> None:
-    MOE_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = CONFIG_PATH.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        json.dump(cfg, handle)
-    tmp.replace(CONFIG_PATH)
+    with _history_config_lock:
+        _withdraw_history_configuration()
+        MOE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = CONFIG_PATH.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(cfg, handle)
+        tmp.replace(CONFIG_PATH)
+        _observe_history_config(cfg)
 
 
 def connected_accounts(cfg: dict | None = None) -> dict[str, dict]:
@@ -454,6 +500,7 @@ async def begin_authorization(client_id: str, client_secret: str = "",
                               include_receipt: bool = False) -> str | dict:
     """Start the loopback listener and return the Google consent URL."""
     global _pending_flow, _flow_generation
+    _withdraw_history_configuration()
     _flow_generation += 1
     generation = _flow_generation
     _authorization.update(state="authorizing", generation=generation, error="", email="")
@@ -566,20 +613,22 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
     if generation != _flow_generation:
         return
     email = email.strip().lower()
-    cfg = load_config()
-    accounts = connected_accounts(cfg)
-    if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
-                               for other, item in accounts.items()):
-        raise GmailError("That Mail account is already linked to a different Google account")
-    _epochs[email] = _epochs.get(email, 0) + 1
-    _access.pop(email, None)
-    _last.pop(email, None)
-    accounts[email] = {"client_id": client_id, "client_secret": client_secret,
-                       "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
-    _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
-    from service.tools import email_tools as E
-    E.configure_external_accounts(accounts)
-    E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
+    with revocation():
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        if mail_account_id and any(item.get("mail_account_id") == mail_account_id and other != email
+                                   for other, item in accounts.items()):
+            raise GmailError("That Mail account is already linked to a different Google account")
+        invalidate_behavior_history()
+        _epochs[email] = _epochs.get(email, 0) + 1
+        _access.pop(email, None)
+        _last.pop(email, None)
+        accounts[email] = {"client_id": client_id, "client_secret": client_secret,
+                           "refresh_token": body["refresh_token"], "mail_account_id": mail_account_id}
+        _save_config({"client_id": client_id, "client_secret": client_secret, "accounts": accounts})
+        from service.tools import email_tools as E
+        E.configure_external_accounts(accounts)
+        E.external_email_error(email, "headers", "New sign-in is waiting for its first refresh")
     # Header-only first connection; bodies remain on demand.
     asyncio.create_task(sync(("headers",)))
     return email
@@ -588,33 +637,649 @@ async def _finish(client_id, client_secret, code, verifier, redirect, *,
 async def disconnect(account: str = "") -> None:
     """Invalidate before awaiting revocation; a late fetch cannot restore access."""
     global _pending_flow, _flow_generation
-    from service.tools import email_tools as E
-    _flow_generation += 1
-    _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
-    if _pending_flow:
-        _pending_flow["server"].close()
-        _pending_flow = None
-    cfg = load_config()
-    accounts = connected_accounts(cfg)
-    removed = {email: item for email, item in accounts.items() if not account or email == account.lower()}
-    for email in removed:
-        accounts.pop(email)
-        _epochs[email] = _epochs.get(email, 0) + 1
-        _access.pop(email, None)
-        _last.pop(email, None)
-        _errors.pop(email, None)
-        for key in list(_meta):
-            if key[0] == email:
-                _meta.pop(key, None)
-    if accounts:
-        _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
-                      "accounts": accounts})
-    else:
-        CONFIG_PATH.unlink(missing_ok=True)
-    E.configure_external_accounts(accounts)
+    with revocation():
+        invalidate_behavior_history("disconnected")
+        _withdraw_history_configuration()
+        from service.tools import email_tools as E
+        _flow_generation += 1
+        _authorization.update(state="cancelled", generation=_flow_generation, error="Sign-in cancelled by disconnect", email="")
+        if _pending_flow:
+            _pending_flow["server"].close()
+            _pending_flow = None
+        cfg = load_config()
+        accounts = connected_accounts(cfg)
+        removed = {email: item for email, item in accounts.items() if not account or email == account.lower()}
+        for email in removed:
+            accounts.pop(email)
+            _epochs[email] = _epochs.get(email, 0) + 1
+            _access.pop(email, None)
+            _last.pop(email, None)
+            _errors.pop(email, None)
+            for key in list(_meta):
+                if key[0] == email:
+                    _meta.pop(key, None)
+        if accounts:
+            _save_config({"client_id": cfg.get("client_id", ""), "client_secret": cfg.get("client_secret", ""),
+                          "accounts": accounts})
+        else:
+            with _history_config_lock:
+                CONFIG_PATH.unlink(missing_ok=True)
+                _observe_history_config({})
+        E.configure_external_accounts(accounts)
     for item in removed.values():
         try:
             async with httpx.AsyncClient(timeout=5) as http:
                 await http.post("https://oauth2.googleapis.com/revoke", data={"token": item["refresh_token"]})
         except Exception:
             pass  # Local disconnect already succeeded.
+
+
+# --- Explicit public history binding (disabled unless trusted callers bind it) --
+
+
+def _history_guard():
+    from service.gmail_behavior_history import history_source_guard
+    return history_source_guard()
+
+
+_HISTORY_ISSUER = object()
+_history_records = {}
+_history_account_ids = {}
+_history_config_digest = None
+_history_registry_gate = None
+_history_recovery_gates = weakref.WeakSet()
+_history_http_clients = weakref.WeakSet()
+_history_configuration_authority = Authority("gmail-configured-accounts")
+
+
+@dataclass(frozen=True)
+class HistoryAccountStatus:
+    account: object  # Immutable gmail_behavior_history.AccountIdentity.
+    client_revision: str
+    credentials_revision: str
+    configured: bool = True
+    display_label: str = ""  # UI only; never an identity or permission input.
+
+    def to_metadata(self):
+        return {"schema": 1, "kind": "gmail_history_account", "value": asdict(self)}
+
+
+@dataclass(frozen=True, eq=False)
+class HistoryAccountLease:
+    """A live source object, never a deserializable account permission DTO."""
+    status: HistoryAccountStatus
+    _issuer: object = field(repr=False)
+
+    @property
+    def account(self):
+        return self.status.account
+
+    def to_metadata(self):
+        return self.status.to_metadata()
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("History source leases cannot be restored")
+
+
+@dataclass(frozen=True)
+class _HistoryConfigured:
+    lease: HistoryAccountLease
+    address: str = field(repr=False)
+    client_id: str = field(repr=False)
+    client_secret: str = field(repr=False)
+    refresh_token: str = field(repr=False)
+
+
+@mutating
+def _withdraw_history_configuration():
+    """Memory withdrawal before config I/O or connection-changing awaits."""
+    global _history_config_digest, _history_registry_gate
+    with _history_guard():
+        _history_configuration_authority.withdraw()
+        _history_config_digest = None
+        _history_registry_gate = None
+        _history_records.clear()
+        invalidate_behavior_history()
+
+
+def _history_recovery_blocked():
+    """Cached latch only: metadata/admission must not import or check disk."""
+    module = sys.modules.get("service.config.quarantine")
+    gate = module.current_gate() if module is not None else None
+    return module is not None and (gate is None or gate.blocked)
+
+
+def _history_cached_gate():
+    module = sys.modules.get("service.config.quarantine")
+    return module.current_gate() if module is not None else None
+
+
+@mutating
+def _observe_history_config(cfg):
+    """Only explicit source config observations call this; never a getter."""
+    global _history_config_digest, _history_registry_gate
+    if _history_recovery_blocked():
+        _withdraw_history_configuration()
+        return
+    from service.gmail_behavior_history import AccountIdentity
+    try:
+        accounts = connected_accounts(cfg)
+        canonical = {}
+        raw = cfg.get("accounts") if isinstance(cfg, dict) else None
+        if isinstance(raw, dict) and len({str(k).strip().lower() for k in raw}) != len(raw):
+            accounts = {}
+        for address, item in accounts.items():
+            address = address.strip().lower()
+            if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", address):
+                raise ValueError()
+            values = tuple(item.get(k, "") for k in ("client_id", "client_secret", "refresh_token"))
+            if not all(isinstance(v, str) for v in values) or not values[0] or not values[2]:
+                raise ValueError()
+            canonical[address] = (*values, str(item.get("mail_account_id", "")))
+        digest = hashlib.sha256(json.dumps(canonical, sort_keys=True).encode()).digest()
+    except Exception:
+        canonical = {}
+        digest = b"invalid"
+    with _history_guard():
+        gate = _history_cached_gate()
+        if _history_recovery_blocked():
+            _withdraw_history_configuration()
+            return
+        if digest == _history_config_digest and gate is _history_registry_gate:
+            return
+        _history_configuration_authority.withdraw()
+        invalidate_behavior_history()
+        _history_records.clear()
+        set_revision = secrets.token_hex(16)
+        for address in list(_history_account_ids):
+            if address not in canonical:
+                _history_account_ids.pop(address)
+        for address, (client, secret, refresh, _) in canonical.items():
+            opaque_id = _history_account_ids.setdefault(address, secrets.token_hex(16))
+            account = AccountIdentity("gmail", opaque_id, secrets.token_hex(16), set_revision)
+            status = HistoryAccountStatus(account, secrets.token_hex(16), secrets.token_hex(16),
+                                          display_label=address)
+            lease = HistoryAccountLease(status, _HISTORY_ISSUER)
+            _history_records[opaque_id] = _HistoryConfigured(lease, address, client, secret, refresh)
+        _history_config_digest = digest
+        _history_registry_gate = gate
+        _history_configuration_authority.publish()
+
+
+@mutating
+def refresh_history_configuration():
+    """Explicit trusted bootstrap read. Status/admission getters never call it."""
+    _register_history_recovery()
+    with _history_config_lock:
+        _observe_history_config(load_config())
+    return history_account_status()
+
+
+def history_account_status():
+    """Pure cached configured metadata; no account/token/permission inference."""
+    with _history_guard():
+        if (_history_recovery_blocked() or
+                (_history_records and _history_registry_gate is not _history_cached_gate())):
+            _withdraw_history_configuration()
+        return tuple(row.lease.status for row in _history_records.values())
+
+
+def history_account_lease(account_id):
+    with _history_guard():
+        if _history_recovery_blocked() or _history_registry_gate is not _history_cached_gate():
+            _withdraw_history_configuration()
+            return None
+        row = _history_records.get(account_id) if isinstance(account_id, str) else None
+        return row.lease if row else None
+
+
+def _history_lease_current(lease):
+    if _history_recovery_blocked() or _history_registry_gate is not _history_cached_gate():
+        return False
+    if not isinstance(lease, HistoryAccountLease) or lease._issuer is not _HISTORY_ISSUER:
+        return False
+    row = _history_records.get(lease.account.account_id)
+    return row is not None and row.lease is lease
+
+
+@dataclass(frozen=True)
+class HistoryPermissionState:
+    """Only a trusted zero-I/O application probe supplies these server facts.
+
+    Public request/body/checkpoint DTOs must never be installed as this probe.
+    P2 must revoke/refresh before its settings/Forget/session/role mutations or
+    awaits. A probe reads a single immutable in-memory snapshot, without locks.
+    """
+    account_ids: tuple[str, ...]
+    scope_digests: tuple[str, ...]
+    session_id: str
+    session_epoch: int
+    role: str
+    role_epoch: int
+    consent_epoch: int
+    global_learning: bool
+    email_consent: bool
+    history_start: bool
+    account_scopes: tuple[tuple[str, str], ...] = ()
+
+    def allows(self, lease, scope):
+        return (type(self.account_ids) is tuple and type(self.scope_digests) is tuple
+                and lease.account.account_id in self.account_ids and scope.digest in self.scope_digests
+                and type(self.account_scopes) is tuple
+                and ((not self.account_scopes and len(self.scope_digests) == 1)
+                     or (all(type(pair) is tuple and len(pair) == 2 for pair in self.account_scopes)
+                         and (lease.account.account_id, scope.digest) in self.account_scopes))
+                and isinstance(self.session_id, str) and 0 < len(self.session_id) <= 256
+                and all(ord(c) >= 32 for c in self.session_id)
+                and self.role == "gmail_history"
+                and all(type(v) is int and v >= 0 for v in
+                        (self.session_epoch, self.role_epoch, self.consent_epoch))
+                and self.global_learning is True and self.email_consent is True and self.history_start is True)
+
+
+@dataclass(frozen=True, eq=False)
+class HistoryGrant:
+    """Source-issued application+account lease, not request authority."""
+    account_lease: HistoryAccountLease
+    scope: object
+    permission: HistoryPermissionState
+    _application: object = field(repr=False)
+    _issuer: object = field(repr=False)
+
+    def to_metadata(self):
+        return {"schema": 1, "kind": "gmail_history_grant_metadata",
+                "account": self.account_lease.to_metadata(), "scope_digest": self.scope.digest,
+                "session_epoch": self.permission.session_epoch, "role_epoch": self.permission.role_epoch,
+                "consent_epoch": self.permission.consent_epoch}
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("History grants cannot be restored")
+
+
+class HistoryApplicationAuthority:
+    def __init__(self, *, probe, _issuer=None):
+        if _issuer is not _HISTORY_ISSUER or not callable(probe):
+            raise ValueError("Trusted application bootstrap probe required")
+        self._probe = probe
+        self._state = None
+        self._revoked = False
+        self._grants = weakref.WeakSet()
+        self._bridges = weakref.WeakSet()
+        self._publication = Authority("gmail-history-application", owner=self)
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("History application authority cannot be restored")
+
+    def refresh(self):
+        """Publish current trusted memory facts; withdraw before caller awaits."""
+        with _history_guard():
+            if self._revoked:
+                return None
+            try:
+                state = self._probe()
+                if not isinstance(state, HistoryPermissionState):
+                    state = None
+            except Exception:
+                state = None
+            if state != self._state:
+                self._publication.withdraw()
+                self._grants.clear()
+                for bridge in list(self._bridges):
+                    bridge.invalidate("revoked")
+                self._state = state
+                if state is not None:
+                    self._publication.publish()
+            return state
+
+    def revoke(self):
+        """Terminal installation withdrawal; reinstall via trusted bootstrap."""
+        with _history_guard():
+            self._publication.withdraw()
+            self._revoked = True
+            self._state = None
+            self._grants.clear()
+            for bridge in list(self._bridges):
+                bridge.invalidate("revoked")
+
+    def issue(self, account_lease, scope):
+        from service.gmail_behavior_history import HistoryScope
+        with _history_guard():
+            state = self.refresh()
+            if (state is None or not _history_lease_current(account_lease)
+                    or not isinstance(scope, HistoryScope) or not state.allows(account_lease, scope)):
+                raise PermissionError("Current configured account and application history permission required")
+            grant = HistoryGrant(account_lease, scope, state, self, _HISTORY_ISSUER)
+            self._grants.add(grant)
+            return grant
+
+
+def install_history_application(*, probe):
+    """Trusted application-code bootstrap only, never route-supplied data."""
+    return HistoryApplicationAuthority(probe=probe, _issuer=_HISTORY_ISSUER)
+
+
+def _history_grant_current(grant):
+    if not isinstance(grant, HistoryGrant) or grant._issuer is not _HISTORY_ISSUER:
+        return False
+    app = grant._application
+    state = app.refresh()
+    return (grant in app._grants and state == grant.permission
+            and _history_lease_current(grant.account_lease) and state is not None
+            and state.allows(grant.account_lease, grant.scope))
+
+
+@mutating
+def _register_history_recovery():
+    from service.config import quarantine
+    gate = quarantine.current_gate()
+    with _history_guard():
+        if gate not in _history_recovery_gates:
+            gate.callbacks.append(_withdraw_history_configuration)
+            _history_recovery_gates.add(gate)
+    return gate
+
+
+class HistoryHTTPClient:
+    """Explicit source-owned fixed-policy client, no default construction.
+
+    synthetic() uses only MockTransport. network() is an explicit future runtime
+    factory, never invoked automatically. Both disable proxy environment,
+    redirects and retries. Behavior never supplies token or OAuth helpers.
+    """
+    def __init__(self, *, transport, _issuer=None):
+        if _issuer is not _HISTORY_ISSUER:
+            raise ValueError("Use the explicit source HTTP factories")
+        self._client = httpx.AsyncClient(transport=transport, follow_redirects=False,
+                                        trust_env=False, timeout=10)
+        self._gate = _register_history_recovery()
+        with _history_guard():
+            _history_http_clients.add(self)
+
+    @classmethod
+    def synthetic(cls, handler):
+        if not callable(handler):
+            raise ValueError("Synthetic HTTP handler required")
+        return cls(transport=httpx.MockTransport(handler), _issuer=_HISTORY_ISSUER)
+
+    @classmethod
+    def network(cls):
+        return cls(transport=httpx.AsyncHTTPTransport(retries=0), _issuer=_HISTORY_ISSUER)
+
+    async def aclose(self):
+        await self._client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()
+
+    async def _request(self, check, method, url, **kwargs):
+        from service.config import quarantine
+        # Recovery I/O is explicit transport work OUTSIDE the history guard.
+        # No source/admission/getter callback checks disk or acquires its lock.
+        if quarantine.current_gate() is not self._gate:
+            _withdraw_history_configuration()
+            raise GmailError("History credential authority changed")
+        refresh_history_configuration()
+        self._gate.check()
+        check()
+        response = await self._client.request(method, url, **{**kwargs, "follow_redirects": False})
+        refresh_history_configuration()
+        self._gate.check()
+        check()
+        return response
+
+
+class _BoundHistoryHTTP:
+    def __init__(self, bridge, grant, http):
+        self.bridge, self.grant, self.http = bridge, grant, http
+
+    async def request(self, method, url, **kwargs):
+        response = await self.http._request(lambda: self.bridge._require_grant(self.grant), method, url, **kwargs)
+        if response.status_code in (401, 403):
+            _withdraw_history_configuration()
+            self.bridge._binding_error = "Configured Gmail authorization could not be verified"
+        return response
+
+
+class PublicContinuation:
+    """Opaque, volatile traversal handoff. Metadata never restores this object."""
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, *, _issuer=None):
+        if _issuer is not _HISTORY_ISSUER:
+            raise TypeError("History continuation must be issued by its live source")
+
+    def __copy__(self):
+        raise TypeError("History continuation cannot be copied")
+
+    def __deepcopy__(self, memo):
+        raise TypeError("History continuation cannot be copied")
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("History continuation cannot be restored")
+
+
+class PublicHistoryBridge:
+    """Prepared production binding; no production caller or default activation.
+
+    All currentness/cache operations use the SAME core guard. Application probes
+    read immutable memory without taking any other lock. Explicit config I/O uses
+    application barrier -> config mutex -> history guard for withdrawal/publication,
+    never the reverse. No application lease spans a provider await.
+    """
+    def __init__(self, *, application, limits, clock=time.time, monotonic=time.monotonic):
+        from service.gmail_behavior_history import HistoryProvider
+        if not isinstance(application, HistoryApplicationAuthority):
+            raise ValueError("Source-installed application authority required")
+        self._application = application
+        self._clock = clock
+        self._grant = None
+        self._token = None
+        self._binding_error = ""
+        self._continuation = None
+        self._start_identity = None
+        self._provider = HistoryProvider(admission=self._admission, limits=limits, clock=clock, monotonic=monotonic)
+        with _history_guard():
+            application._bridges.add(self)
+            _behavior_history_sources.add(self)
+
+    def _current(self, grant):
+        current = _history_grant_current(grant)
+        return self._grant is grant and current
+
+    def _require_grant(self, grant):
+        from service.gmail_behavior_history import _Withdrawn
+        with _history_guard():
+            if not self._current(grant):
+                if self._grant is grant:
+                    self.invalidate("revoked")
+                raise _Withdrawn()
+
+    def _admission(self):
+        from service.gmail_behavior_history import Admission
+        grant = self._grant
+        if grant is None or not self._current(grant):
+            return None
+        state = grant.permission
+        return Admission(grant.account_lease.account, state.consent_epoch, state.session_epoch,
+                         True, True, True, grant.scope.digest)
+
+    def start(self, grant):
+        with _history_guard():
+            if (not isinstance(grant, HistoryGrant) or grant._application is not self._application
+                    or not _history_grant_current(grant)):
+                raise PermissionError("Live source-issued account/application history grant required")
+            self.invalidate()
+            # invalidate may discard a grant reused by this same bridge.
+            if grant not in self._application._grants:
+                raise PermissionError("Withdrawn history grant cannot restart")
+            self._grant = grant
+            self._binding_error = ""
+            self._provider.control("start", scope=grant.scope)
+            self._start_identity = object()
+            return self.status()
+
+    def invalidate(self, reason="invalidated"):
+        with _history_guard():
+            self._provider.invalidate(reason)
+            if self._grant is not None:
+                self._application._grants.discard(self._grant)
+            self._grant = self._token = None
+            self._continuation = self._start_identity = None
+
+    def prepare_continuation(self):
+        """Issue one live handoff before expiry; no HTTP, disk I/O or await."""
+        with _history_guard():
+            self.status()
+            state = self._provider._continuation_status()
+            if not state["available"]:
+                if state["blocked_reason"]:
+                    self._continuation = None
+                    self._provider._stop_continuation("History continuation stopped; coverage is partial")
+                raise PermissionError("Current progressing history handoff window required")
+            if self._continuation is None:
+                self._continuation = (PublicContinuation(_issuer=_HISTORY_ISSUER),
+                                      self._provider._job, self._grant, self._start_identity)
+            return self._continuation[0]
+
+    def continue_scan(self, continuation, *, grant):
+        """Consume a source-issued traversal with a NEW current unused grant.
+
+        Same explicit Start, source lease, scope, application and immutable
+        permission are mandatory. Old cache/receipt/token are withdrawn. Only
+        a subsequent explicit, counted step can refresh/profile/fetch again.
+        """
+        with _history_guard():
+            self.status()
+            issued = self._continuation
+            old = self._grant
+            if (issued is None or continuation is not issued[0]
+                    or self._provider._job is not issued[1] or old is not issued[2]
+                    or self._start_identity is not issued[3]
+                    or not self._provider._continuation_status()["available"]
+                    or not self._current(old)
+                    or not isinstance(grant, HistoryGrant) or grant is old
+                    or grant._application is not self._application
+                    or grant.account_lease is not old.account_lease or grant.scope != old.scope
+                    or grant.permission != old.permission or not _history_grant_current(grant)
+                    or any(bridge._grant is grant for bridge in self._application._bridges)):
+                raise PermissionError("Live source continuation and fresh same-Start grant required")
+            # No I/O/await between final old/new validation and atomic transfer.
+            self._continuation = None
+            self._application._grants.discard(old)
+            self._grant, self._token = grant, None
+            try:
+                self._provider._continue_segment()
+                self._require_grant(grant)
+            except BaseException:
+                self.invalidate("revoked")
+                raise
+            return self.status()
+
+    def control(self, action):
+        actions = {"pause": "paused", "cancel": "cancelled", "revoke": "revoked", "forget": "forgotten"}
+        if action not in actions:
+            raise ValueError("Start requires a live source-issued grant")
+        self.invalidate(actions[action])
+        return self.status()
+
+    def status(self):
+        with _history_guard():
+            grant = self._grant
+            if grant is not None and not self._current(grant):
+                self.invalidate("revoked")
+            status = self._provider.status()
+            if self._grant is not None and status["state"] not in ("running", "exhausted", "capped", "partial"):
+                self.invalidate(status["state"])
+                status = self._provider.status()
+            return {**status, "binding": self._grant.to_metadata() if self._grant else None,
+                    "binding_error": self._binding_error,
+                    "continuation": self._provider._continuation_status()}
+
+    def snapshot(self, *, expected_receipt=None, required_refs=()):
+        with _history_guard():
+            self.status()
+            snapshot = self._provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+            if snapshot is None:
+                return None
+            from service.config import quarantine
+            witness = Witness.combine(snapshot.cache_witness,
+                _history_configuration_authority.token(), self._application._publication.token(),
+                quarantine.publication_token(_history_registry_gate))
+            return replace(snapshot, publication_witness=witness)
+
+    def checkpoint(self):
+        with _history_guard():
+            # Traversal stays source-owned; this export is never resume authority.
+            return {"schema": 1, "status": self.status()}
+
+    async def _source_token(self, http):
+        from service import gmail_behavior_history as H
+        grant = self._grant
+        self._require_grant(grant)
+        cached = self._token
+        if cached and cached[0] is grant and self._clock() < cached[2] - 60:
+            return H.HistoryAccessToken(http.admission, cached[1])
+        with _history_guard():
+            self._require_grant(grant)
+            record = _history_records[grant.account_lease.account.account_id]
+        try:
+            response = await http.post(TOKEN_URL, data={"client_id": record.client_id,
+                "client_secret": record.client_secret, "refresh_token": record.refresh_token,
+                "grant_type": "refresh_token"})
+            self._require_grant(grant)
+            data = response.json()
+            if (response.status_code != 200 or not isinstance(data, dict)
+                    or not isinstance(data.get("access_token"), str) or not data["access_token"]
+                    or SCOPE not in str(data.get("scope", "")).split()
+                    or data.get("token_type", "").lower() != "bearer"):
+                raise GmailError("History read authorization unavailable")
+            expires = data.get("expires_in")
+            if (isinstance(expires, bool) or not isinstance(expires, (int, float))
+                    or not math.isfinite(expires) or not 60 < expires <= 86400):
+                raise GmailError("History token expiry unavailable")
+            profile = await http.get(API + "/profile", headers={"Authorization": f"Bearer {data['access_token']}"})
+            self._require_grant(grant)
+            owner = profile.json()
+            if (profile.status_code != 200 or not isinstance(owner, dict)
+                    or not isinstance(owner.get("emailAddress"), str)
+                    or owner["emailAddress"].strip().lower() != record.address):
+                raise GmailError("History token does not match configured account")
+            with _history_guard():
+                self._require_grant(grant)
+                self._token = (grant, data["access_token"], self._clock() + expires)
+            return H.HistoryAccessToken(http.admission, data["access_token"])
+        except (H._BudgetStop, H._Withdrawn):
+            raise
+        except Exception:
+            with _history_guard():
+                if self._grant is grant:
+                    self.invalidate("revoked")
+                    self._binding_error = "Configured Gmail authorization could not be verified"
+            raise GmailError("Configured Gmail authorization could not be verified") from None
+
+    async def step(self, *, http, budget):
+        from service.gmail_behavior_history import StepBudget
+        with _history_guard():
+            if type(http) is not HistoryHTTPClient or http not in _history_http_clients:
+                raise ValueError("Explicit source-owned history HTTP client required")
+            if not isinstance(budget, StepBudget):
+                raise ValueError("Explicit bounded history step budget required")
+            self.status()
+            grant = self._grant
+            if grant is None:
+                return self.status()
+        try:
+            await self._provider.step(http=_BoundHistoryHTTP(self, grant, http), token=self._source_token, budget=budget)
+        except asyncio.CancelledError:
+            with _history_guard():
+                if self._grant is grant:
+                    self.invalidate("cancelled")
+            raise
+        return self.status()
+
+
+def new_public_history_bridge(*, application, limits, clock=time.time, monotonic=time.monotonic):
+    return PublicHistoryBridge(application=application, limits=limits, clock=clock, monotonic=monotonic)

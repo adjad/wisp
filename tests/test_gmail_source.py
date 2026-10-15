@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import dataclasses
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from datetime import datetime
@@ -61,6 +63,124 @@ class GmailSource(unittest.TestCase):
 
     def publish(self, account=ME, **parts):
         E.cache_external_emails(account=account, **parts)
+
+    def test_native_mail_memory_witness_uses_exact_live_snapshot_and_never_calls_getters(self):
+        from service.publication_authority import PublicationBusy,publication
+        raw = "\x01".join([str(time.time()),"U","Native","native-id","Sender","me@example.test",
+                              "Subject","<synthetic>","A complete synthetic native body."])
+        E.set_email_availability(True)
+        E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        snapshot = E.raw_email_snapshot()
+        self.assertIsNotNone(snapshot)
+        witness = E.prepare_publication_witness(snapshot)
+        self.assertTrue(witness.current())
+        self.assertIsNone(E.prepare_publication_witness(dataclasses.replace(snapshot)))
+        with publication(witness):
+            with self.assertRaises(PublicationBusy):
+                E.set_email_availability(False)
+            with self.assertRaises(PublicationBusy):
+                E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+            with patch.object(E,"raw_email_snapshot",side_effect=AssertionError("Getter during publication")), \
+                 patch.object(E.cache_store,"load",side_effect=AssertionError("Cache I/O during publication")):
+                self.assertTrue(witness.current())
+        E.set_email_availability(False)
+        self.assertFalse(witness.current())
+        self.assertIsNone(E.prepare_publication_witness(snapshot))
+        E.set_email_availability(True)
+        self.assertFalse(witness.current())  # Re-enabling never rearms the old availability stamp.
+        self.assertTrue(E.prepare_publication_witness(snapshot).current())
+        E.cache_raw_emails("",{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        self.assertIsNone(E.prepare_publication_witness(snapshot))
+
+    def test_native_mail_memory_witness_does_not_renew_original_receipt(self):
+        raw = "\x01".join([str(time.time()),"U","Native","native-id","Sender","me@example.test",
+                              "Subject","<synthetic>","A complete synthetic native body."])
+        E.set_email_availability(True)
+        E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        snapshot = E.raw_email_snapshot()
+        witness = E.prepare_publication_witness(snapshot)
+        with patch.object(E.time,"time",return_value=snapshot.synced_at+1199):
+            self.assertTrue(witness.current())
+            self.assertTrue(E.prepare_publication_witness(snapshot).current())
+        with patch.object(E.time,"time",return_value=snapshot.synced_at+1200):
+            self.assertFalse(witness.current())
+            self.assertIsNone(E.prepare_publication_witness(snapshot))
+
+    def history_provider(self):
+        import weakref
+        from service import gmail_behavior_history as H
+        self.enterContext(patch.object(G, "_behavior_history_sources", weakref.WeakSet()))
+        scope = H.HistoryScope(100, 190, "inbox", 100)
+        admission = H.Admission(H.AccountIdentity("gmail", "configured-opaque-id", "connection-1", "set-1"),
+                                1, 1, True, True, True, scope.digest)
+        provider = G.new_behavior_history(admission=lambda: admission,
+            limits=H.Limits(80000, 8000000, 32000000, 100), clock=lambda: 200, monotonic=lambda: 0)
+        self.addCleanup(provider.invalidate)
+        return provider, scope
+
+    def test_provider_history_fetches_beyond_recent_fifty_without_native_complete_promotion(self):
+        from test_gmail_behavior_history import FakeHTTP, message, token
+        provider, scope = self.history_provider()
+        http = FakeHTTP(pages=[{"messages": [{"id": str(i)} for i in range(55)]}],
+                        messages={str(i): message(str(i)) for i in range(55)})
+        provider.control("start", scope=scope)
+        async def run():
+            from service.gmail_behavior_history import StepBudget
+            for _ in range(11):
+                await provider.step(http=http, token=token, budget=StepBudget(100, 5, 6, 400000, 30))
+        with patch.object(E, "_raw_mail_snapshot", None), patch.object(E, "_email_available", True):
+            asyncio.run(run())
+            snapshot = E.provider_history_snapshot(provider)
+            self.assertEqual(len(snapshot.records), 55)
+            self.assertIsNone(E.raw_email_snapshot())
+            calls = len(http.calls)
+            same = E.provider_history_snapshot(provider, expected_receipt=snapshot.receipt,
+                                                required_refs=(snapshot.records[0].ref,))
+            self.assertEqual(same.records[0], snapshot.records[0])
+            self.assertEqual(len(http.calls), calls)
+        self.assertEqual(G.RAW_LIMIT, 50)
+        self.assertEqual(len(http.calls), 56)
+        self.assertEqual((E._raw_emails, E._swift_raw), ("", ""))
+
+    def test_provider_disconnect_withdraws_history_before_revocation_await(self):
+        from test_gmail_behavior_history import FakeHTTP, token
+        from service.gmail_behavior_history import StepBudget
+        provider, scope = self.history_provider()
+        provider.control("start", scope=scope)
+        asyncio.run(provider.step(http=FakeHTTP(), token=token, budget=StepBudget(100, 5, 6, 400000, 30)))
+        receipt = provider.snapshot().receipt
+        async def revoke(*args, **kwargs):
+            self.assertIsNone(E.provider_history_snapshot(provider, expected_receipt=receipt))
+            self.assertEqual(provider.status()["state"], "disconnected")
+        with patch.object(G.httpx, "AsyncClient") as client:
+            client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=revoke)
+            asyncio.run(G.disconnect(ME))
+            client.return_value.__aenter__.return_value.post.assert_awaited_once()
+        self.assertEqual(provider.status()["state"], "disconnected")
+        self.assertIsNone(provider.snapshot(expected_receipt=receipt))
+
+    def test_history_forget_synchronously_withdraws_without_affecting_native_fallback(self):
+        from test_gmail_behavior_history import FakeHTTP, token
+        from service.gmail_behavior_history import StepBudget
+        provider, scope = self.history_provider()
+        native = header("iCloud", "Native fallback preserved", native_id="native-cloud")
+        E.cache_emails(native)
+        provider.control("start", scope=scope)
+        asyncio.run(provider.step(http=FakeHTTP(), token=token, budget=StepBudget(100, 5, 6, 400000, 30)))
+        G.invalidate_behavior_history("forgotten")
+        self.assertIsNone(E.provider_history_snapshot(provider))
+        self.assertIn("Native fallback preserved", E._headers)
+        self.assertEqual(E._swift_headers, native)
+
+    def test_history_factory_and_snapshot_do_not_activate_or_require_gmail_presence(self):
+        from service.gmail_behavior_history import Limits
+        self.accounts.clear()
+        provider = G.new_behavior_history(admission=lambda: None, limits=Limits(100, 100, 100, 100))
+        self.addCleanup(provider.invalidate)
+        self.assertFalse(G.is_connected())
+        self.assertEqual(provider.status()["state"], "off")
+        self.assertIsNone(E.provider_history_snapshot(provider))
+        self.assertIsNone(E.provider_history_snapshot({"email_consent": True}))
 
     def test_header_roundtrip_and_plain_body(self):
         self.publish(headers=header(subject="Hi | there"))
@@ -1302,6 +1422,981 @@ print('fresh process retained original native fallback')
         asyncio.run(run())
 
     _original_accounts = staticmethod(G.connected_accounts)
+
+
+class HistoryPublicBinding(unittest.TestCase):
+    """Public bridge uses source config and actual fake token owner, no caller token."""
+    def setUp(self):
+        from service import gmail_behavior_history as H
+        self.H = H
+        self.config = {"client_id": "configured-client", "client_secret": "fake-secret",
+                       "accounts": {ME: {"refresh_token": "configured-refresh"}}}
+        self.enterContext(patch.object(G, "load_config", lambda: self.config))
+        G.refresh_history_configuration()
+        self.scope = H.HistoryScope(100, 190, "inbox", 100)
+        self.permission = None
+        self.app = G.install_history_application(probe=lambda: self.permission)
+        self.addCleanup(self.app.revoke)
+        self.bridge = G.new_public_history_bridge(application=self.app,
+            limits=H.Limits(80000, 8000000, 32000000, 100), clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(self.bridge.invalidate)
+        self.calls = []
+        self.profile = ME
+        self.hook = None
+        self.token_scope = G.SCOPE
+        self.token_status = 200
+        self.message_status = 200
+        self.pages = [{"messages": [{"id": "51"}]}]
+        self.now, self.mono = 200, 0
+        self.http = G.HistoryHTTPClient.synthetic(self.server)
+        self.addCleanup(lambda client=self.http: asyncio.run(client.aclose()))
+        self.budget = H.StepBudget(100, 5, 6, 400000, 30)
+
+    async def server(self, request):
+        from test_gmail_behavior_history import message
+        from urllib.parse import parse_qs
+        self.calls.append(request)
+        if self.hook:
+            await self.hook(request)
+        if str(request.url) == G.TOKEN_URL:
+            form = parse_qs(request.content.decode())
+            self.assertEqual(form["client_id"], ["configured-client"])
+            self.assertEqual(form["refresh_token"], ["configured-refresh"])
+            return httpx.Response(self.token_status, json={"access_token": "server-issued", "scope": self.token_scope,
+                                             "token_type": "Bearer", "expires_in": 3600})
+        self.assertEqual(request.headers["Authorization"], "Bearer server-issued")
+        if request.url.path.endswith("/profile"):
+            return httpx.Response(200, json={"emailAddress": self.profile})
+        if request.url.path.endswith("/messages"):
+            return httpx.Response(self.message_status, json=self.pages.pop(0) if self.pages else {})
+        return httpx.Response(self.message_status, json=message(request.url.path.rsplit("/", 1)[1]))
+
+    def admit(self):
+        accounts = G.history_account_status()
+        self.assertEqual(len(accounts), 1, "Configured source must publish a public account lease")
+        lease = G.history_account_lease(accounts[0].account.account_id)
+        self.assertIsNotNone(lease)
+        self.permission = G.HistoryPermissionState((lease.account.account_id,), (self.scope.digest,),
+            "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        grant = self.app.issue(lease, self.scope)
+        self.bridge.start(grant)
+        return grant
+
+    def step(self):
+        return asyncio.run(self.bridge.step(http=self.http, budget=self.budget))
+
+    def test_default_off_public_metadata_and_step_do_not_touch_network(self):
+        self.assertEqual(self.bridge.status()["state"], "off")
+        self.assertIsNone(self.bridge.snapshot())
+        self.step()
+        self.assertEqual(self.calls, [])
+
+    def test_actual_configured_source_refresh_profile_list_body_pipeline(self):
+        self.admit()
+        self.step()
+        snapshot = self.bridge.snapshot()
+        self.assertIsNotNone(snapshot)
+        self.assertEqual(snapshot.records[0].resource_id, "51")
+        self.assertEqual(len(self.calls), 4)
+
+    def test_public_memory_witness_binds_source_application_config_and_recovery_without_io(self):
+        from service.publication_authority import PublicationBusy,publication
+        from service.config import quarantine
+        self.admit(); self.step()
+        snapshot = self.bridge.snapshot()
+        witness = snapshot.publication_witness
+        self.assertIsNotNone(witness)
+        original = G._history_config_digest
+        gate = quarantine.current_gate()
+        with publication(witness):
+            for operation in (self.app.revoke,lambda:self.bridge.control("pause"),
+                              lambda:G._save_config(self.config),gate.invalidate):
+                with self.assertRaises(PublicationBusy):
+                    operation()
+                self.assertTrue(witness.current())
+            self.assertFalse(self.app._revoked or gate.blocked)
+            self.assertEqual(G._history_config_digest,original)
+            with patch.object(G,"load_config",side_effect=AssertionError("Config I/O")), \
+                 patch.object(self.bridge,"snapshot",side_effect=AssertionError("Source getter")), \
+                 patch.object(gate,"generation",side_effect=AssertionError("Recovery file I/O")), \
+                 patch.object(self.app,"_probe",side_effect=AssertionError("Application callback")):
+                self.assertTrue(witness.current())
+        self.app.revoke()
+        self.assertFalse(witness.current())
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_public_memory_witness_is_withdrawn_before_config_or_recovery_mutation_ack(self):
+        from service.config import quarantine
+        self.admit(); self.step()
+        witness = self.bridge.snapshot().publication_witness
+        G._withdraw_history_configuration()
+        self.assertFalse(witness.current())
+        # Re-admission requires current source/bootstrap state, not saved tokens.
+        G.refresh_history_configuration()
+        self.pages = [{"messages":[{"id":"51"}]}]
+        self.admit(); self.step()
+        witness = self.bridge.snapshot().publication_witness
+        gate = quarantine.RecoveryGate(home=lambda:Path(os.environ["HOME"]))
+        # Use a separate private gate; avoid latching the shared test gate.
+        with patch.object(quarantine,"_gate",gate):
+            G.refresh_history_configuration()
+            self.assertFalse(witness.current())
+            http = G.HistoryHTTPClient.synthetic(self.server)
+            self.addCleanup(lambda:asyncio.run(http.aclose()))
+            self.http = http
+            self.pages = [{"messages":[{"id":"51"}]}]
+            self.admit(); self.step()
+            current = self.bridge.snapshot().publication_witness
+            self.assertTrue(current.current())
+            with self.assertRaises(quarantine.CredentialQuarantined):
+                gate.invalidate()
+            self.assertFalse(current.current())
+
+    def test_wrong_actual_token_owner_is_rejected_even_when_grant_declares_right_account(self):
+        self.admit()
+        self.profile = "other@gmail.com"
+        self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls], ["token", "profile"])
+
+    def test_public_status_snapshot_checkpoint_currentness_have_zero_io(self):
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        with patch.object(G, "load_config", side_effect=AssertionError("getter config I/O")), \
+             patch.object(G.httpx.AsyncClient, "request", side_effect=AssertionError("getter network")), \
+             patch("service.config.quarantine.check", side_effect=AssertionError("getter recovery I/O")):
+            accounts = G.history_account_status()
+            self.assertEqual(accounts[0].display_label, ME)
+            self.assertIsNotNone(G.history_account_lease(accounts[0].account.account_id))
+            for _ in range(3):
+                self.bridge.status()
+                self.bridge.checkpoint()
+                current = E.provider_history_snapshot(self.bridge, expected_receipt=receipt,
+                    required_refs=(receipt.refs[0],))
+                self.assertTrue(current.complete)
+        self.assertEqual(len(self.calls), 4)
+
+    def test_payload_and_cloned_lease_grant_cannot_install_or_restart_permission(self):
+        with self.assertRaises(ValueError):
+            G.install_history_application(probe={"history_start": True})
+        with self.assertRaises(ValueError):
+            G.HistoryApplicationAuthority(probe=lambda: self.permission)
+        with self.assertRaises(PermissionError):
+            self.bridge.start({"account_id": "chosen", "history_start": True})
+        grant = self.admit()
+        with self.assertRaises(PermissionError):
+            self.app.issue(dataclasses.replace(grant.account_lease), self.scope)
+        with self.assertRaises(PermissionError):
+            self.bridge.start(dataclasses.replace(grant))
+        self.bridge.control("forget")
+        with self.assertRaises(PermissionError):
+            self.bridge.start(grant)
+        self.assertEqual(self.calls, [])
+
+    def test_no_source_account_or_application_permission_cannot_issue(self):
+        lease = G.history_account_lease(G.history_account_status()[0].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+        grant = self.admit()
+        original = self.permission
+        for updates in ({"global_learning": False}, {"email_consent": False}, {"history_start": False},
+                        {"role": "other"}, {"account_ids": ()}, {"scope_digests": ()},
+                        {"session_epoch": True}, {"session_id": ""}):
+            self.permission = dataclasses.replace(original, **updates)
+            with self.assertRaises(PermissionError):
+                self.app.issue(lease, self.scope)
+            self.assertIsNone(self.bridge.snapshot())
+        self.permission = original
+        G._withdraw_history_configuration()
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+    def test_multiple_account_scope_sets_must_not_imply_a_cross_product_grant(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+        G.refresh_history_configuration()
+        accounts = G.history_account_status()
+        second = dataclasses.replace(self.scope, start=90)
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest, second.digest), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        first_lease = G.history_account_lease(accounts[0].account.account_id)
+        second_lease = G.history_account_lease(accounts[1].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(first_lease, second)
+        self.permission = dataclasses.replace(self.permission, account_scopes=(
+            (first_lease.account.account_id, self.scope.digest), (second_lease.account.account_id, second.digest)))
+        self.assertIsNotNone(self.app.issue(first_lease, self.scope))
+        self.assertIsNotNone(self.app.issue(second_lease, second))
+        with self.assertRaises(PermissionError):
+            self.app.issue(first_lease, second)
+        with self.assertRaises(PermissionError):
+            self.app.issue(second_lease, self.scope)
+
+    def test_token_post_profile_get_and_body_get_share_six_call_budget(self):
+        self.pages = [{"messages": [{"id": str(i)} for i in range(5)]}]
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 6)
+        status = self.bridge.status()
+        self.assertEqual(status["http_calls"], 6)
+        self.assertEqual(status["fetched"], 3)
+        self.assertEqual(status["pending"], 2)
+        self.step()  # Exact same verified token lease, no refresh/profile repeat.
+        self.assertEqual(len(self.calls), 8)
+        self.assertEqual(self.bridge.status()["cached"], 5)
+
+    def test_budget_exhaustion_before_profile_never_caches_unverified_token(self):
+        self.admit()
+        asyncio.run(self.bridge.step(http=self.http, budget=self.H.StepBudget(100, 5, 1, 400000, 30)))
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNone(self.bridge.snapshot())
+        self.step()
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls],
+                         ["token", "token", "profile", "messages", "51"])
+
+    def test_invalid_scope_failed_refresh_and_read_revocation_fail_closed_without_retry(self):
+        self.admit()
+        self.token_scope = "https://www.googleapis.com/auth/gmail.metadata"
+        self.step()
+        self.assertEqual(len(self.calls), 1)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertIn("authorization", self.bridge.status()["binding_error"])
+        self.token_scope = G.SCOPE
+        self.token_status = 400
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 2)
+        self.assertIsNone(self.bridge.snapshot())
+        self.token_status = 200
+        self.message_status = 401
+        self.admit()
+        self.step()
+        self.assertEqual(len(self.calls), 5)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(G.history_account_status(), ())
+
+    def test_every_await_checks_role_session_consent_and_no_late_forget_recreation(self):
+        for boundary in ("token", "profile", "messages", "51"):
+            for mutation in ("session_epoch", "role_epoch", "consent_epoch", "session_id", "role",
+                             "history_start", "global_learning", "email_consent", "forget", "pause", "cancel"):
+                with self.subTest(boundary=boundary, mutation=mutation):
+                    G.refresh_history_configuration()
+                    self.admit()
+                    self.pages = [{"messages": [{"id": "51"}]}]
+                    fired = []
+                    async def change(request):
+                        if request.url.path.rsplit("/", 1)[1] == boundary:
+                            fired.append(True)
+                            if mutation in ("forget", "pause", "cancel"):
+                                self.bridge.control(mutation)
+                            elif mutation in ("history_start", "global_learning", "email_consent"):
+                                self.permission = dataclasses.replace(self.permission, **{mutation: False})
+                            elif mutation in ("session_id", "role"):
+                                self.permission = dataclasses.replace(self.permission, **{mutation: "changed"})
+                            else:
+                                self.permission = dataclasses.replace(self.permission,
+                                    **{mutation: getattr(self.permission, mutation) + 1})
+                            await asyncio.sleep(0)
+                    self.hook = change
+                    before = len(self.calls)
+                    self.step()
+                    self.assertTrue(fired)
+                    self.assertIsNone(self.bridge.snapshot())
+                    self.assertEqual(self.bridge.status()["cached"], 0)
+                    self.assertFalse(self.bridge.status()["fresh"])
+                    self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "messages": 3, "51": 4}[boundary])
+                    self.hook = None
+
+    def test_client_credentials_accountset_mutations_at_each_await_revoke_old_source(self):
+        for boundary in ("token", "profile", "messages", "51"):
+            for mutation in ("client_id", "client_secret", "refresh_token", "accountset"):
+                with self.subTest(boundary=boundary, mutation=mutation):
+                    self.config = {"client_id": "configured-client", "client_secret": "fake-secret",
+                                   "accounts": {ME: {"refresh_token": "configured-refresh"}}}
+                    G.refresh_history_configuration()
+                    old_grant = self.admit()
+                    self.pages = [{"messages": [{"id": "51"}]}]
+                    fired = []
+                    async def change(request):
+                        if request.url.path.rsplit("/", 1)[1] == boundary:
+                            fired.append(True)
+                            if mutation == "accountset":
+                                self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+                            elif mutation == "refresh_token":
+                                self.config["accounts"][ME][mutation] = "changed"
+                            else:
+                                self.config[mutation] = "changed"
+                            G.refresh_history_configuration()
+                            await asyncio.sleep(0)
+                    self.hook = change
+                    before = len(self.calls)
+                    self.step()
+                    self.assertTrue(fired)
+                    self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "messages": 3, "51": 4}[boundary])
+                    self.assertIsNone(self.bridge.snapshot())
+                    with self.assertRaises(PermissionError):
+                        self.bridge.start(old_grant)
+                    self.hook = None
+
+    def test_explicit_application_refresh_and_revoke_withdraw_without_getter_or_await(self):
+        self.admit()
+        self.step()
+        self.permission = dataclasses.replace(self.permission, global_learning=False)
+        self.app.refresh()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertFalse(self.bridge.status()["fresh"])
+        self.app.revoke()
+        self.permission = dataclasses.replace(self.permission, global_learning=True)
+        lease = G.history_account_lease(G.history_account_status()[0].account.account_id)
+        with self.assertRaises(PermissionError):
+            self.app.issue(lease, self.scope)
+
+    def test_source_configuration_save_and_failed_save_withdraw_before_io(self):
+        self.admit()
+        self.step()
+        with patch.object(G.os, "open", side_effect=OSError("synthetic write failure")):
+            with self.assertRaises(OSError):
+                G._save_config(self.config)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(G.history_account_status(), ())
+
+    def test_authorization_begin_withdraws_history_before_its_first_await(self):
+        self.admit()
+        self.step()
+        observed = []
+        async def listener(*args, **kwargs):
+            observed.append(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+            raise OSError("synthetic listener blocked")
+        with patch.multiple(G, _pending_flow=None, _flow_generation=0, _authorization={}), \
+             patch.object(G.asyncio, "start_server", listener):
+            with self.assertRaises(G.GmailError):
+                asyncio.run(G.begin_authorization("other-client"))
+        self.assertEqual(observed, [None])
+
+    def test_disconnect_withdraws_public_bridge_before_revoke_and_keeps_native_cache(self):
+        self.admit()
+        self.step()
+        with tempfile.TemporaryDirectory() as folder, \
+             patch.object(G, "CONFIG_PATH", Path(folder) / "gmail.json"), \
+             patch.object(G.httpx, "AsyncClient") as client:
+            seen = []
+            async def revoke(*args, **kwargs):
+                seen.append(self.bridge.snapshot())
+                return httpx.Response(200)
+            client.return_value.__aenter__.return_value.post = AsyncMock(side_effect=revoke)
+            with patch.object(E, "_swift_headers", "genuine-native"):
+                asyncio.run(G.disconnect(ME))
+                self.assertEqual(E._swift_headers, "genuine-native")
+        self.assertEqual(seen, [None])
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["state"], "disconnected")
+
+    def test_cached_older_refs_and_v3_time_schema_stay_valid_after_unrelated_page(self):
+        self.pages = [{"messages": [{"id": "51"}], "nextPageToken": "next"},
+                      {"messages": [{"id": "52"}]}]
+        self.admit()
+        self.step()
+        original = self.bridge.snapshot()
+        receipt = self.H.HistoryReceipt.from_metadata(json.loads(json.dumps(original.receipt.to_metadata())))
+        ref = self.H.RecordRef.from_metadata(json.loads(json.dumps(original.records[0].ref.to_metadata())))
+        self.step()
+        before = len(self.calls)
+        older = E.provider_history_snapshot(self.bridge, expected_receipt=receipt, required_refs=(ref,))
+        self.assertTrue(older.complete)
+        self.assertEqual(len(self.calls), before)
+        self.assertIsNone(older.records[0].event_at)
+        self.assertFalse(older.records[0].time_qualification.relative_deadlines_supported)
+
+    def test_unannounced_config_mutation_during_await_is_observed_before_publication(self):
+        self.admit()
+        async def mutate(request):
+            if request.url.path.endswith("/51"):
+                self.config["accounts"][ME]["refresh_token"] = "new-unannounced-credential"
+        self.hook = mutate
+        self.step()
+        self.assertEqual(len(self.calls), 4)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertFalse(self.bridge.status()["fresh"])
+
+    def test_sync_credential_recovery_and_gate_change_prevent_late_request_publication(self):
+        from service.config import quarantine
+        gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", gate):
+            self.http = G.HistoryHTTPClient.synthetic(self.server)
+            G.refresh_history_configuration()
+            self.admit()
+            async def recover(request):
+                if request.url.path.endswith("/51"):
+                    try:
+                        gate.invalidate()
+                    except quarantine.CredentialQuarantined:
+                        pass
+            self.hook = recover
+            self.step()
+            self.assertIsNone(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+            asyncio.run(self.http.aclose())
+        # A client bound to an older gate cannot dispatch after authority replacement.
+        self.hook = None
+        G.refresh_history_configuration()
+        self.admit()
+        before = len(self.calls)
+        with patch.object(quarantine, "_gate", quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))):
+            self.step()
+        self.assertEqual(len(self.calls), before)
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_replaced_recovery_authority_invalidates_pure_getters_without_disk_or_network(self):
+        from service.config import quarantine
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        new_gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", new_gate), \
+             patch.object(G, "load_config", side_effect=AssertionError("getter config read")), \
+             patch.object(new_gate, "check", side_effect=AssertionError("getter recovery read")):
+            self.assertIsNone(self.bridge.snapshot(expected_receipt=receipt))
+            self.assertEqual(G.history_account_status(), ())
+
+    def test_expiry_does_not_renew_via_public_bridge_or_metadata_roundtrip(self):
+        self.admit()
+        self.step()
+        receipt = self.bridge.snapshot().receipt
+        self.now, self.mono = 299, 99
+        self.assertEqual(self.bridge.snapshot().receipt.expires_at, receipt.expires_at)
+        self.now, self.mono = 300, 100
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=receipt))
+        before = len(self.calls)
+        self.step()
+        self.assertEqual(len(self.calls), before)
+
+    def test_source_bridge_does_not_accept_caller_token_or_arbitrary_http_client(self):
+        self.admit()
+        with self.assertRaises(TypeError):
+            asyncio.run(self.bridge.step(http=self.http, budget=self.budget, token="declared-right-account"))
+        with self.assertRaises(ValueError):
+            asyncio.run(self.bridge.step(http=object(), budget=self.budget))
+        with self.assertRaises(ValueError):
+            asyncio.run(self.bridge.step(http=object.__new__(G.HistoryHTTPClient), budget=self.budget))
+        self.assertEqual(self.calls, [])
+
+    def test_pure_source_readback_does_not_wait_for_configuration_io_mutex(self):
+        self.admit()
+        self.step()
+        rows = []
+        def readback():
+            rows.append(E.provider_history_snapshot(self.bridge))
+        thread = threading.Thread(target=readback, daemon=True)
+        with G._history_config_lock:
+            thread.start()
+            thread.join(timeout=1)
+            completed = not thread.is_alive()
+        thread.join(timeout=1)
+        self.assertTrue(completed, "Getter acquired configuration mutex under history guard")
+        self.assertFalse(thread.is_alive())
+        self.assertIsNotNone(rows[0])
+
+    def test_source_owned_clients_do_not_follow_redirects_or_retry_errors(self):
+        self.admit()
+        async def redirect(request):
+            self.calls.append(request)
+            return httpx.Response(302, headers={"Location": "https://example.test/leak"})
+        client = G.HistoryHTTPClient.synthetic(redirect)
+        asyncio.run(self.bridge.step(http=client, budget=self.budget))
+        asyncio.run(client.aclose())
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(str(self.calls[0].url), G.TOKEN_URL)
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_cancelled_source_step_withdraws_verified_token_and_existing_records(self):
+        self.pages = [{"messages": [{"id": "51"}], "nextPageToken": "next"}]
+        self.admit()
+        self.step()
+        self.assertEqual(self.bridge.status()["cached"], 1)
+        async def cancelled(request):
+            raise asyncio.CancelledError()
+        self.hook = cancelled
+        with self.assertRaises(asyncio.CancelledError):
+            self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["state"], "cancelled")
+
+    def test_two_configured_accounts_use_their_actual_credentials_and_never_deduplicate(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "school-refresh"}
+        G.refresh_history_configuration()
+        accounts = G.history_account_status()
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest,), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        captured = []
+        async def configured_server(request):
+            from urllib.parse import parse_qs
+            from test_gmail_behavior_history import message
+            captured.append(request)
+            if str(request.url) == G.TOKEN_URL:
+                refresh = parse_qs(request.content.decode())["refresh_token"][0]
+                return httpx.Response(200, json={"access_token": refresh, "scope": G.SCOPE,
+                                                 "token_type": "Bearer", "expires_in": 3600})
+            if request.url.path.endswith("/profile"):
+                owner = SCHOOL if request.headers["Authorization"] == "Bearer school-refresh" else ME
+                return httpx.Response(200, json={"emailAddress": owner})
+            return httpx.Response(200, json={"messages": [{"id": "51"}]} if request.url.path.endswith("/messages") else message())
+        client = G.HistoryHTTPClient.synthetic(configured_server)
+        bridges = []
+        for account in accounts:
+            source = G.new_public_history_bridge(application=self.app, limits=self.H.Limits(80000, 8000000, 32000000, 100),
+                clock=lambda: 200, monotonic=lambda: 0)
+            self.addCleanup(source.invalidate)
+            source.start(self.app.issue(G.history_account_lease(account.account.account_id), self.scope))
+            asyncio.run(source.step(http=client, budget=self.budget))
+            bridges.append(source)
+        asyncio.run(client.aclose())
+        rows = [source.snapshot().records[0] for source in bridges]
+        self.assertEqual([row.resource_id for row in rows], ["51", "51"])
+        self.assertNotEqual(rows[0].account.account_id, rows[1].account.account_id)
+        self.assertNotEqual(rows[0].ref, rows[1].ref)
+        self.assertEqual(len(captured), 8)
+
+
+class HistoryContinuation(unittest.TestCase):
+    setUp = HistoryPublicBinding.setUp
+    server = HistoryPublicBinding.server
+    admit = HistoryPublicBinding.admit
+    step = HistoryPublicBinding.step
+
+    def scan(self, *, cap=12):
+        self.scope = self.H.HistoryScope(100, 190, "inbox", cap)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, min(cap, 8) + 1)],
+                       "nextPageToken": "private-page-cursor"},
+                      {"messages": [{"id": str(i)} for i in range(9, cap + 1)]}]
+        self.old_grant = self.admit()
+        self.step()
+
+    def due(self):
+        self.now += 75
+        self.mono += 75
+
+    def fresh_grant(self, *, scope=None):
+        lease = G.history_account_lease(self.old_grant.account_lease.account.account_id)
+        return self.app.issue(lease, scope or self.scope)
+
+    def test_live_two_segment_scan_reauthenticates_and_never_renews_old_proof(self):
+        self.scan()
+        old = self.bridge.snapshot()
+        self.assertEqual([r.resource_id for r in old.records], ["1", "2", "3"])
+        self.assertTrue(callable(getattr(self.bridge, "prepare_continuation", None)),
+                        "The source needs a safe live traversal handoff, not a longer job TTL")
+        self.due()
+        handle = self.bridge.prepare_continuation()
+        before = len(self.calls)
+        status = self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(len(self.calls), before, "handoff must perform zero HTTP")
+        self.assertEqual((status["listed"], status["fetched"], status["pending"]), (8, 3, 5))
+        self.assertEqual(status["cached"], 0)
+        self.assertEqual(status["continuation"]["segment"], 2)
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt, required_refs=old.receipt.refs))
+        self.assertEqual(old.records[0].expires_at, 300)
+        self.assertEqual(old.records[0].read_started_at, 200)
+        self.step()
+        recent = self.bridge.snapshot()
+        self.assertEqual([r.resource_id for r in recent.records], ["4", "5", "6", "7"])
+        self.assertTrue(all(r.read_started_at == 275 and r.expires_at == 375 for r in recent.records))
+        self.assertEqual([r.url.path.rsplit("/", 1)[1] for r in self.calls[before:]][:2], ["token", "profile"])
+        self.step()
+        self.step()
+        self.assertEqual(self.bridge.status()["fetched"], 12)
+        self.assertEqual(self.bridge.status()["listed"], 12)
+        self.assertTrue(self.bridge.status()["eof_observed"])
+        self.assertEqual([r.url.params.get("pageToken") for r in self.calls if r.url.path.endswith("/messages")],
+                         [None, "private-page-cursor"])
+        ids = [r.url.path.rsplit("/", 1)[1] for r in self.calls if "/messages/" in r.url.path]
+        self.assertEqual(len(ids), len(set(ids)))
+
+    def test_handoff_requires_both_clocks_early_window_and_actual_pending_work(self):
+        self.scan()
+        for wall, mono in ((200, 0), (275, 0), (200, 75), (274, 74)):
+            with self.subTest(wall=wall, mono=mono):
+                self.now, self.mono = wall, mono
+                self.assertFalse(self.bridge.status()["continuation"]["available"])
+                with self.assertRaises(PermissionError):
+                    self.bridge.prepare_continuation()
+        self.now, self.mono = 275, 75
+        self.assertTrue(self.bridge.status()["continuation"]["available"])
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step(); self.step(); self.step()
+        self.due()
+        with self.assertRaises(PermissionError):
+            self.bridge.prepare_continuation()
+
+    def test_old_expiry_or_clock_rollback_cannot_restore_handle(self):
+        for wall, mono in ((300, 75), (275, 100), (199, 75), (275, -1)):
+            with self.subTest(wall=wall, mono=mono):
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                self.now, self.mono = wall, mono
+                before = len(self.calls)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+                self.assertEqual(before, len(self.calls))
+
+    def test_single_use_handle_cannot_be_cloned_serialized_forged_or_replayed(self):
+        import copy, pickle
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        self.assertIs(handle, self.bridge.prepare_continuation())
+        for operation in (copy.copy, copy.deepcopy, pickle.dumps, json.dumps):
+            with self.subTest(operation=operation.__name__), self.assertRaises(TypeError):
+                operation(handle)
+        for fake in ({"segment": 1}, object(), object.__new__(G.PublicContinuation)):
+            with self.subTest(fake=type(fake).__name__), self.assertRaises(PermissionError):
+                self.bridge.continue_scan(fake, grant=self.fresh_grant())
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.old_grant)
+        self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+
+    def test_same_scope_lease_application_and_original_start_are_required(self):
+        from dataclasses import replace
+        self.scan(); self.due()
+        handle, good = self.bridge.prepare_continuation(), self.fresh_grant()
+        for fake in (replace(good), replace(good, scope=self.H.HistoryScope(101, 190, "inbox", 12)),
+                     replace(good, account_lease=replace(good.account_lease))):
+            with self.subTest(fake=fake.scope.digest), self.assertRaises(PermissionError):
+                self.bridge.continue_scan(handle, grant=fake)
+        other_app = G.install_history_application(probe=lambda: self.permission)
+        self.addCleanup(other_app.revoke)
+        other_grant = other_app.issue(good.account_lease, self.scope)
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=other_grant)
+        # Even an otherwise-current new explicit Start severs the old lineage.
+        self.bridge.start(good)
+        self.due()
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+
+    def test_grant_already_attached_to_another_bridge_is_not_fresh(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        other = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 100),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(other.invalidate)
+        other.start(grant)
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=grant)
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+
+    def test_permission_session_role_scope_and_consent_changes_withdraw_handle(self):
+        from dataclasses import replace
+        changes = ({"session_id": "new-session"}, {"session_epoch": 2}, {"role_epoch": 2},
+                   {"role": "other"}, {"consent_epoch": 2}, {"global_learning": False},
+                   {"email_consent": False}, {"history_start": False}, {"account_ids": ()},
+                   {"scope_digests": ()})
+        for change in changes:
+            with self.subTest(change=change):
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                self.permission = replace(self.permission, **change)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+
+    def test_pause_reset_forget_terminal_revoke_and_config_change_reject_handoff(self):
+        for action in ("pause", "cancel", "forget", "revoke", "new_start", "config"):
+            with self.subTest(action=action):
+                # Reinstall only trusted test bootstrap after terminal revoke.
+                if action == "config":
+                    G.refresh_history_configuration()
+                self.app = G.install_history_application(probe=lambda: self.permission)
+                self.addCleanup(self.app.revoke)
+                self.bridge = G.new_public_history_bridge(application=self.app,
+                    limits=self.H.Limits(80000, 8000000, 32000000, 100),
+                    clock=lambda: self.now, monotonic=lambda: self.mono)
+                self.addCleanup(self.bridge.invalidate)
+                self.now, self.mono = 200, 0
+                self.scan(); self.due()
+                handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+                if action == "revoke": self.app.revoke()
+                elif action == "new_start": self.bridge.start(grant)
+                elif action == "config":
+                    self.config["client_secret"] = "rotated-test-only"
+                    G.refresh_history_configuration()
+                else: self.bridge.control(action)
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+                if action == "revoke":
+                    self.assertIsNone(self.app.refresh())
+                    with self.assertRaises(PermissionError): self.fresh_grant()
+
+    def test_public_status_checkpoint_and_handle_do_not_expose_traversal_or_tokens(self):
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        before = len(self.calls)
+        with patch.object(G, "load_config", side_effect=AssertionError("getter config I/O")), \
+             patch.object(G.httpx.AsyncClient, "request", side_effect=AssertionError("getter HTTP")):
+            encoded = json.dumps([self.bridge.status(), self.bridge.checkpoint()]) + repr(handle)
+            self.bridge.continue_scan(handle, grant=self.fresh_grant())
+        for private in ("private-page-cursor", "server-issued", "configured-refresh", "fake-secret",
+                        "listed_ids", "pending_ids", '"next_page"'):
+            self.assertNotIn(private, encoded)
+        self.assertEqual(before, len(self.calls))
+
+    def test_simultaneous_consumption_creates_only_one_new_segment(self):
+        import concurrent.futures, threading
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        grants = (self.fresh_grant(), self.fresh_grant())
+        barrier = threading.Barrier(2)
+        def consume(grant):
+            barrier.wait(timeout=5)
+            try:
+                self.bridge.continue_scan(handle, grant=grant)
+                return "started"
+            except PermissionError:
+                return "rejected"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(consume, grants))
+        self.assertCountEqual(results, ["started", "rejected"])
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+        self.assertEqual(len(self.calls), 6)
+
+    def test_transition_failure_withdraws_both_segments_and_consumes_handle(self):
+        self.scan(); self.due()
+        old = self.bridge.snapshot()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        with patch.object(self.bridge._provider, "_continue_segment", side_effect=RuntimeError("synthetic fault")):
+            with self.assertRaises(RuntimeError):
+                self.bridge.continue_scan(handle, grant=grant)
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt))
+        self.assertIsNone(self.bridge.status()["binding"])
+        with self.assertRaises(PermissionError):
+            self.bridge.continue_scan(handle, grant=grant)
+
+    def test_total_unique_scope_cap_is_not_reset_by_handoff(self):
+        self.scan(cap=6); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step()
+        status = self.bridge.status()
+        self.assertEqual((status["listed"], status["fetched"], status["pending"]), (6, 6, 0))
+        self.assertTrue(status["capped"])
+        self.assertFalse(status["eof_observed"])
+        before = len(self.calls)
+        for _ in range(3): self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_segment_limit_and_no_progress_stop_partial_without_extra_dispatch(self):
+        self.budget = self.H.StepBudget(100, 1, 6, 400000, 30)
+        self.scope = self.H.HistoryScope(100, 190, "inbox", 100)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, 101)],
+                       "nextPageToken": "never-follow-after-cap"}]
+        self.old_grant = self.admit(); self.step()
+        for segment in range(2, 33):
+            self.due()
+            self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+            self.step()
+            self.assertEqual(self.bridge.status()["continuation"]["segment"], segment)
+        self.due()
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.assertEqual(self.bridge.status()["fetched"], 32)
+        self.step()
+        self.assertEqual(before, len(self.calls))
+        # A fresh explicit Start gets its own finite scope, never old authority.
+        self.now, self.mono = 200, 0
+        self.scan(); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.due()  # No new list/body progress in the second segment.
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_handoff_is_refused_while_source_http_is_in_flight(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        async def hook(request):
+            if "/messages/" in request.url.path:
+                self.assertFalse(self.bridge.status()["continuation"]["available"])
+                with self.assertRaises(PermissionError):
+                    self.bridge.continue_scan(handle, grant=grant)
+        self.hook = hook
+        self.step()
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+
+    def test_new_segment_withdrawal_at_each_http_boundary_cannot_publish(self):
+        for phase in ("token", "profile", "body"):
+            with self.subTest(phase=phase):
+                self.now, self.mono = 200, 0
+                self.hook = None
+                self.scan(); self.due()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                async def hook(request):
+                    tail = request.url.path.rsplit("/", 1)[1]
+                    if tail == phase or (phase == "body" and "/messages/" in request.url.path):
+                        self.bridge.control("forget")
+                self.hook = hook
+                before = len(self.calls)
+                self.step()
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+                self.assertEqual(len(self.calls) - before, {"token": 1, "profile": 2, "body": 3}[phase])
+
+    def test_new_segment_wrong_profile_token_error_and_cancellation_fail_closed(self):
+        for failure in ("profile", "token", "cancel"):
+            with self.subTest(failure=failure):
+                self.now, self.mono = 200, 0
+                self.hook = None; self.profile = ME; self.token_status = 200
+                self.scan(); self.due()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                if failure == "profile": self.profile = "wrong@gmail.com"
+                elif failure == "token": self.token_status = 500
+                else:
+                    async def cancel(request): raise asyncio.CancelledError()
+                    self.hook = cancel
+                if failure == "cancel":
+                    with self.assertRaises(asyncio.CancelledError): self.step()
+                else: self.step()
+                self.assertIsNone(self.bridge.snapshot())
+                self.assertIsNone(self.bridge.status()["binding"])
+
+    def test_full_2000_scope_advances_across_segments_with_original_step_caps(self):
+        self.scope = self.H.HistoryScope(100, 190, "inbox", 2000)
+        self.bridge = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 1200),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(self.bridge.invalidate)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(first, first + 100)],
+                       **({"nextPageToken": f"cursor-{first + 100}"} if first < 1901 else {})}
+                      for first in range(1, 2001, 100)]
+        self.old_grant = self.admit()
+        handoffs = 0
+        for _ in range(600):
+            state = self.bridge.status()
+            if state["fetched"] == 2000: break
+            self.assertIn(state["state"], ("running", "capped"))
+            if state["continuation"]["available"]:
+                old = self.bridge.snapshot()
+                self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+                handoffs += 1
+                self.assertEqual(self.bridge.status()["cached"], 0)
+                self.assertIsNone(self.bridge.snapshot(expected_receipt=old.receipt))
+            before = len(self.calls)
+            self.step()
+            dispatched = self.calls[before:]
+            self.assertLessEqual(len(dispatched), 6)
+            self.assertLessEqual(sum("/messages/" in r.url.path for r in dispatched), 5)
+            self.now += 30; self.mono += 30
+        status = self.bridge.status()
+        self.assertEqual((status["listed"], status["fetched"]), (2000, 2000))
+        self.assertEqual(status["http_calls"], len(self.calls))
+        self.assertTrue(status["eof_observed"])
+        self.assertFalse(status["continuation"]["incomplete"])
+        self.assertGreater(handoffs, 1)
+        self.assertLess(handoffs, 32)
+        self.assertEqual(len([r for r in self.calls if r.url.path.endswith("/profile")]), handoffs + 1)
+        body_ids = [r.url.path.rsplit("/", 1)[1] for r in self.calls if "/messages/" in r.url.path]
+        self.assertEqual(len(set(body_ids)), 2000)
+        self.assertEqual(status["semantic_processing"], "not_performed")
+
+    def test_recovery_latch_invalidates_prepared_handle_without_restoring_credentials(self):
+        from service.config import quarantine
+        gate = quarantine.RecoveryGate(home=lambda: Path(os.environ["HOME"]))
+        with patch.object(quarantine, "_gate", gate):
+            client = G.HistoryHTTPClient.synthetic(self.server)
+            self.addCleanup(lambda: asyncio.run(client.aclose()))
+            self.http = client
+            G.refresh_history_configuration()
+            self.scan(); self.due()
+            handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+            try: gate.invalidate()
+            except quarantine.CredentialQuarantined: pass
+            with self.assertRaises(PermissionError): self.bridge.continue_scan(handle, grant=grant)
+            self.assertIsNone(self.bridge.snapshot())
+            self.assertEqual(G.history_account_status(), ())
+
+    def test_late_body_publication_after_handoff_and_forget_is_withdrawn(self):
+        self.scan(); self.due()
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        publish = self.bridge._provider._publish
+        def withdraw_then_publish(*args, **kwargs):
+            self.bridge.control("forget")
+            return publish(*args, **kwargs)
+        with patch.object(self.bridge._provider, "_publish", side_effect=withdraw_then_publish):
+            self.step()
+        self.assertIsNone(self.bridge.snapshot())
+        self.assertEqual(self.bridge.status()["cached"], 0)
+        self.assertEqual(self.bridge.status()["state"], "forgotten")
+
+    def test_expiry_during_atomic_metadata_copy_does_not_create_fresh_job(self):
+        self.scan(); self.due()
+        handle, grant = self.bridge.prepare_continuation(), self.fresh_grant()
+        original = self.bridge._provider._continuation_status
+        def late_status():
+            status = original()
+            self.now, self.mono = 300, 100
+            return status
+        with patch.object(self.bridge._provider, "_continuation_status", side_effect=late_status):
+            with self.assertRaises((PermissionError, self.H._Withdrawn)):
+                self.bridge.continue_scan(handle, grant=grant)
+        self.assertIsNone(self.bridge.status()["binding"])
+        self.assertIsNone(self.bridge.snapshot())
+
+    def test_duplicate_page_or_empty_progress_cannot_extend_traversal_forever(self):
+        self.scan(); self.step()  # Drain first page before the handoff window.
+        self.due()
+        self.pages = [{"messages": [], "nextPageToken": "private-page-cursor"}]
+        self.bridge.continue_scan(self.bridge.prepare_continuation(), grant=self.fresh_grant())
+        self.step()
+        self.assertTrue(self.bridge.status()["error"])
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.now, self.mono = 200, 0
+        self.pages = [{"messages": [], "nextPageToken": "no-progress"}]
+        self.old_grant = self.admit(); self.step(); self.due()
+        before = len(self.calls)
+        with self.assertRaises(PermissionError): self.bridge.prepare_continuation()
+        self.assertEqual(self.bridge.status()["state"], "partial")
+        self.step()
+        self.assertEqual(before, len(self.calls))
+
+    def test_other_configured_account_grant_cannot_consume_this_account_cursor(self):
+        self.config["accounts"][SCHOOL] = {"refresh_token": "other-refresh"}
+        accounts = G.refresh_history_configuration()
+        self.permission = G.HistoryPermissionState(tuple(row.account.account_id for row in accounts),
+            (self.scope.digest,), "server-session", 1, "gmail_history", 1, 1, True, True, True)
+        leases = {row.display_label: G.history_account_lease(row.account.account_id) for row in accounts}
+        self.old_grant = self.app.issue(leases[ME], self.scope)
+        self.pages = [{"messages": [{"id": str(i)} for i in range(1, 9)], "nextPageToken": "same-scope-page"}]
+        self.bridge.start(self.old_grant); self.step(); self.due()
+        handle = self.bridge.prepare_continuation()
+        other = self.app.issue(leases[SCHOOL], self.scope)
+        with self.assertRaises(PermissionError): self.bridge.continue_scan(handle, grant=other)
+        self.assertEqual(self.bridge.status()["fetched"], 3)
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 1)
+        self.bridge.continue_scan(handle, grant=self.app.issue(leases[ME], self.scope))
+        self.assertEqual(self.bridge.status()["continuation"]["segment"], 2)
+
+    def test_same_account_handle_cannot_be_used_by_a_different_bridge(self):
+        self.scan(); self.due()
+        handle = self.bridge.prepare_continuation()
+        other = G.new_public_history_bridge(application=self.app,
+            limits=self.H.Limits(80000, 8000000, 32000000, 100),
+            clock=lambda: self.now, monotonic=lambda: self.mono)
+        self.addCleanup(other.invalidate)
+        other.start(self.fresh_grant())
+        with self.assertRaises(PermissionError): other.continue_scan(handle, grant=self.fresh_grant())
+        self.assertEqual(other.status()["fetched"], 0)
+        self.assertEqual(self.bridge.status()["fetched"], 3)
 
 
 if __name__ == "__main__":

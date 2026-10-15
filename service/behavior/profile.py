@@ -83,17 +83,26 @@ def prediction_line(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) ->
     t = fmt_clock(minute_of(local_dt(pr.ts, tz)))
     pct = int(round(pr.probability * 100))
     if pr.kind == "activity":
-        return f"{pr.subject} around {t} ({pct}% likely)"
+        source = patterns.get(pr.pattern_id)
+        scheduled = source is None or source.stats.get("basis", "scheduled") == "scheduled"
+        return (f"Expected schedule: {pr.subject} around {t} (pattern score {pct}%; completion unknown)" if scheduled
+                else f"Expected routine: {pr.subject} around {t} (pattern score {pct}%)")
     if pr.kind == "cancel_risk":
-        return f"{pr.subject} at {t} — likely to be skipped ({pct}%)"
+        return f"{pr.subject} at {t} — schedule may change (historical rate {pct}%)"
     if pr.kind == "habit_conflict":
         h = patterns.get(pr.pattern_id)
         noun = miners.habit_noun(h) if h else "a routine"
         return f"{pr.subject} at {t} overlaps your usual {noun}"
     if pr.kind == "contact":
+        from service.behavior.predict import _contact_source_counts
+
         end = minute_of(local_dt(pr.end_ts, tz)) if pr.end_ts else None
         span = fmt_range(minute_of(local_dt(pr.ts, tz)), end) if end else t
-        return f"Usually in touch with {pr.subject} {span}"
+        p = patterns.get(pr.pattern_id)
+        calls, messages = _contact_source_counts(p)
+        source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
+                  else "Recorded message window" if messages else "Contact timing (source details unavailable)")
+        return f"{source} with {pr.subject} {span}"
     if pr.kind == "usage":
         return f"Usually asks Wisp about {pr.subject} around {t}"
     return f"{pr.subject} at {t}"
@@ -179,7 +188,7 @@ def describe(patterns: list[Pattern], predictions: list[Prediction], subject: st
     shown = {p.id for p in ranked}
     ranked += sorted((p for p in live if p.id not in shown), key=lambda p: -p.confidence)
     if ranked:
-        summary = "From what you do: " + "; ".join(p.statement for p in ranked[:5]) + "."
+        summary = "From your schedule and recorded activity: " + "; ".join(p.statement for p in ranked[:5]) + "."
     elif subject:
         summary = f"I haven't noticed a pattern about {subject} yet."
     else:

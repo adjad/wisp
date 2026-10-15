@@ -11,6 +11,61 @@ import pytest
 from service.config import credentials, quarantine as q
 
 
+def test_recovery_memory_stamp_reentry_refuses_before_header_and_latch_change(tmp_path,monkeypatch):
+    from service.publication_authority import PublicationBusy,Witness,publication
+    gate = q.RecoveryGate(home=lambda:tmp_path)
+    class Client:
+        headers = {"Authorization":"synthetic-only"}
+    client = Client()
+    callbacks = []
+    gate.clients.add(client)
+    gate.callbacks.append(lambda:callbacks.append(True))
+    assert gate.publication_token() is None
+    gate.check()
+    witness = Witness.combine(gate.publication_token())
+    assert witness.current()
+    with publication(witness):
+        with pytest.raises(PublicationBusy):
+            gate.invalidate()
+        with pytest.raises(PublicationBusy):
+            gate.check()
+        assert not gate.blocked and client.headers["Authorization"] == "synthetic-only"
+        assert callbacks == [] and witness.current()
+    def forbidden():
+        raise AssertionError("A cached witness tried to inspect credential files")
+    with monkeypatch.context() as pure:
+        pure.setattr(gate,"generation",forbidden)
+        assert gate.publication_token().current() and witness.current()
+    with pytest.raises(q.CredentialQuarantined):
+        gate.invalidate()
+    assert gate.blocked and "Authorization" not in client.headers
+    assert callbacks == [True] and gate.publication_token() is None and not witness.current()
+    with pytest.raises(q.CredentialQuarantined):
+        gate.invalidate()
+    assert callbacks == [True]
+
+
+def test_recovery_revoker_waits_until_publication_can_finish(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from service.publication_authority import Witness,publication
+    gate = q.RecoveryGate(home=lambda:tmp_path)
+    gate.check()
+    witness = Witness.combine(gate.publication_token())
+    attempted,acknowledged = threading.Event(),threading.Event()
+    def revoke():
+        attempted.set()
+        with pytest.raises(q.CredentialQuarantined):
+            gate.invalidate()
+        acknowledged.set()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with publication(witness):
+            task = pool.submit(revoke)
+            assert attempted.wait(3) and not acknowledged.is_set() and not gate.blocked
+        task.result(timeout=3)
+    assert acknowledged.is_set() and gate.blocked and not witness.current()
+
+
 def marker():
     parent = q._gate.directory
     parent.mkdir(mode=0o700, exist_ok=True)

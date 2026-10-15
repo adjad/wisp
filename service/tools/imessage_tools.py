@@ -17,6 +17,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating
 from service.config import role_to_model, user_facing_summary_kwargs
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 from service.inference.omlx_client import OMLXClient
@@ -275,17 +276,39 @@ def _c() -> OMLXClient:
     return _client
 
 
+import threading as _snapshot_threading
+from types import MappingProxyType as _SnapshotMapping
+
+_snapshot_lock = _snapshot_threading.RLock()
+_snapshot_generation = 0
+_snapshot_captured_at = 0.0
+_publication_authority = Authority("native-messages")
+_publication_expires_monotonic = 0.0
+_issued_snapshot = None
+
+
+@mutating
 def cache_messages(lines: str, available: bool, reason: str = "") -> None:
-    global _lines, _available, _unavailable_reason, _sync_completed
-    _lines = lines or ""
-    _available = available
-    _unavailable_reason = reason
-    _sync_completed = True
-    # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
-    # locked) posts empty lines with available=False — saving that would wipe
-    # a perfectly good restored cache on the first failed sync after launch.
-    if available and _lines:
-        cache_store.save("messages", _lines)
+    with _snapshot_lock:
+        global _lines, _available, _unavailable_reason, _sync_completed
+        global _snapshot_generation, _snapshot_captured_at, _publication_expires_monotonic, _issued_snapshot
+        _publication_authority.withdraw()
+        _issued_snapshot = None
+        _snapshot_generation += 1
+        _snapshot_captured_at = time.time()
+        _lines = lines or ""
+        _available = available
+        _unavailable_reason = reason
+        _sync_completed = True
+        _publication_expires_monotonic = time.monotonic()+600
+        body = _lines
+    # Only a successful read is persisted; failed reads preserve the disk cache.
+    # Unready while persistence runs; no source lock is held across file I/O.
+    if available and body:
+        cache_store.save("messages", body)
+    with _snapshot_lock:
+        if available:
+            _publication_authority.publish()
 
 
 _STRUCTURED_PREFIX = "V3 | "
@@ -2209,3 +2232,120 @@ async def list_contacts(query: str = "") -> str:
         if not names:
             return f"(No saved contact name contains {query!r}.)"
     return f"{len(names)} contact(s):\n" + "\n".join(f"- {n}" for n in names)
+
+
+def structured_messages_snapshot_with_receipt(*, expected_generation=None):
+    """Immutable current-publication snapshot, never refreshed by reading.
+
+    Five-minute native refreshes have a ten-minute freshness allowance. Empty,
+    failed, restored, partial or superseded publications provide no evidence.
+    """
+    def freeze(value):
+        if isinstance(value, dict):
+            return _SnapshotMapping({k: freeze(v) for k, v in value.items()})
+        if isinstance(value, list):
+            return tuple(freeze(v) for v in value)
+        return value
+    with _snapshot_lock:
+        generation, captured = _snapshot_generation, _snapshot_captured_at
+        if (_available is not True or not _sync_completed
+                or generation == 0 or not 0 <= time.time()-captured <= 600
+                or (expected_generation is not None and expected_generation != generation)):
+            return None
+        snapshot = structured_messages_snapshot()
+        if snapshot.get("state") != "ready" or snapshot.get("coverage", {}).get("status") != "complete":
+            return None
+        return freeze(dict(snapshot, generation=generation, captured_at=captured))
+
+
+def behavior_messages_snapshot_with_receipt(*, expected_generation=None, expected_proof=None):
+    """Current complete records from a possibly bounded Messages publication.
+
+    This positive-evidence subset never upgrades aggregate coverage. Existing
+    inventory callers keep the stricter complete-publication getter above.
+    Receipt age is backend receipt age, not a native read-start guarantee.
+    """
+    global _issued_snapshot
+    def freeze(value):
+        if isinstance(value, dict):
+            return _SnapshotMapping({k: freeze(v) for k, v in value.items()})
+        if isinstance(value, list):
+            return tuple(freeze(v) for v in value)
+        return value
+
+    with _snapshot_lock:
+        generation, captured, now = _snapshot_generation, _snapshot_captured_at, time.time()
+        if (_available is not True or _sync_completed is not True
+                or type(generation) is not int or generation <= 0
+                or any(type(t) not in (int, float) or not math.isfinite(t) for t in (captured, now))
+                or not 0 <= now-captured <= 600
+                or (expected_generation is not None and
+                    (type(expected_generation) is not int or expected_generation != generation))):
+            return None
+        snapshot = structured_messages_snapshot()
+        coverage, rows = snapshot.get("coverage", {}), snapshot.get("records", [])
+        fields = ("attempted", "emitted", "skipped", "truncated", "limit", "byte_limit", "window_days", "row_limit", "malformed")
+        if (snapshot.get("state") != "ready" or not isinstance(coverage, dict) or not isinstance(rows, list)
+                or coverage.get("status") not in ("complete", "partial")
+                or any(type(coverage.get(k)) is not int or coverage[k] < 0 for k in fields)
+                or coverage["malformed"] != 0 or type(coverage.get("reached_row_limit")) is not bool
+                or not 1 <= coverage["limit"] <= _STRUCTURED_MAX_RECORDS
+                or not 1 <= coverage["byte_limit"] <= 4_000_000
+                or not 1 <= coverage["window_days"] <= 365
+                or not 1 <= coverage["row_limit"] <= 20000
+                or not coverage["emitted"] == len(rows) <= coverage["limit"]
+                or not coverage["emitted"]+coverage["skipped"] <= coverage["attempted"] <= coverage["row_limit"]
+                or coverage["truncated"] < coverage["attempted"]-coverage["emitted"]-coverage["skipped"]
+                or coverage["reached_row_limit"] != (coverage["attempted"] == coverage["row_limit"])):
+            return None
+        wire_bytes, wire_records = 0, 0
+        try:
+            for index, line in enumerate(_lines.split("\n", _STRUCTURED_MAX_RECORDS+1)):
+                if index == 0:
+                    if not line.startswith(_STRUCTURED_PREFIX):
+                        return None
+                    continue
+                if not line.startswith(_STRUCTURED_PREFIX):
+                    break
+                wire_records += 1
+                wire_bytes += len(line.encode("utf-8"))
+                if wire_bytes > coverage["byte_limit"]:
+                    return None
+        except UnicodeError:
+            return None
+        if wire_records != coverage["emitted"]:
+            return None
+        eligible = [r for r in rows if r.get("status") == "complete" and not r.get("issues")
+                    and r.get("coverage") == {"text": "complete", "links": "complete"}]
+        complete = coverage["status"] == "complete"
+        if not eligible and not complete:
+            return None  # Partial with no complete records cannot claim a finished seed.
+        scope = dict(version=1, kind="complete_record_subset", selected=len(eligible),
+                     excluded_partial=len(rows)-len(eligible),
+                     known_omitted=coverage["attempted"]-len(eligible), publication_complete=complete)
+        proof = hashlib.sha256(json.dumps(dict(generation=generation, captured_at=captured,
+            coverage=coverage, record_scope=scope, records=eligible), sort_keys=True,
+            ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        if expected_proof is not None and (not isinstance(expected_proof, str) or expected_proof != proof):
+            return None
+        _issued_snapshot = freeze(dict(snapshot, records=eligible, generation=generation, captured_at=captured,
+                                       record_scope=dict(scope, proof=proof)))
+        return _issued_snapshot
+
+
+def prepare_publication_witness(snapshot) -> Witness | None:
+    """A genuine behavior getter capture, prepared outside the publication lease.
+
+    Read-only captures never replace the source authority head; a prepared
+    witness survives further getters. Prepare promptly: only the latest issued
+    capture is retained, avoiding a new personal-content history cache.
+    """
+    with _snapshot_lock:
+        if (snapshot is None or snapshot is not _issued_snapshot
+                or _available is not True or _sync_completed is not True
+                or snapshot.get("generation") != _snapshot_generation
+                or snapshot.get("captured_at") != _snapshot_captured_at):
+            return None
+        return Witness.combine(_publication_authority.token(clock=LIVE_CLOCK,
+            expires_wall=_snapshot_captured_at+600,
+            expires_monotonic=_publication_expires_monotonic))

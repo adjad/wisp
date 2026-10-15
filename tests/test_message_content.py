@@ -26,6 +26,139 @@ def record(**changes):
     }
 
 
+def v3_carrier(rows, *, coverage=None, partial=()):
+    """Actual native V3 shape; every row and receipt is synthetic."""
+    meta = dict(version=1, kind="coverage", attempted=len(rows), emitted=len(rows), skipped=0,
+                truncated=len(partial), limit=2000, byte_limit=4_000_000, window_days=365,
+                row_limit=20000, reached_row_limit=False)
+    meta.update(coverage or {})
+    values = [meta]
+    for i, raw in enumerate(rows):
+        values.append(dict(version=1, kind="record", record=raw,
+            source=dict(kind="messages", message_guid=raw.get("guid"), chat_guid=raw.get("conversation"), navigation_url=None),
+            coverage=dict(text="partial" if i in partial else "complete", links="complete")))
+    return "\n".join("V3 | "+json.dumps(v, ensure_ascii=False) for v in values)+"\nV2 | synthetic legacy carrier"
+
+
+@pytest.fixture
+def live_message_publication(monkeypatch):
+    # Importing the adapter must not restore any cache or construct a client.
+    from service.tools import cache_store
+    monkeypatch.setattr(cache_store, "load", lambda *_a, **_k: "")
+    monkeypatch.setattr(cache_store, "save", lambda *_a, **_k: None)
+    from service.tools import imessage_tools as messages
+    for name in ("_lines", "_available", "_unavailable_reason", "_sync_completed",
+                 "_snapshot_generation", "_snapshot_captured_at"):
+        monkeypatch.setattr(messages, name, getattr(messages, name))
+    clock = [1792051200.0]
+    monkeypatch.setattr(messages.time, "time", lambda: clock[0])
+    return messages, clock
+
+
+def test_behavior_message_subset_keeps_strict_inventory_and_original_receipt(live_message_publication):
+    messages, clock = live_message_publication
+    rows = [record(guid=f"g{i}", text=f"A complete arbitrary passage {i}.") for i in range(3)]
+    messages.cache_messages(v3_carrier(rows, partial=(1,)), True)
+    assert messages.structured_messages_snapshot_with_receipt() is None
+    snapshot = messages.behavior_messages_snapshot_with_receipt()
+    assert [r["guid"] for r in snapshot["records"]] == ["g0", "g2"]
+    assert snapshot["coverage"]["status"] == "partial"
+    scope = snapshot["record_scope"]
+    assert dict(scope, proof="redacted") == dict(version=1, kind="complete_record_subset", selected=2,
+        excluded_partial=1, known_omitted=1, publication_complete=False, proof="redacted")
+    receipt = snapshot["captured_at"]
+    clock[0] += 5
+    again = messages.behavior_messages_snapshot_with_receipt(expected_generation=snapshot["generation"], expected_proof=scope["proof"])
+    assert again["captured_at"] == receipt and again["record_scope"]["proof"] == scope["proof"]
+    with pytest.raises(TypeError):
+        snapshot["records"][0]["text"] = "changed"
+    with pytest.raises(TypeError):
+        scope["publication_complete"] = True
+
+
+@pytest.mark.parametrize("change", [
+    {"attempted": 0}, {"emitted": 0}, {"skipped": 1}, {"attempted": 2},
+    {"limit": 0}, {"limit": True}, {"limit": 2001}, {"byte_limit": 1},
+    {"byte_limit": 4_000_001}, {"window_days": 0}, {"window_days": 366},
+    {"row_limit": 0}, {"row_limit": 20001}, {"reached_row_limit": True},
+])
+def test_behavior_message_subset_rejects_inconsistent_carrier_counts(live_message_publication, change):
+    messages, _ = live_message_publication
+    messages.cache_messages(v3_carrier([record()], coverage=change), True)
+    assert messages.behavior_messages_snapshot_with_receipt() is None
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "bad_json", "bad_source", "missing_header", "malformed_header"])
+def test_behavior_message_subset_never_launders_malformed_records(live_message_publication, fault):
+    messages, _ = live_message_publication
+    carrier = v3_carrier([record(), record(guid="other")])
+    lines = carrier.split("\n")
+    if fault == "duplicate":
+        carrier = v3_carrier([record(), record()])
+    elif fault == "bad_json":
+        lines[1] = 'V3 | {bad'; carrier = "\n".join(lines)
+    elif fault == "bad_source":
+        row = json.loads(lines[1][5:]); row["source"]["message_guid"] = "unrelated"
+        lines[1] = "V3 | "+json.dumps(row); carrier = "\n".join(lines)
+    elif fault == "missing_header":
+        carrier = "\n".join(lines[1:])
+    else:
+        lines[0] = "V3 | "+json.dumps(dict(version=1, kind="coverage")); carrier = "\n".join(lines)
+    messages.cache_messages(carrier, True)
+    assert messages.behavior_messages_snapshot_with_receipt() is None
+
+
+def test_behavior_message_subset_empty_partial_and_row_limit_are_distinct(live_message_publication):
+    messages, _ = live_message_publication
+    messages.cache_messages(v3_carrier([]), True)
+    empty = messages.behavior_messages_snapshot_with_receipt()
+    assert empty["records"] == () and empty["record_scope"]["publication_complete"] is True
+    assert messages.structured_messages_snapshot_with_receipt() is not None
+    messages.cache_messages(v3_carrier([record()], partial=(0,)), True)
+    assert messages.behavior_messages_snapshot_with_receipt() is None
+    messages.cache_messages(v3_carrier([record()], coverage=dict(attempted=20000, truncated=19999, reached_row_limit=True)), True)
+    bounded = messages.behavior_messages_snapshot_with_receipt()
+    assert bounded["record_scope"]["known_omitted"] == 19999
+    assert bounded["coverage"]["reached_row_limit"] is True and bounded["coverage"]["status"] == "partial"
+    assert bounded["record_scope"]["publication_complete"] is False
+
+
+@pytest.mark.parametrize("fault", ["stale", "future", "restored", "unavailable", "superseded", "body_changed", "boolean_generation"])
+def test_behavior_message_subset_receipt_fences_currentness(live_message_publication, monkeypatch, fault):
+    messages, clock = live_message_publication
+    carrier = v3_carrier([record()])
+    messages.cache_messages(carrier, True)
+    before = messages.behavior_messages_snapshot_with_receipt()
+    if fault == "stale":
+        clock[0] += 600.01
+    elif fault == "future":
+        clock[0] -= .01
+    elif fault == "restored":
+        monkeypatch.setattr(messages, "_sync_completed", False)
+    elif fault == "unavailable":
+        messages.cache_messages("", False)
+    elif fault == "superseded":
+        messages.cache_messages(carrier, True)
+    elif fault == "body_changed":
+        monkeypatch.setattr(messages, "_lines", v3_carrier([record(text="Changed but same-generation synthetic passage")]))
+    else:
+        monkeypatch.setattr(messages, "_snapshot_generation", True)
+    assert messages.behavior_messages_snapshot_with_receipt(expected_generation=before["generation"],
+        expected_proof=before["record_scope"]["proof"]) is None
+
+
+def test_behavior_message_subset_receipt_boundary_does_not_renew_on_read(live_message_publication):
+    messages, clock = live_message_publication
+    messages.cache_messages(v3_carrier([record()]), True)
+    first = messages.behavior_messages_snapshot_with_receipt()
+    clock[0] += 600
+    boundary = messages.behavior_messages_snapshot_with_receipt()
+    assert boundary["captured_at"] == first["captured_at"]
+    assert boundary["record_scope"]["proof"] == first["record_scope"]["proof"]
+    clock[0] += .001
+    assert messages.behavior_messages_snapshot_with_receipt() is None
+
+
 def issue_codes(result, field):
     return [issue.code for issue in result.issues if issue.field == field]
 

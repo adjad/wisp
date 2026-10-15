@@ -19,8 +19,10 @@ import sqlite3
 import threading
 import time
 import uuid
+import weakref
 from pathlib import Path
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, revocation
 from service.assistant.recovery import recovery_guidance
 from service.paths import MOE_DIR
 
@@ -200,6 +202,35 @@ CREATE TABLE IF NOT EXISTS notify_log (
 );
 """
 
+class _BehaviorReceiptHead:
+    """Shared by live connections to one database; never restored from disk."""
+    def __init__(self):
+        self.authority = Authority("native-reminders-permission", owner=self)
+        self.metadata = None
+        self.expires_monotonic = 0.0
+
+
+_behavior_receipt_heads = weakref.WeakValueDictionary()
+_behavior_receipt_registry_lock = threading.RLock()
+
+
+def _behavior_reminders_receipt(value):
+    if (type(value) is not dict or value.get("available") is not True
+            or value.get("syncing") is not False):
+        return None
+    diagnostics = value.get("diagnostics")
+    if (type(diagnostics) is not dict or diagnostics.get("complete", True) is not True
+            or diagnostics.get("partial", False) is not False):
+        return None
+    last, started = value.get("last_sync"), value.get("snapshot_started_at")
+    if any(type(t) not in (int, float) or not math.isfinite(t) or t <= 0 for t in (last, started)):
+        return None
+    coverage = tuple(diagnostics.get(key) for key in ("coverage_start", "coverage_end"))
+    if any(t is not None and (type(t) not in (int, float) or not math.isfinite(t)) for t in coverage):
+        return None
+    return (last, started, *coverage)
+
+
 class AssistantStore:
     def __init__(self, path: Path = DB_PATH) -> None:
         path = path.expanduser().resolve()
@@ -209,6 +240,20 @@ class AssistantStore:
         self._db.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._transaction_write: bool | None = None
+        self._behavior_receipt_stages = []
+        # Resolve aliases once, outside transaction locks/SQL. A fresh process
+        # has no head and cannot recover native permission from persisted JSON.
+        try:
+            identity_stat = path.stat()
+            identity = (identity_stat.st_dev, identity_stat.st_ino)
+        except OSError:
+            identity = ("path", str(path))
+        with revocation(), _behavior_receipt_registry_lock:
+            head = _behavior_receipt_heads.get(identity)
+            if head is None:
+                head = _BehaviorReceiptHead()
+                _behavior_receipt_heads[identity] = head
+            self._behavior_receipt_head = head
         try:
             with self._db:
                 # Lock before inspecting schema so simultaneous startups cannot
@@ -489,7 +534,9 @@ class AssistantStore:
         commit independently. All write decisions must start with write=True;
         a read transaction must not be upgraded across concurrent connections.
         """
-        with self._lock:
+        # The outer order also covers composed/nested receipt writes. No
+        # source lock can be held while waiting for a publication to finish.
+        with revocation(), self._lock:
             nested = self._db.in_transaction
             if nested and write and self._transaction_write is False:
                 raise RuntimeError("Cannot upgrade a read transaction to a write transaction")
@@ -499,13 +546,38 @@ class AssistantStore:
                              "BEGIN IMMEDIATE" if write else "BEGIN")
             if not nested:
                 self._transaction_write = write
+            frame = {"receipt": None}
+            self._behavior_receipt_stages.append(frame)
             try:
                 yield self._db
                 if nested:
                     self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
+                    if len(self._behavior_receipt_stages) > 1 and frame["receipt"] is not None:
+                        self._behavior_receipt_stages[-2]["receipt"] = frame["receipt"]
                 else:
+                    candidate = frame["receipt"]
+                    if candidate is not None:
+                        row = self._db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+                        if row is None or row["payload"] != candidate[0]:
+                            candidate = None
                     self._db.commit()
+                    # Only a successfully committed actual native receipt can
+                    # arm the process-local permission head. No SQL in checks.
+                    if candidate is not None:
+                        _, metadata, deadline = candidate
+                        now = time.time()
+                        if all(0 <= now-t < 1200 for t in metadata[:2]) and time.monotonic() < deadline:
+                            self._behavior_receipt_head.metadata = metadata
+                            self._behavior_receipt_head.expires_monotonic = deadline
+                            self._behavior_receipt_head.authority.publish()
             except BaseException:
+                # A failed attempted receipt never revives an older/pending
+                # permission, even when its SQL savepoint is rolled back.
+                if frame["receipt"] is not None:
+                    self._behavior_receipt_head.authority.withdraw()
+                    self._behavior_receipt_head.metadata = None
+                    for previous in self._behavior_receipt_stages:
+                        previous["receipt"] = None
                 if nested:
                     self._db.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
                     self._db.execute(f"RELEASE SAVEPOINT {savepoint}")
@@ -513,12 +585,32 @@ class AssistantStore:
                     self._db.rollback()
                 raise
             finally:
+                self._behavior_receipt_stages.pop()
                 self._transaction_write = previous_mode
 
     @contextmanager
     def _write_transaction(self):
         with self.transaction():
             yield
+
+    def prepare_behavior_source_publication_witness(self, source, snapshot) -> Witness | None:
+        """Only current native Reminders permission metadata, never task content.
+
+        Copied DTO fields must match both current SQL and a process-issued
+        successfully committed native receipt. Reads never renew its lifetime.
+        """
+        if source != "reminders":
+            return None
+        with revocation(), self._lock:
+            metadata = _behavior_reminders_receipt(snapshot)
+            head = self._behavior_receipt_head
+            if metadata is None or metadata != head.metadata or self._db.in_transaction:
+                return None
+            row = self._db.execute("SELECT payload FROM today_source_sync WHERE source='reminders'").fetchone()
+            if row is None or metadata != _behavior_reminders_receipt(json.loads(row["payload"])):
+                return None
+            return Witness.combine(head.authority.token(clock=LIVE_CLOCK,
+                expires_wall=min(metadata[:2])+1200, expires_monotonic=head.expires_monotonic))
 
     def today_snapshot(self, day: str, timezone: str) -> dict:
         from service.assistant.today import day_bounds
@@ -1144,6 +1236,11 @@ class AssistantStore:
         from service.assistant.today import RevisionConflict, number
         if source not in {"calendar", "reminders"}:
             return
+        if source == "reminders":
+            self._behavior_receipt_head.authority.withdraw()
+            self._behavior_receipt_head.metadata = None
+            for frame in self._behavior_receipt_stages:
+                frame["receipt"] = None
         started = diagnostics.get("snapshot_started_at")
         if started is not None:
             started = number(started, "snapshot_started_at")
@@ -1170,9 +1267,16 @@ class AssistantStore:
                        reason="Up to date" if current else (
                            "Source snapshot is incomplete" if available else "Source is unavailable or syncing"),
                        last_sync=min(now, started) if started is not None else now, snapshot_started_at=started, diagnostics=coverage)
+        payload = json.dumps(receipt, allow_nan=False)
         self._db.execute("INSERT INTO today_source_sync(source,payload) VALUES (?,?) "
                          "ON CONFLICT(source) DO UPDATE SET payload=excluded.payload",
-                         (source, json.dumps(receipt, allow_nan=False)))
+                         (source, payload))
+        if (source == "reminders" and diagnostics.get("authorized") is True
+                and diagnostics.get("available") is not False):
+            metadata = _behavior_reminders_receipt(receipt)
+            if metadata is not None and self._behavior_receipt_stages:
+                deadline = time.monotonic()+min(metadata[:2])+1200-now
+                self._behavior_receipt_stages[-1]["receipt"] = (payload, metadata, deadline)
 
     def today_source_unavailable(self, source: str, diagnostics: dict) -> None:
         with self._write_transaction():
