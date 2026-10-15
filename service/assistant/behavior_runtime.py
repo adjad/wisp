@@ -38,6 +38,7 @@ Forgetting and retention
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -50,6 +51,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
+from types import MappingProxyType
 
 log = logging.getLogger("wisp.behavior")
 
@@ -355,6 +357,13 @@ class BehaviorRuntime:
         target = role_target("fast")
         return (target.identity, remote_active())
 
+    @staticmethod
+    def _pattern_proof(pattern):
+        try:
+            return hashlib.sha256(json.dumps(pattern, sort_keys=True, allow_nan=False).encode()).hexdigest()
+        except (TypeError, ValueError, UnicodeError, OverflowError):
+            return None
+
     def _refresh_availability(self, now):
         """Worker-only bounded interpretation. Never called by a planning GET."""
         self._availability_attempt = now
@@ -379,6 +388,12 @@ class BehaviorRuntime:
             if not batch.current() or not (patterns or batch.records):
                 self._availability_cache = None
                 return
+            # Bind the complete input before interpretation. Stable IDs alone
+            # cannot admit revised cohorts, bounds, sites or descriptors.
+            proofs = {}
+            for pattern in patterns:
+                ident, proof = pattern["id"], self._pattern_proof(pattern)
+                proofs[ident] = proof if ident not in proofs or proofs[ident] == proof else None
             def admit():
                 with self._gate:
                     return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
@@ -394,7 +409,8 @@ class BehaviorRuntime:
                 if (not cancellation.is_set() and self.live() and engine.signal_settings() == settings and batch.current()
                         and self._analysis_role() == role and result.get("state") == "tentative"):
                     self._availability_cache = dict(epoch=settings["epoch"], batch=batch, result=result,
-                                                    at=now, role=role, timezone=zone, cancellation=cancellation)
+                                                    at=now, role=role, timezone=zone, cancellation=cancellation,
+                                                    pattern_proofs=MappingProxyType(proofs))
                 else:
                     self._availability_cache = None
         except Exception:
@@ -404,9 +420,13 @@ class BehaviorRuntime:
     def planning_context(self, day, timezone, now=None):
         """Versioned read-only planner contract. Reads never renew freshness."""
         from service.behavior.availability import apply_interpretations
+        from service.assistant.behavior_sources import Batch, capture
         from zoneinfo import ZoneInfo
         # Validate even when no evidence is currently available.
-        datetime.fromisoformat(day).date()
+        from datetime import date
+        target = date.fromisoformat(day)
+        if target.isoformat() != day:
+            raise ValueError("A local date is required")
         ZoneInfo(timezone)
         now = self.clock() if now is None else now
         empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
@@ -419,23 +439,47 @@ class BehaviorRuntime:
             settings = engine.signal_settings()
             cache = self._availability_cache
             patterns = engine.availability_patterns(day, timezone, now=now)
+            first = datetime.fromtimestamp(now, ZoneInfo(timezone)).date()
+            in_horizon = first <= target <= first+timedelta(days=6)
+            if not in_horizon:
+                patterns = []
             empty["patterns"] = patterns
-            if (cache is None or cache["cancellation"].is_set() or not settings["settings"]["interpretation"]
+            if (not in_horizon or cache is None or "pattern_proofs" not in cache or cache["cancellation"].is_set() or not settings["settings"]["interpretation"]
                     or cache["epoch"] != settings["epoch"] or cache["timezone"] != timezone
                     or not 0 <= now-cache["at"] <= 300 or not cache["batch"].current()
                     or self._analysis_role() != cache["role"]):
                 return empty
-            result = cache["result"]
-            from copy import deepcopy
-            demands = deepcopy(result["demands"])
-            for demand in demands:
-                if demand.get("due_range") and demand["due_range"][1] <= now:
-                    demand["status"] = "unresolved"
-            return dict(empty, ready=True, windows=apply_interpretations(patterns, result["patterns"]),
-                        demands=demands, generated_at=cache["at"],
-                        detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
-                        source_coverage=cache["batch"].detail,
-                        observed_context=engine.availability_context(timezone, now=now))
+            fresh = None
+            try:
+                fresh = (self._sources_fn or capture)(settings["settings"])
+                if (not isinstance(fresh, Batch) or not fresh.current()
+                        or len(fresh.receipts) < len(cache["batch"].receipts)
+                        or fresh.detail != cache["batch"].detail):
+                    return empty
+                patterns = engine.availability_patterns(day, timezone, fresh.visits, now)
+                proofs = cache.get("pattern_proofs", {})
+                matching = [p for p in patterns if isinstance(proofs.get(p["id"]), str)
+                            and proofs[p["id"]] == self._pattern_proof(p)]
+                result = cache["result"]
+                from copy import deepcopy
+                demands = deepcopy(result["demands"])
+                for demand in demands:
+                    if demand.get("due_range") and demand["due_range"][1] <= now:
+                        demand["status"] = "unresolved"
+                windows = apply_interpretations(matching, result["patterns"])
+                if (not self.live() or self._availability_cache is not cache or cache["cancellation"].is_set() or engine.signal_settings() != settings
+                        or self._analysis_role() != cache["role"] or not cache["batch"].current() or not fresh.current()):
+                    return empty
+                return dict(empty, ready=True, windows=windows,
+                            demands=demands, generated_at=cache["at"],
+                            detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
+                            source_coverage=cache["batch"].detail,
+                            observed_context=engine.availability_context(timezone, now=now))
+            except Exception:
+                return empty
+            finally:
+                if isinstance(fresh, Batch):
+                    fresh.records, fresh.visits = [], []
 
     async def acall(self, method: str, *args, **kwargs):
         return await asyncio.to_thread(self.call, method, *args, **kwargs)

@@ -238,6 +238,17 @@ def apply_interpretations(patterns, interpretations):
     windows = []
     for item in interpretations:
         p = by_id.get(item.get("pattern_id"))
+        if (p is not None and item.get("availability") == "unknown"
+                and item.get("evidence") == p.get("evidence")
+                and isinstance(item.get("reason"), str) and item["reason"].strip()
+                and _absence_only_recurrence(p)):
+            windows.append({**p, "kind": "possible_unavailability", "current": True,
+                "title": "Possible time away", "prediction_target": "computer_activity",
+                "availability": "unknown", "basis": "inferred", "action_authority": "none",
+                "because": f"Computer inactivity recurs in {p['support']} of {p['opportunities']} covered windows; an optional planning assumption, not verified busyness.",
+                "semantic_reason": item["reason"],
+                "uncertainty": "Recurring computer inactivity does not establish whether you are free, busy, or away."})
+            continue
         if (p is None or item.get("availability") != "likely_occupied"
                 or not has_active_app_support(p)):
             continue
@@ -254,6 +265,27 @@ def apply_interpretations(patterns, interpretations):
             }
         )
     return windows
+
+
+def _absence_only_recurrence(pattern):
+    """Observe computer inactivity; never infer its cause or availability."""
+    values = pattern.get("descriptors")
+    names = {"device:idle", "device:inactive", "device:screen_sleep"}
+    if (not isinstance(values, dict) or not values or has_active_app_support(pattern)
+            or any(key not in names or type(value) not in (int, float)
+                   or not 0 <= value <= 1/3 or not math.isfinite(value)
+                   for key, value in values.items())
+            or not any(value > 0 for value in values.values())):
+        return False
+    support, opportunities, weeks = (pattern.get(k) for k in ("support", "opportunities", "distinct_weeks"))
+    return (type(support) is int and type(opportunities) is int and type(weeks) is int
+            and 3 <= weeks <= support <= opportunities and support/opportunities >= .6
+            and pattern.get("coverage") in ("adequate", "complete")
+            and isinstance(pattern.get("evidence"), list) and bool(pattern["evidence"])
+            and all(isinstance(v, str) and v for v in pattern["evidence"])
+            and all(type(pattern.get(k)) in (int, float) and -1e12 < pattern[k] < 1e12
+                    and math.isfinite(pattern[k]) for k in ("start", "end", "observed_at", "confidence"))
+            and pattern["end"] > pattern["start"] and 0 <= pattern["confidence"] <= 1)
 
 
 def competing_activity(events, bins, timezone):

@@ -468,9 +468,27 @@ app support before accepting an occupied hypothesis. Correlated idle, inactive a
 screen-sleep descriptors, or point website visits, cannot satisfy that requirement.
 Active app support is a minimum evidence boundary, not proof of busyness. Raw
 recurring-away patterns and an unknown interpretation remain available as context.
-Version 1 currently has only an occupied window kind; a separate possible-away
-planning hint still needs an explicit producer/consumer kind, label and placement
-contract. This repair does not claim that away-only routines already reserve time.
+A successfully admitted unknown interpretation with matching evidence can expose
+a separate version-1 `possible_unavailability` window titled “Possible time away”.
+It predicts recurring computer inactivity and explicitly leaves personal
+availability unknown. Only finite cohort-local absence features without active-app
+support qualify under the existing recurrence and coverage rules. Failed, empty,
+malformed or ungrounded analysis cannot create a hint; an occupied guess cannot
+promote absence into activity. Its score describes recurrence strength, not the
+probability that someone is busy or away. It carries no action authority.
+
+Both window kinds bind the complete pattern before analysis, including absolute
+bounds, cohort, supporting evidence, descriptors, coverage and website point
+context. A planning read rechecks the original receipts, then uses at most one
+read of current public cached publications to recompute and compare that proof.
+It does not refresh a source or run a model. Changed evidence with the same pattern
+ID, missing proof, unavailable sources, revocation, role/epoch changes, cancellation,
+expired analysis or dates outside the seven-day horizon withhold the hint. Source
+bodies and visits are discarded after this comparison, including on failure;
+neither analysis nor source receipt time is renewed.
+
+The day-planner consumer still requires its separate kind, label and advisory
+placement integration. This producer alone does not reserve away time in a plan.
 
 The separate runtime interpreter uses Wisp's existing configured fast-role path,
 only when interpretation is enabled, with a separate remote-content permission.
@@ -490,7 +508,7 @@ because it quotes real text; all such results remain tentative.
 export a version-1 read-only envelope: `ready`, `timezone`, `generated_at`, `detail`,
 `patterns`, `windows`, `demands`, `source_coverage`, `observed_context`. The HTTP
 surface is `GET /behavior/availability?day=YYYY-MM-DD&timezone=Area/City`.
-`windows` are tentative likely-occupied hypotheses, separate from `demands`
+`windows` are tentative occupied or possible-unavailability hypotheses, separate from `demands`
 (`preparation`, `task`, `meeting_request`). Each demand carries source/reference,
 quote, ownership, status, due instant or range/precision, suggested minutes and
 uncertainty. Unknown ownership/time never becomes a schedulable demand. Source

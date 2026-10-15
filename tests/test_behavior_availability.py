@@ -12,6 +12,218 @@ from service.behavior.types import Observation
 NOW = datetime(2026, 10, 19, 8, tzinfo=ZoneInfo("UTC")).timestamp()
 
 
+@pytest.fixture
+def routine_runtime(tmp_path, monkeypatch):
+    """Real private runtime/interpreter; only source publications/model are fake."""
+    import json
+    from copy import deepcopy
+    from dataclasses import replace
+    from service.assistant.behavior_runtime import BehaviorRuntime
+    from service.assistant.behavior_interpreter import Interpreter
+    from service.assistant.behavior_sources import Batch
+    monkeypatch.setenv("WISP_BEHAVIOR", "1")
+    runtimes = []
+    def make(kind="away", *, sites=False):
+        rows = history()
+        if kind == "away":
+            rows = [replace(o, attrs={**o.attrs, "apps": {}, "idle": 900, "inactive": 900, "screen_sleep": 900}) for o in rows]
+        pattern = discover(rows, [], "2026-10-19", "UTC", NOW)[0]
+        controls = dict(live=True, generation=1, role="fake", visits=([dict(host="arbitrary.test", ts=rows[0].ts)] if sites else []),
+                        calls=[], reads=[], changes={}, response="normal")
+        def sources(_):
+            controls["reads"].append("cached-publication")
+            token = controls["generation"]
+            return Batch([], deepcopy(controls["visits"]), [lambda: controls["live"] and token == controls["generation"]], {})
+        def current_patterns(_day, _zone, visits=(), now=None):
+            value = deepcopy(pattern)
+            value["website_visit_context"] = sorted({v["host"] for v in visits})
+            value.update(deepcopy(controls["changes"]))
+            return [value]
+        def complete(_system, prompt, **_):
+            controls["calls"].append(json.loads(prompt))
+            if controls["response"] == "failed":
+                raise RuntimeError("Synthetic unavailable analysis")
+            if controls["response"] == "empty":
+                return json.dumps(dict(demands=[], patterns=[]))
+            if controls["response"] == "malformed":
+                return "{not-json"
+            patterns = json.loads(prompt)["recurring_patterns"]
+            # Runtime projects seven dates. The fixture returns the same id;
+            # the real interpreter validates references to the supplied data.
+            return json.dumps(dict(demands=[], patterns=[dict(pattern_id=p["id"],
+                availability="likely_occupied" if controls["response"] == "occupied_absence" else "unknown" if kind == "away" else "likely_occupied",
+                evidence=["unadmitted-reference"] if controls["response"] == "wrong_reference" else p["evidence"],
+                reason="Availability remains uncertain.") for p in patterns[:1]]))
+        runtime = BehaviorRuntime(tmp_path/str(len(runtimes)),
+            local_factory=lambda p: BehaviorEngine(p, tz="UTC", clock=lambda: NOW),
+            behavior_sources_fn=sources, behavior_interpreter=Interpreter(complete),
+            role_key_fn=lambda: controls["role"], clock=lambda: NOW)
+        runtime.call("configure_signals", {"activity": True, "interpretation": True, "websites": sites}, NOW)
+        monkeypatch.setattr(runtime.local_engine(), "availability_patterns", current_patterns)
+        runtimes.append(runtime)
+        return runtime, controls, pattern
+    yield make
+    for runtime in runtimes:
+        runtime.close()
+
+
+def test_recurring_absence_has_distinct_tentative_planning_kind(routine_runtime):
+    runtime, controls, pattern = routine_runtime()
+    runtime._refresh_availability(NOW)
+    result = runtime.planning_context("2026-10-19", "UTC", NOW)
+    assert len(result["windows"]) == 1
+    hint = result["windows"][0]
+    assert hint["kind"] == "possible_unavailability" and hint["title"] == "Possible time away"
+    assert hint["prediction_target"] == "computer_activity" and hint["availability"] == "unknown"
+    assert hint["action_authority"] == "none" and hint["basis"] == "inferred"
+    assert hint["evidence"] == pattern["evidence"] and hint["confidence"] == pattern["confidence"]
+    assert "does not establish" in hint["uncertainty"]
+    assert runtime.planning_context("2026-10-19", "UTC", NOW+20)["generated_at"] == NOW
+    assert len(controls["calls"]) == 1
+
+
+@pytest.mark.parametrize("field,value", [
+    ("descriptors", {"app:other": 1}), ("evidence", ["new-support"]), ("coverage", "unknown"),
+    ("state_id", "changed-anchor"), ("support", 4), ("opportunities", 6),
+    ("observed_at", NOW-20), ("confidence", .65), ("start", NOW+123), ("end", NOW+999),
+])
+def test_same_pattern_id_cannot_reuse_analysis_for_changed_evidence(routine_runtime, field, value):
+    runtime, controls, _ = routine_runtime("active")
+    runtime._refresh_availability(NOW)
+    assert len(runtime.planning_context("2026-10-19", "UTC", NOW)["windows"]) == 1
+    controls["changes"][field] = value
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+    assert len(controls["calls"]) == 1
+
+
+def test_forecast_cannot_escape_analyzed_seven_day_horizon(routine_runtime):
+    runtime, controls, _ = routine_runtime("active")
+    runtime._refresh_availability(NOW)
+    assert runtime.planning_context("2026-10-18", "UTC", NOW)["windows"] == []
+    assert runtime.planning_context("2026-10-26", "UTC", NOW)["windows"] == []
+    assert len(controls["calls"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["active", "away"])
+def test_both_window_kinds_keep_unchanged_cached_website_context(routine_runtime, kind):
+    runtime, controls, _ = routine_runtime(kind, sites=True)
+    runtime._refresh_availability(NOW)
+    result = runtime.planning_context("2026-10-19", "UTC", NOW)
+    assert len(result["windows"]) == 1
+    assert result["windows"][0]["website_visit_context"] == ["arbitrary.test"]
+    assert len(controls["reads"]) == 2 and len(controls["calls"]) == 1
+    controls["visits"] = []
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+    assert len(controls["reads"]) == 3 and len(controls["calls"]) == 1
+
+
+@pytest.mark.parametrize("kind", ["active", "away"])
+@pytest.mark.parametrize("fault", ["stale", "future", "role", "source", "superseded", "consent", "cancel", "missing_proof", "timezone"])
+def test_cached_routine_admission_fails_before_any_new_capture(routine_runtime, kind, fault):
+    runtime, controls, _ = routine_runtime(kind)
+    runtime._refresh_availability(NOW)
+    stamp, zone = NOW, "UTC"
+    if fault == "stale": stamp += 301
+    elif fault == "future": stamp -= 1
+    elif fault == "role": controls["role"] = "changed"
+    elif fault == "source": controls["live"] = False
+    elif fault == "superseded": controls["generation"] += 1
+    elif fault == "consent": runtime.call("configure_signals", {"activity": False}, NOW)
+    elif fault == "cancel": runtime._availability_cache["cancellation"].set()
+    elif fault == "timezone": zone = "America/Los_Angeles"
+    else: runtime._availability_cache.pop("pattern_proofs")
+    result = runtime.planning_context("2026-10-19", zone, stamp)
+    assert result["windows"] == [] and len(controls["calls"]) == 1
+    assert len(controls["reads"]) == 1
+
+
+@pytest.mark.parametrize("fault", ["role", "consent", "cancel", "source", "invalid_batch", "exception"])
+def test_mid_capture_changes_withhold_windows_and_drop_transient_bodies(routine_runtime, fault):
+    from service.assistant.behavior_sources import Batch
+    runtime, controls, _ = routine_runtime()
+    runtime._refresh_availability(NOW)
+    captured = []
+    def changed_sources(_):
+        controls["reads"].append("cached-publication")
+        batch = Batch([{"text": "Synthetic private body never retained"}], [{"host": "arbitrary.test"}],
+                      [lambda: controls["live"]], {})
+        captured.append(batch)
+        if fault == "role": controls["role"] = "changed"
+        elif fault == "consent": runtime.call("configure_signals", {"activity": False}, NOW)
+        elif fault == "cancel": runtime._availability_cache["cancellation"].set()
+        elif fault == "source": controls["live"] = False
+        elif fault == "invalid_batch": return {}
+        elif fault == "exception": raise RuntimeError("Synthetic failed cached read")
+        return batch
+    runtime._sources_fn = changed_sources
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+    assert len(controls["calls"]) == 1 and len(controls["reads"]) == 2
+    if fault not in {"invalid_batch", "exception"}:
+        assert captured[0].records == captured[0].visits == []
+
+
+@pytest.mark.parametrize("response", ["empty", "failed", "malformed", "occupied_absence", "wrong_reference"])
+def test_unadmitted_analysis_cannot_create_an_away_hint(routine_runtime, response):
+    runtime, controls, _ = routine_runtime()
+    controls["response"] = response
+    runtime._refresh_availability(NOW)
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+    assert len(controls["calls"]) == 1
+
+
+def test_pattern_proof_is_bound_before_analysis_and_immutable(routine_runtime, monkeypatch):
+    runtime, controls, _ = routine_runtime()
+    original = runtime._interpreter.interpret
+    def changing_analysis(records, patterns, **kwargs):
+        result = original(records, patterns, **kwargs)
+        for pattern in patterns:
+            pattern["support"] = 4
+        controls["changes"]["support"] = 4
+        return result
+    monkeypatch.setattr(runtime._interpreter, "interpret", changing_analysis)
+    runtime._refresh_availability(NOW)
+    cache = runtime._availability_cache
+    assert cache is not None
+    with pytest.raises(TypeError):
+        cache["pattern_proofs"]["invented"] = "changed"
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+
+
+def test_invalid_fresh_receipt_cannot_replace_old_valid_receipt(routine_runtime):
+    from service.assistant.behavior_sources import Batch
+    runtime, controls, _ = routine_runtime()
+    runtime._refresh_availability(NOW)
+    runtime._sources_fn = lambda _: Batch([], [], [lambda: False], {})
+    assert runtime._availability_cache["batch"].current()
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+    assert len(controls["calls"]) == 1
+
+
+def test_vacuous_fresh_batch_cannot_replace_required_source_proof(routine_runtime):
+    from service.assistant.behavior_sources import Batch
+    runtime, controls, _ = routine_runtime()
+    runtime._refresh_availability(NOW)
+    runtime._sources_fn = lambda _: Batch([], [], [], {})
+    assert runtime.planning_context("2026-10-19", "UTC", NOW)["windows"] == []
+
+
+@pytest.mark.parametrize("change", [
+    {"descriptors": {}}, {"descriptors": {"device:idle": float("nan")}},
+    {"descriptors": {"device:idle": True}}, {"descriptors": {"device:idle": 10**1000}},
+    {"descriptors": {"device:idle": .333, "app:arbitrary": .05}},
+    {"descriptors": {"device:unknown": .333}}, {"coverage": "unknown"}, {"coverage": []},
+    {"support": True}, {"support": 2}, {"opportunities": 100}, {"distinct_weeks": 2},
+    {"evidence": []}, {"confidence": float("inf")}, {"end": NOW},
+])
+def test_unknown_or_malformed_recurrence_is_not_an_away_hint(change):
+    from dataclasses import replace
+    rows = [replace(o, attrs={**o.attrs, "apps": {}, "idle": 900}) for o in history()]
+    pattern = discover(rows, [], "2026-10-19", "UTC", NOW)[0]
+    pattern.update(change)
+    item = dict(pattern_id=pattern["id"], availability="unknown", evidence=pattern["evidence"], reason="Unknown availability")
+    assert apply_interpretations([pattern], [item]) == []
+
+
 def history(app="org.arbitrary.Alpha", weeks=5, timezone="UTC", minute=600):
     day = datetime(2026, 10, 12, tzinfo=ZoneInfo(timezone))
     return [
