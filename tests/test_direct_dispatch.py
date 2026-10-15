@@ -13,11 +13,11 @@ DECLINES, not the hits.
 
 What must keep holding:
   * a request naming exactly one zero-arg device tool dispatches it directly;
-  * a request naming TWO ("battery and lock my screen") declines — step 0 is a
+  * a request naming TWO ("battery and show my clipboard") declines — step 0 is a
     thinking-off narration step once a direct call has run, so the second call
     would be silently dropped;
-  * device WRITES never pre-dispatch the matching read ("turn the volume up"
-    must not fire get_volume);
+  * device WRITES never pre-dispatch the matching read ("copy this to my
+    clipboard" must not fire clipboard_read);
   * a calendar-only lookup resolves its exact period in Python, preserves both
     days for today/tomorrow, and declines on writes, past-tense
     questions, and compound multi-domain reads;
@@ -63,9 +63,8 @@ def test_single_zero_arg_device_tool_dispatches() -> None:
     for prompt, tool, args in [
         ("what's my battery level", "system_status", {"section": "battery"}),
         ("how's my battery doing", "system_status", {"section": "battery"}),
-        ("what's my volume at", "get_volume", {}),
         ("what did i copy", "clipboard_read", {}),
-        ("lock my screen", "lock_screen", {}),
+        ("show my clipboard", "clipboard_read", {}),
     ]:
         calls = direct(prompt)
         check(f"{prompt!r} -> {tool}",
@@ -76,20 +75,20 @@ def test_two_named_tools_decline() -> None:
     print("\ntwo tools named -> decline (the second would be silently dropped)")
     # Step 0 becomes a thinking-off narration step once a direct call has run,
     # so pre-dispatching only the first loses the other half of the request.
-    calls = direct("what's my battery and lock my screen")
+    calls = direct("what's my battery and show my clipboard")
     check("compound device request emits no direct call", calls == [], f"got {calls}")
-    d = router.rule_route("what's my battery and lock my screen")
+    d = router.rule_route("what's my battery and show my clipboard")
     # Device-control tool_subset is retrieval-filled since 2026-08-21 (see
     # router.py's _mk_scoped `subset=None` doc) — rule_route() alone (sync)
     # can only confirm the route MATCHED (tool_subset is None, reason names
     # it); whether both tools actually come back from retrieval needs the
     # real async route().
     check("…still matches the compound device-control route",
-          d is not None and set(d.tool_subset or ()) == {"system_status", "lock_screen"})
-    d_retrieved = asyncio.run(router.route("what's my battery and lock my screen"))
+          d is not None and set(d.tool_subset or ()) == {"system_status", "clipboard_read"})
+    d_retrieved = asyncio.run(router.route("what's my battery and show my clipboard"))
     check("…and retrieval surfaces BOTH tools",
           d_retrieved.tool_subset is not None
-          and "lock_screen" in d_retrieved.tool_subset
+          and "clipboard_read" in d_retrieved.tool_subset
           and "system_status" in d_retrieved.tool_subset,
           str(d_retrieved.tool_subset))
 
@@ -167,7 +166,7 @@ def test_summary_dispatches_only_when_unqualified() -> None:
 def test_direct_routes_never_force_a_selection_step() -> None:
     print("\na direct route must not re-arm the selection step it exists to skip")
     for prompt in ["what's my battery level", "what's on my calendar today",
-                   "summarize my inbox", "lock my screen"]:
+                   "summarize my inbox", "show my clipboard"]:
         d = router.rule_route(prompt)
         check(f"{prompt!r}: expect_tool_first is off",
               d is not None and not d.expect_tool_first)

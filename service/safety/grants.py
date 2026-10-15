@@ -68,8 +68,6 @@ _MERGED_SCOPES = {
     "email_triage": ("action", "", frozenset()),
     "set_timer": ("kind", "timer", frozenset({"timer"})),
     "manage_timers": ("action", "list", frozenset({"list", "cancel", "cancel_all"})),
-    "music": ("app", "music", frozenset({"music"})),
-    "play_audio": ("kind", "", frozenset()),
 }
 
 # Retired tool -> (the merged tool, the behaviours it became). A DENY the user
@@ -86,12 +84,6 @@ _RETIRED_INTO = {
     "set_sleep_timer": ("set_timer", frozenset({"sleep"})),
     "stopwatch": ("manage_timers", frozenset({
         "stopwatch_start", "stopwatch_lap", "stopwatch_read", "stopwatch_stop"})),
-    "spotify": ("music", frozenset({"spotify"})),
-    "play_podcast": ("play_audio", frozenset({"podcast"})),
-    "play_audiobook": ("play_audio", frozenset({"audiobook"})),
-    "play_radio": ("play_audio", frozenset({"radio"})),
-    "stop_radio": ("play_audio", frozenset({"stop"})),
-    "play_ambient": ("play_audio", frozenset({"ambient"})),
 }
 
 _lock = threading.Lock()
@@ -138,7 +130,7 @@ def scope_for(tool: str, args: dict) -> str:
         if tool in ("web_fetch", "http_request"):
             from urllib.parse import urlparse
             return (urlparse(str(args.get("url", ""))).hostname or "").lower()
-        if tool in ("write_file", "delete_path", "read_file"):
+        if tool in ("write_file", "read_file"):
             p = Path(str(args.get("path", "")))
             return str(p.parent) if p.name else str(p)
         if tool == "run_shell":

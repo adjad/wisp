@@ -1,0 +1,34 @@
+- id: notes_latte
+  prompt: "Search my notes for latte"
+  expect: [{tool: search_notes, args: {query: {icontains: latte}}}]
+  answer: {contains_any: ["{milk}", espresso]}
+- id: notes_gift_sam
+  prompt: "what gift ideas did I write down for {friend_first}?"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: ["{gift_friend}"]}
+- id: notes_create_groceries
+  prompt: "Make a note called Groceries with eggs, spinach and coffee"
+  expect: [{tool: create_note, args: {title: {icontains: groceries}}}]
+  forbid: [append_note]
+- id: notes_packing
+  prompt: "what's on my packing list?"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: [passport, boots]}
+- id: notes_append_packing
+  prompt: "add a rain jacket to my packing list note"
+  expect: [{tool: append_note, args: {title: {icontains: packing}, text: {icontains: rain}}}]
+  forbid: [create_note]
+- id: notes_missing_topic
+  prompt: "what did I write about the zebra project?"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: ["no ", "don't", "couldn't", "not find", "nothing", "didn't"]}
+  trap: "nothing exists; the answer must say so, not invent a note"
+- id: notes_mom_gift
+  split: dev
+  prompt: "what did I want to get mom?"
+  expect: [{tool: search_notes}]
+  answer: {contains_any: [scarf]}
+- id: notes_jot
+  split: dev
+  prompt: "jot down: call the plumber about the leak"
+  expect: [{any_of: [create_note, append_note]}]

@@ -19,7 +19,7 @@ _TIMEOUT = 30
     "run_applescript",
     "Run raw AppleScript against a specific app — the escape hatch when the "
     "user's request is scriptable but no dedicated Wisp tool covers it yet. "
-    "Prefer a real tool when one exists (music, calendar, mail, etc.); use "
+    "Prefer a real tool when one exists (calendar, mail, etc.); use "
     "this only for genuinely one-off app automation.",
     {"type": "object",
      "properties": {"script": {"type": "string", "description": "The AppleScript source to run."}},

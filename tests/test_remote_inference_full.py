@@ -183,7 +183,7 @@ class MainChecks(FullFixture):
                 'cloud_super_model_enabled': bomb, 'start_laya_warmup': bomb,
                 'research_manager': SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),
                 'research_cache': SimpleNamespace(purge_older_than=Mock()), 'assistant_store': object(),
-                'ensure_omlx': bomb, '_omlx_cli': bomb}
+                'ensure_omlx': bomb, '_omlx_cli': bomb, 'is_bundled': lambda: False}
 
     def test_full_startup_runs_scheduler_and_nothing_local(self):
         fake = SimpleNamespace(health=AsyncMock(return_value={'ok': True}), aclose=AsyncMock())

@@ -21,11 +21,12 @@ import re
 import sys
 from pathlib import Path
 
+from service.engine.manager import BUNDLED_PORT
 from service.paths import MOE_DIR
 
 # Ports the real app and its engine own. Nothing sandboxed may bind or proxy to them.
 PRODUCTION_BACKEND_PORT = 8765
-PRODUCTION_PORTS = frozenset({PRODUCTION_BACKEND_PORT, 8000})
+PRODUCTION_PORTS = frozenset({PRODUCTION_BACKEND_PORT, 8000, BUNDLED_PORT})
 
 
 def is_sandbox() -> bool:

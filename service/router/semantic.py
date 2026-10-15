@@ -147,8 +147,8 @@ _FILE_ACTION_RE = re.compile(
 # and no outbound turn being continued — and offered whenever in doubt.
 # Withholding is an accuracy measure for the small model, not a safety
 # boundary: approvals gate sends in most access modes, but NOT all of these
-# tools are confirm-gated in every mode (in full-access mode delete_path,
-# clear_memory and place_call run without a card), which is a reason to keep
+# tools are confirm-gated in every mode (in full-access mode clear_memory
+# and place_call run without a card), which is a reason to keep
 # them out of menus for requests that plainly never asked for them, and not a
 # reason to hide them from requests that might have.
 #
@@ -160,7 +160,7 @@ _FILE_ACTION_RE = re.compile(
 # gate whatever its verb.
 _OUTBOUND_TOOLS = frozenset({"send_email", "send_message", "reply_to_email", "forward_email",
                              "schedule_send", "place_call", "unsubscribe"})
-_BULK_DELETE_TOOLS = frozenset({"clear_reminders", "clear_past_reminders", "clear_memory", "delete_path"})
+_BULK_DELETE_TOOLS = frozenset({"clear_reminders", "clear_past_reminders", "clear_memory"})
 _RELATION = (
     r"mom|mum|mommy|mother|dad|daddy|father|parents?|wife|husband|partner|spouse|fianc[ée]e?|"
     r"boyfriend|girlfriend|bf|gf|sister|brother|sis|bro|siblings?|sons?|daughters?|kids?|"
@@ -249,7 +249,7 @@ def _docs(tool: Tool) -> list[str]:
     exactly what gets blurred away.
 
     Scoring each alias separately and taking the MAX over a tool's vectors keeps
-    every phrasing sharp: "it's way too loud" is allowed to match `set_volume`
+    every phrasing sharp: "it's too dark in here" is allowed to match `toggle_setting`
     strongly on its own terms without having to out-vote the tool's paragraph of
     prose. `embedder.rank` already takes max-not-mean across sub-queries for the
     same reason, stated in its own docstring.
@@ -437,7 +437,7 @@ def _gate_open(text: str, *, writing: bool) -> bool:
 
     "uninstall X" used to open this gate for the retired uninstall_app tool. It
     no longer does: with no uninstall tool, opening it would only hand the
-    model delete_path for an application bundle.
+    model a file tool to aim at an application bundle.
     """
     return writing or bool(_FILE_ACTION_RE.search(text))
 

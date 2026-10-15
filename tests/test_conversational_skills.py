@@ -23,12 +23,14 @@ def loaded_bundled_skills(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 def test_wisp_ships_only_the_two_requested_workflows(loaded_bundled_skills) -> None:
     bundled = {name for name, skill in loaded_bundled_skills.items()
                if skill.bundled}
-    assert bundled == {"interview-me", "idea-refine"}
+    # mac-controls is a tool skill (fixed device commands), not a workflow.
+    assert bundled == {"interview-me", "idea-refine", "mac-controls"}
     assert all(skill.body for skill in loaded_bundled_skills.values())
     assert all(len(skill.body) <= skills.MAX_BODY_CHARS
                for skill in loaded_bundled_skills.values())
-    assert all(skill.conversation_workflow
-               for skill in loaded_bundled_skills.values())
+    workflows = {name for name, skill in loaded_bundled_skills.items()
+                 if skill.conversation_workflow}
+    assert workflows == {"interview-me", "idea-refine"}
 
 
 def test_bundled_skill_toggle_creates_a_user_override(

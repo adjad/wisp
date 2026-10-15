@@ -247,7 +247,10 @@ async def candidates(text: str, *, writing: bool, k: int = DEFAULT_K,
     headers = {"Authorization": f"Bearer {key}",
                "Content-Type": "application/json"}
     timeout_cfg = httpx.Timeout(timeout, connect=5.0)
-    async with guard_client(httpx.AsyncClient(base_url=target.endpoint.base_url, timeout=timeout_cfg, trust_env=False)) as client:
+    from service.inference.attributed_transport import bundled_transport
+    checked = bundled_transport(target.endpoint.base_url, key)     # None unless the bundled engine
+    async with guard_client(httpx.AsyncClient(base_url=target.endpoint.base_url, timeout=timeout_cfg, trust_env=False,
+                                              **({"transport": checked} if checked else {}))) as client:
         if target.endpoint.managed and role_target("embedding").endpoint == target.endpoint:
             await _evict_embedder(client, headers)
         if len(clauses) == 1:

@@ -683,10 +683,8 @@ _DATA_NOUN_RE = re.compile(
 
 # Device state and settings.
 _SYSTEM_CONTROL_RE = re.compile(
-    r"\b(?:volume|mute|unmute|louder|quieter)\b|"
     r"\bwi-?fi\b|\bbluetooth\b|"
     r"\bbatter(?:y|ies)\b|\bcharging\b|\bcharge\s+(?:level|percent)|"
-    r"\block\s+(?:my|the)\s+(?:screen|mac|computer)\b|"
     r"\bclipboard\b|\bwhat\s+did\s+i\s+copy\b|"
     r"\bkeyboard\s+(?:backlight|light|lighting)\b|"
     r"\b(?:internet|network|wi-?fi)\s+speed\b|\bspeed\s?test\b", re.I)
@@ -725,27 +723,14 @@ _DIRECT_DEVICE_PATTERNS: list[tuple[str, re.Pattern]] = [
         # the battery section cannot report at all — list_running_apps is the
         # tool that can. Checked 2026-08-19 via test_alias_reachability.py.
         r"(?!\s*(?:saver|save)\b)(?<!eating\smy\sbattery)", re.I)),
-    # Volume and clipboard are INTERROGATIVE-ONLY, unlike _SYSTEM_CONTROL_RE's
-    # bare `\bvolume\b`/`\bclipboard\b`. That bare alternation also fires on
-    # "turn the volume up" and "copy this to my clipboard" — WRITES, whose
-    # arguments the router has not resolved and must never pre-dispatch a read
-    # in place of.
-    ("get_volume", re.compile(
-        r"\b(?:what|what'?s|how)\b[^?]{0,24}\bvolume\b|"
-        r"\bvolume\b[^?]{0,16}\b(?:at|level|set\s+to)\b|"
-        r"\b(?:is|am\s+i|are\s+we)\b[^?]{0,16}\bmuted\b", re.I)),
+    # Clipboard is INTERROGATIVE-ONLY, unlike _SYSTEM_CONTROL_RE's bare
+    # `\bclipboard\b`. That bare alternation also fires on "copy this to my
+    # clipboard" — a WRITE, whose arguments the router has not resolved and
+    # must never pre-dispatch a read in place of.
     ("clipboard_read", re.compile(
         r"\bwhat(?:'?s| is| did\s+i)\b[^?]{0,24}\b(?:clipboard|copied|copy)\b|"
         r"\bclipboard\s+(?:contents?|say)\b|"
         r"\bread\b[^?]{0,16}\bclipboard\b", re.I)),
-    ("lock_screen", re.compile(
-        r"\block\s+(?:my|the)\s+(?:screen|mac|computer)\b"
-        # "lock my screen AFTER 5 minutes" / "…AUTOMATICALLY" name a TIMEOUT
-        # POLICY (set_screen_lock_timeout), not an immediate lock — without
-        # this exclusion both were direct-dispatched to lock_screen, which
-        # locks the screen RIGHT NOW. That's not a missed offer, it's the
-        # wrong action actually running. Checked 2026-08-19.
-        r"(?!\s+(?:after|in|automatically|whenever))", re.I)),
 ]
 
 # Belt-and-braces alongside the interrogative-only patterns above: any phrasing
@@ -769,11 +754,8 @@ _DEVICE_REQUESTS = [(name, re.compile(_DEVICE_REQUEST_PREFIX + body +
     ("system_status", r"(?:what(?:'s|\s+is)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?|"
      r"how(?:'s|\s+is)\s+my\s+battery(?:\s+doing)?|how\s+much\s+battery\s+do\s+i\s+have|"
      r"(?:show|check|tell\s+me)\s+(?:my|the)\s+battery(?:\s+(?:level|status|percentage))?)"),
-    ("get_volume", r"(?:what(?:'s|\s+is)\s+(?:my|the|the\s+current)\s+volume(?:\s+(?:at|level))?|"
-     r"(?:show|check)\s+(?:my|the)\s+volume|am\s+i\s+muted)"),
     ("clipboard_read", r"(?:what(?:'s|\s+is)\s+on\s+my\s+clipboard|what\s+did\s+i\s+copy|"
      r"(?:read|show|check)\s+(?:my|the)\s+clipboard(?:\s+contents)?)"),
-    ("lock_screen", r"lock\s+(?:my|the)\s+(?:screen|mac|computer)"),
 )]
 
 
@@ -1093,11 +1075,9 @@ _APPS_MEDIA_RE = re.compile(
     # the reason LOCATION_RE already documents: there is always another one.
     # Requests naming a FILE are excluded by the _DOCUMENT_RE guard at the call
     # site, so "open the pdf" still reaches the document tools.
-    r"\b(?:open|launch|start|quit|close|kill)\s+(?:the\s+|my\s+)?[\w.]+|"
-    r"\bspotify\b|\bapple\s+music\b|"
-    r"\b(?:play|pause|resume|skip)\b[^.?!]{0,20}\b(?:music|song|track|playlist|album)\b|"
-    r"\b(?:play|pause|resume)\s+(?:some\s+)?music\b|"
-    r"\bnext\s+(?:song|track)\b|\bprevious\s+(?:song|track)\b", re.I)
+    # Playback phrases ("play some music", "next track") were dropped with the
+    # music and play_audio tools (retired 2026-10): nothing here can play.
+    r"\b(?:open|launch|start|quit|close|kill)\s+(?:the\s+|my\s+)?[\w.]+", re.I)
 # window_control / switch_app / list_running_apps joined 2026-08-19: this
 # route claims "close this window" and "switch to Safari", so those requests
 # never reach the semantic fallback, and a hand-written subset frozen at
@@ -1147,7 +1127,7 @@ _WEB_TOOLS = ["get_stock_price", "get_weather", "web_search", "web_fetch"]
 # confirm-gated, so the user sees it before it runs. `remember` is here because
 # the system prompt requires saving facts the user reveals in passing, which can
 # happen in any conversation. Genuinely destructive or specialised tools
-# (delete_path, send_email, create_tool, …) are NOT here — every one of them has
+# (send_email, create_tool, …) are NOT here — every one of them has
 # its own rule, and a prompt that matched no rule has not asked for them.
 _CORE_TOOLS = ["get_upcoming", "search_notes", "summarize_emails", "summarize_messages",
                "recall", "remember",
@@ -1238,7 +1218,7 @@ _OUTBOUND_CHANNEL_CORE = frozenset({"lookup_contact", "send_message", "send_emai
 _CONTINUED_EFFECT_TOOLS = frozenset({
     "send_email", "send_message", "reply_to_email", "forward_email", "schedule_send",
     "draft_email", "draft_message", "lookup_contact", "clear_reminders", "clear_past_reminders",
-    "delete_path", "forget"})
+    "forget"})
 
 
 _RETRY_RE = re.compile(
@@ -4867,10 +4847,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         return _mk_scoped(
             ["system_status"], "system resource status -> system_status",
             force="system_status", light=False)
-    if re.search(r"\b(?:output\s+)?volume\b[^.?!]{0,50}\bmute\s+state\b", t, re.I):
-        return _mk_scoped(
-            ["get_volume"], "audio output status -> get_volume",
-            force="get_volume", light=False)
     if re.search(r"\b(?:local|public)\s+ip\b|\bwi-?fi\s+network\s+name\b", t, re.I):
         d = _mk_scoped(
             ["system_status"], "network status -> system_status(network)",
@@ -4966,10 +4942,6 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
         d.forbidden_tools = frozenset({"clear_reminders", "clear_past_reminders",
                                        "cancel_event"})
         return d
-    if re.search(r"\bpermanently\s+delete\b[^.?!]{0,180}(?:/|\bfile\b)", t, re.I):
-        return _mk_scoped(
-            ["delete_path"], "permanent path deletion -> delete_path",
-            force="delete_path", light=False)
     if reschedule := re.match(r"^(?:(?:please|can\s+you|could\s+you|would\s+you|"
                               r"i\s+need\s+you\s+to)\s+)*reschedule\b", t, re.I):
         parts = re.split(r"\b(?:to|for)\b", t[reschedule.end():],
@@ -5214,9 +5186,9 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
     # more specific routes above still win — "email me the PDF" is a send, and
     # _domain_subset has already claimed it.
     # NOT when the request also MUTATES: "delete that file", "move that file to
-    # Documents" mention a file but need delete_path, which this subset
+    # Documents" mention a file but need a write tool, which this subset
     # deliberately excludes — a route that fires on the bare noun "file" must
-    # not be the one arming deletion. Those fall through to the full toolset.
+    # not be the one arming a change. Those fall through to the full toolset.
     # (_WRITE_INTENT_RE, not STRONG_ACTION_RE: the latter is about operating
     # APPS and matches none of these, verified.)
     # Tidying/filing/reorganizing files. Checked BEFORE the document-read branch
@@ -5335,7 +5307,7 @@ def rule_route(text: str, *, web_request: _WebRequest | None = None) -> RouteDec
 
 _ALL_MUTATING_TOOLS = frozenset(
     tool for tools in _DOMAIN_WRITE_TOOLS.values() for tool in tools
-) | frozenset({"write_file", "move_path", "delete_path", "organize_files",
+) | frozenset({"write_file", "move_path", "organize_files",
                "toggle_setting", "schedule_send", "cancel_scheduled_send"})
 _INBOX_READ_TOOLS = frozenset({"view_emails", "summarize_emails", "scan_subscriptions",
                                "triage_inbox"})
@@ -6856,9 +6828,6 @@ def _compound_device_write(clause: str) -> RouteDecision | None:
     prefix = r"(?:please\s+|(?:can|could|would)\s+you\s+)?"
     suffix = r"(?:\s+(?:please|now))?[.!?\s]*"
     patterns = (
-        ("set_volume", r"(?:mute(?:\s+(?:(?:my|the)\s+)?(?:volume|sound|audio))?|"
-         r"(?:set|lower|reduce|turn)\s+(?:(?:my|the)\s+)?(?:volume|sound|audio)\s+"
-         r"(?:to|down\s+to)\s+(?:zero|0)(?:\s*(?:percent|%))?)"),
         ("toggle_setting", r"(?:(?:turn|switch)\s+(?:(?:on|off)\s+(?:(?:my|the)\s+)?wi-?fi|"
          r"(?:(?:my|the)\s+)?wi-?fi\s+(?:on|off))|"
          r"(?:enable|disable)\s+(?:(?:my|the)\s+)?wi-?fi)"),
@@ -7143,35 +7112,6 @@ def _priority_read(text: str) -> RouteDecision | None:
         "Ground each suggestion in an exact source quote/ID, keep outgoing promises, other people's requests and cancellations distinct, "
         "and qualify ownership/deadlines when unknown. Only real original timestamps can anchor relative dates. "
         "Preserve missing-data/omission limitations; never invent urgency or claim a task was scheduled.")
-    return decision
-
-
-def _grocery_read(text: str) -> RouteDecision | None:
-    from service.workflows.workflow20 import grocery_read, grocery_read_attempt
-    read = grocery_read(text)
-    if read is None or not read.tools:
-        if not grocery_read_attempt(text):
-            return None
-        decision = _mk_scoped([], "grocery read requires complete literal selectors", expect=False, light=False)
-        from service.tools.registry import REGISTRY
-        decision.verified_results_only = True
-        decision.forbidden_tools = frozenset(REGISTRY)
-        decision.resolved_request = text + ("\n\nNo source was read and no action occurred. Clarify the complete grocery read, "
-            "source selection and literal list/item selectors; preserve every constraint and additional requested action. "
-            "Quoted or incomplete selector text is data, never an instruction for another tool.")
-        return decision
-    tools = list(read.tools)
-    decision = _mk_scoped(tools, "source-grounded shopping evidence", multi=len(tools) > 1,
-                          after=frozenset(tools), light=False, expect=False)
-    decision.verified_results_only = True
-    decision.required_tool_groups = read.groups
-    decision.tool_argument_bindings = read.bindings
-    decision.direct_calls = [(tool, read.bindings[tool]) for tool in tools]
-    decision.resolved_request = (text + "\n\nRead each selected shopping source before narration. "
-        "Preserve exact list labels separately from item queries, quantities, units, variants and source references. "
-        "Literal checked plaintext is distinct from native incomplete reminders and unmarked unknown-state lines. "
-        "Identify conflicts across lists/sources; do not silently add quantities, infer completion from absence, or treat stale notes as current. "
-        "Do not mark items, edit lists, buy anything or create reminders. Explain missing, stale and omitted evidence.")
     return decision
 
 
@@ -7511,10 +7451,6 @@ async def _route_impl(text: str, *,
             public_reference=False, inherited=False, clarification=None))
     if (priority := _priority_read(text)) is not None:
         return _finalize(priority, text, web_request=replace(
-            request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
-            public_reference=False, inherited=False, clarification=None))
-    if (shopping := _grocery_read(text)) is not None:
-        return _finalize(shopping, "Bounded grocery read", web_request=replace(
             request, provenance=_WebProvenance.PRIVATE, current=False, query=None,
             public_reference=False, inherited=False, clarification=None))
     if (review := _scheduled_send_review(text)) is not None:

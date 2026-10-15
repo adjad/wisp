@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 from service.assistant.hub import hub
 from service.assistant.store import assistant_store
-from service.attention.detectors import local_timezone
+from service.attention.detectors import local_timezone, matches_clock
 from service.attention.ledger import Ledger
 from service.attention.live import LOOKBACK_S, Plan, load_settings, local_midnight, settings_path
 from service.attention.runner import process
@@ -25,6 +25,7 @@ from service.paths import MOE_DIR
 
 MIN_INTERVAL_S = 120                # the scheduler ticks every 30s; parsing the feed is not free
 FINGERPRINT_BUCKET_S = 900          # also recompute every 15 minutes: "soon" moves with the clock
+REMEMBERED_ZONE_DAYS = 366         # a remembered zone must match the clock's rules for a year
 ON_FILE_DAYS = 4                    # how far ahead the "already on the calendar?" check looks
 
 _ledger: Ledger | None = None
@@ -48,6 +49,28 @@ def reset() -> None:
     _ledger, _last_fingerprint, _last_run, _task = None, None, 0.0, None
 
 
+def current_zone() -> str | None:
+    """The zone to read and file times in: the one macOS names now, or else the last zone it
+    named, but only while the Mac clock still agrees with that zone's offset, today and on
+    every day of the coming year.
+
+    Each zone read successfully is remembered in the ledger. If the name later cannot be read,
+    the remembered one stands in. If the user has since moved, the clock's offsets differ from
+    it on some day (even a move to a zone that shares today's offset, such as Los Angeles to
+    Phoenix in summer), so there is no zone and the pass stops rather than guess."""
+    tz = local_timezone()
+    try:
+        ledger = get_ledger()
+        if tz is not None:
+            if ledger.meta("last_zone") != tz:
+                ledger.set_meta("last_zone", tz)
+            return tz
+        saved = ledger.meta("last_zone")
+    except Exception:  # noqa: BLE001 — an unreadable ledger only loses the fallback
+        return tz
+    return saved if saved and matches_clock(saved, days=REMEMBERED_ZONE_DAYS) else None
+
+
 def _policy_block(**args) -> str | None:
     """Why the safety policy forbids a reminder write right now, or None when it is ALLOW.
 
@@ -67,11 +90,11 @@ def _audit(event: str, **fields) -> None:
     audit(event, **fields)
 
 
-def _commitments(now: float) -> list[dict]:
+def _commitments(now: float, tz: str) -> list[dict]:
     # From local midnight, not from now: `upcoming` drops anything that started more than
     # five minutes ago, which would hide today's all-day events and make a message about
     # an exam that is already on the calendar look uncaptured.
-    return assistant_store.upcoming(local_midnight(now, local_timezone()), days=ON_FILE_DAYS + 1)
+    return assistant_store.upcoming(local_midnight(now, tz), days=ON_FILE_DAYS + 1)
 
 
 def _rows_near(due: float) -> dict[str, dict]:
@@ -149,9 +172,12 @@ async def create_reminder(plan: Plan) -> dict:
         # Defence in depth: the tick already checked, but view-only can be switched on mid-pass.
         _audit("deny", tool="add_reminder", source="attention", reason=blocked)
         return {"ok": False, "status": "failed", "error": f"BLOCKED by safety policy: {blocked}"}
+    tz = current_zone()
+    if tz is None:
+        return {"ok": False, "status": "failed", "error": "The local time zone cannot be determined."}
     # With an explicit offset, add_reminder's parse is exact whatever the process's own TZ is,
     # and a time in a repeated DST hour keeps its meaning.
-    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(local_timezone())).isoformat(timespec="minutes")
+    when_iso = datetime.fromtimestamp(plan.due_ts, ZoneInfo(tz)).isoformat(timespec="minutes")
     try:
         base = _payload_action_id(plan, when_iso)
     except Exception:  # noqa: BLE001
@@ -239,6 +265,13 @@ async def run_tick(now: float | None = None) -> list:
                 _audit("deny", tool="add_reminder", source="attention", reason=blocked)
             ledger.set_meta("last_mode", "off")
             return []
+    tz = current_zone()
+    if tz is None:
+        # Every time in a message would be read in a guessed zone. Treated as "off", like a
+        # policy block: when the zone is known again, live re-baselines rather than sweeping up
+        # what arrived meanwhile.
+        ledger.set_meta("last_mode", "off")
+        return []
     from service.tools import imessage_tools
     feed = imessage_tools.structured_messages_snapshot()
     # Only a read completed in THIS launch is trusted; restored rows are not "new".
@@ -250,9 +283,9 @@ async def run_tick(now: float | None = None) -> list:
     if fingerprint == _last_fingerprint:
         return []
     outcomes = await process(
-        records=records, commitments=_commitments(now), now=now, tz=local_timezone(),
+        records=records, commitments=_commitments(now, tz), now=now, tz=tz,
         settings=settings, ledger=ledger, create=create_reminder, publish=_publish,
-        fresh_commitments=lambda: _commitments(time.time()), name_for=_name_for)
+        fresh_commitments=lambda: _commitments(time.time(), tz), name_for=_name_for)
     if not getattr(outcomes, "limited", False):
         _last_fingerprint = fingerprint               # a limited pass has work left: look again soon
     return outcomes

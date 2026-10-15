@@ -39,7 +39,7 @@ class MainChecks(RemoteFixture):
             'mcp_manager':SimpleNamespace(start=bomb,stop=bomb),'idle_unloader':SimpleNamespace(run=bomb),
             'assistant_scheduler':SimpleNamespace(run=scheduler_run),'cloud_super_model_enabled':bomb,'start_laya_warmup':bomb,
             'research_manager':SimpleNamespace(store=SimpleNamespace(purge_stale_bodies=Mock())),
-            'research_cache':SimpleNamespace(purge_older_than=Mock()),'assistant_store':object()}
+            'research_cache':SimpleNamespace(purge_older_than=Mock()),'assistant_store':object(),'is_bundled':lambda:False}
         selected({'lifespan','_sync_keep_warm','_prepare_remote_inference'},ns)
         async def run():
             with patch.dict('sys.modules',{'service.identity':identity,'service.config.quarantine':q,'service.browser':browser,'service.browser.host':host}),patch('service.config.quarantine',q):

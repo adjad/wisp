@@ -81,6 +81,7 @@ PROFILE_TESTS = {
     "conversation": {
         "tests/test_conversation_memory.py",
         "tests/test_conversational_skills.py",
+        "tests/test_mac_controls_skill.py",
         "tests/test_contextual_outbound_routing.py",
         "tests/test_workflow_bindings.py",
         "tests/test_workflow_engine.py",
@@ -199,6 +200,7 @@ PROFILE_TESTS = {
         "tests/test_routing_semantic_correctness.py",
         "tests/test_semantic_routing.py",
         "tests/test_tool_consolidation.py",
+        "tests/test_terse_tool_schemas.py",
         "tests/test_search_reliability.py",
         "tests/test_short_circuit.py",
     },
@@ -209,6 +211,11 @@ PROFILE_TESTS = {
 # is classified here; this prevents an innocently named live test from entering
 # an offline release gate without review.
 ADDITIONAL_FULL_TESTS = {
+    # Scorer self-test on synthetic fixtures; tmp_path files only, no model or network.
+    "tests/test_memory_eval_scorer.py",
+    # Toolbench matchers/scorer/report on hand-built trajectories and fake-world
+    # tools called directly; temp WISP_HOME, no model, network or tool execution.
+    "tests/test_toolbench.py",
     # Planner eval --dry-run in a temp HOME/WISP_HOME: builds menus, no model, oMLX or tool execution.
     "tests/test_eval_planner_dry_run.py",
     # Inert bounded attestation store; supplied facts and manual interleavings only.
@@ -262,6 +269,17 @@ ADDITIONAL_FULL_TESTS = {
     # on disposable temporary trees and in-process fakes; no oMLX, port 8000 or real process.
     "tests/test_runtime_attestation_t0.py",
     "tests/test_runtime_attestation_t1t3.py",
+    # The bundled-engine suites run Wisp's own stand-in HTTP engine and impostors as child
+    # processes on random loopback ports (never 8000, 8765 or 8791 for real traffic), in
+    # disposable temp directories with a private HOME; no oMLX, user data or network.
+    "tests/test_bundled_attribution.py",
+    "tests/test_bundled_engine_api.py",
+    "tests/test_bundled_engine.py",
+    "tests/test_bundled_engine_mode.py",
+    # Engine packaging on a synthetic oMLX.app: selection, pruning, pinning, validation.
+    "tests/test_engine_packaging.py",
+    "tests/test_engine_licenses.py",
+    "tests/test_bundled_engine_startup.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
     "tests/test_attestation_reuse.py",
@@ -392,7 +410,6 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_workflow20_compiler.py",
     "tests/test_workflow20_daily.py",
     "tests/test_workflow20_files.py",
-    "tests/test_workflow20_groceries.py",
     "tests/test_workflow20_knowledge.py",
     "tests/test_workflow20_meeting.py",
     "tests/test_workflow20_meeting_approval.py",

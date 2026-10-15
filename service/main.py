@@ -58,6 +58,7 @@ from service.agent import InteractiveApprover, run_agent
 from service.errors import translate as translate_error
 from service.inference.omlx_client import OMLXClient, IncompleteStreamError, ModelLoadError
 from service.inference import qualify as qualification
+from service.engine.mode import is_bundled
 from service.safety.redaction import (HANDOFF_NOTICE as KEY_HANDOFF_NOTICE, is_key_handoff,
                                       scrub as redact_credentials)
 from service.inference.readiness import TurnInferenceClient
@@ -287,6 +288,20 @@ async def lifespan(app: FastAPI):
     from service.config import quarantine
     quarantine.check()
     global client
+    if remote_only_profile() is None:
+        # Make the first-launch engine choice sticky now, not when Settings is first opened.
+        from service.engine.api import persist_default as persist_engine_default
+        await asyncio.to_thread(persist_engine_default)
+    if remote_only_profile() is None:
+        # The engine runs in its own session, so a crash or a SIGKILL of the previous backend
+        # leaves it running (and holding its memory). Stop it in either mode before anything
+        # else looks at the port.
+        from service.engine.runtime import reap_orphan
+        await asyncio.to_thread(reap_orphan)
+    if is_bundled() and remote_only_profile() is None:
+        # The client reads the engine's key from its settings file at construction.
+        from service.engine.runtime import manager
+        await asyncio.to_thread(manager().prepare)
     client = OMLXClient()
     profile = remote_only_profile()
     started_tasks = []
@@ -402,6 +417,9 @@ async def lifespan(app: FastAPI):
         if profile is None:
             await mcp_manager.stop()
         await client.aclose()
+        if is_bundled():
+            from service.engine.runtime import stop_if_running
+            await asyncio.to_thread(stop_if_running)
 
 
 app = FastAPI(title="Wisp", lifespan=lifespan)
@@ -415,6 +433,7 @@ from service.behavior_api import router as behavior_router
 app.include_router(behavior_router)
 from service.assistant.attention_api import router as attention_router
 app.include_router(attention_router)
+app.include_router(__import__("service.engine.api", fromlist=["router"]).router)
 
 OMLX_CLI = "/Applications/oMLX.app/Contents/MacOS/omlx-cli"
 
@@ -458,6 +477,18 @@ async def ensure_omlx() -> None:
     from service.inference.omlx_client import ModelLoadError
     if not getattr(client, "managed", True):
         raise ModelLoadError("Remote inference cannot invoke local lifecycle commands")
+    if is_bundled():
+        # Only an engine this backend launched can be verified. Probing first would find a
+        # leftover from a previous backend, refuse it as "not owned", and never reach the
+        # start path that reaps it.
+        from service.engine.runtime import manager
+        seen = manager().incarnation()
+        if seen is not None and await _await_omlx(2):
+            manager().mark_verified(seen)
+            return
+        client.invalidate_connections()
+        await _ensure_bundled_engine()
+        return
     if await _await_omlx(2):
         return
     client.invalidate_connections()
@@ -469,6 +500,39 @@ async def ensure_omlx() -> None:
     if await _omlx_cli("restart") and await _await_omlx(60):
         return
     raise ModelLoadError("The local AI engine did not become ready")
+
+
+async def _ensure_bundled_engine() -> None:
+    """Start Wisp's own engine (never a user's oMLX.app) and wait until it answers."""
+    from service.engine import EngineError
+    from service.engine.runtime import manager
+    engine = manager()
+    # A verification failure stops only an engine this call launched (start() reports that under
+    # its lock): a healthy engine other turns are using must survive a momentary refusal. An engine
+    # that gives no HTTP answer at all for the whole readiness window is hung and is stopped.
+    try:
+        launched = bool(await asyncio.to_thread(engine.start))
+    except EngineError as exc:
+        raise ModelLoadError(f"The bundled AI engine could not start: {exc}") from None
+    if not await engine.wait_ready(60):
+        engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
+    incarnation = engine.incarnation()
+    client.invalidate_connections()
+    # wait_ready sent no credential, so nothing has proven who answers yet. The checked client
+    # does: it refuses anything but the recorded child before sending the API key. The window
+    # is as long as readiness: an engine preloading a pinned model answers /health slowly.
+    try:
+        verified = await _await_omlx(60)
+    except ModelLoadError:
+        if launched:
+            engine.stop()
+        raise
+    if not verified:
+        if launched:
+            engine.stop()
+        raise ModelLoadError("The bundled AI engine did not become ready")
+    engine.mark_verified(incarnation)
 
 
 @app.get("/health")
@@ -486,6 +550,9 @@ async def shutdown_omlx() -> dict[str, Any]:
     """Stop the oMLX engine entirely (frees its ~2GB baseline). Called on app quit."""
     if not getattr(client, "managed", True):
         return {"stopped": False}
+    if is_bundled():
+        from service.engine.runtime import stop_if_running
+        return {"stopped": await asyncio.to_thread(stop_if_running)}
     try:
         subprocess.Popen([OMLX_CLI, "stop"],
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -884,6 +951,9 @@ async def config(body: dict[str, Any]) -> dict[str, Any]:
 
 def _omlx_installed() -> bool:
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_code_root
+        return (engine_code_root() / "py" / "bin" / "python3").exists()
     return any(Path(p).exists() for p in ("/Applications/oMLX.app",
                                           str(Path.home() / "Applications" / "oMLX.app")))
 
@@ -899,6 +969,9 @@ def _omlx_model_dir() -> str | None:
     except Exception:  # noqa: BLE001 — a missing settings file just means the default folder
         pass
     from pathlib import Path
+    if is_bundled():
+        from service.engine.mode import engine_data_dir
+        return str(engine_data_dir() / "models")
     return str(Path.home() / ".omlx" / "models")     # oMLX's documented default
 
 
@@ -908,7 +981,8 @@ def _omlx_admin_url() -> str:
     try:
         return omlx_base_url() + "/admin"
     except Exception:  # noqa: BLE001 — unreadable settings: use the documented default
-        return "http://127.0.0.1:8000/admin"
+        from service.engine import BUNDLED_PORT
+        return f"http://127.0.0.1:{BUNDLED_PORT if is_bundled() else 8000}/admin"
 
 
 def _setup_roles() -> dict[str, dict[str, str]]:
@@ -1452,16 +1526,15 @@ async def agent(body: dict[str, Any]):
                 pass
 
         try:
-            # Knowledge fields, grocery selectors and bounded queue targets are literal
+            # Knowledge fields and bounded queue targets are literal
             # data. Recognize their envelope before task/workflow/skill
             # interpreters can mistake those fields for another command. Credential redaction
             # and current-user capture have already run at the entry boundary.
             from service.knowledge_intent import knowledge_envelope
             literal_knowledge = knowledge_envelope(prompt) is not None
-            from service.workflows.workflow20 import grocery_read_attempt
             from service.router.router import _scheduled_send_review
             queue_envelope = _scheduled_send_review(prompt) is not None
-            literal_envelope = literal_knowledge or grocery_read_attempt(prompt) or queue_envelope
+            literal_envelope = literal_knowledge or queue_envelope
             last_assistant = store.last_assistant_turn(sid) if sess else None
             last_user = store.last_user_turn(sid) if sess else None
             recent_users = store.recent_user_turns(sid) if sess else []
@@ -1829,17 +1902,25 @@ async def agent(body: dict[str, Any]):
             # e.g. "clarify before effects" forbids add_reminder outright.
             # Typed workflows, deterministic claims and vision keep their paths.
             planner_turn = False
+            planner_act_first: frozenset[str] = frozenset()
             if (not model_led_turn and not (workflow_turn and workflow_turn.decision)
                     and remote_only_profile() is None and not deterministic_claim
                     and getattr(client, "managed", False) and decision.role != "vision"
                     and planner_enabled_from_env()):
-                from service.router.menu import build_menu
+                from service.router.menu import act_first_tools, build_menu
                 guard_forbidden, guard_bindings = routing_guard_contract(prompt)
+                planner_menu = build_menu(prompt, last_assistant=last_assistant,
+                                          forbidden=frozenset(guard_forbidden))
+                # The rules router's confident subset is evidence the turn
+                # needs a tool; its "ambiguous, model decides" default is not.
+                planner_act_first = act_first_tools(
+                    prompt, planner_menu,
+                    routed=(decision.tool_subset or ()) if (decision.route_source == "rules"
+                                                            and decision.needs_tools) else ())
                 decision = dataclasses.replace(
                     decision, role="agent", model=role_to_model("agent"), needs_tools=True,
                     route_source="planner", reason=f"{decision.reason} · planner menu",
-                    tool_subset=build_menu(prompt, last_assistant=last_assistant,
-                                           forbidden=frozenset(guard_forbidden)),
+                    tool_subset=planner_menu,
                     force_first_tool=None, expect_tool_first=False, direct_calls=[],
                     required_tool_groups=(), conditional_tools=(), multi_round=True,
                     narration_after=frozenset(), resolved_request="", strict_read_limits={},
@@ -2092,7 +2173,8 @@ async def agent(body: dict[str, Any]):
                                         strict_read_limits=decision.strict_read_limits,
                                         reminder_action=decision.reminder_action,
                                         test_mode=test_mode, debug=debug,
-                                        planner=planner_turn)
+                                        planner=planner_turn,
+                                        act_first=planner_act_first if planner_turn else frozenset())
                 from service.tools.registry import DisplayOnlyToolResult
                 if not isinstance(captured["text"], DisplayOnlyToolResult):
                     captured["text"] = final or captured["text"]

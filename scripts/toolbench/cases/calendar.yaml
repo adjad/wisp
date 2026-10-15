@@ -1,0 +1,67 @@
+# Calendar reads and writes. Writes forbid the destructive neighbours.
+- id: cal_tomorrow
+  prompt: "What's on my calendar tomorrow?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  forbid: [add_calendar_event, cancel_event, clear_reminders]
+  answer: {contains_any: ["{dentist}", dentist]}
+- id: cal_sunday
+  prompt: "do i have anything on sunday"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: ["{friend_first}", brunch, "{restaurant}"]}
+  trap: "2026-10-13 eval: get_upcoming/get_past_events x10 on this exact prompt"
+- id: cal_last_week
+  prompt: "What did I have on my calendar last week?"
+  expect: [{tool: get_past_events}]
+  answer: {contains_any: ["{garage}", car service, "{offsite}"]}
+- id: cal_free_tomorrow
+  prompt: "When am I free tomorrow?"
+  expect: [{any_of: [find_free_time, get_upcoming]}]
+  answer: {contains_any: ["9:00", "5:00", "11:30", "{dentist_time}"]}
+- id: cal_add_lunch
+  prompt: "Add lunch with {coworker_first} on Friday at 12:30"
+  expect:
+    - tool: add_calendar_event
+      args: {title: {icontains: "{coworker_first}"}, when_iso: {weekday: friday}}
+  forbid: [send_email, send_message, cancel_event]
+- id: cal_pencil_in
+  prompt: "pencil in coffee with Jordan next wednesday at 9"
+  expect:
+    - tool: add_calendar_event
+      args: {title: {icontains: coffee}, when_iso: {regex: "T0?9:00"}}
+  forbid: [send_email, send_message]
+  trap: "2026-10-13 eval: get_upcoming x3 instead of adding the event"
+- id: cal_cancel_yoga
+  prompt: "Cancel my {class_word} class"
+  expect: [{tool: cancel_event, args: {title: {icontains: "{class_word}"}}}]
+  forbid: [clear_reminders, clear_past_reminders]
+- id: cal_this_week
+  prompt: "What's on my calendar this week?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: ["{dentist}", budget, "{class_word}"]}
+- id: cal_dentist_when
+  prompt: "When is my dentist appointment?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_all: ["{dentist_time}"]}
+- id: cal_plumber_call
+  prompt: "schedule a call with the plumber tomorrow at 4pm"
+  expect: [{tool: add_calendar_event, args: {when_iso: {date_offset: 1}}}]
+  forbid: [schedule_send, send_message, send_email]
+  trap: "2026-10-13 eval: 'schedule a call with the plumber' -> schedule_send to the user"
+- id: cal_offsite_where
+  prompt: "Where was the team offsite last week?"
+  expect: [{tool: get_past_events}]
+  answer: {contains_all: ["{offsite}"]}
+- id: cal_next_class
+  split: dev
+  prompt: "when's my next {class_word} class?"
+  expect: [{any_of: [get_upcoming, daily_brief]}]
+  answer: {contains_any: ["7:00", "7 AM", "7am", "7 am"]}
+- id: cal_book_vet
+  split: dev
+  prompt: "book a slot thursday at 2pm for the vet"
+  expect: [{tool: add_calendar_event, args: {title: {icontains: vet}, when_iso: {weekday: thursday}}}]
+  forbid: [send_email, send_message]
+- id: cal_meeting_room
+  split: dev
+  prompt: "Do I have time for a one hour meeting the day after tomorrow?"
+  expect: [{any_of: [find_free_time, get_upcoming]}]

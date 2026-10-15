@@ -19,6 +19,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "build-support"))
 import pipeline as p
+import engine_licenses
 import release
 
 
@@ -56,7 +57,9 @@ class PipelineTests(unittest.TestCase):
                     "Contents/Resources/backend/.venv/bin/python3", "Contents/Resources/backend/service/main.py",
                     "Contents/Resources/backend/service/config/models.yaml", "Contents/Resources/backend/service/config/policy.yaml",
                     "Contents/Resources/backend/service/skills/bundled/interview-me/SKILL.md",
-                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md"):
+                    "Contents/Resources/backend/service/skills/bundled/idea-refine/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/SKILL.md",
+                    "Contents/Resources/backend/service/skills/bundled/mac-controls/controls.sh"):
             path = bundle / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("fixture")
@@ -66,8 +69,69 @@ class PipelineTests(unittest.TestCase):
         (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(p.plist(self.meta)))
         return bundle
 
+    def engine_fixture(self, bundle):
+        engine = bundle / p.engine_build.ENGINE_DIR
+        for rel in ("py/bin/python3.11", "omlx/server.py", "omlx/cli.py", "omlx_web/index.html",
+                    "sp/mlx/core.cpython-311-darwin.so", "sp/mlx/lib/mlx.metallib"):
+            path = engine / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            is_native = rel in ("py/bin/python3.11", "sp/mlx/core.cpython-311-darwin.so")
+            path.write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture" if is_native else b"fixture")
+        (engine / "py/bin/python3.11").chmod(0o755)
+        (engine / "py/bin/python3").symlink_to("python3.11")
+        for component in engine_licenses.load_reviewed()["components"]:   # licence files the notice copies
+            path = engine / component["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("licence text")
+        p.json_write(engine / "ENGINE.json", {
+            "schema": 1, "minimum_macos": "26.2", "signing_identifier": p.engine_build.ENGINE_SIGNING_ID,
+            "dropped": []})
+        return engine
+
     def test_valid_bundle(self):
         p.validate_structure(self.fixture(), self.meta)
+
+    def test_engine_json_requires_all_engine_pieces(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        (engine / "omlx/server.py").unlink()
+        with self.assertRaisesRegex(p.BuildError, "Engine is missing omlx/server.py"):
+            p.validate_structure(bundle, self.meta)
+
+    def add_engine_package(self, engine, name, version, licence, text):
+        dist_info = engine / "sp" / f"{name}-{version}.dist-info"
+        dist_info.mkdir(parents=True)
+        (dist_info / "METADATA").write_text(f"Metadata-Version: 2.4\nName: {name}\nVersion: {version}\n"
+                                            f"License-Expression: {licence}\n")
+        (dist_info / "LICENSE").write_text(text)
+
+    def test_engine_json_accepts_complete_engine(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        self.add_engine_package(engine, "fixturepkg", "1.0", "MIT", "Permission is hereby granted, free of charge")
+        engine_licenses.write_notices(bundle)
+        p.validate_structure(bundle, self.meta)
+
+    def test_engine_bundle_requires_third_party_notices(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+        with self.assertRaisesRegex(p.BuildError, "Missing third-party notice"):
+            p.validate_structure(bundle, self.meta)
+
+    def test_engine_notice_must_list_every_shipped_package(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        engine_licenses.write_notices(bundle)
+        self.add_engine_package(engine, "latecomer", "2.0", "MIT", "Permission is hereby granted, free of charge")
+        with self.assertRaisesRegex(p.BuildError, "does not list latecomer"):
+            p.validate_structure(bundle, self.meta)
+
+    def test_unreviewed_copyleft_package_fails_the_licence_gate(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        self.add_engine_package(engine, "newgpl", "1.0", "GPL-3.0-only", "GNU GENERAL PUBLIC LICENSE\nVersion 3")
+        with self.assertRaisesRegex(engine_licenses.LicenseError, "Unreviewed strong-copyleft licence: newgpl"):
+            engine_licenses.write_notices(bundle)
 
     def test_missing_resource(self):
         bundle = self.fixture()
@@ -854,6 +918,17 @@ print('external venv readable; private home and writes denied')
         self.assertIn("--deep", runner.calls[-2])
         self.assertIn("--strict", runner.calls[-2])
 
+    def test_adhoc_signing_identifier_is_only_for_engine_interpreter(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.signing_runner()
+        p.sign_adhoc(runner, bundle)
+        signs = [command for command in runner.calls if "--sign" in command]
+        identified = [command for command in signs if "-i" in command]
+        self.assertEqual(len(identified), 1)
+        self.assertEqual(identified[0][identified[0].index("-i") + 1], "com.wisp.engine.python3")
+        self.assertEqual(identified[0][-1], engine / "py/bin/python3.11")
+
     def test_signing_failure_stops_before_parent_and_verification(self):
         bundle = self.signing_fixture()
         runner = self.signing_runner(failure="adhoc-sign-0")
@@ -925,6 +1000,126 @@ print('external venv readable; private home and writes denied')
             p.prepare_native_for_signing(runner, bundle)
         self.assertEqual(runner.calls[0][:2], ["/usr/bin/strip", "-S"])
         self.assertFalse(any("--sign" in command or "-delete_rpath" in command for command in runner.calls))
+
+    def rpath_runner(self, loads):
+        runner = self.signing_runner()
+        original = runner.run
+        def run(label, command):
+            code, log = original(label, command)
+            if "signing-load-commands" in label and p.engine_build.ENGINE_DIR in str(command[-1]):
+                log.write_text("cmd LC_RPATH\ncmdsize 40\npath /build/deps (offset 12)\n"
+                               + "".join(f"cmd LC_LOAD_DYLIB\ncmdsize 40\nname {name} (offset 24)\n" for name in loads))
+            return code, log
+        runner.run = run
+        return runner
+
+    def test_engine_kernel_with_only_rpath_dependencies_loses_its_dead_absolute_rpath(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.rpath_runner(["@rpath/libmlx.dylib", "/usr/lib/libc++.1.dylib"])
+        p.prepare_native_for_signing(runner, bundle)
+        deletes = [command for command in runner.calls if "-delete_rpath" in command]
+        self.assertTrue(any(command[-1] == engine / "sp/mlx/core.cpython-311-darwin.so" for command in deletes))
+        self.assertTrue(all(command[-2] == "/build/deps" for command in deletes))
+
+    def test_engine_kernel_with_an_absolute_library_keeps_the_refusal(self):
+        bundle = self.signing_fixture()
+        self.engine_fixture(bundle)
+        runner = self.rpath_runner(["@rpath/libmlx.dylib", "/opt/homebrew/lib/libfoo.dylib"])
+        with self.assertRaisesRegex(p.BuildError, "non-system dependencies"):
+            p.prepare_native_for_signing(runner, bundle)
+        self.assertFalse(any("-delete_rpath" in command for command in runner.calls))
+
+    def test_native_cleanup_skips_engine_but_strips_app_machos(self):
+        bundle = self.signing_fixture()
+        engine = self.engine_fixture(bundle)
+        runner = self.signing_runner()
+        p.prepare_native_for_signing(runner, bundle)
+        stripped = [command[-1] for command in runner.calls if command[:2] == ["/usr/bin/strip", "-S"]]
+        self.assertIn(bundle / "Contents/MacOS/Wisp", stripped)
+        self.assertTrue(stripped)
+        self.assertNotIn(engine / "py/bin/python3.11", stripped)
+        self.assertNotIn(engine / "sp/mlx/core.cpython-311-darwin.so", stripped)
+
+    def test_release_notes_describe_built_in_engine_only_when_staged(self):
+        meta = dict(self.meta, preview=False)
+        with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")), \
+                patch.object(p, "git", return_value="- fixture change"):
+            engine_notes = p.notes(dict(meta, engine={"minimum_macos": "26.2"}))
+            external_notes = p.notes(meta)
+        self.assertIn("Includes a built-in AI engine (macOS 26.2 or newer for the engine)", engine_notes)
+        self.assertNotIn("separately installed oMLX", engine_notes)
+        self.assertIn("Requires a separately installed oMLX server and models.", external_notes)
+        self.assertNotIn("built-in AI engine", external_notes)
+
+    def test_relocation_smoke_skips_engine_import_only_on_a_host_below_the_engine_minimum(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+
+        class Runner:
+            logs = self.root
+            calls = []
+
+            def run(inner, label, command, **kwargs):
+                inner.calls.append(label)
+                log = self.root / (label + ".log")
+                log.write_text("")
+                return 0, log
+
+        for host, expect_run in (("15.5", False), ("26.2", True), ("27.0", True)):
+            with self.subTest(host=host), patch.object(p, "guarded", return_value=0), \
+                    patch.object(p.engine_build, "_host_macos", return_value=host), \
+                    patch.object(p, "engine_smoke") as smoke, patch("builtins.print"):
+                p.relocation_smoke(Runner(), bundle)
+                self.assertEqual(smoke.called, expect_run)
+                if not expect_run:
+                    self.assertIn("older than the engine's minimum 26.2",
+                                  (self.root / "relocated-engine-smoke.log").read_text())
+
+    def test_release_notes_say_when_the_engine_smoke_was_skipped(self):
+        meta = dict(self.meta, preview=False, engine={"minimum_macos": "26.2"})
+        skipped = dict(meta, engine_smoke={"mode": "skip", "reason": "host macOS 15.5 is older than the engine's minimum 26.2"})
+        with patch.object(p.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, "", "")), \
+                patch.object(p, "git", return_value="- fixture change"):
+            self.assertIn("import smoke test was not run on the build host", p.notes(skipped))
+            self.assertIn("verified against the pinned oMLX release", p.notes(skipped))
+            self.assertNotIn("not run on the build host", p.notes(dict(meta, engine_smoke={"mode": "run"})))
+
+    def test_fetch_engine_and_engine_app_are_mutually_exclusive(self):
+        with patch.object(sys, "argv", ["pipeline.py", "preview", "--fetch-engine", "--engine-app", "/x/oMLX.app"]), \
+                self.assertRaises(SystemExit) as raised, patch("sys.stderr"):
+            p.main()
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_engine_source_pin_matches_the_engine_lock(self):
+        source = p.engine_build.load_source()
+        self.assertEqual(source["omlx_version"], p.engine_build.load_lock()["omlx_version"])
+
+    def test_engine_smoke_requires_success_status_and_marker(self):
+        bundle = self.fixture()
+        self.engine_fixture(bundle)
+
+        class FakeRunner:
+            logs = self.root
+
+            def __init__(inner, status, output):
+                inner.status = status
+                inner.output = output
+                inner.calls = []
+
+            def run(inner, label, command, **kwargs):
+                inner.calls.append((label, command, kwargs))
+                log = self.root / (label + ".log")
+                log.write_text(inner.output)
+                return inner.status, log
+
+        for status, output in ((1, "engine-import-ok"), (0, "imports completed")):
+            with self.subTest(status=status, output=output), self.assertRaisesRegex(p.BuildError, "import smoke test"):
+                p.engine_smoke(FakeRunner(status, output), bundle)
+        runner = FakeRunner(0, "engine-import-ok\n")
+        p.engine_smoke(runner, bundle)
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0][0], "relocated-engine-smoke")
 
     def test_production_staging_removes_only_development_fallback(self):
         path = ROOT / "app/Sources/WispApp/BackendManager.swift"
@@ -1549,6 +1744,46 @@ print('external venv readable; private home and writes denied')
             with self.subTest(message=message), self.assertRaisesRegex(p.BuildError, message):
                 p.validate_native(runner, bundle, self.meta)
 
+    def test_native_inventory_uses_engine_minimum_and_keeps_app_minimum(self):
+        bundle = self.fixture()
+        engine = self.engine_fixture(bundle)
+        app_paths = ("Contents/MacOS/Wisp", "Contents/Resources/backend/.venv/bin/python3")
+        for name in app_paths:
+            (bundle / name).write_bytes(b"\xcf\xfa\xed\xfe" + b"fixture")
+        engine_paths = tuple(str((engine / name).relative_to(bundle)) for name in
+                             ("py/bin/python3.11", "sp/mlx/core.cpython-311-darwin.so"))
+        app_main = app_paths[0]
+        minimums = {name: "14.0" for name in app_paths}
+        minimums.update({name: "26.2" for name in engine_paths})
+
+        def runner_for(target_minimums):
+            root = self.root
+
+            class FakeRunner:
+                logs = root
+
+                def run(inner, label, command):
+                    target = str(Path(command[-1]).relative_to(bundle))
+                    log = root / (label + ".log")
+                    if label.startswith("macho-"):
+                        log.write_text("arm64")
+                    elif label.startswith("load-commands-"):
+                        log.write_text("cmd LC_BUILD_VERSION\ncmdsize 32\nplatform 1\nminos "
+                                       + target_minimums[target])
+                    else:
+                        log.write_text("binary:\n\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0)\n")
+                    return 0, log
+
+            return FakeRunner()
+
+        p.validate_native(runner_for(minimums), bundle, self.meta)
+        too_new_app = dict(minimums, **{app_main: "14.1"})
+        with self.assertRaisesRegex(p.BuildError, "advertised minimum"):
+            p.validate_native(runner_for(too_new_app), bundle, self.meta)
+        too_new_engine = {**minimums, **{name: "26.3" for name in engine_paths}}
+        with self.assertRaisesRegex(p.BuildError, "the engine's own minimum"):
+            p.validate_native(runner_for(too_new_engine), bundle, self.meta)
+
 
     def test_native_inventory_distinguishes_dylib_identity_from_loads(self):
         bundle = self.fixture()
@@ -1943,7 +2178,7 @@ print('external venv readable; private home and writes denied')
         self.assertIn("inputs.publish_ad_hoc && !inputs.publish", workflow)
         self.assertIn("startsWith(github.ref, 'refs/tags/v')", workflow)
         job = workflow.split("  publish-ad-hoc-release:", 1)[1]
-        self.assertIn("all --strict-toolchain --output dist/candidate", job)
+        self.assertIn("all --strict-toolchain --fetch-engine --output dist/candidate", job)
         self.assertIn("release-ad-hoc --output dist/candidate", job)
         self.assertIn("WISP_AD_HOC_RELEASE_APPROVED: 'true'", job)
         self.assertNotIn("gh release create", job)
@@ -1977,7 +2212,7 @@ print('external venv readable; private home and writes denied')
             self.assertNotIn("secrets.", job)
             self.assertNotIn("download-artifact", job)
             self.assertNotIn("wisp-build all", job)
-        self.assertIn("./scripts/wisp-build preview --strict-toolchain --output dist/preview", preview)
+        self.assertIn("./scripts/wisp-build preview --strict-toolchain --fetch-engine --output dist/preview", preview)
         self.assertNotIn("wisp-build test", preview)
         self.assertIn("isolated_acl_fixture.py --ephemeral-macos", preview)
         self.assertIn("mini_artifact.py --source-sha", preview)
@@ -1985,11 +2220,21 @@ print('external venv readable; private home and writes denied')
         self.assertIn("./scripts/wisp-build test --strict-toolchain\n", qa)
         self.assertNotIn("wisp-build preview", qa)
 
+    def test_every_ci_build_stages_the_pinned_engine(self):
+        """A release made by CI must carry the engine: every build command passes --fetch-engine."""
+        workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
+        commands = [line.strip() for line in workflow.splitlines()
+                    if "./scripts/wisp-build preview" in line or "./scripts/wisp-build all" in line]
+        self.assertEqual(len(commands), 4)          # PR preview, full, release rebuild, ad-hoc rebuild
+        for command in commands:
+            self.assertIn("--fetch-engine", command)
+            self.assertNotIn("--engine-app", command)
+
     def test_main_tags_and_dispatch_keep_the_unchanged_full_gate(self):
         workflow = (ROOT / ".github/workflows/wisp-build.yml").read_text()
         full = self.workflow_job(workflow, "full")
         self.assertIn("    if: github.event_name != 'pull_request'\n", full)
-        self.assertIn("./scripts/wisp-build all --strict-toolchain --output dist/candidate", full)
+        self.assertIn("./scripts/wisp-build all --strict-toolchain --fetch-engine --output dist/candidate", full)
         for step in ("Qualify isolated signed ACL replacement on disposable macOS", "Upload verified candidate",
                      "Verify synthetic publisher signatures and provisioning transactions",
                      "Build and verify exact-candidate offline mini artifact", "Upload diagnostics"):

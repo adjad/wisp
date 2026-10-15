@@ -28,23 +28,24 @@ RETIRED = {
     # retired outright
     "trash_file", "http_request", "country_info", "set_keyboard_backlight",
     "get_directions", "convert_currency", "uninstall_app", "unsubscribe",
+    "delete_path", "get_volume", "set_volume", "lock_screen", "music",
+    "play_audio", "grocery_note_evidence", "grocery_reminder_evidence",
 }
 MERGED = {"set_timer", "manage_timers", "system_status", "toggle_setting",
-          "music", "play_audio", "email_triage", "wisp_status", "get_weather"}
-INTERNAL = {"collect_task_evidence", "grocery_reminder_evidence",
-            "grocery_note_evidence", "search_coverage"}
+          "email_triage", "wisp_status", "get_weather"}
+INTERNAL = {"collect_task_evidence", "search_coverage"}
 
 
 def _route(prompt):
     return asyncio.run(R.route(prompt))
 
 
-def test_registry_is_capped_at_one_hundred():
+def test_registry_stays_under_the_one_hundred_cap():
     # Built-in tools only. use_skill, skill tools and MCP tools register later,
     # once the user installs them, and test modules can leave them behind.
     builtin = [name for name, tool in REGISTRY.items()
                if tool.func.__module__.startswith("service.tools.")]
-    assert len(builtin) == 100
+    assert len(builtin) == 92
 
 
 def test_retired_names_stay_retired_and_merged_tools_exist():
@@ -150,8 +151,6 @@ def test_pre_merge_tool_wide_allow_keeps_its_old_coverage(isolated_grants):
     ("archive_email", "email_triage", {"message_id": "<a@x>", "action": "archive"}),
     ("set_wifi", "toggle_setting", {"setting": "wifi", "on": False}),
     ("set_alarm", "set_timer", {"kind": "alarm", "time": "7am"}),
-    ("spotify", "music", {"action": "play", "app": "spotify"}),
-    ("play_radio", "play_audio", {"kind": "radio", "query": "kexp"}),
 ])
 def test_deny_on_a_retired_name_still_blocks_its_merged_behaviour(isolated_grants, monkeypatch,
                                                                    retired, tool, args):
@@ -178,7 +177,6 @@ def test_retired_deny_does_not_spill_onto_other_behaviours(isolated_grants):
 @pytest.mark.parametrize("tool, args", [
     ("toggle_setting", {"on": False}),
     ("email_triage", {"message_id": "<a@x>"}),
-    ("play_audio", {"query": "kexp"}),
 ])
 def test_always_allow_without_a_behaviour_is_refused(isolated_grants, tool, args):
     grants = isolated_grants

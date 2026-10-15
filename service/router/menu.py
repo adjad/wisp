@@ -39,10 +39,10 @@ CORE: dict[str, tuple[str, ...]] = {
                           "draft_message", "search_conversations"),
     "notes": ("search_notes", "create_note", "append_note"),
     "memory": ("remember", "recall", "search_conversations", "forget"),
-    "files": ("find_files", "list_dir", "read_file", "move_path", "delete_path"),
+    "files": ("find_files", "list_dir", "read_file", "move_path"),
     "public_web": ("web_search", "web_fetch", "get_weather", "travel_time", "find_place"),
-    "apps_media": ("open_app", "music"),
-    "device": ("set_volume", "system_status", "toggle_setting"),
+    "apps_media": ("open_app", "quit_app"),
+    "device": ("system_status", "toggle_setting", "clipboard_read"),
     "automation": ("set_timer", "manage_timers", "run_shell"),
     "compute": ("calculate", "convert_units", "world_time"),
 }
@@ -67,9 +67,9 @@ HINTS: tuple[tuple[re.Pattern, tuple[str, ...]], ...] = tuple(
         (r"\b(?:file|files|folder|downloads|desktop|documents|pdf|docx?|resume|cv|photos?)\b", ("files",)),
         (r"\b(?:weather|forecast|rain|news|look up|search the web|google|price|stock|hours|"
          r"open(?:s|ing)? (?:at|time)|directions|drive|traffic|how far|near(?:by| me)|restaurant|"
-         r"who is|ceo|right now|latest)\b", ("public_web",)),
-        (r"\b(?:open|launch|play|pause|music|song|spotify|podcast)\b", ("apps_media",)),
-        (r"\b(?:volume|louder|quieter|mute|crank it|turn it (?:up|down)|wi-?fi|bluetooth|battery|"
+         r"who is|ceo|right now|latest|define|definition|meaning of|what does \S+ mean)\b", ("public_web",)),
+        (r"\b(?:open|launch|quit|close)\b", ("apps_media",)),
+        (r"\b(?:wi-?fi|bluetooth|battery|"
          r"brightness|dark mode|settings?)\b", ("device",)),
         (r"\b(?:timer|alarm|stopwatch|countdown|shortcut)\b", ("automation",)),
         (r"\b(?:calculate|convert|what time is it in|percent|\d+\s*[x*/+-]\s*\d+)\b", ("compute",)),
@@ -213,3 +213,64 @@ def build_menu(text: str, *, last_assistant: str | None = None,
         for name in CORE.get(fam, ())[CORE_HEAD:]:
             add(name, fam)
     return menu[:max_tools]
+
+
+# ACT BEFORE ANSWERING. Families whose answer lives in the user's own data:
+# a request that names one AND talks about the user ("my", "I", "am I") has
+# to be looked up, never answered from the model's head or bounced back as a
+# clarifying question before anything was checked. Public lookups need no
+# first-person reference: "define ephemeral", "who is the ceo of X".
+_PERSONAL_FAMILIES = frozenset({"calendar", "mail", "messages_contacts", "notes", "memory", "files"})
+_FIRST_PERSON_RE = re.compile(r"\b(?:my|me|mine|i|i'?m|i've|am\s+i)\b", re.I)
+# A writing request is answered with the writing itself. Measured 2026-10-14,
+# Ling V3, all 55 chat/clarify corpus cases: the only forced lookups were
+# writing requests ("write a regex ...", "draft a speech for my dad's
+# retirement", "how should i word a message asking for a raise"). The corpus
+# writing requests that ARE actions ("draft an email to Sam") need a write
+# tool, which this gate never forces anyway.
+_WRITING_RE = re.compile(
+    r"^\s*(?:(?:please|pls|can\s+you|could\s+you|would\s+you|help\s+me|i\s+need\s+you\s+to|"
+    r"i\s+want\s+you\s+to)\s+)*(?:write|draft|compose|rewrite|reword|rephrase|translate|explain|"
+    r"give\s+me\s+(?:a|an|some)\s+(?:\w+\s+)?(?:ways?|versions?|examples?)\b|"
+    r"how\s+(?:should|do|can|would)\s+i\s+(?:word|phrase|say)|make\s+this)\b", re.I)
+
+
+def act_first_tools(text: str, menu: list[str], *, routed=()) -> frozenset[str]:
+    """Menu tools a planner turn must try before it answers or clarifies with
+    no call at all (service/agent/loop.py, "ANSWERED BEFORE LOOKING").
+
+    Measured 2026-10-14, Ling V3, real planner path: 7 of the 17 failures in
+    59 cases planned no call at all, with the menu holding the right tool.
+    "what am i forgetting to do this week" was answered with an invented
+    meeting; "remember that my wife's birthday is march 3" answered "Your
+    wife's birthday is March 3." and saved nothing; "find my resume and email
+    it to dana@example.com" asked what the email should say.
+
+    Evidence is the rules router's confident tool subset (`routed`, empty for
+    its "ambiguous, model decides" default) plus the menu's own family hints.
+    Only READ tools are returned: a forced re-plan never carries a write.
+    Three independent review rounds of #221 broke every write exception
+    (a question-shape test, then remember's own save guard): "should I turn
+    wi-fi off?" forced toggle_setting, and "can you remember that my dog is
+    named Max? Please don't save anything" saved it. A turn that genuinely
+    asked for a write plans it after the forced lookup, unforced.
+    Prohibitions and mentions ("don't search the web, just tell me ...") and
+    writing requests never qualify.
+    """
+    from service.router.model_led import READ_CATEGORIES
+    from service.tools.registry import REGISTRY
+    from service.utterance_shape import deliberate, mask_quoted
+
+    masked = mask_quoted(text or "")
+    if deliberate(text or "") or _WRITING_RE.search(masked):
+        return frozenset()
+    offered = set(menu)
+    pool = set(routed) & offered
+    families = set(hinted_families(masked))
+    wanted = families & {"public_web"}
+    if _FIRST_PERSON_RE.search(masked):
+        wanted |= families & _PERSONAL_FAMILIES
+    if wanted:
+        pool |= {n for n in menu if family_of(n) in wanted}
+    return frozenset(n for n in pool if (t := REGISTRY.get(n)) is not None
+                     and t.category in READ_CATEGORIES)
