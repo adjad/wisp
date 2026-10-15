@@ -371,6 +371,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_think_leak.py",
     "tests/test_timeranges.py",
     "tests/test_today_plan.py",
+    # Daily workspace: pure source fixtures, private disposable SQLite, fixed
+    # verified-self identity, fake policy/outbox and ASGI transport; no effects.
+    "tests/test_daily_workspace.py",
+    "tests/test_day_plan_email.py",
     "tests/test_user_reported_regressions_20260902.py",
     "tests/test_user_reported_regressions_20260903.py",
     "tests/test_user_reported_regressions_20260903_noon.py",

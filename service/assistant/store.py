@@ -1159,8 +1159,16 @@ class AssistantStore:
         for key, value in coverage.items():
             if value is not None:
                 coverage[key] = number(value, key)
-        receipt = dict(available=available, syncing=bool(diagnostics.get("syncing")),
-                       reason="Up to date" if available else "Source is unavailable or syncing",
+        complete, partial = diagnostics.get("complete", True), diagnostics.get("partial", False)
+        current = available and complete is True and partial is False
+        if "complete" in diagnostics or "partial" in diagnostics:
+            # Invalid latest metadata must not leave an older successful receipt
+            # eligible. Keep only typed completeness proof, never diagnostic rows.
+            coverage.update(complete=complete if type(complete) is bool else False,
+                            partial=partial if type(partial) is bool else True)
+        receipt = dict(available=current, syncing=bool(diagnostics.get("syncing")),
+                       reason="Up to date" if current else (
+                           "Source snapshot is incomplete" if available else "Source is unavailable or syncing"),
                        last_sync=min(now, started) if started is not None else now, snapshot_started_at=started, diagnostics=coverage)
         self._db.execute("INSERT INTO today_source_sync(source,payload) VALUES (?,?) "
                          "ON CONFLICT(source) DO UPDATE SET payload=excluded.payload",

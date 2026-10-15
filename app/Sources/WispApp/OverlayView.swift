@@ -153,7 +153,7 @@ struct OverlayView: View {
                 .background(Capsule().fill(Theme.chipFill))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
                 .help("Plan study and project time around your calendar")
-            Button(action: { model.runDailySummary() }) {
+            Button(action: { model.runDailySummary(); TodayWindow.show(initialTab: 0) }) {
                 HStack(spacing: 4) {
                     Image(systemName: "sun.max").font(.system(size: 11))
                     Text("Daily Summary").font(.system(size: 11, weight: .medium))
@@ -163,7 +163,7 @@ struct OverlayView: View {
                 .background(Capsule().fill(Theme.chipFill))
                 .overlay(Capsule().stroke(Theme.chipStroke, lineWidth: 1))
             }
-            .buttonStyle(.plain).help("Summarize today's calendar + email now")
+            .buttonStyle(.plain).help("Compile your sources, see what needs attention and review your day plan")
 
             // AM / PM segmented toggle for the scheduled brief time.
             HStack(spacing: 0) {
