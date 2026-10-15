@@ -1060,3 +1060,67 @@ def test_failed_header_reacquisition_does_not_leave_raw_proof_eligible(native_ob
     assert h.email._headers == h.cache.load("email_headers") == "original headers"
     assert h.due() == "waiting_for_self_identity" and not h.calls
     assert h.store.occurrence("2026-10-14") is None
+
+
+_ACK_INVALIDS = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing",
+    "generation_true", "generation_false", "generation_zero", "generation_negative", "generation_string", "generation_null",
+    "generation_missing", "generation_fraction", "generation_overflow"]
+
+
+@pytest.mark.parametrize("lane", ["headers", "raw", "history"])
+@pytest.mark.parametrize("invalid", _ACK_INVALIDS)
+@pytest.mark.parametrize("stage", ["invalid", "recover"])
+def test_invalid_native_ack_never_poisoned_later_same_session_admission(native_observer_flows, observer_replay, lane, invalid, stage):
+    h = observer_replay
+    flow = native_observer_flows[f"{stage}_{lane}_{invalid}"]
+    expected_begins, expected_terminals = (2, 1) if stage == "invalid" else (4, 3)
+    assert sum(r["path"].endswith("/identity/begin") for r in flow["requests"]) == expected_begins
+    assert sum(r["path"].endswith("/email/identity") for r in flow["requests"]) == expected_terminals
+    for request in flow["requests"]:
+        h.replay(request)
+        if request["path"].endswith("/identity/begin"):
+            assert h.due() == "waiting_for_self_identity" and not h.calls
+    assert h.api.self_identity().epoch == h.epoch
+    assert h.api.self_identity().addresses == ("me@example.test",)
+    assert h.due() == "submitted" and len(h.calls) == 1
+    assert h.store.occurrence("2026-10-14")["status"] == "submitted"
+    assert h.due(at(hour=8, minute=1)) == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("lane", ["headers", "raw", "history"])
+@pytest.mark.parametrize("length", [20, 100])
+def test_declared_session_boundaries_remain_native_and_backend_positives(native_observer_flows, observer_replay, lane, length):
+    h = observer_replay
+    flow = native_observer_flows[f"valid_session_{lane}_{length}"]
+    h.api._identity_session = flow["requests"][0]["reply_session"]
+    assert len(h.api._identity_session) == length
+    for request in flow["requests"]:
+        h.replay(request)
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("lane", ["headers", "raw", "history"])
+def test_representable_positive_generation_boundary_remains_eligible(native_observer_flows, observer_replay, lane):
+    h = observer_replay
+    flow = native_observer_flows[f"valid_max_generation_{lane}"]
+    h.api._identity_generation = 2**63 - 2
+    for request in flow["requests"]:
+        h.replay(request)
+    assert h.api._identity_generation == 2**63 - 1
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("field,value", [("session", ""), ("session", "x" * 19), ("session", "x" * 101),
+    ("session", 42), ("session", None), ("generation", True), ("generation", False), ("generation", 0),
+    ("generation", -1), ("generation", "1"), ("generation", None), ("generation", 1.5)])
+def test_backend_still_rejects_malformed_receipt_while_real_native_proof_can_recover(native_observer_flows, observer_replay, field, value):
+    h = observer_replay
+    flow = native_observer_flows["raw_success"]
+    h.replay(flow["requests"][0])
+    terminal = next(r for r in flow["requests"] if r["path"].endswith("/email/identity"))
+    corrupt = dict(path=terminal["path"], body={**terminal["body"], field: value})
+    h.replay(corrupt, expected=422)
+    assert h.due() == "waiting_for_self_identity" and not h.calls
+    for request in flow["requests"][1:]:
+        h.replay(request)
+    assert h.due() == "submitted" and len(h.calls) == 1

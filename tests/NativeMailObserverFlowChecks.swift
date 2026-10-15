@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Dispatch
 
 // Only inert collaborators execute here. Python inserts the exact production
@@ -51,8 +52,28 @@ final class URLSession {
         let (session, generation, callback) = pending.remove(at: index)
         acknowledged = true
         lock.unlock()
+        var payload: [String: Any] = ["session": session, "generation": generation]
+        switch kind {
+        case "session_empty": payload["session"] = ""
+        case "session_short": payload["session"] = "x"
+        case "session_19": payload["session"] = String(repeating: "x", count: 19)
+        case "session_101": payload["session"] = String(repeating: "x", count: 101)
+        case "session_number": payload["session"] = 42
+        case "session_null": payload["session"] = NSNull()
+        case "session_missing": payload.removeValue(forKey: "session")
+        case "generation_true": payload["generation"] = true
+        case "generation_false": payload["generation"] = false
+        case "generation_zero": payload["generation"] = 0
+        case "generation_negative": payload["generation"] = -1
+        case "generation_string": payload["generation"] = "1"
+        case "generation_null": payload["generation"] = NSNull()
+        case "generation_missing": payload.removeValue(forKey: "generation")
+        case "generation_fraction": payload["generation"] = 1.5
+        case "generation_overflow": payload["generation"] = NSNumber(value: UInt64.max)
+        default: break
+        }
         let data = kind == "bad_json" ? Data("{}".utf8) :
-            try! JSONSerialization.data(withJSONObject: ["session": session, "generation": generation])
+            try! JSONSerialization.data(withJSONObject: payload)
         callback(["transport", "cancel"].contains(kind) ? nil : data,
             HTTPURLResponse(url: WispClient.baseURL, statusCode: kind == "bad_http" ? 500 : 200,
                             httpVersion: nil, headerFields: nil),
@@ -258,6 +279,53 @@ final class Reader {
                 }
                 save(lane + "_" + which, reader)
             }
+        }
+        // A corrupt ACK must never mutate accepted order, retire the actual
+        // backend session, read native data or trigger header reacquisition.
+        let invalidACKs = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing",
+                           "generation_true", "generation_false", "generation_zero", "generation_negative", "generation_string", "generation_null",
+                           "generation_missing", "generation_fraction", "generation_overflow"]
+        for lane in ["headers", "raw", "history"] {
+            for invalid in invalidACKs {
+                session.reset()
+                let reader = Reader("success")
+                reader.start(lane); session.acknowledge(); reader.wait(lane)
+                let before = reader.events
+                reader.start(lane); session.acknowledge(kind: invalid); reader.wait(lane)
+                precondition(reader.events == before, "Malformed ACK performed native work: \(lane) \(invalid)")
+                precondition(session.requests.filter { ($0["path"] as? String)?.hasSuffix("/identity/begin") == true }.count == 2,
+                             "Malformed ACK retried: \(lane) \(invalid)")
+                precondition(session.requests.filter { ($0["path"] as? String)?.hasSuffix("/email/identity") == true }.count == 1)
+                for _ in 0..<2 {
+                    let old = reader.events.count
+                    reader.start(lane); session.acknowledge(); reader.wait(lane)
+                    precondition(reader.events.count > old, "Valid session recovery poisoned: \(lane) \(invalid)")
+                }
+                precondition(reader.events.filter { $0 == "accounts" }.count == 3)
+                precondition(session.requests.filter { ($0["path"] as? String)?.hasSuffix("/email/identity") == true }.count == 3)
+                save("recover_" + lane + "_" + invalid, reader)
+
+                session.reset()
+                let initial = Reader("success")
+                initial.start(lane); session.acknowledge(kind: invalid); initial.wait(lane)
+                precondition(initial.events.isEmpty && session.requests.count == 1 && session.pending.isEmpty)
+                initial.start(lane); session.acknowledge(); initial.wait(lane)
+                precondition(initial.events.filter { $0 == "accounts" }.count == 1)
+                save("invalid_" + lane + "_" + invalid, initial)
+            }
+            for length in [20, 100] {
+                session.reset(); session.session = String(repeating: "s", count: length)
+                let reader = Reader("success")
+                reader.start(lane); session.acknowledge(); reader.wait(lane)
+                precondition(reader.events.filter { $0 == "accounts" }.count == 1)
+                save("valid_session_" + lane + "_" + String(length), reader)
+            }
+            session.reset(); session.generation = Int.max - 1
+            let reader = Reader("success")
+            reader.start(lane); session.acknowledge(); reader.wait(lane)
+            let terminal = session.requests.first { ($0["path"] as? String)?.hasSuffix("/email/identity") == true }!
+            precondition((terminal["body"] as! [String: Any])["generation"] as! Int == Int.max)
+            save("valid_max_generation_" + lane, reader)
         }
         // No account observation at all before launch header readiness.
         session.reset()
