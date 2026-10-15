@@ -616,3 +616,103 @@ def test_malformed_policy_has_zero_fake_bridge_effects(store, monkeypatch):
     monkeypatch.setattr(outbox, "request", native)
     result = asyncio.run(delivery._approved_native_submission("send_email", dict(to=["me@example.test"], cc=[], subject="Plan", body="Body")))
     assert not calls and result["status"] == "not_attempted"
+
+
+@pytest.fixture(scope="module")
+def native_identity_flows(tmp_path_factory):
+    """Execute exact production Swift bodies with recording-only collaborators."""
+    import json
+    import subprocess
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    scratch = tmp_path_factory.mktemp("native-identity-flow")
+    source = (root / "app/Sources/WispApp/MailReader.swift").read_text()
+    flow = source[source.index("    func sync() {"):source.index("    func syncRaw() {")]
+    posts = source[source.index("    private func postEmptyAccounts("):source.rindex("\n}")]
+    transport = (root / "app/Sources/WispApp/MailHistoryMerge.swift").read_text()
+    transport = transport[transport.index("enum MailHistoryTransport {"):transport.index("/// Serializes local")]
+    fixture = (root / "tests/NativeMailIdentityFlowChecks.swift").read_text()
+    fixture = fixture.replace("// WISP_NATIVE_TRANSPORT", transport).replace(
+        "// WISP_NATIVE_READER_METHODS", flow + posts)
+    generated = scratch / "IdentityFlow.swift"
+    generated.write_text(fixture)
+    executable = scratch / "identity-flow"
+    compiled = subprocess.run(["swiftc", "-parse-as-library", "-swift-version", "5",
+        "-module-cache-path", str(scratch / "module-cache"), str(generated), "-o", str(executable)],
+        capture_output=True, text=True, timeout=90)
+    assert compiled.returncode == 0, compiled.stderr
+    result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    return {row["case"]: row for row in json.loads(result.stdout)}
+
+
+@pytest.mark.parametrize("case", ["success", "empty", "duplicate", "unavailable", "failed", "partial",
+    "closed_index", "closed_failed_index", "closed_empty", "closed_during_header", "closed_before_identity",
+    "identity_failed", "identity_malformed", "identity_empty"])
+def test_actual_native_capture_flow_through_both_api_channels(store, monkeypatch, native_identity_flows, case):
+    import ast
+    import importlib
+    from pathlib import Path
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api, day_plan_email as delivery, outbox
+    from service.tools import email_tools as email
+    hub = importlib.import_module("service.assistant.hub")
+    clock = [at(hour=7, minute=55)]
+    for name, value in {"_email_store": store, "_identity": SelfIdentity(), "_identity_started": 0,
+        "_identity_epoch": "native-flow-epoch", "_identity_previous": (), "_identity_settled": False,
+        "_identity_generation": 0, "_identity_capture_at": 0,
+        "_identity_session": "native-flow-test-session"}.items():
+        monkeypatch.setattr(api, name, value)
+    monkeypatch.setattr(api.time, "time", lambda: clock[0])
+    monkeypatch.setattr(api, "email_contents", lambda *args: dict(ready=True, subject="Plan", body="Body"))
+    monkeypatch.setattr(delivery, "_policy_allows", lambda _: True)
+    monkeypatch.setattr(hub, "hub", SimpleNamespace(has_subscribers=True))
+    calls = []
+    async def bridge(*args):
+        calls.append(args)
+        return dict(ok=True, status="succeeded")
+    monkeypatch.setattr(outbox, "request", bridge)
+    # Compile only the actual handler; importing service.main would start unrelated app machinery.
+    path = Path(__file__).resolve().parents[1] / "service/main.py"
+    node = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "assistant_sync_emails")
+    node.decorator_list = []
+    namespace = {"Any": object}
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    # Keep production legacy handler semantics while all cache persistence is private/inert.
+    for name in ("cache_emails", "cache_history_headers", "cache_raw_emails", "cache_identity", "set_email_availability"):
+        monkeypatch.setattr(email, name, lambda *args, **kwargs: None)
+    app = FastAPI(); app.include_router(api.router)
+    app.post("/assistant/sync/emails")(namespace["assistant_sync_emails"])
+    api.publish_identity(["me@example.test"], available=True, complete=True, started_at=clock[0], now=clock[0])
+    preview = store.preview(dict(recipient="me@example.test", timezone=ZONE, minute=480),
+                            "Plan", "Body", api.self_identity(), now=clock[0])
+    store.enable(preview["token"], api.self_identity(), confirmed=True, now=clock[0], policy_allows=lambda _: True)
+    clock[0] = at(hour=7, minute=59)
+    def due():
+        return asyncio.run(deliver_due(store, identity=api.self_identity, compose=api.email_contents,
+            sender=delivery._approved_native_submission, policy_allows=delivery._policy_allows,
+            clock=lambda: at(hour=8)))
+    # Replay real recorded native requests, never an OS/network invocation.
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
+        for request in native_identity_flows[case]["requests"]:
+            body = request["body"]
+            path = request["path"].replace("/assistant/today/workspace", "/workspace")
+            response = client.post(path, **({"json": body} if body is not None else {}))
+            assert response.status_code == 200, response.text
+            if path.endswith("/identity/begin"):
+                assert response.json() == dict(session="native-flow-test-session", generation=1)
+                assert due() == "waiting_for_self_identity" and not calls
+    clock[0] = at(hour=8)
+    result = due()
+    assert len(calls) == int(case == "success")
+    assert result == ("submitted" if case == "success" else "waiting_for_self_identity")
+    assert any(r["path"] == "/assistant/sync/emails" for r in native_identity_flows[case]["requests"])
+
+
+def test_native_capture_transport_failure_aborts_before_observing_accounts(native_identity_flows):
+    for case in ("bad_http", "bad_json"):
+        flow = native_identity_flows[case]
+        assert not flow["events"] and len(flow["requests"]) == 1

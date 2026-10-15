@@ -701,162 +701,181 @@ final class MailReader {
         // second request for it is satisfied by waiting rather than by scanning
         // the inbox twice (see claimScan).
         guard claimScan(.headers) else { return }
-        // NSAppleScript is synchronous and can be slow — run off the main thread.
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            defer { self?.releaseScan(.headers) }
+        // Suspend daily-email eligibility before any native account/header read.
+        beginIdentityCapture { [weak self] capture in
             guard let self else { return }
-            // Mail isn't open — rather than launching it just to answer "what's
-            // in the inbox", read straight from its on-disk index instead. No
-            // AppleScript, no auto-launch, and (being a plain indexed SQL scan)
-            // considerably faster than the batched history walk this replaces
-            // for this tick. See MailDBReader.
-            guard self.isMailRunning() else {
-                let captured = self.historyState.capture()
-                // A stale index cannot reintroduce disabled-account rows after
-                // this process observed zero enabled accounts. Unknown later
-                // metadata preserves that boundary until a known nonempty scan.
-                if captured.lastKnownEmpty {
-                    self.postEmptyAccounts(readSource: "local_index")
-                    return
-                }
-                let generation = captured.generation
-                if let (headers, history) = self.dbReader.readHeadersAndHistory() {
-                    // A completed read is complete even for an empty or old
-                    // index. File modification time cannot tell us whether a
-                    // provider sync is running (a quiet inbox may not change).
-                    // Report the local-only limitation separately; otherwise
-                    // this read-only path can leave Email "syncing" forever.
-                    // Headers and their readiness diagnostic must be one atomic
-                    // backend update. Separate fire-and-forget requests could
-                    // arrive in either order, letting Daily Summary observe
-                    // "sync complete" while it still held the restored cache.
-                    // This history replaces whatever an AppleScript walk
-                    // last posted, so the next walk must not stitch onto it.
-                    self.post(headers: headers, available: true, reason: "",
-                              readSource: "local_index", history: history,
-                              historyGeneration: generation)
-                } else {
-                    self.postDiagnostic(available: false,
-                                        reason: "Mail isn't open and its on-disk index isn't readable (Full Disk Access?)")
-                }
+            guard let capture else {
+                // Do not observe account changes without first fencing delivery.
+                self.releaseScan(.headers)
                 return
             }
-
-            // nil = unified-inbox fallback when enumeration is unavailable.
-            // Never use it for duplicate labels: that would hide the account
-            // ambiguity that must be resolved before account-scoped reads.
-            let enumeration = self.accountNames()
-            let names: [String]
-            let targets: [String?]
-            switch enumeration {
-            case .accounts(let accounts):
-                names = accounts.values.sorted()
-                targets = names.map { $0 }
-            case .unavailable:
-                names = []
-                targets = [nil]
-            case .duplicateLabels:
-                self.setLastAccountNames(nil)
-                self.postDiagnostic(available: false,
-                                    reason: "Mail account labels are duplicated. In Mail > Settings > Accounts, rename one of the duplicate account labels so every account name is unique, then refresh Wisp.")
-                return
-            }
-            if case .accounts(let accounts) = enumeration {
-                AccountLabelCache.learn(accounts: accounts)
-            }
-            // Published only AFTER learn(), so the history sync never reads
-            // the index with names whose labels haven't been learned yet.
-            self.setLastAccountNames(enumeration == .unavailable ? nil : names)
-            if case .accounts(let accounts) = enumeration, accounts.isEmpty {
-                self.postEmptyAccounts(readSource: "mail_app")
-                return
-            }
-
-            var chunks: [String] = []
-            var lastFailureCode = 0
-            var anySucceeded = false
-            for target in targets {
-                // Re-checked per account, not just at entry: a multi-account
-                // scan is several sequential `tell application "Mail"` calls,
-                // and a manual quit between them would otherwise relaunch
-                // Mail on the next one (same race as syncHistory's batch loop).
+            // NSAppleScript is synchronous and can be slow — run off the main thread.
+            DispatchQueue.global(qos: .utility).async { [weak self] in
+                defer { self?.releaseScan(.headers) }
+                guard let self else { return }
+                var identityMayRead = false
+                var identityKnownEmpty = false
+                defer { self.syncIdentity(capture: capture, readAccounts: identityMayRead, knownEmpty: identityKnownEmpty) }
+                // Mail isn't open — rather than launching it just to answer "what's
+                // in the inbox", read straight from its on-disk index instead. No
+                // AppleScript, no auto-launch, and (being a plain indexed SQL scan)
+                // considerably faster than the batched history walk this replaces
+                // for this tick. See MailDBReader.
                 guard self.isMailRunning() else {
-                    self.postDiagnostic(available: false,
-                                        reason: "Mail closed during the header scan; refresh after reopening it")
+                    let captured = self.historyState.capture()
+                    // A stale index cannot reintroduce disabled-account rows after
+                    // this process observed zero enabled accounts. Unknown later
+                    // metadata preserves that boundary until a known nonempty scan.
+                    if captured.lastKnownEmpty {
+                        self.postEmptyAccounts(readSource: "local_index")
+                        return
+                    }
+                    let generation = captured.generation
+                    if let (headers, history) = self.dbReader.readHeadersAndHistory() {
+                        // A completed read is complete even for an empty or old
+                        // index. File modification time cannot tell us whether a
+                        // provider sync is running (a quiet inbox may not change).
+                        // Report the local-only limitation separately; otherwise
+                        // this read-only path can leave Email "syncing" forever.
+                        // Headers and their readiness diagnostic must be one atomic
+                        // backend update. Separate fire-and-forget requests could
+                        // arrive in either order, letting Daily Summary observe
+                        // "sync complete" while it still held the restored cache.
+                        // This history replaces whatever an AppleScript walk
+                        // last posted, so the next walk must not stitch onto it.
+                        self.post(headers: headers, available: true, reason: "",
+                                  readSource: "local_index", history: history,
+                                  historyGeneration: generation)
+                    } else {
+                        self.postDiagnostic(available: false,
+                                            reason: "Mail isn't open and its on-disk index isn't readable (Full Disk Access?)")
+                    }
                     return
                 }
-                let (text, code) = self.run(self.headerScript(account: target,
-                                                              limit: self.headerLimit), tag: "headers")
-                guard let text else {
-                    lastFailureCode = code
-                    chunks.append(self.incompleteMarker(account: target, reason: "failed"))
-                    continue
-                }
-                anySucceeded = true
-                chunks.append(text)
-            }
 
-            // Every account failed — usually Automation not granted
-            // (errAEEventNotPermitted, -1743) or Mail not running. Report it so
-            // the backend's "no data" message can say WHY instead of always
-            // blaming permission. Do NOT post headers (nothing to post, and it
-            // must not wipe the existing cache). A PARTIAL failure (one account
-            // unreadable, another fine) still counts as available: mail is
-            // flowing, and claiming otherwise would send the user to a
-            // permission screen that isn't the problem.
-            guard anySucceeded else {
-                let reason = lastFailureCode == -1743
-                    ? "Mail Automation access isn't granted"
-                    : "couldn't reach Mail (is it running?)"
-                self.postDiagnostic(available: false, reason: reason)
-                return
+                // nil = unified-inbox fallback when enumeration is unavailable.
+                // Never use it for duplicate labels: that would hide the account
+                // ambiguity that must be resolved before account-scoped reads.
+                let enumeration = self.accountNames()
+                let names: [String]
+                let targets: [String?]
+                switch enumeration {
+                case .accounts(let accounts):
+                    names = accounts.values.sorted()
+                    targets = names.map { $0 }
+                case .unavailable:
+                    names = []
+                    targets = [nil]
+                case .duplicateLabels:
+                    self.setLastAccountNames(nil)
+                    self.postDiagnostic(available: false,
+                                        reason: "Mail account labels are duplicated. In Mail > Settings > Accounts, rename one of the duplicate account labels so every account name is unique, then refresh Wisp.")
+                    return
+                }
+                if case .accounts(let accounts) = enumeration {
+                    AccountLabelCache.learn(accounts: accounts)
+                }
+                // Published only AFTER learn(), so the history sync never reads
+                // the index with names whose labels haven't been learned yet.
+                self.setLastAccountNames(enumeration == .unavailable ? nil : names)
+                if case .accounts(let accounts) = enumeration, accounts.isEmpty {
+                    identityKnownEmpty = true
+                    self.postEmptyAccounts(readSource: "mail_app")
+                    return
+                }
+
+                var chunks: [String] = []
+                var lastFailureCode = 0
+                var anySucceeded = false
+                var allSucceeded = true
+                for target in targets {
+                    // Re-checked per account, not just at entry: a multi-account
+                    // scan is several sequential `tell application "Mail"` calls,
+                    // and a manual quit between them would otherwise relaunch
+                    // Mail on the next one (same race as syncHistory's batch loop).
+                    guard self.isMailRunning() else {
+                        self.postDiagnostic(available: false,
+                                            reason: "Mail closed during the header scan; refresh after reopening it")
+                        return
+                    }
+                    let (text, code) = self.run(self.headerScript(account: target,
+                                                                  limit: self.headerLimit), tag: "headers")
+                    guard let text else {
+                        allSucceeded = false
+                        lastFailureCode = code
+                        chunks.append(self.incompleteMarker(account: target, reason: "failed"))
+                        continue
+                    }
+                    anySucceeded = true
+                    chunks.append(text)
+                }
+
+                // Every account failed — usually Automation not granted
+                // (errAEEventNotPermitted, -1743) or Mail not running. Report it so
+                // the backend's "no data" message can say WHY instead of always
+                // blaming permission. Do NOT post headers (nothing to post, and it
+                // must not wipe the existing cache). A PARTIAL failure (one account
+                // unreadable, another fine) still counts as available: mail is
+                // flowing, and claiming otherwise would send the user to a
+                // permission screen that isn't the problem.
+                guard anySucceeded else {
+                    let reason = lastFailureCode == -1743
+                        ? "Mail Automation access isn't granted"
+                        : "couldn't reach Mail (is it running?)"
+                    self.postDiagnostic(available: false, reason: reason)
+                    return
+                }
+                // Ran fine — permission is OK even if the inbox scan was empty.
+                self.post(headers: self.mergeHeaderChunks(chunks),
+                          available: true, reason: "", readSource: "mail_app")
+                identityMayRead = allSucceeded && enumeration != .unavailable
             }
-            // Ran fine — permission is OK even if the inbox scan was empty.
-            self.post(headers: self.mergeHeaderChunks(chunks),
-                      available: true, reason: "", readSource: "mail_app")
-            self.syncIdentity()
         }
     }
 
-    private func syncIdentity() {
-        // Re-checked rather than relying on sync()'s entry guard: the header
-        // scans that run before this can take long enough for a manual quit
-        // to happen in between, and this is another `tell application "Mail"`.
-        guard isMailRunning() else { return }
-        // A server-issued capture generation binds freshness to when this read
-        // was requested. Delayed successes cannot revive an older account set.
+    private func beginIdentityCapture(completion: @escaping ((String, Int)?) -> Void) {
+        // A server-issued generation fences delayed terminal results and binds
+        // freshness to when the native scan was requested, including failures.
         var begin = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/today/workspace/email/identity/begin"))
         begin.httpMethod = "POST"
         begin.timeoutInterval = 8
-        URLSession.shared.dataTask(with: begin) { [weak self] data, response, _ in
-            guard let self,
-                  let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+        URLSession.shared.dataTask(with: begin) { data, response, _ in
+            guard let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let capture = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let session = capture["session"] as? String,
-                  let generation = capture["generation"] as? Int else { return }
-            DispatchQueue.global(qos: .utility).async {
-                let text = self.isMailRunning() ? self.run(self.identityScript, tag: "identity").0 : nil
-                let rows = (text ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
-                let emails = rows.filter { $0.contains("@") }
-                let complete = text != nil && rows.count == emails.count
-                let receipt: [String: Any] = ["session": session, "generation": generation,
-                    "addresses": complete ? emails : [], "available": complete, "complete": complete]
-                var fresh = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/today/workspace/email/identity"))
-                fresh.httpMethod = "POST"
-                fresh.timeoutInterval = 8
-                fresh.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                fresh.httpBody = try? JSONSerialization.data(withJSONObject: receipt)
-                URLSession.shared.dataTask(with: fresh).resume()
-                // Preserve the existing attribution publication. This legacy
-                // cache is never used to authorize recurring self-email.
-                guard !emails.isEmpty else { return }
-                var legacy = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"))
-                legacy.httpMethod = "POST"
-                legacy.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                legacy.httpBody = try? JSONSerialization.data(withJSONObject: ["identity_emails": emails])
-                URLSession.shared.dataTask(with: legacy).resume()
+                  let generation = capture["generation"] as? Int, generation > 0 else {
+                completion(nil)
+                return
             }
+            completion((session, generation))
         }.resume()
+    }
+
+    private func syncIdentity(capture: (String, Int)?, readAccounts: Bool, knownEmpty: Bool) {
+        guard let (session, generation) = capture else { return }
+        // Every terminal scan settles the capture. Unknown/partial inventory,
+        // failed headers and closed Mail revoke eligibility without AppleScript.
+        // The re-check also prevents an identity read from launching closed Mail.
+        let text = knownEmpty ? "" : (readAccounts && isMailRunning() ? run(identityScript, tag: "identity").0 : nil)
+        let rows = (text ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        let emails = rows.filter { $0.contains("@") }
+        let complete = text != nil && rows.count == emails.count
+        let receipt: [String: Any] = ["session": session, "generation": generation,
+            "addresses": complete ? emails : [], "available": complete, "complete": complete]
+        var fresh = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/today/workspace/email/identity"))
+        fresh.httpMethod = "POST"
+        fresh.timeoutInterval = 8
+        fresh.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        fresh.httpBody = try? JSONSerialization.data(withJSONObject: receipt)
+        URLSession.shared.dataTask(with: fresh).resume()
+        // Preserve attribution publication only from a complete nonempty read.
+        // This legacy cache never authorizes recurring self-email.
+        guard complete, !emails.isEmpty else { return }
+        var legacy = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"))
+        legacy.httpMethod = "POST"
+        legacy.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        legacy.httpBody = try? JSONSerialization.data(withJSONObject: ["identity_emails": emails])
+        URLSession.shared.dataTask(with: legacy).resume()
     }
 
     func syncRaw() {

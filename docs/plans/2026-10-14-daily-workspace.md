@@ -166,6 +166,48 @@ fabricated deadline or assignment. Fresh final gates use the pinned 3.13.14
 runtime through its verified normal subprocess launcher, with their own skip
 ledger; historical 3.14 runs are retained separately.
 
+Independent review of `7f5e93f4` blocked three additional integration paths.
+That candidate's green mechanical/CI evidence is historical, not approval of
+these repairs. The complete Auditor and Simulation findings were routed to one
+writer in `WISP_PR232_7F_THREE_P2_SINGLE_PRIMARY_REPAIR_ACK_20261015.json`.
+
+The native header scan now obtains its server capture fence before reading any
+account, index or header. A missing acknowledgement aborts that scan and releases
+its claim. Every acknowledged scan settles its generation: empty accounts,
+closed Mail, duplicate/unknown inventory, partial/failed headers and invalid
+identity reads cannot retain sending eligibility. Legacy display publications
+remain separate; a successful unified-inbox fallback cannot verify an account.
+Only a genuine complete account-address read restores eligibility. Existing
+expiry, supersession and continuously fresh same-account consent rules remain.
+
+The narrowly owned receipt writer retains typed Calendar completeness metadata
+and records an incomplete latest snapshot as unavailable. Malformed supplied
+flags become conservative boolean proof, rather than rolling back and leaving
+an older successful receipt eligible. Date coverage and original read-start
+ordering remain atomic; equal/older results cannot downgrade a newer receipt.
+Authored work is planned around commitments and supported tentative holds first.
+Actual fitting placements are reserved only in local copies before generated
+suggestions fill remaining gaps; stored pins, revisions and replay inputs do not
+change.
+
+Development checks passed 318 focused cases with no skips, including the
+existing Today contracts. They compile exact
+production native scan/capture/post bodies and transport into
+`NativeMailIdentityFlowChecks.swift`'s inert collaborators, then replay recorded
+requests through actual API handlers into a fake submission bridge. They also
+exercise actual Calendar ASGI/store round trips through Today, direct workspace
+and email readiness, including malformed flags after a successful receipt;
+constrained-day, remaining-gap and cross-day-pin controls cover authored work.
+The native fixture never invokes Foundation networking, Mail or AppleScript;
+its result is synthetic caller qualification, not native runtime QA. Equal/older
+partial results also preserve a newer complete receipt. The frozen successor
+needs fresh evidence for every final check.
+
+The separately committed behavior v1 adapter remains held and is not grafted
+here. Its fake-producer tests do not establish integration: durable analysis
+ages, source-specific receipt eligibility and cross-timezone evidence still
+need their separately owned contract repair and actual-wrapper qualification.
+
 Final delivery requires a clean current-main-reconciled pushed candidate,
 exact-SHA mechanical checks, required CI and distinct independent review plus
 synthetic specialist QA. No app launch, real model/provider/native access,
