@@ -128,15 +128,18 @@ _raw_mail_snapshot: RawEmailSnapshot | None = None
 # Restore whatever the last run had synced, so a backend restart doesn't leave
 # these empty until each source's next (potentially very slow) sync lands —
 # see cache_store's module docstring for the profile-build bug this fixes.
-# `_at` timestamps are deliberately set to now rather than persisted: they only
-# drive the raw cache's staleness TTL, and treating restored content as fresh
-# for one more TTL window is far better than treating it as instantly expired.
+# Header readiness is separate from server freshness. Raw bodies retain their
+# original persisted age so restarts and recomposition cannot extend the TTL.
 _headers = cache_store.load("email_headers")
 _history = cache_store.load("email_history")
 _raw_emails = cache_store.load("email_raw")
 def _restored_native(part: str, fallback: str) -> str:
     name = "email_mail_" + part
-    return cache_store.load(name) if cache_store._path(name).exists() else fallback
+    if cache_store._path(name).exists():
+        return cache_store.load(name)
+    # Once source ownership was recorded, an unlabelled display cache may
+    # contain provider data. Missing native provenance must never adopt it.
+    return "" if cache_store._path("email_sources").exists() else fallback
 
 
 _swift_headers = _restored_native("headers", _headers)
@@ -163,21 +166,18 @@ def cache_emails(headers: str) -> None:
     _swift_headers = headers or ""
     _refresh_native_bindings()
     _headers = _compose_source(_swift_headers, "headers")
-    cache_store.save("email_mail_headers", _swift_headers)
     _headers_at = time.time()
     _headers_sync_generation += 1
-    cache_store.save("email_headers", _headers)
+    _persist_composed_sources()
 
 
 def cache_history_headers(history: str) -> None:
     global _history, _history_at, _swift_history, _native_history_at
     _swift_history = history or ""
     _history = _compose_source(_swift_history, "history")
-    cache_store.save("email_mail_history", _swift_history)
     _history_at = time.time()
     _native_history_at = _history_at
-    _save_email_sources()
-    cache_store.save("email_history", _history)
+    _persist_composed_sources()
 
 
 # Provider snapshots are separate from native Mail snapshots. A failed refresh
@@ -207,12 +207,33 @@ def _restore_email_sources() -> None:
         _external_accounts = {}
 
 
-def _save_email_sources() -> None:
+def _save_email_sources() -> bool:
     import json
-    cache_store.save("email_sources", json.dumps({
+    saved = json.dumps({
         "native_headers_at": _native_headers_at, "native_source": _native_source,
         "native_raw_at": _native_raw_at, "native_history_at": _native_history_at,
-        "accounts": _external_accounts}))
+        "accounts": _external_accounts})
+    cache_store.save("email_sources", saved)
+    return cache_store.load("email_sources") == saved
+
+
+def _persist_composed_sources(*, purge: bool = True) -> None:
+    """Keep native provenance durable before writing any merged display data."""
+    global _native_raw_at
+    if purge:
+        _purge_raw_if_expired(persist=False)
+    # Preserve the original legacy body's age during the one-time migration.
+    if _swift_raw and not _native_raw_at:
+        _native_raw_at = _raw_emails_at
+    durable = True
+    for part, data in (("headers", _swift_headers), ("history", _swift_history), ("raw", _swift_raw)):
+        name = "email_mail_" + part
+        cache_store.save(name, data)
+        durable = (cache_store._path(name).exists() and cache_store.load(name) == data) and durable
+    durable = _save_email_sources() and durable
+    if durable:
+        for part, data in (("headers", _headers), ("history", _history), ("raw", _raw_emails)):
+            cache_store.save("email_" + part, data)
 
 
 def native_email_accounts() -> list[dict]:
@@ -241,7 +262,7 @@ def configure_external_accounts(accounts: dict[str, dict]) -> None:
     _refresh_native_bindings()
     _recompose_all()
     cache_identity(_swift_identity)
-    _save_email_sources()
+    _persist_composed_sources()
 
 
 def _source_identity(record: str, *, raw: bool = False) -> tuple[str, str]:
@@ -351,19 +372,14 @@ def cache_external_emails(*, account: str, headers: str | None = None,
     if raw is not None:
         _raw_emails_at = now
     _recompose_all()
-    _save_email_sources()
-    for part, data in (("headers", headers), ("history", history), ("raw", raw)):
-        if data is not None:
-            cache_store.save("email_" + ("raw" if part == "raw" else part),
-                             {"headers": _headers, "history": _history, "raw": _raw_emails}[part])
+    _persist_composed_sources()
 
 
 def external_email_error(account: str, part: str, reason: str) -> None:
     if account in _external_accounts:
         _external_accounts[account][part + "_error"] = reason
         _recompose_all()
-        _save_email_sources()
-        cache_store.save("email_" + part, {"headers": _headers, "history": _history, "raw": _raw_emails}[part])
+        _persist_composed_sources()
 
 
 def _external_fresh() -> bool:
@@ -796,14 +812,12 @@ def cache_raw_emails(raw: str, coverage: dict | None = None) -> None:
         # Mail-only (task evidence/references address Mail messages).
         _swift_raw = raw
         _native_raw_at = stamp
-        _save_email_sources()
         _raw_emails = _compose_source(raw, "raw")
-        cache_store.save("email_mail_raw", raw)
         _raw_emails_at = stamp
         _raw_reference_scan = {**scan, "synced_at": stamp,
                                "decode_complete": candidate.decode_complete}
         _raw_mail_snapshot = snapshot  # Atomic body + identity + coverage publication.
-        cache_store.save("email_raw", _raw_emails)
+        _persist_composed_sources()
 
 
 def raw_reference_metadata() -> dict:
@@ -832,7 +846,7 @@ async def ensure_reply_source(timeout_seconds: float = 2.5) -> None:
         await asyncio.sleep(0.1)
 
 
-def _purge_raw_if_expired() -> None:
+def _purge_raw_if_expired(*, persist: bool = True) -> None:
     """Drop the raw cache once it's more than a week old (see _RAW_TTL_SECONDS).
     Checked lazily on read rather than via a background task: same effect, no
     extra scheduler needed."""
@@ -850,16 +864,15 @@ def _purge_raw_if_expired() -> None:
             _swift_raw = ""
             _native_raw_at = 0.0
             _raw_mail_snapshot = None
-            cache_store.save("email_mail_raw", "")
             changed = True
         if changed:
             _recompose_all()
-            _save_email_sources()
-            cache_store.save("email_raw", _raw_emails)
         if _raw_emails_at and now - _raw_emails_at > _RAW_TTL_SECONDS:
             _raw_emails = ""
             _raw_emails_at = 0.0
             _raw_mail_snapshot = None
+        if changed and persist:
+            _persist_composed_sources(purge=False)
 
 
 def _parse_raw() -> list[dict]:
@@ -1062,11 +1075,14 @@ def _parse_header_records(text: str, *, snapshot: str = "") -> list[dict]:
 def _unique_records(rows: list[dict]) -> list[dict]:
     seen: set[tuple] = set()
     result: list[dict] = []
-    for row in sorted(rows, key=lambda r: r["ts"], reverse=True):
+    # Current read state wins over an older historical copy, even if that
+    # historical header has an anomalous date. Restore date order afterwards.
+    for row in sorted(rows, key=lambda r: (r.get("_snapshot") == "recent", r["ts"]), reverse=True):
         account = (row["account_id"] or row["account"]).casefold()
         identities = []
         if account and row.get("message_id"):
-            identities.append(("message", account, row["message_id"].casefold()))
+            identities.append(("message", _account_group(row["account"], row["account_id"]),
+                               row["message_id"].casefold()))
         if account and row.get("native_id"):
             identities.append(("native", account, row["native_id"].casefold()))
         if not identities:
@@ -1077,6 +1093,7 @@ def _unique_records(rows: list[dict]) -> list[dict]:
         seen.update(identities)
         if not duplicate:
             result.append(row)
+    result.sort(key=lambda r: r["ts"], reverse=True)
     # Mail.app and the SQLite fallback use different native ID namespaces. A
     # producer switch can leave the same message in recent/history with
     # unrelated account/native IDs. Pair only across snapshots and producers,

@@ -5,6 +5,7 @@ import asyncio
 import base64
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import time
@@ -257,6 +258,8 @@ class GmailSource(unittest.TestCase):
                 self.assertNotIn(ME, E.get_identity_emails())
         asyncio.run(run())
         self.assertNotIn("Disconnected content", E._headers)
+        self.assertNotIn("Disconnected content", cache_store.load("email_headers"))
+        self.assertEqual(self.restarted_cache()["headers"], "")
         self.assertEqual(G._epochs[ME], 1)
 
     def test_status_never_exposes_credentials_and_marks_restored_data_unverified(self):
@@ -270,6 +273,161 @@ class GmailSource(unittest.TestCase):
     def test_successful_empty_native_cache_is_preserved_on_restart(self):
         E.cache_emails("")
         self.assertEqual(E._restored_native("headers", header(subject="Obsolete")), "")
+
+    def restarted_cache(self, accounts=None):
+        code = """
+import importlib, json, sys
+from pathlib import Path
+from service.tools import cache_store
+cache_store.CACHE_DIR = Path(sys.argv[1])
+from service.tools import email_tools as E
+E = importlib.reload(E)
+E.configure_external_accounts(json.loads(sys.argv[2]))
+print(json.dumps({'headers': E._headers, 'history': E._history, 'raw': E._raw_emails,
+                  'native': E._swift_headers, 'native_raw_at': E._native_raw_at}))
+"""
+        result = subprocess.run([sys.executable, "-c", code, str(cache_store.CACHE_DIR),
+                                 json.dumps(accounts or {})], check=True, capture_output=True, text=True)
+        return json.loads(result.stdout)
+
+    def test_provider_disconnect_cannot_resurrect_as_native_after_restart(self):
+        self.publish(headers=header(subject="Disconnected private header"),
+                     history=header(subject="Disconnected history"), raw=G.raw_record(msg("private"), ME))
+        for part in ("headers", "history", "raw"):
+            self.assertTrue(cache_store._path("email_mail_" + part).exists())
+            self.assertEqual(cache_store.load("email_mail_" + part), "")
+        E.configure_external_accounts({})
+        self.assertEqual(self.restarted_cache(), {
+            "headers": "", "history": "", "raw": "", "native": "", "native_raw_at": 0.0})
+        self.assertNotIn("Disconnected", cache_store.load("email_headers"))
+        self.assertNotIn("Synthetic body", cache_store.load("email_raw"))
+
+    def test_disconnect_one_account_retains_other_and_genuine_native_after_restart(self):
+        self.accounts[SCHOOL] = {"client_id": "other", "refresh_token": "other"}
+        E.configure_external_accounts(self.accounts)
+        E.cache_emails(header("Native", "Genuine native", native_id="native-independent"))
+        self.publish(headers=header(subject="Removed personal"))
+        self.publish(SCHOOL, headers=header(SCHOOL, "Retained school"))
+        E.configure_external_accounts({SCHOOL: self.accounts[SCHOOL]})
+        restored = self.restarted_cache({SCHOOL: self.accounts[SCHOOL]})
+        self.assertNotIn("Removed personal", restored["headers"])
+        self.assertIn("Retained school", restored["headers"])
+        self.assertIn("Genuine native", restored["native"])
+        self.assertNotIn("Retained school", restored["native"])
+
+    def test_missing_native_backing_with_recorded_sources_is_unknown_not_display(self):
+        self.publish(headers=header(subject="Provider display"))
+        cache_store._path("email_mail_headers").unlink()
+        self.assertEqual(E._restored_native("headers", cache_store.load("email_headers")), "")
+        E.configure_external_accounts({})
+        self.assertEqual(self.restarted_cache()["headers"], "")
+
+    def test_legacy_mail_cache_migrates_with_original_body_age(self):
+        cache_store._path("email_sources").unlink()
+        for part in ("headers", "history", "raw"):
+            cache_store._path("email_mail_" + part).unlink()
+        legacy = header("Native", "Legacy Mail snapshot", native_id="native-legacy")
+        cache_store.save("email_headers", legacy)
+        cache_store.save("email_raw", G.raw_record(msg("legacy"), "Native"))
+        original_age = time.time() - 6 * 86400
+        os.utime(cache_store._path("email_raw"), (original_age, original_age))
+        restored = self.restarted_cache()
+        self.assertIn("Legacy Mail snapshot", restored["native"])
+        self.assertAlmostEqual(restored["native_raw_at"], original_age, places=4)
+
+    def test_failed_source_metadata_write_does_not_renew_or_publish_display(self):
+        original = cache_store.save
+        def fail_sources(name, value):
+            if name != "email_sources":
+                original(name, value)
+        with patch.object(cache_store, "save", fail_sources):
+            self.publish(headers=header(subject="Memory only metadata failure"))
+        self.assertIn("Memory only metadata failure", E._headers)
+        self.assertNotIn("Memory only metadata failure", cache_store.load("email_headers"))
+
+    def test_failed_native_persistence_does_not_publish_unlabelled_provider_display(self):
+        cache_store._path("email_mail_headers").unlink()
+        original = cache_store.save
+        def fail_native(name, value):
+            if name != "email_mail_headers":
+                original(name, value)
+        with patch.object(cache_store, "save", fail_native):
+            self.publish(headers=header(subject="Memory only provider"))
+        self.assertIn("Memory only provider", E._headers)
+        self.assertNotIn("Memory only provider", cache_store.load("email_headers"))
+
+    def test_native_callbacks_cannot_bypass_failed_provider_provenance_barrier(self):
+        for part in ("headers", "history", "raw"):
+            cache_store._path("email_mail_" + part).unlink()
+        cache_store._path("email_sources").unlink()
+        original = cache_store.save
+        def fail_provenance(name, value):
+            if not name.startswith("email_mail_") and name != "email_sources":
+                original(name, value)
+        with patch.object(cache_store, "save", fail_provenance):
+            self.publish(headers=header(subject="Provider secret header"),
+                         history=header(subject="Provider secret history"),
+                         raw=G.raw_record(msg("secret", "Provider secret body"), ME))
+            E.cache_emails(header("Native", "Native header"))
+            E.cache_history_headers(header("Native", "Native history"))
+            E.cache_raw_emails(G.raw_record(msg("native", "Native body"), "Native"))
+            # Exercise an expired native body while a provider body survives.
+            E._native_raw_at = time.time() - 8 * 86400
+            E._purge_raw_if_expired()
+        for part in ("headers", "history", "raw"):
+            self.assertNotIn("Provider secret", cache_store.load("email_" + part))
+        restored = self.restarted_cache()
+        for part in ("headers", "history", "raw", "native"):
+            self.assertNotIn("Provider secret", restored[part])
+
+    def test_failed_disconnect_display_write_never_relabels_provider_as_native(self):
+        self.publish(headers=header(subject="Old provider display"))
+        original = cache_store.save
+        def fail_display(name, value):
+            if name != "email_headers":
+                original(name, value)
+        with patch.object(cache_store, "save", fail_display):
+            E.configure_external_accounts({})
+        self.assertIn("Old provider display", cache_store.load("email_headers"))
+        self.assertEqual(self.restarted_cache()["headers"], "")
+
+    def test_recomposition_preserves_raw_age_and_purges_expired_data_before_saving(self):
+        native = G.raw_record(msg("native"), "Native")
+        E.cache_raw_emails(native)
+        original_age = time.time() - 6 * 86400
+        E._native_raw_at = E._raw_emails_at = original_age
+        E.configure_external_accounts(self.accounts)
+        self.assertEqual(self.restarted_cache(self.accounts)["native_raw_at"], original_age)
+        self.publish(raw=G.raw_record(msg("provider"), ME))
+        E._external_accounts[ME]["raw_at"] = time.time() - 8 * 86400
+        E._native_raw_at = time.time() - 8 * 86400
+        E.configure_external_accounts(self.accounts)
+        restored = self.restarted_cache(self.accounts)
+        self.assertEqual(restored["raw"], "")
+        self.assertNotIn("Synthetic body", cache_store.load("email_sources"))
+
+    def test_bound_rfc_duplicate_prefers_recent_read_state_and_preserves_other_accounts(self):
+        self.accounts[ME]["mail_account_id"] = "native-A"
+        E.configure_external_accounts(self.accounts)
+        recent = E._parse_header_records(header(ME, "Current", stamp=100), snapshot="recent")[0]
+        historical = E._parse_header_records(header("Personal", "Historical", stamp=200,
+                                                    native_id="native-A"), snapshot="history")[0]
+        recent["unread"], historical["unread"] = False, True
+        other = dict(historical, account="Google", account_id="native-B")
+        rows = E._unique_records([historical, recent, other])
+        self.assertEqual(len(rows), 2)
+        self.assertIn(recent, rows)
+        self.assertIn(other, rows)
+        self.assertNotIn(historical, rows)
+        self.assertFalse(recent["unread"])
+
+    def test_unbound_labels_and_producer_native_ids_do_not_collapse(self):
+        one = E._parse_header_records(header("Google", native_id="native-A"), snapshot="recent")[0]
+        two = dict(one, account_id="native-B", _snapshot="history")
+        self.assertEqual(len(E._unique_records([one, two])), 2)
+        one.update(message_id="", native_id="mail:123")
+        two.update(message_id="", account_id="native-A", native_id="db:123", subject="Different")
+        self.assertEqual(len(E._unique_records([one, two])), 2)
 
     @staticmethod
     def fake_oauth_server():
