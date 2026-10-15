@@ -301,3 +301,14 @@ recovery. JSON `1.0` reserialized as `1` is not counted as a distinct malformed
 wire case. The successor requires fresh full gates and independent reviews;
 actual app/native/provider execution and the separate consumer remain outside
 this qualification.
+
+The first protocol-validation successor `3f54c7ac` remained held after self-review
+found that Swift grapheme counts differed from backend Unicode length. Its
+already-running checks completed before further editing; they are historical.
+The exact-caller Unicode control first reproduced native work after a malformed
+100-grapheme/200-scalar acknowledgement. Session bounds now count Unicode
+scalars, matching the backend. Controls cover 19/20/100/101/200 scalar cases,
+including valid 20- and 100-scalar sessions containing one grapheme, across
+header/raw/history recovery and actual backend admission. Canonical ASCII
+server tokens retain their original behavior. This is synthetic protocol
+resilience evidence, not a report of a live backend sending malformed tokens.

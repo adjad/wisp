@@ -61,6 +61,12 @@ final class URLSession {
         case "session_number": payload["session"] = 42
         case "session_null": payload["session"] = NSNull()
         case "session_missing": payload.removeValue(forKey: "session")
+        case "session_unicode_19": payload["session"] = "e" + String(repeating: "\u{0301}", count: 18)
+        case "session_unicode_101": payload["session"] = "e" + String(repeating: "\u{0301}", count: 100)
+        case "session_unicode_200":
+            let text = String(repeating: "e\u{0301}", count: 100)
+            precondition(text.count == 100 && text.unicodeScalars.count == 200)
+            payload["session"] = text
         case "generation_true": payload["generation"] = true
         case "generation_false": payload["generation"] = false
         case "generation_zero": payload["generation"] = 0
@@ -282,7 +288,7 @@ final class Reader {
         }
         // A corrupt ACK must never mutate accepted order, retire the actual
         // backend session, read native data or trigger header reacquisition.
-        let invalidACKs = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing",
+        let invalidACKs = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing", "session_unicode_19", "session_unicode_101", "session_unicode_200",
                            "generation_true", "generation_false", "generation_zero", "generation_negative", "generation_string", "generation_null",
                            "generation_missing", "generation_fraction", "generation_overflow"]
         for lane in ["headers", "raw", "history"] {
@@ -319,6 +325,14 @@ final class Reader {
                 reader.start(lane); session.acknowledge(); reader.wait(lane)
                 precondition(reader.events.filter { $0 == "accounts" }.count == 1)
                 save("valid_session_" + lane + "_" + String(length), reader)
+            }
+            for length in [20, 100] {
+                session.reset(); session.session = "e" + String(repeating: "\u{0301}", count: length - 1)
+                precondition(session.session.count == 1 && session.session.unicodeScalars.count == length)
+                let reader = Reader("success")
+                reader.start(lane); session.acknowledge(); reader.wait(lane)
+                precondition(reader.events.filter { $0 == "accounts" }.count == 1)
+                save("valid_unicode_session_" + lane + "_" + String(length), reader)
             }
             session.reset(); session.generation = Int.max - 1
             let reader = Reader("success")

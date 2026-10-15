@@ -1062,7 +1062,7 @@ def test_failed_header_reacquisition_does_not_leave_raw_proof_eligible(native_ob
     assert h.store.occurrence("2026-10-14") is None
 
 
-_ACK_INVALIDS = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing",
+_ACK_INVALIDS = ["session_empty", "session_short", "session_19", "session_101", "session_number", "session_null", "session_missing", "session_unicode_19", "session_unicode_101", "session_unicode_200",
     "generation_true", "generation_false", "generation_zero", "generation_negative", "generation_string", "generation_null",
     "generation_missing", "generation_fraction", "generation_overflow"]
 
@@ -1111,7 +1111,8 @@ def test_representable_positive_generation_boundary_remains_eligible(native_obse
 
 
 @pytest.mark.parametrize("field,value", [("session", ""), ("session", "x" * 19), ("session", "x" * 101),
-    ("session", 42), ("session", None), ("generation", True), ("generation", False), ("generation", 0),
+    ("session", 42), ("session", None), ("session", "e" + "\u0301" * 18),
+    ("session", "e" + "\u0301" * 100), ("session", "e\u0301" * 100), ("generation", True), ("generation", False), ("generation", 0),
     ("generation", -1), ("generation", "1"), ("generation", None), ("generation", 1.5)])
 def test_backend_still_rejects_malformed_receipt_while_real_native_proof_can_recover(native_observer_flows, observer_replay, field, value):
     h = observer_replay
@@ -1122,5 +1123,18 @@ def test_backend_still_rejects_malformed_receipt_while_real_native_proof_can_rec
     h.replay(corrupt, expected=422)
     assert h.due() == "waiting_for_self_identity" and not h.calls
     for request in flow["requests"][1:]:
+        h.replay(request)
+    assert h.due() == "submitted" and len(h.calls) == 1
+
+
+@pytest.mark.parametrize("lane", ["headers", "raw", "history"])
+@pytest.mark.parametrize("length", [20, 100])
+def test_unicode_scalar_boundary_matches_backend_with_one_native_grapheme(native_observer_flows, observer_replay, lane, length):
+    h = observer_replay
+    flow = native_observer_flows[f"valid_unicode_session_{lane}_{length}"]
+    session = flow["requests"][0]["reply_session"]
+    assert len(session) == length and session == "e" + "\u0301" * (length - 1)
+    h.api._identity_session = session
+    for request in flow["requests"]:
         h.replay(request)
     assert h.due() == "submitted" and len(h.calls) == 1

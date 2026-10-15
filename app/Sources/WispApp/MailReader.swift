@@ -887,7 +887,7 @@ final class MailReader {
             guard let self, error == nil, deadline.timeIntervalSinceNow > 0,
                   let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let capture = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let session = capture["session"] as? String, (20...100).contains(session.count),
+                  let session = capture["session"] as? String, (20...100).contains(session.unicodeScalars.count),
                   let number = capture["generation"] as? NSNumber,
                   CFGetTypeID(number) != CFBooleanGetTypeID(),
                   !["f", "d"].contains(String(cString: number.objCType)),
