@@ -66,6 +66,54 @@ def test_adjacent_windows_require_shared_support():
     assert all(p["end"] - p["start"] == 900 for p in result)
 
 
+def changing_history(exceptions):
+    """All dates are covered; an alternate state is actual counterevidence."""
+    from dataclasses import replace
+
+    return [
+        (
+            replace(o, attrs={**o.attrs, "apps": {"org.other.State": 900}})
+            if (int(o.id.split(":")[1]), int(o.id.split(":")[2])) in exceptions
+            else o
+        )
+        for o in history()
+    ]
+
+
+def test_group_cannot_borrow_recency_from_disjoint_latest_dates():
+    # Left recurs on A/B/C/D, right on A/B/C/E. Both independently have two
+    # recent hits, but the full window has only C among its latest three dates.
+    rows = changing_history({(0, 600), (1, 615)})
+    patterns = discover(rows, [], "2026-10-19", "UTC", NOW)
+    assert len(patterns) == 2
+    assert all(p["end"] - p["start"] == 900 for p in patterns)
+    assert all(p["support"] == 4 and p["opportunities"] == 5 for p in patterns)
+
+
+def test_shared_recent_group_uses_only_shared_dates_for_freshness_and_evidence():
+    # Both cover all five dates; the merged pattern occurs together on A/D/E.
+    rows = changing_history({(2, 600), (3, 615)})
+    patterns = discover(rows, [], "2026-10-19", "UTC", NOW)
+    assert len(patterns) == 1
+    pattern = patterns[0]
+    assert pattern["end"] - pattern["start"] == 1800
+    assert pattern["support"] == 3 and pattern["opportunities"] == 5
+    assert pattern["distinct_weeks"] == 3
+    shared = {o.id: o for o in rows if int(o.id.split(":")[1]) in {0, 1, 4}}
+    assert set(pattern["evidence"]) <= shared.keys()
+    assert pattern["observed_at"] == max(o.end_ts for o in shared.values())
+
+
+def test_individual_newest_hit_cannot_freshen_a_merged_cohort():
+    # Left has an extra newest hit, while the latest shared hit is a week older.
+    rows = changing_history({(0, 615)})
+    pattern = discover(rows, [], "2026-10-19", "UTC", NOW)[0]
+    assert pattern["end"] - pattern["start"] == 1800
+    shared = [o for o in rows if int(o.id.split(":")[1]) >= 1]
+    assert pattern["observed_at"] == max(o.end_ts for o in shared)
+    assert not any(e.startswith("b:0:") for e in pattern["evidence"])
+
+
 def test_partial_event_bins_do_not_invent_uniform_coverage():
     bins = history(weeks=3)
     bins = [

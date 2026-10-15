@@ -127,6 +127,7 @@ def discover(bins, visits, day, timezone, now):
                 observed_at=last,
                 dates=set(matching),
                 eligible=set(eligible),
+                hits=hits,
                 evidence=[hits[d].id for d in matching][-5:],
                 descriptors={
                     k: round(v, 3)
@@ -135,20 +136,37 @@ def discover(bins, visits, day, timezone, now):
                 },
             )
         )
+
+    def cohort(group):
+        dates = set.intersection(*(x["dates"] for x in group))
+        eligible = sorted(set.intersection(*(x["eligible"] for x in group)))
+        samples = [x["hits"][d] for d in sorted(dates) for x in group]
+        observed_at = max((o.end_ts for o in samples), default=0)
+        valid = (
+            bool(eligible)
+            and len({d.isocalendar()[:2] for d in dates}) >= 3
+            and len(dates) / len(eligible) >= 0.6
+            and sum(d in dates for d in eligible[-3:]) >= 2
+            and 0 <= now - observed_at <= 21 * 86400
+        )
+        return valid, dates, eligible, observed_at, [o.id for o in samples][-5:]
+
     groups = []
     for c in candidates:
         if (
             groups
             and groups[-1][-1]["state_id"] == c["state_id"]
             and groups[-1][-1]["minute"] + 15 == c["minute"]
-            and len(set.intersection(*(x["dates"] for x in groups[-1]), c["dates"]))
-            >= 3
+            and cohort([*groups[-1], c])[0]
         ):
             groups[-1].append(c)
         else:
             groups.append([c])
     patterns = []
     for group in groups:
+        valid, sample_dates, eligible, observed_at, evidence = cohort(group)
+        if not valid:
+            continue
         first, last = group[0]["minute"], group[-1]["minute"] + 15
         start, end = at_minute(target, first, tz), at_minute(target, last, tz)
         if (
@@ -160,7 +178,6 @@ def discover(bins, visits, day, timezone, now):
         ident = hashlib.sha256(
             f"{timezone}:{target.weekday()}:{first}:{last}:{c['state_id']}".encode()
         ).hexdigest()[:24]
-        sample_dates = set.intersection(*(x["dates"] for x in group))
         # Visits remain point context. No visit-to-next-visit dwell is created.
         domains = sorted(
             {
@@ -173,7 +190,7 @@ def discover(bins, visits, day, timezone, now):
                 < last
             }
         )[:20]
-        n = len(set.intersection(*(x["eligible"] for x in group)))
+        n = len(eligible)
         hit = len(sample_dates)
         if hit / n < 0.6:
             continue
@@ -187,10 +204,8 @@ def discover(bins, visits, day, timezone, now):
                 support=hit,
                 opportunities=n,
                 distinct_weeks=len({d.isocalendar()[:2] for d in sample_dates}),
-                observed_at=max(x["observed_at"] for x in group),
-                evidence=list(dict.fromkeys(e for x in group for e in x["evidence"]))[
-                    -5:
-                ],
+                observed_at=observed_at,
+                evidence=evidence,
                 descriptors=c["descriptors"],
                 website_visit_context=domains,
                 confidence=min(0.85, 0.5 + 0.3 * hit / n + 0.01 * min(n, 5)),
