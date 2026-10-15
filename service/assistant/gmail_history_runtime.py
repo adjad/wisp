@@ -112,6 +112,7 @@ class _Job:
     bridge: BridgeProtocol | None = None
     state: str = "off"
     authority: object = None
+    detail: str = ""
 
 
 class HistoryHost:
@@ -216,6 +217,7 @@ class HistoryHost:
                         and isinstance(labels.get(account.account_id,""),str) else ""),
                     account_set_revision=account.account_set_revision,
                     control_revision=self._revisions.get(account.account_id, 0), state=state, counts=counts,
+                    detail=job.detail if job else "",
                     semantic_processing="separate", scope=(dict(start=job.scope.start, end=job.scope.end,
                         selection=job.scope.selection, message_cap=job.scope.message_cap) if job else None)))
             return dict(version=1, session=self._session,
@@ -288,6 +290,36 @@ class HistoryHost:
                     raise HistoryUnavailable("Gmail history could not start") from None
             return self.status()
 
+    def worker_jobs(self):
+        """Pure current explicitly started jobs; never restores an old Start."""
+        with self._lock:
+            accounts = self._accounts()
+            rows = []
+            for ident, job in self._jobs.items():
+                if self._permission(job) is None or job.bridge is None or job.account not in accounts:
+                    continue
+                value = job.bridge.status()
+                state = value.get("state")
+                if state not in {"waiting","running","capped","exhausted"}:
+                    continue
+                pending = value.get("pending",0)
+                rows.append(dict(account_id=ident,revision=job.revision,
+                    acquisition_pending=(state in {"waiting","running"} or type(pending) is int and pending > 0)))
+            return tuple(rows)
+
+    def pause_job(self, ident, revision, reason):
+        """Withdraw only the exact failing worker, without pausing a new Start."""
+        with self._lock, history_source_guard():
+            job = self._jobs.get(ident)
+            if job is None or job.revision != revision:
+                return
+            job.permission = None
+            job.state = "paused"
+            job.detail = reason
+            if job.bridge is not None:
+                job.bridge.invalidate("paused")
+            self._revisions[ident] = self._revisions.get(ident,0)+1
+
     def cached_getters(self):
         with self._lock:
             getters = []
@@ -304,12 +336,13 @@ class HistoryHost:
                 getters.append(getter)
             return tuple(getters)
 
-    async def step(self, ident, *, http, budget):
+    async def step(self, ident, *, http, budget, revision=None):
         """One explicitly budgeted source step; no scheduler or default transport."""
         with self._lock:
             job = self._jobs.get(ident)
             if (self._closed or job is None or self._permission(job) is None or job.bridge is None
-                    or job.account not in self._accounts()):
+                    or job.account not in self._accounts()
+                    or revision is not None and revision != job.revision):
                 raise HistoryUnavailable("No current explicitly started history job")
             bridge = job.bridge
         await bridge.step(http=http, budget=budget)
