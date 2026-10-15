@@ -57,6 +57,11 @@ class PublicHistoryBackend:
         from service import gmail_source
         return tuple(row.account for row in gmail_source.history_account_status())
 
+    def observe_accounts(self):
+        """Explicit worker boundary only; getters never call this method."""
+        from service import gmail_source
+        return gmail_source.refresh_history_configuration()
+
     def account_labels(self):
         from service import gmail_source
         return {row.account.account_id:row.display_label for row in gmail_source.history_account_status()}
@@ -306,6 +311,12 @@ class HistoryHost:
                 rows.append(dict(account_id=ident,revision=job.revision,
                     acquisition_pending=(state in {"waiting","running"} or type(pending) is int and pending > 0)))
             return tuple(rows)
+
+    def observe_accounts(self):
+        # Resolve source configuration outside both the host and source locks.
+        observe = getattr(self._backend,"observe_accounts",None)
+        if observe is not None and not self._closed:
+            observe()
 
     def pause_job(self, ident, revision, reason):
         """Withdraw only the exact failing worker, without pausing a new Start."""

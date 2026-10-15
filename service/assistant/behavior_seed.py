@@ -9,7 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from contextlib import nullcontext
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -51,6 +51,43 @@ def _range(value):
 
 def _choice(value, allowed, default="unknown"):
     return value if isinstance(value, str) and value in allowed else default
+
+
+def record_metadata(source, raw):
+    """Exact normalized identity/revision without retaining source text.
+
+    Used for progress/backpressure across a byte-capped interpretation batch.
+    It grants no eligibility/currentness; the caller still needs fresh receipts.
+    """
+    if not isinstance(raw,Mapping) or source not in SOURCES:
+        return None
+    identity,text = raw.get("id"),raw.get("text")
+    if (not isinstance(identity,str) or not 1 <= len(identity) <= 1000
+            or not isinstance(text,str) or not text.strip() or len(text) > MAX_RECORD_CHARS
+            or _choice(raw.get("status"),{"done","completed","cancelled","dismissed"}) != "unknown"
+                and not (source == "reminders" and raw.get("evidence_basis") == "recorded_completion")):
+        return None
+    basis = _choice(raw.get("evidence_basis"),{"scheduled","recorded_completion","observed","source_statement"})
+    if source == "calendar":
+        basis = "scheduled"
+    elif source in {"email","messages","notes"}:
+        basis = "source_statement"
+    time_basis,stamp = _choice(raw.get("time_basis"),{"source_timestamp","scheduled_time","completion_time"}),raw.get("source_time")
+    if source == "notes" or time_basis == "unknown" or not _number(stamp):
+        time_basis,stamp = "unknown",None
+    direction = _choice(raw.get("direction"),{"incoming","outgoing"})
+    status = _choice(raw.get("status"),{"active","pending"})
+    try:
+        ident = source+":"+hashlib.sha256(identity.encode()).hexdigest()[:32]
+        revision = hashlib.sha256(json.dumps([text,stamp,time_basis,basis,direction,status],ensure_ascii=False).encode()).hexdigest()
+    except UnicodeError:
+        return None
+    reference = raw.get("reference")
+    reference = {str(k):v for k,v in reference.items() if isinstance(k,str) and len(k) <= 80
+                 and isinstance(v,str) and len(v) <= 1000} if isinstance(reference,Mapping) and len(reference) <= 6 else {}
+    return dict(id=ident,source=source,revision=revision,source_time=stamp,time_basis=time_basis,
+        evidence_basis=basis,direction=direction,reference=reference or {"source":source,"id":ident},
+        ordering_at=raw.get("ordering_at") if _number(raw.get("ordering_at")) else stamp)
 
 
 def prepare(snapshots):
@@ -122,29 +159,12 @@ def prepare(snapshots):
                 info["skipped"] += 1
                 continue
             seen.add(ident)
-            basis = _choice(raw.get("evidence_basis"), {"scheduled", "recorded_completion", "observed", "source_statement"})
-            if source == "calendar":
-                basis = "scheduled"
-            elif source in {"email", "messages", "notes"}:
-                basis = "source_statement"
-            time_basis, stamp = _choice(raw.get("time_basis"), {"source_timestamp", "scheduled_time", "completion_time"}), raw.get("source_time")
-            if time_basis == "unknown" or not _number(stamp):
-                time_basis, stamp = "unknown", None
-            # Notes lack an original utterance date. Even a caller-supplied
-            # modified_at/source_time must not anchor relative words in prose.
-            if source == "notes":
-                time_basis, stamp = "unknown", None
-            direction = _choice(raw.get("direction"), {"incoming", "outgoing"})
-            status = _choice(raw.get("status"), {"active", "pending"})
-            revision = hashlib.sha256(json.dumps([text, stamp, time_basis, basis, direction, status], ensure_ascii=False).encode()).hexdigest()
-            reference = raw.get("reference")
-            reference = {str(k):v for k,v in reference.items() if isinstance(k, str) and len(k) <= 80
-                         and isinstance(v, str) and len(v) <= 1000} if isinstance(reference, Mapping) and len(reference) <= 6 else {}
-            records.append(dict(id=ident, source=source, revision=revision, text=text,
-                                source_time=stamp, time_basis=time_basis, evidence_basis=basis,
-                                direction=direction,
-                                publication_at=snap.published_at if _number(snap.published_at) else None,
-                                reference=reference or {"source": source, "id": ident}))
+            metadata = record_metadata(source,raw)
+            if metadata is None:
+                info["skipped"] += 1
+                continue
+            records.append(dict(metadata,text=text,
+                publication_at=snap.published_at if _number(snap.published_at) else None))
             used += size
             source_bytes += size
             info["eligible"] += 1
@@ -193,7 +213,7 @@ def context_for(anchors, records):
     for r in selected:
         # Opaque native references are unnecessary in a semantic prompt. Keep
         # them only in the current host snapshot for later source resolution.
-        r = {k:v for k,v in r.items() if k not in {"reference", "publication_at"}}
+        r = {k:v for k,v in r.items() if k not in {"reference", "publication_at", "ordering_at"}}
         n = len(json.dumps(r, ensure_ascii=False).encode())
         if size+n <= MAX_INPUT_BYTES:
             result.append(r)
@@ -211,6 +231,10 @@ class Seed:
             with publication():
                 self.index.reset()
             return dict(state="off", sources=self.index.status([]), analyzed=0)
+        # Rotate finite byte-capped input before normalization so completed
+        # prefix records cannot keep an unread tail out of every later pass.
+        snapshots = tuple(replace(s,records=self.index.prioritize(s.source,s.records))
+                          if isinstance(s,Snapshot) else s for s in snapshots)
         records, manifests, receipts = prepare(snapshots)
         guard = lambda: _current(receipts, admit)
         with publication():

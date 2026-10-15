@@ -301,6 +301,8 @@ def public_host(monkeypatch):
     monkeypatch.setattr(G,"load_config",lambda:source_config)
     G.refresh_history_configuration()
     clock, calls, hook = [NOW], [], [None]
+    token_owners = {}
+    messages = {"51":message("51",TEXT,int(NOW-60))}
     backend = PublicHistoryBackend(clock=lambda:clock[0],monotonic=lambda:0)
     h = HistoryHost(backend=backend)
     h.bind(enabled=True,settings={"email":True},epoch="consent",role="synthetic-local")
@@ -313,18 +315,24 @@ def public_host(monkeypatch):
         if str(request.url) == G.TOKEN_URL:
             form = parse_qs(request.content.decode())
             assert form["client_id"] == ["configured-client"]
-            assert form["refresh_token"] == ["configured-refresh"]
-            return httpx.Response(200,json=dict(access_token="server-issued",scope=G.SCOPE,
+            owner = next((address for address,item in source_config["accounts"].items()
+                          if item["refresh_token"] == form["refresh_token"][0]),None)
+            assert owner is not None
+            bearer = "server-issued" if owner == "synthetic@example.invalid" else "server-issued-"+owner
+            token_owners[bearer] = owner
+            return httpx.Response(200,json=dict(access_token=bearer,scope=G.SCOPE,
                 token_type="Bearer",expires_in=3600))
-        assert request.headers["Authorization"] == "Bearer server-issued"
+        bearer = request.headers["Authorization"].removeprefix("Bearer ")
+        assert bearer in token_owners
         if request.url.path.endswith("/profile"):
-            return httpx.Response(200,json={"emailAddress":"synthetic@example.invalid"})
+            return httpx.Response(200,json={"emailAddress":token_owners[bearer]})
         if request.url.path.endswith("/messages"):
-            return httpx.Response(200,json={"messages":[{"id":"51"}]})
-        return httpx.Response(200,json=message("51",TEXT,int(NOW-60)))
+            return httpx.Response(200,json={"messages":[{"id":ident} for ident in messages]})
+        return httpx.Response(200,json=messages[request.url.path.rsplit("/",1)[-1]])
     http = G.HistoryHTTPClient.synthetic(server)
     yield SimpleNamespace(host=h,backend=backend,http=http,calls=calls,clock=clock,hook=hook,
-                          source_config=source_config,account=h.status()["accounts"][0]["account_id"])
+                          source_config=source_config,account=h.status()["accounts"][0]["account_id"],
+                          messages=messages,server=server)
     h.invalidate("fixture complete",close=True)
     asyncio.run(http.aclose())
 

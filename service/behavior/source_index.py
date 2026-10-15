@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import math
+import hashlib
+from collections.abc import Mapping
 
 SOURCES = ("email", "messages", "notes", "calendar", "reminders")
 MAX_RECORDS = 10000
@@ -90,6 +92,7 @@ def _work_rank(row, now):
 class SourceIndex:
     def __init__(self, store):
         self.store = store
+        self._account_picks = {}
         with store._lock, store._conn:
             store._conn.executescript(SCHEMA)
 
@@ -102,6 +105,7 @@ class SourceIndex:
             self._reset(epoch)
 
     def _reset(self, epoch):
+        self._account_picks.clear()
         for table in ("behavior_seed_capacity", "behavior_seed_links", "behavior_seed_work", "behavior_seed_records", "behavior_seed_sources"):
             self.store._conn.execute("DELETE FROM " + table)
         for key, value in (("behavior_seed_epoch", epoch), ("behavior_seed_turn", 0), ("behavior_seed_version", VERSION),
@@ -242,31 +246,103 @@ class SourceIndex:
             self.store._conn.execute("UPDATE behavior_seed_records SET state='pending',retry_at=0 WHERE id=?", (ident,))
             released += 1
 
+    @staticmethod
+    def _account(record):
+        reference = record.get("reference")
+        account = reference.get("account_id") if isinstance(reference,Mapping) else None
+        return account if isinstance(account,str) else ""
+
+    @staticmethod
+    def _ordering(record):
+        value = record.get("ordering_at",record.get("source_time"))
+        return value if type(value) in (int,float) and math.isfinite(value) else float("-inf")
+
+    def prioritize(self, source, records):
+        """Fair finite input order before the unchanged source byte budget.
+
+        Only ordering metadata is used; it never becomes an utterance timestamp.
+        These process-local choices restore neither permission nor source proof.
+        """
+        if source not in SOURCES:
+            return records
+        with self.store._lock:
+            known = {row["id"]:dict(row) for row in self.store._conn.execute(
+                "SELECT id,state,cursor,attempted_at FROM behavior_seed_records WHERE source=?",(source,))}
+        groups, service = {}, {}
+        for pos, raw in enumerate(records):
+            if not isinstance(raw,Mapping) or not isinstance(raw.get("id"),str):
+                account, prior = "", None
+            else:
+                account = self._account(raw)
+                try:
+                    ident = source+":"+hashlib.sha256(raw["id"].encode()).hexdigest()[:32]
+                    prior = known.get(ident)
+                except UnicodeError:
+                    prior = None
+            service[account] = max(service.get(account,0),prior["attempted_at"] if prior else 0)
+            key = (2 if prior and prior["state"] == "analyzed" else
+                   0 if prior and prior["cursor"] > 0 else 1,
+                   prior["attempted_at"] if prior and prior["cursor"] > 0 else 0,
+                   -self._ordering(raw) if isinstance(raw,Mapping) else float("inf"),pos)
+            groups.setdefault(account,[]).append((key,raw))
+        for values in groups.values():
+            values.sort(key=lambda item:item[0])
+        order = sorted(groups,key=lambda account:(service[account],account))
+        result = []
+        while any(groups.values()):
+            for account in order:
+                if groups[account]:
+                    result.append(groups[account].pop(0)[1])
+        return tuple(result)
+
     def select(self, records, *, now, limit=4):
-        """Round-robin sources and least-recently attempted record revisions."""
+        """Rotate sources/accounts; alternate recent work and retained backlog."""
         if type(limit) is not int or not 1 <= limit <= 8:
             raise ValueError("Invalid seed batch size")
         current = {r["id"]: r for r in records}
-        queues = {s: [] for s in SOURCES}
+        queues = {s: {} for s in SOURCES}
+        service = {}
         with self.store._lock, self.store._conn:
             self._release_capacity(current, now, limit)
-            rows = self.store._conn.execute("SELECT * FROM behavior_seed_records WHERE state IN ('pending','deferred') AND retry_at<=? "
-                                            "ORDER BY attempted_at,id", (now,)).fetchall()
+            all_rows = self.store._conn.execute("SELECT * FROM behavior_seed_records ORDER BY attempted_at,id").fetchall()
             turn = self.store.meta_get("behavior_seed_turn", 0)
             turn = turn if type(turn) is int else 0
             self.store._conn.execute("INSERT INTO meta VALUES ('behavior_seed_turn',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                      (json.dumps((turn+1) % len(SOURCES)),))
-        for row in rows:
+        for row in all_rows:
             r = current.get(row["id"])
             if r is not None and r["revision"] == row["revision"]:
+                account = self._account(r)
+                key = (r["source"],account)
+                service[key] = max(service.get(key,0),row["attempted_at"])
+                if row["state"] not in {"pending","deferred"} or row["retry_at"] > now:
+                    continue
                 text = r["text"][row["cursor"]:row["cursor"] + PASSAGE_CHARS].encode()[:PASSAGE_BYTES].decode("utf-8", errors="ignore")
-                queues[r["source"]].append(dict(r, text=text,
-                                                text_start=row["cursor"]))
+                queues[r["source"]].setdefault(account,[]).append((row,dict(r,text=text,text_start=row["cursor"])))
+        active = set(service)
+        self._account_picks = {key:value for key,value in self._account_picks.items() if key in active}
+        def pick(source):
+            accounts = [account for account,values in queues[source].items() if values]
+            if not accounts:
+                return None
+            account = min(accounts,key=lambda account:(service[(source,account)],local_picks.get((source,account),0),account))
+            key = (source,account)
+            values = queues[source][account]
+            recent = self._account_picks.get(key,0) % 2 == 0
+            chosen = (max(range(len(values)),key=lambda i:(self._ordering(values[i][1]),values[i][1]["id"])) if recent else
+                min(range(len(values)),key=lambda i:(0 if values[i][0]["cursor"] > 0 else 1,
+                    values[i][0]["attempted_at"],values[i][0]["id"])))
+            _, record = values.pop(chosen)
+            self._account_picks[key] = self._account_picks.get(key,0)+1
+            service[key] = now
+            local_picks[key] = local_picks.get(key,0)+1
+            return record
         selected = []
-        while len(selected) < limit and any(queues.values()):
+        local_picks = {}
+        while len(selected) < limit and any(values for groups in queues.values() for values in groups.values()):
             for source in SOURCES[turn:] + SOURCES[:turn]:
-                if queues[source] and len(selected) < limit:
-                    selected.append(queues[source].pop(0))
+                if len(selected) < limit and (record := pick(source)) is not None:
+                    selected.append(record)
         return selected
 
     def finish(self, anchors, context, proposals, *, epoch, now, admit, work=()):
@@ -378,6 +454,14 @@ class SourceIndex:
                                         if manifest["state"] == "available" else manifest["state"],
                                   completion_scope="bounded current publication; never an exhaustive source history")
         return result
+
+    def analyzed_ids(self, records):
+        """Current exact-revision progress for host-side acquisition backpressure."""
+        current = {r["id"]:r["revision"] for r in records}
+        with self.store._lock:
+            return {row["id"] for row in self.store._conn.execute(
+                "SELECT id,revision FROM behavior_seed_records WHERE state='analyzed'")
+                if current.get(row["id"]) == row["revision"]}
 
     def prune(self, *, now, retention=180*86400):
         with self.store._lock, self.store._conn:

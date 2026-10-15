@@ -41,6 +41,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -223,7 +224,8 @@ class BehaviorRuntime:
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
                  behavior_sources_fn=None, behavior_interpreter=None, role_key_fn=None,
-                 gmail_history_backend=None,
+                 gmail_history_backend=None, gmail_history_client_factory=None,
+                 history_monotonic: Callable[[], float] = time.monotonic,
                  clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
         self._local_factory = local_factory or _default_local_factory
@@ -235,8 +237,14 @@ class BehaviorRuntime:
         self._sources_fn = behavior_sources_fn
         self._interpreter = behavior_interpreter
         self._role_key_fn = role_key_fn
-        from service.assistant.gmail_history_runtime import HistoryHost
-        self._email_history = HistoryHost(backend=gmail_history_backend)
+        from service.assistant.gmail_history_runtime import HistoryHost, PublicHistoryBackend
+        from service.assistant.behavior_history_driver import HistoryDriver
+        self._email_history = HistoryHost(backend=gmail_history_backend if gmail_history_backend is not None
+            else PublicHistoryBackend(clock=clock,monotonic=history_monotonic))
+        self._history_driver = HistoryDriver(self._email_history,client_factory=gmail_history_client_factory,
+            monotonic=history_monotonic)
+        self._history_discovery_at = None
+        self._history_monotonic = history_monotonic
         self._availability_cache = None
         self._seed_status = None
         self._planning_store = None
@@ -401,6 +409,46 @@ class BehaviorRuntime:
         with self._in_flight(), self._gate:
             self._bind_history()
             return self._email_history.control(body)
+
+    def _history_backlog(self):
+        """Cached source proofs plus metadata-only progress; no source I/O/model."""
+        from service.assistant.behavior_sources import capture
+        from service.assistant.behavior_seed import record_metadata
+        batch = capture({"email":True},getters={"email":lambda **kwargs:None},now=self.clock(),
+                        gmail_history_getters=self._email_history.cached_getters)
+        records = [metadata for snapshot in batch.snapshots for raw in snapshot.records
+                   if (metadata := record_metadata(snapshot.source,raw)) is not None]
+        index = self.local_engine().seed_index(create=False)
+        analyzed = index.analyzed_ids(records) if index is not None else set()
+        counts,done = {},{}
+        for record in records:
+            account = record["reference"].get("account_id")
+            counts[account] = counts.get(account,0)+1
+            if record["id"] in analyzed:
+                done[account] = done.get(account,0)+1
+        return {row["account_id"]:max(0,counts.get(row["account_id"],0)-done.get(row["account_id"],0))
+                for row in self._email_history.status()["accounts"]}
+
+    def _history_worker_state(self):
+        """Worker-only discovery; construction, status and planning never call it."""
+        with self._work_lock:
+            if not self.live():
+                return None
+            engine = self.local_engine()
+            if not hasattr(engine,"signal_settings"):
+                return None
+            settings = engine.signal_settings()
+            if not settings["settings"]["email"]:
+                return None
+            self._bind_history(settings)
+            moment = self._history_monotonic()
+            if (type(moment) not in (int,float) or not math.isfinite(moment)):
+                return None
+            if self._history_discovery_at is None or moment-self._history_discovery_at >= TICK_S:
+                self._history_discovery_at = moment
+                self._email_history.observe_accounts()
+                self._bind_history(settings)
+            return self._history_backlog() if self.live() else None
 
     @staticmethod
     def _seed_epoch(settings, role):
@@ -845,7 +893,10 @@ class BehaviorRuntime:
                 changed = self._ingest(store, now, stamps) or changed
                 stamps["ingest"] = now
                 self.last["ingest"] = now
-            if now - self._availability_attempt >= INGEST_EVERY_S:
+            explicit = bool(self._email_history.worker_jobs())
+            fast_pending = explicit and any(self._history_backlog().values())
+            if self._history_driver.analysis_due(
+                    wanted=fast_pending or now-self._availability_attempt >= INGEST_EVERY_S,explicit=explicit):
                 self._refresh_availability(now)
             nudges: list = []
             try:
@@ -1068,9 +1119,13 @@ class BehaviorRuntime:
             finally:
                 del self._availability_cancel.event
         try:
+            backlog = await asyncio.to_thread(self._history_worker_state)
+            if backlog is not None and self.live():
+                await self._history_driver.advance(pending=lambda account:backlog.get(account,0))
             nudges, key = await asyncio.to_thread(run_work)
         except asyncio.CancelledError:
             cancellation.set()
+            self._email_history.invalidate("Behavior tick cancelled")
             self._availability_cache = None
             raise
         published: list[dict] = []

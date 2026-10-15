@@ -134,6 +134,52 @@ def test_all_five_sources_get_turns_with_four_anchor_budget(index):
     assert all(result["sources"][s]["analyzed"] > 0 for s in SOURCES)
 
 
+def test_recent_and_old_backlog_share_turns_across_accounts(index):
+    raw = []
+    for account in ("one","two"):
+        raw += [dict(id=f"{account}-{i}",text=f"Arbitrary complete passage {account} {i}.",
+            source_time=None,time_basis="unknown",ordering_at=NOW-10000+i,
+            reference={"provider":"gmail","account_id":account}) for i in range(8)]
+    old_ids = {r["id"] for r in prepare([Snapshot("email",tuple(raw),enabled=True,available=True,
+                        current=lambda:True)])[0]}
+    selected = []
+    for turn in range(8):
+        for account in ("one","two"):
+            raw.append(dict(id=f"recent-{account}-{turn}",text=f"A newly arrived complete passage {account} {turn}.",
+                source_time=None,time_basis="unknown",ordering_at=NOW+turn,
+                reference={"provider":"gmail","account_id":account}))
+        def analyze(context,**kwargs):
+            selected.append(context)
+            return {"links":[]}
+        Seed(index).run([Snapshot("email",tuple(raw),enabled=True,available=True,current=lambda:True)],
+            epoch="consent-one",now=NOW+turn*30,analysis_enabled=True,analyze=analyze,admit=lambda:True)
+        assert len(selected[-1]) <= 4
+        assert {r["reference"]["account_id"] for r in prepare([Snapshot("email",tuple(raw),
+            enabled=True,available=True,current=lambda:True)])[0] if r["id"] in {c["id"] for c in selected[-1]}} == {"one","two"}
+        if turn == 0:
+            assert sum("newly arrived" in r["text"] for r in selected[-1]) == 2
+        assert all(r["source_time"] is None for r in selected[-1])
+        assert all("ordering_at" not in r for r in selected[-1])
+    assert old_ids <= {r["id"] for batch in selected for r in batch}
+
+
+def test_byte_capped_seed_moves_past_already_analyzed_input_prefix(index,monkeypatch):
+    from service.assistant import behavior_seed
+    monkeypatch.setattr(behavior_seed,"MAX_BYTES",500)
+    publication = snap(n=8,text="A bounded complete passage with enough text to fill the small test budget. ")
+    all_records = []
+    for raw in publication.records:
+        all_records += prepare([replace(publication,records=(raw,))])[0]
+    seen = set()
+    def analyze(context,**kwargs):
+        seen.update(r["id"] for r in context)
+        return {"links":[]}
+    for turn in range(8):
+        Seed(index).run([publication],epoch="consent-one",now=NOW+turn*30,analysis_enabled=True,
+            analyze=analyze,admit=lambda:True)
+    assert seen == {r["id"] for r in all_records}
+
+
 @pytest.mark.parametrize("bad", [None, {}, {"links": {}}, {"actions": []}, {"links": [{"action": "send"}]}])
 def test_invalid_analysis_is_deferred_not_counted_as_analyzed(index, bad):
     seed = Seed(index)

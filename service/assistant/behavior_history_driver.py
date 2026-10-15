@@ -35,6 +35,22 @@ class HistoryDriver:
         self._last_dispatch = None
         self._last_account = None
         self._singleflight = threading.Lock()
+        self._analysis_lock = threading.Lock()
+        self._last_analysis = None
+
+    def analysis_due(self, *, wanted, explicit):
+        """Faster explicit scans share one monotonic interpretation slot."""
+        if not wanted:
+            return False
+        with self._analysis_lock:
+            if not explicit and self._last_analysis is None:
+                return True  # Preserve ordinary runtime cadence without a scan.
+            now = self._monotonic()
+            if (type(now) not in (int,float) or not math.isfinite(now)
+                    or self._last_analysis is not None and now-self._last_analysis < SPACING_SECONDS):
+                return False
+            self._last_analysis = now
+            return True
 
     async def advance(self, *, pending=lambda account:0):
         if not self._singleflight.acquire(blocking=False):
