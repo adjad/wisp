@@ -12,6 +12,16 @@ import math
 import hashlib
 from collections.abc import Mapping
 
+from service.publication_authority import PublicationLease, PublicationUnavailable
+
+
+class CallerTransactionActive(PublicationUnavailable):
+    """Publication was refused without changing a caller-owned transaction."""
+
+
+class _PublicationDeclined(Exception):
+    pass
+
 SOURCES = ("email", "messages", "notes", "calendar", "reminders")
 MAX_RECORDS = 10000
 MAX_EDGES = 1000
@@ -346,65 +356,110 @@ class SourceIndex:
         return selected
 
     def finish(self, anchors, context, proposals, *, epoch, now, admit, work=()):
-        """CAS progress and validated links together, or publish neither.
+        """Compatibility entry while callers acquire prepared source witnesses.
 
-        The host's admission guard includes live source receipts, permissions,
-        cancellation and its publication gate; no callback here grants consent.
+        Full admission is performed before the Store lock or transaction. It
+        does not provide the ordered source-witness contract of finish_prepared.
         """
-        from service.behavior.associations import validate
-        edges = validate(proposals, context)
-        # Never acquire the host's consent gate while holding the Store lock.
-        # Seed holds that publication gate before entering this method.
         if not admit():
             return False
-        with self.store._lock, self.store._conn:
-            if self._epoch() != epoch:
+        return self._finish_atomic(anchors, context, proposals, epoch=epoch, now=now, work=work)
+
+    def finish_prepared(self, anchors, context, proposals, *, epoch, now, lease, work=()):
+        """Publish under an already-held outer application publication lease.
+
+        The caller prepares full source/config admission before taking that
+        lease, then takes its Runtime gate and finally this Store lock. Only
+        typed memory checks run here; no source or admission callback runs in
+        the transaction. The caller retains the lease through our commit.
+        """
+        if type(lease) is not PublicationLease or not lease.current():
+            return False
+        return self._finish_atomic(anchors, context, proposals, epoch=epoch, now=now, work=work, lease=lease)
+
+    def _finish_atomic(self, anchors, context, proposals, *, epoch, now, work, lease=None):
+        from service.behavior.associations import validate
+        edges = validate(proposals, context)
+        with self.store._lock:
+            conn = self.store._conn
+            # A connection context would commit unrelated outer work. Refuse
+            # before entering one, issuing SQL, or changing any progress state.
+            if conn.in_transaction:
+                raise CallerTransactionActive("Seed publication was not applied inside a caller-owned transaction")
+            if lease is not None and not lease.current():
                 return False
-            for r in anchors:
-                old = self.store._conn.execute("SELECT revision,cursor FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()
-                if old is None or old["revision"] != r["revision"] or old["cursor"] != r["text_start"]:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                if not self._write_finish(anchors, edges, epoch=epoch, now=now, work=work, lease=lease):
+                    raise _PublicationDeclined()
+                # Logical publication decision: expiry after this check and
+                # during disk commit is not a physical commit-before-deadline
+                # promise. Cooperating revokers remain outside the outer lease.
+                if lease is not None and not lease.current():
+                    raise _PublicationDeclined()
+                conn.commit()
+            except BaseException as error:
+                if conn.in_transaction:
+                    try:
+                        conn.rollback()
+                    except BaseException as cleanup:
+                        error.add_note("Seed transaction rollback failed: " + type(cleanup).__name__)
+                        raise error from cleanup
+                if isinstance(error, _PublicationDeclined):
                     return False
-            for e in edges:
-                for end in (e["left"], e["right"]):
-                    old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
-                    if old is None or old["revision"] != end["revision"]:
-                        return False
-            for w in work:
-                end = w["endpoint"]
+                raise
+            return True
+
+    def _write_finish(self, anchors, edges, *, epoch, now, work, lease):
+        if lease is not None and not lease.current():
+            return False
+        if self._epoch() != epoch:
+            return False
+        for r in anchors:
+            old = self.store._conn.execute("SELECT revision,cursor FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()
+            if old is None or old["revision"] != r["revision"] or old["cursor"] != r["text_start"]:
+                return False
+        for e in edges:
+            for end in (e["left"], e["right"]):
                 old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
                 if old is None or old["revision"] != end["revision"]:
                     return False
-            completed = []
-            for r in anchors:
-                end = r["text_start"] + len(r["text"])
-                total = self.store._conn.execute("SELECT chars FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()[0]
-                done = end >= total
-                if done:
-                    completed.append(r["id"])
-                self.store._conn.execute("UPDATE behavior_seed_records SET cursor=?,covered=?,state=?,attempts=attempts+1,"
-                                         "attempted_at=?,retry_at=0 WHERE id=?",
-                                         (total if done else max(r["text_start"]+1, end-OVERLAP), end,
-                                          "analyzed" if done else "pending", now, r["id"]))
-            for e in edges:
-                e = dict(e, analyzed_at=now)
-                self.store._conn.execute("INSERT INTO behavior_seed_links VALUES (?,?,?) ON CONFLICT(id) DO NOTHING",
-                                         (e["id"], json.dumps(e, sort_keys=True, allow_nan=False), now))
-            self._expire_work(now)
-            for w in work:
-                if _future_range(w, now) is False:
-                    _count_loss(self.store._conn, w["endpoint"], "expired_derivations")
-                    continue
-                self.store._conn.execute("INSERT INTO behavior_seed_work VALUES (?,?,?) ON CONFLICT(id) "
-                                         "DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at",
-                                         (w["id"], json.dumps(w, sort_keys=True, allow_nan=False), now))
-            self._trim("work", now)
-            self._trim("links", now)
-            for ident in completed:
-                # A reservation lasts through every passage. A fresh eviction
-                # during this retry stays deferred instead of being forgiven.
-                self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE record_id=? AND retrying=1", (ident,))
-                self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=0 WHERE record_id=? AND retrying=2", (ident,))
-            return True
+        for w in work:
+            end = w["endpoint"]
+            old = self.store._conn.execute("SELECT revision FROM behavior_seed_records WHERE id=?", (end["record_id"],)).fetchone()
+            if old is None or old["revision"] != end["revision"]:
+                return False
+        completed = []
+        for r in anchors:
+            end = r["text_start"] + len(r["text"])
+            total = self.store._conn.execute("SELECT chars FROM behavior_seed_records WHERE id=?", (r["id"],)).fetchone()[0]
+            done = end >= total
+            if done:
+                completed.append(r["id"])
+            self.store._conn.execute("UPDATE behavior_seed_records SET cursor=?,covered=?,state=?,attempts=attempts+1,"
+                                     "attempted_at=?,retry_at=0 WHERE id=?",
+                                     (total if done else max(r["text_start"]+1, end-OVERLAP), end,
+                                      "analyzed" if done else "pending", now, r["id"]))
+        for e in edges:
+            e = dict(e, analyzed_at=now)
+            self.store._conn.execute("INSERT INTO behavior_seed_links VALUES (?,?,?) ON CONFLICT(id) DO NOTHING",
+                                     (e["id"], json.dumps(e, sort_keys=True, allow_nan=False), now))
+        self._expire_work(now)
+        for w in work:
+            if _future_range(w, now) is False:
+                _count_loss(self.store._conn, w["endpoint"], "expired_derivations")
+                continue
+            self.store._conn.execute("INSERT INTO behavior_seed_work VALUES (?,?,?) ON CONFLICT(id) "
+                                     "DO UPDATE SET payload=excluded.payload,created_at=excluded.created_at",
+                                     (w["id"], json.dumps(w, sort_keys=True, allow_nan=False), now))
+        self._trim("work", now)
+        self._trim("links", now)
+        for ident in completed:
+            # A reservation lasts through every passage. A fresh eviction
+            # during this retry stays deferred instead of being forgiven.
+            self.store._conn.execute("DELETE FROM behavior_seed_capacity WHERE record_id=? AND retrying=1", (ident,))
+            self.store._conn.execute("UPDATE behavior_seed_capacity SET retrying=0 WHERE record_id=? AND retrying=2", (ident,))
+        return True
 
     def defer(self, anchors, *, epoch, now):
         with self.store._lock, self.store._conn:

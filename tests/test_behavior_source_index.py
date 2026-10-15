@@ -305,6 +305,174 @@ def _finish(index, records, *, now=NOW, work=()):
     return anchors
 
 
+def _prepared_case(index):
+    from service.publication_authority import Authority, Clock, Witness
+    records, manifests, _ = prepare([snap(), snap("messages"), snap("calendar")])
+    index.sync(records, manifests, epoch="consent-one", now=NOW)
+    anchors = index.select(records, now=NOW)
+    authority = Authority("synthetic-prepared-source")
+    authority.publish()
+    clock = Clock(live=False)
+    clock.observe(NOW,100)
+    witness = Witness.combine(authority.token(clock=clock,expires_wall=NOW+10,expires_monotonic=110))
+    a,b,c = records
+    links = [dict(relation="possibly_related", left_id=a["id"], right_id=r["id"],
+                  left_quote=a["text"], right_quote=r["text"]) for r in (b,c)]
+    return records,anchors,links,authority,clock,witness
+
+
+def _seed_rows(index):
+    return {table:[tuple(row) for row in index.store._conn.execute("SELECT * FROM "+table+" ORDER BY 1")]
+            for table in ("meta","behavior_seed_sources","behavior_seed_records","behavior_seed_links",
+                          "behavior_seed_work","behavior_seed_capacity")}
+
+
+def test_prepared_finish_commits_progress_and_derivations_visible_to_another_connection(index,monkeypatch):
+    import sqlite3
+    from service import config
+    from service.publication_authority import publication
+    records,anchors,links,_,_,witness = _prepared_case(index)
+    traced = []
+    index.store._conn.set_trace_callback(traced.append)
+    def forbidden(*args,**kwargs):
+        raise AssertionError("Full admission/config was called inside prepared publication")
+    monkeypatch.setattr(config,"models_config",forbidden)
+    with publication(witness) as lease:
+        assert index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,
+                                     work=[_work(records[0],NOW+86400)],lease=lease)
+        assert lease.current() and not index.store._conn.in_transaction
+    assert any(sql == "BEGIN IMMEDIATE" for sql in traced) and "COMMIT" in traced
+    # The preexisting trace observer survives unchanged; no handler is installed.
+    count = len(traced)
+    path = index.store._conn.execute("PRAGMA database_list").fetchone()[2]
+    assert len(traced) == count+1
+    with sqlite3.connect(path) as reader:
+        assert reader.execute("SELECT count(*) FROM behavior_seed_work").fetchone()[0] == 1
+        assert reader.execute("SELECT count(*) FROM behavior_seed_links").fetchone()[0] == 2
+        assert reader.execute("SELECT count(*) FROM behavior_seed_records WHERE state='analyzed'").fetchone()[0] == 3
+
+
+def test_prepared_finish_refuses_outer_transaction_without_committing_or_rolling_it_back(index):
+    import sqlite3
+    from service.publication_authority import publication
+    from service.behavior.source_index import CallerTransactionActive
+    records,anchors,links,_,_,witness = _prepared_case(index)
+    conn = index.store._conn
+    conn.execute("INSERT INTO meta VALUES ('unrelated-outer-row','true')")
+    before = _seed_rows(index)
+    trace = []
+    conn.set_trace_callback(trace.append)
+    with publication(witness) as lease:
+        with pytest.raises(CallerTransactionActive,match="not applied"):
+            index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,lease=lease)
+    assert trace == [] and conn.in_transaction and _seed_rows(index) == before
+    conn.commit()  # Only the actual caller can commit its unrelated work.
+    with sqlite3.connect(conn.execute("PRAGMA database_list").fetchone()[2]) as reader:
+        assert reader.execute("SELECT value FROM meta WHERE key='unrelated-outer-row'").fetchone()[0] == "true"
+        assert reader.execute("SELECT count(*) FROM behavior_seed_links").fetchone()[0] == 0
+
+
+def test_prepared_finish_rolls_back_progress_links_work_loss_trim_and_capacity_on_expiry(index,monkeypatch):
+    from service.publication_authority import publication
+    import service.behavior.source_index as module
+    records,anchors,links,_,clock,witness = _prepared_case(index)
+    monkeypatch.setattr(module,"MAX_EDGES",1)
+    # Retained expired work must be restored too, along with its loss counter.
+    old = _work(records[0],NOW-86400,ident="prior-expired-work")
+    with index.store._conn:
+        index.store._conn.execute("INSERT INTO behavior_seed_work VALUES (?,?,?)",(old["id"],json.dumps(old),NOW-2*86400))
+    before = _seed_rows(index)
+    trims = []
+    original = index._trim
+    def trim(kind,now):
+        original(kind,now)
+        trims.append(kind)
+        if kind == "links":
+            assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_capacity").fetchone()[0] > 0
+            assert index.store.meta_get("behavior_seed_loss_counts") != {}
+            clock.observe(NOW+10,110)
+    monkeypatch.setattr(index,"_trim",trim)
+    with publication(witness) as lease:
+        assert not index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,
+                    lease=lease,work=[_work(r,NOW+(i+1)*86400) for i,r in enumerate(records)])
+    assert trims == ["work","links"] and not index.store._conn.in_transaction
+    assert _seed_rows(index) == before
+
+
+def test_prepared_finish_rolls_back_own_transaction_after_sql_failure(index):
+    import sqlite3
+    from service.publication_authority import publication
+    records,anchors,links,_,_,witness = _prepared_case(index)
+    before = _seed_rows(index)
+    index.store._conn.execute("CREATE TEMP TRIGGER reject_work BEFORE INSERT ON behavior_seed_work "
+                             "BEGIN SELECT RAISE(ABORT,'synthetic-write-failure'); END")
+    with publication(witness) as lease:
+        with pytest.raises(sqlite3.IntegrityError,match="synthetic-write-failure"):
+            index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,
+                                 work=[_work(records[0],NOW+86400)],lease=lease)
+    assert not index.store._conn.in_transaction and _seed_rows(index) == before
+
+
+def test_prepared_finish_rejects_missing_stale_or_closed_publication_lease(index):
+    from service.publication_authority import publication
+    records,anchors,links,authority,_,witness = _prepared_case(index)
+    before = _seed_rows(index)
+    assert not index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,lease=None)
+    with publication(witness) as lease:
+        pass
+    assert not index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,lease=lease)
+    authority.withdraw()
+    assert not index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,lease=lease)
+    assert _seed_rows(index) == before and not index.store._conn.in_transaction
+
+
+@pytest.mark.parametrize("boundary",["INSERT INTO behavior_seed_work","COMMIT"])
+def test_prepared_finish_reentrant_source_withdrawal_is_explicitly_not_applied(index,boundary):
+    from service.publication_authority import PublicationBusy,publication
+    records,anchors,links,authority,_,witness = _prepared_case(index)
+    attempts = []
+    def observe(sql):
+        if sql.startswith(boundary) and not attempts:
+            try:
+                authority.withdraw()
+            except PublicationBusy as error:
+                attempts.append(error)
+    index.store._conn.set_trace_callback(observe)
+    with publication(witness) as lease:
+        assert index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,
+                                     work=[_work(records[0],NOW+86400)],lease=lease)
+        assert len(attempts) == 1 and witness.current() and lease.current()
+    assert "not applied" in str(attempts[0]) and len(index.work()) == 1
+    authority.withdraw()  # A real retry outside publication is applied.
+    assert not witness.current()
+
+
+def test_prepared_finish_commits_before_concurrent_source_withdrawal_acknowledgement(index):
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from service.publication_authority import publication
+    records,anchors,links,authority,_,witness = _prepared_case(index)
+    attempted,acknowledged = threading.Event(),threading.Event()
+    tasks = []
+    def revoke():
+        attempted.set()
+        authority.withdraw()
+        acknowledged.set()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        def observe(sql):
+            if sql.startswith("INSERT INTO behavior_seed_work") and not tasks:
+                tasks.append(pool.submit(revoke))
+                assert attempted.wait(3) and not acknowledged.is_set()
+        index.store._conn.set_trace_callback(observe)
+        with publication(witness) as lease:
+            assert index.finish_prepared(anchors,records,links,epoch="consent-one",now=NOW,
+                                        work=[_work(records[0],NOW+86400)],lease=lease)
+            assert len(tasks) == 1 and attempted.is_set() and not acknowledged.is_set()
+            assert not index.store._conn.in_transaction and lease.current()
+        tasks[0].result(timeout=3)
+    assert acknowledged.is_set() and not witness.current() and len(index.work()) == 1
+
+
 def test_aged_derivations_reopen_still_current_exact_revision(index):
     records, manifests, _ = prepare([snap(n=1)])
     index.sync(records, manifests, epoch="consent-one", now=NOW)
