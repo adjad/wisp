@@ -633,3 +633,280 @@ def test_today_and_direct_workspace_share_calendar_admission(cached_sources, mon
                           supplied["preferences"], supplied["sources"], now=NOW)
     assert today["replay"]["sources"] == original["sources"]
     assert today["replay"]["expected_plan"] == expected
+
+
+@pytest.fixture
+def composed_header_sources(cached_sources, monkeypatch):
+    """Actual public header accessors over synthetic in-memory backing only."""
+    store, _, mail, *_ = cached_sources
+    account = "work@example.test"
+    def header(label=account, native_id=account, message="message", subject="Assignment due Friday"):
+        return "\x01".join(["H2", str(int(NOW)), "U", label, native_id,
+            "Course", "course@example.test", message, subject, message])
+    backing = {account: dict(headers=header(), headers_at=NOW, headers_verified=True,
+        headers_error="", history=None, raw=None)}
+    for name, value in {"_external_accounts": backing, "_swift_headers": "", "_headers": header(),
+        "_email_available": False, "_email_read_source": "local_index", "_email_reason": "Synthetic Mail closed",
+        "_native_headers_at": 0, "_native_source": "", "_swift_identity": [],
+        "_raw_emails": "PRIVATE_BODY_WITHOUT_ELIGIBLE_SNAPSHOT"}.items():
+        monkeypatch.setattr(mail, name, value)
+    monkeypatch.setattr(mail.time, "time", lambda: NOW)
+    return store, mail, backing, header
+
+
+@pytest.mark.parametrize("condition", ["current", "stale", "future", "error", "restored", "invalid_receipt"])
+def test_actual_email_accessor_gates_header_only_daily_evidence(composed_header_sources, condition):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    account = "work@example.test"
+    source = backing[account]
+    if condition == "stale": source["headers_at"] = NOW - 301
+    if condition == "future": source["headers_at"] = NOW + 1
+    if condition == "error": source["headers_error"] = "Synthetic disconnected account"
+    if condition == "restored": source["headers_verified"] = False
+    if condition == "invalid_receipt": source["headers_at"] = "unknown"
+    original_stamp = source["headers_at"]
+    assert mail.header_rows()  # Display cache alone remains readable.
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] is (condition == "current")
+    assert bool(result["records"]) is (condition == "current")
+    assert source["headers_at"] == original_stamp  # Assessment cannot renew a receipt.
+    assessed = run(e={"email": result})
+    assert "PRIVATE_BODY_WITHOUT_ELIGIBLE_SNAPSHOT" not in render(assessed)
+    if result["records"]:
+        assert result["records"][0]["quote"] == "Assignment due Friday"
+        assert "Header-only" in result["records"][0]["review_reason"]
+        assert assessed["attention"][0]["due_ts"] is None
+        assert assessed["attention"][0]["needs_review"]
+
+
+def test_actual_email_accessor_keeps_fresh_account_separate_from_stale_account(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, header = composed_header_sources
+    stale = "stale@example.test"
+    backing[stale] = dict(headers=header(stale, stale, "old", "Old assignment due Friday"),
+        headers_at=NOW - 301, headers_verified=True, headers_error="", history=None, raw=None)
+    monkeypatch.setattr(mail, "_headers", header() + "\n" + backing[stale]["headers"])
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and [r["title"] for r in result["records"]] == ["Assignment due Friday"]
+    assert len(mail.email_source_details(part="headers")) == 2
+
+
+def test_actual_email_accessor_fresh_empty_is_bounded_evidence(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    backing["work@example.test"]["headers"] = ""
+    monkeypatch.setattr(mail, "_headers", "")
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and not result["records"] and result["inspected"] == 0
+    assert "bounded/unverified" in result["detail"]
+
+
+def test_actual_email_accessor_preserves_distinct_native_ids_with_duplicate_labels(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, _, header = composed_header_sources
+    rows = header("Work", "native-one") + "\n" + header("Work", "native-two")
+    for name, value in {"_external_accounts": {}, "_headers": rows, "_swift_headers": rows,
+        "_email_available": True, "_email_read_source": "mail_app", "_native_headers_at": NOW}.items():
+        monkeypatch.setattr(mail, name, value)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and len(result["records"]) == 2
+    assert len({r["id"] for r in result["records"]}) == 2
+    assert len({r["reference"] for r in result["records"]}) == 2
+
+
+def test_actual_email_receipt_change_during_header_read_withholds_evidence(composed_header_sources, monkeypatch):
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, backing, _ = composed_header_sources
+    actual_rows = mail.header_rows
+    def changed_rows():
+        rows = actual_rows()
+        backing["work@example.test"]["headers_error"] = "Revoked during assessment"
+        return rows
+    monkeypatch.setattr(mail, "header_rows", changed_rows)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert not result["ready"] and not result["records"]
+
+
+def test_eligible_immutable_body_snapshot_precedes_actual_header_fallback(composed_header_sources, monkeypatch):
+    from types import SimpleNamespace
+    from service.assistant.daily_workspace import collect_evidence
+    store, mail, _, _ = composed_header_sources
+    row = dict(ts=NOW, account_id="native-account", message_id="body-message", subject="Project question",
+        sender="Course", sender_address="course@example.test", body="Could you submit the project by Friday?", unread=False)
+    monkeypatch.setattr(mail, "raw_email_snapshot", lambda: SimpleNamespace(rows=(row,)))
+    def no_header_read(*args, **kwargs):
+        pytest.fail("An eligible immutable body snapshot should not trigger a second header assessment")
+    monkeypatch.setattr(mail, "email_source_details", no_header_read)
+    result = collect_evidence(store, state(), DAY, ZONE, now=NOW)["email"]
+    assert result["ready"] and result["records"][0]["reference"] == "email:native-account:body-message"
+    assert "Could you submit" in result["records"][0]["quote"]
+
+
+@pytest.mark.parametrize("source,priority", [("reminders", 3), ("reminders", 1), ("email", 2)])
+def test_saved_work_keeps_its_fitting_slot_before_more_urgent_or_tied_suggestions(source, priority):
+    s = state()
+    s["preferences"].update(start_minute=540, end_minute=570)
+    s["tasks"] = [dict(id="zz-chosen", title="Chosen project", day=DAY, kind="project",
+        duration_minutes=30, priority=priority, status="active", due_ts=None, pinned_start=None, revision=7)]
+    original = deepcopy(s)
+    row = (dict(id="r", title="Overdue different work", due_ts=NOW - 86400) if source == "reminders" else
+           dict(id="e", title="Different source request", quote="Please review this project", review_reason="Review original"))
+    baseline = run(s)["proposed_plan"]
+    plan = run(s, evidence(**{source: [row]}))["proposed_plan"]
+    chosen = next(b for b in plan["blocks"] if b.get("task_id") == "zz-chosen")
+    assert chosen == next(b for b in baseline["blocks"] if b.get("task_id") == "zz-chosen")
+    assert (chosen["start"], chosen["end"]) == (at(9), at(9, 30))
+    assert not [b for b in plan["blocks"] if b["kind"] == "suggestion"]
+    assert len(plan["unscheduled"]) == 1 and plan["unscheduled"][0]["task_id"] != "zz-chosen"
+    assert plan["tasks"] == original["tasks"] and s == original
+
+
+def test_suggestions_fit_only_after_authored_work_and_supported_holds():
+    s = state()
+    s["preferences"].update(start_minute=540, end_minute=660)
+    s["commitments"] = [dict(id="event", source="calendar", title="Fixed commitment", kind="event",
+        when_ts=at(9), end_ts=at(9, 15), all_day=False)]
+    s["tasks"] = [dict(id="chosen", title="Chosen project", day=DAY, kind="project", duration_minutes=30,
+        priority=3, status="active", due_ts=None, pinned_start=None, revision=2),
+        dict(id="pin", title="Chosen pin", day=DAY, kind="task", duration_minutes=15,
+        priority=3, status="active", due_ts=None, pinned_start=at(10), revision=4)]
+    original = deepcopy(s)
+    holds = [busy(start=at(9, 15), end=at(9, 30))]
+    baseline = run(s, windows=holds)["proposed_plan"]
+    plan = run(s, evidence(reminders=[dict(id="r", title="Overdue source work", due_ts=NOW - 86400)]), holds)["proposed_plan"]
+    assert [b for b in plan["blocks"] if b.get("task_id")] == [b for b in baseline["blocks"] if b.get("task_id")]
+    suggestion = next(b for b in plan["blocks"] if b["kind"] == "suggestion")
+    assert (suggestion["start"], suggestion["end"]) == (at(10, 15), at(10, 40))
+    assert next(b for b in plan["blocks"] if b.get("task_id") == "chosen")["start"] == at(9, 30)
+    assert s == original and plan["tasks"] == original["tasks"]
+
+
+def test_cross_day_pin_and_saved_task_revisions_survive_source_refresh():
+    s = state()
+    s["preferences"].update(start_minute=0, end_minute=60)
+    for receipt in s["sources"].values():
+        receipt.update(last_sync=at(0), snapshot_started_at=at(0))
+    s["tasks"] = [dict(id="overnight", title="Overnight pin", day="2026-10-13", kind="project",
+        duration_minutes=60, priority=3, status="active", due_ts=None, pinned_start=at(0) - 1800, revision=8),
+        dict(id="chosen", title="Morning work", day=DAY, kind="task", duration_minutes=30,
+        priority=3, status="active", due_ts=None, pinned_start=None, revision=3)]
+    original = deepcopy(s)
+    baseline = assess(DAY, ZONE, s, {}, now=at(0))["proposed_plan"]
+    result = assess(DAY, ZONE, s, evidence(reminders=[dict(id="r", title="Other overdue work", due_ts=at(0) - 86400)]),
+                    now=at(0))
+    plan = result["proposed_plan"]
+    assert plan["tasks"] == original["tasks"] and s == original
+    assert [b for b in plan["blocks"] if b.get("task_id")] == baseline["blocks"]
+    assert next(b for b in plan["blocks"] if b.get("task_id") == "chosen")["start"] == at(0, 30)
+    assert not [b for b in plan["blocks"] if b["kind"] == "suggestion"]
+    pin = next(b for b in plan["blocks"] if b.get("task_id") == "overnight")
+    assert pin["start"] == at(0) - 1800 and "Continues from the previous day" in pin["warnings"]
+
+
+@pytest.mark.parametrize("case,flags", [
+    ("current", {}), ("explicit_complete", dict(complete=True, partial=False)),
+    ("partial", dict(partial=True)), ("incomplete", dict(complete=False)),
+    ("both", dict(partial=True, complete=False)),
+    *[(f"{key}_{i}", {key: value}) for key in ("partial", "complete")
+      for i, value in enumerate([None, 0, 1, "false", "true", [], {}])],
+    ("missing_start", {}), ("future_start", {}), ("stale_start", {}),
+    ("short_coverage", {}), ("unavailable", {}), ("syncing", {}),
+])
+def test_actual_calendar_route_persists_admission_through_today_workspace_and_email(
+        cached_sources, monkeypatch, tmp_path, case, flags):
+    import ast
+    import asyncio
+    import json
+    import sys
+    import types
+    from pathlib import Path
+    from fastapi import FastAPI, HTTPException
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace as daily, daily_workspace_api as api, today_api
+    from service.assistant.store import AssistantStore
+    from service.assistant.today import build_plan
+    from service.assistant.day_plan_email import EmailStore, SelfIdentity, deliver_due
+    import service.assistant as assistant_package
+    actual = AssistantStore(tmp_path / "calendar.sqlite3")
+    mail = EmailStore(tmp_path / "email.sqlite3", process="calendar-contract")
+    monkeypatch.setattr(api.time, "time", lambda: NOW)
+    monkeypatch.setattr(today_api, "assistant_store", actual)
+    monkeypatch.setattr(api, "email_store", lambda: mail)
+    monkeypatch.setattr(api, "availability", lambda *args: None)
+    real_workspace = api.current_workspace
+    monkeypatch.setattr(api, "current_workspace", lambda day, timezone, now=None:
+                        real_workspace(day, timezone, now=now, store=actual))
+    fake_behavior = types.ModuleType("service.assistant.behavior_runtime")
+    fake_behavior.poke = lambda *args: None
+    monkeypatch.setitem(sys.modules, fake_behavior.__name__, fake_behavior)
+    monkeypatch.setattr(assistant_package, "behavior_runtime", fake_behavior, raising=False)
+    async def publish(*args):
+        pass
+    # Bind the unchanged production route, without importing application startup.
+    path = Path(__file__).resolve().parents[1] / "service/main.py"
+    node = next(n for n in ast.parse(path.read_text()).body if isinstance(n, ast.AsyncFunctionDef)
+                and n.name == "assistant_sync_calendar")
+    node.decorator_list = []
+    namespace = dict(Any=object, HTTPException=HTTPException, assistant_store=actual,
+        assistant_scheduler=types.SimpleNamespace(record_sync=lambda *args, **kwargs: None),
+        assistant_hub=types.SimpleNamespace(publish=publish))
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    app = FastAPI(); app.post("/assistant/sync/calendar")(namespace["assistant_sync_calendar"])
+    diagnostics = dict(authorized=True, snapshot_started_at=NOW,
+                       coverage_start=at(0), coverage_end=at(23, 59) + 60,
+                       event_ids=["private diagnostic never retained"])
+    try:
+        actual.sync_source("reminders", [dict(source_id="r", kind="reminder", title="Synthetic work", when_ts=at(17))],
+                           diagnostics=diagnostics)
+        # A newer incomplete/malformed declaration must supersede a successful receipt.
+        if case not in {"missing_start", "future_start", "stale_start", "short_coverage", "unavailable", "syncing"}:
+            actual.sync_source("calendar", [], diagnostics=diagnostics | dict(snapshot_started_at=NOW - 1))
+        if case == "missing_start": diagnostics.pop("snapshot_started_at")
+        if case == "future_start": diagnostics["snapshot_started_at"] = NOW + 1
+        if case == "stale_start": diagnostics["snapshot_started_at"] = NOW - 1201
+        if case == "short_coverage": diagnostics["coverage_end"] = at(12)
+        if case == "unavailable": diagnostics["available"] = False
+        if case == "syncing": diagnostics["syncing"] = True
+        with TestClient(app) as client:
+            response = client.post("/assistant/sync/calendar", json=dict(source="calendar", events=[], diagnostics=diagnostics | flags))
+        assert response.status_code == 200, response.text
+        stored = json.loads(actual._db.execute("SELECT payload FROM today_source_sync WHERE source='calendar'").fetchone()[0])
+        assert "event_ids" not in stored["diagnostics"]
+        ready = case in {"current", "explicit_complete"}
+        if ready:
+            with TestClient(app) as client:
+                for started in (NOW, NOW - 1):
+                    late = client.post("/assistant/sync/calendar", json=dict(source="calendar", events=[],
+                        diagnostics=diagnostics | dict(snapshot_started_at=started, partial=True)))
+                    assert late.status_code == 409
+                    assert json.loads(actual._db.execute("SELECT payload FROM today_source_sync WHERE source='calendar'").fetchone()[0]) == stored
+        if flags:
+            assert stored["available"] is ready
+            assert all(type(stored["diagnostics"][key]) is bool for key in ("partial", "complete"))
+            if not ready:
+                assert stored["reason"] == "Source snapshot is incomplete"
+        supplied = actual.today_snapshot(DAY, ZONE)
+        today = today_api.snapshot(DAY, ZONE, debug=True)
+        direct = daily.workspace(actual, DAY, ZONE, now=NOW)
+        assert today["workspace"] == direct
+        assert direct["proposed_plan"]["sources"]["calendar"]["ready"] is ready
+        assert bool([b for b in direct["proposed_plan"]["blocks"] if b["kind"] == "suggestion"]) is ready
+        assert api.email_contents(DAY, ZONE, NOW)["ready"] is ready
+        assert today["replay"]["expected_plan"] == build_plan(DAY, ZONE, supplied["tasks"], supplied["commitments"],
+            supplied["preferences"], supplied["sources"], now=NOW)
+        assert today["replay"]["sources"] == supplied["sources"]
+        own = SelfIdentity(("me@example.test",), NOW - 60, True)
+        preview = mail.preview(dict(recipient="me@example.test", timezone=ZONE, minute=480), "Plan", "Body", own, now=NOW - 60)
+        mail.enable(preview["token"], own, confirmed=True, now=NOW - 60)
+        calls = []
+        async def sender(*args):
+            calls.append(args)
+            return dict(ok=True, status="succeeded")
+        result = asyncio.run(deliver_due(mail, identity=lambda: own, compose=api.email_contents,
+            sender=sender, policy_allows=lambda _: True, now=NOW))
+        assert len(calls) == int(ready)
+        assert result == ("submitted" if ready else "waiting_for_sources")
+    finally:
+        mail.close()
+        actual._db.close()

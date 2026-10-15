@@ -224,7 +224,119 @@ Synthetic controls cover the actual persisted receipt writer accepting missing
 or future read-starts and clamping stale read-starts into stale sync times.
 These are development results; the successor requires fresh complete gates.
 
+PR #219's reviewed email provenance changes were subsequently merged into
+`main` as `dcb0ed5f`. The daily branch reconciles that base and preserves the
+union of Simulation QA registrations. Composition fixtures exercise the actual
+public `email_source_details` and `header_rows` against private synthetic
+backing: fresh/empty, stale/future/corrupt/restored/error receipts, account
+separation, duplicate native account labels, and a receipt changed during a
+read. Unverified body globals never supply text; an eligible immutable body
+snapshot retains precedence. Header text remains review context without a
+fabricated deadline or assignment. Fresh final gates use the pinned 3.13.14
+runtime through its verified normal subprocess launcher, with their own skip
+ledger; historical 3.14 runs are retained separately.
+
+Independent review of `7f5e93f4` blocked three additional integration paths.
+That candidate's green mechanical/CI evidence is historical, not approval of
+these repairs. The complete Auditor and Simulation findings were routed to one
+writer in `WISP_PR232_7F_THREE_P2_SINGLE_PRIMARY_REPAIR_ACK_20261015.json`.
+
+The native header scan now obtains its server capture fence before reading any
+account, index or header. A missing acknowledgement aborts that scan and releases
+its claim. Every acknowledged scan settles its generation: empty accounts,
+closed Mail, duplicate/unknown inventory, partial/failed headers and invalid
+identity reads cannot retain sending eligibility. Legacy display publications
+remain separate; a successful unified-inbox fallback cannot verify an account.
+Only a genuine complete account-address read restores eligibility. Existing
+expiry, supersession and continuously fresh same-account consent rules remain.
+
+The narrowly owned receipt writer retains typed Calendar completeness metadata
+and records an incomplete latest snapshot as unavailable. Malformed supplied
+flags become conservative boolean proof, rather than rolling back and leaving
+an older successful receipt eligible. Date coverage and original read-start
+ordering remain atomic; equal/older results cannot downgrade a newer receipt.
+Authored work is planned around commitments and supported tentative holds first.
+Actual fitting placements are reserved only in local copies before generated
+suggestions fill remaining gaps; stored pins, revisions and replay inputs do not
+change.
+
+After the fixture correction, development checks passed 319 focused cases with no skips, including the
+existing Today contracts. They compile exact
+production native scan/capture/post bodies and transport into
+`NativeMailIdentityFlowChecks.swift`'s inert collaborators, then replay recorded
+requests through actual API handlers into a fake submission bridge. They also
+exercise actual Calendar ASGI/store round trips through Today, direct workspace
+and email readiness, including malformed flags after a successful receipt;
+constrained-day, remaining-gap and cross-day-pin controls cover authored work.
+The native fixture never invokes Foundation networking, Mail or AppleScript;
+its result is synthetic caller qualification, not native runtime QA. Equal/older
+partial results also preserve a newer complete receipt. The frozen successor
+needs fresh evidence for every final check.
+
+The first repair candidate `40e94aa7` passed its configured mechanical run but
+remained held: its native fixture used an overly broad initial-closed branch
+that shadowed two mid-read scenarios. The corrected fixture distinguishes those
+branches with exact execution traces and adds closure between two account reads;
+its successor requires fresh validation rather than inheriting the old result.
+
+The separately committed behavior v1 adapter remains held and is not grafted
+here. Its fake-producer tests do not establish integration: durable analysis
+ages, source-specific receipt eligibility and cross-timezone evidence still
+need their separately owned contract repair and actual-wrapper qualification.
+
 Final delivery requires a clean current-main-reconciled pushed candidate,
 exact-SHA mechanical checks, required CI and distinct independent review plus
 synthetic specialist QA. No app launch, real model/provider/native access,
 communications, installed-app replacement or deployment is part of validation.
+
+Independent review of `cda9008d` found that the raw and history readers also
+observe account inventory. A raw empty-account observation updated legacy
+content caches without revoking the feature identity. The sealed reproduction
+reached the fake send bridge with old consent, so that candidate remains held.
+The single-owner successor extends the same capture boundary to all three
+native entry points, including early exits and helper-controlled interruption.
+Raw and history content failures alone do not mean an account disappeared:
+a known nonempty inventory may recover only through a genuine complete live
+address read. Closed, unknown, duplicate or empty inventory cannot preserve old
+sending eligibility. A closure actually observed during a loop stays failed
+for that capture even if Mail reopens before settlement. Cached index/history
+content cannot verify identity.
+
+Begin response admission tracks server session/generation and local request
+ordering without holding a lock during native work. An older acknowledgement
+cannot begin new work after a newer acknowledged capture; a restarted backend
+can issue a new-session generation one, while retired-session responses remain
+ineligible. Each terminal request retains its own original capture. Server
+ordering, original read-start expiry, account-set epochs, final consent and
+claim-once admission remain authoritative. Existing scan coalescing and history
+yielding remain separate from identity generations.
+
+`NativeMailObserverFlowChecks.swift` executes byte-exact production header,
+raw and history callers, capture/order logic, inventory parser, posting methods,
+history helpers and pure history state with inert script/database/URLSession
+collaborators. Its request traces are replayed through the actual legacy and
+feature API handlers, real private legacy cache functions, real Decision/Tier
+policy and final scoped admission into a fake bridge. Controls cover empty and
+failed inventory, closures between accounts/batches and reopening, body-only
+failures, index/commit supersession, malformed/capped/deferred history, failed
+begin acknowledgement and retry, cross-entry delayed receipts, reordered begin
+responses, restart, expiry, duplicate completion, account-set changes retaining
+the original self address, continuous fresh same-account receipts, and yielding
+to a pending raw scan. The original 17-branch header fixture is preserved.
+All runtime state is disposable; this does not qualify actual native readers,
+real inbox delivery or a running Wisp app. The behavior adapter remains separate.
+
+
+The static ordering helper also caught a cold-start compatibility gap in the
+working repair: a newer raw capture could suppress a delayed initial header
+acknowledgement. The source-bound cold-start control first failed on that
+working snapshot. Within the existing claimed header invocation, a valid but
+superseded same-session acknowledgement may now reacquire one fresh capture.
+Both requests share the original eight-second deadline; no new scan or timer
+is created. Failure, malformed response, retired session or another
+supersession releases the claim without native work. Existing later header
+invocations can recover readiness. Raw/history captures do not reacquire.
+The fixture checks successful readiness recovery, bounded failure paths,
+subsequent recovery, no third header begin, and real final fake admission.
+This bounds a startup interleaving; it is not a universal starvation guarantee
+under unbounded competing requests.

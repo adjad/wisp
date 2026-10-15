@@ -341,7 +341,15 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
                     semantic_reason=window.get("semantic_reason"), uncertainty=window.get("uncertainty")))
     # Tentative windows prevent automatic flexible placement, never displace
     # authored pins. The normal planner reports any conflicting explicit pin.
-    proposal = build_plan(day, timezone, state["tasks"] + suggestions,
+    authored_plan = build_plan(day, timezone, state["tasks"],
+                               state["commitments"] + behavioral, state["preferences"], state["sources"], now=now)
+    authored_starts = {b["task_id"]: b["start"] for b in authored_plan["blocks"] if b.get("task_id") is not None}
+    # Reserve actual authored placements before the planner sorts generated
+    # suggestions by urgency. These local copies never change a user's pins.
+    reserved_tasks = [dict(t, pinned_start=authored_starts[t["id"]])
+                      if t.get("pinned_start") is None and t["id"] in authored_starts else t
+                      for t in state["tasks"]]
+    proposal = build_plan(day, timezone, reserved_tasks + suggestions,
                           state["commitments"] + behavioral, state["preferences"], state["sources"], now=now)
     source_by_task = {s["id"]: s for s in suggestions}
     behavior_by_id = {b["id"]: b for b in behavioral}
