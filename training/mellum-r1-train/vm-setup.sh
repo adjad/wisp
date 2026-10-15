@@ -102,7 +102,7 @@ PY
   ;;
 unpack)
   [ -f "$UP/$DATA_ZIP" ] || die "upload $DATA_ZIP into wisp/uploads first"
-  rm -rf "$DATA"; mkdir -p "$DATA"; unzip -q "$UP/$DATA_ZIP" -d "$DATA" || die "unzip failed"
+  rm -rf "$DATA"; mkdir -p "$DATA"; "$PY" -m zipfile -e "$UP/$DATA_ZIP" "$DATA" || die "unzip failed"   # python: zip/unzip may be absent
   # Every file must match the manifest packed inside the zip.
   (cd "$DATA" && "$PY" -c "
 import hashlib,json,sys
@@ -136,8 +136,20 @@ merge)
 package)
   need "$OUT/best/adapter_model.safetensors" train
   rm -f "$WORK/mellum-r1-adapter.zip"
-  (cd "$OUT" && zip -qr "$WORK/mellum-r1-adapter.zip" best final train.log.jsonl -x '*/trainer_state.pt')
-  (cd "$DATA" && zip -qj "$WORK/mellum-r1-adapter.zip" smoke.log train.out 2>/dev/null)
+  # Python's zipfile, not zip(1): apt may not have run, and a missing zip once printed ALL DONE with no adapter.
+  "$PY" - "$OUT" "$DATA" "$WORK/mellum-r1-adapter.zip" <<'PY' || die "packaging the adapter failed"
+import sys, zipfile
+from pathlib import Path
+out, data, dest = map(Path, sys.argv[1:4])
+files = [f for d in ("best", "final") for f in sorted((out / d).glob("*")) if f.name != "trainer_state.pt"]
+files += [p for p in (out / "train.log.jsonl", data / "smoke.log", data / "train.out", out / "smoke.json") if p.exists()]
+if not (out / "best" / "adapter_model.safetensors").exists():
+    sys.exit("no best/adapter_model.safetensors")
+with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+    for f in files:
+        z.write(f, f.relative_to(out) if f.is_relative_to(out) else f.name)
+print(f"{dest}: {len(files)} files, {dest.stat().st_size / 1e6:.1f} MB")
+PY
   sha256sum "$WORK/mellum-r1-adapter.zip"
   [ -d "$MERGED" ] && { du -sh "$MERGED"; (cd "$MERGED" && sha256sum *.safetensors > SHA256SUMS && cat SHA256SUMS); }
   echo "download wisp/mellum-r1-adapter.zip (small) and, for quantizing on the Mac, the files in $MERGED" ;;
