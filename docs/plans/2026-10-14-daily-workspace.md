@@ -65,6 +65,11 @@ Fresh native identity uses
 server-issued capture sessions/generations; delayed, empty or failed reads
 cannot restore old eligibility. Account changes, expiry and backend restart
 require explicit review again. Existing policy denial always blocks submission.
+Workspace mutations require a loopback peer and Wisp's fixed local host/port
+(`8765`); explicit browser origins must match that trusted local origin.
+Foreign/null origins, forged hosts, cross-site fetch metadata and duplicate
+security headers are rejected before mutation. Native URLSession requests
+without an Origin header retain their existing format.
 
 A new complete plan is composed inside a 30-minute delivery window. Source or
 identity holdback can recover inside that window. Sleep/missed windows and DST
@@ -91,7 +96,7 @@ policy, assistant storage and inference/routing remain with existing owners.
 
 Development validation before freeze:
 
-- 188 focused Python tests passed (new workspace/email tests plus existing
+- 236 focused Python tests passed (new workspace/email tests plus existing
   Today contracts).
 - 2,206 existing summary, priority, presentation-text and QA-runner cases passed.
 - 89 native model/transport/decoding checks passed; the GUI branch was explicitly
@@ -110,6 +115,16 @@ The successor requires a real `Decision` and `Tier`; malformed results produce
 no fake-bridge effects. The same repair batch aligns the disconnected behavior
 consumer with generic work demands. Earlier candidate gates remain historical
 and cannot approve the successor.
+
+The `72015ac4` candidate was also held before independent review after a simple
+foreign-origin identity-begin request cleared synthetic verification. The
+router-local admission repair covers all six workspace mutations. Regression
+cases first reproduced 42 boundary failures; the corrected suite passes.
+Two initial IPv6 positive cases hit an upstream TestClient URL-parser error;
+they now supply IPv6 Host/peer metadata in ASGI instead, without weakening
+their capture assertions. This is synthetic admission coverage, not live IPv6
+transport or installed-app QA. `72015ac4`'s local 254-module/Swift/native and
+required CI passes remain historical; the new candidate requires fresh gates.
 
 Historical `6eb5c01c` full mechanical run exited successfully with 254/254
 modules passing and 165 skipped cases: 11 link/directory parametrizations,

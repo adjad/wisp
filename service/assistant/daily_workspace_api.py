@@ -8,8 +8,9 @@ from __future__ import annotations
 import threading
 import time
 import secrets
+from ipaddress import ip_address
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 from service.assistant import daily_workspace as daily
@@ -17,7 +18,32 @@ from service.assistant.day_plan_email import EmailStore, SelfIdentity, address
 from service.assistant.today import RevisionConflict, day_bounds
 from service.paths import MOE_DIR
 
-router = APIRouter(prefix="/workspace", tags=["daily workspace"])
+_LOCAL_ORIGINS = frozenset({"http://127.0.0.1:8765", "http://localhost:8765", "http://[::1]:8765"})
+
+
+async def require_workspace_mutation(request: Request):
+    """Admit native loopback requests and the fixed local browser origin.
+
+    CORS alone cannot prevent simple browser requests from changing state.
+    The trusted origins are fixed independently of the caller's Host header.
+    """
+    if request.method in {"GET", "HEAD", "OPTIONS"}:
+        return
+    try:
+        local_peer = request.client is not None and ip_address(request.client.host).is_loopback
+    except ValueError:
+        local_peer = False
+    hosts = request.headers.getlist("host")
+    origins = request.headers.getlist("origin")
+    sites = request.headers.getlist("sec-fetch-site")
+    host_origin = "http://" + hosts[0].lower() if len(hosts) == 1 else ""
+    if (not local_peer or request.url.scheme != "http" or host_origin not in _LOCAL_ORIGINS
+            or len(origins) > 1 or (origins and origins[0] != host_origin)
+            or len(sites) > 1 or (sites and sites[0] not in {"same-origin", "none"})):
+        raise HTTPException(403, "Daily workspace changes require the local Wisp app or its own origin")
+
+
+router = APIRouter(prefix="/workspace", tags=["daily workspace"], dependencies=[Depends(require_workspace_mutation)])
 _email_store = None
 _store_lock = threading.Lock()
 _identity = SelfIdentity()

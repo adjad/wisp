@@ -222,7 +222,7 @@ def test_http_preview_enable_pause_and_strict_validation(store, monkeypatch):
     monkeypatch.setattr(api, "email_contents", lambda *args: dict(subject="Plan", body="Complete proposed plan", ready=True))
     app = FastAPI()
     app.include_router(api.router)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
         body = dict(day="2026-10-14", recipient="me@example.test", timezone=ZONE, minute=480)
         p = client.post("/workspace/email/preview", json=body)
         assert p.status_code == 200 and p.json()["body"] == "Complete proposed plan"
@@ -322,7 +322,7 @@ def test_server_capture_order_and_empty_receipts_revoke_without_client_clock(sto
     monkeypatch.setattr(api.time, "time", lambda: at())
     app = FastAPI()
     app.include_router(api.router)
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
         old = client.post("/workspace/email/identity/begin").json()
         latest = client.post("/workspace/email/identity/begin").json()
         success = dict(addresses=["me@example.test"], available=True, complete=True)
@@ -405,6 +405,106 @@ def test_policy_admission_requires_real_decision_and_enum(monkeypatch, case):
         allow=safety.Decision(safety.Tier.ALLOW, "allowed"), confirm=safety.Decision(safety.Tier.CONFIRM, "review required"))
     monkeypatch.setattr(safety, "decide", lambda *args, **kwargs: values[case])
     assert delivery._policy_allows("me@example.test") is (case in {"allow", "confirm"})
+
+
+@pytest.mark.parametrize("path", ["/email/identity/begin", "/email/identity", "/email/preview", "/email/enable", "/email/pause", "/availability"])
+@pytest.mark.parametrize("headers", [
+    {"Origin": "https://untrusted.example"}, {"Origin": "null"},
+    {"Host": "untrusted.example", "Origin": "http://untrusted.example"},
+    {"Sec-Fetch-Site": "cross-site"}, {"Sec-Fetch-Site": "same-site"},
+    {"Host": "localhost.untrusted.example:8765", "Origin": "http://localhost.untrusted.example:8765"},
+])
+def test_workspace_browser_rejection_has_no_identity_settings_or_delivery_effect(store, monkeypatch, path, headers):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api, day_plan_email as delivery
+    config = enable(store)
+    own = identity(at())
+    preview = store.preview(dict(recipient="me@example.test", timezone=ZONE, minute=480), "Plan", "Body", own, now=at())
+    for name, value in {"_email_store": store, "_identity": own, "_identity_generation": 1,
+        "_identity_session": "synthetic-capture-session", "_identity_capture_at": at(), "_identity_started": 0,
+        "_identity_settled": False, "_identity_previous": ("me@example.test",)}.items():
+        monkeypatch.setattr(api, name, value)
+    monkeypatch.setattr(api.time, "time", lambda: at())
+    effects = []
+    def compose(*args):
+        effects.append("compose")
+        return dict(subject="Plan", body="Body", ready=True)
+    async def sender(*args):
+        effects.append("send")
+        return dict(ok=True)
+    monkeypatch.setattr(api, "email_contents", compose)
+    monkeypatch.setattr(delivery, "_approved_native_submission", sender)
+    monkeypatch.setattr(delivery, "_policy_allows", lambda _: True)
+    bodies = {"/email/identity": dict(session="synthetic-capture-session", generation=1, addresses=[], available=False, complete=False),
+        "/email/preview": dict(day="2026-10-14", recipient="me@example.test", timezone=ZONE, minute=480),
+        "/email/enable": dict(token=preview["token"], confirmed=True), "/email/pause": dict(revision=config["revision"]),
+        "/availability": dict(day="2026-10-14", timezone=ZONE, window="synthetic-window")}
+    app = FastAPI(); app.include_router(api.router)
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
+        kwargs = dict(json=bodies[path]) if path in bodies else dict(content=b"", headers=headers | {"Content-Type": "text/plain"})
+        if path in bodies:
+            kwargs["headers"] = headers
+        result = client.post("/workspace" + path, **kwargs)
+    assert result.status_code == 403
+    assert api._identity == own and api._identity_generation == 1
+    assert store.settings() == config and not store.ignored("2026-10-14", ZONE)
+    assert store._db.execute("SELECT COUNT(*) FROM previews").fetchone()[0] == 1
+    assert not effects and store.status()["last_result"] is None
+
+
+@pytest.mark.parametrize("headers,peer", [
+    ({"Host": "127.0.0.1:9999", "Origin": "http://127.0.0.1:9999"}, "127.0.0.1"),
+    ({"Origin": "http://127.0.0.1:8765 http://untrusted.example"}, "127.0.0.1"),
+    ({"Origin": ""}, "127.0.0.1"), ({}, "192.0.2.1"),
+    ({"Sec-Fetch-Site": "unexpected"}, "127.0.0.1"),
+])
+def test_workspace_rejects_untrusted_transport_metadata_before_capture(monkeypatch, headers, peer):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api
+    own = identity(at())
+    monkeypatch.setattr(api, "_identity", own)
+    monkeypatch.setattr(api, "_identity_generation", 1)
+    app = FastAPI(); app.include_router(api.router)
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=(peer, 50000)) as client:
+        result = client.post("/workspace/email/identity/begin", headers=headers)
+    assert result.status_code == 403 and api._identity == own and api._identity_generation == 1
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1:8765", "localhost:8765", "[::1]:8765"])
+@pytest.mark.parametrize("browser", [False, True])
+def test_workspace_accepts_native_and_same_origin_loopback_capture(monkeypatch, host, browser):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api
+    monkeypatch.setattr(api, "_identity", identity(at()))
+    monkeypatch.setattr(api, "_identity_generation", 1)
+    monkeypatch.setattr(api, "_identity_capture_at", 0)
+    monkeypatch.setattr(api, "_identity_settled", True)
+    app = FastAPI(); app.include_router(api.router)
+    headers = {"Host": host}
+    if browser:
+        headers.update(Origin="http://" + host, **{"Sec-Fetch-Site": "same-origin"})
+    # This TestClient release cannot parse IPv6 base URLs. Exercise the actual
+    # IPv6 Host and peer in ASGI metadata without using its URL parser.
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("::1" if host.startswith("[") else "127.0.0.1", 50000)) as client:
+        result = client.post("/workspace/email/identity/begin", headers=headers)
+    assert result.status_code == 200 and api._identity_generation == 2 and not api._identity.complete
+
+
+def test_workspace_rejects_duplicate_browser_security_headers(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from service.assistant import daily_workspace_api as api
+    own = identity(at())
+    monkeypatch.setattr(api, "_identity", own)
+    monkeypatch.setattr(api, "_identity_generation", 1)
+    app = FastAPI(); app.include_router(api.router)
+    with TestClient(app, base_url="http://127.0.0.1:8765", client=("127.0.0.1", 50000)) as client:
+        for key, value in [("Host", "127.0.0.1:8765"), ("Origin", "http://127.0.0.1:8765"), ("Sec-Fetch-Site", "same-origin")]:
+            assert client.post("/workspace/email/identity/begin", headers=[(key, value), (key, value)]).status_code == 403
+    assert api._identity == own and api._identity_generation == 1
 
 
 def test_malformed_policy_has_zero_fake_bridge_effects(store, monkeypatch):
