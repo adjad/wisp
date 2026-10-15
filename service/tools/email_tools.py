@@ -818,7 +818,8 @@ def provider_history_snapshot(provider, *, expected_receipt=None, required_refs=
     Native-only raw_email_snapshot retains its existing admission contract.
     """
     from service.gmail_behavior_history import HistoryProvider
-    if not isinstance(provider, HistoryProvider):
+    from service.gmail_source import PublicHistoryBridge
+    if not isinstance(provider, (HistoryProvider, PublicHistoryBridge)):
         return None
     return provider.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
 

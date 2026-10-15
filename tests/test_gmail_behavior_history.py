@@ -6,6 +6,7 @@ import base64
 import dataclasses
 import gc
 import json
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -79,6 +80,27 @@ class ProviderContract(unittest.TestCase):
         self.step()
         self.assertEqual(self.http.calls, [])
         self.assertNotIn("body", json.dumps(self.provider.checkpoint()))
+
+    def test_public_source_guard_serializes_withdrawal_before_cached_readback(self):
+        self.start()
+        self.step()
+        started = threading.Event()
+        finished = threading.Event()
+        read = []
+        def capture():
+            started.set()
+            read.append(self.provider.snapshot())
+            finished.set()
+        thread = threading.Thread(target=capture, daemon=True)
+        with H.history_source_guard():
+            thread.start()
+            self.assertTrue(started.wait(1))
+            was_blocked = not finished.wait(0.03)
+            self.provider.control("forget")
+        thread.join(timeout=1)
+        self.assertTrue(was_blocked, "Source guard did not serialize the core readback")
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(read, [None])
 
     def test_explicit_history_fetch_publishes_resource_identity_and_exact_body(self):
         self.start()
