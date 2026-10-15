@@ -1,11 +1,20 @@
 """Synthetic checks for the guided inference setup. No network, no real Wisp state."""
 import asyncio
+import ast
+import copy
+import json
+import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import httpx
 import pytest
 from fastapi import HTTPException
+from starlette.responses import StreamingResponse
 
 from service.setup import catalog, guide
 from service.setup.engines import EngineProfile, EngineState, detect_external_engines
@@ -452,3 +461,169 @@ def test_status_route_falls_back_to_saved_models_when_engine_is_down(monkeypatch
     assert s["omlx"]["running"] is False and s["models"]["source"] == "saved"
     assert s["hardware"]["tier"] == "standard" and s["models"]["recommended"] == Q5
     assert _check(s, "engine")["action"] == "start_engine"
+
+
+# Extract only the actual functions under test: importing service.main starts
+# unrelated application machinery. All managed HTTP/loading/activity below is
+# synthetic; normalization, metadata validation and the route are production code.
+def _functions(path, names, namespace, *, methods=False):
+    tree = ast.parse(path.read_text())
+    nodes = (next(n for n in tree.body if isinstance(n, ast.ClassDef)
+                  and n.name == "OMLXClient").body if methods else tree.body)
+    selected = [copy.deepcopy(n) for n in nodes
+                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
+    assert {n.name for n in selected} == set(names)
+    for node in selected:
+        node.decorator_list = []
+    import __future__
+    exec(compile(ast.Module(body=selected, type_ignores=[]), str(path), "exec",
+                 flags=__future__.annotations.compiler_flag), namespace)
+
+
+def _chat_pipeline(raw):
+    root = Path(__file__).resolve().parents[1]
+    events = []
+
+    class IncompleteStreamError(RuntimeError):
+        pass
+
+    ns = {"Any": Any, "json": json, "httpx": httpx, "IncompleteStreamError": IncompleteStreamError,
+          "engine_epoch": SimpleNamespace(begin=lambda: events.append("epoch"), end=lambda: None),
+          "idle": SimpleNamespace(begin=lambda *a: None, end=lambda *a: None)}
+    path = root / "service/inference/omlx_client.py"
+    _functions(path, {"_ensure_choices", "_demote_unclosed_think"}, ns)
+    _functions(path, {"chat", "_completion_data", "_check_response"}, ns, methods=True)
+
+    class Managed:
+        managed = True
+        api_prefix = "/v1"
+        provider = SimpleNamespace(name="omlx")
+        chat = ns["chat"]
+        _completion_data = staticmethod(ns["_completion_data"])
+        _check_response = ns["_check_response"]
+
+        def __init__(self):
+            self._client = self
+
+        def _fit_request(self, *args):
+            return args
+
+        def _payload(self, *args, **kwargs):
+            return {}
+
+        def activity_key(self, model):
+            return model
+
+        async def ensure_only(self, model):
+            events.append("load")
+
+        async def post(self, path, **kwargs):
+            events.append("http")
+            return httpx.Response(200, json=copy.deepcopy(raw), request=httpx.Request("POST", "http://synthetic.invalid" + path))
+
+    def target(role):
+        events.append("target")
+        return SimpleNamespace(role=role, model="Synthetic",
+                               endpoint=SimpleNamespace(name="local", managed=True))
+
+    async def ensure():
+        events.append("ensure")
+
+    route = {"Any": Any, "HTTPException": HTTPException, "StreamingResponse": StreamingResponse, "setup_guide": guide,
+             "role_target": target, "remote_only_profile": lambda: None,
+             "ensure_omlx": ensure, "client": Managed()}
+    _functions(root / "service/main.py", {"chat"}, route)
+    return route["chat"], events, IncompleteStreamError
+
+
+def _completion(text="OK", *, finish="stop", role="assistant", **extra):
+    return {"choices": [{"message": {"role": role, "content": text, **extra}, "finish_reason": finish}]}
+
+
+COMPLETION_CASES = [
+    ("complete_visible", _completion(), True),
+    ("closed_reasoning_and_answer", _completion("<think>secret</think> OK"), True),
+    ("uppercase_closed_and_answer", _completion("<THINK>secret</THINK> OK"), True),
+    ("separate_reasoning_and_answer", _completion(reasoning_content="secret"), True),
+    ("closed_reasoning_only", _completion("<think>secret</think>"), False),
+    ("uppercase_reasoning_only", _completion("<THINK>secret</THINK>"), False),
+    ("orphan_reasoning_close", _completion("secret</think>"), False),
+    ("length_with_separate_reasoning", _completion(finish="length", reasoning_content="secret"), False),
+    ("finish_error_with_text", _completion(finish="error"), False),
+    ("wrong_message_role", _completion(role="user"), False),
+    ("unfinished_lowercase", _completion("OK<think>unfinished"), False),
+    ("nested_reasoning", _completion("<think>outer<think>inner</think></think> OK"), False),
+    ("empty_answer", _completion("  "), False),
+    ("error_envelope", {**_completion(), "error": {"message": "synthetic failure"}}, False),
+    ("missing_choices", {}, False),
+]
+
+
+def _run_setup_pipeline(raw):
+    chat, events, incomplete = _chat_pipeline(raw)
+    try:
+        body = asyncio.run(chat({"role": "general", "prompt": "Reply with the single word OK.",
+                                 "max_tokens": 512, "setup_test": True}))
+        return 200, body, events
+    except HTTPException as error:
+        return error.status_code, {"detail": error.detail}, events
+    except incomplete:
+        return 503, {"detail": "Synthetic provider failure"}, events
+
+
+@pytest.mark.parametrize("name,raw,valid", COMPLETION_CASES, ids=[c[0] for c in COMPLETION_CASES])
+def test_setup_certificate_uses_actual_managed_completion_and_route(name, raw, valid):
+    status, body, events = _run_setup_pipeline(raw)
+    assert "http" in events
+    assert (status == 200) == valid
+    if valid:
+        assert body["setup_test"] == "complete_visible_assistant_v1"
+        assert body["content"] == "OK"
+    else:
+        assert status in (502, 503)
+        assert "setup_test" not in body
+
+
+@pytest.mark.parametrize("flag", [None, 0, 1, "true", [], {}])
+def test_setup_flag_is_strictly_boolean_before_any_effect(flag):
+    chat, events, _ = _chat_pipeline(_completion())
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(chat({"setup_test": flag, "role": "general", "prompt": "OK"}))
+    assert error.value.status_code == 422 and events == []
+
+
+def test_streaming_setup_test_is_rejected_before_any_effect():
+    chat, events, _ = _chat_pipeline(_completion())
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(chat({"setup_test": True, "stream": True, "role": "general", "prompt": "OK"}))
+    assert error.value.status_code == 422 and events == []
+
+
+@pytest.mark.parametrize("flag", [{}, {"setup_test": False}])
+def test_ordinary_chat_keeps_its_existing_response_contract(flag):
+    chat, _, _ = _chat_pipeline(_completion("ordinary", finish="length", reasoning_content="secret"))
+    body = asyncio.run(chat({"role": "general", "prompt": "OK", **flag}))
+    assert body == {"model": "Synthetic", "content": "ordinary", "usage": None}
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or shutil.which("swiftc") is None, reason="Requires macOS Swift compiler")
+def test_actual_completion_route_to_native_setup_certificate(tmp_path):
+    cases = []
+    for name, raw, valid in COMPLETION_CASES:
+        status, body, _ = _run_setup_pipeline(raw)
+        cases.append({"name": name, "status": status, "body": body, "expectedWorks": valid})
+    payload = tmp_path / "pipeline.json"
+    payload.write_text(json.dumps(cases))
+    root = Path(__file__).resolve().parents[1]
+    output = tmp_path / "SetupGuideChecks"
+    environment = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "HOME": str(tmp_path),
+                   "WISP_HOME": str(tmp_path), "TMPDIR": str(tmp_path)}
+    command = ["swiftc", "-swift-version", "5", "-module-cache-path", str(tmp_path / "module-cache"),
+               str(root / "tests/SetupGuideChecks.swift"), str(root / "app/Sources/WispApp/SetupGuideView.swift"),
+               str(root / "app/Sources/WispApp/Theme.swift"), "-o", str(output)]
+    compiled = subprocess.run(command, capture_output=True, text=True, env=environment, timeout=120)
+    assert compiled.returncode == 0, compiled.stderr[-5000:]
+    checked = subprocess.run([str(output), str(payload)], capture_output=True, text=True, env=environment, timeout=45)
+    assert checked.returncode == 0, checked.stderr[-7000:]
+    assert "setup model-state checks passed; all HTTP intercepted" in checked.stdout
+    print(checked.stdout.strip())

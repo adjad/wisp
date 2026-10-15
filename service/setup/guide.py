@@ -5,6 +5,7 @@ the same logic serves the first-run guide, Settings, and tests.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass
 
@@ -25,6 +26,33 @@ EXTERNAL_ENGINE_DISCLOSURE = (
     "too. Wisp does not automatically send earlier conversation summaries or remembered facts. "
     "Routing, summary generation, search and memory stay with managed models. A loopback app "
     "without an API key is not identity-verified; connect only one you trust.")
+
+
+def visible_test_answer(payload: object) -> str:
+    """Validate setup evidence before /chat discards completion metadata.
+
+    Keep the complete-visible-assistant contract used by the raw engine smoke.
+    This pure check never launches or queries an engine.
+    """
+    if isinstance(payload, dict) and payload.get("error") is not None:
+        raise ValueError("The model returned an error. Try again or pick another model.")
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    if not isinstance(choice, dict) or choice.get("finish_reason") != "stop":
+        raise ValueError("The model did not finish its answer. Try again or pick another model.")
+    message = choice.get("message")
+    if not isinstance(message, dict) or message.get("role") != "assistant":
+        raise ValueError("The model returned no assistant answer. Try again or pick another model.")
+    content = message.get("content")
+    if not isinstance(content, str):
+        raise ValueError("The model returned no visible answer. Try again or pick another model.")
+    content = re.sub(r"(?is)<think>(?:(?!</?think>).)*</think>", "", content)
+    if "<think" in content.lower() or "</think" in content.lower():
+        raise ValueError("The model returned unfinished reasoning. Try again or pick another model.")
+    content = content.strip()
+    if not content:
+        raise ValueError("The model gave no visible answer. It may be spending its whole budget thinking; try again or pick another model.")
+    return content
 
 
 @dataclass(frozen=True)

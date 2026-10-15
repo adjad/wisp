@@ -88,6 +88,7 @@ final class SetupGuideModel: ObservableObject {
     private func invalidateTest() {
         testGeneration += 1
         testResult = nil
+        testing = false
     }
 
     private func beginMutation() {
@@ -223,6 +224,7 @@ final class SetupGuideModel: ObservableObject {
     func stopMonitoring() {
         monitoringStopped = true
         downloadGeneration += 1
+        invalidateTest()
     }
 
     func shouldOfferRedownload(_ model: String) -> Bool {
@@ -319,26 +321,31 @@ final class SetupGuideModel: ObservableObject {
     }
 
     func test() async {
-        guard !testing, statusIsCurrent, status?.ready == true else { return }
+        guard !testing, !monitoringStopped, !Task.isCancelled, statusIsCurrent, status?.ready == true else { return }
         testing = true
         testResult = nil
         let generation = testGeneration
-        defer { testing = false }
+        defer { if generation == testGeneration { testing = false } }
         let started = Date()
         do {
             let data = try await call("POST", "chat", body: [
                 "role": "general", "prompt": "Reply with the single word OK.", "max_tokens": 512,
+                "setup_test": true,
             ], timeout: 120)
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
-            guard generation == testGeneration else { return }
+            guard generation == testGeneration, !Task.isCancelled else { return }
             let text = (object?["content"] as? String ?? "")
-                .replacingOccurrences(of: "(?s)<think>.*?</think>", with: "", options: .regularExpression)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard object?["setup_test"] as? String == "complete_visible_assistant_v1" else {
+                testResult = "Wisp couldn't verify this test reply. Restart Wisp to use the matching backend, then try again."
+                return
+            }
             let seconds = String(format: "%.1f", Date().timeIntervalSince(started))
-            testResult = text.isEmpty || text.contains("<think>") ? "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
+            testResult = text.isEmpty || text.lowercased().contains("<think") || text.lowercased().contains("</think")
+                                      ? "The model replied but gave no visible answer. It may be spending its whole budget thinking; try again or pick another model."
                                       : "Works — replied in \(seconds)s."
         } catch {
-            if generation == testGeneration { testResult = "That didn't work: \(error.localizedDescription)" }
+            if generation == testGeneration, !Task.isCancelled { testResult = "That didn't work: \(error.localizedDescription)" }
         }
     }
 

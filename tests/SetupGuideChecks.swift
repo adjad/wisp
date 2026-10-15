@@ -62,13 +62,19 @@ func setupSnapshot(_ model: String = "A", ready: Bool = true, bundled: Bool = tr
 struct SetupGuideChecks {
     @MainActor static func main() async throws {
         var checks = 0
+        var failures = 0
         func check(_ value: @autoclosure () -> Bool, _ message: String) {
-            precondition(value(), message)
+            if !value() {
+                failures += 1
+                FileHandle.standardError.write(Data("FAIL: \(message)\n".utf8))
+            }
             checks += 1
         }
         func configure(_ model: String, delayChat: Double = 0) {
             SetupHTTP.configure { request in
-                if request.url!.path == "/chat" { return (200, ["content": "OK"], delayChat) }
+                if request.url!.path == "/chat" {
+                    return (200, ["content": "OK", "setup_test": "complete_visible_assistant_v1"], delayChat)
+                }
                 if request.url!.path == "/engine/downloads" { return (200, ["tasks": []], 0) }
                 if request.url!.path == "/engine/start" { return (200, ["running": true], 0) }
                 if request.url!.path == "/inference/local-provider" { return (200, [:], 0) }
@@ -276,6 +282,104 @@ struct SetupGuideChecks {
         await initialMonitor.value
         check(SetupHTTP.count("/setup/status") == 1,
               "Stopping during the initial failed request prevents every hidden retry")
+
+        // Stop fences both outcomes, and the retained model can perform a new
+        // test on reopen without an old completion clearing its busy state.
+        for code in [200, 503] {
+            configure("A")
+            let closed = SetupGuideModel(session: session)
+            await closed.refresh()
+            SetupHTTP.configure { _ in
+                (code, code == 200 ? ["content": "OK", "setup_test": "complete_visible_assistant_v1"]
+                                  : ["detail": "Delayed synthetic failure"], 0.15)
+            }
+            let delayed = Task { await closed.test() }
+            while !SetupHTTP.saw("/chat") { try await Task.sleep(nanoseconds: 1_000_000) }
+            closed.stopMonitoring()
+            check(closed.testResult == nil && !closed.testing, "Stop clears test evidence and busy state")
+            configure("A", delayChat: 0.25)
+            let reopen = Task { await closed.monitor() }
+            while !SetupHTTP.saw("/engine/downloads") { try await Task.sleep(nanoseconds: 1_000_000) }
+            let fresh = Task { await closed.test() }
+            for _ in 0..<50 where !SetupHTTP.saw("/chat") { try await Task.sleep(nanoseconds: 1_000_000) }
+            check(SetupHTTP.saw("/chat"), "Reopen can start a test before the old request finishes")
+            await delayed.value
+            check(closed.testResult == nil, "Stop fences delayed test HTTP\(code)")
+            check(closed.testing, "An old completion cannot clear a reopened test's busy state")
+            await fresh.value
+            check(closed.testResult?.hasPrefix("Works") == true, "Reopened retained model can pass a fresh test")
+            closed.stopMonitoring()
+            await reopen.value
+        }
+        configure("A", delayChat: 0.15)
+        let cancelled = SetupGuideModel(session: session)
+        await cancelled.refresh()
+        let cancelledTest = Task { await cancelled.test() }
+        while !SetupHTTP.saw("/chat") { try await Task.sleep(nanoseconds: 1_000_000) }
+        cancelledTest.cancel()
+        await cancelledTest.value
+        check(cancelled.testResult == nil && !cancelled.testing, "A cancelled test cannot publish success or an error")
+
+        // Missing/invalid certificates from an older or malformed endpoint
+        // never count as a successful setup test.
+        for marker: Any in [NSNull(), false, true, 1, "wrong", ["valid": true]] {
+            configure("A")
+            let uncertified = SetupGuideModel(session: session)
+            await uncertified.refresh()
+            SetupHTTP.configure { _ in (200, ["content": "OK", "setup_test": marker], 0) }
+            await uncertified.test()
+            check(uncertified.testResult?.hasPrefix("Works") != true, "Invalid certificate \(marker) must fail closed")
+        }
+        for content in ["", "  ", "<THINK>secret</THINK>", "OK</think>"] {
+            configure("A")
+            let malformed = SetupGuideModel(session: session)
+            await malformed.refresh()
+            SetupHTTP.configure { _ in
+                (200, ["content": content, "setup_test": "complete_visible_assistant_v1"], 0)
+            }
+            await malformed.test()
+            check(malformed.testResult?.hasPrefix("Works") != true, "A certificate cannot excuse unusable visible content")
+        }
+        configure("A")
+        let oldEndpoint = SetupGuideModel(session: session)
+        await oldEndpoint.refresh()
+        SetupHTTP.configure { _ in (200, ["content": "OK"], 0) }
+        await oldEndpoint.test()
+        check(oldEndpoint.testResult?.hasPrefix("Works") != true, "An older generic endpoint cannot certify setup")
+
+        if CommandLine.arguments.count == 2 {
+            let data = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
+            let cases = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+            for item in cases {
+                configure("A")
+                let pipeline = SetupGuideModel(session: session)
+                await pipeline.refresh()
+                var requestedValidation = false
+                SetupHTTP.configure { request in
+                    let body = try! JSONSerialization.jsonObject(with: request.httpBody
+                        ?? request.httpBodyStream.map { stream in
+                            stream.open(); defer { stream.close() }
+                            var bytes = [UInt8](repeating: 0, count: 4096)
+                            var result = Data()
+                            while stream.hasBytesAvailable {
+                                let count = stream.read(&bytes, maxLength: bytes.count)
+                                if count <= 0 { break }; result.append(bytes, count: count)
+                            }
+                            return result
+                        } ?? Data()) as! [String: Any]
+                    requestedValidation = (body["setup_test"] as? Bool) == true
+                    return (item["status"] as! Int, item["body"] as! [String: Any], 0)
+                }
+                await pipeline.test()
+                check(requestedValidation, "Native test requests server validation")
+                check((pipeline.testResult?.hasPrefix("Works") == true) == (item["expectedWorks"] as! Bool),
+                      "Actual managed completion/route/native pipeline: \(item["name"]!)")
+            }
+        }
+        if failures > 0 {
+            FileHandle.standardError.write(Data("\(failures) of \(checks) setup checks failed\n".utf8))
+            exit(1)
+        }
         print("\(checks) setup model-state checks passed; all HTTP intercepted")
     }
 }
