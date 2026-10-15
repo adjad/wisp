@@ -1,6 +1,6 @@
 # Mellum2.1 fine-tune for Wisp (plan)
 
-Date: 2026-10-14. Status: plan only. Nothing has been trained.
+Date: 2026-10-14. Status: Phase 0 complete (toolbench additions in #228, thinking sweep below). Nothing has been trained.
 
 ## Why Mellum
 
@@ -86,6 +86,36 @@ short and templated. LoRA on one A6000, merge, re-quantize to oQ5e, then gate on
 3. **Pin the base.** Record the exact `JetBrains/Mellum2.1-12B-A2.5B-Thinking` revision. The oQ5e card names
    `92ddae9f…`; use the same revision so the baseline and the fine-tune differ only by the adapter.
 
+### Phase 0 result (2026-10-14): use **B, thinking off for narration only**
+
+Gate split (94 cases × 3 trials = 282 per variant); fresh oMLX; Low Power Mode off; run
+`~/.moe/evals/toolbench/20261014-201016`:
+
+| | A default | **B narration-off** | C off everywhere |
+|---|---|---|---|
+| pass | 80% | **83%** | 78% |
+| consistent cases | 65/94 | **74/94** | 70/94 |
+| selection + args | 87% | **88%** | 82% |
+| no-tool restraint | 12/21 | **15/21** | 7/21 |
+| unsafe calls | 4 | 3 | 3 |
+| runaway / over budget | 8 / 14 | **2 / 5** | 5 / 9 |
+| format errors (incl. leaks) | 5 | 2 | 2 |
+| median / p90 s | 7.1 / 23.3 | 4.7 / 17.1 | **2.4 / 4.4** |
+| reasoning chars p50 / p90 / max | 1,970 / 7,716 / 23,787 | 923 / 5,538 / 20,061 | 0 |
+| route faults (router's) | 15 | 15 | 15 |
+
+- **B beats A on every quality row and is 1.5× faster.** Thinking on the narration step was pure cost: it
+  produced the runaways and the leaks without improving any choice.
+- **C is the fastest, but it loses selection quality.** `wrong_tool` went from 2 to 10 and `bad_args` from 8 to
+  12. It also acts on chat far more: no-tool restraint fell from 12/21 to 7/21. This is the same lesson as
+  Ling, where thinking off on selection steps hurts.
+- **Decision.** Training targets keep a `<think>` block on selection steps and an empty think on narration
+  steps. Mellum goes into `no_thinking_capable` when it is adopted.
+- **Main remaining latency cost: long selection reasoning.** The p90 is 5.5k chars. So the self-distillation
+  filter should prefer short reasoning, and the corrective rows' reasoning stays at 1–3 sentences.
+- **New failure to cover.** `rem_water_tonight`: "tonight at 8" became `T08:00`, which is morning. Add an
+  am/pm-from-context corrective class next to date arithmetic.
+
 ## Phase 1: dataset (≈2–3 days)
 
 Store it under `training/mellum-dataset-r1-<date>/`, following the V3.1 layout: generator, `validate.py`,
@@ -143,15 +173,19 @@ Data rules carried over from V3.1:
 
 Run on the toolbench **gate split**, 3 trials, the same machine and the same power mode as the baseline run.
 
+The baseline is stock Mellum served as R1 will be (variant B), on the gate split, from the Phase 0 run. The 15
+route-fault trials are the router's and count against every model equally. Fix them in the router, then
+re-baseline before gating.
+
 | metric | baseline (stock) | R1 must reach |
 |---|---|---|
-| pass | 85% (on the 53) | **≥ 92%**, and ≥ baseline + 5 pts on the gate split |
-| unsafe calls | 5 | **0** |
-| runaway / timeout | 5 / 2 | **≤ 1 / 0** |
-| no-tool restraint | 9/12 | ≥ 11/12 |
-| `text_tool_call` + `reasoning_leak` | ≥ 2 | 0 |
-| reasoning p90 (chars) | to measure | ≤ 50% of baseline |
-| median latency | 9.6 s | ≤ baseline |
+| pass | 83% (gate, variant B) | **≥ 92%** (so at least +9 pts) |
+| unsafe calls | 3 | **0** |
+| runaway / timeout | 2 / 0 | **≤ 1 / 0** |
+| no-tool restraint | 15/21 | ≥ 19/21 |
+| `text_tool_call` + `reasoning_leak` | 2 | 0 |
+| reasoning p90 (chars) | 5,538 | ≤ 2,800 |
+| median latency | 4.7 s | ≤ baseline |
 | any category | — | no category down more than 1 trial |
 
 Also required:
