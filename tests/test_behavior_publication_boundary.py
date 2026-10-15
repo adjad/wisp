@@ -98,6 +98,8 @@ def test_expiry_and_clock_rollback_do_not_renew_tokens():
     assert not witness.current()
     clock.observe(110,60)
     assert not witness.current()
+    clock.observe(106,56)
+    assert not witness.current()  # A recovered reading cannot rearm the same clock epoch.
 
 
 def test_memory_witness_check_never_calls_config_or_sql_or_file_io(monkeypatch):

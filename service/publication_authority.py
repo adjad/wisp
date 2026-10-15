@@ -28,6 +28,12 @@ _local = threading.local()
 _issuer = object()
 
 
+def assert_mutation_allowed():
+    """Refuse an unsafe same-thread request before observing or changing state."""
+    if getattr(_local,"publisher",None) is not None:
+        raise PublicationBusy("Permission or source change was not applied during publication; retry outside it")
+
+
 @contextmanager
 def revocation():
     """Order a supported mutation before taking any inner writer locks.
@@ -35,8 +41,7 @@ def revocation():
     Nested mutations are allowed. A publishing thread cannot synchronously
     mutate authority: this is an explicit not-applied error, never a deferral.
     """
-    if getattr(_local,"publisher",None) is not None:
-        raise PublicationBusy("Permission or source change was not applied during publication; retry outside it")
+    assert_mutation_allowed()
     with _barrier:
         depth = getattr(_local,"revokers",0)
         _local.revokers = depth+1
@@ -72,14 +77,20 @@ class Clock:
             raise TypeError("A known clock mode is required")
         self._live = live
         self._reading = None
+        self._invalid = False
 
     def observe(self, wall, monotonic):
         if not _finite(wall) or not _finite(monotonic):
             self._reading = None
+            self._invalid = True
         else:
+            if self._reading is not None and (wall<self._reading[0] or monotonic<self._reading[1]):
+                self._invalid = True
             self._reading = (float(wall),float(monotonic))
 
     def read(self):
+        if self._invalid:
+            return None
         return (time.time(),time.monotonic()) if self._live else self._reading
 
 
