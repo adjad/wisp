@@ -141,6 +141,9 @@ class BehaviorEngine:
             self._store.delete_observations(gone)
             self._store.put_snapshot(source, taken_at=taken_at, window_start=window_start,
                                      window_end=window_end, items=[_snap_item(o) for o in current])
+            if (source=="calendar" and prev is not None
+                    and 0<taken_at-prev["taken_at"]<=600):
+                self._store.record_coverage("calendar_changes",prev["taken_at"],taken_at,"complete",taken_at)
         return {"upserted": upserted,
                 "cancelled": sum(1 for o in lifecycle if o.kind == "event_cancelled"),
                 "moved": sum(1 for o in lifecycle if o.kind == "event_moved")}
@@ -214,7 +217,8 @@ class BehaviorEngine:
         now = self._now(now)
         with self._lock:
             obs = self._load(ask_phraser=True, since=now - MINE_LOOKBACK_S, until=now)
-            mined = miners.mine_all(obs, now, self._tz)
+            from service.behavior.evidence import pattern_evidence
+            mined = [pattern_evidence(p) for p in miners.mine_all(obs, now, self._tz)]
             self._store.replace_patterns(mined, now)
             self._store.meta_set("last_mined_at", now)
             self._store.prune(now)    # retention: observations 180d, nudges 30d
@@ -292,7 +296,7 @@ class BehaviorEngine:
             created = []
             phrased = 0
             for n in chosen:      # highest priority first, so the best ones get phrased
-                if (self._phraser is not None and phrased < PHRASE_MAX_PER_PASS
+                if (self._phraser is not None and n.kind == "contact_window" and phrased < PHRASE_MAX_PER_PASS
                         and time.monotonic() - started < PHRASE_BUDGET_S):
                     phrased += 1
                     n = self._phrase(n)
@@ -304,7 +308,7 @@ class BehaviorEngine:
     def _phrase(self, n: Nudge) -> Nudge:
         """Let the optional model reword the body; the title and the evidence
         line stay code-composed. Any failure keeps the code text."""
-        if self._phraser is None:
+        if self._phraser is None or n.kind in {"habit_missed", "habit_conflict", "cancel_likely", "day_preview"}:
             return n
         facts = {"title": n.title, "body": n.body, "because": n.because,
                  "actions": [a.label for a in n.actions if a.label]}
@@ -341,6 +345,44 @@ class BehaviorEngine:
                 attrs={"nudge_id": fb.nudge_id, "verdict": fb.verdict, "pattern_id": key})])
 
     # ---- personal context ---------------------------------------------------
+    def history_status(self) -> dict:
+        from service.behavior.history import History
+        return History(self._store).status()
+
+    def history_next(self, source: str) -> dict:
+        from service.behavior.history import History
+        with self._lock:
+            return History(self._store).next(source, self._now(None))
+
+    def history_control(self, source: str, command: str) -> dict:
+        from service.behavior.history import History
+        with self._lock:
+            return History(self._store).control(source, command, self._now(None))
+
+    def history_ingest(self, source: str, payload: dict) -> dict:
+        from service.behavior.history import History
+        with self._lock:
+            result = History(self._store).ingest(source,payload,self._now(None),self._prepare)
+            # Mine only recent evidence; old scans must not revive obsolete routines.
+            if result.get("retained_rows",0):
+                self.mine()
+            return result
+
+    def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
+        self._store.record_coverage(source, start, end, state, now)
+
+    def weekly(self, now: float | None = None) -> dict:
+        from service.behavior.weekly import weekly_report, render_report
+        now = self._now(now)
+        from service.behavior.timeutil import day_start, local_dt
+        start = day_start(local_dt(now, self._tz).date() - timedelta(days=35), self._tz)
+        with self._lock:
+            # Include events beginning before the report if their ends overlap.
+            obs = self._load()
+            report = weekly_report(obs,self._store.coverage(),now,self._tz)
+        report["summary"] = render_report(report)
+        return report
+
     def profile_card(self, now: float | None = None, max_bytes: int = 700) -> str:
         """Compact always-on 'who you are' text for the system prompt: top
         confirmed/high-confidence patterns + today's predictions. UTF-8 bytes

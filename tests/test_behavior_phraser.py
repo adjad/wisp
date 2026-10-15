@@ -228,10 +228,15 @@ def test_real_engine_uses_phraser_and_payloads_fit_remote_profile(tmp_path):
                          window_end=now + 14 * 86400, taken_at=now)
     eng.mine(now=now)
     nudges = eng.generate_nudges(now=now)
+    # Schedule-sensitive bodies remain deterministic. Exercise wording on an
+    # observed-contact nudge instead, retaining the same remote payload checks.
+    from service.behavior.types import Nudge
+    contact = eng._phrase(Nudge(id="contact-probe",kind="contact_window",title="Reply to Sam?",
+                                body="Sam messaged you 3h ago.",because="Observed messages",created_at=now))
     eng.close()
     assert nudges and seen
-    phrased = [n for n in nudges if n.body.startswith("Heads up:")]
-    assert phrased, [n.body for n in nudges]
+    assert contact.body.startswith("Heads up:")
+    assert all(not n.body.startswith("Heads up:") for n in nudges if n.kind != "contact_window")
 
 
 # ------------------------------------------------- review regressions (repair pass)

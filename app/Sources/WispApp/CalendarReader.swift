@@ -16,6 +16,7 @@ final class CalendarReader {
     // close — this is a deliberate scope choice, not a technical ceiling.
     private let historyDays = 365
     private var timer: Timer?
+    private var historyTask: Task<Void, Never>?
 
     private static let examWords = ["exam", "midterm", "final", "quiz", "test"]
     private static let assignWords = ["due", "assignment", "homework", "hw",
@@ -75,6 +76,7 @@ final class CalendarReader {
                                            "status": EKEventStore.authorizationStatus(for: .event).rawValue])
             return
         }
+        startHistoryScan()
         // Start a full `historyDays` back (not just "today") so past events
         // sync too — see AssistantStore.history/service/memory/profile.py.
         // sync_source() replaces the active set for this source on every
@@ -141,6 +143,57 @@ final class CalendarReader {
             "events_found": events.count,
             "event_ids": payload.map { "\($0["title"] ?? "") | \($0["source_id"] ?? "")" },
         ])
+    }
+
+    /// History has its own append-only endpoint: a backfill page must never
+    /// replace the agenda or manufacture cancellation events.
+    private func startHistoryScan() {
+        guard historyTask == nil else { return }
+        historyTask = Task { @MainActor [weak self] in
+            defer { self?.historyTask = nil }
+            // Bound work per minute. A failed upload leaves the backend cursor
+            // unchanged; the next pass re-reads the same page.
+            for _ in 0..<8 {
+                guard self?.isAuthorized == true,
+                      let job = await WispClient.behaviorNativeHistoryRequest("GET", "behavior/history/calendar/next"),
+                      job["state"] as? String == "scanning",
+                      let start = job["page_start"] as? Double,
+                      let end = job["page_end"] as? Double else { return }
+                let capture: ([[String: Any]]?, String) = await Task.detached(priority: .utility) {
+                    let source = EKEventStore()
+                    guard EKEventStore.authorizationStatus(for: .event) == .fullAccess,
+                          !source.calendars(for: .event).isEmpty else { return (nil,"access_unavailable") }
+                    let predicate = source.predicateForEvents(withStart: Date(timeIntervalSince1970: start),
+                        end: Date(timeIntervalSince1970: end), calendars: nil)
+                    let events = source.events(matching: predicate)
+                    guard events.count <= 10000 else { return (nil,"row_limit") }
+                    var result: [[String: Any]] = []
+                    for ev in events {
+                        guard let id = ev.eventIdentifier, !id.isEmpty,
+                              let first = ev.startDate, let last = ev.endDate else { return (nil,"invalid_record") }
+                        guard first.timeIntervalSince1970 < end && last.timeIntervalSince1970 > start else { continue }
+                        guard let row = Self.historyEventRow(id: id, title: ev.title ?? "(untitled)",
+                            start: first.timeIntervalSince1970, end: last.timeIntervalSince1970,
+                            allDay: ev.isAllDay, calendar: ev.calendar?.title ?? "") else { return (nil,"invalid_record") }
+                        result.append(row)
+                    }
+                    guard EKEventStore.authorizationStatus(for: .event) == .fullAccess else { return (nil,"access_unavailable") }
+                    return (result,"")
+                }.value
+                let rows = capture.0
+                guard await WispClient.behaviorNativeHistoryBatch("calendar", job: job, rows: rows ?? [],
+                    complete: rows != nil, reason: capture.1) else { return }
+                if rows == nil { return }
+                await Task.yield()
+            }
+        }
+    }
+
+    static func historyEventRow(id: String, title: String, start: Double, end: Double,
+                                allDay: Bool, calendar: String) -> [String: Any]? {
+        guard !id.isEmpty, id.count <= 1000, start.isFinite, end.isFinite, end >= start else { return nil }
+        return ["source_id": id, "title": String((title.isEmpty ? "(untitled)" : title).prefix(1000)),
+                "when_ts": start, "end_ts": end, "all_day": allDay, "context": calendar]
     }
 
     // Create a real event in the default calendar (write access comes with the

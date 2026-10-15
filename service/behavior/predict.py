@@ -117,7 +117,10 @@ def _activities(live, upcoming, now, end, tz) -> list[Prediction]:
         for s, e in occurrences(p.window, now, end, tz):
             on_cal = [ev.id for ev in upcoming if miners.matches_habit(ev, p)
                       and ev.ts < e and _end(ev) > s]
-            because = f"{label} on {habit_evidence(p)}" + ("; it's on your calendar" if on_cal else "")
+            because = (f"Calendar scheduled {label} on {habit_evidence(p)}; completion unknown"
+                       if p.stats.get("basis", "scheduled") == "scheduled" else
+                       f"Recorded task completions: {label} on {habit_evidence(p)}")
+            because += "; it's on your calendar" if on_cal else ""
             out.append(Prediction(kind="activity", subject=label, ts=s, end_ts=e,
                                   probability=activity_probability(p, now), because=because,
                                   pattern_id=p.id, refs=tuple(on_cal)))
@@ -134,7 +137,8 @@ def _contacts(live, now, end, tz) -> list[Prediction]:
             continue
         s, e = occ[0]
         part = p.stats.get("daypart", "")
-        because = (f"You were in touch with {p.subject} on {p.support} of the last {p.opportunities} "
+        basis = "Messages and scheduled calls with" if p.stats.get("basis") == "mixed" else "Messages with"
+        because = (f"{basis} {p.subject} on {p.support} of the last {p.opportunities} "
                    f"{p.stats.get('days', 'days')} ({part}s, "
                    f"{fmt_range(p.window.start_minute, p.window.end_minute)})")
         out.append(Prediction(kind="contact", subject=p.subject, ts=s, end_ts=e,

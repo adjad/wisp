@@ -2,7 +2,7 @@
 
 Wisp learns the user's routines from what they already do (calendar, reminders,
 message rhythm, what they ask Wisp), predicts the next day, and sends a few
-**nudges** before being asked. Some nudges carry a small, reversible action
+**nudges** before being asked. Calendar entries describe scheduled plans, never verified attendance or completion. Some nudges carry a small, reversible action
 that Wisp performs on its own, always with an **Undo**.
 
 **Code mines, the model only talks.** Patterns, predictions and nudge decisions
@@ -73,7 +73,7 @@ hours, and when you switch learning off.
 
 | Pattern kind | Needs | Example statement |
 | --- | --- | --- |
-| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. Also notes and completed reminders. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "You usually work out on Mon, Wed and Fri mornings (6:45–7:45am)" |
+| `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. The library also supports notes; runtime Notes ingestion is not wired. Completed reminders require a dedicated source completion date to establish a timed habit. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "Your calendar usually has time to work out on Mon, Wed and Fri mornings (6:45–7:45am); completion is unknown" |
 | `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
 | `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
 | `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
@@ -113,7 +113,7 @@ Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
 | `habit_conflict` | an event overlaps a learned habit | auto: reminder "Remind me" on Wisp's schedule. Offered: "Draft a move request" |
 | `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
 | `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
-| `habit_missed` | a personal habit (confidence 0.5 or more) did not happen today, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
+| `habit_missed` | a scheduled personal habit (confidence 0.5 or more) is absent from today’s calendar; actual completion remains unknown, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
 | `day_preview` | 07:00-10:00, top four predictions for today; usage windows only fill slots left after the other kinds (one per topic, at most two); expires at noon | none |
 
 Attention rules (`nudges.select`):
@@ -130,7 +130,7 @@ Attention rules (`nudges.select`):
 - **Undo:** an `undo` also turns that kind and pattern's auto actions into
   offers.
 - **Horizon:** candidates are built for events through the end of tomorrow.
-- **Phrasing:** at most 2 nudges per pass are reworded, and none after 10 s.
+- **Phrasing:** only observed-contact bodies may be reworded; at most 2 per pass, and none after 10 s.
   Title and `because` stay code-composed; the body is capped at 400 characters.
 
 ## Autonomy
@@ -275,3 +275,81 @@ WISP_HOME=$(mktemp -d) python -m pytest -q tests/test_behavior_*.py
 - **Time zones.** The engine mines in the Mac's zone; snapshots carry only
   epoch times.
 - **Single user.** One engine database per Mac.
+
+## Evidence and weekly activity
+
+Calendar observations always have evidence basis `scheduled` and outcome `unknown`.
+Messages and Wisp asks are observed interactions. `reminder_done` records a task
+marked complete; only a dedicated native `completion_ts` establishes its date.
+Generic `updated_at` and due dates are not completion timestamps. Pattern
+confirmation does not confirm attendance at individual events.
+
+Schema 2 adds source-coverage intervals without rewriting or discarding old
+observations, pattern identities or verdicts. Old saved/confirmed patterns receive
+conservative evidence wording on read, including before re-mining. Old schedule
+nudges are decoded with neutral wording and no offered automatic actions; their
+identity and Undo records remain. Schedule-sensitive nudge bodies stay deterministic.
+
+`GET /behavior/weekly` returns seven **completed local dates**, ending at today's
+midnight, compared with the preceding four seven-day windows. It reports scheduled
+meeting count and occupied meeting hours (overlaps counted once), scheduled focus
+hours, adjacent meeting pairs, unbooked weekday hours in 09:00–18:00, dated reminder
+completions, and observed calendar moves/removals. These are measurements, not a
+productivity score. Calendar gaps do not establish focused work. No completion rate
+uses calendar plans as its denominator.
+
+All comparison windows must have explicit complete coverage for their source;
+otherwise values are labeled observed records only, with no change or percentage.
+Missing event end times suppress duration comparisons. Zero baselines never produce
+an infinite percentage. Calendar change coverage begins only with successive live
+snapshots no more than ten minutes apart; historical backfill cannot reconstruct
+past removals. Date boundaries use the engine timezone, including DST.
+
+The Learned window displays the report and per-source history status even before
+any pattern qualifies. `my_patterns(query="weekly activity")` serves the same grounded
+report through the existing tool. Exact new weekly phrase routing is not added in
+this candidate because that router seam has a separately retained owner.
+
+## Accessible history scanning
+
+The native Calendar and Reminders readers poll separate behavior-only history
+endpoints while learning is enabled and existing source permissions allow access.
+These imports never use the agenda's replace-set endpoint, reopen tasks, create
+reminders, or synthesize cancellations.
+
+Calendar scans backwards in ranges shorter than EventKit's four-year ceiling.
+There is no public oldest-event query, so empty ranges do not terminate the scan.
+The explicit lower bound is Gregorian 0001-01-01 UTC. Each minute performs at most
+eight bounded Calendar queries off the main thread. Completed reminders initially
+query the accessible date range in one pass, including completed undated tasks.
+A page over 10,000 rows automatically reduces its date span without advancing the
+cursor. A still-overfull one-day page, unavailable access or invalid source row
+pauses the scan with its known progress retained. Large histories can take time.
+
+Each batch binds a scan ID, exact half-open date range and content digest. SQLite
+commits validated observations, coverage and checkpoint together. Repeat batches
+are idempotent; old/restarted/paused scan responses cannot advance the cursor.
+Users can pause, resume and restart from the Learned window. Learning off refuses
+new imports; Forget deletes history jobs along with the behavior database.
+
+The first recent page can seed useful guesses immediately. Current routines still
+use the latest 16 weeks, and personal observation retention remains 180 days:
+older pages contribute scan counts/coverage, not indefinite raw records or revived
+obsolete routines. The regular runtime ingests the full retained 180-day source
+window. Completed-reminder history refreshes incrementally after the first scan.
+
+"Accessible" means records returned by the already permitted native stores. It
+cannot establish that providers synced every historic record, restore deleted
+calendar events, or reconstruct attendance or past uncollected app usage. Messages
+and Wisp-request ingestion remain limited by their existing feed/cap and are not
+presented as complete computer history. No real user history is scanned during QA.
+
+Endpoints added: `GET /behavior/history`, `GET /behavior/history/{source}/next`,
+`POST /behavior/history/{source}/batch`, and
+`POST /behavior/history/{source}/control` with `pause|resume|restart`.
+Supported native history sources are `calendar` and `completed_reminders` only.
+
+Email, foreground/screen time, website sessions, Focus/DND availability, away/sleep/
+lock intervals and next-activity/day planning remain the accepted next stages.
+Their collectors are not activated by this milestone. Those sources must keep
+observed, reported, scheduled and inferred evidence distinct and expose coverage.

@@ -1130,7 +1130,15 @@ final class OverlayModel: ObservableObject {
             // Behavior engine (service/behavior, Nudge.to_event()). Auto
             // actions were already performed by the backend; the card and the
             // notification say so and offer Undo. Acked like "reminder".
-            guard let nudge = BehaviorNudge.parse(ev.payload) else { return false }
+            var payload = ev.payload
+            if (payload["evidence_version"] as? Int) != 2,
+               ["habit_missed", "habit_conflict", "cancel_likely", "day_preview"].contains(payload["kind"] as? String ?? "") {
+                payload["title"] = "Review an older calendar suggestion"
+                payload["body"] = "This suggestion used calendar plans. Whether the activity happened is unknown."
+                payload["because"] = "Calendar evidence; completion unknown"
+                payload["actions"] = [[String: Any]]()
+            }
+            guard let nudge = BehaviorNudge.parse(payload) else { return false }
             // A replay that outlived its moment is acknowledged silently.
             if nudge.isExpired() { return true }
             showNudge(nudge)

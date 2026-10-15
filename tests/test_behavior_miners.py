@@ -59,7 +59,7 @@ def test_dev_afternoon_contact_rhythm(mined):
     assert dev.stats["daypart"] == "afternoon"
     assert dev.window.weekdays == (0, 1, 2, 3, 4)
     assert 13 * 60 <= dev.window.start_minute <= 15 * 60 and dev.window.end_minute <= 18 * 60
-    assert "Dev Malik most weekday afternoons" in dev.statement
+    assert "Dev Malik recur most weekday afternoons" in dev.statement
     assert dev.stats["reply_latency_s"] is not None and dev.stats["reply_latency_s"] < 3600
     assert dev.stats["calls"] >= 4                              # the Thursday "Dev / Robin 1:1"
 
@@ -69,7 +69,7 @@ def test_mom_sunday_evenings(mined):
     mom = one(patterns, "contact_rhythm", "Mom")
     assert mom.window.weekdays == (6,)
     assert mom.stats["daypart"] == "evening"
-    assert mom.statement.startswith("You call Mom on Sunday evenings")
+    assert mom.statement.startswith("Messages and scheduled calls with Mom recur on Sunday evenings")
 
 
 def test_back_to_back_last_cancel_rate(mined):
@@ -92,7 +92,7 @@ def test_meetings_over_gym_get_moved(mined):
     prot = one(patterns, "habit_protection", "fitness")
     assert prot.stats["moved"] == persona.expected["gym_collisions"]["moved"] == 4
     assert prot.stats["kept"] == persona.expected["gym_collisions"]["kept"] == 1
-    assert "move it (4 of 5 times)" in prot.statement
+    assert "the overlapping event moves (4 of 5 times)" in prot.statement
 
 
 def test_wisp_brief_around_8_15(mined):
@@ -161,7 +161,7 @@ def test_habit_needs_three_occurrences_over_three_weeks():
     four = [_yoga(d, n=i) for i, d in enumerate(saturdays)]
     (p,) = [p for p in miners.mine_all([first] + four, now, TZ) if p.subject == "fitness"]
     assert p.window.weekdays == (5,) and p.support == 4 and p.opportunities == 4
-    assert p.statement == "You usually work out on Saturday mornings (7–8am)"
+    assert p.statement == "Your calendar usually has time to work out on Saturday mornings (7–8am); completion is unknown"
 
 
 def _titled(day, title, minute, n):

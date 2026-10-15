@@ -23,7 +23,7 @@ from typing import Any, Iterable
 
 from service.behavior.types import Nudge, Observation, Pattern
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 log = logging.getLogger(__name__)
 # Retention (applied by prune(), which the engine runs during mine()). Mining
 # looks back ~16 weeks and feedback memory is 30 days, so nothing older is read.
@@ -60,6 +60,11 @@ CREATE TABLE IF NOT EXISTS feedback (
     ts REAL NOT NULL, kind TEXT NOT NULL DEFAULT '', pattern_key TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS feedback_ts ON feedback(ts);
+CREATE TABLE IF NOT EXISTS source_coverage (
+    source TEXT NOT NULL, start_ts REAL NOT NULL, end_ts REAL NOT NULL,
+    state TEXT NOT NULL, observed_at REAL NOT NULL,
+    PRIMARY KEY(source, start_ts, end_ts)
+);
 """
 
 
@@ -158,6 +163,31 @@ class Store:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def record_coverage(self, source: str, start: float, end: float, state: str, now: float) -> None:
+        import math
+        if (state not in {"complete", "partial", "unavailable"} or not source
+                or not all(math.isfinite(v) for v in (start, end, now)) or end <= start):
+            raise ValueError("Invalid source coverage")
+        with self._lock, self._conn:
+            self._write_coverage(source,start,end,state,now)
+
+    def _write_coverage(self, source, start, end, state, now):
+        """Caller holds the transaction. Merge complete intervals, keeping gaps."""
+        if state == "complete":
+            rows=self._conn.execute("SELECT start_ts,end_ts FROM source_coverage WHERE source=? "
+                                    "AND state='complete' AND start_ts<=? AND end_ts>=?",(source,end,start)).fetchall()
+            if rows:
+                start=min(start,*(r[0] for r in rows)); end=max(end,*(r[1] for r in rows))
+                self._conn.execute("DELETE FROM source_coverage WHERE source=? AND state='complete' "
+                                   "AND start_ts<=? AND end_ts>=?",(source,end,start))
+        self._conn.execute("INSERT INTO source_coverage VALUES (?,?,?,?,?) ON CONFLICT(source,start_ts,end_ts) "
+                               "DO UPDATE SET state=excluded.state,observed_at=excluded.observed_at "
+                               "WHERE excluded.observed_at >= observed_at", (source,start,end,state,now))
+
+    def coverage(self) -> list[dict]:
+        with self._lock:
+            return [dict(r) for r in self._conn.execute("SELECT * FROM source_coverage ORDER BY source,start_ts")]
 
     # ------------------------------------------------------------------ meta
     def meta_get(self, key: str, default: Any = None) -> Any:
@@ -269,12 +299,14 @@ class Store:
         sql += " ORDER BY confidence DESC, id"
         with self._lock:
             rows = self._conn.execute(sql, args).fetchall()
-        return [replace(Pattern.from_dict(json.loads(r[0])), status=r[1]) for r in rows]
+        from service.behavior.evidence import pattern_evidence
+        return [pattern_evidence(replace(Pattern.from_dict(json.loads(r[0])), status=r[1])) for r in rows]
 
     def get_pattern(self, pattern_id: str) -> Pattern | None:
         with self._lock:
             row = self._conn.execute("SELECT json, status FROM patterns WHERE id=?", (pattern_id,)).fetchone()
-        return None if row is None else replace(Pattern.from_dict(json.loads(row[0])), status=row[1])
+        from service.behavior.evidence import pattern_evidence
+        return None if row is None else pattern_evidence(replace(Pattern.from_dict(json.loads(row[0])), status=row[1]))
 
     def replace_patterns(self, mined: list[Pattern], now: float) -> list[Pattern]:
         """Persist a fresh mining run. The user's verdict survives because pattern
@@ -284,13 +316,15 @@ class Store:
         one successor with the same kind+subject, which inherits the verdict."""
         out: list[Pattern] = []
         with self._lock, self._conn:
-            rows = self._conn.execute("SELECT id, status, kind, subject FROM patterns").fetchall()
+            rows = self._conn.execute("SELECT id, status, kind, subject, json FROM patterns").fetchall()
             existing = {r[0]: r[1] for r in rows}
+            from service.behavior.evidence import pattern_evidence
+            old_basis = {r[0]: pattern_evidence(Pattern.from_dict(json.loads(r[4]))).stats.get("basis") for r in rows}
             mined_ids = {p.id for p in mined}
             # A verdict whose pattern drifted to a new id (e.g. a weekday joined
             # the window) follows it when the kind+subject is unambiguous.
             orphans: dict[tuple[str, str], list[str]] = {}
-            for pid, st, kind, subject in rows:
+            for pid, st, kind, subject, _raw in rows:
                 if st != "active" and pid not in mined_ids:
                     orphans.setdefault((kind, subject), []).append(pid)
             successors: dict[tuple[str, str], list[Pattern]] = {}
@@ -300,7 +334,8 @@ class Store:
             inherited: dict[str, str] = {}
             for key, olds in orphans.items():
                 news = successors.get(key, [])
-                if len(olds) == 1 and len(news) == 1:
+                if (len(olds) == 1 and len(news) == 1
+                        and old_basis[olds[0]] == pattern_evidence(news[0]).stats.get("basis")):
                     inherited[news[0].id] = existing[olds[0]]
                     self._conn.execute("DELETE FROM patterns WHERE id=?", (olds[0],))
             seen = set()

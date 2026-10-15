@@ -413,9 +413,10 @@ def test_calendar_snapshot_maps_ids_and_detects_cancellation(tmp_path, store):
     tick(rt, store, FakeHub())
     source, ids, start, end, taken = eng.snapshot_calls[-1]
     assert source == "calendar" and taken == NOW - 5
-    # Every calendar, past and upcoming, but no all-day events.
+    # All-day plans stay available for calendar-load reports; habit miners exclude them.
     assert sorted(ids) == sorted([f"cal:g:{int(at(6, 30, -1))}", f"cal:t:{int(at(16, 0, 1))}",
-                                  f"cal:b:{int(at(17, 0, 1))}", f"cal:r:{int(at(11, 0, 1))}"])
+                                  f"cal:b:{int(at(17, 0, 1))}", f"cal:r:{int(at(11, 0, 1))}",
+                                  f"cal:h:{int(at(0, 0, 2))}"])
     sync_ = eng.obs[f"cal:t:{int(at(16, 0, 1))}"]
     assert sync_.kind == "event" and sync_.end_ts == at(16, 30, 1) and sync_.source_id == "t"
     assert sync_.attrs["calendar"] == "Work"

@@ -119,7 +119,7 @@ def test_habit_missed_suggests_a_hold_in_a_free_slot(tmp_path, persona):
     (hold,) = miss.actions
     assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Morning lift (Wisp suggested)"
     assert hold.params["when_ts"] == at(14, 11) and hold.params["end_ts"] == at(14, 12)   # after the focus block
-    assert miss.title == "No workout today?"
+    assert miss.title == "Morning lift isn't on your calendar today"
     e.close()
 
 
@@ -302,7 +302,7 @@ def test_demo_sunday_1pm_both_presets_fire(tmp_path):
         ("habit_conflict", "Foundry export check-in overlaps your workout")]
     e.observe(backtoback())
     b2b = e.generate_nudges(SUN)
-    assert [(n.kind, n.title) for n in b2b] == [("cancel_likely", "You might skip Board deck prep")]
+    assert [(n.kind, n.title) for n in b2b] == [("cancel_likely", "The schedule for Board deck prep may change")]
     assert b2b[0].expires_at == ts(12, 15, 30)
     assert any(a.type == "add_hold" and a.auto for a in b2b[0].actions)
     e.close()
@@ -312,7 +312,7 @@ def test_demo_presets_fire_without_warmup_in_one_pass(tmp_path):
     e, _ = demo_engine(tmp_path, SUN)
     e.observe([foundry()] + backtoback())
     made = sorted((n.kind, n.title) for n in e.generate_nudges(SUN))
-    assert made == [("cancel_likely", "You might skip Board deck prep"),
+    assert made == [("cancel_likely", "The schedule for Board deck prep may change"),
                     ("habit_conflict", "Foundry export check-in overlaps your workout"),
                     ("habit_conflict", "Harborline SSO check-in overlaps your workout")]
     e.close()
@@ -365,7 +365,7 @@ def test_monday_3pm_and_late_night_runs(tmp_path):
     assert e.generate_nudges(ts(11, 22, 30)) == []                    # quiet hours
     mon = [n for n in e.generate_nudges(ts(12, 15, 0)) if n.kind == "cancel_likely"
            and datetime.fromtimestamp(n.expires_at, TZ).date().day == 12]
-    assert [n.title for n in mon] == ["You might skip Board deck prep"]
+    assert [n.title for n in mon] == ["The schedule for Board deck prep may change"]
     e.close()
 
 

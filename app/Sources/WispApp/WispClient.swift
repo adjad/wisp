@@ -371,8 +371,30 @@ final class WispClient {
 
     // GET /behavior/status | /behavior/patterns | /behavior/predict | /behavior/profile
     func behaviorGet(_ endpoint: String) async -> [String: Any]? {
-        guard ["status", "patterns", "predict", "profile"].contains(endpoint) else { return nil }
+        guard ["status", "patterns", "predict", "profile", "weekly", "history"].contains(endpoint) else { return nil }
         return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    func behaviorHistoryNext(_ source: String) async -> [String: Any]? {
+        guard ["calendar", "completed_reminders"].contains(source) else { return nil }
+        return await behaviorRequest("GET", "behavior/history/\(source)/next")
+    }
+
+    func behaviorHistoryBatch(_ source: String, job: [String: Any], rows: [[String: Any]],
+                              complete: Bool, reason: String = "") async -> Bool {
+        guard ["calendar", "completed_reminders"].contains(source),
+              let scanID = job["scan_id"] as? String,
+              let start = job["page_start"], let end = job["page_end"] else { return false }
+        return await behaviorRequest("POST", "behavior/history/\(source)/batch", body: [
+            "scan_id": scanID, "start_ts": start, "end_ts": end,
+            "rows": rows, "complete": complete, "reason": reason], timeout: 60) != nil
+    }
+
+    func behaviorHistoryControl(_ source: String, command: String) async -> Bool {
+        guard ["calendar", "completed_reminders"].contains(source),
+              ["pause", "resume", "restart"].contains(command) else { return false }
+        return await behaviorRequest("POST", "behavior/history/\(source)/control",
+                                     body: ["command": command]) != nil
     }
 
     // GET /behavior/predict?day=today|tomorrow -> {"predictions": [...]}

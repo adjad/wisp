@@ -194,8 +194,8 @@ def _cancel_likely(inp: Inputs, by_id: dict[str, Pattern]) -> list[Nudge]:
         why = f" {p.statement}." if p is not None else ""
         out.append(Nudge(
             id=nudge_id("cancel_likely", pr.refs[0]), kind="cancel_likely",
-            title=f"You might skip {pr.subject}",
-            body=f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) looks like one you usually drop.{why}",
+            title=f"The schedule for {pr.subject} may change",
+            body=f"{pr.subject} ({_when(pr.ts, inp.now, inp.tz)}) resembles bookings that were removed or moved on your calendar.{why}",
             because=pr.because, created_at=inp.now, expires_at=pr.ts, priority=pr.probability,
             pattern_ids=(pr.pattern_id,) if pr.pattern_id else (), evidence=tuple(pr.refs) + (
                 tuple(p.evidence[-2:]) if p else ()), actions=(hold, draft)))
@@ -307,9 +307,9 @@ def _habit_missed(inp: Inputs) -> list[Nudge]:
         verb = miners.habit_verb("category", h.stats.get("key", ""), label)
         out.append(Nudge(
             id=nudge_id("habit_missed", f"{h.id}|{today.isoformat()}"), kind="habit_missed",
-            title=f"No {noun} today?",
-            body=f"You usually {verb} {when_phrase(h.window.weekdays, h.stats.get('daypart', 'morning'))}"
-                 f" and it didn't happen today. {_clock(s, inp.tz)} is free.",
+            title=f"{label} isn't on your calendar today",
+            body=f"Your calendar usually includes {label} {when_phrase(h.window.weekdays, h.stats.get('daypart', 'morning'))}. "
+                 f"It isn't on your calendar today; completion is unknown. {_clock(s, inp.tz)} is unbooked.",
             because=f"{label} on {h.support} of the last {h.opportunities} {h.stats.get('days', 'days')}",
             created_at=inp.now, expires_at=s, priority=h.confidence, pattern_ids=(h.id,),
             evidence=tuple(h.evidence[-3:]),
