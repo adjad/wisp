@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import CoreFoundation
 
 private extension Dictionary where Key == String, Value == Any {
     var selfID: String { self["id"] as? String ?? "unknown" }
@@ -135,6 +136,7 @@ enum LearnedSection: String, CaseIterable, Identifiable {
 @MainActor
 final class LearnedModel: ObservableObject {
     enum Phase: Equatable { case loading, off, ready, failed(String) }
+    enum SignalState: Equatable { case loading, saving, ready, unavailable }
 
     @Published var phase: Phase = .loading
     @Published var patterns: [LearnedPattern] = []
@@ -144,12 +146,47 @@ final class LearnedModel: ObservableObject {
     @Published var weekly: [String: Any] = [:]
     @Published var history: [String: Any] = [:]
     @Published var signals: [String: Any] = [:]
+    @Published private(set) var signalState: SignalState = .loading
     @Published var activitySummary: [String: Any] = [:]
     @Published var busy: Set<String> = []
     @Published var error = ""
     @Published var seedProgress: [String: Any] = [:]
     private let client = WispClient()
     private var revision = 0
+    private var signalRevision = 0
+    private var signalWorker: Task<Void, Never>?
+    private var signalWrites: [(name: String, enabled: Bool)] = []
+    private static let signalSaveError = "Source settings are unconfirmed. Refresh to check them before trying again."
+    private static let signalNames: Set<String> = [
+        "activity", "websites", "email", "messages", "notes", "calendar_context",
+        "reminders_context", "interpretation", "remote_analysis",
+    ]
+
+    /// A missing or in-flight preference is unknown, never an off permission.
+    func signalValue(_ name: String) -> Bool? {
+        signalState == .ready ? signals[name] as? Bool : nil
+    }
+
+    private static func signalSnapshot(_ reply: [String: Any]?) -> [String: Any]? {
+        guard let reply, let epoch = reply["epoch"] as? String, !epoch.isEmpty,
+              let settings = reply["settings"] as? [String: Any],
+              signalNames.allSatisfy({ name in
+                  guard let value = settings[name] as? NSNumber else { return false }
+                  return CFGetTypeID(value) == CFBooleanGetTypeID()
+              }),
+              let minutes = settings["default_block_minutes"] as? NSNumber,
+              CFGetTypeID(minutes) != CFBooleanGetTypeID(),
+              minutes.doubleValue.isFinite, minutes.doubleValue.rounded() == minutes.doubleValue,
+              (15...120).contains(minutes.doubleValue) else { return nil }
+        return settings
+    }
+
+    private func signalsUnavailable() {
+        signals = [:]
+        activitySummary = [:]
+        seedProgress = [:]
+        signalState = .unavailable
+    }
 
     var active: [LearnedPattern] { patterns.filter { $0.status != "rejected" } }
     var rejected: [LearnedPattern] { patterns.filter { $0.status == "rejected" } }
@@ -157,12 +194,20 @@ final class LearnedModel: ObservableObject {
     func refresh() async {
         revision += 1
         let requested = revision
+        let signalRequested = signalRevision
+        let readSignals = signalWorker == nil
         guard let settings = await client.behaviorSettings() else {
             if requested == revision { phase = .failed("Couldn't reach Wisp. Is it running?") }
+            if requested == revision, signalRequested == signalRevision, signalWorker == nil {
+                signalsUnavailable()
+            }
             return
         }
         guard settings["enabled"] as? Bool ?? true else {
             if requested == revision { phase = .off; patterns = []; today = [] }
+            if requested == revision, signalRequested == signalRevision, signalWorker == nil {
+                signalsUnavailable()
+            }
             return
         }
         async let status = client.behaviorGet("status")
@@ -170,13 +215,20 @@ final class LearnedModel: ObservableObject {
         async let predicted = client.behaviorPredictions(day: "today")
         async let measured = client.behaviorGet("weekly")
         async let scanned = client.behaviorGet("history")
-        async let signalSettings = client.behaviorGet("signals")
+        async let signalSettings = readSignals ? client.behaviorGet("signals") : nil
         let signalReply = await signalSettings
         let (s, l, p, w, h) = await (status, listed, predicted, measured, scanned)
         guard requested == revision else { return }
-        signals = signalReply?["settings"] as? [String: Any] ?? [:]
-        activitySummary = signalReply?["activity"] as? [String: Any] ?? [:]
-        seedProgress = signalReply?["seed"] as? [String: Any] ?? [:]
+        // A read started before/during a write cannot confirm current consent.
+        if readSignals, signalRequested == signalRevision, signalWorker == nil {
+            if let snapshot = Self.signalSnapshot(signalReply) {
+                signals = snapshot
+                activitySummary = signalReply?["activity"] as? [String: Any] ?? [:]
+                seedProgress = signalReply?["seed"] as? [String: Any] ?? [:]
+                signalState = .ready
+                if error == Self.signalSaveError { error = "" }
+            } else { signalsUnavailable() }
+        }
         guard let l, let rows = l["patterns"] as? [[String: Any]] else {
             phase = .failed("Couldn't load what Wisp learned. Try Refresh.")
             return
@@ -196,11 +248,42 @@ final class LearnedModel: ObservableObject {
         phase = .ready
     }
 
-    func setSignal(_ name: String, enabled: Bool) async {
-        if let reply = await client.setBehaviorSignal(name, enabled: enabled),
-           let settings = reply["settings"] as? [String: Any] {
-            signals = settings
-        } else { error = "Couldn't save the source preference. Try again." }
+    func setSignal(_ name: String, enabled: Bool) {
+        guard Self.signalNames.contains(name) else { return }
+        // Capture UI intent synchronously, before scheduling any async work.
+        // Keep at most one pending intent per source (nine), plus one in flight.
+        signalRevision += 1
+        signalWrites.removeAll { $0.name == name }
+        signalWrites.append((name, enabled))
+        signalState = .saving
+        error = ""
+        guard signalWorker == nil else { return }
+        signalWorker = Task { await drainSignalWrites() }
+    }
+
+    private func drainSignalWrites() async {
+        var latest: [String: Any]?
+        var failed = false
+        while !signalWrites.isEmpty {
+            let intent = signalWrites.removeFirst()
+            let reply = await client.setBehaviorSignal(intent.name, enabled: intent.enabled)
+            if let snapshot = Self.signalSnapshot(reply),
+               snapshot[intent.name] as? Bool == intent.enabled {
+                latest = snapshot
+            } else { failed = true }
+        }
+        signalWorker = nil
+        // Do not turn intermediate or optimistic state into confirmed consent.
+        // A failed/ambiguous write needs an explicit fresh read or retry.
+        if !failed, let latest {
+            signals = latest
+            activitySummary = [:]
+            seedProgress = [:]
+            signalState = .ready
+        } else {
+            signalsUnavailable()
+            error = Self.signalSaveError
+        }
     }
 
     func historyControl(_ source: String, command: String) async {
@@ -378,6 +461,12 @@ struct LearnedView: View {
             Label("Learn from more context", systemImage: "sparkle.magnifyingglass").font(.headline)
             Text("Choose sources for tentative availability and planning suggestions. These start off. Recurring activity does not prove attendance or free time.")
                 .font(.caption).foregroundStyle(.secondary)
+            if model.signalState != .ready {
+                Text(model.signalState == .saving ? "Saving source settings…" :
+                     model.signalState == .loading ? "Loading source settings…" :
+                     "Source settings are unavailable. Refresh to check which sources are enabled.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             signalToggle("activity", "App, idle and screen-state metadata")
             signalToggle("websites", "Website visit context from enabled Browser History")
             signalToggle("email", "Accessible cached email bodies")
@@ -387,7 +476,7 @@ struct LearnedView: View {
             signalToggle("reminders_context", "Recorded reminder completion history")
             signalToggle("interpretation", "Interpret selected context with Wisp's configured model")
             signalToggle("remote_analysis", "Allow selected context to reach a configured remote model")
-            if model.signals["interpretation"] as? Bool == true {
+            if model.signalValue("interpretation") == true {
                 Text("Initial context analysis").font(.subheadline.weight(.semibold))
                 let sources = model.seedProgress["sources"] as? [String: [String: Any]] ?? [:]
                 ForEach(["email", "messages", "notes", "calendar", "reminders"], id: \.self) { source in
@@ -402,7 +491,7 @@ struct LearnedView: View {
                 Text("Progress resumes across launches and advances through bounded passages. A processed seed covers accessible cached records, not your whole mailbox or account history. Links and work suggestions remain hypotheses and require current source evidence.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            if model.signals["activity"] as? Bool == true,
+            if model.signalValue("activity") == true,
                let seconds = model.activitySummary["covered_seconds"] as? Double {
                 Text("Last seven days: \(Int(seconds / 60)) minutes of device observations collected.")
                     .font(.caption)
@@ -416,10 +505,18 @@ struct LearnedView: View {
         }.padding(12)
     }
 
-    private func signalToggle(_ key: String, _ title: String) -> some View {
-        Toggle(title, isOn: Binding(get: { model.signals[key] as? Bool ?? false },
-            set: { enabled in Task { await model.setSignal(key, enabled: enabled) } }))
-            .toggleStyle(.checkbox)
+    @ViewBuilder private func signalToggle(_ key: String, _ title: String) -> some View {
+        if let confirmed = model.signalValue(key) {
+            Toggle(title, isOn: Binding(get: { model.signalValue(key) ?? confirmed },
+                set: { enabled in model.setSignal(key, enabled: enabled) }))
+                .toggleStyle(.checkbox)
+        } else {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(model.signalState == .saving ? "Pending" : "Unknown").foregroundStyle(.secondary)
+            }
+        }
     }
 
     private var historySection: some View {
