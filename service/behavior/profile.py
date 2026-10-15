@@ -96,7 +96,11 @@ def prediction_line(pr: Prediction, tz: tzinfo, patterns: dict[str, Pattern]) ->
     if pr.kind == "contact":
         end = minute_of(local_dt(pr.end_ts, tz)) if pr.end_ts else None
         span = fmt_range(minute_of(local_dt(pr.ts, tz)), end) if end else t
-        return f"Usually in touch with {pr.subject} {span}"
+        p = patterns.get(pr.pattern_id)
+        calls, messages = (p.stats.get("calls"), p.stats.get("messages")) if p else (0, 0)
+        source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
+                  else "Recorded message window" if messages else "Contact timing (source details unavailable)")
+        return f"{source} with {pr.subject} {span}"
     if pr.kind == "usage":
         return f"Usually asks Wisp about {pr.subject} around {t}"
     return f"{pr.subject} at {t}"

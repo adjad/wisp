@@ -79,7 +79,7 @@ def test_back_to_back_last_cancel_rate(mined):
     assert b2b.support == persona.expected["b2b_last"]["cancelled"]
     assert b2b.opportunities == persona.expected["b2b_last"]["opportunities"]
     assert b2b.stats["last_share"] >= 0.6 and b2b.stats["lift"] >= 1.5
-    assert "usually the last one" in b2b.statement
+    assert "meetings that ended a 3+ back-to-back run" in b2b.statement
     assert set(b2b.window.weekdays) <= {1, 3}
     # Precision: nothing else is claimed as a cancel habit from this history.
     cancel_subjects = {p.subject for p in patterns if p.kind == "cancel_propensity"
@@ -92,7 +92,7 @@ def test_meetings_over_gym_get_moved(mined):
     prot = one(patterns, "habit_protection", "fitness")
     assert prot.stats["moved"] == persona.expected["gym_collisions"]["moved"] == 4
     assert prot.stats["kept"] == persona.expected["gym_collisions"]["kept"] == 1
-    assert "the overlapping event moves (4 of 5 times)" in prot.statement
+    assert "4 moved, 0 removed, 1 remained scheduled out of 5" in prot.statement
 
 
 def test_wisp_brief_around_8_15(mined):

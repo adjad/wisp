@@ -137,8 +137,10 @@ def _contacts(live, now, end, tz) -> list[Prediction]:
             continue
         s, e = occ[0]
         part = p.stats.get("daypart", "")
-        basis = "Messages and scheduled calls with" if p.stats.get("basis") == "mixed" else "Messages with"
-        because = (f"{basis} {p.subject} on {p.support} of the last {p.opportunities} "
+        calls, messages = p.stats.get("calls"), p.stats.get("messages")
+        source = ("Messages and scheduled calls" if calls and messages else "Scheduled calls" if calls
+                  else "Recorded messages" if messages else "Contact timing (source details unavailable)")
+        because = (f"{source} with {p.subject} on {p.support} of the last {p.opportunities} "
                    f"{p.stats.get('days', 'days')} ({part}s, "
                    f"{fmt_range(p.window.start_minute, p.window.end_minute)})")
         out.append(Prediction(kind="contact", subject=p.subject, ts=s, end_ts=e,
@@ -166,8 +168,8 @@ def _cancel_risks(live, events, now, end, tz) -> list[Prediction]:
         if not matches:
             continue
         p = max(matches, key=lambda m: (m.stats.get("rate", 0), m.support))
-        because = (f"You cancelled {p.support} of the last {p.opportunities} "
-                   f"{miners.bucket_phrase(p.stats['bucket'])}")
+        because = (f"Calendar records show {p.support} of the last {p.opportunities} "
+                   f"{miners.bucket_phrase(p.stats['bucket'])} were removed before their start")
         pred = Prediction(kind="cancel_risk", subject=o.subject, ts=o.ts, end_ts=_end(o),
                           probability=round(float(p.stats.get("rate", 0)), 2), because=because,
                           pattern_id=p.id, refs=(o.id,))
@@ -193,11 +195,11 @@ def _conflicts(live, upcoming, now, end, tz) -> list[Prediction]:
                     continue
                 prot = protection.get(h.id)
                 day = DAY_NAMES[local_dt(s, tz).weekday()]
-                because = (f"{ev.subject} overlaps your usual {noun} on {day} "
-                           f"({label} on {habit_evidence(h)})")
+                because = (f"{ev.subject} overlaps time usually scheduled for your {noun} on {day} "
+                           f"({label} on {habit_evidence(h)}; completion unknown)")
                 if prot is not None and prot.stats.get("collisions"):
-                    because += (f"; you moved or cancelled {prot.support} of the last "
-                                f"{prot.opportunities} things booked over it")
+                    because += (f"; {prot.support} of the last {prot.opportunities} "
+                                "overlapping calendar bookings were moved or removed")
                     prob = prot.stats.get("rate", h.confidence)
                 else:
                     prob = h.confidence

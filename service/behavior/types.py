@@ -226,13 +226,14 @@ class Nudge:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "Nudge":
+        legacy_contact = d.get("evidence_version") != 2 and d.get("kind") == "contact_window"
         legacy = (d.get("evidence_version") != 2 and d.get("kind") in
-                  {"habit_missed", "habit_conflict", "cancel_likely", "day_preview"})
+                  {"habit_missed", "habit_conflict", "cancel_likely", "day_preview", "contact_window"})
         return cls(
             id=str(d["id"]), kind=str(d["kind"]),
-            title="Review an older calendar suggestion" if legacy else str(d.get("title", "")),
-            body="This suggestion used calendar plans. Whether the activity happened is unknown." if legacy else str(d.get("body", "")),
-            because="Calendar evidence; completion unknown" if legacy else str(d.get("because", "")),
+            title=("Review an older routine suggestion" if legacy_contact else "Review an older calendar suggestion") if legacy else str(d.get("title", "")),
+            body=("Source details for this older contact suggestion are unavailable; actual communication is unknown." if legacy_contact else "This suggestion used calendar plans. Whether the activity happened is unknown.") if legacy else str(d.get("body", "")),
+            because=("Source details unavailable" if legacy_contact else "Calendar evidence; completion unknown") if legacy else str(d.get("because", "")),
             created_at=float(d.get("created_at", 0.0)), expires_at=d.get("expires_at"),
             priority=float(d.get("priority", 0.0)), pattern_ids=tuple(d.get("pattern_ids") or ()),
             evidence=tuple(d.get("evidence") or ()),

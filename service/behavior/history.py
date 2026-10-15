@@ -104,16 +104,21 @@ class History:
             key = "history:" + source
             job = self.store.meta_get(key)
             if command == "restart":
-                job.update(
-                    scan_id=uuid.uuid4().hex,
-                    state="scanning",
-                    cursor=now,
-                    end_ts=now,
-                    pages=0,
-                    rows=0,
-                    started_at=now,
-                    error="",
-                )
+                # A rescan is a new full job, not a continuation of a narrowed
+                # or incremental page. Keep observations/coverage, but discard
+                # every prior job's sizing and retry checkpoint.
+                job = {
+                    "scan_id": uuid.uuid4().hex,
+                    "source": source,
+                    "state": "scanning",
+                    "start_ts": EARLIEST,
+                    "end_ts": now,
+                    "cursor": now,
+                    "pages": 0,
+                    "rows": 0,
+                    "started_at": now,
+                    "error": "",
+                }
             elif command == "pause":
                 job.update(state="paused")
             elif job["cursor"] > job["start_ts"]:

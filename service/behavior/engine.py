@@ -296,7 +296,7 @@ class BehaviorEngine:
             created = []
             phrased = 0
             for n in chosen:      # highest priority first, so the best ones get phrased
-                if (self._phraser is not None and n.kind == "contact_window" and phrased < PHRASE_MAX_PER_PASS
+                if (self._phraser is not None and self._can_phrase(n) and phrased < PHRASE_MAX_PER_PASS
                         and time.monotonic() - started < PHRASE_BUDGET_S):
                     phrased += 1
                     n = self._phrase(n)
@@ -305,10 +305,31 @@ class BehaviorEngine:
                     created.append(stored)
             return created
 
+    def _can_phrase(self, n: Nudge) -> bool:
+        """Only a message-only rhythm backed by retained message evidence.
+
+        A legacy/mixed contact label, missing evidence or a stale calendar
+        reference cannot authorize presenting scheduled calls as communication.
+        """
+        if n.kind != "contact_window" or not n.pattern_ids:
+            return False
+        for pid in n.pattern_ids:
+            p = self._store.get_pattern(pid)
+            if (p is None or p.kind != "contact_rhythm" or p.status == "rejected"
+                    or p.stats.get("basis") != "observed" or p.stats.get("calls")
+                    or not p.stats.get("messages") or not p.evidence):
+                return False
+            for oid in p.evidence:
+                o = self._store.get_observation(oid)
+                if (o is None or o.kind not in {"message_in", "message_out"}
+                        or o.source != "messages" or o.subject != p.subject):
+                    return False
+        return True
+
     def _phrase(self, n: Nudge) -> Nudge:
         """Let the optional model reword the body; the title and the evidence
         line stay code-composed. Any failure keeps the code text."""
-        if self._phraser is None or n.kind in {"habit_missed", "habit_conflict", "cancel_likely", "day_preview"}:
+        if self._phraser is None or not self._can_phrase(n):
             return n
         facts = {"title": n.title, "body": n.body, "because": n.because,
                  "actions": [a.label for a in n.actions if a.label]}

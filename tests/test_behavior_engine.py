@@ -7,7 +7,7 @@ import pytest
 
 from service.behavior.engine import BehaviorEngine
 from tests.fixtures.behavior_persona import generate_persona
-from service.behavior.types import Feedback, Nudge, Observation
+from service.behavior.types import Feedback, Nudge, Observation, Pattern
 
 TZ = ZoneInfo("America/Los_Angeles")
 H = 3600.0
@@ -218,6 +218,15 @@ def _ironwood(i):
     return ev(f"iw{i}", day, "Ironwood session", dur=3600)
 
 
+def _observed_contact(e, now):
+    e.observe([Observation("observed-sam", "message_in", now - 100,
+                           subject="Sam", source="messages")])
+    p = Pattern("message-only", "contact_rhythm", "Sam", "Recorded messages with Sam",
+                evidence=("observed-sam",), stats={"messages": 1, "calls": 0})
+    e._store.replace_patterns(e.patterns() + [p], now)
+    return p.id
+
+
 def test_phraser_labels_leftover_titles_once_and_rewrites_bodies(tmp_path):
     ph = Phraser()
     e = BehaviorEngine(tmp_path / "b.db", tz="America/Los_Angeles", phraser=ph)
@@ -227,7 +236,9 @@ def test_phraser_labels_leftover_titles_once_and_rewrites_bodies(tmp_path):
     e.mine(T0)
     assert ph.calls == [["Bogus", "Ironwood session"]]                # cached, incl. the bad answer
     assert e._store.meta_get("category_cache") == {"Ironwood session": "fitness", "Bogus": "other"}
-    n = e._phrase(Nudge(id="n1", kind="contact_window", title="T", body="code body", because="b", created_at=T0))
+    pid = _observed_contact(e, T0)
+    n = e._phrase(Nudge(id="n1", kind="contact_window", title="T", body="code body", because="b", created_at=T0,
+                        pattern_ids=(pid,)))
     assert n.body == "[contact_window] T" and n.because == "b"
     scheduled = e._phrase(Nudge(id="n2", kind="day_preview", title="T", body="schedule only", because="b", created_at=T0))
     assert scheduled.body == "schedule only"
@@ -359,8 +370,10 @@ def test_phrasing_is_capped_per_generate_pass(tmp_path, monkeypatch):
     from service.behavior import engine as engine_mod
     ph = _CountingPhraser()
     e, sun = _three_nudge_engine(tmp_path, ph)
+    e.mine(sun)
+    pid = _observed_contact(e, sun)
     candidates = [Nudge(id=f"phrase-{i}",kind="contact_window",title=f"Contact {i}",body="template",because="counts",
-                        created_at=sun,expires_at=sun+3600,priority=.8) for i in range(3)]
+                        created_at=sun,expires_at=sun+3600,priority=.8,pattern_ids=(pid,)) for i in range(3)]
     monkeypatch.setattr(engine_mod.nudge_mod,"build_candidates",lambda inp:candidates)
     monkeypatch.setattr(engine_mod.nudge_mod,"select",lambda candidates,**kw:candidates)
     made = e.generate_nudges(sun)
@@ -375,8 +388,10 @@ def test_phrasing_stops_after_the_wall_time_budget(tmp_path, monkeypatch):
     monkeypatch.setattr(engine_mod.time, "monotonic", lambda: clock[0])
     ph = _CountingPhraser(clock, cost=engine_mod.PHRASE_BUDGET_S + 1)    # one slow call eats it all
     e, sun = _three_nudge_engine(tmp_path, ph)
+    e.mine(sun)
+    pid = _observed_contact(e, sun)
     candidates = [Nudge(id=f"phrase-{i}",kind="contact_window",title=f"Contact {i}",body="template",because="counts",
-                        created_at=sun,expires_at=sun+3600,priority=.8) for i in range(3)]
+                        created_at=sun,expires_at=sun+3600,priority=.8,pattern_ids=(pid,)) for i in range(3)]
     monkeypatch.setattr(engine_mod.nudge_mod,"build_candidates",lambda inp:candidates)
     monkeypatch.setattr(engine_mod.nudge_mod,"select",lambda candidates,**kw:candidates)
     made = e.generate_nudges(sun)

@@ -382,6 +382,9 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
     "tests/test_behavior_miners.py",
+    # Compiles actual Swift sources, then exercises pure mapping/transport
+    # guards only; no EventKit store, native app, model or personal data access.
+    "tests/test_behavior_native_history.py",
     "tests/test_behavior_persona.py",
     "tests/test_behavior_phraser.py",
     "tests/test_behavior_predict_nudges.py",
@@ -389,6 +392,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_routing.py",
     "tests/test_behavior_runtime.py",
     "tests/test_behavior_tools.py",
+    "tests/test_behavior_weekly_history.py",
     # Remote-inference mode: fictional example profile, patched sockets, mocked
     # transports and AST-selected main functions; no network, Keychain or model.
     "tests/test_remote_inference_client.py",

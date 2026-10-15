@@ -1132,10 +1132,11 @@ final class OverlayModel: ObservableObject {
             // notification say so and offer Undo. Acked like "reminder".
             var payload = ev.payload
             if (payload["evidence_version"] as? Int) != 2,
-               ["habit_missed", "habit_conflict", "cancel_likely", "day_preview"].contains(payload["kind"] as? String ?? "") {
-                payload["title"] = "Review an older calendar suggestion"
-                payload["body"] = "This suggestion used calendar plans. Whether the activity happened is unknown."
-                payload["because"] = "Calendar evidence; completion unknown"
+               ["habit_missed", "habit_conflict", "cancel_likely", "day_preview", "contact_window"].contains(payload["kind"] as? String ?? "") {
+                let contact = payload["kind"] as? String == "contact_window"
+                payload["title"] = contact ? "Review an older routine suggestion" : "Review an older calendar suggestion"
+                payload["body"] = contact ? "Source details for this older contact suggestion are unavailable; actual communication is unknown." : "This suggestion used calendar plans. Whether the activity happened is unknown."
+                payload["because"] = contact ? "Source details unavailable" : "Calendar evidence; completion unknown"
                 payload["actions"] = [[String: Any]]()
             }
             guard let nudge = BehaviorNudge.parse(payload) else { return false }

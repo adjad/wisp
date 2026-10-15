@@ -87,6 +87,45 @@ def test_v1_open_preserves_verdict_and_safely_normalizes_before_remine(tmp_path)
     assert not list(tmp_path.glob("*.bak"))
 
 
+@pytest.mark.parametrize("original", [
+    "When something lands on your workout you move it (4 of 5 times)",
+    "When something lands on your workout you move or cancel it (4 of 5 times)",
+    "When something lands on your workout you usually keep it (4 of 5 times)",
+])
+@pytest.mark.parametrize("known_counts", [False, True])
+def test_orphan_confirmed_protection_preserves_counts_without_inventing_agency(engine, original, known_counts):
+    stats = {"collisions": 5, "moved": 1, "cancelled": 0, "kept": 4} if known_counts else {}
+    p = Pattern("protection", "habit_protection", "fitness", original, stats=stats)
+    engine._store.replace_patterns([p], NOW)
+    engine._store.set_pattern_status(p.id, "confirmed")
+    engine._store.replace_patterns([], NOW + 1)
+    saved = engine._store.get_pattern(p.id)
+    assert saved.status == "confirmed" and saved.stats["original_statement"] == original
+    assert all(v not in saved.statement for v in ("you move", "you usually keep", "you cancel"))
+    if known_counts:
+        assert "1 moved, 0 removed, 4 remained scheduled out of 5" in saved.statement
+    else:
+        assert "counts unavailable" in saved.statement
+    assert "attendance unknown" in saved.statement
+
+
+@pytest.mark.parametrize("action,original", [
+    ("move", "You move about 60% of afternoon meetings"),
+    ("move", "When you have 3+ back-to-back meetings you move one about 60% of the time"),
+    ("cancel", "You cancel about 60% of afternoon meetings"),
+])
+def test_legacy_schedule_changes_do_not_attribute_user_agency(engine, action, original):
+    p = Pattern("change", "cancel_propensity", "afternoon", original,
+                support=3, opportunities=5, stats={"action": action, "bucket": "afternoon"})
+    engine._store.replace_patterns([p], NOW)
+    engine._store.set_pattern_status(p.id, "confirmed")
+    saved = engine._store.get_pattern(p.id)
+    assert saved.id == p.id and saved.status == "confirmed"
+    assert saved.stats["original_statement"] == original
+    assert "3 of the last 5" in saved.statement and "attendance unknown" in saved.statement
+    assert "you move" not in saved.statement.lower() and "you cancel" not in saved.statement.lower()
+
+
 def test_completion_pattern_does_not_inherit_schedule_confirmation(engine):
     planned = Pattern(
         "planned", "habit", "fitness", "Gym on calendar", stats={"key_type": "category"}
@@ -235,6 +274,23 @@ def test_legacy_nudge_is_safe_before_remining_and_keeps_identity():
     assert Nudge.from_dict(n.to_dict()) == n
 
 
+def test_legacy_contact_nudge_is_neutral_and_retains_undo_identity():
+    old = {"id": "contact-old", "kind": "contact_window", "title": "Time to call Sam?",
+           "body": "You usually call Sam now", "because": "Calendar calls", "seq": 12,
+           "actions": [{"type": "open_prompt", "params": {"prompt": "Call Sam"}}]}
+    n = Nudge.from_dict(old)
+    assert n.id == old["id"] and n.seq == old["seq"] and not n.actions
+    assert "unavailable" in n.because and "communication is unknown" in n.body
+    assert "call Sam" not in n.title and Nudge.from_dict(n.to_dict()) == n
+    current = Nudge.from_dict({**old, "evidence_version": 2})
+    assert current.title == old["title"] and current.actions
+    # The native cached-SSE boundary includes the same legacy kind guard.
+    from pathlib import Path
+    native = (Path(__file__).resolve().parents[1] / "app/Sources/WispApp/OverlayModel.swift").read_text()
+    guard = native.split('if (payload["evidence_version"] as? Int) != 2,', 1)[1].split('payload["actions"]', 1)[0]
+    assert '"contact_window"' in guard and '"Source details unavailable"' in guard
+
+
 def test_history_survives_process_restart_and_never_diffs_deletions(tmp_path):
     path = tmp_path / "b.db"
     e = BehaviorEngine(path, clock=lambda: NOW, tz=str(TZ))
@@ -277,6 +333,39 @@ def test_completed_undated_history_uses_actual_completion_not_due_time(engine):
         ]
         == 1
     )
+
+
+def test_explicit_rescan_after_incremental_refresh_restores_full_job(tmp_path):
+    path = tmp_path / "rescan.db"
+    store = Store(path)
+    history = History(store)
+    row = {"source_id": "old-task", "title": "Done", "completion_ts": NOW - 3 * 86400}
+    initial = history.next("completed_reminders", NOW)
+    history.ingest("completed_reminders", batch(initial, [row]), NOW, lambda o: o)
+    incremental = history.next("completed_reminders", NOW + 301)
+    assert incremental["start_ts"] == NOW - 86400
+    # Simulate reduced source pages as well as an incremental lower bound.
+    job = store.meta_get("history:completed_reminders")
+    job["page_seconds"] = 86400
+    store.meta_set("history:completed_reminders", job)
+    restarted = history.control("completed_reminders", "restart", NOW + 302)
+    assert restarted["scan_id"] != incremental["scan_id"]
+    assert restarted["start_ts"] == EARLIEST
+    assert not {"mode", "page_seconds", "last_start", "last_end", "last_digest"} & restarted.keys()
+    assert restarted["pages"] == restarted["rows"] == 0
+    with pytest.raises(ValueError, match="scan changed"):
+        history.ingest("completed_reminders", batch(incremental), NOW + 302, lambda o: o)
+    store.close()
+    store = Store(path)
+    history = History(store)
+    resumed = history.next("completed_reminders", NOW + 303)
+    assert resumed["page_start"] == EARLIEST and resumed["page_end"] == NOW + 302
+    history.ingest("completed_reminders", batch(resumed, [row]), NOW + 303, lambda o: o)
+    assert len(store.observations(kinds=["reminder_done"])) == 1
+    again = history.control("completed_reminders", "restart", NOW + 304)
+    assert again["start_ts"] == EARLIEST and again["scan_id"] != resumed["scan_id"]
+    assert len(store.observations(kinds=["reminder_done"])) == 1
+    store.close()
 
 
 def test_old_history_is_scanned_but_not_retained_or_revived(engine):

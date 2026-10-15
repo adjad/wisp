@@ -30,8 +30,9 @@ times") and when it was last seen. "That's right" confirms a routine; "Not
 true" rejects it, which stops it driving predictions, nudges and the profile
 card; rejected rows sit under "Marked not true" with a Restore button. Above
 the list, "Coming up today" shows today's predictions with their `because`
-lines. The window uses only existing endpoints (`/behavior/settings`,
-`/status`, `/patterns`, `/patterns/{id}`, `/predict?day=today`).
+lines. The same window shows weekly measurements and source history controls.
+It uses behavior endpoints for settings, status, patterns, predictions, weekly
+reports and history progress; it does not ask whether individual events happened.
 
 ## Data flow
 
@@ -74,10 +75,10 @@ hours, and when you switch learning off.
 | Pattern kind | Needs | Example statement |
 | --- | --- | --- |
 | `habit` | at least 3 occurrences in at least 3 separate weeks; start times binned in 30 min; a weekday joins when it happens on 40% or more of that weekday; window at most 4 h (central 80% of starts and ends). Keyed by category for personal routines (fitness, focus, meal, class, health, social, personal, errand, travel), by cleaned title otherwise. The library also supports notes; runtime Notes ingestion is not wired. Completed reminders require a dedicated source completion date to establish a timed habit. A category is scored against every matching weekday in the history; a title, note or reminder only from its first appearance, so a class that began this term isn't charged for the weeks before it existed. Title-keyed habits never become `activity` predictions (they are already on the calendar). | "Your calendar usually has time to work out on Mon, Wed and Fri mornings (6:45–7:45am); completion is unknown" |
-| `contact_rhythm` | at least 8 interactions (messages in/out plus calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "You talk to Dev Malik most weekday afternoons (2–5pm)" |
-| `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a cancel (or move) rate of 40% or more, and at least 1.5x the baseline rate | "When you have 3+ back-to-back meetings you cancel one about 60% of the time — usually the last one" |
-| `habit_protection` | a personal habit with confidence 0.4 or more and at least 3 other events booked over it | "When something lands on your workout you move it (4 of 5 times)" |
-| `day_shape` | at least 5 weekdays (4 weekend days) of kept events | "On weekdays your first commitment is usually around 6:45am and your last ends around 3:30pm; lunch is usually free 11am–2pm" |
+| `contact_rhythm` | at least 8 interactions (messages in/out plus scheduled calendar calls or 1:1s that name the person) over at least 2 weeks, with 50% or more in one daypart (not night). A message counts toward its sender (incoming) or the other side of a 1:1 chat (outgoing), named by Contacts when known; outgoing group messages and automated senders (SMS short codes, toll-free numbers, alphanumeric sender ids, business chats) are skipped. Learned names stay in `behavior.db` until they age out (180 days) or you use Forget; revoking Contacts access does not erase them, though messages from the last 8 weeks are re-keyed to the raw handle on the next ingest. | "Messages and scheduled calls with Dev Malik recur most weekday afternoons (2–5pm)" |
+| `cancel_propensity` | a bucket (daypart, weekday, category, organizer self/other, back-to-back first/middle/last/3+/pair) with at least 4 opportunities, a detected removal (or move) rate of 40% or more, and at least 1.5x the baseline rate | "Calendar records show removals or moves among back-to-back bookings"; this does not establish who changed them or who attended |
+| `habit_protection` | a scheduled personal habit with confidence 0.4 or more and at least 3 other events booked over its usual calendar window | "Overlapping calendar bookings moved or were removed in 4 of 5 cases"; this does not establish intention |
+| `day_shape` | at least 5 weekdays (4 weekend days) of calendar records retained on the schedule | "The first scheduled commitment is usually around 6:45am and the last ends around 3:30pm; the midday calendar gap is usually 11am–2pm"; gaps do not prove availability or a lunch break |
 | `wisp_usage` | the same coarse ask topic at least 4 times in a recurring window | "You check your brief with Wisp around 8:15am on weekdays", "You look things up with Wisp around 5pm on Tue and Thu" |
 
 A pattern's `status` is `active`, `confirmed` or `rejected`. The user's verdict
@@ -97,9 +98,9 @@ from counts (for example "20 of the last 24 Mon/Wed/Fri"), never by a model.
 
 | Kind | Meaning |
 | --- | --- |
-| `activity` | a habit expected in the horizon (confidence 0.3 or more; weighted by the last 4 weeks, halved if unseen for 3 weeks) |
-| `contact` | the next window in which the user usually talks to someone (0.3 or more) |
-| `cancel_risk` | an upcoming event in a bucket the user tends to cancel; one per back-to-back run; probability is the bucket's historical rate |
+| `activity` | an expected schedule or recorded-completion routine in the horizon (confidence 0.3 or more; weighted by the last 4 weeks, halved if unseen for 3 weeks); an expected calendar plan is not attendance |
+| `contact` | the next recurring window supported by recorded messages or scheduled calls (0.3 or more), with its source stated |
+| `cancel_risk` | an upcoming event in a bucket with detected calendar removals; one per back-to-back run; the score is the bucket's historical rate, not a calibrated probability the user will skip it |
 | `habit_conflict` | an upcoming event booked over a habit (10 min overlap or more) |
 | `usage` | the next window in which the user usually asks Wisp about a named topic (confidence 0.2 or more; the catch-all "general" topic is skipped). Feeds `day_preview` and `predict_my_day`, not the profile card |
 
@@ -110,8 +111,8 @@ Five kinds. Priority is probability x kind importance (conflict 1.0, cancel
 
 | Kind | Fires when | Actions |
 | --- | --- | --- |
-| `habit_conflict` | an event overlaps a learned habit | auto: reminder "Remind me" on Wisp's schedule. Offered: "Draft a move request" |
-| `cancel_likely` | cancel probability 0.4 or more | auto: tentative hold "Tentative: Likely skip: ...". Offered: "Draft reschedule note" |
+| `habit_conflict` | an event overlaps time usually scheduled for a learned habit | auto: calendar-overlap reminder on Wisp's schedule. Offered: "Draft a move request"; no attendance assumption |
+| `cancel_likely` | historical calendar removal rate 0.4 or more | auto: tentative schedule note "Tentative: Schedule may change: ...". Offered: "Draft reschedule note"; no skipping assumption |
 | `contact_window` | now is inside a rhythm with confidence 0.4 or more; if message history exists, only when their last message has waited 2 h to 3 days unanswered | offered: "Draft a message to ..." |
 | `habit_missed` | a scheduled personal habit (confidence 0.5 or more) is absent from today’s calendar; actual completion remains unknown, its window is over, it is before 21:00 and a free slot exists | auto: tentative hold "Tentative: ... (Wisp suggested)" |
 | `day_preview` | 07:00-10:00, top four predictions for today; usage windows only fill slots left after the other kinds (one per topic, at most two); expires at noon | none |
@@ -130,7 +131,7 @@ Attention rules (`nudges.select`):
 - **Undo:** an `undo` also turns that kind and pattern's auto actions into
   offers.
 - **Horizon:** candidates are built for events through the end of tomorrow.
-- **Phrasing:** only observed-contact bodies may be reworded; at most 2 per pass, and none after 10 s.
+- **Phrasing:** only message-only contact bodies with retained native message evidence may be reworded; calendar-only, mixed and unsupported legacy contact patterns keep deterministic text. At most 2 per pass, and none after 10 s.
   Title and `because` stay code-composed; the body is capped at 400 characters.
 
 ## Autonomy
@@ -226,6 +227,10 @@ Mac backend (`service/behavior_api.py`, `127.0.0.1:8765`). Every route answers
 | `POST /behavior/run` | ingest + mine + nudge + deliver now |
 | `GET /behavior/patterns?status=&kind=`, `POST /behavior/patterns/{id}` `{"status"}` | list, confirm, reject, reactivate |
 | `GET /behavior/predict?day=today\|tomorrow\|next24h` | predictions |
+| `GET /behavior/weekly` | source-grounded weekly measurements and comparison coverage |
+| `GET /behavior/history`, `GET /behavior/history/{source}/next` | native history progress and the next exact source range |
+| `POST /behavior/history/{source}/batch` | validated append-only page and transactional checkpoint |
+| `POST /behavior/history/{source}/control` `{"command": "pause\|resume\|restart"}` | pause, resume or begin a new full source scan |
 | `GET /behavior/profile?subject=` | profile card, patterns, predictions, summary |
 | `GET /behavior/nudges?limit=` | delivered nudges with verdicts and Undo state |
 | `POST /behavior/nudges/{id}/feedback` `{"verdict": useful\|not_now\|wrong}` | teach it |
@@ -353,3 +358,69 @@ Email, foreground/screen time, website sessions, Focus/DND availability, away/sl
 lock intervals and next-activity/day planning remain the accepted next stages.
 Their collectors are not activated by this milestone. Those sources must keep
 observed, reported, scheduled and inferred evidence distinct and expose coverage.
+
+The next planning stage should learn probable availability and ask only when a
+concrete decision conflicts with a sufficiently supported, recent routine. For
+example, recurring Monday 10am–noon away intervals plus a new 11am meeting may
+justify: "You are usually away from this computer then. Keep this meeting, find
+another time, or treat that routine as wrong?" Away from a computer does not prove
+the user is busy, in class, at an event, or unable to join remotely. Suggestions
+must be correctable, use coverage and uncertainty, respect prompt budgets, and
+retain normal authorization for any real rescheduling. Do not add repeated
+per-event attendance or completion questions. This milestone establishes the
+evidence foundation; it does not activate that collector or planning workflow.
+
+### Availability research and next-stage requirements
+
+The research supports personalized combinations of signals. The foundational
+[BusyBody study (CSCW 2004)](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/11/busybody_cscw.pdf)
+used recent application activity, switching patterns, session duration and temporal
+context to estimate interruption cost; influential features differed among its four
+participants. This is evidence for an approach, not a measured accuracy claim for
+Wisp. [Task-engagement research (CHI 2005)](https://www.cs.cmu.edu/~kptang/pubs/interruptibility-chi05.pdf)
+also examines task-level interaction beyond coarse computer activity. Wisp's design
+implication is to keep quiet reading/listening distinct from demonstrated free time.
+
+The next stage should distinguish **reachability on this device**, **likely
+occupation**, **receptiveness to an interruption**, and **availability for a
+proposed duration and modality**. A brief reply and a one-hour meeting have different
+requirements. This follows the distinction between presence and availability in
+[Coordinate (UAI 2002)](https://www.microsoft.com/en-us/research/publication/coordinate-probabilistic-forecasting-presence-availability/).
+An exact activity label such as class remains a separate hypothesis.
+
+Candidate signal families, subject to supported source access:
+
+| Signals | Intended contribution | Counterexamples to retain |
+| --- | --- | --- |
+| Awake/lock/sleep, active/idle intervals, collector heartbeat and return timing | Device reachability, recurring departures and returns | Mac off or missing telemetry is unknown; low input can be reading or listening |
+| Foreground apps, uninterrupted task duration and switching rates | Task engagement relative to this user's baseline | Foreground is not attention; high switching can be productive coordination or distraction |
+| Foreground academic/LMS sessions, lecture playback or note-taking where supported | Context that may explain a recurring occupied window | Background tabs, casual educational browsing, and independent study are not proof of a class |
+| Channel/contact-relative response timing, outgoing bursts and observation coverage | Responsiveness patterns and likely return times | Many emails need no reply; missing replies or other-device activity are not definitive busy labels |
+| Focus/DND preferences, supported actual call-session metadata, permitted email class schedules and calendar intentions | Additional intent or context | Preferences and schedules do not prove attendance; opening a call app does not prove an active call |
+| Weekday/time recurrence, episode duration, transitions and recent exceptions | Predict future occupied windows even with an empty calendar | Terms, holidays and changed routines must reduce stale confidence |
+
+For the user's uncalendared 2–4pm and 6–7pm classes, learn two separate candidate
+windows from recurring combinations of reduced responsiveness, off-computer time
+and academic sessions. Keep **likely occupied** useful even when the exact reason
+is unknown. A permitted syllabus or class email may support a **possible class**
+label; it still does not verify attendance. Do not merge the intervening 4–6pm gap
+into one busy afternoon.
+
+Measure covered local-time bins and episodes, retain counterevidence, discount
+correlated clues such as lock plus idle plus low input, and compare within-person
+weekday/time baselines. Decay obsolete patterns. Without suitable outcome evidence,
+call confidence a provisional pattern score, not a calibrated probability of being
+busy. Learn from ordinary keep/move/defer/routine-wrong choices and explicit user
+statements; do not send probe notifications or turn silence into ground truth.
+
+Use those estimates to rank planning alternatives and time optional interruptions.
+[Oasis (TOCHI 2010)](https://www.microsoft.com/en-us/research/publication/oasis-a-framework-for-linking-notification-delivery-to-the-perceptual-structure-of-goal-directed-tasks/)
+supports considering task breakpoints for notification timing. A recent
+[planning-agent study (CHI 2026)](https://adnan-abbas.github.io/assets/pdf/PITCH_CHI_2026.pdf)
+describes annoyance when the agent persists despite changed user context; Wisp
+must respect deferrals and avoid repeated questions. Test forward on held-out
+weeks against a simple temporal baseline, measuring false busy/free suggestions,
+confidence reliability, useful alternatives, prompt burden and correction recovery.
+Include quiet reading, background tabs, absent telemetry, term changes and five-minute
+versus one-hour availability. Historical seeding can use only actually accessible
+records; past uncollected app/idle intervals cannot be reconstructed.

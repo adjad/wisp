@@ -57,10 +57,33 @@ def pattern_evidence(p: Pattern) -> Pattern:
                 statement += "; completion unknown"
         else:
             stats["basis"] = "recorded_completion" if kt == "reminder" else "observed"
-    elif p.kind in {"day_shape", "habit_protection", "cancel_propensity"}:
-        stats["basis"] = (
-            "scheduled" if p.kind == "day_shape" else "inferred_schedule_change"
-        )
+    elif p.kind == "habit_protection":
+        stats["basis"] = "inferred_schedule_change"
+        counts = [stats.get(k) for k in ("collisions", "moved", "cancelled", "kept")]
+        if (all(type(v) is int and v >= 0 for v in counts)
+                and counts[0] > 0 and sum(counts[1:]) == counts[0]):
+            n, moved, removed, kept = counts
+            statement = (f"Calendar overlap pattern for {p.subject}: {moved} moved, {removed} removed, "
+                         f"{kept} remained scheduled out of {n} overlapping bookings; attendance unknown")
+        else:
+            statement = (f"Calendar overlap pattern for {p.subject}; historical change counts unavailable; "
+                         "attendance unknown")
+    elif p.kind == "cancel_propensity":
+        from service.behavior.miners import bucket_phrase
+        stats["basis"] = "inferred_schedule_change"
+        count, total = p.support, p.opportunities
+        action = stats.get("action")
+        if (type(count) is int and type(total) is int and 0 <= count <= total
+                and total > 0 and action in {"move", "cancel"}):
+            change = "moved" if action == "move" else "removed before their start"
+            bucket = bucket_phrase(str(stats.get("bucket") or p.subject))
+            statement = (f"Calendar records: {count} of the last {total} {bucket} {change}; "
+                         "attendance unknown")
+        else:
+            statement = (f"Calendar change pattern for {p.subject}; historical change counts unavailable; "
+                         "attendance unknown")
+    elif p.kind == "day_shape":
+        stats["basis"] = "scheduled"
         # Keep the measured association, but avoid attributing an inferred edit
         # to the user's attendance or intention.
         statement = "Calendar pattern: " + statement.removeprefix("You ").replace(

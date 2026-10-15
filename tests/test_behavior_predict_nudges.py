@@ -8,7 +8,7 @@ import pytest
 from service.behavior import nudges as N
 from service.behavior.engine import BehaviorEngine
 from tests.fixtures.behavior_persona import generate_persona
-from service.behavior.types import Action, Feedback, Nudge, Observation
+from service.behavior.types import Action, Feedback, Nudge, Observation, Pattern, Prediction, Window
 
 TZ = ZoneInfo("America/Los_Angeles")
 D = 86400.0
@@ -74,7 +74,7 @@ def test_demo_nudges_fire_with_actions(eng, persona):
     hc = by_kind["habit_conflict"]
     remind, draft = hc.actions
     assert remind.type == "add_reminder" and remind.auto
-    assert remind.params["title"] == "Gym moved? — Harborline SSO check-in overlaps your usual workout"
+    assert remind.params["title"] == "Review calendar overlap: Harborline SSO check-in / Gym"
     conflict_ts = at(14, 7)
     assert remind.params["when_ts"] == conflict_ts - 12 * 3600       # 12h before (later than now)
     assert draft.type == "open_prompt" and not draft.auto
@@ -82,7 +82,7 @@ def test_demo_nudges_fire_with_actions(eng, persona):
     assert hc.expires_at == conflict_ts and persona.expected["conflict_event_id"] in hc.evidence
     cl = by_kind["cancel_likely"]
     hold, resched = cl.actions
-    assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Likely skip: Ops standup"
+    assert hold.type == "add_hold" and hold.auto and hold.params["title"] == "Schedule may change: Ops standup"
     assert hold.params["when_ts"] == at(13, 15, 45) and hold.params["end_ts"] == at(13, 16, 15)
     assert resched.params["prompt"] == "Draft a reschedule note for Ops standup" and not resched.auto
     assert by_kind["day_preview"].body.startswith("Likely today:")
@@ -141,6 +141,37 @@ def test_contact_window_needs_an_unanswered_message(tmp_path, persona):
     reply = Observation(id="m:out", kind="message_out", ts=at(13, 12, 30), subject="Dev Malik", source="messages")
     assert run([ask, reply], at(13, 14, 45)) == []                    # answered
     assert run([ask], at(13, 13, 0)) == []                            # outside the 2-5pm window
+
+
+@pytest.mark.parametrize("calls,messages,source", [
+    (8, 0, "Scheduled calls"), (4, 4, "Messages and scheduled calls"), (0, 8, "Recorded message"),
+])
+def test_contact_outputs_keep_the_source_without_claiming_conversation(calls, messages, source):
+    from service.behavior.profile import prediction_line
+    p = Pattern("contact", "contact_rhythm", "Sam", "Source timing", Window((1,), 420, 600),
+                confidence=.9, support=8, opportunities=10,
+                stats={"calls": calls, "messages": messages, "basis": "mixed" if calls else "observed"})
+    pr = Prediction("contact", "Sam", NOW, end_ts=NOW + 3600,
+                    probability=.9, because="Source timing", pattern_id=p.id)
+    inp = N.Inputs(NOW, TZ, [p], [pr], {}, [], {"Sam": (NOW - 3 * 3600, None)} if messages else {})
+    candidates = N.build_candidates(inp)
+    cw = next(n for n in candidates if n.kind == "contact_window")
+    preview = next(n for n in candidates if n.kind == "day_preview")
+    line = prediction_line(pr, TZ, {p.id: p})
+    assert all(source in s for s in (cw.body, cw.because, preview.body, line))
+    text = " ".join((cw.title, cw.body, cw.because, preview.body, line)).lower()
+    assert all(phrase not in text for phrase in ("talk with", "usually call", "in touch"))
+    assert cw.actions[0].type == "open_prompt" and not cw.actions[0].auto
+
+
+def test_schedule_change_outputs_do_not_claim_user_agency_or_skipping(eng):
+    predictions = eng.predict(NOW)
+    assert any(p.kind == "cancel_risk" for p in predictions)
+    assert any(p.kind == "habit_conflict" for p in predictions)
+    nudges = eng.generate_nudges(NOW)
+    texts = [p.because for p in predictions] + [
+        " ".join((n.title, n.body, n.because, *(a.label + str(a.params) for a in n.actions))) for n in nudges]
+    assert all(word not in " ".join(texts).lower() for word in ("you cancelled", "you moved", "skip"))
 
 
 # --------------------------------------------------------------- the budget
