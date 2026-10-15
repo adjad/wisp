@@ -190,10 +190,19 @@ def bench_client_class():
         """Records every model step; loads without ever evicting."""
 
         steps: list[dict]
+        # "off" forces enable_thinking=false on every request (thinking variant C).
+        thinking: str = "default"
 
         def __init__(self, *a, **kw):
             super().__init__(*a, **kw)
             self.steps = []
+
+        def _thinking_kw(self, kw: dict) -> dict:
+            if self.thinking != "off":
+                return kw
+            ctk = dict(kw.get("chat_template_kwargs") or {})
+            ctk["enable_thinking"] = False
+            return {**kw, "chat_template_kwargs": ctk}
 
         async def ensure_only(self, model, *, settle_timeout=60.0, exclusive=False, emit=None):
             await self.make_resident(model, timeout=max(settle_timeout, 300.0))
@@ -238,7 +247,7 @@ def bench_client_class():
             step = self._new_step(messages, tools)
             t0 = time.monotonic()
             try:
-                async for ev in super().stream_events(model, messages, tools=tools, **kw):
+                async for ev in super().stream_events(model, messages, tools=tools, **self._thinking_kw(kw)):
                     if step["ttft"] is None and ev.get("kind") in ("reasoning", "content", "final"):
                         step["ttft"] = round(time.monotonic() - t0, 3)
                     if ev.get("kind") == "final":
@@ -254,7 +263,7 @@ def bench_client_class():
             step = self._new_step(messages, tools)
             t0 = time.monotonic()
             try:
-                resp = await super().chat(model, messages, tools=tools, **kw)
+                resp = await super().chat(model, messages, tools=tools, **self._thinking_kw(kw))
                 self._finish(step, ((resp.get("choices") or [{}])[0]).get("message") or {})
                 return resp
             except Exception as e:
@@ -264,6 +273,31 @@ def bench_client_class():
                 step["seconds"] = step["ttft"] = round(time.monotonic() - t0, 3)
 
     return BenchClient
+
+
+THINKING_MODES = ("default", "narration-off", "off")
+
+
+def set_thinking(client, model: str, mode: str) -> None:
+    """Apply a thinking variant for `model`.
+
+    default        whatever production does for this model (nothing extra sent
+                   unless the model is already configured)
+    narration-off  add the model to no_thinking_capable, so the loop sends
+                   enable_thinking=false on narration steps only — the switch a
+                   roster change would flip in models.yaml
+    off            enable_thinking=false on every request, selection included
+    """
+    if mode not in THINKING_MODES:
+        raise ValueError(f"thinking must be one of {THINKING_MODES}")
+    import service.config as config
+    original = getattr(set_thinking, "_original", None) or config.no_thinking_capable
+    set_thinking._original = original
+    if mode == "narration-off":
+        config.no_thinking_capable = lambda: list(original()) + [model]
+    else:
+        config.no_thinking_capable = original
+    client.thinking = "off" if mode == "off" else "default"
 
 
 class Approver:

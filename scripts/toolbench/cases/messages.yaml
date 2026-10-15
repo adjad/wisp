@@ -2,13 +2,35 @@
   prompt: "What are my recent messages about?"
   expect: [{any_of: [summarize_messages, view_messages]}]
   forbid: [send_message]
-  answer: {contains_any: [Nopa, dinner, photos, flight]}
+  answer: {contains_any: ["{restaurant}", dinner, photos, flight]}
 - id: msg_sam_dinner
-  prompt: "What did Sam say about dinner?"
+  prompt: "What did {friend_first} say about dinner?"
   expect: [{any_of: [view_messages, summarize_messages]}]
-  answer: {contains_any: [Nopa, "7"]}
+  answer: {contains_any: ["{restaurant}", "{dinner_time}"]}
 - id: msg_text_mom
   prompt: "text mom that i'm on my way"
-  expect: [{any_of: [send_message, draft_message], args: {to: {contains_any: [mom, linda, "0101"]}}}]
+  expect: [{any_of: [send_message, draft_message], args: {to: {contains_any: [mom, "{mom_phone_tail}"]}}}]
   forbid: [send_email, draft_email]
   trap: "2026-10-13 eval: view_messages / lookup_contact and never sends"
+- id: msg_hike_photos
+  prompt: "did {friend2_first} send the hike photos?"
+  expect: [{any_of: [view_messages, summarize_messages]}]
+  answer: {contains_any: [photos, "yes"]}
+- id: msg_draft_friend
+  prompt: "draft a text to {friend_first} saying 7 works for me"
+  expect: [{tool: draft_message, args: {to: {icontains: "{friend_first}"}}}]
+  forbid: [send_message, send_email]
+- id: msg_any_new
+  prompt: "any new texts?"
+  expect: [{any_of: [view_messages, summarize_messages]}]
+  answer: {contains_any: ["{friend_first}", Mom]}
+- id: msg_text_mom_back
+  split: dev
+  prompt: "text mom back that I got her email"
+  expect: [{any_of: [send_message, draft_message], args: {to: {contains_any: [mom, "{mom_phone_tail}"]}}}]
+  forbid: [send_email]
+- id: msg_mom_said
+  split: dev
+  prompt: "what did mom text me?"
+  expect: [{any_of: [view_messages, summarize_messages]}]
+  answer: {contains_any: [flight, email]}

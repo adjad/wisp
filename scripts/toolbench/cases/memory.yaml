@@ -10,3 +10,18 @@
   no_tool: true
   forbid: [remember, save_knowledge]
   trap: "remember is strict (2026-10-13): only explicit remember/save requests save"
+- id: mem_remember_veg
+  prompt: "remember that I'm vegetarian"
+  expect: [{tool: remember, args: {fact: {icontains: vegetarian}}}]
+- id: mem_allergy
+  prompt: "am I allergic to anything?"
+  expect: [{any_of: [recall, describe_me]}]
+  answer: {contains_all: [penicillin]}
+- id: mem_no_save_sister
+  split: dev
+  prompt: "my sister is visiting next week, I should probably clean"
+  forbid: [remember, save_knowledge]
+- id: mem_forget_allergy
+  split: dev
+  prompt: "forget that I'm allergic to penicillin"
+  expect: [{tool: forget, args: {query: {icontains: penicillin}}}]

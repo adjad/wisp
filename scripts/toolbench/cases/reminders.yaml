@@ -13,8 +13,34 @@
 - id: rem_list
   prompt: "What are my reminders?"
   expect: [{any_of: [get_upcoming, search_reminders]}]
-  answer: {contains_any: [plants, Chase]}
+  answer: {contains_any: [plants, "{bank}"]}
 - id: rem_complete
   prompt: "I watered the plants, check that reminder off"
   expect: [{tool: complete_reminder, args: {title: {icontains: plant}}}]
   forbid: [clear_reminders, clear_past_reminders]
+- id: rem_call_mom_sunday
+  prompt: "remind me to call mom on sunday at 10am"
+  expect: [{tool: add_reminder, args: {title: {icontains: mom}, when_iso: {weekday: sunday}}}]
+  forbid: [send_message, send_email]
+- id: rem_trash_tonight
+  prompt: "don't let me forget to take out the trash tonight"
+  expect: [{tool: add_reminder, args: {title: {icontains: trash}, when_iso: {date_offset: 0}}}]
+  trap: "2026-10-13 eval: 'don't let me forget…' -> search_notes"
+- id: rem_bank_bill
+  prompt: "is there a reminder about the {bank} bill?"
+  expect: [{any_of: [search_reminders, get_upcoming]}]
+  answer: {contains_any: [bill]}
+- id: rem_rename_plants
+  split: dev
+  prompt: "change the plants reminder to say water the garden"
+  expect: [{tool: update_reminder}]
+  forbid: [clear_reminders, clear_past_reminders]
+- id: rem_timesheet_friday
+  split: dev
+  prompt: "ping me friday morning to submit the timesheet"
+  expect: [{tool: add_reminder, args: {title: {icontains: timesheet}, when_iso: {weekday: friday}}}]
+- id: rem_due_today
+  split: dev
+  prompt: "what's due today?"
+  expect: [{any_of: [get_upcoming, search_reminders, daily_brief]}]
+  answer: {contains_any: [plants]}

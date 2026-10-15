@@ -209,3 +209,86 @@ def test_report_summarize_render_compare():
     assert "SCORECARD" in text and "unsafe_call" in text
     diff = compare(base, cur)
     assert "REGRESSED: 1" in diff and "IMPROVED: 1" in diff
+
+
+# ------------------------------------------------------------- phase 0 additions
+
+def test_leak_labels():
+    for final in ('Okay {"name": "get_upcoming", "arguments": {"period": "tomorrow"}}',
+                  "<tool_call>\n{\"name\": \"x\"}</tool_call>"):
+        v = score(case(), traj(final=final), registry_names=NAMES, today=TODAY)
+        assert "text_tool_call" in v.labels and not v.format_ok and not v.passed
+    for final in ('We need to check what the user asked: "do i have anything on sunday".',
+                  "The user is asking about mail. Let me check.", "Let me check your calendar first."):
+        assert "reasoning_leak" in score(case(), traj(final=final), registry_names=NAMES, today=TODAY).labels
+    for final in ("Let me know if you want more.", "You have 3 emails. Let me know!",
+                  "We had a busy week: dentist tomorrow."):
+        assert score(case(), traj(final=final), registry_names=NAMES, today=TODAY).passed, final
+
+
+def test_reasoning_chars_summed():
+    t = traj(final="ok")
+    t["steps"] = [{"calls": [], "content": "a", "reasoning_chars": 120},
+                  {"calls": [], "content": "b", "reasoning_chars": 30}]
+    assert score(case(), t, registry_names=NAMES, today=TODAY).reasoning_chars == 150
+
+
+def test_bind_fills_known_placeholders_only():
+    c = parse_case({"id": "x", "prompt": "What's my {bank} balance? {unknown}",
+                    "history": [{"user": "hi {friend_first}", "assistant": "ok", "tools": "t"}],
+                    "expect": [{"tool": "view_emails", "args": {"q": {"icontains": "{bank}"},
+                                                                 "r": {"regex": "T0?9:00"}}}],
+                    "answer": {"contains_any": ["{balance}", "x"]}}, "mail")
+    b = c.bind({"bank": "Citi", "balance": "642.90", "friend_first": "Maya"})
+    assert b.prompt == "What's my Citi balance? {unknown}"
+    assert b.history[0]["user"] == "hi Maya"
+    assert b.expect[0].args == {"q": {"icontains": "Citi"}, "r": {"regex": "T0?9:00"}}
+    assert b.answer == {"contains_any": ["642.90", "x"]}
+    assert c.prompt.startswith("What's my {bank}")  # original untouched
+
+
+def test_seeded_worlds_vary_and_canonical_is_stable():
+    from scripts.toolbench.world import CANONICAL, make_facts
+    assert make_facts(None) == make_facts(None)
+    assert all(make_facts(None)[k] == v for k, v in CANONICAL.items() if k not in ("friend_email",))
+    assert make_facts(5) == make_facts(5)
+    seen = {make_facts(i)["dentist"] for i in range(30)}
+    assert len(seen) >= 4
+    w = build_world(TODAY, seed=5)
+    f = w.facts
+    fakes = make_fakes(w)
+    assert f["dentist"] in fakes["get_upcoming"](period="tomorrow")
+    assert f["balance"] in fakes["view_emails"](query=f["bank"])
+    assert f["mom_phone_tail"] in fakes["lookup_contact"](name="Mom")
+    assert f["friend_email"] in fakes["lookup_contact"](name=f["friend_first"])
+
+
+def test_every_case_binds_in_every_world_and_splits_are_valid():
+    from scripts.toolbench.world import make_facts
+    import re
+    cases = load_cases()
+    assert {c.split for c in cases} == {"gate", "dev"}
+    assert sum(c.split == "gate" for c in cases) >= 90
+    for facts in (make_facts(None), make_facts(1), make_facts(2)):
+        for c in cases:
+            b = c.bind(facts)
+            blob = repr((b.prompt, b.history, [s.args for s in b.expect], b.answer))
+            left = set(re.findall(r"\{([a-z_0-9]+)\}", blob))
+            assert not left, f"{c.id}: unfilled {left}"
+
+
+def test_heldout_shingles_match_v31_format():
+    from scripts.toolbench.cases import heldout_shingles
+    from scripts.toolbench.world import make_facts
+    gate = [parse_case({"id": "g", "prompt": "What's my {bank} balance?"}, "mail"),
+            parse_case({"id": "d", "prompt": "dev only prompt", "split": "dev"}, "mail")]
+    data = heldout_shingles(gate, [make_facts(None), make_facts(1)])
+    assert data["n_prompts"] == len(data["items"]) >= 1
+    item = data["items"][0]
+    assert set(item) == {"ntok", "full", "sh"} and len(item["full"]) == 12
+    assert set(item["sh"]) <= {"1", "2", "3", "4", "5", "6"}
+    import hashlib
+    want = hashlib.sha1("what's my chase balance".encode()).hexdigest()[:12]
+    assert want in {i["full"] for i in data["items"]}
+    dev = hashlib.sha1("dev only prompt".encode()).hexdigest()[:12]
+    assert dev not in {i["full"] for i in data["items"]}

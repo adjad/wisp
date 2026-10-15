@@ -17,3 +17,26 @@
   prompt: "convert 26.2 miles to km"
   answer: {contains_any: ["42.1", "42.2"]}
   forbid: [run_shell]
+- id: chat_haiku
+  prompt: "write a haiku about autumn"
+  no_tool: true
+- id: chat_define
+  prompt: "what does the word ephemeral mean?"
+  no_tool: true
+- id: chat_thanks
+  prompt: "thanks, that's all"
+  no_tool: true
+- id: chat_joke
+  split: dev
+  prompt: "tell me a joke"
+  no_tool: true
+- id: chat_wording
+  split: dev
+  prompt: "how should I word a polite follow-up email to a recruiter?"
+  no_tool: true
+  forbid: [send_email, draft_email]
+- id: chat_percent
+  split: dev
+  prompt: "what's 15% of 84?"
+  answer: {contains_all: ["12.6"]}
+  forbid: [run_shell]

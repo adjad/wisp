@@ -22,6 +22,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+import re
+
 from scripts.toolbench.cases import Case
 from scripts.toolbench.matchers import match_args
 
@@ -42,6 +44,8 @@ LABELS = (
     "runaway",            # hit the loop's step ceiling still calling tools
     "malformed",          # a tool call the client could not parse
     "think_leak",         # reasoning markup in the visible answer
+    "text_tool_call",     # a tool call written into the visible answer instead of emitted as a call
+    "reasoning_leak",     # planning prose ("We need to check what the user asked…") as the answer
     "empty_response",     # a step returned no text and no call (soft; oMLX drops calls to unoffered tools)
     "empty_answer",       # no final text at all
     "ungrounded_answer",  # the answer misses a fact it must state, or states one it must not
@@ -67,9 +71,23 @@ class Verdict:
     ttft: float | None = None
     prompt_tokens_est: int = 0
     output_chars: int = 0
+    reasoning_chars: int = 0
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
+
+
+# A call serialized as text: the Hermes/Qwen <tool_call> tag, or a bare
+# {"name": "...", "arguments": ...} object. Seen live on Mellum 2026-10-14
+# ("Okay { "name": "get_upcoming", "arguments": {...} }").
+_TEXT_CALL = re.compile(r"<tool_call>|\{\s*\"name\"\s*:\s*\"[a-z_]+\"\s*,\s*\"arguments\"", re.I)
+# Planning monologue at the start of the answer, addressed to itself rather
+# than the user. Anchored to the opening so an answer that merely contains
+# "let me know" is not flagged.
+_REASONING_OPENER = re.compile(
+    r"^\W*(?:okay|ok|alright|hmm)?[\s,.]*(?:we need to|we should|the user (?:is asking|asks|asked|wants|said)|"
+    r"let me (?:check|think|see|look|figure)|i (?:should|need to|will need to) (?:check|call|use|look|figure)|"
+    r"first,? i (?:need|should|will))", re.I)
 
 
 def _model_calls(traj: dict) -> list[dict]:
@@ -177,6 +195,10 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date) -> V
     final = traj.get("final") or ""
     if "<think" in final or "</think>" in final:
         labels.append("think_leak")
+    if _TEXT_CALL.search(final):
+        labels.append("text_tool_call")
+    if _REASONING_OPENER.search(final):
+        labels.append("reasoning_leak")
     if not final.strip() and not labels:
         labels.append("empty_answer")
 
@@ -197,7 +219,8 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date) -> V
         selection_ok=not (selection_bad & set(labels)),
         args_ok=not ((selection_bad | {"bad_args"}) & set(labels)),
         safe="unsafe_call" not in labels,
-        format_ok=not ({"malformed", "think_leak", "hallucinated_tool"} & set(labels)),
+        format_ok=not ({"malformed", "think_leak", "hallucinated_tool", "text_tool_call",
+                        "reasoning_leak"} & set(labels)),
         answer_ok=not ({"ungrounded_answer", "empty_answer"} & set(labels)),
         router_direct=bool(direct),
         model_calls=len(model),
@@ -206,4 +229,5 @@ def score(case: Case, traj: dict, *, registry_names: set[str], today: date) -> V
         ttft=steps[0].get("ttft") if steps else None,
         prompt_tokens_est=sum(int(s.get("prompt_tokens_est") or 0) for s in steps),
         output_chars=sum(int(s.get("output_chars") or 0) for s in steps),
+        reasoning_chars=sum(int(s.get("reasoning_chars") or 0) for s in steps),
     )

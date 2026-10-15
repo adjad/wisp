@@ -7,6 +7,10 @@
     .venv/bin/python scripts/run_toolbench.py --models A,B --trials 3
     .venv/bin/python scripts/run_toolbench.py --only mail,safety --ids mail_chase_balance
     .venv/bin/python scripts/run_toolbench.py --models LFM2.5-24B-A2B-MLX-4bit --exclusive
+    .venv/bin/python scripts/run_toolbench.py --split gate                    # the frozen fine-tune gate
+    .venv/bin/python scripts/run_toolbench.py --world-seed 7                  # a variant world
+    .venv/bin/python scripts/run_toolbench.py --models M --thinking default,narration-off,off
+    .venv/bin/python scripts/run_toolbench.py --export-shingles out.json      # gate prompts, hashed
     .venv/bin/python scripts/run_toolbench.py --report ~/.moe/evals/toolbench/<run>
     .venv/bin/python scripts/run_toolbench.py --report <run> --compare <baseline_run>
 
@@ -67,26 +71,29 @@ def _wisp_running() -> bool:
     return bool(r.stdout.strip())
 
 
-def _row(run_id, model, case, trial, traj, verdict) -> dict:
+def _row(run_id, model, case, trial, traj, verdict, variant="default") -> dict:
     steps = [{k: s.get(k) for k in ("calls", "error", "ttft", "seconds", "prompt_tokens_est",
                                      "output_chars", "reasoning_chars")}
              | {"content": (s.get("content") or "")[:600]} for s in traj.get("steps", ())]
-    return {"run": run_id, "model": model, "case": case.id, "category": case.category,
+    label = model if variant == "default" else f"{model} +{variant}"
+    return {"run": run_id, "model": label, "base_model": model, "variant": variant,
+            "split": case.split, "case": case.id, "category": case.category,
             "trial": trial, "no_tool": case.no_tool, "path": traj.get("path"),
             "route": traj.get("route"), "steps": steps, "final": traj.get("final", "")[:2000],
             "effects": traj.get("effects"), "escapes": traj.get("escapes"),
             "error": traj.get("error"), "timeout": traj.get("timeout"), "v": verdict.to_dict()}
 
 
-async def _dry_run(cases) -> int:
+async def _dry_run(args, cases) -> int:
     """Route every case (no model call) and flag expectations the router can't reach."""
     from scripts.toolbench import runner
     from scripts.toolbench.world import build_world
     from service.router.pinning import apply_session_pin
     from service.router.router import route
-    names = runner.install_fakes(build_world())
+    world = build_world(seed=args.world_seed)
+    names = runner.install_fakes(world)
     bad = 0
-    for c in cases:
+    for c in (c.bind(world.facts) for c in cases):
         _, ctx = runner._history_messages(c.history)
         d = apply_session_pin(await route(c.prompt, last_user=ctx["last_user"],
                                           recent_users=ctx["recent_users"] or None,
@@ -108,13 +115,26 @@ async def _dry_run(cases) -> int:
     return 0
 
 
+async def _one(runner, score, client, model, case, world, names, args, run_id, trial, variant) -> dict:
+    """One trial, retried once on a transient engine error (409, reload, dropped stream)."""
+    traj = await runner.run_case(client, model, case, world, timeout=args.timeout, max_steps=args.max_steps)
+    if traj.get("error") and _TRANSIENT.search(traj["error"]):
+        await client.make_resident(model)
+        traj = await runner.run_case(client, model, case, world, timeout=args.timeout,
+                                     max_steps=args.max_steps)
+    v = score(case, traj, registry_names=names, today=world.today)
+    return _row(run_id, model, case, trial, traj, v, variant)
+
+
 async def _run(args, cases) -> int:
     from scripts.toolbench import runner
     from scripts.toolbench.scorer import score
     from scripts.toolbench.world import build_world
 
-    world = build_world()
+    world = build_world(seed=args.world_seed)
     names = runner.install_fakes(world)
+    cases = [c.bind(world.facts) for c in cases]
+    variants = [v.strip() for v in args.thinking.split(",") if v.strip()]
     client = runner.bench_client_class()(timeout=args.timeout)
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     installed = await client.models()
@@ -130,7 +150,8 @@ async def _run(args, cases) -> int:
     out.mkdir(parents=True, exist_ok=True)
     meta = {"run": run_id, "git": _git_sha(), "models": models, "trials": args.trials,
             "cases": [c.id for c in cases], "started": time.time(), "exclusive": args.exclusive,
-            "today": world.today.isoformat(), "max_steps": args.max_steps}
+            "today": world.today.isoformat(), "max_steps": args.max_steps,
+            "world_seed": args.world_seed, "thinking": variants, "split": args.split or "all"}
     (out / "meta.json").write_text(json.dumps(meta, indent=2))
     if _wisp_running():
         print("note: Wisp is running. It may unload a non-roster model mid-run; the harness "
@@ -147,29 +168,26 @@ async def _run(args, cases) -> int:
                             await client.unload(other)
                 print(f"\n== {model}: loading…")
                 await client.make_resident(model)
-                total = len(cases) * args.trials
-                k = 0
-                for trial in range(1, args.trials + 1):
-                    for case in cases:
-                        k += 1
-                        if not _swap_ok():
-                            print("STOP: memory pressure (free swap < 500MB and pressure high)")
-                            return 3
-                        traj = await runner.run_case(client, model, case, world,
-                                                     timeout=args.timeout, max_steps=args.max_steps)
-                        if traj.get("error") and _TRANSIENT.search(traj["error"]):
-                            await client.make_resident(model)
-                            traj = await runner.run_case(client, model, case, world,
-                                                         timeout=args.timeout, max_steps=args.max_steps)
-                        v = score(case, traj, registry_names=names, today=world.today)
-                        row = _row(run_id, model, case, trial, traj, v)
-                        rows.append(row)
-                        fh.write(json.dumps(row, default=str) + "\n")
-                        fh.flush()
-                        mark = "PASS" if v.passed else "FAIL " + ",".join(v.labels)
-                        calls = [c["name"] for s in traj["steps"] for c in s.get("calls", ())]
-                        print(f"[{k}/{total}] {case.id:<28} t{trial} {v.seconds:>6.1f}s  {mark}"
-                              f"  {calls}")
+                for variant in variants:
+                    runner.set_thinking(client, model, variant)
+                    print(f"-- thinking: {variant}")
+                    total, k = len(cases) * args.trials, 0
+                    for trial in range(1, args.trials + 1):
+                        for case in cases:
+                            k += 1
+                            if not _swap_ok():
+                                print("STOP: memory pressure (free swap < 500MB and pressure high)")
+                                return 3
+                            row = await _one(runner, score, client, model, case, world, names,
+                                             args, run_id, trial, variant)
+                            rows.append(row)
+                            fh.write(json.dumps(row, default=str) + "\n")
+                            fh.flush()
+                            v = row["v"]
+                            mark = "PASS" if v["passed"] else "FAIL " + ",".join(v["labels"])
+                            calls = [c["name"] for s in row["steps"] for c in s.get("calls", ())]
+                            print(f"[{k}/{total}] {case.id:<28} t{trial} {v['seconds']:>6.1f}s  {mark}"
+                                  f"  {calls}")
     finally:
         if args.exclusive:
             for m in started_loaded:
@@ -195,6 +213,13 @@ def main() -> int:
     ap.add_argument("--exclusive", action="store_true",
                     help="unload every other model while a model runs; restore them afterwards")
     ap.add_argument("--out", default="", help="results directory (default ~/.moe/evals/toolbench/<run>)")
+    ap.add_argument("--split", default="", choices=["", "gate", "dev"], help="only this split")
+    ap.add_argument("--world-seed", type=int, default=None,
+                    help="variant world (default: the canonical gate world)")
+    ap.add_argument("--thinking", default="default",
+                    help="comma-separated variants: default, narration-off, off")
+    ap.add_argument("--export-shingles", default="",
+                    help="write hashed n-grams of every gate prompt (canonical + 50 seeded worlds) and exit")
     ap.add_argument("--list", action="store_true", help="list cases and exit")
     ap.add_argument("--dry-run", action="store_true", help="route every case without a model")
     ap.add_argument("--report", default="", help="re-render a finished run directory")
@@ -207,14 +232,22 @@ def main() -> int:
         if args.compare:
             print("\n" + rep.compare(rep.load_rows(Path(args.compare).expanduser()), cur))
         return 0
-    cases = select(load_cases(), only=args.only, ids=args.ids)
+    cases = select(load_cases(), only=args.only, ids=args.ids, split=args.split)
     if not cases:
         print("no cases selected")
         return 2
+    if args.export_shingles:
+        from scripts.toolbench.cases import heldout_shingles
+        from scripts.toolbench.world import make_facts
+        worlds = [make_facts(None)] + [make_facts(i) for i in range(50)]
+        data = heldout_shingles(cases, worlds)
+        Path(args.export_shingles).expanduser().write_text(json.dumps(data, separators=(",", ":")) + "\n")
+        print(f"wrote {data['n_prompts']} hashed gate prompts to {args.export_shingles}")
+        return 0
     if args.list:
         for c in cases:
             want = "no tool" if c.no_tool else " > ".join("/".join(s.tools) for s in c.expect) or "-"
-            print(f"{c.category:<10} {c.id:<28} {want:<40} {c.prompt[:60]}")
+            print(f"{c.split:<5} {c.category:<10} {c.id:<28} {want:<40} {c.prompt[:60]}")
         print(f"\n{len(cases)} cases")
         return 0
     if args.trials < 1:
@@ -223,7 +256,7 @@ def main() -> int:
     from scripts.toolbench import runner
     runner.isolate(Path(tempfile.mkdtemp(prefix="toolbench-")))
     if args.dry_run:
-        return asyncio.run(_dry_run(cases))
+        return asyncio.run(_dry_run(args, cases))
     return asyncio.run(_run(args, cases))
 
 

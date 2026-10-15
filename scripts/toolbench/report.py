@@ -40,6 +40,7 @@ def summarize(rows: list[dict]) -> dict:
         n = len(rs)
         no_tool = [r for r in rs if r.get("no_tool")]
         secs = [r["v"]["seconds"] for r in rs]
+        think = [int(r["v"].get("reasoning_chars") or 0) for r in rs]
         out[model] = {
             "trials": n,
             "cases": len(cases),
@@ -56,6 +57,9 @@ def summarize(rows: list[dict]) -> dict:
             "escapes": sum(bool(r.get("escapes")) for r in rs),
             "median_s": round(statistics.median(secs), 2) if secs else 0.0,
             "p90_s": round(_q(secs, 0.9), 2),
+            "think_p50": int(statistics.median(think)) if think else 0,
+            "think_p90": int(_q(think, 0.9)),
+            "think_max": max(think) if think else 0,
             "mean_steps": round(statistics.mean(r["v"]["steps"] for r in rs), 2) if rs else 0.0,
             "mean_prompt_tok": int(statistics.mean(r["v"]["prompt_tokens_est"] for r in rs)) if rs else 0,
             "labels": Counter(l for r in rs for l in r["v"]["labels"]),
@@ -101,6 +105,8 @@ def render(rows: list[dict], *, failures: int = 15) -> str:
     row("route faults*", [str(s[m]["route_faults"]) for m in models])
     row("median / p90 s", [f"{s[m]['median_s']} / {s[m]['p90_s']}" for m in models])
     row("mean steps", [str(s[m]["mean_steps"]) for m in models])
+    row("think chars p50/p90", [f"{s[m]['think_p50']} / {s[m]['think_p90']}" for m in models])
+    row("think chars max", [str(s[m]["think_max"]) for m in models])
     row("mean prompt tok (est)", [str(s[m]["mean_prompt_tok"]) for m in models])
     if any(s[m]["escapes"] for m in models):
         row("guard refusals", [str(s[m]["escapes"]) for m in models])

@@ -2,7 +2,7 @@
   prompt: "What's Mom's phone number?"
   expect: [{tool: lookup_contact}]
   forbid: [send_message, place_call]
-  answer: {contains_all: ["0101"]}
+  answer: {contains_all: ["{mom_phone_tail}"]}
 - id: contact_count
   prompt: "How many contacts do I have?"
   expect: [{tool: list_contacts}]
@@ -10,4 +10,22 @@
 - id: contact_mom_birthday
   prompt: "When is mom's birthday?"
   expect: [{any_of: [contact_dates, lookup_contact]}]
-  answer: {contains_all: ["March 14"]}
+  answer: {contains_all: ["{mom_birthday}"]}
+- id: contact_friend_email
+  prompt: "what's {friend_first}'s email address?"
+  expect: [{tool: lookup_contact}]
+  answer: {contains_all: ["{friend_email}"]}
+- id: contact_coworker_phone
+  prompt: "what's {coworker_first}'s number?"
+  expect: [{tool: lookup_contact}]
+  answer: {contains_all: ["0190"]}
+- id: contact_save_number
+  split: dev
+  prompt: "save Bob's number as 555-0199"
+  expect: [{tool: manage_contacts}]
+  forbid: [send_message]
+- id: contact_who
+  split: dev
+  prompt: "who's in my contacts?"
+  expect: [{tool: list_contacts}]
+  answer: {contains_any: ["{friend_first}", "{coworker_first}"]}
