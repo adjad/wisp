@@ -4,11 +4,12 @@ Readers inspect one immutable pointer without locks or I/O. Writers update it
 before mutation and notify outside the ledger lock and every config/file lock.
 A listener failure cannot make an earlier snapshot current again.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import hashlib
 import json
 import threading
 import weakref
+from service.publication_authority import Authority, mutating
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class Snapshot:
     revision: int
     ready: bool
     pending: int
+    _token: object = field(default=None,compare=False,repr=False)
 
 
 _state = Snapshot(0, False, 0)
@@ -24,15 +26,25 @@ _pending = set()
 _listeners = {}
 _next_listener = 0
 _projection = None
+_authority = Authority("configuration")
 
 
 def current():
     return _state
 
 
+def publication_token(expected):
+    """Known memory only; an old Snapshot cannot acquire a new state's token."""
+    state = _state
+    token = state._token
+    return token if expected is state and state.ready and token is not None and token.current() else None
+
+
 def _publish(ready):
     global _state
-    _state = Snapshot(_state.revision+1, ready and not _pending, len(_pending))
+    ready = ready and not _pending
+    _authority.publish() if ready else _authority.withdraw()
+    _state = Snapshot(_state.revision+1,ready,len(_pending),_authority.token() if ready else None)
     callbacks = []
     for key, ref in tuple(_listeners.items()):
         callback = ref()
@@ -69,6 +81,7 @@ def subscribe(callback):
     return unsubscribe
 
 
+@mutating
 def begin():
     token = object()
     with _lock:
@@ -78,6 +91,7 @@ def begin():
     return token
 
 
+@mutating
 def finish(token):
     with _lock:
         if token not in _pending:
@@ -88,12 +102,14 @@ def finish(token):
     _notify(state, callbacks)
 
 
+@mutating
 def invalidate():
     with _lock:
         state, callbacks = _publish(False)
     _notify(state, callbacks)
 
 
+@mutating
 def observe(projection, *, valid, expected):
     global _projection
     try:

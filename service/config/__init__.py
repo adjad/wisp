@@ -93,6 +93,7 @@ def _deep_merge(base: dict, over: dict) -> dict:
 
 
 from . import authority_changes as _authority_changes
+from service.publication_authority import mutating as _publication_mutation, revocation as _publication_revocation
 
 
 @lru_cache
@@ -124,6 +125,7 @@ def models_config() -> dict:
     return value
 
 
+@_publication_mutation
 def _clear_config_caches():
     _authority_changes.invalidate()
     _raw_overlay_cache_clear()
@@ -164,9 +166,13 @@ def _write_overlay(update: dict) -> dict:
 
 
 def _save_overlay(update: dict) -> None:
-    relevant = isinstance(update, dict) and bool(set(update) & {"behavior", "roles", "inference"})
-    before = _authority_changes.current()
-    token = _authority_changes.begin() if relevant else None
+    # Refuse reentrant calls before any file/cache/authority change. Keep the
+    # unsettled revision while I/O proceeds outside the short application lease;
+    # concurrent writers may register, but none can publish readiness yet.
+    with _publication_revocation():
+        relevant = isinstance(update, dict) and bool(set(update) & {"behavior", "roles", "inference"})
+        before = _authority_changes.current()
+        token = _authority_changes.begin() if relevant else None
     try:
         merged = _write_overlay(update)
     finally:
