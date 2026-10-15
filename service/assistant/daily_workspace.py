@@ -36,7 +36,7 @@ def set_availability_provider(provider):
 def availability_snapshot(day, timezone, now):
     unavailable = dict(version=1, available=False, status="unavailable", generated_at=now,
         timezone=timezone, reason="Behavioral availability is not available yet; no inferred time is reserved.",
-        windows=[], preparation_demands=[])
+        windows=[], demands=[])
     if _availability_provider is None:
         return unavailable
     try:
@@ -52,7 +52,7 @@ def valid_availability(value, timezone, now):
         and value.get("timezone") == timezone and finite(value.get("generated_at"))
         and 0 <= now - value["generated_at"] <= 20 * 60
         and value.get("coverage") in ("adequate", "complete")
-        and isinstance(value.get("windows", []), list) and isinstance(value.get("preparation_demands", []), list))
+        and isinstance(value.get("windows", []), list) and isinstance(value.get("demands", []), list))
 
 
 def _refs(value):
@@ -161,26 +161,45 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
 
     supported_behavior = valid_availability(behavior, timezone, now)
     if supported_behavior:
-        for demand in behavior.get("preparation_demands", [])[:100]:
+        for demand in behavior.get("demands", [])[:100]:
             if not isinstance(demand, dict):
                 continue
             due, confidence = demand.get("due_ts"), demand.get("confidence")
             if (not isinstance(demand.get("id"), str) or not 1 <= len(demand["id"]) <= 200 or demand.get("current") is not True
+                    or not isinstance(demand.get("kind"), str) or not 1 <= len(demand["kind"]) <= 80
                     or demand.get("timezone") != timezone or not clean(demand.get("quote"))
                     or not _refs(demand.get("evidence_refs")) or not demand.get("source_reference")
                     or demand.get("source") not in ("email", "messages", "notes", "reminders", "user")
                     or not finite(confidence) or not .65 <= confidence <= 1
                     or demand.get("coverage") not in ("adequate", "complete")
-                    or not finite(due) or not now < due <= hi + 14 * 86400):
+                    or (due is not None and (not finite(due) or not now < due <= hi + 14 * 86400))):
                 continue
-            duration = demand.get("duration_minutes")
-            known_duration = type(duration) is int and 1 <= duration <= 480 and demand.get("duration_basis") in {"user", "source"}
-            item = _item("behavior", demand["id"], demand.get("title") or "Prepare for an upcoming commitment",
-                "Preparation suggested from source evidence; review relevance and adjust study time." if known_duration else
-                "Preparation suggested from source evidence; choose a study duration before fitting it into your day.",
-                quote=demand["quote"], due=due, priority=3, reference=demand["source_reference"])
-            item.update(needs_review=True, task_kind="study", planning_duration=duration if known_duration else None,
-                        suggested_minutes=duration if known_duration else 25)
+            ownership = demand.get("ownership", "unknown")
+            if ownership not in ("user", "unknown", "unclear"):
+                continue
+            duration, basis = demand.get("suggested_minutes"), demand.get("duration_basis", "unknown")
+            estimated_duration = type(duration) is int and 1 <= duration <= 480 and basis in ("user", "source", "model", "default")
+            explicit_priority = demand.get("priority_basis") == "user" and type(demand.get("priority")) is int and demand["priority"] in (1, 2, 3)
+            reason = ("Source-backed work suggestion; review relevance. " if ownership == "user" else
+                      "Ownership is unclear; review the source before accepting work. ")
+            reason += (basis.capitalize() + " duration estimate; adjust it to suit your day. " if estimated_duration else
+                       "Duration unknown; choose an estimate before adding it to your day. ")
+            reason += "Your explicit priority applies." if explicit_priority else "Importance is unknown."
+            uncertainty = demand.get("uncertainty") or []
+            if isinstance(uncertainty, str):
+                uncertainty = [uncertainty]
+            uncertainty = [clean(value, 120) for value in uncertainty[:5] if isinstance(value, str)] if isinstance(uncertainty, list) else ["Uncertainty details unavailable"]
+            if uncertainty:
+                reason += " Uncertainty: " + "; ".join(uncertainty)
+            item = _item("behavior", demand["id"], demand.get("title") or "Review source-backed work",
+                reason, quote=demand["quote"], due=due, priority=demand["priority"] if explicit_priority else 3,
+                reference=demand["source_reference"])
+            item.update(needs_review=True, task_kind="task", ownership=ownership, demand_kind=demand["kind"],
+                        duration_basis=basis, importance="user priority" if explicit_priority else "unknown",
+                        uncertainty=uncertainty,
+                        planning_duration=duration if estimated_duration else None,
+                        suggested_minutes=duration if estimated_duration else 25,
+                        planning_title=item["title"] if ownership == "user" else "Review: " + item["title"])
             items.append(item)
 
     for task in state["tasks"]:
@@ -210,7 +229,7 @@ def assess(day, timezone, state, evidence, *, now, behavior=None, ignored_window
         if item["source"] == "reminders" and item["due_ts"] is None:
             continue
         suggested_titles.add(title_key)
-        planned_title = "Review: " + title if item["needs_review"] and item.get("task_kind") != "study" else title
+        planned_title = item.get("planning_title") or ("Review: " + title if item["needs_review"] else title)
         suggestions.append(dict(id="daily:" + item["id"], title=planned_title, day=day,
             timezone=timezone, kind=item.get("task_kind", "task"), duration_minutes=item["suggested_minutes"],
             priority=item["priority"], due_ts=item["due_ts"] if item["due_ts"] and item["due_ts"] > max(now, lo) else None,

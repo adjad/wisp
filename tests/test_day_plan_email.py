@@ -289,6 +289,26 @@ def test_changed_account_epoch_or_content_scope_requires_new_review(store):
     assert sweep(store, at(hour=8))[0] == "day_plan_scope_changed_review_settings"
 
 
+def test_behavior_scope_requires_new_preview_and_explicit_consent(store):
+    import json
+    preview = store.preview(dict(recipient="me@example.test", timezone=ZONE, minute=480),
+                            "Plan", "Body", identity(at()), now=at())
+    assert "behavior" in preview["consent"]["source_scope"] and not store.settings()["enabled"]
+    old_preview = json.loads(store._db.execute("SELECT payload FROM previews WHERE token=?", (preview["token"],)).fetchone()[0])
+    old_preview["consent"]["source_scope"].remove("behavior")
+    store._db.execute("UPDATE previews SET payload=? WHERE token=?", (json.dumps(old_preview), preview["token"]))
+    store._db.commit()
+    with pytest.raises(ValueError, match="format changed"):
+        store.enable(preview["token"], identity(at()), confirmed=True, now=at())
+    assert not store.settings()["enabled"]
+    current = enable(store)
+    current["consent"]["source_scope"].remove("behavior")
+    store._db.execute("UPDATE settings SET payload=?", (json.dumps(current),))
+    store._db.commit()
+    outcome, calls = sweep(store, at(hour=8))
+    assert outcome == "day_plan_scope_changed_review_settings" and not calls
+
+
 def test_server_capture_order_and_empty_receipts_revoke_without_client_clock(store, monkeypatch):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
@@ -372,3 +392,38 @@ def test_exact_reviewed_daily_scope_can_use_existing_fake_bridge_once(store, mon
     monkeypatch.setattr(remote_policy, "remote_only_profile", lambda: "synthetic-remote")
     monkeypatch.setattr(remote_policy, "remote_tool_allowed", lambda _: False)
     assert not delivery._policy_allows("me@example.test")
+
+
+@pytest.mark.parametrize("case", ["namespace", "string", "mapping", "missing", "unknown", "malformed_decision", "deny", "allow", "confirm"])
+def test_policy_admission_requires_real_decision_and_enum(monkeypatch, case):
+    from types import SimpleNamespace
+    from service import safety
+    from service.assistant import day_plan_email as delivery
+    values = dict(namespace=SimpleNamespace(tier="confirm"), string="confirm", mapping={"tier": "confirm"},
+        missing=SimpleNamespace(), unknown=SimpleNamespace(tier="unexpected"),
+        malformed_decision=safety.Decision("confirm", "not a Tier"), deny=safety.Decision(safety.Tier.DENY, "denied"),
+        allow=safety.Decision(safety.Tier.ALLOW, "allowed"), confirm=safety.Decision(safety.Tier.CONFIRM, "review required"))
+    monkeypatch.setattr(safety, "decide", lambda *args, **kwargs: values[case])
+    assert delivery._policy_allows("me@example.test") is (case in {"allow", "confirm"})
+
+
+def test_malformed_policy_has_zero_fake_bridge_effects(store, monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+    from service import safety
+    from service.assistant import day_plan_email as delivery, daily_workspace_api as api, outbox
+    hub = importlib.import_module("service.assistant.hub")
+    config = enable(store)
+    store.claim(config, "2026-10-14", at(hour=8), "Plan", "Body", now=at(hour=8))
+    monkeypatch.setattr(api, "email_store", lambda: store)
+    monkeypatch.setattr(api, "self_identity", lambda: identity(at(hour=8)))
+    monkeypatch.setattr(delivery.time, "time", lambda: at(hour=8))
+    monkeypatch.setattr(hub, "hub", SimpleNamespace(has_subscribers=True))
+    monkeypatch.setattr(safety, "decide", lambda *args, **kwargs: SimpleNamespace(tier="confirm"))
+    calls = []
+    async def native(*args):
+        calls.append(args)
+        return dict(ok=True)
+    monkeypatch.setattr(outbox, "request", native)
+    result = asyncio.run(delivery._approved_native_submission("send_email", dict(to=["me@example.test"], cc=[], subject="Plan", body="Body")))
+    assert not calls and result["status"] == "not_attempted"

@@ -34,12 +34,16 @@ answer and email preview.
 The version-1 availability interface is a host-owned read-only callback in
 `daily_workspace.py`, registered only by the behavior producer. Its envelope
 contains `version`, `available`, `status`, `generated_at`, `timezone`, `coverage`,
-`reason`, `windows`, and optional `preparation_demands`. Windows retain an ID,
+`reason`, `windows`, and optional generic `demands`. Windows retain an ID,
 exact start/end, timezone, current status, confidence, observation date, coverage,
-evidence references and explanation. Preparation demands retain their source,
-quote/reference, due time and duration provenance. Without a user/source-backed
-duration, a preparation demand stays in attention until the user chooses an
-estimate. The tab provides an editable estimate before adding a Wisp task.
+evidence references and explanation. Generic demands retain `kind`, ownership,
+source quote/reference, optional due time and `suggested_minutes` with
+`duration_basis` (`user`, `source`, `model`, `default`, or unknown). Estimates
+retain their uncertainty. Unknown duration stays in attention until the user
+chooses an estimate; unknown ownership yields review work, and other people's
+tasks are withheld. Importance stays unknown unless the user explicitly supplied
+a priority. No topic turns a generic demand into a study task automatically.
+The tab provides an editable estimate before adding a Wisp task.
 
 The actual availability producer is **not implemented in this candidate**. It
 belongs to the separate behavior stage-2 workstream. Production explicitly says
@@ -53,7 +57,11 @@ daily wall time and named timezone, reviews a complete example, then explicitly
 enables. Preview tokens expire and bind the exact settings revision. Changing
 recipient/time/zone requires another preview. Pause invalidates previews.
 The host receipt also binds the feature/generator version, approved source
-scope and current connected-account session/set. Fresh native identity uses
+scope and current connected-account session/set.
+The approved scope includes tentative behavior-derived planning suggestions;
+it does not authorize new collection or raw behavior export. A receipt created
+without this scope cannot enable or submit under the expanded scope.
+Fresh native identity uses
 server-issued capture sessions/generations; delayed, empty or failed reads
 cannot restore old eligibility. Account changes, expiry and backend restart
 require explicit review again. Existing policy denial always blocks submission.
@@ -83,7 +91,7 @@ policy, assistant storage and inference/routing remain with existing owners.
 
 Development validation before freeze:
 
-- 170 focused Python tests passed (new workspace/email tests plus existing
+- 188 focused Python tests passed (new workspace/email tests plus existing
   Today contracts).
 - 2,206 existing summary, priority, presentation-text and QA-runner cases passed.
 - 89 native model/transport/decoding checks passed; the GUI branch was explicitly
@@ -95,6 +103,21 @@ Development validation before freeze:
   reviewed scope; final-bridge fakes initially imported the package's exported
   Hub instance instead of its module. Corrections kept the intended assertions.
   A pre-existing Starlette/httpx deprecation warning appears in focused tests.
+
+The first frozen candidate was held before review after a fake policy result
+with a plain string `confirm` was accepted by a str-backed enum comparison.
+The successor requires a real `Decision` and `Tier`; malformed results produce
+no fake-bridge effects. The same repair batch aligns the disconnected behavior
+consumer with generic work demands. Earlier candidate gates remain historical
+and cannot approve the successor.
+
+Historical `6eb5c01c` full mechanical run exited successfully with 254/254
+modules passing and 165 skipped cases: 11 link/directory parametrizations,
+one missing installed Ling template, 151 copied-interpreter process-path
+cases whose interpreter could not start, and two root/filesystem-dependent
+attestation cases. None of the daily feature tests were skipped. This ledger
+is a coverage limitation, not live attestation or a zero-skip pass. The new
+candidate needs its own complete result and independent relevance assessment.
 
 Read-only helper findings were reconciled by the sole builder: flexible work
 cannot erase busy windows, native/manual source caps are separate with true

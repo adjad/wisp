@@ -271,20 +271,50 @@ def test_body_request_can_surface_old_received_mail_without_fabricating_a_due_da
     assert assessed["attention"][0]["due_ts"] is None
 
 
-def test_versioned_behavior_preparation_requires_grounding_and_duration_choice():
-    demand = dict(id="quiz", title="Study for the quiz", source="email", source_reference="email:quiz",
-        quote="Quiz on Friday", due_ts=at(17) + 2 * 86400, confidence=.8, current=True,
-        timezone=ZONE, coverage="adequate", evidence_refs=["email:quiz"])
+@pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on Friday"),
+    ("Prepare a budget", "Budget review is Friday"), ("Review the garden proposal", "Proposal review is Friday")])
+def test_versioned_generic_demands_require_grounding_and_duration_choice(title, quote):
+    demand = dict(id="work", kind="task", ownership="user", title=title, source="email", source_reference="email:work",
+        quote=quote, due_ts=at(17) + 2 * 86400, confidence=.8, current=True,
+        timezone=ZONE, coverage="adequate", evidence_refs=["email:work"])
     contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE,
-                    coverage="adequate", windows=[], preparation_demands=[demand])
+                    coverage="adequate", windows=[], demands=[demand])
     result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["attention"][0]["task_kind"] == "study" and result["suggested_count"] == 0
-    demand.update(duration_minutes=45, duration_basis="user")
+    assert result["attention"][0]["task_kind"] == "task" and result["suggested_count"] == 0
+    assert "Duration unknown" in result["attention"][0]["reason"] and "Importance is unknown" in result["attention"][0]["reason"]
+    demand.update(suggested_minutes=45, duration_basis="user")
     result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
     assert result["suggested_count"] == 1
     assert result["proposed_plan"]["blocks"][0]["end"] - result["proposed_plan"]["blocks"][0]["start"] == 45 * 60
     contract["version"] = 2
     assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)["attention"]
+
+
+@pytest.mark.parametrize("basis", ["user", "source", "model", "default"])
+def test_generic_estimates_preserve_basis_and_unknown_ownership_is_review_work(basis):
+    demand = dict(id="arbitrary", kind="follow_up", title="Check the project", source="notes", source_reference="notes-local:work",
+        quote="Check the project", due_ts=at(17), confidence=.8, current=True, timezone=ZONE, coverage="adequate",
+        evidence_refs=["notes-local:work"], suggested_minutes=20, duration_basis=basis)
+    contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE, coverage="adequate", windows=[], demands=[demand])
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
+    assert result["proposed_plan"]["blocks"][0]["title"] == "Review: Check the project"
+    assert result["attention"][0]["duration_basis"] == basis and result["attention"][0]["importance"] == "unknown"
+    demand["ownership"] = "other"
+    assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)["attention"]
+
+
+def test_generic_demands_do_not_promote_inferred_importance_over_user_priority():
+    demand = dict(id="work", kind="task", ownership="user", title="Explicit work", source="notes",
+        source_reference="notes-local:work", quote="Work to do", confidence=.8, current=True, timezone=ZONE,
+        coverage="adequate", evidence_refs=["notes-local:work"], suggested_minutes=20, duration_basis="default", priority=1)
+    demand["uncertainty"] = ["Deadline interpretation needs review"]
+    contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE, coverage="adequate", windows=[], demands=[demand])
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
+    assert result["attention"][0]["priority"] == 3 and result["attention"][0]["importance"] == "unknown"
+    assert "Deadline interpretation needs review" in result["attention"][0]["reason"]
+    demand["priority_basis"] = "user"
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
+    assert result["attention"][0]["priority"] == 1 and result["attention"][0]["importance"] == "user priority"
 
 
 def test_unknown_stale_or_malformed_provider_contract_is_unavailable(monkeypatch):

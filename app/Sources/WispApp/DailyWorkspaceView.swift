@@ -12,6 +12,7 @@ struct DailyAttentionItem: Decodable, Identifiable {
     let suggested_minutes: Int
     let needs_review: Bool
     let task_kind: String?
+    let ownership: String?
 }
 
 struct DailySourceCoverage: Decodable, Identifiable {
@@ -66,7 +67,7 @@ struct DailyAttentionView: View {
                                     if item.source != "calendar" && item.source != "wisp" {
                                         Button("Add as task") {
                                             Task {
-                                                _ = await model.add(title: item.needs_review && item.task_kind != "study" ? "Review: " + item.title : item.title,
+                                                _ = await model.add(title: item.needs_review && item.ownership != "user" ? "Review: " + item.title : item.title,
                                                     kind: item.task_kind ?? "task", minutes: durations[item.id] ?? item.suggested_minutes, priority: item.priority,
                                                     due: item.due_ts.flatMap { $0 > Date().timeIntervalSince1970 ? Date(timeIntervalSince1970: $0) : nil })
                                             }

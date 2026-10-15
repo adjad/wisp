@@ -30,7 +30,7 @@ _IDENTITY_TTL = 10 * 60
 _LATE_WINDOW = 30 * 60
 _EMAIL = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}")
 _CONSENT = dict(feature="daily_self_plan", generator_version=1,
-                source_scope=["calendar", "reminders", "email", "messages", "notes", "wisp"])
+                source_scope=["calendar", "reminders", "email", "messages", "notes", "wisp", "behavior"])
 
 
 def address(value):
@@ -323,10 +323,11 @@ async def deliver_due(store, *, identity, compose, sender, policy_allows, now=No
 
 
 def _policy_allows(recipient):
-    from service.safety import Tier, decide
+    from service.safety import Decision, Tier, decide
     try:
         decision = decide("email_send", {"to": recipient, "confirmed_self_send": True}, tool="send_email")
-        return decision.tier in {Tier.ALLOW, Tier.CONFIRM}
+        return (isinstance(decision, Decision) and isinstance(decision.tier, Tier)
+                and decision.tier in {Tier.ALLOW, Tier.CONFIRM})
     except Exception:
         return False
 
