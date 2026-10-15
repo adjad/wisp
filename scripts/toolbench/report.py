@@ -78,7 +78,11 @@ def _group(rows, key) -> dict[str, list[dict]]:
 
 
 def _short(model: str) -> str:
-    return model.replace("Ling-3.0-tiny-", "Ling-").replace("-merged", "")[:26]
+    base, _, variant = model.partition(" +")
+    base = base.replace("Ling-3.0-tiny-", "Ling-").replace("-merged", "")
+    if not variant:
+        return base[:26]
+    return f"{base[:25 - len(variant)]} +{variant}"
 
 
 def render(rows: list[dict], *, failures: int = 15) -> str:
