@@ -55,12 +55,62 @@ class BehaviorEngine:
     def __init__(self, db_path: str | Path, *, phraser: Phraser | None = None,
                  clock=None, tz: str | None = None) -> None:
         self._store = Store(db_path)
+        from service.behavior.activity import Activity
+        self._activity = Activity(self._store)
         self._phraser = phraser
         self._clock = clock or time.time
         self._tz = resolve_tz(tz)
         self.tz = tz_name(self._tz)
         # Snapshot diffing and mining read-modify-write the store; serialize them.
         self._lock = threading.RLock()
+
+    def signal_settings(self):
+        with self._lock:
+            return dict(settings=self._activity.settings(), epoch=self._store.meta_get("signal_epoch", "initial"))
+
+    def activity_summary(self, now=None):
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return {"state": "off"}
+            now = self._now(now)
+            bins = self._store.observations(kinds=["activity_bin"], since=now-7*86400, until=now-900)
+            return dict(state="observed", period="last seven days, completed bins only", timezone=self.tz,
+                        covered_seconds=sum(b.attrs.get("covered", 0) for b in bins),
+                        known_screen_awake_seconds=sum(b.attrs.get("awake", 0) for b in bins),
+                        idle_seconds=sum(b.attrs.get("idle", 0) for b in bins),
+                        foreground_seconds={app:sum(b.attrs.get("apps", {}).get(app, 0) for b in bins)
+                                            for app in set().union(*(b.attrs.get("apps", {}) for b in bins))},
+                        meaning="This Mac only; awake time and idle time do not measure human attention or availability.")
+
+    def configure_signals(self, changes, now=None):
+        with self._lock:
+            self._activity.configure(changes, self._now(now))
+            return self.signal_settings()
+
+    def activity_lease(self, client, now=None):
+        with self._lock:
+            return self._activity.lease(client, self._now(now))
+
+    def observe_activity(self, payload, now=None):
+        with self._lock:
+            return self._activity.ingest(payload, self._now(now))
+
+    def availability_patterns(self, day, timezone, visits=(), now=None):
+        from service.behavior.availability import discover
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return []
+            return discover(self._store.observations(kinds=["activity_bin"], since=self._now(now)-56*86400),
+                            visits, day, timezone, self._now(now))
+
+    def availability_context(self, timezone, now=None):
+        from service.behavior.availability import competing_activity
+        with self._lock:
+            if not self._activity.settings()["activity"]:
+                return []
+            now = self._now(now)
+            return competing_activity(self._store.observations(kinds=["event"], since=now-56*86400, until=now),
+                                      self._store.observations(kinds=["activity_bin"], since=now-56*86400), timezone)
 
     def close(self) -> None:
         self._store.close()

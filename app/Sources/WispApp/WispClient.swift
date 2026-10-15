@@ -371,8 +371,20 @@ final class WispClient {
 
     // GET /behavior/status | /behavior/patterns | /behavior/predict | /behavior/profile
     func behaviorGet(_ endpoint: String) async -> [String: Any]? {
-        guard ["status", "patterns", "predict", "profile", "weekly", "history"].contains(endpoint) else { return nil }
+        guard ["status", "patterns", "predict", "profile", "weekly", "history", "signals"].contains(endpoint) else { return nil }
         return await behaviorRequest("GET", "behavior/\(endpoint)")
+    }
+
+    func behaviorActivityLease(_ client: String) async -> [String: Any]? {
+        await behaviorRequest("GET", "behavior/activity/lease", query: [URLQueryItem(name: "client", value: client)])
+    }
+
+    func behaviorActivityBatch(lease: [String: Any], intervals: [[String: Any]]) async -> Bool {
+        await behaviorRequest("POST", "behavior/activity", body: ["lease": lease, "intervals": intervals]) != nil
+    }
+
+    func setBehaviorSignal(_ name: String, enabled: Bool) async -> [String: Any]? {
+        await behaviorRequest("PUT", "behavior/signals", body: [name: enabled])
     }
 
     func behaviorHistoryNext(_ source: String) async -> [String: Any]? {

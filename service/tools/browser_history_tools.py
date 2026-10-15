@@ -300,3 +300,47 @@ async def search_browser_history_impl(query: str | None = None, count: int | Non
 async def search_browser_history(query: str | None = None, count: int | None = None,
                                  period: str | None = None, day: str | None = None) -> str:
     return await search_browser_history_impl(query, count, period, day)
+
+
+def current_browser_snapshot(*, expected_receipt=None):
+    """Immutable, consent-revision fenced cached point visits; no new scan.
+
+    The receipt covers privacy state and both publications. Rechecking cannot
+    extend freshness. No title/path/query is exported to behavior analysis.
+    """
+    import math
+    import re
+    from types import MappingProxyType
+    def receipt():
+        return (_enabled, _privacy_current, _revision, _applied_revision,
+                tuple((_available[b], _synced_at[b], _raw[b]) for b in _BROWSERS))
+    before = receipt()
+    if before[0] is not True or before[1] is not True or before[2] <= 0 or before[2] != before[3]:
+        return None
+    # Digest identifies source publication without retaining source carrier text.
+    import hashlib
+    now = time.time()
+    eligible = tuple(bool(available and 0 <= now-stamp <= _TTL_SECONDS) for available, stamp, _ in before[4])
+    identity = hashlib.sha256(repr((before, eligible)).encode()).hexdigest()
+    if expected_receipt is not None and identity != expected_receipt:
+        return None
+    rows, now, stamps = [], time.time(), []
+    for available, stamp, raw in before[4]:
+        if not available or not 0 <= now-stamp <= _TTL_SECONDS:
+            continue
+        stamps.append(stamp)
+        for line in raw.splitlines()[:5000]:
+            parts = line.split(" | ", 3)
+            if len(parts) != 4:
+                continue
+            try:
+                ts = float(parts[0])
+            except ValueError:
+                continue
+            host = parts[1].strip().lower()
+            if math.isfinite(ts) and 0 <= now-ts <= 30*86400 and re.fullmatch(r"[a-z0-9.-]{1,253}", host):
+                rows.append(MappingProxyType(dict(ts=ts, host=host)))
+    if before != receipt() or not stamps:
+        return None
+    return MappingProxyType(dict(receipt=identity, captured_at=min(stamps), rows=tuple(rows),
+                                 coverage="bounded cached point visits; not dwell or complete history"))

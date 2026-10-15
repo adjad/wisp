@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notesReader: NotesReader?
     private var contactsReader: ContactsReader?
     private var browserHistoryReader: BrowserHistoryReader?
+    private var activityReader: ActivityReader?
     private var nativeSourceReadersStarted = false
     private static let autoCollapseDelay: TimeInterval = 2
 
@@ -741,10 +742,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mailReader = MailReader()
         messagesReader = MessagesReader()
         browserHistoryReader = BrowserHistoryReader()
+        activityReader = ActivityReader()
         calendarReader?.start()
         mailReader?.start()
         messagesReader?.start()
         browserHistoryReader?.start()
+        activityReader?.start()
         remindersWriter = RemindersWriter()
         notesReader = NotesReader()
         contactsReader = ContactsReader()

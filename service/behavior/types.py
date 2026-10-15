@@ -18,6 +18,8 @@ from typing import Any, Literal
 # --------------------------------------------------------------------------
 
 OBSERVATION_KINDS = (
+    "device_activity",    # short-lived foreground/idle/device metadata, no content
+    "activity_bin",       # coarse covered intervals, not a semantic activity label
     "event",              # calendar event occurrence (past or upcoming); end_ts set when known
     "event_cancelled",    # an upcoming event vanished from the calendar before it started
     "event_moved",        # same source_id re-appeared at another time; attrs: from_ts, to_ts
@@ -35,6 +37,7 @@ OBSERVATION_KINDS = (
 )
 
 ObservationKind = Literal[
+    "device_activity", "activity_bin",
     "event", "event_cancelled", "event_moved", "event_declined", "reminder",
     "reminder_done", "reminder_dismissed", "note", "message_in", "message_out",
     "wisp_ask", "approval", "denial", "nudge_feedback",

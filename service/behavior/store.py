@@ -164,6 +164,8 @@ class Store:
         with self._lock, self._conn:
             obs = self._conn.execute(OBSERVATION_EXPIRY_SQL,
                                      (now - observation_retention_s,)).rowcount
+            obs += self._conn.execute("DELETE FROM observations WHERE kind='device_activity' AND ts < ?", (now-7*86400,)).rowcount
+            obs += self._conn.execute("DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", (now-56*86400,)).rowcount
             nud = self._conn.execute("DELETE FROM nudges WHERE created_at < ?",
                                      (now - nudge_retention_s,)).rowcount
         return {"observations": int(obs), "nudges": int(nud)}
