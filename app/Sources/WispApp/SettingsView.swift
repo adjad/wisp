@@ -1627,26 +1627,15 @@ struct SettingsView: View {
 
                         Divider()
 
-                        // Wisp reads whatever Mail/Calendar accounts are
-                        // already configured in Mail.app/Calendar.app — every
-                        // linked account shows up automatically once granted,
-                        // and Wisp already tells them apart (see the
-                        // `account` param on summarize_emails/view_emails/
-                        // get_upcoming/get_past_events). Adding an account
-                        // itself is a macOS step, deliberately NOT something
-                        // Wisp does for you: only the OS should ever hold
-                        // your email password/OAuth token, never a
-                        // third-party app. This just opens the right System
-                        // Settings pane.
+                        // Native accounts remain managed by macOS. Google inbox
+                        // connections are optional and configured separately.
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Linked Accounts")
                                 .font(.system(size: 14, weight: .medium))
-                            Text("Wisp automatically reads every account already set up in "
-                                 + "Mail.app and Calendar.app, and can tell them apart when "
-                                 + "you ask about a specific one (e.g. \"what's in my work "
-                                 + "email\"). To add another account, use macOS's own "
-                                 + "Internet Accounts settings — Wisp never handles your "
-                                 + "email password or sign-in directly.")
+                            Text("Wisp reads permitted Mail and Calendar accounts configured in macOS. "
+                                 + "Mail’s local cache can be out of date while Mail is closed. "
+                                 + "Use Settings ▸ Google to connect each Google inbox directly and see its last successful refresh. "
+                                 + "Other native accounts can be added in Internet Accounts settings.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                             Button("Open Internet Accounts Settings…") {

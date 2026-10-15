@@ -147,7 +147,10 @@ if _headers:
 if _history:
     _history_at = time.time()
 if _raw_emails:
-    _raw_emails_at = time.time()
+    try:
+        _raw_emails_at = cache_store._path("email_raw").stat().st_mtime
+    except OSError:
+        _raw_emails_at = 0.0
 
 # Managed QA's staged-import contract checks that summaries never construct a
 # model client at import time. Sender digests are deterministic, so this stays
@@ -166,11 +169,13 @@ def cache_emails(headers: str) -> None:
 
 
 def cache_history_headers(history: str) -> None:
-    global _history, _history_at, _swift_history
+    global _history, _history_at, _swift_history, _native_history_at
     _swift_history = history or ""
     _history = _compose_source(_swift_history, "history")
     cache_store.save("email_mail_history", _swift_history)
     _history_at = time.time()
+    _native_history_at = _history_at
+    _save_email_sources()
     cache_store.save("email_history", _history)
 
 
@@ -181,16 +186,18 @@ _EXTERNAL_MAX_AGE = 300.0
 _native_headers_at = 0.0
 _native_source = ""
 _native_raw_at = 0.0
+_native_history_at = 0.0
 
 
 def _restore_email_sources() -> None:
-    global _external_accounts, _native_headers_at, _native_source, _native_raw_at
+    global _external_accounts, _native_headers_at, _native_source, _native_raw_at, _native_history_at
     import json
     try:
         saved = json.loads(cache_store.load("email_sources") or "{}")
         _native_headers_at = float(saved.get("native_headers_at") or 0)
         _native_source = str(saved.get("native_source") or "")
         _native_raw_at = float(saved.get("native_raw_at") or 0)
+        _native_history_at = float(saved.get("native_history_at") or 0)
         for address, item in saved.get("accounts", {}).items():
             if isinstance(item, dict) and "@" in address:
                 _external_accounts[address] = {**item, "verified": False}
@@ -202,7 +209,7 @@ def _save_email_sources() -> None:
     import json
     cache_store.save("email_sources", json.dumps({
         "native_headers_at": _native_headers_at, "native_source": _native_source,
-        "native_raw_at": _native_raw_at,
+        "native_raw_at": _native_raw_at, "native_history_at": _native_history_at,
         "accounts": _external_accounts}))
 
 
@@ -265,8 +272,12 @@ def _provider_selected(address: str, item: dict, part: str) -> bool:
         return True
     # A successful later native read is a better fallback than a failed provider
     # snapshot. Its server freshness is still disclosed separately.
-    native_stamp = _native_raw_at if part == "raw" else _native_headers_at
-    if _native_source == "mail_app" and native_stamp > stamp:
+    native_stamp = {"raw": _native_raw_at, "history": _native_history_at}.get(part, _native_headers_at)
+    native = {"raw": _swift_raw, "history": _swift_history}.get(part, _swift_headers)
+    records = native.split(_RAW_RS if part == "raw" else "\n")
+    matched = any(_covered_source(*_source_identity(record, raw=part == "raw"), address, item)
+                  for record in records if record.strip())
+    if matched and _native_source == "mail_app" and native_stamp > stamp:
         return False
     return True
 
@@ -421,6 +432,9 @@ def set_email_availability(available: bool, reason: str = "",
 def _no_inbox_message() -> str:
     """The right 'no data' message for the CURRENT sync state — only blames
     permission when the sync actually failed."""
+    if _external_accounts and not any(item.get("headers") is not None for item in _external_accounts.values()):
+        return ("I couldn’t refresh email from Google. No verified provider snapshot is available. "
+                + email_freshness_warning())
     if _email_available is False and _external_fresh():
         return "No emails found."
     if _email_available is False:
@@ -447,6 +461,8 @@ def email_sync_state() -> str:
     """
     if _external_fresh() or any(item.get("headers") is not None for item in _external_accounts.values()):
         return "ready"
+    if any(item.get("headers_error") for item in _external_accounts.values()):
+        return "ready" if _parse_lines() else "unavailable"
     if _email_available is False:
         return "unavailable"
     if _email_sync_pending:
@@ -520,8 +536,8 @@ def with_email_freshness_note(text: str, warning: str) -> str:
 def _disclose_mail_freshness(function):
     @wraps(function)
     async def wrapped(*args, **kwargs):
-        # Capture BEFORE generation: a newer sync arriving during a model call
-        # must not silently remove the caveat for the older input snapshot.
+        # Digests are synchronous once readiness resolves. Inspect freshness
+        # after on-demand refresh so a successful retry removes the old caveat.
         import inspect
         bound = inspect.signature(function).bind_partial(*args, **kwargs)
         account = bound.arguments.get("account")
@@ -765,9 +781,27 @@ def _purge_raw_if_expired() -> None:
     """Drop the raw cache once it's more than a week old (see _RAW_TTL_SECONDS).
     Checked lazily on read rather than via a background task: same effect, no
     extra scheduler needed."""
-    global _raw_emails, _raw_emails_at, _raw_mail_snapshot
+    global _raw_emails, _raw_emails_at, _raw_mail_snapshot, _swift_raw, _native_raw_at
+    changed = False
     with _raw_snapshot_lock:
-        if _raw_emails_at and (time.time() - _raw_emails_at) > _RAW_TTL_SECONDS:
+        now = time.time()
+        for item in _external_accounts.values():
+            if item.get("raw") is not None and now - float(item.get("raw_at") or 0) > _RAW_TTL_SECONDS:
+                item["raw"] = None
+                item["raw_at"] = 0
+                changed = True
+        native_stamp = _native_raw_at or _raw_emails_at
+        if _swift_raw and native_stamp and now - native_stamp > _RAW_TTL_SECONDS:
+            _swift_raw = ""
+            _native_raw_at = 0.0
+            _raw_mail_snapshot = None
+            cache_store.save("email_mail_raw", "")
+            changed = True
+        if changed:
+            _recompose_all()
+            _save_email_sources()
+            cache_store.save("email_raw", _raw_emails)
+        if _raw_emails_at and now - _raw_emails_at > _RAW_TTL_SECONDS:
             _raw_emails = ""
             _raw_emails_at = 0.0
             _raw_mail_snapshot = None

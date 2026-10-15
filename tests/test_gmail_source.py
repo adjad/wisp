@@ -381,6 +381,32 @@ class GmailSource(unittest.TestCase):
             asyncio.run(module["main"]())
         self.assertIn(SCHOOL, output.getvalue())
 
+    def test_first_refresh_failure_does_not_blame_mail_permissions(self):
+        E._email_available = False
+        async def fail(*args):
+            raise G.GmailError("Google is offline")
+        with patch.object(G, "_sync_headers", fail):
+            output = asyncio.run(E.summarize_emails())
+        self.assertIn("Google", output)
+        self.assertIn("offline", output)
+        self.assertNotIn("grant Wisp Automation", output)
+        self.assertNotIn("No emails found", output)
+
+    def test_unrelated_new_native_read_cannot_erase_provider_fallback(self):
+        self.publish(headers=header(subject="Personal fallback"))
+        E.external_email_error(ME, "headers", "offline")
+        E.cache_emails(header(SCHOOL, "Native school message"))
+        E.set_email_availability(True, read_source="mail_app")
+        self.assertIn("Personal fallback", E._headers)
+        self.assertIn("Native school message", E._headers)
+
+    def test_expired_provider_body_is_removed_from_persisted_source_cache(self):
+        self.publish(headers=header(), raw=G.raw_record(msg("private"), ME))
+        E._external_accounts[ME]["raw_at"] = time.time() - 8 * 86400
+        E._purge_raw_if_expired()
+        self.assertIsNone(E._external_accounts[ME]["raw"])
+        self.assertNotIn("Synthetic body", cache_store.load("email_sources"))
+
     _original_accounts = staticmethod(G.connected_accounts)
 
 
