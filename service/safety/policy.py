@@ -16,6 +16,8 @@ from pathlib import Path
 
 import yaml
 
+from service.publication_authority import Authority, Witness, revocation
+
 POLICY_YAML = Path(__file__).parent.parent / "config" / "policy.yaml"
 
 
@@ -311,14 +313,53 @@ def _derived_path_operands(tool: str | None, args: dict):
                     yield "destination child", str(target / group / item.name) if group else str(target / item.name)
 
 
-def _load_yaml() -> dict:
+def _known_config(data) -> bool:
+    if type(data) is not dict:
+        return False
+    flags = {"read_only", "full_access", "disable_safety_floor"}
+    rules = {"shell_deny", "shell_mutate", "shell_allow", "path_deny", "destructive_shell"}
+    for key, value in data.items():
+        if key in flags:
+            if type(value) is not bool:
+                return False
+        elif key in rules:
+            if type(value) is not list or any(type(item) is not str for item in value):
+                return False
+            try:
+                for item in value:
+                    re.compile(item, re.IGNORECASE)
+            except re.error:
+                return False
+        else:
+            return False
+    return True
+
+
+def _load_snapshot() -> tuple[dict, bool]:
     if POLICY_YAML.exists():
         with POLICY_YAML.open() as f:
-            return yaml.safe_load(f) or {}
-    return {}
+            raw = yaml.safe_load(f)
+            return raw or {}, raw is None or _known_config(raw)
+    return {}, True
 
 
-_CFG = _load_yaml()
+def _load_yaml() -> dict:
+    """Read a snapshot only; this does not replace live policy or grant proof."""
+    return _load_snapshot()[0]
+
+
+_CFG, _proof_known = _load_snapshot()
+_publication = Authority("action-policy")
+
+
+def publication_witness() -> Witness | None:
+    """Issue the current memory epoch; never load policy or rearm authority.
+
+    Capture before full action checks and validate these SAME tokens afterwards.
+    Direct file/environment/global edits outside the setters are not attested.
+    """
+    token = _publication.token() if _proof_known else None
+    return Witness((token,)) if token is not None else None
 
 # View-only mode: the app may READ/inspect anything but never modify the machine.
 # Default ON — a local assistant shouldn't be able to change things unless you opt in.
@@ -331,7 +372,11 @@ def read_only() -> bool:
 
 def set_read_only(value: bool) -> None:
     global _READ_ONLY
-    _READ_ONLY = bool(value)
+    with revocation():
+        _publication.withdraw()
+        _READ_ONLY = bool(value)
+        if _proof_known:
+            _publication.publish()
 
 
 # Full-access mode: every action auto-runs with NO confirmation. Overrides
@@ -340,6 +385,8 @@ def set_read_only(value: bool) -> None:
 # model being prompt-injected into something irreversible, not against you.
 _FULL_ACCESS = bool(_CFG.get("full_access", False))
 _KEEP_FLOOR = not bool(_CFG.get("disable_safety_floor", False))
+if _proof_known:
+    _publication.publish()
 
 
 def full_access() -> bool:
@@ -348,7 +395,11 @@ def full_access() -> bool:
 
 def set_full_access(value: bool) -> None:
     global _FULL_ACCESS
-    _FULL_ACCESS = bool(value)
+    with revocation():
+        _publication.withdraw()
+        _FULL_ACCESS = bool(value)
+        if _proof_known:
+            _publication.publish()
 
 
 def _rules(key: str, default: list[str]) -> list[str]:
