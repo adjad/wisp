@@ -17,6 +17,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from service.publication_authority import Authority, LIVE_CLOCK, Witness, mutating
 from service.config import role_to_model, user_facing_summary_kwargs
 from service.tools.timeranges import PERIOD_ARG, BadPeriod, resolve_span
 from service.inference.omlx_client import OMLXClient
@@ -281,23 +282,33 @@ from types import MappingProxyType as _SnapshotMapping
 _snapshot_lock = _snapshot_threading.RLock()
 _snapshot_generation = 0
 _snapshot_captured_at = 0.0
+_publication_authority = Authority("native-messages")
+_publication_expires_monotonic = 0.0
+_issued_snapshot = None
 
 
+@mutating
 def cache_messages(lines: str, available: bool, reason: str = "") -> None:
     with _snapshot_lock:
         global _lines, _available, _unavailable_reason, _sync_completed
-        global _snapshot_generation, _snapshot_captured_at
+        global _snapshot_generation, _snapshot_captured_at, _publication_expires_monotonic, _issued_snapshot
+        _publication_authority.withdraw()
+        _issued_snapshot = None
         _snapshot_generation += 1
         _snapshot_captured_at = time.time()
         _lines = lines or ""
         _available = available
         _unavailable_reason = reason
         _sync_completed = True
-        # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
-        # locked) posts empty lines with available=False — saving that would wipe
-        # a perfectly good restored cache on the first failed sync after launch.
-        if available and _lines:
-            cache_store.save("messages", _lines)
+        _publication_expires_monotonic = time.monotonic()+600
+        body = _lines
+    # Only a successful read is persisted; failed reads preserve the disk cache.
+    # Unready while persistence runs; no source lock is held across file I/O.
+    if available and body:
+        cache_store.save("messages", body)
+    with _snapshot_lock:
+        if available:
+            _publication_authority.publish()
 
 
 _STRUCTURED_PREFIX = "V3 | "
@@ -2254,6 +2265,7 @@ def behavior_messages_snapshot_with_receipt(*, expected_generation=None, expecte
     inventory callers keep the stricter complete-publication getter above.
     Receipt age is backend receipt age, not a native read-start guarantee.
     """
+    global _issued_snapshot
     def freeze(value):
         if isinstance(value, dict):
             return _SnapshotMapping({k: freeze(v) for k, v in value.items()})
@@ -2316,5 +2328,24 @@ def behavior_messages_snapshot_with_receipt(*, expected_generation=None, expecte
             ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         if expected_proof is not None and (not isinstance(expected_proof, str) or expected_proof != proof):
             return None
-        return freeze(dict(snapshot, records=eligible, generation=generation, captured_at=captured,
-                           record_scope=dict(scope, proof=proof)))
+        _issued_snapshot = freeze(dict(snapshot, records=eligible, generation=generation, captured_at=captured,
+                                       record_scope=dict(scope, proof=proof)))
+        return _issued_snapshot
+
+
+def prepare_publication_witness(snapshot) -> Witness | None:
+    """A genuine behavior getter capture, prepared outside the publication lease.
+
+    Read-only captures never replace the source authority head; a prepared
+    witness survives further getters. Prepare promptly: only the latest issued
+    capture is retained, avoiding a new personal-content history cache.
+    """
+    with _snapshot_lock:
+        if (snapshot is None or snapshot is not _issued_snapshot
+                or _available is not True or _sync_completed is not True
+                or snapshot.get("generation") != _snapshot_generation
+                or snapshot.get("captured_at") != _snapshot_captured_at):
+            return None
+        return Witness.combine(_publication_authority.token(clock=LIVE_CLOCK,
+            expires_wall=_snapshot_captured_at+600,
+            expires_monotonic=_publication_expires_monotonic))
