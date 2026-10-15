@@ -414,11 +414,16 @@ final class MailReader {
         set output to ""
         set oldDelims to AppleScript's text item delimiters
         set AppleScript's text item delimiters to linefeed
-        repeat with a in accounts
-            try
-                set output to output & ((email addresses of a) as string) & linefeed
-            end try
-        end repeat
+        try
+            repeat with a in accounts
+                if enabled of a then
+                    set output to output & ((email addresses of a) as string) & linefeed
+                end if
+            end repeat
+        on error messageText number errorNumber
+            set AppleScript's text item delimiters to oldDelims
+            error messageText number errorNumber
+        end try
         set AppleScript's text item delimiters to oldDelims
         return output
     end tell
@@ -818,19 +823,40 @@ final class MailReader {
         // scans that run before this can take long enough for a manual quit
         // to happen in between, and this is another `tell application "Mail"`.
         guard isMailRunning() else { return }
-        let (text, _) = run(identityScript, tag: "identity")
-        guard let text else { return }
-        let emails = text
-            .split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { $0.contains("@") }
-        guard !emails.isEmpty else { return }
-        let url = WispClient.baseURL.appendingPathComponent("assistant/sync/emails")
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try? JSONSerialization.data(withJSONObject: ["identity_emails": emails])
-        URLSession.shared.dataTask(with: req).resume()
+        // A server-issued capture generation binds freshness to when this read
+        // was requested. Delayed successes cannot revive an older account set.
+        var begin = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/today/workspace/email/identity/begin"))
+        begin.httpMethod = "POST"
+        begin.timeoutInterval = 8
+        URLSession.shared.dataTask(with: begin) { [weak self] data, response, _ in
+            guard let self,
+                  let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let capture = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let session = capture["session"] as? String,
+                  let generation = capture["generation"] as? Int else { return }
+            DispatchQueue.global(qos: .utility).async {
+                let text = self.isMailRunning() ? self.run(self.identityScript, tag: "identity").0 : nil
+                let rows = (text ?? "").split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                let emails = rows.filter { $0.contains("@") }
+                let complete = text != nil && rows.count == emails.count
+                let receipt: [String: Any] = ["session": session, "generation": generation,
+                    "addresses": complete ? emails : [], "available": complete, "complete": complete]
+                var fresh = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/today/workspace/email/identity"))
+                fresh.httpMethod = "POST"
+                fresh.timeoutInterval = 8
+                fresh.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                fresh.httpBody = try? JSONSerialization.data(withJSONObject: receipt)
+                URLSession.shared.dataTask(with: fresh).resume()
+                // Preserve the existing attribution publication. This legacy
+                // cache is never used to authorize recurring self-email.
+                guard !emails.isEmpty else { return }
+                var legacy = URLRequest(url: WispClient.baseURL.appendingPathComponent("assistant/sync/emails"))
+                legacy.httpMethod = "POST"
+                legacy.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                legacy.httpBody = try? JSONSerialization.data(withJSONObject: ["identity_emails": emails])
+                URLSession.shared.dataTask(with: legacy).resume()
+            }
+        }.resume()
     }
 
     func syncRaw() {

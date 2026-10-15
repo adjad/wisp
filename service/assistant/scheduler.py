@@ -169,6 +169,11 @@ async def run() -> None:
             schedule_tick()                  # background, single-flight: never awaited here
         except Exception:  # noqa: BLE001 — must never break the scheduler loop
             pass
+        try:
+            from service.assistant.day_plan_email import schedule_tick
+            schedule_tick()
+        except Exception:  # optional daily self-plan delivery never delays the loop
+            pass
         await asyncio.sleep(TICK_S)
 
 

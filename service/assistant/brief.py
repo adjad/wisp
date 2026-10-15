@@ -2003,9 +2003,23 @@ def _assemble_full(body: str, messages_section: str) -> str:
 async def _generate_brief(part_of_day: str) -> dict[str, str]:
     """Render the user-facing brief from grounded, already-synced sections."""
     now = time.time()
+    extra = ""
+    try:
+        from service.attention.detectors import local_timezone
+        from service.assistant.daily_workspace_api import current_workspace
+        from service.assistant.daily_workspace import render
+        zone = local_timezone()
+        if zone:
+            from zoneinfo import ZoneInfo
+            day = datetime.fromtimestamp(now, ZoneInfo(zone)).date().isoformat()
+            extra = "\n\n" + render(current_workspace(day, zone, now=now), compact=True)
+    except Exception:
+        # Optional richer planning never suppresses the established grounded
+        # brief, repeats native sync waits or invokes a language model.
+        pass
     return {"TODAY": _today_card(now),
             "MESSAGES": _messages_card(now),
-            "FULL": _render_brief(now, _messages_section(now))}
+            "FULL": _render_brief(now, _messages_section(now)) + extra}
 
 
 # One wait for the app's Calendar/Reminders/Mail/Messages reads, in one place.
