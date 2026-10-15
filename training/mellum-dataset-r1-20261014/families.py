@@ -122,8 +122,8 @@ FAMILIES: list[Family] = [
         "what did I do last week?", "what was on my calendar the past week", "remind me what I had on last week",
         "what events did I have recently?"],
         expect=[{"tool": "get_past_events"}], answer={"contains_any": ["{garage}", "{offsite}"]},
-        gold=lambda m, t: [T("Past events, so get_past_events for last week.",
-                             ("get_past_events", {"period": "last week"})),
+        gold=lambda m, t: [T("Past events, so get_past_events over the last 7 days.",
+                             ("get_past_events", {"days": 7})),
                            A(f"Last week you had your car service at {m['garage']} and the team offsite in "
                              f"{m['offsite']}.")]),
     Family("cal_add_weekday", "calendar", [

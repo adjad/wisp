@@ -197,7 +197,13 @@ def bench_client_class():
             super().__init__(*a, **kw)
             self.steps = []
 
+        # oMLX samples deterministically without a seed, so repeated trials of
+        # one prompt come back identical; set a seed per trial for variety.
+        seed: int | None = None
+
         def _thinking_kw(self, kw: dict) -> dict:
+            if self.seed is not None and "seed" not in kw:
+                kw = {**kw, "seed": self.seed}
             if self.thinking != "off":
                 return kw
             ctk = dict(kw.get("chat_template_kwargs") or {})

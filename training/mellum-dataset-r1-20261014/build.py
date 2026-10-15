@@ -166,6 +166,18 @@ def _case(item):
     return parse_case(raw, item["category"])
 
 
+def _tool_errors(traj) -> list[str]:
+    """Tool results that are loop errors (bad arguments, unknown tool). A row
+    built on one would train a recovery from a mistake the target never made."""
+    seen = []
+    for st in traj["steps"]:
+        for m in (st.get("request") or {}).get("messages") or ():
+            c = m.get("content") or ""
+            if m.get("role") == "tool" and c.startswith("(error") and c not in seen:
+                seen.append(c)
+    return seen
+
+
 def _rows(item, traj, source) -> list[dict]:
     """One row per model step whose target is non-empty."""
     out = []
@@ -173,7 +185,8 @@ def _rows(item, traj, source) -> list[dict]:
         req = st.get("request")
         if not req:
             continue
-        target = {"role": "assistant", "content": st.get("content") or "",
+        content = st.get("content") or ""
+        target = {"role": "assistant", "content": content if content.strip() else "",
                   "reasoning_content": st.get("reasoning") or "",
                   "tool_calls": [{"type": "function", "function": {"name": c["name"],
                                                                     "arguments": c.get("raw") or json.dumps(c["args"])}}
@@ -223,6 +236,8 @@ async def _run_gold(runner, items, out_rows, log) -> Counter:
         traj = await runner.run_case(client, MODEL, case, world, timeout=60)
         v = score(case, traj, registry_names=names, today=world.today)
         why = client.failure or ("" if v.passed else ",".join(v.labels))
+        if not why and _tool_errors(traj):
+            why = "tool_error: " + _tool_errors(traj)[0][:80]
         if traj.get("escapes"):
             why = why or f"escape {traj['escapes']}"
         if why:
@@ -273,13 +288,18 @@ def cmd_distill(args) -> None:
                 names = runner.install_fakes(world)
                 case = _case(item)
                 best, tries = None, []
-                for _ in range(args.k):
+                for j in range(args.k):
+                    client.seed = int(hashlib.sha1(f"{item['id']}:{j}".encode()).hexdigest()[:8], 16)
                     traj = await runner.run_case(client, MODEL, case, world, timeout=args.timeout)
                     v = score(case, traj, registry_names=names, today=world.today)
                     think = [len(s.get("reasoning") or "") for s in traj["steps"]]
-                    ok = (v.passed and not traj.get("escapes") and not v.labels
+                    thought = all((s.get("reasoning") or "").strip() for s in traj["steps"]
+                                  if (s.get("request") or {}).get("enable_thinking"))
+                    ok = (v.passed and not traj.get("escapes") and not v.labels and thought
+                          and not _tool_errors(traj)
                           and max(think or [0]) <= THINK_STEP_MAX and sum(think) <= THINK_TOTAL_MAX)
-                    tries.append({"passed": v.passed, "labels": v.labels, "think": sum(think),
+                    tries.append({"passed": v.passed, "labels": v.labels, "think": sum(think), "ok": ok,
+                                  "tool_error": bool(_tool_errors(traj)), "thought": thought,
                                   "seconds": v.seconds})
                     if ok and (best is None or sum(think) < best[1]):
                         best = (traj, sum(think))
@@ -395,6 +415,9 @@ def cmd_validate(args) -> None:
             bad("orphan_row", r["id"])
         elif item["overlap"] >= OVERLAP_MAX:
             bad("gate_overlap", r["id"], item["prompt"])
+        errs = [m for m in r["messages"] if m["role"] == "tool" and (m.get("content") or "").startswith("(error")]
+        if errs:
+            bad("tool_error_in_context", r["id"], errs[0]["content"])
         if r["messages"][-1]["role"] not in ("user", "tool"):
             bad("context_not_ending_in_user_or_tool", r["id"], r["messages"][-1]["role"])
     # Template consistency: for thinking steps, rendering context+target as one
