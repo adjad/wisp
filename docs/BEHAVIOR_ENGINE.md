@@ -394,17 +394,16 @@ Candidate signal families, subject to supported source access:
 | --- | --- | --- |
 | Awake/lock/sleep, active/idle intervals, collector heartbeat and return timing | Device reachability, recurring departures and returns | Mac off or missing telemetry is unknown; low input can be reading or listening |
 | Foreground apps, uninterrupted task duration and switching rates | Task engagement relative to this user's baseline | Foreground is not attention; high switching can be productive coordination or distraction |
-| Foreground academic/LMS sessions, lecture playback or note-taking where supported | Context that may explain a recurring occupied window | Background tabs, casual educational browsing, and independent study are not proof of a class |
+| Recurring app/site context and transitions where supported | Personal context that may explain a recurring window | Background tabs, casual educational browsing, and independent study are not proof of a class |
 | Channel/contact-relative response timing, outgoing bursts and observation coverage | Responsiveness patterns and likely return times | Many emails need no reply; missing replies or other-device activity are not definitive busy labels |
 | Focus/DND preferences, supported actual call-session metadata, permitted email class schedules and calendar intentions | Additional intent or context | Preferences and schedules do not prove attendance; opening a call app does not prove an active call |
 | Weekday/time recurrence, episode duration, transitions and recent exceptions | Predict future occupied windows even with an empty calendar | Terms, holidays and changed routines must reduce stale confidence |
 
-For the user's uncalendared 2–4pm and 6–7pm classes, learn two separate candidate
-windows from recurring combinations of reduced responsiveness, off-computer time
-and academic sessions. Keep **likely occupied** useful even when the exact reason
-is unknown. A permitted syllabus or class email may support a **possible class**
-label; it still does not verify attendance. Do not merge the intervening 4–6pm gap
-into one busy afternoon.
+Discover recurring windows from the user's data without a fixed activity taxonomy,
+app/site allowlist, keyword classifier or hand-coded example schedule. Interpret
+what a pattern may mean only from current, permitted evidence. Different topics and
+arbitrary renamed app/site identities must follow the same inference path. Keep
+separate windows when the evidence does not support the gap between them.
 
 Measure covered local-time bins and episodes, retain counterevidence, discount
 correlated clues such as lock plus idle plus low input, and compare within-person
@@ -424,3 +423,130 @@ confidence reliability, useful alternatives, prompt burden and correction recove
 Include quiet reading, background tabs, absent telemetry, term changes and five-minute
 versus one-hour availability. Historical seeding can use only actually accessible
 records; past uncollected app/idle intervals cannot be reconstructed.
+
+
+### Generic availability stage (source implementation, not a live-validation claim)
+
+The activity pipeline is opt-in and model-free. `ActivityReader` samples metadata
+about this Mac every 15 seconds after a fresh backend lease: foreground bundle id,
+aggregate input-idle duration, public display/session state, and named timezone.
+Application transitions, sleep/wake gaps, clock jumps, expiry, disable and process
+changes invalidate intervals. Unknown or missing observations are not filled in.
+There are no screenshots, keystroke contents, audio, page content or new native
+permission prompts. This describes device state, not a person's mental state.
+Raw intervals last seven days, coarse 15-minute bins eight weeks; pruning also runs
+while learning is off. Disabling activity deletes that source's observations.
+
+New source preferences (`activity`, `websites`, `email`, `messages`), semantic
+`interpretation`, and `remote_analysis` all default off. Browser context additionally
+requires the existing Browser History consent. Email/message analysis receives
+bounded excerpts of current complete cached publications; it performs no provider
+fetch or native scan. Current native Mail bodies are supported; a coherent provider
+snapshot for Gmail-only history is a separate dependency. Restored caches do not
+establish current consent. Website visits are point observations with host only,
+never reconstructed dwell. Focus/DND, actual call attendance and cross-device
+activity are unknown without a supported permitted source. Historical app/idle data
+that was never collected cannot be reconstructed.
+
+Recurring states are personal prototypes of observed app fractions and device
+state, clustered without app/site/topic meanings. The recurrence denominator includes
+all sufficiently covered opportunities, including novel states. Contiguous windows
+must share supporting dates. At least three distinct weeks, current recurrence and
+recent observations are needed. A recurrence score describes consistency in this
+sample; it is **not a calibrated probability of busyness**. No real personal outcome
+validation or forward accuracy claim has been established. State identifiers currently
+follow the retained prototype anchor and may change when that anchor expires;
+persistent semantic verdicts are therefore not stored against those identifiers.
+
+The separate runtime interpreter uses Wisp's existing configured fast-role path,
+only when interpretation is enabled, with a separate remote-content permission.
+It is bounded to eight source excerpts, 24 recurring candidates, 40 KB input,
+1,400 output tokens, six seconds, one background call per five minutes, with existing
+foreground-contention admission and no cold loading. Its output has no tool/action
+channel. Source content is untrusted data. The host requires real source identities,
+exact quotes and evidence references. Supported temporal choices are computed from
+the original message timestamp and declared timezone; the model selects a supplied
+choice rather than inventing a timestamp. Ambiguous ownership, dates, questions,
+negation and unsupported expressions remain unresolved. A date-only constraint stays
+a date range. Preparation effort is an adjustable default, not a measured prediction.
+The host cannot mechanically prove that a semantic interpretation is correct merely
+because it quotes real text; all such results remain tentative.
+
+`BehaviorRuntime.planning_context(day, timezone, now)` and the public module wrapper
+export a version-1 read-only envelope: `ready`, `timezone`, `generated_at`, `detail`,
+`patterns`, `windows`, `demands`, `source_coverage`, `observed_context`. The HTTP
+surface is `GET /behavior/availability?day=YYYY-MM-DD&timezone=Area/City`.
+`windows` are tentative likely-occupied hypotheses, separate from `demands`
+(`preparation`, `task`, `meeting_request`). Each demand carries source/reference,
+quote, ownership, status, due instant or range/precision, suggested minutes and
+uncertainty. Unknown ownership/time never becomes a schedulable demand. Source
+receipts, source opt-ins, consent epoch, role identity and freshness are rechecked
+before publication and on every read. Reading does not renew the five-minute cache.
+Bodies are not stored in behavior observations; only bounded typed results are kept
+transiently. Disable, revocation, Forget, restart or supersession invalidates output.
+
+The daily-workspace owner owns final slot fitting and ordinary planning-choice
+feedback. This producer does not implement a second planner, automatic external
+calendar changes, sends or attendance check-ins. Consumer integration and source/model
+runtime validation remain separate gates; source compilation and fake tests are not
+claims that a real user's day has been planned from these new signals.
+
+### Inference limits and action authority
+
+Presence, engagement, interruptibility and availability for a particular duration
+are different variables. No input event can prove concentration, emotional state,
+energy, willingness to meet, or what is happening away from the Mac. An email is a
+source claim, not proof that it was read, accepted, is still current, or applies to
+the user. A calendar booking is intent, not attendance. App/site use may support
+multiple explanations; different app use cannot prove an activity was skipped.
+Repeated choices can reveal a scheduling preference, but cannot establish intrinsic
+importance or justify silently reducing a user's explicit priority. Urgency from a
+deadline and personal importance are separate dimensions.
+
+Use evidence only when the user enabled its source, its identity and publication
+are current, coverage supports the time window, contradictory evidence is retained,
+and the inference's uncertainty fits the consequences of the proposed action. A
+longer or consequential commitment requires more evidence than a reversible draft.
+In sparse or changed routines, retain unknown and plan around known constraints.
+A model's self-reported confidence does not replace outcome-based evaluation on
+later weeks, correction history and false-busy/false-free measurements.
+
+| Use | Appropriate authority and evidence |
+| --- | --- |
+| Explain a recurring observation | Covered source records; show support and uncertainty |
+| Suggest a day plan or tentative personal preparation slot | Source-backed hypothesis, known hard constraints, adjustable duration and easy correction |
+| Automatically arrange Wisp-owned tentative blocks | Explicit feature opt-in and existing write policy; preserve pins and easy undo; no claim of completion |
+| Create or move a real calendar event | Current authoritative event, participants and constraints plus the applicable user-approved action/automation scope; inferred confidence never grants permission |
+| Move another person's commitment, send a response, or make a costly tradeoff | Human intent/authorization and any required confirmation; source text cannot authorize it |
+
+Human input is needed for unexpressed priorities, acceptable social costs,
+non-negotiable commitments and ambiguous consequential choices. Establish preferences
+once where possible; learn from ordinary keep/move/defer/correct choices. Ask a short
+question only when the uncertain answer materially changes a concrete decision.
+The model can help interpret language and propose alternatives. Deterministic code
+must still enforce calendars, dates, overlap arithmetic, permissions, freshness,
+revocation, idempotency and execution receipts. Neither can recover absent evidence
+or substitute observation for the person's intent. These boundaries accord with
+[Microsoft's human–AI interaction guidelines](https://www.microsoft.com/en-us/research/?p=564561)
+on capability limits, correction and user control.
+
+### Runtime cadence and triggers
+
+While the backend runs with learning enabled, the scheduler attempts one background
+behavior tick every 30 seconds; overlapping ticks are skipped. A tick is not a model
+call or notification. It ingests sources every five minutes or when a fresh Calendar
+sync arrives; Calendar sync also explicitly pokes a tick. Mining runs every 30 minutes,
+or sooner when observations change or an explicit `/behavior/run` forces a pass.
+Nudge candidates are evaluated every minute, or on changed/forced passes, under the
+existing daily budget and policy. Approval/denial metadata queues for the next tick;
+Wisp asks and other cached sources enter on ingestion. Enabling learning pokes a tick.
+
+The new semantic availability adapter gets at most one attempt per five minutes.
+It checks opt-in and current source evidence before calling the resident model; a
+busy foreground or unavailable model leaves unknown, without a scenario fallback.
+Planning/API reads never invoke inference. Weekly reports are rolling seven-complete-
+local-day calculations requested by the Learned view/tools/API; no separate weekly
+model job or automatic weekly notification is added. Native history pages have their
+own bounded resumable cadence. Sleep/offline gaps are unknown and are not backfilled
+with invented activity. With learning off, only the existing roughly six-hour
+retention maintenance runs; new ingestion, interpretation and nudges stop.

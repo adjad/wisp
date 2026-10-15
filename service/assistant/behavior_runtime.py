@@ -220,6 +220,7 @@ class BehaviorRuntime:
                  contact_name_fn: Callable[[str], str] | None = None,
                  calendar_sync_fn: Callable[[], dict] | None = None,
                  session_db_fn: Callable[[], Any] | None = None,
+                 behavior_sources_fn=None, behavior_interpreter=None, role_key_fn=None,
                  clock: Callable[[], float] = time.time) -> None:
         self.home = Path(home) if home is not None else _home()
         self._local_factory = local_factory or _default_local_factory
@@ -228,6 +229,12 @@ class BehaviorRuntime:
         self._calendar_sync_fn = calendar_sync_fn or _default_calendar_sync
         self._session_db_fn = session_db_fn or _default_session_db
         self.clock = clock
+        self._sources_fn = behavior_sources_fn
+        self._interpreter = behavior_interpreter
+        self._role_key_fn = role_key_fn
+        self._availability_cache = None
+        self._availability_attempt = 0.0
+        self._availability_cancel = threading.local()
         self._local_engine = None
         self._stamps: dict[str, dict[str, Any]] = {}
         self._work_lock = threading.Lock()
@@ -290,6 +297,7 @@ class BehaviorRuntime:
         is deleted."""
         with self._gate:
             self._stopped = True
+            self._availability_cache = None
             self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
         with self._work_lock:
             pass
@@ -322,12 +330,112 @@ class BehaviorRuntime:
     def call(self, method: str, *args, **kwargs):
         """Call an engine method. KeyError/ValueError are semantic answers
         (404/400) and propagate."""
-        if method.startswith("history_"):
+        if method == "configure_signals":
+            with self._in_flight(), self._gate:
+                if not self.live():
+                    raise RuntimeStopped("behavior learning stopped")
+                self._availability_cache = None
+                self._availability_attempt = 0.0
+                return self.local_engine().configure_signals(*args, **kwargs)
+        if method.startswith("history_") or method in {"observe_activity", "activity_lease"}:
             with self._in_flight(), self._work_lock:
                 if not self.live():
                     raise RuntimeStopped("behavior learning stopped")
+                if method == "configure_signals":
+                    self._availability_cache = None
+                    self._availability_attempt = 0.0
                 return getattr(self.local_engine(), method)(*args, **kwargs)
         return getattr(self.local_engine(), method)(*args, **kwargs)
+
+    def _analysis_role(self):
+        if self._role_key_fn is not None:
+            return self._role_key_fn()
+        from service.config.endpoints import role_target
+        from service.behavior_switch import remote_active
+        target = role_target("fast")
+        return (target.identity, remote_active())
+
+    def _refresh_availability(self, now):
+        """Worker-only bounded interpretation. Never called by a planning GET."""
+        self._availability_attempt = now
+        cancellation = getattr(self._availability_cancel, "event", None) or threading.Event()
+        engine = self.local_engine()
+        if not hasattr(engine, "signal_settings"):
+            return
+        settings = engine.signal_settings()
+        if not settings["settings"]["interpretation"] or not self.live():
+            self._availability_cache = None
+            return
+        try:
+            from service.assistant.behavior_sources import capture
+            from service.assistant.behavior_interpreter import Interpreter
+            from zoneinfo import ZoneInfo
+            zone = engine.tz
+            role = self._analysis_role()
+            batch = (self._sources_fn or capture)(settings["settings"])
+            day = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
+            patterns = [p for offset in range(7) for p in engine.availability_patterns(
+                (day+timedelta(days=offset)).isoformat(), zone, batch.visits, now)]
+            if not batch.current() or not (patterns or batch.records):
+                self._availability_cache = None
+                return
+            def admit():
+                with self._gate:
+                    return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
+                            and batch.current() and self._analysis_role() == role)
+            result = (self._interpreter or Interpreter()).interpret(
+                batch.records, patterns, now=now, timezone=zone,
+                default_minutes=settings["settings"]["default_block_minutes"],
+                remote_allowed=settings["settings"]["remote_analysis"], admit=admit)
+            # Drop bodies before keeping a receipt. No source text persisted.
+            batch.records = []
+            batch.visits = []
+            with self._gate:
+                if (not cancellation.is_set() and self.live() and engine.signal_settings() == settings and batch.current()
+                        and self._analysis_role() == role and result.get("state") == "tentative"):
+                    self._availability_cache = dict(epoch=settings["epoch"], batch=batch, result=result,
+                                                    at=now, role=role, timezone=zone, cancellation=cancellation)
+                else:
+                    self._availability_cache = None
+        except Exception:
+            self._availability_cache = None
+            self.errors["availability"] = "Interpretation unavailable; no availability assumed."
+
+    def planning_context(self, day, timezone, now=None):
+        """Versioned read-only planner contract. Reads never renew freshness."""
+        from service.behavior.availability import apply_interpretations
+        from zoneinfo import ZoneInfo
+        # Validate even when no evidence is currently available.
+        datetime.fromisoformat(day).date()
+        ZoneInfo(timezone)
+        now = self.clock() if now is None else now
+        empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
+                     windows=[], demands=[], patterns=[],
+                     detail="No current inferred availability; an empty calendar does not prove free time.")
+        with self._in_flight(), self._gate:
+            if not self.live():
+                return empty
+            engine = self.local_engine()
+            settings = engine.signal_settings()
+            cache = self._availability_cache
+            patterns = engine.availability_patterns(day, timezone, now=now)
+            empty["patterns"] = patterns
+            if (cache is None or cache["cancellation"].is_set() or not settings["settings"]["interpretation"]
+                    or cache["epoch"] != settings["epoch"] or cache["timezone"] != timezone
+                    or not 0 <= now-cache["at"] <= 300 or not cache["batch"].current()
+                    or self._analysis_role() != cache["role"]):
+                return empty
+            result = cache["result"]
+            from copy import deepcopy
+            demands = deepcopy(result["demands"])
+            for demand in demands:
+                if demand.get("due_range") and demand["due_range"][1] <= now:
+                    demand["status"] = "unresolved"
+            return dict(empty, ready=True, windows=apply_interpretations(patterns, result["patterns"]),
+                        demands=demands, generated_at=cache["at"],
+                        detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
+                        source_coverage=cache["batch"].detail,
+                        observed_context=engine.availability_context(timezone, now=now))
 
     async def acall(self, method: str, *args, **kwargs):
         return await asyncio.to_thread(self.call, method, *args, **kwargs)
@@ -515,6 +623,8 @@ class BehaviorRuntime:
                 changed = self._ingest(store, now, stamps) or changed
                 stamps["ingest"] = now
                 self.last["ingest"] = now
+            if now - self._availability_attempt >= INGEST_EVERY_S:
+                self._refresh_availability(now)
             nudges: list = []
             try:
                 if force or changed or now - stamps["mine"] >= MINE_EVERY_S:
@@ -728,7 +838,19 @@ class BehaviorRuntime:
     async def _tick_locked(self, store, hub, now: float | None, force: bool) -> list[dict]:
         now = now if now is not None else self.clock()
         self.expire_events(store, now)
-        nudges, key = await asyncio.to_thread(self.work, store, now, force=force)
+        cancellation = threading.Event()
+        def run_work():
+            self._availability_cancel.event = cancellation
+            try:
+                return self.work(store, now, force=force)
+            finally:
+                del self._availability_cancel.event
+        try:
+            nudges, key = await asyncio.to_thread(run_work)
+        except asyncio.CancelledError:
+            cancellation.set()
+            self._availability_cache = None
+            raise
         published: list[dict] = []
         for nudge in sorted(nudges, key=lambda n: n.seq):
             if not self.live():
@@ -1042,6 +1164,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
             conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True, timeout=30)
             with conn:
                 for key, sql, cutoff in statements:
+                    if "kind=" in sql and "kind" not in {r[1] for r in conn.execute("PRAGMA table_info(observations)")}:
+                        continue
                     out[key] += int(conn.execute(sql, (cutoff,)).rowcount or 0)
         except sqlite3.DatabaseError:
             pass          # unreadable or a different schema: leave it alone
@@ -1050,6 +1174,8 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                 conn.close()
 
     run(ENGINE_DB, [("observations", "DELETE FROM observations WHERE ts < ?", now - OBSERVATION_RETENTION_S),
+                    ("observations", "DELETE FROM observations WHERE kind='device_activity' AND ts < ?", now-7*86400),
+                    ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
                     ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
     run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
     return out
@@ -1134,3 +1260,9 @@ def predictions_for(runtime: BehaviorRuntime, day: str, now: float | None = None
     start, end = day_bounds(day, now)
     preds = runtime.call("predict", now, horizon_s=max(60.0, end - now))
     return sorted((p for p in preds if start <= float(p.ts) < end), key=lambda p: p.ts)
+
+
+def planning_context(day: str, timezone: str, now: float | None = None):
+    """Public planner adapter; disabled/forgetting is unavailable, never free."""
+    runtime = get_runtime()
+    return None if runtime is None else runtime.planning_context(day, timezone, now)

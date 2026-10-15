@@ -275,17 +275,29 @@ def _c() -> OMLXClient:
     return _client
 
 
+import threading as _snapshot_threading
+from types import MappingProxyType as _SnapshotMapping
+
+_snapshot_lock = _snapshot_threading.RLock()
+_snapshot_generation = 0
+_snapshot_captured_at = 0.0
+
+
 def cache_messages(lines: str, available: bool, reason: str = "") -> None:
-    global _lines, _available, _unavailable_reason, _sync_completed
-    _lines = lines or ""
-    _available = available
-    _unavailable_reason = reason
-    _sync_completed = True
-    # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
-    # locked) posts empty lines with available=False — saving that would wipe
-    # a perfectly good restored cache on the first failed sync after launch.
-    if available and _lines:
-        cache_store.save("messages", _lines)
+    with _snapshot_lock:
+        global _lines, _available, _unavailable_reason, _sync_completed
+        global _snapshot_generation, _snapshot_captured_at
+        _snapshot_generation += 1
+        _snapshot_captured_at = time.time()
+        _lines = lines or ""
+        _available = available
+        _unavailable_reason = reason
+        _sync_completed = True
+        # Only persist a SUCCESSFUL read. A failed sync (no Full Disk Access, DB
+        # locked) posts empty lines with available=False — saving that would wipe
+        # a perfectly good restored cache on the first failed sync after launch.
+        if available and _lines:
+            cache_store.save("messages", _lines)
 
 
 _STRUCTURED_PREFIX = "V3 | "
@@ -2209,3 +2221,27 @@ async def list_contacts(query: str = "") -> str:
         if not names:
             return f"(No saved contact name contains {query!r}.)"
     return f"{len(names)} contact(s):\n" + "\n".join(f"- {n}" for n in names)
+
+
+def structured_messages_snapshot_with_receipt(*, expected_generation=None):
+    """Immutable current-publication snapshot, never refreshed by reading.
+
+    Five-minute native refreshes have a ten-minute freshness allowance. Empty,
+    failed, restored, partial or superseded publications provide no evidence.
+    """
+    def freeze(value):
+        if isinstance(value, dict):
+            return _SnapshotMapping({k: freeze(v) for k, v in value.items()})
+        if isinstance(value, list):
+            return tuple(freeze(v) for v in value)
+        return value
+    with _snapshot_lock:
+        generation, captured = _snapshot_generation, _snapshot_captured_at
+        if (_available is not True or not _sync_completed
+                or generation == 0 or not 0 <= time.time()-captured <= 600
+                or (expected_generation is not None and expected_generation != generation)):
+            return None
+        snapshot = structured_messages_snapshot()
+        if snapshot.get("state") != "ready" or snapshot.get("coverage", {}).get("status") != "complete":
+            return None
+        return freeze(dict(snapshot, generation=generation, captured_at=captured))

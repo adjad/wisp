@@ -31,7 +31,7 @@ def basis(o: Observation) -> str:
         return "recorded_completion"
     if o.kind in {"event_cancelled", "event_moved"}:
         return "inferred_schedule_change"
-    if o.kind in {"message_in", "message_out", "wisp_ask", "note"}:
+    if o.kind in {"message_in", "message_out", "wisp_ask", "note", "device_activity", "activity_bin"}:
         return "observed"
     return "unknown"
 

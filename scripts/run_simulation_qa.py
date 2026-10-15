@@ -379,6 +379,11 @@ ADDITIONAL_FULL_TESTS = {
     # TestClient/httpx MockTransport (no listener) and FakeHub; no model, Keychain,
     # Calendar, Messages or network.
     "tests/test_behavior_api.py",
+    # Generic availability: disposable histories/receipts, injected completions,
+    # and a pure interval Swift harness; no native collector, model or network.
+    "tests/test_behavior_availability.py",
+    "tests/test_behavior_activity_native.py",
+    "tests/test_behavior_interpreter.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
     "tests/test_behavior_miners.py",

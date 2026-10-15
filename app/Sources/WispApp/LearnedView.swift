@@ -133,6 +133,8 @@ final class LearnedModel: ObservableObject {
     @Published var lastMined: Double?
     @Published var weekly: [String: Any] = [:]
     @Published var history: [String: Any] = [:]
+    @Published var signals: [String: Any] = [:]
+    @Published var activitySummary: [String: Any] = [:]
     @Published var busy: Set<String> = []
     @Published var error = ""
     private let client = WispClient()
@@ -157,8 +159,12 @@ final class LearnedModel: ObservableObject {
         async let predicted = client.behaviorPredictions(day: "today")
         async let measured = client.behaviorGet("weekly")
         async let scanned = client.behaviorGet("history")
+        async let signalSettings = client.behaviorGet("signals")
+        let signalReply = await signalSettings
         let (s, l, p, w, h) = await (status, listed, predicted, measured, scanned)
         guard requested == revision else { return }
+        signals = signalReply?["settings"] as? [String: Any] ?? [:]
+        activitySummary = signalReply?["activity"] as? [String: Any] ?? [:]
         guard let l, let rows = l["patterns"] as? [[String: Any]] else {
             phase = .failed("Couldn't load what Wisp learned. Try Refresh.")
             return
@@ -176,6 +182,13 @@ final class LearnedModel: ObservableObject {
         weekly = w ?? [:]
         history = h?["sources"] as? [String: Any] ?? [:]
         phase = .ready
+    }
+
+    func setSignal(_ name: String, enabled: Bool) async {
+        if let reply = await client.setBehaviorSignal(name, enabled: enabled),
+           let settings = reply["settings"] as? [String: Any] {
+            signals = settings
+        } else { error = "Couldn't save the source preference. Try again." }
     }
 
     func historyControl(_ source: String, command: String) async {
@@ -281,6 +294,7 @@ struct LearnedView: View {
             LazyVStack(alignment: .leading, spacing: 18) {
                 weeklySection
                 historySection
+                signalSection
                 if model.patterns.isEmpty {
                     Text("Wisp can estimate routines from existing accessible history. Results appear as sources finish syncing; completion remains unknown unless recorded.")
                         .foregroundStyle(.secondary)
@@ -345,6 +359,37 @@ struct LearnedView: View {
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var signalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Learn from more context", systemImage: "sparkle.magnifyingglass").font(.headline)
+            Text("Choose sources for tentative availability and planning suggestions. These start off. Recurring activity does not prove attendance or free time.")
+                .font(.caption).foregroundStyle(.secondary)
+            signalToggle("activity", "App, idle and screen-state metadata")
+            signalToggle("websites", "Website visit context from enabled Browser History")
+            signalToggle("email", "Recent email passages for possible commitments")
+            signalToggle("messages", "Recent message passages for possible commitments")
+            signalToggle("interpretation", "Interpret selected context with Wisp's configured model")
+            signalToggle("remote_analysis", "Allow selected context to reach a configured remote model")
+            if model.signals["activity"] as? Bool == true,
+               let seconds = model.activitySummary["covered_seconds"] as? Double {
+                Text("Last seven days: \(Int(seconds / 60)) minutes of device observations collected.")
+                    .font(.caption)
+                if let awake = model.activitySummary["known_screen_awake_seconds"] as? Double {
+                    Text("\(Int(awake / 60)) minutes with the main display awake; this does not measure attention.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Text("Only selected sources enter interpretation. Source passages can contain sensitive information. Remote analysis requires its separate permission. Raw device intervals last seven days; coarse activity lasts eight weeks. No screenshots or keystrokes are collected. Focus/DND is unknown where no supported source exists. Website visits are points, not time spent. History cannot reconstruct past device activity.")
+                .font(.caption).foregroundStyle(.secondary)
+        }.padding(12)
+    }
+
+    private func signalToggle(_ key: String, _ title: String) -> some View {
+        Toggle(title, isOn: Binding(get: { model.signals[key] as? Bool ?? false },
+            set: { enabled in Task { await model.setSignal(key, enabled: enabled) } }))
+            .toggleStyle(.checkbox)
     }
 
     private var historySection: some View {

@@ -187,6 +187,44 @@ async def behavior_weekly() -> dict[str, Any]:
     return await _runtime().acall("weekly")
 
 
+@router.get("/signals")
+async def behavior_signals():
+    runtime = _runtime()
+    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary")}
+
+
+@router.put("/signals")
+async def behavior_signal_settings(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("configure_signals", _body(body))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/activity/lease")
+async def behavior_activity_lease(client: str):
+    try:
+        return await _runtime().acall("activity_lease", client)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/activity")
+async def behavior_activity(body: dict[str, Any]):
+    try:
+        return await _runtime().acall("observe_activity", body)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=409, detail="Activity source changed or interval invalid") from exc
+
+
+@router.get("/availability")
+async def behavior_availability(day: str, timezone: str):
+    try:
+        return await asyncio.to_thread(_runtime().planning_context, day, timezone)
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=422, detail="A local date and named timezone are required") from exc
+
+
 @router.get("/history")
 async def behavior_history() -> dict[str, Any]:
     return {"sources": await _runtime().acall("history_status")}
