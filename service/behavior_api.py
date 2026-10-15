@@ -190,7 +190,8 @@ async def behavior_weekly() -> dict[str, Any]:
 @router.get("/signals")
 async def behavior_signals():
     runtime = _runtime()
-    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary")}
+    return {**(await runtime.acall("signal_settings")), "activity": await runtime.acall("activity_summary"),
+            "seed": await asyncio.to_thread(runtime.seed_progress)}
 
 
 @router.put("/signals")

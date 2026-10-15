@@ -235,6 +235,8 @@ class BehaviorRuntime:
         self._interpreter = behavior_interpreter
         self._role_key_fn = role_key_fn
         self._availability_cache = None
+        self._seed_status = None
+        self._planning_store = None
         self._availability_attempt = 0.0
         self._availability_cancel = threading.local()
         self._local_engine = None
@@ -300,6 +302,7 @@ class BehaviorRuntime:
         with self._gate:
             self._stopped = True
             self._availability_cache = None
+            self._seed_status = None
             self._gate.wait_for(lambda: self._inflight == 0, timeout=STOP_WAIT_S)
         with self._work_lock:
             pass
@@ -337,6 +340,7 @@ class BehaviorRuntime:
                 if not self.live():
                     raise RuntimeStopped("behavior learning stopped")
                 self._availability_cache = None
+                self._seed_status = None
                 self._availability_attempt = 0.0
                 return self.local_engine().configure_signals(*args, **kwargs)
         if method.startswith("history_") or method in {"observe_activity", "activity_lease"}:
@@ -358,11 +362,74 @@ class BehaviorRuntime:
         return (target.identity, remote_active())
 
     @staticmethod
+    def _seed_epoch(settings, role):
+        return settings["epoch"] + ":" + hashlib.sha256(repr(role).encode()).hexdigest()
+
+    @staticmethod
     def _pattern_proof(pattern):
         try:
             return hashlib.sha256(json.dumps(pattern, sort_keys=True, allow_nan=False).encode()).hexdigest()
         except (TypeError, ValueError, UnicodeError, OverflowError):
             return None
+
+    def _source_batch(self, settings, now):
+        if self._sources_fn is not None:
+            return self._sources_fn(settings)
+        from service.assistant.behavior_sources import capture
+        from service.assistant.behavior_seed import Snapshot
+        from zoneinfo import ZoneInfo
+        engine = self.local_engine()
+        retained = []
+        store = self._planning_store
+        day = datetime.fromtimestamp(now, ZoneInfo(engine.tz)).date().isoformat()
+        def permission(source):
+            if source == "calendar":
+                value = self._calendar_sync_fn() or {}
+            elif store is not None:
+                value = store.today_snapshot(day, engine.tz)["sources"].get(source, {})
+            else:
+                return None
+            if (value.get("available") is not True or value.get("syncing") or not _finite(value.get("last_sync"))
+                    or not 0 <= self.clock()-value["last_sync"] <= 1200):
+                return None
+            diagnostics = value.get("diagnostics") or {}
+            if diagnostics.get("complete") is False or diagnostics.get("partial"):
+                return None
+            start = diagnostics.get("snapshot_started_at") if source == "calendar" else value.get("snapshot_started_at")
+            if (not _finite(start) or float(start) <= 0 or not 0 <= self.clock()-start <= 1200
+                    or (source == "calendar" and diagnostics.get("authorized") is not True)):
+                return None
+            # A receipt contains no calendar title/event diagnostic lists.
+            return json.dumps(dict(last_sync=value["last_sync"], snapshot_started_at=start,
+                                   coverage_start=diagnostics.get("coverage_start"),
+                                   coverage_end=diagnostics.get("coverage_end")), sort_keys=True, allow_nan=False)
+        for source, flag in (("calendar", "calendar_context"), ("reminders", "reminders_context")):
+            if not settings.get(flag):
+                retained.append(Snapshot(source))
+                continue
+            token = None
+            try:
+                token = permission(source)
+                expected = json.loads(token)["last_sync"] if token is not None and source == "calendar" else None
+                context = engine.semantic_history(source, now, expected_sync=expected, metadata=True) if token is not None else None
+                records = context["records"] if context is not None else []
+                digest = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
+                def current(s=source, token=token, digest=digest):
+                    if token is None or permission(s) != token:
+                        return False
+                    expected = json.loads(token)["last_sync"] if s == "calendar" else None
+                    rows = engine.semantic_history(s, now, expected_sync=expected, metadata=True)
+                    return rows is not None and hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest() == digest
+                valid = token is not None and context is not None and current()
+            except Exception:
+                records, context, valid = [], None, False
+                current = lambda: False
+            retained.append(Snapshot(source, tuple(records or []), enabled=True, available=valid,
+                                     current=current, publication_complete=bool(context and context["complete"]),
+                                     omitted=context["omitted"] if context else 0,
+                                     requested_range=(now-HISTORY_S, now+AHEAD_S if source == "calendar" else now), scope="retained_history",
+                                     published_at=json.loads(token)["snapshot_started_at"] if token is not None else None))
+        return capture(settings, retained=retained, now=now)
 
     def _refresh_availability(self, now):
         """Worker-only bounded interpretation. Never called by a planning GET."""
@@ -376,16 +443,16 @@ class BehaviorRuntime:
             self._availability_cache = None
             return
         try:
-            from service.assistant.behavior_sources import capture
             from service.assistant.behavior_interpreter import Interpreter
+            from service.assistant.behavior_seed import Seed
             from zoneinfo import ZoneInfo
             zone = engine.tz
             role = self._analysis_role()
-            batch = (self._sources_fn or capture)(settings["settings"])
+            batch = self._source_batch(settings["settings"], now)
             day = datetime.fromtimestamp(now, ZoneInfo(zone)).date()
             patterns = [p for offset in range(7) for p in engine.availability_patterns(
                 (day+timedelta(days=offset)).isoformat(), zone, batch.visits, now)]
-            if not batch.current() or not (patterns or batch.records):
+            if not batch.current():
                 self._availability_cache = None
                 return
             # Bind the complete input before interpretation. Stable IDs alone
@@ -398,13 +465,36 @@ class BehaviorRuntime:
                 with self._gate:
                     return (not cancellation.is_set() and self.live() and engine.signal_settings() == settings
                             and batch.current() and self._analysis_role() == role)
-            result = (self._interpreter or Interpreter()).interpret(
-                batch.records, patterns, now=now, timezone=zone,
-                default_minutes=settings["settings"]["default_block_minutes"],
-                remote_allowed=settings["settings"]["remote_analysis"], admit=admit)
+            interpreter = self._interpreter or Interpreter()
+            result = None
+            if batch.snapshots:
+                seed = Seed(engine.seed_index())
+                def analyze(context, *, admit):
+                    nonlocal result
+                    result = interpreter.interpret(context, patterns, now=now, timezone=zone,
+                        default_minutes=settings["settings"]["default_block_minutes"],
+                        remote_allowed=settings["settings"]["remote_analysis"], admit=admit, associations=True)
+                    if result.get("state") != "tentative":
+                        raise ValueError("Seed interpretation unavailable")
+                    work = [{k:d.get(k) for k in ("source_id", "quote", "kind", "ownership", "due_range", "importance_hypothesis")}
+                            for d in result.get("demands", [])]
+                    return dict(links=result.get("link_proposals", []), demands=work, processed_ids=result.get("record_ids", []))
+                progress = seed.run(batch.snapshots, epoch=self._seed_epoch(settings, role), now=now, timezone=zone,
+                                    analysis_enabled=True, analyze=analyze, admit=admit, publication=lambda: self._gate)
+                with self._gate:
+                    if admit():
+                        self._seed_status = dict(progress, epoch=settings["epoch"], role_digest=self._seed_epoch(settings, role), at=now)
+            if result is None and (patterns or (batch.records and not batch.snapshots)):
+                # Empty/finished seed: at most one guarded call to interpret
+                # current activity patterns, never a second source-history call.
+                result = interpreter.interpret([] if batch.snapshots else batch.records, patterns, now=now, timezone=zone,
+                    default_minutes=settings["settings"]["default_block_minutes"],
+                    remote_allowed=settings["settings"]["remote_analysis"], admit=admit)
+            result = result or dict(state="tentative", patterns=[], demands=[])
             # Drop bodies before keeping a receipt. No source text persisted.
             batch.records = []
             batch.visits = []
+            batch.snapshots = ()
             with self._gate:
                 if (not cancellation.is_set() and self.live() and engine.signal_settings() == settings and batch.current()
                         and self._analysis_role() == role and result.get("state") == "tentative"):
@@ -417,20 +507,32 @@ class BehaviorRuntime:
             self._availability_cache = None
             self.errors["availability"] = "Interpretation unavailable; no availability assumed."
 
+    def seed_progress(self):
+        with self._in_flight(), self._gate:
+            engine = self.local_engine()
+            if not hasattr(engine, "signal_settings"):
+                return dict(state="unavailable", sources={}, detail="Source interpretation is unavailable.")
+            settings = engine.signal_settings()
+            if not self.live() or not settings["settings"]["interpretation"]:
+                return dict(state="off", detail="Source interpretation is off.", sources={})
+            if (self._seed_status is None or self._seed_status["epoch"] != settings["epoch"]
+                    or self._seed_status["role_digest"] != self._seed_epoch(settings, self._analysis_role())):
+                return dict(state="not_started", sources={}, detail="Waiting for a permitted current publication.")
+            return {k:v for k,v in self._seed_status.items() if k not in {"epoch", "role_digest"}}
+
     def planning_context(self, day, timezone, now=None):
-        """Versioned read-only planner contract. Reads never renew freshness."""
+        """Read current evidence; neither analysis nor receipt freshness is renewed."""
         from service.behavior.availability import apply_interpretations
-        from service.assistant.behavior_sources import Batch, capture
-        from zoneinfo import ZoneInfo
-        # Validate even when no evidence is currently available.
+        from service.assistant.behavior_sources import Batch
         from datetime import date
+        from zoneinfo import ZoneInfo
         target = date.fromisoformat(day)
         if target.isoformat() != day:
             raise ValueError("A local date is required")
         ZoneInfo(timezone)
         now = self.clock() if now is None else now
         empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
-                     windows=[], demands=[], patterns=[],
+                     evidence_checked_at=now, windows=[], demands=[], patterns=[], associations=[], source_coverage={},
                      detail="No current inferred availability; an empty calendar does not prove free time.")
         with self._in_flight(), self._gate:
             if not self.live():
@@ -438,48 +540,79 @@ class BehaviorRuntime:
             engine = self.local_engine()
             settings = engine.signal_settings()
             cache = self._availability_cache
-            patterns = engine.availability_patterns(day, timezone, now=now)
             first = datetime.fromtimestamp(now, ZoneInfo(timezone)).date()
             in_horizon = first <= target <= first+timedelta(days=6)
-            if not in_horizon:
-                patterns = []
-            empty["patterns"] = patterns
-            if (not in_horizon or cache is None or "pattern_proofs" not in cache or cache["cancellation"].is_set() or not settings["settings"]["interpretation"]
-                    or cache["epoch"] != settings["epoch"] or cache["timezone"] != timezone
-                    or not 0 <= now-cache["at"] <= 300 or not cache["batch"].current()
-                    or self._analysis_role() != cache["role"]):
+            if in_horizon:
+                empty["patterns"] = engine.availability_patterns(day, timezone, now=now)
+            def cache_available():
+                return (in_horizon and cache is not None and self._availability_cache is cache
+                        and "pattern_proofs" in cache and not cache["cancellation"].is_set()
+                        and self.live() and engine.signal_settings() == settings
+                        and settings["settings"]["interpretation"] and cache["epoch"] == settings["epoch"]
+                        and cache["timezone"] == timezone and 0 <= now-cache["at"] <= 300
+                        and cache["batch"].current())
+            index = engine.seed_index(create=False) if settings["settings"]["interpretation"] else None
+            if index is None and not cache_available():
                 return empty
-            fresh = None
+            role = self._analysis_role()
+            def cache_current():
+                return cache_available() and self._analysis_role() == role == cache["role"]
+            cache_ok = cache_current()
+            # Durable work needs fresh source proof even after pattern analysis
+            # expires. Pattern-only reads capture nothing until cache admission.
+            if index is None and not cache_ok:
+                return empty
+            batch = None
+            def withdrawn():
+                return dict(empty, ready=False, windows=[], demands=[], associations=[])
             try:
-                fresh = (self._sources_fn or capture)(settings["settings"])
-                if (not isinstance(fresh, Batch) or not fresh.current()
-                        or len(fresh.receipts) < len(cache["batch"].receipts)
-                        or fresh.detail != cache["batch"].detail):
-                    return empty
-                patterns = engine.availability_patterns(day, timezone, fresh.visits, now)
-                proofs = cache.get("pattern_proofs", {})
+                batch = self._source_batch(settings["settings"], now)
+                def current():
+                    return (isinstance(batch, Batch) and self.live() and engine.signal_settings() == settings
+                            and self._analysis_role() == role and batch.current())
+                if not current():
+                    return withdrawn()
+                patterns = engine.availability_patterns(day, timezone, batch.visits, now) if in_horizon else []
+                empty["patterns"] = patterns
+                durable_demands, links = [], []
+                if index is not None and batch.snapshots:
+                    from service.assistant.behavior_seed import Seed
+                    seed = Seed(index)
+                    epoch = self._seed_epoch(settings, role)
+                    durable_demands = seed.demands(batch.snapshots, epoch=epoch, now=now,
+                        default_minutes=settings["settings"]["default_block_minutes"], admit=current)
+                    links = seed.materialize(batch.snapshots, epoch=epoch, admit=current)
+                if not current():
+                    return withdrawn()
+                empty.update(demands=durable_demands, associations=links, source_coverage=batch.detail,
+                    ready=bool(durable_demands or links),
+                    generated_at=min((v["analyzed_at"] for v in durable_demands+links if _finite(v.get("analyzed_at"))), default=now),
+                    detail="Source-grounded tentative hypotheses; uncertainty and source limits apply.")
+                if not cache_ok or not cache_current():
+                    return empty if current() else withdrawn()
+                if (len(batch.receipts) < len(cache["batch"].receipts) or batch.detail != cache["batch"].detail):
+                    return empty if current() else withdrawn()
+                proofs = cache["pattern_proofs"]
                 matching = [p for p in patterns if isinstance(proofs.get(p["id"]), str)
                             and proofs[p["id"]] == self._pattern_proof(p)]
                 result = cache["result"]
                 from copy import deepcopy
-                demands = deepcopy(result["demands"])
+                demands = durable_demands or deepcopy(result["demands"])
                 for demand in demands:
                     if demand.get("due_range") and demand["due_range"][1] <= now:
                         demand["status"] = "unresolved"
                 windows = apply_interpretations(matching, result["patterns"])
-                if (not self.live() or self._availability_cache is not cache or cache["cancellation"].is_set() or engine.signal_settings() != settings
-                        or self._analysis_role() != cache["role"] or not cache["batch"].current() or not fresh.current()):
-                    return empty
-                return dict(empty, ready=True, windows=windows,
-                            demands=demands, generated_at=cache["at"],
-                            detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
-                            source_coverage=cache["batch"].detail,
-                            observed_context=engine.availability_context(timezone, now=now))
+                if not current() or not cache_current():
+                    return withdrawn()
+                return dict(empty, ready=True, windows=windows, demands=demands,
+                    generated_at=min(empty["generated_at"], cache["at"]),
+                    detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.",
+                    observed_context=engine.availability_context(timezone, now=now))
             except Exception:
-                return empty
+                return withdrawn()
             finally:
-                if isinstance(fresh, Batch):
-                    fresh.records, fresh.visits = [], []
+                if isinstance(batch, Batch):
+                    batch.records, batch.visits, batch.snapshots = [], [], ()
 
     async def acall(self, method: str, *args, **kwargs):
         return await asyncio.to_thread(self.call, method, *args, **kwargs)
@@ -655,6 +788,7 @@ class BehaviorRuntime:
             key = "local"
             if not self.live():
                 return [], key
+            self._planning_store = store
             stamps = self._stamps.setdefault(key, {"ingest": 0.0, "mine": 0.0, "nudge": 0.0})
             changed = self._flush_decisions()
             sync = {}
@@ -1081,6 +1215,7 @@ class BehaviorRuntime:
                 "SELECT COUNT(*) FROM actions WHERE undone_at IS NULL").fetchone()[0]
         try:
             info["engine"] = self.call("status")
+            info["seed"] = self.seed_progress()
         except Exception as exc:  # noqa: BLE001
             info["engine"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
         return info
@@ -1222,6 +1357,21 @@ def age_out(home: Path | None = None, now: float | None = None) -> dict[str, int
                     ("observations", "DELETE FROM observations WHERE kind='activity_bin' AND ts < ?", now-56*86400),
                     ("nudges", "DELETE FROM nudges WHERE created_at < ?", now - NUDGE_RETENTION_S)])
     run(RUNTIME_DB, [("delivered", "DELETE FROM nudges WHERE delivered_at < ?", now - NUDGE_RETENTION_S)])
+    path = home / ENGINE_DB
+    if path.exists():
+        conn = None
+        try:
+            conn = sqlite3.connect(path.resolve().as_uri()+"?mode=rw", uri=True, timeout=30)
+            from service.behavior.source_index import prune_connection
+            with conn:
+                removed = prune_connection(conn, now-OBSERVATION_RETENTION_S)
+            if removed:
+                out["seed_metadata"] = removed
+        except sqlite3.DatabaseError:
+            pass
+        finally:
+            if conn is not None:
+                conn.close()
     return out
 
 

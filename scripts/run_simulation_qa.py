@@ -386,6 +386,10 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_behavior_availability.py",
     "tests/test_behavior_activity_native.py",
     "tests/test_behavior_interpreter.py",
+    # Supplied fake snapshots/analyzers, disposable behavior DBs and metadata-only
+    # history/relation checks; no native, provider, real model or user-state access.
+    "tests/test_behavior_source_index.py",
+    "tests/test_behavior_associations.py",
     "tests/test_behavior_boundary.py",
     "tests/test_behavior_engine.py",
     "tests/test_behavior_miners.py",

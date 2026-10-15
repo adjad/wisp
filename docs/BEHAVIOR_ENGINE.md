@@ -448,7 +448,8 @@ permission prompts. This describes device state, not a person's mental state.
 Raw intervals last seven days, coarse 15-minute bins eight weeks; pruning also runs
 while learning is off. Disabling activity deletes that source's observations.
 
-New source preferences (`activity`, `websites`, `email`, `messages`), semantic
+New source preferences (`activity`, `websites`, `email`, `messages`, `notes`,
+`calendar_context`, `reminders_context`), semantic
 `interpretation`, and `remote_analysis` all default off. Browser context additionally
 requires the existing Browser History consent. Email/message analysis receives
 bounded excerpts of current complete cached publications; it performs no provider
@@ -517,16 +518,93 @@ because it quotes real text; all such results remain tentative.
 
 `BehaviorRuntime.planning_context(day, timezone, now)` and the public module wrapper
 export a version-1 read-only envelope: `ready`, `timezone`, `generated_at`, `detail`,
-`patterns`, `windows`, `demands`, `source_coverage`, `observed_context`. The HTTP
+`patterns`, `windows`, `demands`, `associations`, `source_coverage`, `observed_context`.
+`generated_at` preserves analysis age; `evidence_checked_at` describes a read-time
+eligibility check and never replaces a source's original receipt timestamp. The HTTP
 surface is `GET /behavior/availability?day=YYYY-MM-DD&timezone=Area/City`.
 `windows` are tentative occupied or possible-unavailability hypotheses, separate from `demands`
 (`preparation`, `task`, `meeting_request`). Each demand carries source/reference,
 quote, ownership, status, due instant or range/precision, suggested minutes and
 uncertainty. Unknown ownership/time never becomes a schedulable demand. Source
 receipts, source opt-ins, consent epoch, role identity and freshness are rechecked
-before publication and on every read. Reading does not renew the five-minute cache.
-Bodies are not stored in behavior observations; only bounded typed results are kept
-transiently. Disable, revocation, Forget, restart or supersession invalidates output.
+before publication and on every read. Reading does not renew the five-minute
+activity-interpretation cache. Source-backed work can outlive that cache only while
+the exact source revision remains available in a fresh permitted publication.
+Bodies and generated titles are not copied into the behavior database. Disable,
+revocation, Forget and supersession withhold derived output; restart requires fresh
+source evidence before persisted hypotheses can be materialized.
+
+### Initial context seed and cross-source memory
+
+The background interpretation pass indexes bounded **current public cached
+publications**, then advances through record revisions rather than rereading only
+the newest eight. It does not initiate a provider fetch, native scan or weight
+training. Native Mail bodies, Messages and current Notes are supported. Retained
+Calendar context requires a fresh native receipt matching the behavior snapshot;
+historical plans remain scheduled evidence. Completed reminders require a current
+native permission receipt and retain their recorded-completion basis. They are
+context, not new outstanding work. Notes modification dates never date their prose.
+Gmail-only/header history remains unavailable without its separate public contract.
+
+Messages exposes a separate behavior-only complete-record subset. A capped V3
+publication or one individually partial record no longer discards other complete
+records. The aggregate remains partial: individually partial records are excluded,
+known omissions stay visible, and neither full history nor absence is inferred.
+A partial publication with no eligible complete records is unavailable; a valid
+fresh complete empty publication remains a distinct bounded-empty result. Native
+365-day/20,000-row and structured 2,000-record/4 MB limits are unchanged. Existing
+Messages inventory callers keep their stricter complete-publication contract.
+Behavior receipts bind the original backend receipt, generation, coverage and
+exact selected records. Every publication and planning read rechecks that proof;
+restored, stale, replaced, malformed or revoked evidence is withheld. Reading
+never renews its ten-minute receipt or invokes inference.
+
+Each pass selects up to four pending passages fairly across sources and retrieves
+possible related passages with a transient lexical index. This selects candidates
+without topic, app or domain rules. At most eight passages enter the same existing
+guarded model request. Passages are bounded by characters **and UTF-8 bytes**;
+long records have a resumable overlapping passage cursor. The interpreter reports
+which records actually fit its input budget, and only those checkpoints advance.
+There is still at most one attempt per five minutes, so large seeds are gradual.
+
+The metadata index has a 10,000-record cap; each supplied source is bounded to
+2,000 records and an independent byte budget. A publication can be much smaller
+than its account history (especially Mail bodies), and Notes has no revision
+history. Progress reports seen, eligible, indexed, analyzed, pending, deferred,
+skipped, omitted and unindexed counts, requested/declared/observed time bounds,
+and partial coverage. “Seeded” means this bounded publication was processed; it
+does not mean the mailbox, account, computer history or user's life was scanned.
+
+Proposed `possibly_related`, `supports`, `contradicts` and `updates` links require
+exact evidence on both sides. Persisted endpoints contain opaque record IDs,
+content revisions, Unicode span offsets, UTF-8 hashes and provenance; quotations
+are reconstructed only from current eligible records. Conflicting claims remain
+separate. Similar names do not merge people/events, forwarded text is not an
+independent vote, and a proposed update does not decide truth or attendance.
+
+Source-backed work stores the same minimal evidence plus validated temporal
+metadata and tentative ownership. Display text/native references are transient.
+Importance and confidence remain unknown; duration is an adjustable generic
+estimate. Unknown ownership/time stays unresolved. Links and work hypotheses
+cannot authorize calendar changes, sends, reminders or other actions.
+
+Calendar and Notes context use original native read-start times. Mail and Messages
+eligibility currently uses backend receipt age (20 and 10 minutes respectively),
+which does not establish when their native reads began. Notes has a separate
+24-hour limit with a matching successful live receipt. Re-grounding a saved work
+hypothesis in a new current publication preserves its original analysis and source
+times; it does not run inference on a planning read. Bounded reminder history
+reports partial coverage until its scan completes.
+Routine busy labels require the same supporting samples/descriptors/site context
+used by the interpreter and apply only within its seven-day forecast horizon.
+Source-backed deadlines keep their own validated time constraints independently.
+
+Checkpoints, links and work share `behavior.db` and its Forget lifecycle. A source
+off/on or any consent epoch change clears prior analysis; changed content loses
+dependent hypotheses. Retention removes old metadata even while learning is off.
+Saved progress is never permission to reuse a stale/restored/revoked source. With
+no persistent body copy, a record missing from the current bounded source view
+cannot be retrieved as usable historical memory.
 
 The daily-workspace owner owns final slot fitting and ordinary planning-choice
 feedback. This producer does not implement a second planner, automatic external

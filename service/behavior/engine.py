@@ -63,6 +63,51 @@ class BehaviorEngine:
         self.tz = tz_name(self._tz)
         # Snapshot diffing and mining read-modify-write the store; serialize them.
         self._lock = threading.RLock()
+        self._seed_index = None
+
+    def seed_index(self, *, create=True):
+        from service.behavior.source_index import SourceIndex
+        with self._lock, self._store._lock:
+            if self._seed_index is None:
+                if not create and not self._store._conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='behavior_seed_records'").fetchone():
+                    return None
+                self._seed_index = SourceIndex(self._store)
+            return self._seed_index
+
+    def semantic_history(self, source, now=None, *, expected_sync=None, metadata=False):
+        """Retained evidence only; caller must prove current native eligibility."""
+        with self._lock:
+            key = {"calendar": "calendar_context", "reminders": "reminders_context"}.get(source)
+            if key is None or not self._activity.settings()[key]:
+                return []
+            now = self._now(now)
+            rows = self._store.observations(kinds=["event"] if source == "calendar" else ["reminder_done"],
+                                            since=now-180*86400, until=now+21*86400 if source == "calendar" else now)
+            latest = self._store.get_snapshot("calendar") if source == "calendar" else None
+            if source == "calendar" and (latest is None or latest["taken_at"] != expected_sync):
+                return None
+            current_ids = {r["id"] for r in latest["items"]} if latest else set()
+            records = []
+            for o in rows:
+                if o.source != source or o.attrs.get("cancelled") or o.attrs.get("moved"):
+                    continue
+                if source == "calendar" and o.id not in current_ids:
+                    continue
+                if source == "reminders" and (o.attrs.get("completion_time_known") is not True
+                                               or o.attrs.get("evidence_basis") != "recorded_completion"):
+                    continue
+                from datetime import datetime, timezone
+                text = ("Scheduled, attendance unknown: " if source == "calendar" else "Recorded reminder completion: ") + o.subject
+                text += "\nSource time: " + datetime.fromtimestamp(o.ts, timezone.utc).isoformat()
+                records.append(dict(id=o.id, text=text, reference={"source": source, "source_id": o.source_id},
+                                    source_time=o.ts, time_basis="scheduled_time" if source == "calendar" else "completion_time",
+                                    evidence_basis="scheduled" if source == "calendar" else "recorded_completion"))
+            if metadata:
+                job = self.history_status().get("completed_reminders") if source == "reminders" else None
+                return dict(records=records[-2000:], omitted=max(0, len(records)-2000),
+                            complete=source == "calendar" or bool(job and job.get("state") == "complete"))
+            return records[-2000:]
 
     def signal_settings(self):
         with self._lock:
@@ -85,6 +130,10 @@ class BehaviorEngine:
     def configure_signals(self, changes, now=None):
         with self._lock:
             self._activity.configure(changes, self._now(now))
+            # Any epoch change invalidates prior content analysis admission.
+            if self._seed_index is not None or self._store._conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='behavior_seed_records'").fetchone():
+                self.seed_index().reset(self.signal_settings()["epoch"])
             return self.signal_settings()
 
     def activity_lease(self, client, now=None):
@@ -272,6 +321,8 @@ class BehaviorEngine:
             self._store.replace_patterns(mined, now)
             self._store.meta_set("last_mined_at", now)
             self._store.prune(now)    # retention: observations 180d, nudges 30d
+            if self._seed_index is not None:
+                self._seed_index.prune(now=now)
             return self._live_patterns()
 
     def patterns(self, *, status: str | None = None, kind: str | None = None) -> list[Pattern]:

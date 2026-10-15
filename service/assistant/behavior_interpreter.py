@@ -91,12 +91,16 @@ class Interpreter:
         default_minutes=30,
         remote_allowed=False,
         admit=lambda: True,
+        associations=False,
     ):
         # No import/client construction until an opted-in runtime asks for it.
         rows, size = [], 0
         for r in records[:8]:
             row = {**r, "text": r["text"][:2400]}
-            row["temporal"] = temporal_choices(row["text"], r["ts"], timezone)
+            row["ts"] = r.get("ts", r.get("source_time"))
+            row["reference"] = r.get("reference", {"source": r["source"], "id": r["id"]})
+            row["temporal"] = (temporal_choices(row["text"], row["ts"], timezone)
+                               if row["ts"] is not None and r.get("time_basis", "source_timestamp") == "source_timestamp" else [])
             n = len(json.dumps(row, ensure_ascii=False).encode())
             if size + n > 16000:
                 break
@@ -164,19 +168,28 @@ class Interpreter:
         try:
             if not admit():
                 return {"demands": [], "patterns": [], "state": "cancelled"}
-            raw = complete(SYSTEM, prompt, max_tokens=1400, temperature=0.0)
+            system = SYSTEM
+            if associations:
+                system += """\nInclude an additional `links` array in that SAME object. Each item has exactly
+relation (possibly_related|supports|contradicts|updates), left_id, right_id,
+left_quote and right_quote. IDs must be provided records from DIFFERENT sources;
+each quote must be an exact, unique, contiguous 8–800 character passage on its
+respective side. Similar names alone do not identify a person or activity.
+Copies/forwards are not independent corroboration. Keep conflicting claims;
+updates do not establish truth. Links stay proposed, with no action authority.
+Do not return links when the relationship is unclear. Use an empty array."""
+            raw = complete(system, prompt, max_tokens=1400, temperature=0.0)
             if not admit():
                 return {"demands": [], "patterns": [], "state": "cancelled"}
             if not isinstance(raw, str) or len(raw.encode()) > 16000:
                 raise ValueError("No bounded response")
             response = json.loads(raw)
-            if not isinstance(response, dict) or set(response) - {
-                "demands",
-                "patterns",
-            }:
+            allowed = {"demands", "patterns", "links"} if associations else {"demands", "patterns"}
+            if not isinstance(response, dict) or set(response) - allowed:
                 raise ValueError("Unexpected proposal schema")
             demands = validate(
-                response.get("demands"), rows, now=now, default_minutes=default_minutes
+                response.get("demands"), [r for r in rows if r.get("evidence_basis") != "recorded_completion"],
+                now=now, default_minutes=default_minutes
             )
             by_id, interpretations = {p["id"]: p for p in patterns}, []
             for p in (response.get("patterns") or [])[:24]:
@@ -200,6 +213,17 @@ class Interpreter:
                 ):
                     continue
                 interpretations.append(p)
-            return dict(demands=demands, patterns=interpretations, state="tentative")
+            result = dict(demands=demands, patterns=interpretations, state="tentative")
+            if associations:
+                from service.behavior.associations import validate as validate_links
+                links = response.get("links", [])
+                if not isinstance(links, list) or any(not validate_links([p], rows) for p in links):
+                    raise ValueError("Ungrounded cross-source proposal")
+                result["links"] = validate_links(links, rows)
+                # Seed accepts only the model's quotations plus mechanically
+                # regroundable work, not persisted copies of response prose.
+                result["link_proposals"] = links
+                result["record_ids"] = [r["id"] for r in rows]
+            return result
         except Exception:
             return {"demands": [], "patterns": [], "state": "unknown"}
