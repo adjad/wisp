@@ -2,6 +2,8 @@
 from copy import deepcopy
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import hashlib
+import json
 import os
 import tempfile
 
@@ -38,14 +40,54 @@ def busy(identity="class", start=None, end=None, **changes):
     return dict(id=identity, kind="busy", start=at(14) if start is None else start,
                 end=at(16) if end is None else end, confidence=.8, current=True,
                 observed_at=NOW - 86400, coverage="adequate", title="Usual busy period",
-                timezone=ZONE, evidence_refs=["fixture:activity-coverage"],
+                timezone=ZONE, evidence=["fixture:activity-coverage"],
+                validation="provisional recurrence strength; not calibrated availability probability",
                 because="Repeated observed availability pattern; activity is unknown.") | changes
+
+
+def context(*, windows=(), demands=(), **changes):
+    """Public v1 development wire, not the old invented availability envelope."""
+    return dict(version=1, ready=True, generated_at=NOW - 60, evidence_checked_at=NOW,
+        timezone=ZONE, windows=list(windows) if windows is not None else None,
+        demands=list(demands) if demands is not None else None, associations=[],
+        source_coverage={"email": "bounded current publication; not full history", "notes": "off"},
+        detail="Tentative source-grounded hypotheses; not attendance or availability guarantees.") | changes
+
+
+def demand(**changes):
+    """Shape of associations.materialize_work at producer snapshot 587961a5."""
+    quote = changes.get("quote", "Review the garden proposal by October 14 at 5pm")
+    source = changes.get("source", "email")
+    source_id = source + ":opaque-id"
+    time_quote = "October 14 at 5pm"
+    offset = quote.find(time_quote)
+    time_evidence = (dict(start=7 + offset, end=7 + offset + len(time_quote),
+        sha256=hashlib.sha256(time_quote.encode()).hexdigest()) if offset >= 0 else None)
+    if changes.get("deadline_precision") == "unknown":
+        time_evidence = None
+    value = dict(id="work:fixture", source=source, source_id=source_id,
+        reference=dict(source=source, account_id="fixture-account", message_id="fixture-message"),
+        endpoint=dict(source=source, record_id=source_id, revision="revision:original",
+            start=7, end=7 + len(quote), sha256=hashlib.sha256(quote.encode()).hexdigest(),
+            source_time=NOW - 10 * 86400, time_basis="source_timestamp", evidence_basis="source_statement"),
+        kind="task", title="Review the garden proposal", quote=quote, ownership="user", status="tentative",
+        due_ts=at(17), due_range=[at(17), at(17) + 60], deadline_precision="instant",
+        timezone=ZONE, analyzed_at=NOW - 60, source_receipt_at=NOW - 120,
+        time_evidence=time_evidence, priority_dimensions=dict(importance="unknown",
+            importance_basis="not established", inferred_importance="high",
+            due_range=changes.get("due_range", [at(17), at(17) + 60]), recent_choices=[],
+            preference_basis="voluntary planning choices; not proof of completion or value",
+            displacement="unknown; different computer activity cannot establish abandonment"),
+        earliest_start=NOW, suggested_minutes=30, duration_basis="adjustable default; not observed effort",
+        importance="unknown", importance_hypothesis="high", basis="inferred", confidence=None,
+        observed_at=NOW - 10 * 86400, evidence=[source_id], action_authority="none",
+        because="Source-backed work hypothesis; ownership, effort and relevance remain uncertain.")
+    return value | changes
 
 
 def run(s=None, e=None, windows=None, **kw):
     return assess(DAY, ZONE, s or state(), e or {}, now=NOW,
-                  behavior=dict(version=1, available=True, status="current", generated_at=NOW,
-                                coverage="adequate", timezone=ZONE, windows=windows or []), **kw)
+                  behavior=context(windows=windows or []), **kw)
 
 
 def test_source_tasks_precede_behavior_and_fit_around_two_unlisted_classes():
@@ -271,59 +313,259 @@ def test_body_request_can_surface_old_received_mail_without_fabricating_a_due_da
     assert assessed["attention"][0]["due_ts"] is None
 
 
-@pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on Friday"),
-    ("Prepare a budget", "Budget review is Friday"), ("Review the garden proposal", "Proposal review is Friday")])
-def test_versioned_generic_demands_require_grounding_and_duration_choice(title, quote):
-    demand = dict(id="work", kind="task", ownership="user", title=title, source="email", source_reference="email:work",
-        quote=quote, due_ts=at(17) + 2 * 86400, confidence=.8, current=True,
-        timezone=ZONE, coverage="adequate", evidence_refs=["email:work"])
-    contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE,
-                    coverage="adequate", windows=[], demands=[demand])
-    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["attention"][0]["task_kind"] == "task" and result["suggested_count"] == 0
-    assert "Duration unknown" in result["attention"][0]["reason"] and "Importance is unknown" in result["attention"][0]["reason"]
-    demand.update(suggested_minutes=45, duration_basis="user")
-    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["suggested_count"] == 1
-    assert result["proposed_plan"]["blocks"][0]["end"] - result["proposed_plan"]["blocks"][0]["start"] == 45 * 60
-    contract["version"] = 2
-    assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)["attention"]
+@pytest.mark.parametrize("title,quote", [("Study for the quiz", "Quiz on October 14 at 5pm"),
+    ("Prepare a budget", "Budget review is October 14 at 5pm"),
+    ("Review the garden proposal", "Proposal review is October 14 at 5pm")])
+def test_public_v1_generic_demands_have_unknown_confidence_and_adjustable_default(title, quote):
+    work = demand(title=title, quote=quote)
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))
+    item = result["attention"][0]
+    assert item["task_kind"] == "task" and item["confidence"] is None and item["importance"] == "unknown"
+    assert item["duration_basis"] == "adjustable default; not observed effort"
+    assert "not observed effort" in item["reason"] and "Importance is unknown" in item["reason"]
+    block = result["proposed_plan"]["blocks"][0]
+    assert block["title"] == "Review: " + title and block["end"] - block["start"] == 30 * 60
+    assert block["kind"] == "suggestion" and block["task_id"] is None
 
 
-@pytest.mark.parametrize("basis", ["user", "source", "model", "default"])
-def test_generic_estimates_preserve_basis_and_unknown_ownership_is_review_work(basis):
-    demand = dict(id="arbitrary", kind="follow_up", title="Check the project", source="notes", source_reference="notes-local:work",
-        quote="Check the project", due_ts=at(17), confidence=.8, current=True, timezone=ZONE, coverage="adequate",
-        evidence_refs=["notes-local:work"], suggested_minutes=20, duration_basis=basis)
-    contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE, coverage="adequate", windows=[], demands=[demand])
-    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["proposed_plan"]["blocks"][0]["title"] == "Review: Check the project"
-    assert result["attention"][0]["duration_basis"] == basis and result["attention"][0]["importance"] == "unknown"
-    demand["ownership"] = "other"
-    assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)["attention"]
+@pytest.mark.parametrize("change", [dict(ownership="unknown", status="unresolved"),
+    dict(due_ts=None, due_range=None, deadline_precision="unknown", status="unresolved")])
+def test_unknown_ownership_or_deadline_is_review_attention_only(change):
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[demand(**change)]))
+    assert result["attention"][0]["needs_review"] and result["attention"][0]["planning_duration"] is None
+    assert not result["suggested_count"] and not result["proposed_plan"]["blocks"]
+    assert result["proposed_plan"]["tasks"] == []
 
 
-def test_generic_demands_do_not_promote_inferred_importance_over_user_priority():
-    demand = dict(id="work", kind="task", ownership="user", title="Explicit work", source="notes",
-        source_reference="notes-local:work", quote="Work to do", confidence=.8, current=True, timezone=ZONE,
-        coverage="adequate", evidence_refs=["notes-local:work"], suggested_minutes=20, duration_basis="default", priority=1)
-    demand["uncertainty"] = ["Deadline interpretation needs review"]
-    contract = dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE, coverage="adequate", windows=[], demands=[demand])
-    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["attention"][0]["priority"] == 3 and result["attention"][0]["importance"] == "unknown"
-    assert "Deadline interpretation needs review" in result["attention"][0]["reason"]
-    demand["priority_basis"] = "user"
-    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=contract)
-    assert result["attention"][0]["priority"] == 1 and result["attention"][0]["importance"] == "user priority"
+def test_date_range_is_preserved_without_fabricating_an_instant():
+    span = [at(0) + 2 * 86400, at(0) + 3 * 86400]
+    work = demand(quote="Review the garden proposal on October 16", due_ts=None,
+        due_range=span, deadline_precision="date")
+    work["time_evidence"] = dict(start=7 + work["quote"].index("October 16"),
+        end=7 + len(work["quote"]), sha256=hashlib.sha256(b"October 16").hexdigest())
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))
+    item = result["attention"][0]
+    assert item["due_ts"] is None and item["due_range"] == span and item["deadline_precision"] == "date"
+    assert "source range [Oct 16" in render(result)
+    assert "not an exact deadline" in item["reason"] and result["suggested_count"] == 1
 
 
-def test_unknown_stale_or_malformed_provider_contract_is_unavailable(monkeypatch):
+@pytest.mark.parametrize("change", [dict(suggested_minutes=None), dict(suggested_minutes=True),
+    dict(suggested_minutes=481), dict(duration_basis="model"), dict(duration_basis=None)])
+def test_unknown_or_invalid_effort_stays_attention_until_user_chooses(change):
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[demand(**change)]))
+    assert result["attention"] and result["attention"][0]["planning_duration"] is None
+    assert "Duration unknown" in result["attention"][0]["reason"] and not result["suggested_count"]
+
+
+def test_original_locator_revision_quote_and_ages_survive_without_mutation():
+    work = demand(quote="Review 🦉 café proposal by October 14 at 5pm")
+    raw = context(demands=[work], associations=[dict(id="link:fixture", status="proposed", confidence=None,
+        importance="unknown", action_authority="none", analyzed_at=NOW - 90)])
+    before = deepcopy(raw)
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=raw)
+    item = result["attention"][0]
+    for field in ("quote", "source_id", "evidence", "endpoint", "observed_at", "source_receipt_at", "analyzed_at", "time_evidence", "earliest_start", "priority_dimensions"):
+        assert item[field] == work[field]
+    assert item["source_reference"] == work["reference"] and json.loads(item["reference"]) == work["reference"]
+    assert isinstance(item["reference"], str)  # Existing native attention decoder contract.
+    assert result["behavior_context"]["associations"] == raw["associations"]
+    assert raw == before
+    item["endpoint"]["revision"] = "local"
+    assert raw == before
+
+
+@pytest.mark.parametrize("change", [dict(source_receipt_at=None), dict(source_receipt_at=NOW - 1201),
+    dict(source_receipt_at=NOW + 1), dict(analyzed_at=None), dict(analyzed_at=NOW - 1201),
+    dict(analyzed_at=NOW + 1), dict(observed_at=NOW + 1), dict(observed_at=NOW - 1), dict(timezone="UTC"),
+    dict(confidence=.8), dict(importance="high"), dict(action_authority="send"), dict(ownership="other"),
+    dict(status="completed"), dict(evidence=[]), dict(reference="invented://source"),
+    dict(due_ts=at(12)), dict(due_range=[at(17), at(16)]),
+    dict(deadline_precision="date"), dict(deadline_precision="unknown"), dict(kind="study")])
+def test_missing_stale_or_invalid_demand_proof_is_withheld(change):
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[demand(**change)]))
+    assert not result["attention"] and not result["suggested_count"]
+
+
+@pytest.mark.parametrize("change", [dict(source="notes"), dict(record_id="other"), dict(revision=""),
+    dict(start=-1), dict(end=8), dict(sha256="wrong")])
+def test_bad_endpoint_proof_is_withheld(change):
+    work = demand()
+    work["endpoint"].update(change)
+    assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))["attention"]
+
+
+def test_notes_unknown_source_time_is_preserved_and_not_replaced_by_publication():
+    work = demand(source="notes", observed_at=None, due_ts=None, due_range=None,
+        deadline_precision="unknown", status="unresolved")
+    work["endpoint"].update(source_time=None, time_basis="unknown")
+    work["reference"] = dict(source="notes", reference="notes-local:fixture")
+    item = assess(DAY, ZONE, state(), {}, now=NOW, behavior=context(demands=[work]))["attention"][0]
+    assert item["observed_at"] is None and item["due_ts"] is None
+    assert item["source_receipt_at"] == NOW - 120 and item["source_reference"] == work["reference"]
+
+
+def test_explicit_work_and_priority_win_over_producer_importance_hypotheses():
+    s = state()
+    s["tasks"] = [dict(id="pin", title="Chosen work", day=DAY, kind="task", duration_minutes=30,
+        priority=1, status="active", due_ts=None, pinned_start=at(15), revision=1)]
+    work = demand(priority=1, priority_basis="model")
+    result = assess(DAY, ZONE, s, {}, now=NOW, behavior=context(demands=[work], windows=[busy()]))
+    assert result["attention"][0]["source"] == "wisp"
+    item = next(i for i in result["attention"] if i["source"] == "behavior")
+    assert item["priority"] == 3 and item["importance"] == "unknown" and item["importance_hypothesis"] == "high"
+    assert next(b for b in result["proposed_plan"]["blocks"] if b.get("task_id") == "pin")["start"] == at(15)
+    s["tasks"][0]["title"] = work["title"]
+    assert not assess(DAY, ZONE, s, {}, now=NOW, behavior=context(demands=[work]))["suggested_count"]
+
+
+@pytest.fixture
+def public_behavior(monkeypatch):
+    """Fake ONLY the public module; never import/call an actual producer runtime."""
+    import sys
+    from types import ModuleType
     from service.assistant import daily_workspace as daily
-    for value in [None, {}, dict(version=2), dict(version=1, available=True, status="current", generated_at=NOW - 1201,
-        timezone=ZONE, coverage="adequate", windows=[busy()]), dict(version=1, available=True, status="current", generated_at=NOW,
-        timezone=ZONE, coverage=[], windows=[busy()])]:
-        monkeypatch.setattr(daily, "_availability_provider", lambda *args: value)
-        assert daily.availability_snapshot(DAY, ZONE, NOW)["available"] is False
+    module = ModuleType("service.assistant.behavior_runtime")
+    module.planning_context = lambda *args: None
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    monkeypatch.setattr(daily, "_availability_provider", None)
+    return module
+
+
+@pytest.mark.parametrize("value", [None, {}, dict(version=2), context(ready=False), context(ready=1),
+    context(version=True), context(timezone="UTC"), context(generated_at=NOW - 1201),
+    context(generated_at=NOW + 1), context(evidence_checked_at=NOW - 1201),
+    context(evidence_checked_at=NOW + 1), context(windows=None), context(demands=None),
+    context(source_coverage=[]), context(source_coverage={"email": True}),
+    dict(version=1, available=True, status="current", generated_at=NOW, timezone=ZONE, coverage="complete")])
+def test_missing_disabled_malformed_or_stale_public_context_is_unavailable(public_behavior, value):
+    from service.assistant import daily_workspace as daily
+    public_behavior.planning_context = lambda *args: value
+    result = daily.availability_snapshot(DAY, ZONE, NOW)
+    assert result["ready"] is False and result["generated_at"] is None
+    assert "unknown" in result["detail"] and not result["windows"] and not result["demands"]
+    assert not assess(DAY, ZONE, state(), {}, now=NOW, behavior=result)["tentative_count"]
+
+
+def test_missing_public_method_and_exception_are_unavailable(public_behavior):
+    from service.assistant import daily_workspace as daily
+    del public_behavior.planning_context
+    assert daily.availability_snapshot(DAY, ZONE, NOW)["ready"] is False
+    def failure(*args):
+        raise RuntimeError("synthetic failure")
+    public_behavior.planning_context = failure
+    assert daily.availability_snapshot(DAY, ZONE, NOW)["ready"] is False
+
+
+@pytest.mark.parametrize("revocation", ["consent", "generation", "source_revision", "analysis_role"])
+def test_each_public_read_rechecks_authority_without_caching_or_inference(public_behavior, revocation):
+    from service.assistant import daily_workspace as daily
+    calls, eligible = [], {revocation: True}
+    raw = context(windows=[busy()], demands=[demand()])
+    before = deepcopy(raw)
+    def wrapper(day, timezone, now=None):
+        calls.append((day, timezone, now))
+        return raw if eligible[revocation] else context(ready=False)
+    public_behavior.planning_context = wrapper
+    first = daily.availability_snapshot(DAY, ZONE, NOW)
+    assert first == raw and first is not raw
+    later = daily.availability_snapshot(DAY, ZONE, NOW + 1)
+    assert later["generated_at"] == first["generated_at"] and later["evidence_checked_at"] == NOW
+    assert later["demands"][0]["source_receipt_at"] == NOW - 120
+    eligible[revocation] = False
+    assert daily.availability_snapshot(DAY, ZONE, NOW + 2)["ready"] is False
+    assert calls == [(DAY, ZONE, NOW), (DAY, ZONE, NOW + 1), (DAY, ZONE, NOW + 2)] and raw == before
+
+
+def test_fresh_public_read_cannot_renew_old_analysis_or_source_receipt(public_behavior):
+    from service.assistant import daily_workspace as daily
+    public_behavior.planning_context = lambda *args: context(evidence_checked_at=NOW, generated_at=NOW - 1201)
+    assert not daily.availability_snapshot(DAY, ZONE, NOW)["ready"]
+    raw = context(demands=[demand(source_receipt_at=NOW - 1201)])
+    public_behavior.planning_context = lambda *args: raw
+    snapshot = daily.availability_snapshot(DAY, ZONE, NOW)
+    assert snapshot["ready"] and not assess(DAY, ZONE, state(), {}, now=NOW, behavior=snapshot)["attention"]
+
+
+def test_partial_source_availability_is_descriptive_not_full_coverage(public_behavior):
+    from service.assistant import daily_workspace as daily
+    raw = context(windows=[busy()], demands=[demand()], source_coverage={"email": "bounded current publication; not full history",
+        "messages": "current complete evidence unavailable", "notes": "off", "websites": "off"})
+    public_behavior.planning_context = lambda *args: raw
+    result = assess(DAY, ZONE, state(), {}, now=NOW, behavior=daily.availability_snapshot(DAY, ZONE, NOW))
+    assert result["suggested_count"] == 1 and result["tentative_count"] == 1
+    assert result["behavior_context"]["source_coverage"] == raw["source_coverage"]
+    assert "Behavior messages: current complete evidence unavailable" in render(result)
+    assert "coverage" not in raw
+
+
+def test_window_evidence_strength_is_preserved_and_separate_from_demand_confidence():
+    result = assess(DAY, ZONE, state(), {}, now=NOW,
+        behavior=context(windows=[busy(confidence=.8)], demands=[demand()]))
+    block = next(b for b in result["proposed_plan"]["blocks"] if b["kind"] == "behavior")
+    assert block["recurrence_strength"] == .8 and block["observed_at"] == NOW - 86400
+    assert block["evidence_refs"] == ["fixture:activity-coverage"]
+    assert "not calibrated" in block["validation"] and result["attention"][0]["confidence"] is None
+    weak = assess(DAY, ZONE, state(), {}, now=NOW,
+        behavior=context(windows=[busy(confidence=.64)], demands=[demand()]))
+    assert not weak["tentative_count"] and weak["suggested_count"] == 1
+
+
+def test_public_wrapper_get_composition_preserves_selected_day_zone_and_corrections(public_behavior, cached_sources, monkeypatch):
+    from types import SimpleNamespace
+    from service.assistant import daily_workspace_api as api
+    store, *_ = cached_sources
+    monkeypatch.setattr(store, "today_snapshot", lambda *args: state(), raising=False)
+    monkeypatch.setattr(api, "email_store", lambda: SimpleNamespace(ignored=lambda day, zone: ["class"]))
+    calls = []
+    def wrapper(day, timezone, now=None):
+        calls.append((day, timezone, now))
+        return context(windows=[busy(), busy("other", at(18), at(19))])
+    public_behavior.planning_context = wrapper
+    result = api.current_workspace(DAY, ZONE, now=NOW, store=store)
+    assert calls == [(DAY, ZONE, NOW)] and result["tentative_count"] == 1
+    assert result["proposed_plan"]["blocks"][0]["pattern_id"] == "other"
+    # The producer's v1 has no day field: the request carries day; bounds clip
+    # windows to that requested local day. No consumer date is fabricated.
+    assert not assess("2026-10-15", ZONE, state(), {}, now=NOW,
+                      behavior=context(windows=[busy()]))["tentative_count"]
+    public_behavior.planning_context = lambda day, zone, now: context(timezone=zone, windows=[])
+    assert api.availability("2026-10-15", "UTC", NOW)["timezone"] == "UTC"
+
+
+def test_http_get_uses_only_fake_public_wrapper_and_never_model_or_actions(public_behavior, cached_sources, monkeypatch):
+    import importlib
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from types import SimpleNamespace
+    from service.assistant import daily_workspace_api as api
+    store, *_ = cached_sources
+    monkeypatch.setattr(store, "today_snapshot", lambda *args: state(), raising=False)
+    monkeypatch.setattr(importlib.import_module("service.assistant.store"), "assistant_store", store)
+    monkeypatch.setattr(api, "email_store", lambda: SimpleNamespace(ignored=lambda *args: []))
+    monkeypatch.setattr(api.time, "time", lambda: NOW)
+    calls, forbidden = [], []
+    raw = context(windows=[busy()], demands=[demand()])
+    before = deepcopy(raw)
+    def wrapper(day, timezone, now=None):
+        calls.append((day, timezone, now))
+        return raw
+    def effect(*args, **kwargs):
+        forbidden.append(True)
+        raise AssertionError("No inference, refresh, collection or action on GET")
+    public_behavior.planning_context = wrapper
+    for name in ("get_runtime", "tick", "poke", "refresh", "infer", "send", "collect"):
+        setattr(public_behavior, name, effect)
+    app = FastAPI()
+    app.include_router(api.router)
+    response = TestClient(app).get("/workspace", params=dict(day=DAY, timezone=ZONE))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["behavior_context"]["generated_at"] == NOW - 60
+    assert payload["attention"][0]["analyzed_at"] == NOW - 60
+    assert payload["attention"][0]["source_receipt_at"] == NOW - 120
+    assert payload["proposed_plan"]["tasks"] == [] and not forbidden
+    assert calls == [(DAY, ZONE, NOW)] and raw == before
 
 
 def test_header_only_fallback_requires_matching_fresh_per_account_contract(cached_sources, monkeypatch):

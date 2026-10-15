@@ -31,24 +31,94 @@ windows. Cache adapters read existing source contracts and disclose missing,
 partial and bounded coverage. The same grounded renderer serves the daily
 answer and email preview.
 
-The version-1 availability interface is a host-owned read-only callback in
-`daily_workspace.py`, registered only by the behavior producer. Its envelope
-contains `version`, `available`, `status`, `generated_at`, `timezone`, `coverage`,
-`reason`, `windows`, and optional generic `demands`. Windows retain an ID,
-exact start/end, timezone, current status, confidence, observation date, coverage,
-evidence references and explanation. Generic demands retain `kind`, ownership,
-source quote/reference, optional due time and `suggested_minutes` with
-`duration_basis` (`user`, `source`, `model`, `default`, or unknown). Estimates
-retain their uncertainty. Unknown duration stays in attention until the user
-chooses an estimate; unknown ownership yields review work, and other people's
-tasks are withheld. Importance stays unknown unless the user explicitly supplied
-a priority. No topic turns a generic demand into a study task automatically.
-The tab provides an editable estimate before adding a Wisp task.
+The development consumer composes the public
+`service.assistant.behavior_runtime.planning_context(dayISO, timezoneIANA, now)`
+read lazily through `availability_snapshot`. The host/test override accepts that
+same public v1 shape. The actual envelope uses `ready`, `generated_at` (oldest
+analysis), `evidence_checked_at` (current read), `windows`, `demands`,
+`associations`, and a descriptive `source_coverage` map. It does not provide the
+placeholder's global `available/status/coverage` proof. Missing, disabled,
+exceptional, malformed, stale or revoked results remain unavailable; the
+consumer never caches or renews evidence age and never asks for inference.
 
-The actual availability producer is **not implemented in this candidate**. It
-belongs to the separate behavior stage-2 workstream. Production explicitly says
-availability is unknown and reserves no behavioral time until that public
-producer is connected. The 14–16 and 18–19 examples exist only in test fixtures.
+Windows retain their own `evidence` IDs, coverage, observation time, explanation,
+and unscaled recurrence strength. The existing 0.65 admission threshold applies
+only to these windows; it is not a calibrated probability or a demand threshold.
+Calendar commitments, explicit pins and day-local corrections still take
+precedence. No new collection, scheduler, sender, native or policy path exists.
+
+Durable work demands have `confidence=None` and `importance="unknown"`. The
+consumer preserves the exact quote, opaque source ID, structured reference,
+source/revision/span/hash endpoint, original publication receipt, original
+analysis time, source observation time (including unknown Notes prose time),
+temporal proof, deadline precision/range, duration provenance, priority dimensions
+and uncertainty. The existing native attention decoder receives a string JSON
+locator in `reference`; the original dictionary is additive `source_reference`.
+No native URL, source timestamp, confidence, priority or date instant is invented.
+`due_ts` is used only for an exact instant; date ranges stay ranges, with explicit
+half-open bounds in rendered text. Unknown ownership or deadline stays review
+attention without flexible work placement. A tentative user-owned demand with a
+future grounded date/instant and valid adjustable default duration may propose a
+`Review:` block. It never becomes a scheduled event or stored assigned task.
+User-authored work and explicit priorities continue to win; an inferred importance
+hypothesis cannot override them. No automatic topic-specific task kind exists.
+
+Consumer development base: `bebf005e45af3b3c0dd5bbfc45078c60e998c28e`;
+worktree `/Users/adijain/.codex/worktrees/daily-behavior-context/MOE_Project`,
+branch `codex/daily-behavior-context`, single writer
+`/root/consumer_adapter_builder`, under the root's
+`WISP_DAILY_BEHAVIOR_CONSUMER_SINGLE_WRITER_HELPER_ACK_20261015.json`.
+Only this module, its tests and this plan are in the assigned delta. Frozen PR232
+and the separately owned producer are not modified.
+
+The actual producer is absent from this base. Its development snapshot
+`587961a5885865e5254e4053c9c541f7952fdcc5` was inspected statically, including the
+public wrapper, `BehaviorRuntime.planning_context`, availability windows,
+commitments, source adapters, seed materialization and association work proofs.
+Only wire-shaped fakes and a fake public wrapper are executed here. Durable
+`associations.materialize_work` supplies the proof fields above; the older
+cache-only `commitments.validate` shape does not supply original analysis,
+publication receipt or a saved endpoint, so those demands are withheld. Supporting
+that older path requires the producer owner to expose these exact proofs rather
+than synthesizing them in this consumer.
+
+Admission conservatively retains the daily consumer's 20-minute analysis limit
+and applies it independently to original publication/analysis and read timestamps;
+new reads cannot extend it. Original source time can be older (or unknown for
+Notes), while recurrent window observations retain the existing 21-day limit.
+This can withhold otherwise reusable durable hypotheses until fresh analysis is
+published. Source coverage remains descriptive, never a blanket adequacy claim.
+Consent, generation, role, and current source-revision checks remain the public
+producer's responsibility on every call; consumer fakes verify the read seam and
+revocation behavior, not the producer's implementation of those checks.
+
+The producer's root-owned retention/checkpoint repair, producer qualification,
+and a root-acknowledged combined/current-main candidate remain integration
+barriers. This branch does not claim assembled producer qualification or an
+end-to-end beta. Final integration requires testing the actual public producer
+and consumer together, then all required same-SHA mechanical, CI, independent
+review and specialist QA gates.
+
+Development consumer validation uses `/usr/local/bin/python3` to launch the
+qualified `/private/tmp/wisp-behavior-py313.fxCgTl/bin/python` (3.13.14) with
+`subprocess.run`, bounded timeouts, exact worktree `PYTHONPATH`, private fresh
+`HOME`/`WISP_HOME`, `PYTHONDONTWRITEBYTECODE=1`, and `WISP_BEHAVIOR=0`.
+The final child harness installs a fake public producer module before pytest
+collection, asserts that it remains installed, and checks zero forbidden runtime,
+source, model or action calls. This also fences existing Today GET fixtures;
+earlier runs could import the inert base module while discovering the absent
+public method, but never instantiated a runtime or called its sources.
+`python -m pytest -q -rs -p no:cacheprovider tests/test_daily_workspace.py tests/test_today_plan.py`
+passes 207 cases, with zero skips and two existing dependency deprecation
+warnings. The initial development attempt stopped at collection because the
+malformed-window fixture helper tried to iterate `None`; the helper now retains
+that invalid shape for admission tests. An intermediate run passed 205 cases;
+two additional original-time/HTTP GET cases bring the focused suite to 207.
+These checks include synthetic HTTP GET composition, no inference/action calls,
+public-read revocation, freshness, endpoint provenance, generic topics, date
+ranges, unknown owner/time/effort, recurrence strength, source-first Calendar
+admission, pins and corrections. No actual producer runtime, native reader,
+model/provider, credentials, real user state or external action is exercised.
 
 ## Daily email contract
 
