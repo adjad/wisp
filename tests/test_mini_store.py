@@ -1,11 +1,14 @@
 """Durability tests use only private synthetic SQLite state."""
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
+import select
 import sqlite3
 import subprocess
 import sys
+import threading
 
 import pytest
 from tests.test_mini_resources import synthetic_capacity, synthetic_process
@@ -265,6 +268,240 @@ def test_private_state_permissions_and_symlinks(tmp_path):
     link.symlink_to(target)
     with pytest.raises(StoreUnavailable):
         Store(link, "fixture-mini")
+
+
+@pytest.mark.parametrize("suffix", ["-wal", "-shm"])
+def test_startup_rechecks_private_sidecar_unlinked_during_lookup(tmp_path, monkeypatch, suffix):
+    db = store(tmp_path)
+    original_instance = db.instance
+    keeper = sqlite3.connect(db.path)
+    keeper.execute("BEGIN")
+    keeper.execute("SELECT * FROM metadata").fetchall()
+    sidecar = Path(str(db.path) + suffix)
+    original = Path.stat
+    observations = []
+    lookups = []
+
+    def during_cleanup(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if path == sidecar:
+            lookups.append(info)
+        if path == sidecar and len(lookups) == 2 and not observations:
+            # Keep the real inode alive across SQLite's last-close unlink.
+            # Its kernel metadata is private, owned, regular, but unlinked.
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                keeper.close()
+                removed = os.fstat(fd)
+            finally:
+                os.close(fd)
+            assert removed.st_nlink == 0 and removed.st_mode & 0o777 == 0o600
+            observations.append(removed)
+            return removed
+        return info
+
+    monkeypatch.setattr(Path, "stat", during_cleanup)
+    try:
+        # Both ordinary reopens are valid; choose a deterministic pathname
+        # lookup during them for the last-connection cleanup interleaving.
+        assert store(tmp_path).instance == original_instance
+        restarted = store(tmp_path)
+        assert len(observations) == 1
+        assert restarted.instance == original_instance
+        assert restarted.status()["results"] == 0
+    finally:
+        keeper.close()
+
+
+@pytest.mark.parametrize("replacement", ["shared", "symlink", "hardlink", "still_unlinked"])
+def test_sidecar_cleanup_never_admits_an_unsafe_replacement(tmp_path, monkeypatch, replacement):
+    db = store(tmp_path)
+    keeper = sqlite3.connect(db.path)
+    keeper.execute("BEGIN")
+    keeper.execute("SELECT * FROM metadata").fetchall()
+    sidecar = Path(str(db.path) + "-wal")
+    target = tmp_path / "untouched"
+    target.write_bytes(b"private synthetic target")
+    target.chmod(0o600)
+    original = Path.lstat
+    observations = []
+
+    def during_cleanup(path, *args, **kwargs):
+        if path == sidecar and observations and replacement == "still_unlinked":
+            observations.append(observations[0])
+            return observations[0]
+        info = original(path, *args, **kwargs)
+        if path == sidecar and not observations:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                keeper.close()
+                removed = os.fstat(fd)
+            finally:
+                os.close(fd)
+            assert removed.st_nlink == 0
+            observations.append(removed)
+            if replacement == "shared":
+                sidecar.write_bytes(b"shared synthetic WAL")
+                sidecar.chmod(0o644)
+            elif replacement == "symlink":
+                sidecar.symlink_to(target)
+            elif replacement == "hardlink":
+                os.link(target, sidecar)
+            return removed
+        return info
+
+    monkeypatch.setattr(Path, "lstat", during_cleanup)
+    try:
+        with pytest.raises(StoreUnavailable):
+            store(tmp_path)
+        assert 1 <= len(observations) <= 2
+        assert target.read_bytes() == b"private synthetic target"
+    finally:
+        keeper.close()
+
+
+def test_concurrent_first_creation_waits_before_inspecting_uninitialized_database(tmp_path, monkeypatch):
+    import mini.resources as resources
+    created = threading.Event()
+    release = threading.Event()
+    second_progress = threading.Event()
+    first_thread = []
+    open_file = os.open
+    lease = resources.volume_lease
+
+    def paused_create(path, flags, *args, **kwargs):
+        fd = open_file(path, flags, *args, **kwargs)
+        if Path(path).name == "node.sqlite3" and flags & os.O_EXCL:
+            created.set()
+            assert release.wait(10)
+        return fd
+
+    @contextmanager
+    def attempted_lease(*args, **kwargs):
+        if first_thread and threading.get_ident() != first_thread[0]:
+            second_progress.set()
+        with lease(*args, **kwargs):
+            yield
+
+    def first():
+        first_thread.append(threading.get_ident())
+        return store(tmp_path)
+
+    monkeypatch.setattr(os, "open", paused_create)
+    monkeypatch.setattr(resources, "volume_lease", attempted_lease)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(first)
+        try:
+            assert created.wait(10)
+            b = pool.submit(store, tmp_path)
+            b.add_done_callback(lambda _: second_progress.set())
+            assert second_progress.wait(10)
+        finally:
+            release.set()
+        original, reopened = a.result(timeout=10), b.result(timeout=10)
+    assert original.instance == reopened.instance and original.key == reopened.key
+
+
+def test_separate_process_first_creation_uses_the_same_initialization_lease(tmp_path):
+    directory = tmp_path.resolve() / "private"
+    creator = """
+import os, sys
+from pathlib import Path
+from mini.store import Store
+open_file = os.open
+def paused_create(path, flags, *args, **kwargs):
+    fd = open_file(path, flags, *args, **kwargs)
+    if Path(path).name == 'node.sqlite3' and flags & os.O_EXCL:
+        print('CREATED', flush=True)
+        assert sys.stdin.readline().strip() == 'release'
+    return fd
+os.open = paused_create
+s = Store(sys.argv[1], 'fixture-mini')
+print(s.instance, flush=True)
+"""
+    opener = """
+import sys
+from contextlib import contextmanager
+import mini.resources as resources
+from mini.store import Store
+lease = resources.volume_lease
+@contextmanager
+def attempted_lease(*args, **kwargs):
+    print('LEASE_ATTEMPT', flush=True)
+    with lease(*args, **kwargs):
+        yield
+resources.volume_lease = attempted_lease
+try:
+    s = Store(sys.argv[1], 'fixture-mini')
+    print(s.instance, flush=True)
+except BaseException:
+    print('REFUSED_BEFORE_LEASE', flush=True)
+    raise
+"""
+    children = []
+    try:
+        first = subprocess.Popen([sys.executable, "-B", "-c", synthetic_process(creator, tmp_path), str(directory)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        children.append(first)
+        assert select.select([first.stdout], [], [], 10)[0]
+        assert first.stdout.readline().strip() == "CREATED"
+        second = subprocess.Popen([sys.executable, "-B", "-c", synthetic_process(opener, tmp_path), str(directory)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        children.append(second)
+        assert select.select([second.stdout], [], [], 10)[0]
+        attempt = second.stdout.readline().strip()
+        first_out, first_err = first.communicate("release\n", timeout=10)
+        second_out, second_err = second.communicate(timeout=10)
+        assert attempt == "LEASE_ATTEMPT", (attempt, second_err)
+        assert first.returncode == second.returncode == 0, (first_err, second_err)
+        assert first_out.strip() == second_out.strip() and len(first_out.strip()) == 32
+    finally:
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=10)
+
+
+@pytest.mark.parametrize("suffix", ["", "-wal", "-shm"])
+@pytest.mark.parametrize("unsafe", ["shared", "directory", "fifo", "symlink", "hardlink", "foreign_owner"])
+def test_startup_refuses_unsafe_state_without_changing_it(tmp_path, monkeypatch, suffix, unsafe):
+    db = store(tmp_path)
+    path = Path(str(db.path) + suffix)
+    original_db = db.path.read_bytes()
+    if path.exists():
+        path.unlink()
+    target = tmp_path / "untouched"
+    target.write_bytes(b"private synthetic target")
+    target.chmod(0o600)
+    if unsafe == "directory":
+        path.mkdir(mode=0o700)
+    elif unsafe == "fifo":
+        os.mkfifo(path, 0o600)
+    elif unsafe == "symlink":
+        path.symlink_to(target)
+    elif unsafe == "hardlink":
+        os.link(target, path)
+    else:
+        path.write_bytes(original_db if not suffix else b"untrusted synthetic sidecar")
+        path.chmod(0o644 if unsafe == "shared" else 0o600)
+    original = Path.lstat
+    before = original(path)
+    if unsafe == "foreign_owner":
+        def foreign_stat(value, *args, **kwargs):
+            info = original(value, *args, **kwargs)
+            if value == path:
+                fields = list(info)
+                fields[4] = os.getuid() + 1
+                return os.stat_result(fields)
+            return info
+        monkeypatch.setattr(Path, "lstat", foreign_stat)
+    with pytest.raises(StoreUnavailable):
+        store(tmp_path)
+    after = original(path)
+    assert (after.st_ino, after.st_mode, after.st_nlink) == (before.st_ino, before.st_mode, before.st_nlink)
+    assert target.read_bytes() == b"private synthetic target"
+    if suffix:
+        assert db.path.read_bytes() == original_db
 
 
 @pytest.mark.parametrize('change', [
