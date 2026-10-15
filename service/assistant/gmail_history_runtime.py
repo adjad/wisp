@@ -6,15 +6,16 @@ The application must synchronously withdraw this host before changing grants.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import secrets
 import threading
 import time
 from typing import Protocol
 
-from service.gmail_behavior_history import AccountIdentity, HistoryScope, Limits, history_source_guard
+from service.gmail_behavior_history import AccountIdentity, HistoryScope, HistorySnapshot, Limits, history_source_guard
 from service.gmail_source import HistoryPermissionState as Permission
 from service.config import authority_changes
+from service.publication_authority import Authority, Witness, revocation
 
 
 class HistoryUnavailable(ValueError):
@@ -152,6 +153,7 @@ class HistoryHost:
         self._jobs = {}
         self._revisions = {}
         self._closed = False
+        self._publication = Authority("gmail-history-host",owner=self)
         self._unsubscribe_authority = authority_changes.subscribe(self._configuration_changed)
 
     def _configuration_changed(self, _snapshot):
@@ -165,8 +167,8 @@ class HistoryHost:
         return job.permission if current.ready and current is job.authority else None
 
     def _withdraw(self, reason):
-        # Lock order: host -> source guard. The source's callback never takes
-        # this host lock, so source publication cannot reverse that order.
+        # All callers enter application revocation before host/source locks.
+        self._publication.withdraw()
         with history_source_guard():
             jobs = tuple(self._jobs.values())
             for job in jobs:
@@ -178,7 +180,7 @@ class HistoryHost:
 
     def bind(self, *, enabled, settings, epoch, role):
         """Trusted server settings snapshot; calling this does not start a job."""
-        with self._lock:
+        with revocation(), self._lock:
             policy = (enabled is True, settings.get("email") is True, str(epoch), str(role))
             authority = authority_changes.current()
             if not authority.ready:
@@ -191,9 +193,11 @@ class HistoryHost:
                 self._policy_revision += 1
                 self._policy = policy
                 self._policy_authority = authority
+            if not self._closed and self._publication.token() is None:
+                self._publication.publish()
 
     def invalidate(self, reason="Application permission withdrawn", *, close=False):
-        with self._lock:
+        with revocation(), self._lock:
             self._withdraw(reason)
             self._policy_revision += 1
             self._policy = None
@@ -229,7 +233,7 @@ class HistoryHost:
 
     def status(self):
         """Pure metadata. Source status must not fetch or renew any evidence."""
-        with self._lock:
+        with revocation(), self._lock:
             accounts = self._accounts()
             try:
                 labels = self._backend.account_labels() if self._backend is not None else {}
@@ -280,7 +284,7 @@ class HistoryHost:
                 or not isinstance(payload.get("account_id"), str)
                 or type(payload.get("revision")) is not int or payload["revision"] < 0):
             raise ValueError("A current account, revision and supported history command are required")
-        with self._lock, history_source_guard():
+        with revocation(), self._lock, history_source_guard():
             ident, command = payload["account_id"], payload["command"]
             revision = self._revisions.get(ident, 0)
             if (self._closed or payload["revision"] != revision or payload.get("session") != self._session
@@ -291,6 +295,7 @@ class HistoryHost:
             job = self._jobs.get(ident)
             if account is None:
                 if job is not None:
+                    self._publication.withdraw()
                     job.permission = None
                     if job.bridge is not None:
                         job.bridge.invalidate("Source account unavailable")
@@ -309,6 +314,7 @@ class HistoryHost:
                 scope = HistoryScope(**scope_data)
             elif "scope" in payload:
                 raise ValueError("Pause and reset do not change the history scope")
+            self._publication.withdraw()
             if job is not None:
                 job.permission = None
                 job.state = "paused"
@@ -334,11 +340,12 @@ class HistoryHost:
                     if job.bridge is not None:
                         job.bridge.invalidate("History start failed")
                     raise HistoryUnavailable("Gmail history could not start") from None
+            self._publication.publish()
             return self.status()
 
     def worker_jobs(self):
         """Pure current explicitly started jobs; never restores an old Start."""
-        with self._lock:
+        with revocation(), self._lock:
             accounts = self._accounts()
             rows = []
             for ident, job in self._jobs.items():
@@ -356,7 +363,7 @@ class HistoryHost:
             return tuple(rows)
 
     def continue_job(self, ident, revision):
-        with self._lock, history_source_guard():
+        with revocation(), self._lock, history_source_guard():
             job = self._jobs.get(ident)
             if (job is None or job.revision != revision or self._permission(job) is None
                     or job.bridge is None or job.account not in self._accounts()):
@@ -372,36 +379,40 @@ class HistoryHost:
 
     def pause_job(self, ident, revision, reason):
         """Withdraw only the exact failing worker, without pausing a new Start."""
-        with self._lock, history_source_guard():
+        with revocation(), self._lock, history_source_guard():
             job = self._jobs.get(ident)
             if job is None or job.revision != revision:
                 return
+            self._publication.withdraw()
             job.permission = None
             job.state = "paused"
             job.detail = reason
             if job.bridge is not None:
                 job.bridge.invalidate("paused")
             self._revisions[ident] = self._revisions.get(ident,0)+1
+            self._publication.publish()
 
     def cached_getters(self):
-        with self._lock:
+        with revocation(), self._lock:
             getters = []
             accounts = self._accounts()
             for ident, job in self._jobs.items():
                 if self._permission(job) is None or job.bridge is None or job.account not in accounts:
                     continue
                 def getter(*, expected_receipt=None, required_refs=(), ident=ident, job=job):
-                    with self._lock:
+                    with revocation(), self._lock:
                         if (self._closed or self._jobs.get(ident) is not job or self._permission(job) is None
                                 or job.account not in self._accounts()):
                             return None
-                        return job.bridge.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+                        snapshot = job.bridge.snapshot(expected_receipt=expected_receipt, required_refs=required_refs)
+                        return (replace(snapshot,publication_witness=Witness.combine(snapshot.publication_witness,
+                                self._publication.token())) if isinstance(snapshot,HistorySnapshot) else snapshot)
                 getters.append(getter)
             return tuple(getters)
 
     async def step(self, ident, *, http, budget, revision=None):
         """One explicitly budgeted source step; no scheduler or default transport."""
-        with self._lock:
+        with revocation(), self._lock:
             job = self._jobs.get(ident)
             if (self._closed or job is None or self._permission(job) is None or job.bridge is None
                     or job.account not in self._accounts()
@@ -409,7 +420,7 @@ class HistoryHost:
                 raise HistoryUnavailable("No current explicitly started history job")
             bridge = job.bridge
         await bridge.step(http=http, budget=budget)
-        with self._lock:
+        with revocation(), self._lock:
             if (self._jobs.get(ident) is not job or self._permission(job) is None
                     or job.account not in self._accounts()):
                 raise HistoryConflict("History permission changed during source work")

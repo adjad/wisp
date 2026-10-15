@@ -473,6 +473,65 @@ def test_prepared_finish_commits_before_concurrent_source_withdrawal_acknowledge
     assert acknowledged.is_set() and not witness.current() and len(index.work()) == 1
 
 
+def test_seed_prepared_path_checks_full_admission_before_application_lease_and_runtime_gate(index):
+    from contextlib import contextmanager
+    from service.publication_authority import Authority,Witness,PublicationBusy,revocation
+    authority = Authority("synthetic-seed-source")
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    held = []
+    prepared = []
+    @contextmanager
+    def gate():
+        # Acquiring the Runtime gate follows the outer publication lease.
+        with pytest.raises(PublicationBusy):
+            with revocation():
+                raise AssertionError("Outer application lease was missing")
+        held.append(True)
+        try:
+            yield
+        finally:
+            held.pop()
+    def full_check():
+        assert not held, "Full admission was called inside the Runtime publication gate"
+        # A cooperating mutation is allowed during preparation, proving this
+        # full check is not being disguised as a pure memory witness.
+        with revocation():
+            return witness.current()
+    def prepare_witness():
+        assert not held
+        with revocation():
+            prepared.append(True)
+        return witness
+    result = Seed(index).run([snap(current=full_check)],epoch="consent-one",now=NOW,
+        analysis_enabled=True,analyze=lambda *args,**kwargs:{"links":[]},admit=full_check,
+        publication=gate,prepare_publication=prepare_witness)
+    assert result["state"] == "advanced" and result["analyzed"] == 1 and len(prepared) == 2
+    assert index.status(prepare([snap()])[0])["email"]["analyzed"] == 1
+
+
+def test_seed_prepared_path_cannot_publish_after_acknowledged_withdrawal_during_analysis(index):
+    from service.publication_authority import Authority,Witness
+    authority = Authority("synthetic-seed-source")
+    authority.publish()
+    witness = Witness.combine(authority.token())
+    def analyze(*args,**kwargs):
+        authority.withdraw()
+        return {"links":[]}
+    result = Seed(index).run([snap(current=witness.current)],epoch="consent-one",now=NOW,
+        analysis_enabled=True,analyze=analyze,admit=lambda:True,prepare_publication=lambda:witness)
+    assert result["state"] == "cancelled" and not witness.current()
+    assert index.store._conn.execute("SELECT sum(covered),sum(attempts) FROM behavior_seed_records").fetchone()[:] == (0,0)
+    assert index.work() == index.edges() == [] and not index.store._conn.in_transaction
+
+
+def test_seed_prepared_path_missing_stamp_refuses_before_any_indexing(index):
+    result = Seed(index).run([snap()],epoch="consent-one",now=NOW,analysis_enabled=True,
+        analyze=lambda *args,**kwargs:{"links":[]},admit=lambda:True,prepare_publication=lambda:None)
+    assert result["state"] == "unavailable"
+    assert index.store._conn.execute("SELECT count(*) FROM behavior_seed_records").fetchone()[0] == 0
+
+
 def test_aged_derivations_reopen_still_current_exact_revision(index):
     records, manifests, _ = prepare([snap(n=1)])
     index.sync(records, manifests, epoch="consent-one", now=NOW)

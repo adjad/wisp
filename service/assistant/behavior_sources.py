@@ -14,6 +14,7 @@ import math
 import time
 
 from service.assistant.behavior_seed import Snapshot
+from service.publication_authority import Witness
 
 
 @dataclass
@@ -23,6 +24,12 @@ class Batch:
     receipts: list
     detail: dict
     snapshots: tuple = ()
+    publication_witnesses: tuple = ()
+
+    def prepared_witnesses(self):
+        """Memory handles only; missing evidence remains an explicit None."""
+        return self.publication_witnesses + tuple(s.publication_witness for s in self.snapshots
+                                                  if s.enabled is True and s.available is True)
 
     def current(self):
         try:
@@ -49,11 +56,11 @@ def _gmail_records(publications):
     cannot invalidate unchanged evidence or admit a partial body.
     """
     from service.gmail_behavior_history import HistorySnapshot
-    rows, checks, stamps, omitted = [], [], [], 0
+    rows, checks, stamps, omitted, witnesses = [], [], [], 0, []
     try:
         getters = publications() if callable(publications) else ()
         if not isinstance(getters, (tuple, list)):
-            return rows, checks, stamps, omitted
+            return rows, checks, stamps, omitted, witnesses
         for getter in getters:
             if not callable(getter):
                 continue
@@ -70,9 +77,12 @@ def _gmail_records(publications):
                     value = g(expected_receipt=receipt, required_refs=refs)
                     return (isinstance(value, HistorySnapshot) and value.complete is True
                             and not value.missing_refs and tuple(r.ref for r in value.records) == refs)
-                if not current():
+                qualified = getter(expected_receipt=snapshot.receipt,required_refs=refs)
+                if (not isinstance(qualified,HistorySnapshot) or qualified.complete is not True
+                        or qualified.missing_refs or tuple(r.ref for r in qualified.records) != refs):
                     continue
                 checks.append(current)
+                witnesses.append(qualified.publication_witness)
                 stamps.append(snapshot.receipt.read_started_at)
                 for r in selected:
                     identity = json.dumps(["gmail", r.account.account_id, r.resource_id], separators=(",", ":"))
@@ -87,7 +97,26 @@ def _gmail_records(publications):
                 continue
     except Exception:
         pass
-    return rows, checks, stamps, omitted
+    return rows, checks, stamps, omitted, witnesses
+
+
+def _native_witness(source, snapshot):
+    # This is preparation, outside publication and Runtime gates. Issuers check
+    # the actual captured native object; injected/unsupported snapshots cannot
+    # borrow a different live source's authority.
+    try:
+        if source == "email":
+            from service.tools.email_tools import prepare_publication_witness
+        elif source == "messages":
+            from service.tools.imessage_tools import prepare_publication_witness
+        elif source == "notes":
+            from service.tools.notes_tools import prepare_publication_witness
+        else:
+            from service.tools.browser_history_tools import prepare_publication_witness
+        value = prepare_publication_witness(snapshot)
+        return value if type(value) is Witness else None
+    except Exception:
+        return None
 
 
 def capture(settings, getters=None, *, retained=(), now=None, gmail_history_getters=None):
@@ -114,7 +143,7 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
     if gmail_history_getters is not None:
         getters = dict(getters, gmail_history=gmail_history_getters)
     now = time.time() if now is None else now
-    records, visits, receipts, detail, seeds = [], [], [], {}, []
+    records, visits, receipts, detail, seeds, witnesses = [], [], [], {}, [], []
     for source in ("email", "messages", "notes", "websites"):
         if not settings.get(source):
             detail[source] = "off"
@@ -133,6 +162,7 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
             continue
         detail[source] = "bounded current publication; not full history"
         if source == "websites":
+            witnesses.append(_native_witness(source,snapshot))
             receipt = snapshot["receipt"]
             receipts.append(
                 lambda g=getter, token=receipt: g(expected_receipt=token) is not None
@@ -154,7 +184,8 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
                               text=f"Title: {r['title']}\n{r['body']}", source_time=None,
                               time_basis="unknown", evidence_basis="source_statement") for r in snapshot.records)
             seeds.append(Snapshot(source, rows, enabled=True, available=True, current=note_current,
-                                  publication_complete=True, omitted=snapshot.omitted, published_at=snapshot.body_started_at))
+                                  publication_complete=True, omitted=snapshot.omitted, published_at=snapshot.body_started_at,
+                                  publication_witness=_native_witness(source,snapshot)))
             detail[source] = "Current Notes contents only (at most 500); no revisions or dated prose inferred."
             continue
         generation = (
@@ -209,9 +240,10 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
         seeds.append(Snapshot(source, tuple(source_records), enabled=True, available=True, current=check,
                               publication_complete=(record_scope["publication_complete"] if record_scope is not None else True),
                               omitted=(record_scope["known_omitted"] if record_scope is not None else 0),
-                              published_at=snapshot.synced_at if source == "email" else snapshot.get("captured_at")))
+                              published_at=snapshot.synced_at if source == "email" else snapshot.get("captured_at"),
+                              publication_witness=_native_witness(source,snapshot)))
     if settings.get("email") and getters.get("gmail_history") is not None:
-        history_rows, history_checks, stamps, omitted = _gmail_records(getters["gmail_history"])
+        history_rows, history_checks, stamps, omitted, history_witnesses = _gmail_records(getters["gmail_history"])
         if history_rows:
             original = next(s for s in seeds if s.source == "email")
             checks = ([original.current] if original.available else []) + history_checks
@@ -220,7 +252,9 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
                 stamps.append(original.published_at)
             combined = Snapshot("email", original.records+tuple(history_rows), enabled=True, available=True,
                 current=combined_current, publication_complete=False, omitted=original.omitted+omitted,
-                published_at=min(stamps), scope="cached_publication")
+                published_at=min(stamps), scope="cached_publication",
+                publication_witness=Witness.combine(*(([original.publication_witness] if original.available else [])
+                                                      +history_witnesses)))
             seeds = [combined if s.source == "email" else s for s in seeds]
             receipts.extend(history_checks)
             records.extend(dict(r, text=r["text"][:2400]) for r in history_rows)
@@ -234,4 +268,4 @@ def capture(settings, getters=None, *, retained=(), now=None, gmail_history_gett
         detail[snapshot.source] = "Retained 180-day evidence, not attendance or exhaustive history." if snapshot.available else "Current permitted retained evidence unavailable."
     records.sort(key=lambda r: r.get("ts") if type(r.get("ts")) in (int, float)
                  else r.get("ordering_at") or 0, reverse=True)
-    return Batch(records[:8], visits[:10000], receipts, detail, tuple(seeds))
+    return Batch(records[:8], visits[:10000], receipts, detail, tuple(seeds),tuple(witnesses))

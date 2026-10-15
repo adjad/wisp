@@ -7,7 +7,7 @@ progress is not saved permission: materialization always needs current evidence.
 from __future__ import annotations
 
 from copy import deepcopy
-from contextlib import nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import hashlib
@@ -17,6 +17,7 @@ import re
 
 from service.behavior.associations import materialize
 from service.behavior.source_index import PASSAGE_BYTES, PASSAGE_CHARS, SOURCES
+from service.publication_authority import PublicationUnavailable, Witness, publication as ordered_publication, revocation
 
 MAX_SOURCE_RECORDS = 2000
 MAX_RECORD_CHARS = 64000
@@ -38,6 +39,7 @@ class Snapshot:
     declared_range: tuple | None = None
     scope: str = "cached_publication"
     published_at: float | None = None
+    publication_witness: Witness | None = None
 
 
 def _number(value):
@@ -181,6 +183,27 @@ def _current(receipts, admit):
         return False
 
 
+@contextmanager
+def _publication_scope(guard, gate, prepare_publication):
+    if prepare_publication is None:
+        # Transitional callers retain their existing full-admission contract.
+        # They cannot be described as using the ordered prepared witness path.
+        with gate():
+            yield guard(),None
+        return
+    # Full source/config/SQL checks and source-issued stamp preparation occur
+    # before the outer application lease and before the Runtime gate.
+    witness = prepare_publication() if guard() else None
+    with ExitStack() as stack:
+        try:
+            lease = stack.enter_context(ordered_publication(witness))
+        except PublicationUnavailable:
+            yield False,None
+            return
+        stack.enter_context(gate())
+        yield lease.current(),lease
+
+
 def context_for(anchors, records):
     """Transient lexical retrieval proposes candidates, never assigns meaning."""
     def words(text):
@@ -226,9 +249,9 @@ class Seed:
         self.index = index
 
     def run(self, snapshots, *, epoch, now, analysis_enabled=False, analyze=None, admit=lambda: False,
-            publication=nullcontext, timezone="UTC"):
+            publication=nullcontext, timezone="UTC", prepare_publication=None):
         if analysis_enabled is not True:
-            with publication():
+            with revocation(),publication():
                 self.index.reset()
             return dict(state="off", sources=self.index.status([]), analyzed=0)
         # Rotate finite byte-capped input before normalization so completed
@@ -238,8 +261,8 @@ class Seed:
                              and s.enabled is True and s.available is True else s for s in snapshots)
         records, manifests, receipts = prepare(snapshots)
         guard = lambda: _current(receipts, admit)
-        with publication():
-            if not guard():
+        with _publication_scope(guard,publication,prepare_publication) as (current,lease):
+            if not current:
                 return dict(state="unavailable", sources={}, analyzed=0)
             self.index.sync(records, manifests, epoch=epoch, now=now)
             anchors = self.index.select(records, now=now)
@@ -270,14 +293,16 @@ class Seed:
                                  r["source_time"] if r["time_basis"] == "source_timestamp" else None,
                                  timezone)) for r in context]
                 work = work_metadata(response.get("demands", []), grounded, now=now, timezone=timezone)
-                with publication():
-                    if guard() and anchors and self.index.finish(anchors, context, response["links"], epoch=epoch, now=now, admit=guard, work=work):
+                with _publication_scope(guard,publication,prepare_publication) as (current,lease):
+                    if current and anchors and (self.index.finish_prepared(anchors,context,response["links"],
+                            epoch=epoch,now=now,lease=lease,work=work) if lease is not None else
+                            self.index.finish(anchors,context,response["links"],epoch=epoch,now=now,admit=guard,work=work)):
                         state, analyzed = "advanced", len(anchors)
                     else:
                         state = "cancelled"
             except Exception:
-                with publication():
-                    if guard():
+                with _publication_scope(guard,publication,prepare_publication) as (current,lease):
+                    if current:
                         self.index.defer(anchors, epoch=epoch, now=now)
                         state = "deferred"
                     else:

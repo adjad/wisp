@@ -64,6 +64,48 @@ class GmailSource(unittest.TestCase):
     def publish(self, account=ME, **parts):
         E.cache_external_emails(account=account, **parts)
 
+    def test_native_mail_memory_witness_uses_exact_live_snapshot_and_never_calls_getters(self):
+        from service.publication_authority import PublicationBusy,publication
+        raw = "\x01".join([str(time.time()),"U","Native","native-id","Sender","me@example.test",
+                              "Subject","<synthetic>","A complete synthetic native body."])
+        E.set_email_availability(True)
+        E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        snapshot = E.raw_email_snapshot()
+        self.assertIsNotNone(snapshot)
+        witness = E.prepare_publication_witness(snapshot)
+        self.assertTrue(witness.current())
+        self.assertIsNone(E.prepare_publication_witness(dataclasses.replace(snapshot)))
+        with publication(witness):
+            with self.assertRaises(PublicationBusy):
+                E.set_email_availability(False)
+            with self.assertRaises(PublicationBusy):
+                E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+            with patch.object(E,"raw_email_snapshot",side_effect=AssertionError("Getter during publication")), \
+                 patch.object(E.cache_store,"load",side_effect=AssertionError("Cache I/O during publication")):
+                self.assertTrue(witness.current())
+        E.set_email_availability(False)
+        self.assertFalse(witness.current())
+        self.assertIsNone(E.prepare_publication_witness(snapshot))
+        E.set_email_availability(True)
+        self.assertFalse(witness.current())  # Re-enabling never rearms the old availability stamp.
+        self.assertTrue(E.prepare_publication_witness(snapshot).current())
+        E.cache_raw_emails("",{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        self.assertIsNone(E.prepare_publication_witness(snapshot))
+
+    def test_native_mail_memory_witness_does_not_renew_original_receipt(self):
+        raw = "\x01".join([str(time.time()),"U","Native","native-id","Sender","me@example.test",
+                              "Subject","<synthetic>","A complete synthetic native body."])
+        E.set_email_availability(True)
+        E.cache_raw_emails(raw,{"accounts":["Native"],"failed_accounts":[],"complete":True})
+        snapshot = E.raw_email_snapshot()
+        witness = E.prepare_publication_witness(snapshot)
+        with patch.object(E.time,"time",return_value=snapshot.synced_at+1199):
+            self.assertTrue(witness.current())
+            self.assertTrue(E.prepare_publication_witness(snapshot).current())
+        with patch.object(E.time,"time",return_value=snapshot.synced_at+1200):
+            self.assertFalse(witness.current())
+            self.assertIsNone(E.prepare_publication_witness(snapshot))
+
     def history_provider(self):
         import weakref
         from service import gmail_behavior_history as H
