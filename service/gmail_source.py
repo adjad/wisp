@@ -1025,6 +1025,24 @@ class _BoundHistoryHTTP:
         return response
 
 
+class PublicContinuation:
+    """Opaque, volatile traversal handoff. Metadata never restores this object."""
+    __slots__ = ("__weakref__",)
+
+    def __init__(self, *, _issuer=None):
+        if _issuer is not _HISTORY_ISSUER:
+            raise TypeError("History continuation must be issued by its live source")
+
+    def __copy__(self):
+        raise TypeError("History continuation cannot be copied")
+
+    def __deepcopy__(self, memo):
+        raise TypeError("History continuation cannot be copied")
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("History continuation cannot be restored")
+
+
 class PublicHistoryBridge:
     """Prepared production binding; no production caller or default activation.
 
@@ -1041,6 +1059,8 @@ class PublicHistoryBridge:
         self._grant = None
         self._token = None
         self._binding_error = ""
+        self._continuation = None
+        self._start_identity = None
         self._provider = HistoryProvider(admission=self._admission, limits=limits, clock=clock, monotonic=monotonic)
         with _history_guard():
             application._bridges.add(self)
@@ -1079,6 +1099,7 @@ class PublicHistoryBridge:
             self._grant = grant
             self._binding_error = ""
             self._provider.control("start", scope=grant.scope)
+            self._start_identity = object()
             return self.status()
 
     def invalidate(self, reason="invalidated"):
@@ -1086,7 +1107,57 @@ class PublicHistoryBridge:
             if self._grant is not None:
                 self._application._grants.discard(self._grant)
             self._grant = self._token = None
+            self._continuation = self._start_identity = None
             self._provider.invalidate(reason)
+
+    def prepare_continuation(self):
+        """Issue one live handoff before expiry; no HTTP, disk I/O or await."""
+        with _history_guard():
+            self.status()
+            state = self._provider._continuation_status()
+            if not state["available"]:
+                if state["blocked_reason"]:
+                    self._continuation = None
+                    self._provider._stop_continuation("History continuation stopped; coverage is partial")
+                raise PermissionError("Current progressing history handoff window required")
+            if self._continuation is None:
+                self._continuation = (PublicContinuation(_issuer=_HISTORY_ISSUER),
+                                      self._provider._job, self._grant, self._start_identity)
+            return self._continuation[0]
+
+    def continue_scan(self, continuation, *, grant):
+        """Consume a source-issued traversal with a NEW current unused grant.
+
+        Same explicit Start, source lease, scope, application and immutable
+        permission are mandatory. Old cache/receipt/token are withdrawn. Only
+        a subsequent explicit, counted step can refresh/profile/fetch again.
+        """
+        with _history_guard():
+            self.status()
+            issued = self._continuation
+            old = self._grant
+            if (issued is None or continuation is not issued[0]
+                    or self._provider._job is not issued[1] or old is not issued[2]
+                    or self._start_identity is not issued[3]
+                    or not self._provider._continuation_status()["available"]
+                    or not self._current(old)
+                    or not isinstance(grant, HistoryGrant) or grant is old
+                    or grant._application is not self._application
+                    or grant.account_lease is not old.account_lease or grant.scope != old.scope
+                    or grant.permission != old.permission or not _history_grant_current(grant)
+                    or any(bridge._grant is grant for bridge in self._application._bridges)):
+                raise PermissionError("Live source continuation and fresh same-Start grant required")
+            # No I/O/await between final old/new validation and atomic transfer.
+            self._continuation = None
+            self._application._grants.discard(old)
+            self._grant, self._token = grant, None
+            try:
+                self._provider._continue_segment()
+                self._require_grant(grant)
+            except BaseException:
+                self.invalidate("revoked")
+                raise
+            return self.status()
 
     def control(self, action):
         actions = {"pause": "paused", "cancel": "cancelled", "revoke": "revoked", "forget": "forgotten"}
@@ -1101,11 +1172,12 @@ class PublicHistoryBridge:
             if grant is not None and not self._current(grant):
                 self.invalidate("revoked")
             status = self._provider.status()
-            if self._grant is not None and status["state"] not in ("running", "exhausted", "capped"):
+            if self._grant is not None and status["state"] not in ("running", "exhausted", "capped", "partial"):
                 self.invalidate(status["state"])
                 status = self._provider.status()
             return {**status, "binding": self._grant.to_metadata() if self._grant else None,
-                    "binding_error": self._binding_error}
+                    "binding_error": self._binding_error,
+                    "continuation": self._provider._continuation_status()}
 
     def snapshot(self, *, expected_receipt=None, required_refs=()):
         with _history_guard():
@@ -1114,8 +1186,8 @@ class PublicHistoryBridge:
 
     def checkpoint(self):
         with _history_guard():
-            self.status()
-            return self._provider.checkpoint()
+            # Traversal stays source-owned; this export is never resume authority.
+            return {"schema": 1, "status": self.status()}
 
     async def _source_token(self, http):
         from service import gmail_behavior_history as H

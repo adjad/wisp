@@ -487,6 +487,10 @@ class _Job:
     evicted: int = 0
     http_calls: int = 0
     error: str = ""
+    segment: int = 1
+    segment_listed: int = 0
+    segment_fetched: int = 0
+    stopped: bool = False
 
 
 class _Withdrawn(Exception):
@@ -653,6 +657,57 @@ class HistoryProvider:
                     "pending_ids": list(job.pending) if job else [],
                     "next_page": job.next_page if job else ""}
 
+    def _continuation_status(self):
+        """Private source seam; public receipts and reference schemas stay v3."""
+        with _LOCK:
+            job = self._job
+            current = job is not None and self._current(job)
+            pending = bool(current and (job.pending or (job.next_page and not job.capped)))
+            due = bool(current and min(self._clock() - job.read_started_at,
+                       self._monotonic() - job.monotonic_started_at) >= self.limits.ttl_seconds * .75)
+            progress = bool(current and (len(job.listed) > job.segment_listed
+                                         or job.fetched > job.segment_fetched))
+            reason = ("segment_limit" if current and job.segment >= 32 else
+                      "no_progress" if current and not progress else "")
+            incomplete = bool(pending or (current and job.capped and not job.eof))
+            return {"schema": 1, "segment": job.segment if current else 0, "maximum_segments": 32,
+                    "handoff_due": due, "available": bool(pending and due and progress and not reason
+                        and not job.error and not job.stopped and not self._stepping),
+                    "incomplete": incomplete, "blocked_reason": reason if pending and due else ""}
+
+    def _stop_continuation(self, reason):
+        with _LOCK:
+            job = self._job
+            if job is not None and self._current(job):
+                job.stopped = True
+                job.error = reason
+                self._state = "partial"
+
+    def _continue_segment(self):
+        """Source bridge only, while current and under the shared guard.
+
+        Copy bounded traversal metadata, then withdraw ALL old raw/proof state.
+        The caller installs a fresh source grant first; no token or body crosses.
+        """
+        with _LOCK:
+            old = self._job
+            if not self._continuation_status()["available"]:
+                raise PermissionError("Current progressing history segment required")
+            self._require(old)
+            now, mono = self._clock(), self._monotonic()
+            new = _Job(old.admission, old.scope, secrets.token_hex(24), now, mono,
+                pending=list(old.pending), listed=dict(old.listed), page_tokens=set(old.page_tokens),
+                next_page=old.next_page, eof=old.eof, capped=old.capped,
+                fetched=old.fetched, eligible=old.eligible, failed=old.failed, evicted=old.evicted,
+                http_calls=old.http_calls, segment=old.segment + 1,
+                segment_listed=len(old.listed), segment_fetched=old.fetched)
+            self._require(old)  # Copying metadata must not cross the old expiry.
+            self.invalidate()
+            self._job = new
+            _CACHE.owners[self] = self.limits.global_cache_bytes
+            self._state = "running"
+            self._require(new)
+
     def snapshot(self, *, expected_receipt=None, required_refs=()):
         with _LOCK:
             self.status()  # Current trusted state, expiry and withdrawals, no I/O.
@@ -758,7 +813,7 @@ class HistoryProvider:
             raise ValueError("Explicit history step budget required")
         with _LOCK:
             job = self._job
-            if job is None or self._stepping:
+            if job is None or self._stepping or job.stopped:
                 return self.status()
             if not self._current(job):
                 self.invalidate()
