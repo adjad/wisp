@@ -289,7 +289,13 @@ def cmd_distill(args) -> None:
                 case = _case(item)
                 best, tries = None, []
                 for j in range(args.k):
+                    # Try 0 is production sampling (the loop's greedy tool steps), so a
+                    # kept row is what Mellum already does in Wisp. Later tries only run
+                    # when it failed, and sample tool steps at the profile temperature.
+                    if j and best:
+                        break
                     client.seed = int(hashlib.sha1(f"{item['id']}:{j}".encode()).hexdigest()[:8], 16)
+                    client.temperature = None if j == 0 else args.retry_temperature
                     traj = await runner.run_case(client, MODEL, case, world, timeout=args.timeout)
                     v = score(case, traj, registry_names=names, today=world.today)
                     think = [len(s.get("reasoning") or "") for s in traj["steps"]]
@@ -319,6 +325,11 @@ def cmd_distill(args) -> None:
                 print(f"[{n}/{len(todo)}] {item['id']:<34} {status}  "
                       f"{[('P' if t['passed'] else 'F') + str(t['think']) for t in tries]}")
         runner.set_clock(None)
+        # Fallback covers every unpassed item in the log, including ones from an
+        # earlier interrupted run, minus any that already have fallback rows.
+        have = {r["item"] for r in _r(OUT["distill_rows"])}
+        unpassed = {r["item"] for r in _r(OUT["distill_log"]) if r["status"] == "no pass"}
+        fallback = [i for i in items if i["id"] in unpassed - have and i["has_gold"]]
         if fallback:
             rows, log = [], []
             outcome = await _run_gold(runner, fallback, rows, log)
@@ -512,7 +523,8 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=["pool", "gold", "distill", "render", "validate", "stats", "all"])
     ap.add_argument("--per-world", type=int, default=1, help="items per family per world (pool)")
-    ap.add_argument("--k", type=int, default=2, help="Mellum samples per distill item")
+    ap.add_argument("--k", type=int, default=2, help="max Mellum tries per distill item (later tries only on failure)")
+    ap.add_argument("--retry-temperature", type=float, default=0.6, help="tool-step temperature for retries")
     ap.add_argument("--limit", type=int, default=0, help="distill only the first N items (pilot)")
     ap.add_argument("--timeout", type=float, default=180.0)
     ap.add_argument("--template-checks", type=int, default=200, help="validate: rows to re-render and compare")

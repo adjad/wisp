@@ -200,10 +200,15 @@ def bench_client_class():
         # oMLX samples deterministically without a seed, so repeated trials of
         # one prompt come back identical; set a seed per trial for variety.
         seed: int | None = None
+        # The agent loop sends temperature 0.0 on tool-selection steps, so a
+        # seed alone cannot vary them; set this to sample those steps too.
+        temperature: float | None = None
 
         def _thinking_kw(self, kw: dict) -> dict:
             if self.seed is not None and "seed" not in kw:
                 kw = {**kw, "seed": self.seed}
+            if self.temperature is not None:
+                kw = {**kw, "temperature": self.temperature}
             if self.thinking != "off":
                 return kw
             ctk = dict(kw.get("chat_template_kwargs") or {})
