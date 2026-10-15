@@ -365,9 +365,16 @@ def make_fakes(w: World) -> dict:
     def get_stock_price(symbols, period=None, **_):
         prices = {"AAPL": "231.45", "MSFT": "448.10", "NVDA": "142.88", "BTC": "98,400.00",
                   "BTC-USD": "98,400.00", "BTCUSD": "98,400.00"}
+        # The real tool resolves company names itself, and its description tells
+        # the model to pass the name exactly as the user said it — so must the fake.
+        names = {"APPLE": "AAPL", "MICROSOFT": "MSFT", "NVIDIA": "NVDA", "BITCOIN": "BTC"}
         syms = symbols if isinstance(symbols, list) else re.split(r"[,\s]+", str(symbols))
-        return "\n".join(f"{s.upper()}: ${prices.get(s.upper(), '57.20')} USD (quote 2:41 PM ET)"
-                         for s in syms if s)
+        out = []
+        for s in (str(x).strip().upper() for x in syms if str(x).strip()):
+            s = names.get(s, s)
+            out.append(f"{s}: ${prices[s]} USD (quote 2:41 PM ET)" if s in prices
+                       else f"(no quote found for {s!r})")
+        return "\n".join(out)
 
     def web_search(query, limit=None, **_):
         return (f"Results for '{query}':\n1. Example Exchange extends trading hours to 8pm — "

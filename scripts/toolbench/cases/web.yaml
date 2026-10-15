@@ -8,7 +8,7 @@
   answer: {contains_any: ["74", sunny]}
 - id: web_stock_apple
   prompt: "How is Apple stock doing?"
-  expect: [{tool: get_stock_price, args: {symbols: {icontains: aapl}}}]
+  expect: [{tool: get_stock_price, args: {symbols: {contains_any: [aapl, apple]}}}]
   answer: {contains_all: ["231.45"]}
 - id: web_news_exchange
   prompt: "search the web for news about Example Exchange trading hours"

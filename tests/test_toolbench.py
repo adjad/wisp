@@ -180,6 +180,8 @@ def test_fakes_are_query_relevant_and_record_effects():
     assert "No notes match" in f["search_notes"](query="zebra")
     assert "0101" in f["lookup_contact"](name="Mom")
     assert f["calculate"](expression="17*23") == "391"
+    assert "231.45" in f["get_stock_price"](symbols=["Apple"])
+    assert "no quote" in f["get_stock_price"](symbols="ZZZZ")
     assert "error" in f["calculate"](expression="9**999999")
     assert w.effects == []
     f["send_email"](to="mom@example.com", subject="s", body="b")
