@@ -340,3 +340,45 @@ The fixture checks successful readiness recovery, bounded failure paths,
 subsequent recovery, no third header begin, and real final fake admission.
 This bounds a startup interleaving; it is not a universal starvation guarantee
 under unbounded competing requests.
+
+The full `64bf99ad` audit closed the earlier identity, Calendar and authored-work
+findings but blocked malformed begin acknowledgements. Under fault injection,
+an empty or short session could retire the valid backend session locally and
+prevent subsequent valid header/raw/history calls from recovering. Backend
+receipt validation and final sending remained closed; this was a persistent
+client-readiness failure, not an unauthorized-send reproduction. The sealed
+complete finding is `DAILY-64BF-R1-MALFORMED-CAPTURE-SESSION-POISON`.
+
+The capture handshake now checks the complete session/generation envelope
+before accepted ordering or retired sessions can change. Sessions must be
+strings of 20–100 characters. Generations must be representable positive
+integers; CoreFoundation type checks reject JSON booleans, and floating numeric
+representations are rejected before integer bridging. Invalid responses release
+the existing claim, perform no native work or header reacquisition, and leave
+the legitimate session available to future invocations. Genuine backend restart,
+retired-session refusal and the original capture deadline remain intact.
+
+The actual-caller fixture first reproduced the failure before correction.
+Recovery controls cover an invalid initial acknowledgement and valid-session A,
+malformed acknowledgement, then two valid A invocations in every reader. Shapes
+include session length/type/null/missing and generation boolean, zero, negative,
+string, null, missing, fractional and unrepresentable values. Session boundaries
+20/100 and the maximum representable generation retain positive controls.
+Recorded requests pass through real private legacy caches, feature handlers,
+policy and final fake admission without a status read. Separate malformed
+terminal-receipt controls preserve backend rejection and later genuine native
+recovery. JSON `1.0` reserialized as `1` is not counted as a distinct malformed
+wire case. The successor requires fresh full gates and independent reviews;
+actual app/native/provider execution and the separate consumer remain outside
+this qualification.
+
+The first protocol-validation successor `3f54c7ac` remained held after self-review
+found that Swift grapheme counts differed from backend Unicode length. Its
+already-running checks completed before further editing; they are historical.
+The exact-caller Unicode control first reproduced native work after a malformed
+100-grapheme/200-scalar acknowledgement. Session bounds now count Unicode
+scalars, matching the backend. Controls cover 19/20/100/101/200 scalar cases,
+including valid 20- and 100-scalar sessions containing one grapheme, across
+header/raw/history recovery and actual backend admission. Canonical ASCII
+server tokens retain their original behavior. This is synthetic protocol
+resilience evidence, not a report of a live backend sending malformed tokens.

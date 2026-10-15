@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import Dispatch
 
 // The Python contract injects byte-for-byte production scan/capture/post bodies.

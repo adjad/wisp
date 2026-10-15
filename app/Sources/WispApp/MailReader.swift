@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CoreFoundation
 
 // Local callback admission complements the server generation fence. A delayed
 // begin response cannot start an older scan after a newer capture was accepted.
@@ -886,7 +887,10 @@ final class MailReader {
             guard let self, error == nil, deadline.timeIntervalSinceNow > 0,
                   let data, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let capture = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let session = capture["session"] as? String,
+                  let session = capture["session"] as? String, (20...100).contains(session.unicodeScalars.count),
+                  let number = capture["generation"] as? NSNumber,
+                  CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  !["f", "d"].contains(String(cString: number.objCType)),
                   let generation = capture["generation"] as? Int, generation > 0 else {
                 completion(nil)
                 return
