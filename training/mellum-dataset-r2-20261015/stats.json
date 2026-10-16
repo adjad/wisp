@@ -1,39 +1,54 @@
 {
-  "built": "2026-10-15T22:47:57",
+  "built": "2026-10-16T00:25:12",
   "pool_items": 2110,
-  "items_with_rows": 1295,
-  "rows": 2366,
+  "items_with_rows": 1959,
+  "rows": 3662,
   "rows_by_split": {
-    "dev": 251,
-    "train": 2115
+    "dev": 392,
+    "train": 3270
   },
   "rows_by_source": {
-    "gold": 2366
+    "gold": 2366,
+    "distill": 1150,
+    "gold-fallback": 146
   },
   "rows_by_category": {
-    "calendar": 216,
-    "reminders": 360,
-    "mail": 507,
-    "messages": 274,
-    "notes": 154,
-    "files": 162,
-    "device": 24,
-    "memory": 40,
+    "calendar": 438,
+    "reminders": 500,
+    "mail": 617,
+    "messages": 356,
+    "notes": 258,
+    "files": 186,
+    "device": 276,
+    "memory": 130,
     "chat": 122,
     "safety": 102,
     "followup": 354,
-    "web": 51
+    "web": 215,
+    "contacts": 108
   },
   "rows_by_family": {
     "cal_add_offset": 96,
     "cal_add_weekday": 120,
+    "cal_cancel": 90,
+    "cal_free": 24,
+    "cal_past": 32,
+    "cal_sunday": 32,
+    "cal_tomorrow": 44,
     "chat_ack": 16,
     "chat_define_tools_offered": 44,
     "chat_explain": 12,
     "chat_writing": 16,
     "chat_writing_tools_offered": 4,
+    "contact_mom": 22,
+    "contact_phone": 86,
+    "dev_apps": 100,
+    "dev_battery": 20,
     "dev_check_dont_change": 24,
+    "dev_timer": 84,
+    "dev_toggle": 48,
     "files_found_stop": 32,
+    "files_list": 24,
     "files_missing": 74,
     "fu_next_day": 24,
     "fu_nth_email": 120,
@@ -45,8 +60,11 @@
     "mail_card_balance": 32,
     "mail_dont_reply": 106,
     "mail_draft_friend2": 116,
+    "mail_from_coworker": 94,
     "mail_inbox_injection": 32,
     "mail_reply_landlord": 105,
+    "mail_work": 16,
+    "mem_remember": 90,
     "mem_venting": 16,
     "menu_cant_do": 30,
     "menu_from_context": 48,
@@ -55,29 +73,36 @@
     "menu_web_search_only": 51,
     "msg_channel_mom": 16,
     "msg_channel_photos": 78,
+    "msg_read_friend": 82,
     "msg_send_friend2": 180,
+    "notes_create": 72,
+    "notes_find": 32,
     "notes_missing": 106,
+    "rem_list": 20,
     "rem_not_a_send": 120,
+    "rem_tomorrow": 120,
     "rem_tonight_pm": 120,
     "rem_weekday": 120,
     "safe_send_nothing": 16,
     "safe_vague_destroy": 20,
-    "safe_vague_folder": 4
+    "safe_vague_folder": 4,
+    "web_stock": 68,
+    "web_weather": 96
   },
-  "thinking_steps": 1298,
-  "tool_call_targets": 1129,
+  "thinking_steps": 1946,
+  "tool_call_targets": 1779,
   "prompt_tokens": {
     "max": 12077,
-    "p95": 9127,
-    "median": 4713
+    "p95": 8705,
+    "median": 3434
   },
   "completion_tokens": {
-    "max": 113,
-    "p95": 87,
+    "max": 542,
+    "p95": 257,
     "median": 40,
-    "total_train": 88136
+    "total_train": 212316
   },
-  "tokens_per_epoch_train": 9405528,
+  "tokens_per_epoch_train": 13580835,
   "worlds": {
     "train": [
       1001,
@@ -146,9 +171,9 @@
   },
   "gate_rejects": 0,
   "rows_by_embedder": {
-    "engine": 2366
+    "engine": 3662
   },
-  "distill_done": false,
+  "distill_done": true,
   "gold_yield": {
     "cal_add_offset": {
       "items": 48,

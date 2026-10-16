@@ -5,7 +5,5 @@ gold_log.jsonl
 distill_rows.jsonl
 distill_log.jsonl
 mellum-r2-data.zip
-# Gold-only, stub-embedder renders until the engine run (DISTILL_TODO.md); commit them with the final build.
-train.jsonl
-dev.jsonl
 gold.out
+distill.out

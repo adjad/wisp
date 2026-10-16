@@ -1,6 +1,6 @@
 # Router findings from the R2 gold build
 
-From `gold_log.jsonl` after `build.py gold --engine` on `main` + PR #239. Each row is a gold item the router made
+From `gold_log.jsonl` after `build.py gold --engine` on `main` at 40ffe997 (PRs #239 + #241). Each row is a gold item the router made
 impossible to answer: training cannot fix these. Routes marked *retrieved* come from the packaged
 `tool_retrieval.provider: lexical` (the user's config does not override it), so they are production menus. The
 offline stub-embedder run gave the same yields in every family (11/1434 menus differed, none changed an outcome).
