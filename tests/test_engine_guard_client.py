@@ -48,6 +48,49 @@ class GuardClientTests(unittest.TestCase):
                     asyncio.run(client.load("synthetic-model"))
                 self.assertEqual(calls, ["/v1/models/synthetic-model/load"])
 
+    def test_chat_and_stream_refuse_before_output_without_replay(self):
+        async def run(streaming):
+            calls, output = [], []
+            def reply(request):
+                calls.append(request.url.path)
+                return self.response(503)
+            client = OMLXClient.__new__(OMLXClient)
+            client.managed = True
+            client.api_prefix = "/v1"
+            client._fit_request = lambda m, messages, tools, tokens, **kw: (m, messages, tools, tokens)
+            client._payload = lambda *a, **kw: {"model": "synthetic-model"}
+            client._client = httpx.AsyncClient(base_url="http://test.invalid", transport=httpx.MockTransport(reply))
+            try:
+                with self.assertRaises(EngineGuardUnavailableError) as caught:
+                    if streaming:
+                        async for event in client.stream_events("synthetic-model", []):
+                            output.append(event)
+                    else:
+                        await client.chat("synthetic-model", [])
+                self.assertEqual(output, [])
+                self.assertEqual(calls, ["/v1/chat/completions"])
+                self.assertNotIn("PRIVATE", str(caught.exception))
+            finally:
+                await client._client.aclose()
+        for streaming in (False, True):
+            with self.subTest(streaming=streaming):
+                asyncio.run(run(streaming))
+
+    def test_optional_warmup_refusal_preserves_the_requested_resident_model(self):
+        calls = []
+        client = OMLXClient.__new__(OMLXClient)
+        client.managed = True
+        client._keep_warm = {"optional"}
+        async def loaded():
+            return ["primary"]
+        async def post(path):
+            calls.append(path)
+            return self.response(503)
+        client.loaded_models = loaded
+        client._client = SimpleNamespace(post=post)
+        asyncio.run(client.ensure_only("primary", settle_timeout=0.1))
+        self.assertEqual(calls, ["/v1/models/optional/load"])
+
 
 if __name__ == "__main__":
     unittest.main()

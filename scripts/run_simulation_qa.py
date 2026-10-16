@@ -286,6 +286,7 @@ ADDITIONAL_FULL_TESTS = {
     "tests/test_engine_guard_proof.py",
     "tests/test_engine_guard_overlay.py",
     "tests/test_engine_guard_client.py",
+    "tests/test_engine_guard_admission.py",
     "tests/test_bundled_engine_startup.py",
     # Attestation reuse (lease, fence, shadow) on in-process fakes with a fake clock, this
     # process's own loopback sockets and one disposable bash child; no oMLX or port 8000.
