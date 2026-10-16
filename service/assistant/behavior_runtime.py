@@ -761,9 +761,13 @@ class BehaviorRuntime:
             raise ValueError("A local date is required")
         ZoneInfo(timezone)
         now = self.clock() if now is None else now
-        empty = dict(version=1, ready=False, timezone=timezone, generated_at=now,
-                     evidence_checked_at=now, windows=[], demands=[], patterns=[], associations=[], source_coverage={},
-                     detail="No current inferred availability; an empty calendar does not prove free time.")
+        def withdrawn():
+            # Never copy the enriched working view into a refused response.
+            # New containers also prevent caller edits from crossing requests.
+            return dict(version=1, ready=False, timezone=timezone, generated_at=now,
+                        evidence_checked_at=now, windows=[], demands=[], patterns=[], associations=[], source_coverage={},
+                        detail="No current inferred availability; an empty calendar does not prove free time.")
+        empty = withdrawn()
         with self._in_flight():
             if not self.live():
                 return empty
@@ -776,7 +780,7 @@ class BehaviorRuntime:
             def raw_view():
                 proof = engine.prepare_availability_publication_witness(
                     empty["patterns"],day,timezone,(),now,days=1)
-                return self._publish_prepared_view(empty,settings,role,extra=(proof,)) or dict(empty,patterns=[])
+                return self._publish_prepared_view(empty,settings,role,extra=(proof,)) or withdrawn()
             first = datetime.fromtimestamp(now, ZoneInfo(timezone)).date()
             in_horizon = first <= target <= first+timedelta(days=6)
             if in_horizon:
@@ -802,8 +806,6 @@ class BehaviorRuntime:
             if index is None and not cache_ok:
                 return raw_view()
             batch = None
-            def withdrawn():
-                return dict(empty, ready=False, windows=[], demands=[], associations=[])
             try:
                 batch = self._source_batch(settings["settings"], now)
                 def current():

@@ -163,6 +163,163 @@ def test_mid_capture_changes_withhold_windows_and_drop_transient_bodies(routine_
         assert captured[0].records == captured[0].visits == []
 
 
+@pytest.fixture
+def captured_availability(routine_runtime,monkeypatch):
+    """Actual runtime, interpreter, index and publication guard; synthetic source."""
+    from copy import deepcopy
+    from service.publication_authority import Authority,Witness
+    runtime,controls,pattern = routine_runtime("active",sites=True)
+    source = Authority("availability-fallback-synthetic-source")
+    source.publish()
+    original_sources = runtime._sources_fn
+    captured = []
+    def sources(settings):
+        batch = original_sources(settings)
+        batch.detail = {"websites":"captured-private-coverage"}
+        batch.publication_witnesses = (Witness.combine(source.token()),)
+        captured.append(batch)
+        return batch
+    runtime._sources_fn = sources
+    # A real durable index exercises the enriched readback path even when this
+    # particular synthetic publication contains only recurring activity.
+    runtime.local_engine().seed_index()
+    runtime._refresh_availability(NOW)
+    positive = runtime.planning_context("2026-10-19","UTC",NOW)
+    assert positive["ready"] and len(positive["windows"])==len(positive["patterns"])==1
+    assert positive["patterns"][0]["website_visit_context"]==["arbitrary.test"]
+    assert positive["source_coverage"]=={"websites":"captured-private-coverage"}
+    assert len(controls["calls"])==1 and source.token().current()
+    monkeypatch.setattr(runtime,"clock",lambda:NOW+9)
+    return runtime,controls,source,captured,deepcopy(positive)
+
+
+def _assert_no_captured_availability(value,positive):
+    import json
+    assert value["ready"] is False
+    assert all(value[key]==[] for key in ("patterns","windows","demands","associations"))
+    assert value["source_coverage"]=={} and not value.get("observed_context")
+    assert value["generated_at"]==value["evidence_checked_at"]==NOW+9
+    assert value["timezone"]=="UTC" and value["version"]==1
+    serialized = json.dumps(value,sort_keys=True)
+    for marker in ("arbitrary.test","captured-private-coverage",positive["patterns"][0]["id"],
+                   *positive["patterns"][0]["evidence"]):
+        assert marker not in serialized
+
+
+@pytest.mark.parametrize("transport",["runtime","http"])
+@pytest.mark.parametrize("fault",["source","role","settings","exception"])
+def test_withdrawn_midcapture_response_contains_no_captured_context(captured_availability,monkeypatch,transport,fault):
+    runtime,controls,source,captured,positive = captured_availability
+    original_sources = runtime._sources_fn
+    def changed(settings):
+        batch = original_sources(settings)
+        assert batch.visits and batch.detail and batch.current()
+        if fault=="source":
+            source.withdraw()
+            controls["live"] = False
+        elif fault=="role":
+            controls["role"] = "changed-after-capture"
+        elif fault=="settings":
+            runtime.call("configure_signals",{"websites":False},NOW+9)
+        else:
+            raise RuntimeError("captured-private-coverage read failed")
+        return batch
+    runtime._sources_fn = changed
+    if transport=="runtime":
+        value = runtime.planning_context("2026-10-19","UTC",NOW+9)
+    else:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from service import behavior_api
+        monkeypatch.setattr(behavior_api.behavior_runtime,"get_runtime",lambda:runtime)
+        app = FastAPI()
+        app.include_router(behavior_api.router)
+        with TestClient(app) as client:
+            response = client.get("/behavior/availability",params={"day":"2026-10-19","timezone":"UTC"})
+        assert response.status_code==200
+        value = response.json()
+    _assert_no_captured_availability(value,positive)
+    assert len(controls["calls"])==1 and len(captured)==3
+
+
+@pytest.mark.parametrize("transport",["runtime","http"])
+@pytest.mark.parametrize("fault",["source","cache","cancel","exception"])
+def test_final_availability_refusal_scrubs_enriched_response(captured_availability,monkeypatch,transport,fault):
+    from service.publication_authority import Witness
+    runtime,controls,source,captured,positive = captured_availability
+    seen = []
+    if fault=="exception":
+        original_context = runtime.local_engine().availability_context
+        def failed_context(*args,**kwargs):
+            original_context(*args,**kwargs)
+            assert captured[-1].detail==positive["source_coverage"]
+            seen.append("after-enrichment")
+            raise RuntimeError("captured-private-coverage context failed")
+        monkeypatch.setattr(runtime.local_engine(),"availability_context",failed_context)
+    else:
+        original_prepare = runtime._prepare_publication_witness
+        def withdrawn_after_preparation(*args,**kwargs):
+            witness = original_prepare(*args,**kwargs)
+            assert type(witness) is Witness and witness.current()
+            assert captured[-1].detail==positive["source_coverage"]
+            seen.append(witness)
+            if fault=="source": source.withdraw()
+            elif fault=="cache": runtime._availability_cache = None
+            else: runtime._availability_cache["cancellation"].set()
+            return witness
+        monkeypatch.setattr(runtime,"_prepare_publication_witness",withdrawn_after_preparation)
+    if transport=="runtime":
+        value = runtime.planning_context("2026-10-19","UTC",NOW+9)
+    else:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from service import behavior_api
+        monkeypatch.setattr(behavior_api.behavior_runtime,"get_runtime",lambda:runtime)
+        app = FastAPI()
+        app.include_router(behavior_api.router)
+        with TestClient(app) as client:
+            response = client.get("/behavior/availability",params={"day":"2026-10-19","timezone":"UTC"})
+        assert response.status_code==200
+        value = response.json()
+    assert len(seen)==1 and len(captured)==3 and len(controls["calls"])==1
+    if fault in {"source","cancel"}: assert not seen[0].current()
+    elif fault=="cache": assert seen[0].current()  # Actual cache identity guard refused.
+    _assert_no_captured_availability(value,positive)
+
+
+def test_failed_availability_views_never_alias_captured_or_later_views(captured_availability,monkeypatch):
+    import json
+    runtime,controls,source,captured,positive = captured_availability
+    original = json.dumps(positive,sort_keys=True)
+    def unavailable(*args,**kwargs):
+        assert captured[-1].detail==positive["source_coverage"]
+        raise RuntimeError("context unavailable after enrichment")
+    monkeypatch.setattr(runtime.local_engine(),"availability_context",unavailable)
+    first = runtime.planning_context("2026-10-19","UTC",NOW+9)
+    _assert_no_captured_availability(first,positive)
+    for field in ("patterns","windows","demands","associations"):
+        first[field].append({"caller":"injected-private-value"})
+    first["source_coverage"]["caller"] = {"nested":["injected-private-value"]}
+    second = runtime.planning_context("2026-10-19","UTC",NOW+9)
+    _assert_no_captured_availability(second,positive)
+    assert all(first[field] is not second[field] for field in ("patterns","windows","demands","associations","source_coverage"))
+    assert json.dumps(positive,sort_keys=True)==original
+    assert all(batch.detail=={"websites":"captured-private-coverage"} for batch in captured)
+    assert source.token().current() and len(controls["calls"])==1
+
+
+def test_current_uninterpreted_raw_patterns_remain_admitted_without_new_source_read(routine_runtime):
+    runtime,controls,pattern = routine_runtime("active",sites=True)
+    runtime._refresh_availability(NOW)
+    runtime._availability_cache = None
+    before = len(controls["reads"])
+    value = runtime.planning_context("2026-10-19","UTC",NOW+9)
+    assert value["ready"] is False and value["windows"]==value["demands"]==value["associations"]==[]
+    assert len(value["patterns"])==1 and value["patterns"][0]["id"]==pattern["id"]
+    assert value["patterns"][0]["website_visit_context"]==[]
+    assert len(controls["reads"])==before and len(controls["calls"])==1
+
+
 @pytest.mark.parametrize("response", ["empty", "failed", "malformed", "occupied_absence", "wrong_reference"])
 def test_unadmitted_analysis_cannot_create_an_away_hint(routine_runtime, response):
     runtime, controls, _ = routine_runtime()
@@ -844,6 +1001,7 @@ def test_seed_metadata_retention_runs_while_learning_is_off(tmp_path, monkeypatc
 def test_existing_forget_deletes_seed_in_same_behavior_database(tmp_path, monkeypatch):
     from service.behavior.store import Store
     from service.behavior.source_index import SourceIndex
+    from service.assistant.store import AssistantStore
     from service.assistant.behavior_seed import Seed, Snapshot
     from service.assistant import behavior_runtime as module
     store = Store(tmp_path / "behavior.db")
@@ -851,10 +1009,18 @@ def test_existing_forget_deletes_seed_in_same_behavior_database(tmp_path, monkey
         enabled=True, available=True, current=lambda: True)
     Seed(SourceIndex(store)).run([publication], epoch="one", now=NOW, analysis_enabled=True,
         analyze=lambda *a, **k: {"links": []}, admit=lambda: True)
+    assert store._conn.execute("SELECT COUNT(*) FROM behavior_seed_records").fetchone()[0]==1
     store.close()
     monkeypatch.setattr(module, "_runtime", None)
-    result = module.forget_all(None, home=tmp_path)
-    assert result["files_failed"] == [] and not (tmp_path / "behavior.db").exists()
+    planning = AssistantStore(tmp_path / "assistant.db")
+    try:
+        unrelated = planning.add_manual("Unrelated authored task",NOW+600)
+        result = module.forget_all(planning, home=tmp_path)
+        assert result["files_failed"] == [] and not (tmp_path / "behavior.db").exists()
+        assert planning.get(unrelated["id"])==unrelated
+        assert result["removed_items"]==[] and result["kept_items"]==0
+    finally:
+        planning._db.close()
 
 
 def test_busy_label_requires_unchanged_support_and_seven_day_horizon(tmp_path, monkeypatch):
