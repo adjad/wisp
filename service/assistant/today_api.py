@@ -6,6 +6,8 @@ from service.assistant.store import assistant_store
 from service.assistant.today import RevisionConflict, build_plan
 
 router = APIRouter(prefix="/assistant/today", tags=["today"])
+from service.assistant.daily_workspace_api import router as workspace_router
+router.include_router(workspace_router)
 
 
 class CreateTask(BaseModel):
@@ -61,6 +63,17 @@ def snapshot(day, timezone, *, debug=False):
                     revision=state["revision"], calendar_ready=plan["sources"]["calendar"]["ready"],
                     reminders_ready=plan["sources"]["reminders"]["ready"])
         result = {**plan, "revision": state["revision"], "trace_id": trace.id}
+        try:
+            from service.assistant import daily_workspace as daily
+            from service.assistant.daily_workspace_api import email_store, availability
+            result["workspace"] = daily.assess(day, timezone, state,
+                daily.collect_evidence(assistant_store, state, day, timezone, now=now), now=now,
+                behavior=availability(day, timezone, now),
+                ignored_windows=email_store().ignored(day, timezone))
+        except Exception:
+            # The original revisioned planner remains usable when an optional
+            # source or private workspace settings are unavailable.
+            result["workspace_error"] = "Daily source evidence could not be refreshed; your saved day plan is shown."
         if debug:
             # Returned only on explicit opt-in; never journaled. Fixed clock and
             # exact inputs make a replay independent of current state/sources.
