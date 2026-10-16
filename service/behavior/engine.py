@@ -24,7 +24,8 @@ from service.behavior.categorize import categorize, label_leftovers, needs_categ
 from service.behavior.store import OBSERVATION_EXPIRY_SQL, OBSERVATION_RETENTION_S, Store
 from service.behavior.timeutil import day_end, day_start, local_dt, resolve_tz, tz_name
 from service.behavior.types import FEEDBACK_VERDICTS, Feedback, Nudge, Observation, Pattern, Prediction
-from service.publication_authority import Authority, Witness, revocation
+from service.publication_authority import Authority, Clock, Witness, revocation
+import json
 
 MINE_LOOKBACK_S = 16 * 7 * 86400     # routines older than ~4 months say little about next week
 NUDGE_HORIZON_S = 24 * 3600          # minimum look-ahead; see nudge_horizon()
@@ -47,6 +48,8 @@ class _ContentHead:
         self.authority = Authority("behavior-retained-content",owner=self)
         self.revision = 0
         self.policy_revision = 0
+        self.delivery = Authority("behavior-nudge-policy",owner=self)
+        self.queued = {}
 
 
 _content_heads = weakref.WeakValueDictionary()
@@ -90,6 +93,7 @@ class BehaviorEngine:
         self._activity = Activity(self._store)
         self._phraser = phraser
         self._clock = clock or time.time
+        self._delivery_clock = Clock(live=self._clock is time.time)
         self._tz = resolve_tz(tz)
         self.tz = tz_name(self._tz)
         # Snapshot diffing and mining read-modify-write the store; serialize them.
@@ -130,17 +134,100 @@ class BehaviorEngine:
                 self._content_revision += 1
 
     @contextmanager
-    def _policy_change(self):
+    def _policy_change(self, *, delivery=True):
         # Shared by every Engine connection to this database. An odd revision
         # is a pending change; failed writes also invalidate old preparations.
+        if delivery:
+            self._content_head.delivery.withdraw()
         self._content_head.policy_revision += 1
         try:
             yield
+        except BaseException:
+            raise
+        else:
+            if delivery:
+                self._content_head.delivery.publish()
         finally:
             self._content_head.policy_revision += 1
 
     def _nudge_revision(self):
         return self._content_revision, self._content_head.policy_revision
+
+    @staticmethod
+    def _nudge_payload(nudge):
+        return json.dumps(nudge.to_dict(),sort_keys=True,allow_nan=False)
+
+    def queued_nudge_authority(self, nudge, now):
+        """Original process grant plus a coherent full queued-policy read.
+
+        A persisted row, a restored setting or another insertion cannot mint a
+        replacement grant. These handles intentionally do not survive restart.
+        """
+        with self._lock:
+            revision = self._nudge_revision()
+            original = self._content_head.queued.get(nudge.id)
+            if self._closed or any(v % 2 for v in revision) or original is None:
+                return None
+            payload,witness,sources = original
+            stored = self._store.get_nudge(nudge.id)
+            with self._store._lock:
+                status = self._store._conn.execute("SELECT status FROM nudges WHERE id=?",(nudge.id,)).fetchone()
+            if (stored is None or payload!=self._nudge_payload(nudge)
+                    or payload!=self._nudge_payload(stored) or status is None or status[0] not in {"new","useful"}
+                    or stored.expires_at is not None and stored.expires_at<=now):
+                return None
+            if any((p:=self._store.get_pattern(pid)) is None or p.status=="rejected"
+                   for pid in stored.pattern_ids):
+                return None
+            feedback = self._store.feedback_since(now-nudge_mod.FEEDBACK_MEMORY_S)
+            state = nudge_mod.feedback_state(feedback,now)
+            key = stored.kind,nudge_mod.pattern_key(stored)
+            if state.muted(key,now) or any(
+                    row.get("nudge_id")==stored.id and row.get("verdict") in {"wrong","not_now","undo"}
+                    for row in feedback):
+                return None
+            if key in state.auto_off and any(action.auto for action in stored.actions):
+                return None
+            if self._nudge_revision()!=revision:
+                return None
+        with revocation():
+            if self._nudge_revision()!=revision or not witness.current():
+                return None
+            return payload,witness,sources
+
+    def _queue_nudge_authority(self, nudge, patterns, now):
+        # Called from the successful insertion's existing outer ordered unit.
+        sources = set()
+        ids = set(nudge.evidence)
+        for pid in nudge.pattern_ids:
+            pattern = next((p for p in patterns if p.id==pid),None)
+            if pattern is None or not pattern.evidence:
+                sources.add("unsupported")
+            else:
+                ids.update(pattern.evidence)
+        for oid in ids:
+            observation = self._store.get_observation(oid)
+            if observation is not None:
+                sources.add(observation.source)
+            else:
+                sources.add("unsupported")
+        if not sources:
+            sources.add("unsupported")
+        if not self._delivery_clock.live:
+            self._delivery_clock.observe(now,time.monotonic())
+        if self._content_head.delivery.token() is None:
+            self._content_head.delivery.publish()
+        if self._content_publication.token() is None:
+            self._content_publication.publish()
+        content = Witness.combine(self._lifetime.token(),self._content_publication.token())
+        expires = nudge.expires_at if nudge.expires_at is not None else now+86400
+        token = self._content_head.delivery.token(clock=self._delivery_clock,
+            expires_wall=expires,expires_monotonic=time.monotonic()+max(0,expires-now))
+        witness = Witness.combine(content,token)
+        if witness is not None:
+            self._content_head.queued[nudge.id] = self._nudge_payload(nudge),witness,tuple(sorted(sources))
+            while len(self._content_head.queued)>256:
+                self._content_head.queued.pop(next(iter(self._content_head.queued)))
 
     def _prepare_content_token(self, revision):
         # Called only after a full comparison released Engine/Store locks.
@@ -547,10 +634,11 @@ class BehaviorEngine:
             with revocation(),self._lock:
                 if self._closed or self._nudge_revision() != revision:
                     return created
-                with self._policy_change():
+                with self._policy_change(delivery=False):
                     stored = self._store.insert_nudge(n)
                 revision = self._nudge_revision()
                 if stored is not None:
+                    self._queue_nudge_authority(stored,patterns,now)
                     created.append(stored)
         return created
 

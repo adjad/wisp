@@ -35,6 +35,16 @@ def assert_mutation_allowed():
         raise PublicationBusy("Permission or source change was not applied during publication; retry outside it")
 
 
+def assert_drain_allowed():
+    """Deny wait-capable cleanup under a caller-owned application barrier.
+
+    This reads only existing current-thread scope metadata. It neither takes
+    nor releases a lock and grants no mutation or publication permission.
+    """
+    if getattr(_local,"publisher",None) is not None or getattr(_local,"revokers",0):
+        raise PublicationBusy("Cleanup cannot wait inside a caller publication or mutation; retry outside it")
+
+
 @contextmanager
 def revocation():
     """Order a supported mutation before taking any inner writer locks.
@@ -214,13 +224,41 @@ class Witness:
         raise TypeError("Publication witnesses cannot restore authority")
 
 
+@dataclass(frozen=True, eq=False, repr=False)
+class OwnedWrite:
+    """One source-issued owner/context/key binding, never a mutation exemption."""
+    token: Token
+    owner: object
+    context: object
+    key: str
+    _issuer: object = field(repr=False)
+
+    def __post_init__(self):
+        if (self._issuer is not _issuer or type(self.token) is not Token
+                or type(self.key) is not str or not self.key or len(self.key)>512):
+            raise TypeError("A fixed source-owned write binding is required")
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Owned write bindings cannot restore authority")
+
+
+def owned_write(authority, owner, context, key):
+    if type(authority) is not Authority:
+        raise TypeError("A source-owned writer authority is required")
+    token = authority.token()
+    if token is None:
+        raise PublicationUnavailable("Writer is unavailable")
+    return OwnedWrite(token,owner,context,key,_issuer)
+
+
 class PublicationLease:
-    def __init__(self,witness,*,issuer=None):
+    def __init__(self,witness,*,writes=(),issuer=None):
         if issuer is not _issuer:
             raise TypeError("An active application publication lease is required")
         self.witness = witness
         self._thread = threading.get_ident()
         self._closed = False
+        self._writes = writes
 
     def current(self):
         return (not self._closed and self._thread==threading.get_ident()
@@ -230,15 +268,36 @@ class PublicationLease:
         return (type(authority) is Authority and self.current()
                 and any(token._authority is authority for token in self.witness.tokens))
 
+    def authorizes(self, binding, *, authority, owner, context, key):
+        """Continue this lease's already accepted, fixed synchronous effect.
+
+        Source expiry is decided at publication entry, not at each physical SQL
+        commit. Other public mutations still raise Busy throughout the lease.
+        This grants no ordinary transaction or callback permission.
+        """
+        return (not self._closed and self._thread==threading.get_ident()
+                and getattr(_local,"publisher",None) is self
+                and type(binding) is OwnedWrite and any(binding is item for item in self._writes)
+                and binding.token._authority is authority and binding.owner is owner
+                and binding.context is context and type(key) is str and binding.key==key)
+
+    def __reduce_ex__(self, protocol):
+        raise TypeError("Publication leases cannot restore authority")
+
 
 @contextmanager
-def publication(witness):
+def publication(witness, *, writes=()):
     if getattr(_local,"publisher",None) is not None or getattr(_local,"revokers",0):
         raise PublicationBusy("Nested publication is not supported")
     with _barrier:
         if type(witness) is not Witness or not witness.current():
             raise PublicationUnavailable("Current prepared source witnesses are required")
-        lease = PublicationLease(witness,issuer=_issuer)
+        if (type(writes) is not tuple or any(type(item) is not OwnedWrite
+                or not item.token.current() or not any(
+                    token._authority is item.token._authority and token._state is item.token._state
+                    for token in witness.tokens) for item in writes)):
+            raise PublicationUnavailable("Current exact owned writer bindings are required")
+        lease = PublicationLease(witness,writes=writes,issuer=_issuer)
         _local.publisher = lease
         try:
             yield lease

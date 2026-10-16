@@ -155,18 +155,36 @@ def test_feedback(client, live):
 
 
 def test_undo_reverts_auto_actions_and_pings(client, live, store):
+    import httpx
     rt, engine, hub = live
-    client.post("/behavior/run")
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
-    data = client.post("/behavior/nudges/n1/undo").json()
-    assert data["ok"] and len(data["removed"]) == 2
-    assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
-    assert engine.feedbacks[-1].verdict == "undo"
-    assert hub.events[-1]["event"] == {"type": "changed"}
-    assert client.post("/behavior/nudges/unknown/undo").status_code == 404
-    listed = {n["id"]: n for n in client.get("/behavior/nudges").json()["nudges"]}
-    assert set(listed) == {"n1", "n2"} and listed["n1"]["verdict"] == "undo"
-    assert listed["n1"]["can_undo"] is False and all(a["undone"] for a in listed["n1"]["auto_performed"])
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=client.app),base_url="http://test") as api:
+            assert (await api.post("/behavior/run")).status_code==200
+            assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 2
+            persisted = store.event_by_key("behavior:n1")
+            before = len(hub.events)
+            queue = hub.subscribe()   # same owning loop, after the initial delivery ping
+            try:
+                data = (await api.post("/behavior/nudges/n1/undo")).json()
+                assert data["ok"] and len(data["removed"]) == 2
+                assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0] == 0
+                assert engine.feedbacks[-1].verdict == "undo"
+                assert hub.events[-1]["event"] == {"type": "changed"}
+                assert hub.events[before:]==[dict(event={"type":"changed"},dedupe_key=None,
+                                                 durable=False,expires_at=None)]
+                assert queue.get_nowait()=={"type":"changed"} and queue.empty()
+                assert store.event(persisted["id"])["state"]=="ack"
+                assert store._db.execute("SELECT COUNT(*) FROM assistant_events WHERE dedupe_key='behavior:n1'").fetchone()[0]==1
+                assert (await api.post("/behavior/nudges/unknown/undo")).status_code == 404
+                listed = {n["id"]: n for n in (await api.get("/behavior/nudges")).json()["nudges"]}
+                assert set(listed) == {"n1", "n2"} and listed["n1"]["verdict"] == "undo"
+                assert listed["n1"]["can_undo"] is False and all(a["undone"] for a in listed["n1"]["auto_performed"])
+                assert (await api.post("/behavior/nudges/n1/undo")).json()["removed"]==[]
+                assert store._db.execute("SELECT COUNT(*) FROM commitments").fetchone()[0]==0
+                assert store.event_by_key("behavior:n1")["id"]==persisted["id"]
+            finally:
+                hub.unsubscribe(queue)
+    asyncio.run(run())
 
 
 def test_act_open_prompt_and_offered_reminder(client, live, store):
