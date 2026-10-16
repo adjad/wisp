@@ -285,13 +285,13 @@ final class SettingsLoader: ObservableObject {
     // them there, change them here, or an offline Settings pane shows models
     // the user never chose.
     let fallbackModels = [
-        "Ling-3.0-tiny-oQ4e",
+        "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
     ]
     let fallbackRoles = [
-        "fast": "Ling-3.0-tiny-oQ4e",
-        "coding": "Ling-3.0-tiny-oQ4e",
-        "reasoning": "Ling-3.0-tiny-oQ4e",
-        "general": "Ling-3.0-tiny-oQ4e",
+        "fast": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "coding": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "reasoning": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+        "general": "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
     ]
     private let client = WispClient()
 

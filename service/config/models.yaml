@@ -25,33 +25,15 @@ roles:
   # Every text role is the same resident model — no swap, no cold load, and no
   # routing decision that hinges on which model a request lands on.
   #
-  # LING REPLACED AGENTS-A1 AS THE RESIDENT MODEL (2026-08-18), measured on the
-  # six prompts from the 2026-08-16 debug logs at production sampling (no
-  # temperature override — an earlier comparison forced 0.6 on both and got the
-  # opposite answer, see the note on force_sampling below):
-  #
-  #     prompt        A1            Ling
-  #     calendar       4.3s          2.8s
-  #     mail+msgs     24.2s         16.5s
-  #     browser       26.0s (21.7s thinking)   10.4s
-  #     reorg        300.0s TIMEOUT           21.0s
-  #     organize      19.8s         5.7s
-  #     vague         54.8s (41.9s thinking)   4.4s
-  #
-  # Energy over a repeated fixed workload, validated against a 6.2 W idle
-  # baseline: A1 9,615 J vs Ling 2,250 J — Ling draws MORE instantaneous power
-  # (50.4 W vs 39.5 W) but finishes 5.6x sooner, so it costs 77% less overall.
-  # A1 also hung outright three separate times on three different prompts.
-  #
-  # Ling's one real defect — inventing `/Users/<name>` from the user's email on
-  # file requests — is fixed deterministically in builtin._wrong_account_path
-  # rather than by prompt, because a prompt rule only got 10/10 down to 2/10.
-  fast:       "Ling-3.0-tiny-oQ4e"
-  router:     "Ling-3.0-tiny-oQ4e"
-  coding:     "Ling-3.0-tiny-oQ4e"
-  reasoning:  "Ling-3.0-tiny-oQ4e"
-  agent:      "Ling-3.0-tiny-oQ4e"
-  general:    "Ling-3.0-tiny-oQ4e"
+  # User-selected Mellum 2.1 Wisp R1 merged oQ4e default. This is a local
+  # build; setup does not invent a public download or claim validation.
+  # Existing user overrides are still deep-merged over these code defaults.
+  fast:       "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  router:     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  coding:     "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  reasoning:  "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  agent:      "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
+  general:    "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e"
   # Smart Search's T2 retrieval tier (320MB, 1024-dim). NOT a chat model — it's
   # served by oMLX's /v1/embeddings, which rejects LLMs on that endpoint. It is
   # lazy and no longer participates in tool routing.

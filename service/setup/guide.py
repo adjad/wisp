@@ -68,7 +68,7 @@ def _entry(model_id: str, hardware: Hardware, tool_capable: list[str]) -> dict:
     if known:
         return {"id": model_id, "label": f"{known.label} · {known.quant}",
                 "size_gb": known.size_gb, "fit": catalog.fit(known, hardware.ram_gb),
-                "tested": True, "note": known.note}
+                "tested": known.tested, "note": known.note}
     return {"id": model_id, "label": model_id, "size_gb": None, "fit": "unknown",
             "tested": model_id in tool_capable,
             "note": "Not one of Wisp's tested models." if model_id not in tool_capable
@@ -130,8 +130,14 @@ def build_status(*, hardware: Hardware, omlx: OmlxState, installed: list[str],
         checks.append({"id": "model", "state": "todo", "title": "Choose a model",
                        "detail": "Wisp will list your models once oMLX is running."})
     elif not chat_models:
-        checks.append({"id": "model", "state": "todo", "title": "Download a model",
-                       "detail": "No chat model is installed yet.", "action": "download_model"})
+        preferred = catalog.by_id(rec["first_choice"])
+        if preferred is not None and preferred.repo is None and rec["get"] is None:
+            checks.append({"id": "model", "state": "todo", "title": "Add a local model",
+                           "detail": f"Add {preferred.label}'s model folder to the engine's model directory, then check again.",
+                           "action": "add_local_model"})
+        else:
+            checks.append({"id": "model", "state": "todo", "title": "Download a model",
+                           "detail": "No chat model is installed yet.", "action": "download_model"})
     elif missing:
         names = ", ".join(sorted({roles.get(r, {}).get("model") or "(none)" for r in missing}))
         checks.append({"id": "model", "state": "todo", "title": "Pick an installed model",

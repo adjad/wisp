@@ -507,7 +507,9 @@ struct SetupGuideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if s.models.installed.isEmpty {
-                Text(s.omlx.running ? "Download a model below to get started."
+                Text(s.omlx.running ? (s.models.download == nil
+                                      ? "Add a local model to the engine's model folder to get started."
+                                      : "Download a model below to get started.")
                                     : "Start the engine above to see your models.")
                     .font(.callout).foregroundStyle(Theme.textSecondary)
             } else {
@@ -528,18 +530,25 @@ struct SetupGuideView: View {
                              ? "Recommended for this Mac" : "A better fit for this Mac", tag: "main",
                              omlx: s.omlx)
             }
+            if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e",
+               !s.models.installed.contains(where: { $0.id == s.models.recommended }) {
+                Text("This Mellum build uses an existing local model folder. There is no verified public download configured for it. Add the folder named \(s.models.recommended) to your engine's model directory, then choose Check again and Use this model.")
+                    .font(.caption).foregroundStyle(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if let folder = s.omlx.modelDir {
+                    Text(folder).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                }
+                action("Open engine settings") { model.open(s.omlx.adminUrl) }
+            }
         }
     }
 
     private func recommendationText(_ s: SetupStatus) -> some View {
         let text: String
-        switch s.hardware.tier {
-        case "roomy", "comfortable":
-            text = "Ling 3.0 tiny at 6-bit runs comfortably here and gives the best quality."
-        case "standard":
-            text = "On a 16 GB Mac, the 5-bit or 4-bit Ling 3.0 tiny keeps plenty of memory free for your other apps."
-        default:
-            text = "Use the 4-bit Ling 3.0 tiny; it is the smallest build that still picks tools reliably."
+        if s.models.recommended == "Mellum2.1-12B-A2.5B-Thinking-Wisp-R1-merged-oQ4e" {
+            text = "Mellum 2.1 Wisp R1 merged oQ4e is Wisp's default model. Its model validation is pending."
+        } else {
+            text = "Mellum 2.1 Wisp R1 merged oQ4e is the default, with a conservative 24 GB memory requirement. This Mac is offered smaller alternatives; your existing model choices are preserved."
         }
         return Text(text).font(.callout).foregroundStyle(Theme.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -563,6 +572,7 @@ struct SetupGuideView: View {
                         }
                         if current.contains(entry.id) { pill("In use", on: true) }
                         fitBadge(entry.fit)
+                        if !entry.tested && entry.fit != "unknown" { pill("Not validated", on: false) }
                     }
                     Text(entry.note).font(.caption).foregroundStyle(Theme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
