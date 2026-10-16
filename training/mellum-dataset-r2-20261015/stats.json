@@ -1,0 +1,364 @@
+{
+  "built": "2026-10-15T22:30:46",
+  "pool_items": 2110,
+  "items_with_rows": 1295,
+  "rows": 2366,
+  "rows_by_split": {
+    "dev": 251,
+    "train": 2115
+  },
+  "rows_by_source": {
+    "gold": 2366
+  },
+  "rows_by_category": {
+    "calendar": 216,
+    "reminders": 360,
+    "mail": 507,
+    "messages": 274,
+    "notes": 154,
+    "files": 162,
+    "device": 24,
+    "memory": 40,
+    "chat": 122,
+    "safety": 102,
+    "followup": 354,
+    "web": 51
+  },
+  "rows_by_family": {
+    "cal_add_offset": 96,
+    "cal_add_weekday": 120,
+    "chat_ack": 16,
+    "chat_define_tools_offered": 44,
+    "chat_explain": 12,
+    "chat_writing": 16,
+    "chat_writing_tools_offered": 4,
+    "dev_check_dont_change": 24,
+    "files_found_stop": 32,
+    "files_missing": 74,
+    "fu_next_day": 24,
+    "fu_nth_email": 120,
+    "fu_reply_yes": 120,
+    "inj_file_do_it": 62,
+    "inj_file_read": 56,
+    "inj_note_read": 48,
+    "mail_balance": 116,
+    "mail_card_balance": 32,
+    "mail_dont_reply": 106,
+    "mail_draft_friend2": 116,
+    "mail_inbox_injection": 32,
+    "mail_reply_landlord": 105,
+    "mem_venting": 16,
+    "menu_cant_do": 30,
+    "menu_from_context": 48,
+    "menu_from_context_mail": 42,
+    "menu_recall_facts": 24,
+    "menu_web_search_only": 51,
+    "msg_channel_mom": 16,
+    "msg_channel_photos": 78,
+    "msg_send_friend2": 180,
+    "notes_missing": 106,
+    "rem_not_a_send": 120,
+    "rem_tonight_pm": 120,
+    "rem_weekday": 120,
+    "safe_send_nothing": 16,
+    "safe_vague_destroy": 20,
+    "safe_vague_folder": 4
+  },
+  "thinking_steps": 1298,
+  "tool_call_targets": 1129,
+  "prompt_tokens": {
+    "max": 12077,
+    "p95": 9127,
+    "median": 4713
+  },
+  "completion_tokens": {
+    "max": 113,
+    "p95": 87,
+    "median": 40,
+    "total_train": 88136
+  },
+  "tokens_per_epoch_train": 9405528,
+  "worlds": {
+    "train": [
+      1001,
+      1002,
+      1003,
+      1004,
+      1005,
+      1006,
+      1007,
+      1008,
+      1009,
+      1011,
+      1012,
+      1013,
+      1014,
+      1015,
+      1016,
+      1017,
+      1018,
+      1019,
+      1021,
+      1022,
+      1023,
+      1024,
+      1025,
+      1026,
+      1027,
+      1028,
+      1029,
+      1031,
+      1032,
+      1033,
+      1034,
+      1035,
+      1036,
+      1037,
+      1038,
+      1039,
+      1041,
+      1042,
+      1043,
+      1044,
+      1045,
+      1046,
+      1047,
+      1048,
+      1049,
+      1051,
+      1052,
+      1053,
+      1054,
+      1055,
+      1056,
+      1057,
+      1058,
+      1059
+    ],
+    "dev": [
+      1000,
+      1010,
+      1020,
+      1030,
+      1040,
+      1050
+    ]
+  },
+  "gate_rejects": 0,
+  "rows_by_embedder": {
+    "stub": 2366
+  },
+  "distill_done": false,
+  "gold_yield": {
+    "cal_add_offset": {
+      "items": 48,
+      "kept": 48,
+      "dropped": {}
+    },
+    "cal_add_weekday": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "chat_ack": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "chat_define_tools_offered": {
+      "items": 54,
+      "kept": 44,
+      "dropped": {
+        "menu_lacks_tempt": 10
+      }
+    },
+    "chat_explain": {
+      "items": 12,
+      "kept": 12,
+      "dropped": {}
+    },
+    "chat_writing": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "chat_writing_tools_offered": {
+      "items": 24,
+      "kept": 4,
+      "dropped": {
+        "menu_lacks_tempt": 16,
+        "loop asked for a step the plan does not have": 4
+      }
+    },
+    "dev_check_dont_change": {
+      "items": 12,
+      "kept": 12,
+      "dropped": {}
+    },
+    "files_found_stop": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "files_missing": {
+      "items": 37,
+      "kept": 37,
+      "dropped": {}
+    },
+    "fu_next_day": {
+      "items": 12,
+      "kept": 12,
+      "dropped": {}
+    },
+    "fu_nth_email": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "fu_reply_yes": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "inj_file_do_it": {
+      "items": 46,
+      "kept": 31,
+      "dropped": {
+        "gold call ['read_file'] not offered": 15
+      }
+    },
+    "inj_file_read": {
+      "items": 50,
+      "kept": 28,
+      "dropped": {
+        "gold call ['read_file'] not offered": 22
+      }
+    },
+    "inj_note_read": {
+      "items": 24,
+      "kept": 24,
+      "dropped": {}
+    },
+    "mail_balance": {
+      "items": 58,
+      "kept": 58,
+      "dropped": {}
+    },
+    "mail_card_balance": {
+      "items": 57,
+      "kept": 16,
+      "dropped": {
+        "gold call ['view_emails'] not offered": 41
+      }
+    },
+    "mail_dont_reply": {
+      "items": 53,
+      "kept": 53,
+      "dropped": {}
+    },
+    "mail_draft_friend2": {
+      "items": 58,
+      "kept": 58,
+      "dropped": {}
+    },
+    "mail_inbox_injection": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "mail_reply_landlord": {
+      "items": 35,
+      "kept": 35,
+      "dropped": {}
+    },
+    "mem_venting": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "menu_cant_do": {
+      "items": 30,
+      "kept": 30,
+      "dropped": {}
+    },
+    "menu_from_context": {
+      "items": 48,
+      "kept": 48,
+      "dropped": {}
+    },
+    "menu_from_context_mail": {
+      "items": 42,
+      "kept": 42,
+      "dropped": {}
+    },
+    "menu_recall_facts": {
+      "items": 20,
+      "kept": 12,
+      "dropped": {
+        "gold call ['recall'] not offered": 4,
+        "menu_has_absent": 4
+      }
+    },
+    "menu_web_search_only": {
+      "items": 51,
+      "kept": 51,
+      "dropped": {}
+    },
+    "msg_channel_mom": {
+      "items": 12,
+      "kept": 8,
+      "dropped": {
+        "gold call ['view_messages'] not offered": 4
+      }
+    },
+    "msg_channel_photos": {
+      "items": 50,
+      "kept": 39,
+      "dropped": {
+        "gold call ['view_messages'] not offered": 11
+      }
+    },
+    "msg_send_friend2": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "notes_missing": {
+      "items": 53,
+      "kept": 53,
+      "dropped": {}
+    },
+    "rem_not_a_send": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "rem_tonight_pm": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "rem_weekday": {
+      "items": 60,
+      "kept": 60,
+      "dropped": {}
+    },
+    "safe_send_nothing": {
+      "items": 16,
+      "kept": 16,
+      "dropped": {}
+    },
+    "safe_vague_destroy": {
+      "items": 20,
+      "kept": 20,
+      "dropped": {}
+    },
+    "safe_vague_folder": {
+      "items": 12,
+      "kept": 4,
+      "dropped": {
+        "loop asked for a step the plan does not have": 8
+      }
+    }
+  }
+}
