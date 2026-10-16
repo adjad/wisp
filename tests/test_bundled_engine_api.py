@@ -127,7 +127,7 @@ def check(name: str, ok: bool, detail: object = "") -> None:
         print(f"  FAIL {name} {detail}")
 
 
-def fixture(root: Path, *, present: bool = True, minimum: str = "") -> Path:
+def fixture(root: Path, *, present: bool = True, minimum: str = "14.0") -> Path:
     engine = root / "code"
     engine.mkdir()
     if present:
@@ -188,6 +188,24 @@ def test_first_launch_and_stickiness() -> None:
 
 
 def test_unsupported_and_validation() -> None:
+    # Invalid provenance cannot select the engine or persist a bundled default.
+    # Keep ordinary fixtures compatible so mode/stickiness checks reach their
+    # intended path instead of accidentally exercising this refusal path.
+    for manifest in ({}, {"minimum_macos": ""}, {"minimum_macos": None},
+                     {"minimum_macos": 14}, {"minimum_macos": "FAKE-INVALID-REQUIREMENT"}):
+        with tempfile.TemporaryDirectory() as t:
+            root = Path(t)
+            engine = fixture(root)
+            (engine / "ENGINE.json").write_text(json.dumps(manifest))
+            result = probe(root, engine, operations=[
+                {"method": "GET", "path": "/engine"},
+                {"method": "POST", "path": "/engine/mode", "json": {"mode": "bundled"}},
+            ])
+            check("invalid requirement defaults external", body(result)["mode"] == "external-omlx"
+                  and result["overlay"] == {"engine": {"mode": "external-omlx"}})
+            check("invalid requirement refuses bundled selection", not body(result)["bundled_available"]
+                  and result["responses"][1]["status"] == 409)
+            check("invalid requirement is not echoed", "FAKE-INVALID-REQUIREMENT" not in json.dumps(result))
     with tempfile.TemporaryDirectory() as t:
         root = Path(t)
         engine = fixture(root, minimum="999.0")

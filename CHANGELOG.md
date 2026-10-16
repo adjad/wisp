@@ -16,6 +16,8 @@ All notable changes to Wisp are documented here.
 ### Changed
 
 - Bundled-engine setup supports public model download, progress, cancellation and retry without exposing the engine’s private login key. Readiness requires a live model-list response, and the setup test accepts only a complete visible assistant reply. Changing configuration or closing setup invalidates older test results.
+- Fresh text roles use the merged Mellum oQ4e model; existing role overrides remain. The selected model currently requires an existing local folder because no public download has been verified. Memory-fit estimates are separate from load and quality checks, and existing engine memory settings are preserved. A refused load shows a clear message and requires an explicit retry.
+- Setup distinguishes “Ready to test” from “Test passed” and displays the bundled engine’s exact macOS requirement, including fractional versions. Missing or malformed packaged requirements cannot enable the engine; a working compatible external engine remains usable.
 
 ### Fixed
 

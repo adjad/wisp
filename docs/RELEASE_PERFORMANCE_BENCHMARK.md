@@ -468,7 +468,7 @@ per-version waiver mechanism were removed for 1.2.5 by owner decision. The harne
 (the `release-benchmark-contracts` simulation step) remain.
 
 `tests/test_release_performance.py` is registered in the reviewed full Simulation QA manifest. The build
-pipeline runs its complete pinned set of 361 cases in a separate sandbox using one parent-held reserved
+pipeline runs its complete pinned set of 400 cases in a separate sandbox using one parent-held reserved
 loopback socket, then imports the exact-SHA report by digest. Its standalone profile permits only the
 canonical selected interpreter (including its exact framework launcher when necessary) and the literal Git
 shim and system-selected native Git executable, source/runtime reads and scratch writes. It grants no shell, compiler or executable directory
@@ -476,8 +476,9 @@ access. Unrelated loopback connections, unrelated process execution, shells, com
 copied executables and synthetic private-canary reads must be denied. The generic Simulation sandbox
 keeps its network denial. Missing, changed, skipped, duplicate or partial case evidence blocks artifact
 validation. Tests use synthetic evidence, temporary repositories and owned Python child process groups;
-registration never selects the live benchmark command. Independent exact-head review, configured
-CI, specialist QA, live qualification and a reviewed baseline remain required before a real release.
+registration never selects the live benchmark command. These offline contracts remain required by the
+build. Optional live performance measurement uses the baseline and environment qualification described
+above; neither a live performance receipt nor a reviewed baseline is a publication input.
 
 Publication evidence intake opens every directory component and file with no-follow descriptors.
 Receipt and raw files share a retained package directory; symbolic/hard links, special files, mutation during reads
