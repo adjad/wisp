@@ -315,6 +315,30 @@ def loaded_state(engine):
     raise GuardEvidenceUnavailable()
 
 
+def require_usable(engine):
+    """A failed post-load handoff cannot become a reusable resident engine."""
+    if getattr(engine, "_wisp_guard_load_rejected", False):
+        raise GuardEvidenceUnavailable()
+
+
+async def accept_loaded(engine, check, cleanup):
+    """Qualify the attached scheduler before the first caller can use it.
+
+    The rejected instance stays unusable even if existing pool teardown fails.
+    Cleanup failure never turns a refused first request into success.
+    """
+    try:
+        require_usable(engine)
+        check(engine)
+    except GuardEvidenceUnavailable:
+        engine._wisp_guard_load_rejected = True
+        try:
+            await cleanup()
+        except Exception:
+            pass
+        raise
+
+
 def bind_start(engine, check):
     """Keep lazy/direct starts behind the same pool-owned allocation gate."""
     if getattr(engine, "_wisp_guard_bound", False):
@@ -327,6 +351,7 @@ def bind_start(engine, check):
     async def start(*args, **kwargs):
         nonlocal failed
         async with lock:
+            require_usable(engine)
             loaded_state(engine)
             if failed:
                 raise GuardEvidenceUnavailable()

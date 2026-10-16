@@ -1,7 +1,7 @@
 {
   "path": "omlx/engine_pool.py",
   "input_sha256": "06e9186c4a5dc640c8ef0d83918ee9dadc7fdbb81782415dae361a6b2e7e5b92",
-  "output_sha256": "29e8176487713aab8ebe71d29bb91c5ab20aea5f50469e2f71226b8a2cedb079",
+  "output_sha256": "36b8c3bc698d62bae4f283f3683a86d3f69eee4d49cac7ccc383f38bac8c615b",
   "edits": [
     {
       "old": "logger = logging.getLogger(__name__)",
@@ -56,6 +56,16 @@
     {
       "old": "        except Exception as exc:\n            # A failed load",
       "new": "        except Exception as exc:\n            if isinstance(exc, _wisp_guard.GuardEvidenceUnavailable):\n                raise\n            # A failed load",
+      "count": 1
+    },
+    {
+      "old": "    def _validate_llm_engine_ready(self, model_id: str, engine: object | None) -> None:\n        if engine is None:",
+      "new": "    def _validate_llm_engine_ready(self, model_id: str, engine: object | None) -> None:\n        _wisp_guard.require_usable(engine)\n        if engine is None:",
+      "count": 1
+    },
+    {
+      "old": "            logger.info(\n                f\"Loaded model: {model_id} \"",
+      "new": "            # Propagation above can return normally while marking an unresolved\n            # scheduler unqualified. Refuse this SAME first request before any\n            # engine/lease escapes; do not wait for the next pool acquisition.\n            async def _wisp_cleanup_rejected_load():\n                nonlocal load_completed\n                load_completed = False\n                if self._entries.get(model_id) is not entry or entry.engine is not engine:\n                    return\n                # Preserve the existing stop/settlement/accounting policy.\n                await self._unload_engine(model_id)\n\n            await _wisp_guard.accept_loaded(engine, _wisp_check_load, _wisp_cleanup_rejected_load)\n\n            logger.info(\n                f\"Loaded model: {model_id} \"",
       "count": 1
     }
   ]

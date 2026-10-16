@@ -195,6 +195,83 @@ class AdmissionTests(unittest.TestCase):
         self.assertFalse(self.proof.require_admission(self.guard)["qualified"])
         self.assertIs(self.guard._prefill_memory_guard, False)
 
+    def first_request(self, *, cleanup_error=False):
+        """Exercise the exact Wisp post-load handoff, then fake generation.
+
+        The already attached fake represents the first cold request after the
+        original pool's propagation. Its existing teardown is a synthetic stub.
+        """
+        patch_data = json.loads((ROOT / "build-support/engine_guard/engine_pool.py.patch.json").read_text())
+        hooks = [e["new"] for e in patch_data["edits"] if "async def _wisp_cleanup_rejected_load(" in e["new"]]
+        self.assertEqual(len(hooks), 1)
+        hook = hooks[0].split("            logger.info(", 1)[0]
+        # Only Wisp's added block is compiled; no upstream method executes.
+        source = "async def first_request():\n    load_completed = True\n"
+        source += "\n".join(line[8:] if line.startswith("        ") else line for line in hook.splitlines())
+        source += "\n    generated.append(engine)\n    return load_completed\n"
+        self.generated, self.cleanup = [], []
+
+        async def unload(model_id):
+            self.cleanup.append(model_id)
+            if cleanup_error:
+                raise RuntimeError("private teardown diagnostic")
+            self.entry.engine = None
+
+        self.pool._unload_engine = unload
+        context = dict(self=self.pool, entry=self.entry, engine=self.parent, model_id="model",
+                       _wisp_guard=self.proof, _wisp_check_load=self.check, generated=self.generated)
+        exec(compile(ast.parse(source), "<Wisp-post-load-handoff-with-fakes>", "exec"), context)
+        return context["first_request"]()
+
+    def test_first_cold_request_missing_guard_refuses_before_generation_and_unloads(self):
+        self.source_propagation(True, None)
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            asyncio.run(self.first_request())
+        self.assertEqual(self.generated, [])
+        self.assertEqual(self.cleanup, ["model"])
+        self.assertIsNone(self.entry.engine)
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            self.proof.require_usable(self.parent)
+
+    def test_failed_teardown_cannot_reuse_or_start_rejected_engine(self):
+        self.source_propagation(True, None)
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable) as raised:
+            asyncio.run(self.first_request(cleanup_error=True))
+        self.assertNotIn("private teardown diagnostic", str(raised.exception))
+        self.assertEqual(self.generated, [])
+        self.assertIs(self.entry.engine, self.parent)
+        self.assertEqual(self.pool._current_model_memory, 10)
+        # Even recovery of telemetry cannot reopen this quarantined instance.
+        self.source_propagation(True, object())
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            self.proof.require_usable(self.parent)
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            asyncio.run(self.parent.start())
+
+    def test_first_cold_request_with_guard_reaches_generation_without_cleanup(self):
+        self.source_propagation(True, object())
+        self.assertTrue(asyncio.run(self.first_request()))
+        self.assertEqual(self.generated, [self.parent])
+        self.assertEqual(self.cleanup, [])
+        self.assertFalse(getattr(self.parent, "_wisp_guard_load_rejected", False))
+
+    def test_first_request_preserves_deliberately_disabled_profile(self):
+        self.source_propagation(True, None, prefill=False)
+        self.assertTrue(asyncio.run(self.first_request()))
+        self.assertEqual(self.generated, [self.parent])
+        self.assertEqual(self.cleanup, [])
+        self.assertIs(self.guard._prefill_memory_guard, False)
+        self.assertFalse(self.proof.snapshot(self.guard)["qualified"])
+
+    def test_rejected_handoff_does_not_unload_replaced_registry_owner(self):
+        replacement = SimpleNamespace(engine=object())
+        self.pool._entries["model"] = replacement
+        with self.assertRaises(self.proof.GuardEvidenceUnavailable):
+            asyncio.run(self.first_request())
+        self.assertEqual(self.generated, [])
+        self.assertEqual(self.cleanup, [])
+        self.assertIs(self.pool._entries["model"], replacement)
+
 
 if __name__ == "__main__":
     unittest.main()
