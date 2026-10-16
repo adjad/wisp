@@ -33,9 +33,18 @@ KEY = "a" * 64
 
 STUB = textwrap.dedent('''
     print("fake engine: importing", flush=True)
-    import json, sys
+    import json, socket, socketserver, sys
     from http.server import BaseHTTPRequestHandler, HTTPServer
     print("fake engine: imports complete", flush=True)
+    def refuse_hostname_lookup(*args, **kwargs):
+        raise AssertionError("fake engine must not resolve hostnames")
+    socket.getfqdn = refuse_hostname_lookup
+    class LocalHTTPServer(HTTPServer):
+        def server_bind(self):
+            # The loopback-only fixture needs no hostname lookup.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
     args = sys.argv[1:]
     port = int(args[args.index("--port") + 1])
     base = args[args.index("--base-path") + 1]
@@ -49,7 +58,7 @@ STUB = textwrap.dedent('''
             self.wfile.write(b"{}")
         def log_message(self, *a): pass
     print("fake engine: constructing HTTPServer", flush=True)
-    server = HTTPServer(("127.0.0.1", port), H)
+    server = LocalHTTPServer(("127.0.0.1", port), H)
     print("fake engine: listening", flush=True)
     server.serve_forever()
 ''')
@@ -320,14 +329,23 @@ def test_reap_only_the_launched_engine() -> None:
 
 
 LOADING_STUB = textwrap.dedent('''
-    import sys
+    import socket, socketserver, sys
     from http.server import BaseHTTPRequestHandler, HTTPServer
+    def refuse_hostname_lookup(*args, **kwargs):
+        raise AssertionError("fake engine must not resolve hostnames")
+    socket.getfqdn = refuse_hostname_lookup
+    class LocalHTTPServer(HTTPServer):
+        def server_bind(self):
+            # The loopback-only fixture needs no hostname lookup.
+            socketserver.TCPServer.server_bind(self)
+            self.server_name = "localhost"
+            self.server_port = self.server_address[1]
     port = int(sys.argv[sys.argv.index("--port") + 1])
     class H(BaseHTTPRequestHandler):
         def do_GET(self):
             self.send_response(503); self.end_headers(); self.wfile.write(b'{"status": "loading"}')
         def log_message(self, *a): pass
-    HTTPServer(("127.0.0.1", port), H).serve_forever()
+    LocalHTTPServer(("127.0.0.1", port), H).serve_forever()
 ''')
 
 
