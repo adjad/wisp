@@ -22,6 +22,7 @@ from service.config import (
     is_tool_capable,
 )
 from service.inference.omlx_client import OMLXClient
+from service.reminder_intent import REMIND_QUESTION_TAIL
 from service.router.web_request import (
     Provenance as _WebProvenance,
     WebRequest as _WebRequest,
@@ -54,7 +55,7 @@ from service.router.web_request import (
 STRONG_ACTION_RE = re.compile(
     r"\b(run(?:ning|s)?|execute|open|launch|quit|kill|restart|reboot|"
     r"install|uninstall|reinstall|screenshot|clone|commit|push|"
-    r"remind me(?!\s+(?:what|who|where|which|how)\b|\s+of\s+what\b)|"
+    r"remind me(?!" + REMIND_QUESTION_TAIL + r")|"
     r"empty the trash|shut ?down)\b", re.I)
 
 ACTION_VERB_RE = re.compile(
@@ -595,9 +596,10 @@ _PLANNING_RE = re.compile(
 # deliberate app-or-read ambiguity.
 _NAMED_APP_COMMAND_RE = re.compile(
     r"^\s*(?:(?:please|pls|can\s+you|could\s+you|hey)[,\s]+)*"
-    r"(?P<verb>(?i:open|launch|start|quit|close|exit|kill))\s+(?:(?i:the)\s+)?"
+    r"(?P<verb>(?i:open|launch|quit|close))\s+"
     r"(?!.*\b(?i:e-?mails?|messages?|texts?|notes?\s+(?:about|on|for)|events?|files?|documents?|pdfs?|folders?)\s*[.!?]*$)"
-    r"(?-i:[A-Z])[\w.]*(?:\s+(?-i:[A-Z])[\w.]*)?(?:\s+(?i:app))?"
+    r"(?:(?-i:[A-Z])[\w.]*(?:\s+(?-i:[A-Z])[\w.]*)?(?:\s+(?i:app))?|"
+    r"(?i:the)\s+(?-i:[A-Z])[\w.]*(?:\s+(?-i:[A-Z])[\w.]*)?\s+(?i:app))"
     r"(?:\s+(?i:for\s+me|now|please))?\s*[.!?]*\s*$")
 
 # "where's my resume draft?", "where did I put my tax return?", "locate my
@@ -1789,7 +1791,7 @@ _CALENDAR_PAST_RE = re.compile(
 # requires "schedule … meeting/event/…") and routed to the agent. "reschedule"
 # stays because it's unambiguously a write.
 _WRITE_INTENT_RE = re.compile(
-    r"\b(add|create|set\s?up|put|remind(?!\s+me\s+(?:what|who|where|which|how)\b)|book|make|change|edit|cancel|"
+    r"\b(add|create|set\s?up|put|remind(?!\s+me" + REMIND_QUESTION_TAIL + r")|book|make|change|edit|cancel|"
     r"reschedule|postpone|delete|remove|move|clear|send)\b|"
     # "set/add/create/make (a) reminder(s)" — bare "remind\b" above only
     # catches "remind me…"; it does NOT catch "reminder" (found via a real
@@ -1854,7 +1856,7 @@ _CALENDAR_WRITE_RE = re.compile(
     # calendar noun, which fell to the ambiguous route without
     # add_calendar_event. Both need a day or clock, so "set up a call" with
     # no time (place it now) and "block off the street" stay out.
-    r"\b(?:block|hold)\s+(?:off|out)\b(?=[^.!?]{0,60}" + _CAL_WHEN + r")|"
+    r"\bblock\s+(?:off|out)\b(?=[^.!?]{0,60}" + _CAL_WHEN + r")|"
     r"\bset\s+up\s+(?:a|an|the|another|my|our)\s+(?:[\w-]+\s+){0,2}?"
     r"(?:meeting|call|appointment|sync|interview|lunch|dinner|coffee|session|1:1|"
     r"one[\s-]on[\s-]one|check-?in)\b(?=[^.!?]{0,60}" + _CAL_WHEN + r")", re.I)
@@ -3169,10 +3171,15 @@ def _contextual_reply_subset(text: str, last_tools: str | None) -> RouteDecision
     """A bare reply inherits the channel that supplied the prior message."""
     # "say that works" / "tell them yes" right after reading a thread is the
     # same reply with the verb left implicit.
-    if not last_tools or not re.search(
+    # Not a question ("answer honestly, am I overbooked?", "say, what's the
+    # weather?") and not a request to pass on data the turn has not read
+    # ("tell him what my schedule looks like") — those keep their own routes.
+    if not last_tools or "?" in text or not re.search(
             r"^\s*(?:(?:ok(?:ay)?|sure|yes|yeah|just)[,\s]+)?"
-            r"(?:reply|respond|write\s+back|answer|tell\s+(?:them|him|her)|"
-            r"say(?!\s+(?:it|that|this)\s+again\b|\s+what\b|\s+(?:it|that)\s*[?.!]*$))\b",
+            r"(?:reply|respond|write\s+back|answer\s+(?:yes|no|them|him|her|that|with)\b|"
+            r"tell\s+(?:them|him|her)|"
+            r"say(?!\s*,|\s+(?:it|that|this)\s+again\b|\s+what\b|\s+(?:it|that)\s*[?.!]*$))\b"
+            r"(?![^.!?]*\b(?:what|how|when|where|which|who)\b[^.!?]*\bmy\b)",
             text, re.I):
         return None
     domains = _domains_in(last_tools)
@@ -4066,9 +4073,21 @@ _REPLY_BODY_RE = re.compile(
     r"(?:\s*:\s*|\s+(?:and\s+)?(?:say|saying|tell(?:ing)?\s+(?:them|him|her)(?:\s+that)?)\s+)\S", re.I)
 
 
+# A further request after the dictated body ("... saying yes, then quit
+# Slack", "... and also delete my Downloads folder"). Then the whole sentence
+# routes, as before, so that request keeps its tools.
+_AFTER_BODY_ACTION_RE = re.compile(
+    r"(?:[.;]\s+|,\s*|\s+)(?:and\s+)?(?:then|also|after\s+that|afterwards|next)\b|"
+    r"(?:[.;]\s+|,\s+|\s+and\s+)(?:please\s+)?(?:add|put|create|schedule|remind|quit|close|open|launch|"
+    r"forward|delete|remove|trash|send|text|e-?mail|message|move|set|turn|cancel|book|save|"
+    r"check|find|show|read|play|call|archive|mark|flag|book)\b", re.I)
+
+
 def _reply_routing_text(text: str) -> str:
     match = _REPLY_BODY_RE.match(text)
-    return match.group("lead") if match else text
+    if match is None or _AFTER_BODY_ACTION_RE.search(text, match.end("lead")):
+        return text
+    return match.group("lead")
 
 
 def _without_message_body(text: str) -> str:
@@ -6765,7 +6784,9 @@ _CREATIVE_WRITING_RE = re.compile(
     r"(?:[\w'-]+\s+){0,4}?" + _CREATIVE_FORM + r"\b"
     r"(?P<tail>[^.!?]*)[.!?\s]*$", re.I)
 _CREATIVE_DELIVERY_RE = re.compile(
-    r"\b(?:send|text|e-?mail|imessage|dm|deliver|post|share|save|forward|draft)\b|"
+    r"\b(?:send|text|e-?mail|imessage|dm|deliver|post|share|save|forward|draft|message|slack|"
+    r"whatsapp|tweet|schedule|queue|pin|print|copy)\b|"
+    r"\b(?:calendar|reminders?|screenshots?|screen|photos?|pictures?|images?|clipboard|files?)\b|"
     r"\bto\s+(?!celebrate\b|mark\b|honou?r\b|say\b|thank\b|cheer\b|welcome\b|wish\b)"
     r"(?:my\s+|the\s+)?[\w'-]+\b|"
     r"\b(?:my|our)\s+(?:notes?|e-?mails?|inbox|messages?|texts?|calendar|schedule|"
@@ -6777,7 +6798,11 @@ def _creative_writing_decision(text: str) -> RouteDecision | None:
     match = _CREATIVE_WRITING_RE.match(mask_quoted(text))
     if match is None or _CREATIVE_DELIVERY_RE.search(match.group("tail")):
         return None
-    if re.search(r"\b(?:and|then)\b[^.!?]*\b(?:send|text|e-?mail|save|remind|add)\b", text, re.I):
+    # Any further clause ("..., then message Dana with it", "... and put it on
+    # her calendar") is another request; the normal routes keep its tools.
+    if re.search(r"[;,]\s*\w|\bthen\b|\band\s+(?:then\s+|also\s+)?(?:please\s+)?"
+                 r"(?!(?:a|an|the|my|his|her|their|our|its)\b)[a-z]+(?:\s+(?:it|them|that|this)\b)",
+                 match.group("tail"), re.I):
         return None
     decision = _mk("general", reason="creative writing request -> answer without tools")
     decision.forbidden_tools = frozenset({"web_search", "web_fetch", "http_request", "run_shell"})
