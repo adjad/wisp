@@ -211,9 +211,12 @@ final class SettingsLoader: ObservableObject {
     @Published var fullAccess = false
     @Published var idleMinutes: Double = 5
     @Published var humanizerEnabled = false
-    @Published var behaviorEnabled = true
+    @Published var behaviorEnabled: Bool? = nil
+    @Published var behaviorChanging = false
+    @Published var behaviorStatus: String?
     @Published var behaviorRemote = false
     @Published var behaviorPhraser = true
+    private var behaviorRequestGeneration: UInt64 = 0
     @Published var behaviorForgetStatus: String?
     @Published var cloudPreset = "openrouter"
     @Published var cloudBaseURL = "https://openrouter.ai"
@@ -959,22 +962,49 @@ final class SettingsLoader: ObservableObject {
     }
 
     func refreshBehavior() async {
-        guard let settings = await client.behaviorSettings() else { return }
-        if let on = settings["enabled"] as? Bool { behaviorEnabled = on }
+        guard !behaviorChanging else { return }
+        behaviorRequestGeneration &+= 1
+        await readBehaviorSettings(generation: behaviorRequestGeneration)
+    }
+
+    private func readBehaviorSettings(generation: UInt64) async {
+        let settings = await client.behaviorSettings()
+        guard generation == behaviorRequestGeneration else { return }
+        guard let settings, let on = settings["enabled"] as? Bool else {
+            behaviorEnabled = nil
+            behaviorStatus = "Couldn't confirm learning settings. Wisp may still be learning. Check status or try turning it off."
+            return
+        }
+        behaviorEnabled = on
         behaviorRemote = settings["remote_active"] as? Bool ?? false
         behaviorPhraser = settings["phraser"] as? Bool ?? true
+        behaviorStatus = nil
     }
 
     func setBehaviorEnabled(_ on: Bool) {
-        behaviorEnabled = on
+        guard !behaviorChanging else { return }
+        behaviorRequestGeneration &+= 1
+        let generation = behaviorRequestGeneration
+        behaviorChanging = true
+        behaviorStatus = on ? "Turning learning on. Waiting for confirmation…"
+                            : "Turning learning off. Waiting for confirmation…"
         Task {
-            // Re-read the real state on failure so the switch never shows a
-            // position the backend did not accept.
             if let actual = await client.setBehaviorEnabled(on) {
+                guard generation == self.behaviorRequestGeneration else { return }
                 self.behaviorEnabled = actual
+                self.behaviorStatus = nil
             } else {
-                await self.refreshBehavior()
+                // A lost response may mean the write succeeded. Only a fresh
+                // authoritative read can resolve it; double failure is unknown.
+                await self.readBehaviorSettings(generation: generation)
             }
+            guard generation == self.behaviorRequestGeneration else { return }
+            if let actual = self.behaviorEnabled, actual != on {
+                self.behaviorStatus = actual
+                    ? "Wisp confirmed that learning is still on. The requested change was not accepted."
+                    : "Wisp confirmed that learning is still off. The requested change was not accepted."
+            }
+            self.behaviorChanging = false
         }
     }
 
@@ -1036,10 +1066,17 @@ struct SettingsView: View {
     /// inference server is configured (the learned summary is part of the prompt,
     /// and wording / event labeling would send calendar titles to that server).
     private var behaviorExplanation: String {
+        if loader.behaviorChanging {
+            return loader.behaviorStatus ?? "Updating learning settings. Waiting for confirmation…"
+        }
+        guard let enabled = loader.behaviorEnabled else {
+            return loader.behaviorStatus
+                ?? "Learning status has not been confirmed. Wisp may still be learning. Check status or turn learning off."
+        }
         let sources = "Learns from your calendar, reminders, message timing and how you use Wisp. "
             + "Optional app, website, email and message interpretation has separate source controls in What Wisp has learned. "
             + "Nudges at most 4 a day. "
-        guard loader.behaviorEnabled else {
+        guard enabled else {
             return "Off. Wisp is not learning your routines or sending nudges. What it already "
                 + "learned stays on this Mac and is still deleted automatically as it ages; "
                 + "use Forget to erase it now."
@@ -1056,6 +1093,16 @@ struct SettingsView: View {
         return sources + "Learned data is stored on this Mac, but you use a remote inference server: "
             + "a short summary of your routines is part of the prompts it receives. Nudge wording "
             + "and event categorization are off, so calendar titles are not sent for them."
+    }
+
+    private var behaviorLearningLabel: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Learn my routines")
+                .font(.system(size: 14, weight: .medium))
+            Text(behaviorExplanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private var panes: [Pane] {
@@ -1591,19 +1638,31 @@ struct SettingsView: View {
 
                         Divider()
 
-                        Toggle(isOn: Binding(
-                            get: { loader.behaviorEnabled },
-                            set: { loader.setBehaviorEnabled($0) })) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Learn my routines")
-                                    .font(.system(size: 14, weight: .medium))
-                                Text(behaviorExplanation)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                        if loader.behaviorEnabled != nil {
+                            Toggle(isOn: Binding(
+                                get: { loader.behaviorEnabled == true },
+                                set: { loader.setBehaviorEnabled($0) })) {
+                                behaviorLearningLabel
+                            }
+                            .toggleStyle(.switch)
+                            .tint(Theme.accent)
+                            .disabled(loader.behaviorChanging)
+                            if !loader.behaviorChanging, let status = loader.behaviorStatus {
+                                Text(status).font(.caption).foregroundStyle(.secondary)
+                            }
+                        } else {
+                            VStack(alignment: .leading, spacing: 8) {
+                                behaviorLearningLabel
+                                HStack {
+                                    Button("Check status") {
+                                        Task { await loader.refreshBehavior() }
+                                    }
+                                    Button("Turn learning off") { loader.setBehaviorEnabled(false) }
+                                }
+                                .controlSize(.small)
+                                .disabled(loader.behaviorChanging)
                             }
                         }
-                        .toggleStyle(.switch)
-                        .tint(Theme.accent)
 
                         HStack(spacing: 10) {
                             Button("See what Wisp learned") { LearnedWindow.shared.show() }

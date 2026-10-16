@@ -99,3 +99,51 @@ def test_signal_settings_async_order(tmp_path):
     (tmp_path / "signal-checks.stderr").write_text(checked.stderr)
     assert checked.returncode == 0, checked.stdout + checked.stderr
     assert "synthetic signal settings checks passed" in checked.stdout
+
+
+@pytest.mark.skipif(
+    sys.platform != "darwin" or not shutil.which("swiftc"),
+    reason="macOS compiler required",
+)
+def test_global_learning_settings_confirmation(tmp_path):
+    """Actual consent state/methods/copy, with manually ordered HTTP outcomes."""
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "app/Sources/WispApp/SettingsView.swift").read_text()
+    properties = source[source.index("    @Published var behaviorEnabled"):
+                        source.index("    @Published var behaviorForgetStatus")]
+    methods = source[source.index("    func refreshBehavior() async"):
+                     source.index("    /// Deletes everything Wisp learned")]
+    copy_start = source.index("    private var behaviorExplanation: String")
+    copy_end = min(source.index(marker, copy_start) for marker in
+                   ("    private var panes:", "    private var behaviorLearningLabel:")
+                   if marker in source[copy_start:])
+    copy = source[copy_start:copy_end]
+    for segment in (properties, methods, copy):
+        assert "URLSession" not in segment and "NSApplication" not in segment
+    extracted = tmp_path / "SettingsConsent.swift"
+    extracted.write_text(
+        "import Foundation\nimport Combine\n"
+        "@MainActor final class SettingsLoader: ObservableObject {\n"
+        "private let client = WispClient()\n" + properties + methods + "\n}\n"
+        "@MainActor struct BehaviorPrivacyCopy {\nlet loader: SettingsLoader\n" + copy
+        + "\nvar text: String { behaviorExplanation }\n}\n"
+    )
+    env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "WISP_BEHAVIOR": "0"}
+    for key, leaf in (("HOME", "home"), ("WISP_HOME", "state"), ("TMPDIR", "tmp")):
+        folder = tmp_path / leaf
+        folder.mkdir()
+        env[key] = str(folder)
+    env["WISP_ENGINE_ROOT"] = str(tmp_path / "absent-engine")
+    executable = tmp_path / "consent-checks"
+    compiled = subprocess.run(
+        ["/usr/bin/swiftc", "-parse-as-library", "-swift-version", "5",
+         "-module-cache-path", str(tmp_path / "modules"), str(extracted),
+         str(root / "tests/BehaviorGlobalSettingsRegression.swift"), "-o", str(executable)],
+        env=env, cwd=tmp_path, capture_output=True, text=True, timeout=120,
+    )
+    assert compiled.returncode == 0, compiled.stderr
+    checked = subprocess.run(
+        [str(executable)], env=env, cwd=tmp_path, capture_output=True, text=True, timeout=15
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
+    assert "synthetic global consent checks passed" in checked.stdout
