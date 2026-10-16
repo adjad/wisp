@@ -1,0 +1,17 @@
+{
+  "zip": "mellum-r1-data.zip",
+  "sha256": "25b7b922229c453fe9f147c672948ae8fc7e9911ed69d3b30fedc5c2b05e00e1",
+  "bytes": 6557973,
+  "manifest": {
+    "built": "2026-10-15T01:26:09",
+    "files": {
+      "train.jsonl": "5c57ba1c2f9999398c4089c6a426fc6e896d4584832399fc57ef8c103868ed02",
+      "dev.jsonl": "6fdcf834300cd586482c8b1ff0b03c2601b10177d2f8e92be3203e229e13dbfe",
+      "stats.json": "35495a0b24cb5f9e51b8e25aefe3a732a4244bbee5cfb2629bd8dcf24322affa",
+      "validation.json": "301fec58620bea8de2dc720f1adbf82bbf4ee1a1ab222fbedadacb90b8d52f55",
+      "DATA_CARD.md": "b8251880edcace53cf8837291d6979736646062edcd495a1dd8dcd2283a79fe2",
+      "ROUTER_FINDINGS.md": "1bff97dec9d34b22269aeddda7c9ff1492d0803ab38e009711bc639c86b4951b",
+      "train/train.py": "13e757bc354f97185f7490d5f8eb7950c25aa4b73bda80875f3cf0f000609efd"
+    }
+  }
+}
